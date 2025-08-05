@@ -327,6 +327,25 @@ impl Expr {
                     })
                 })
             }
+            ExprKind::Module {
+                name,
+                export,
+                value: ModuleKind::Dynamic { sandbox, sig, source },
+            } => Box::pin(async move {
+                let source = Arc::new(
+                    source.resolve_modules_int(scope, prepend, resolvers).await?,
+                );
+                Ok(Expr {
+                    id: self.id,
+                    ori: self.ori.clone(),
+                    pos: self.pos,
+                    kind: ExprKind::Module {
+                        name,
+                        export,
+                        value: ModuleKind::Dynamic { sandbox, sig, source },
+                    },
+                })
+            }),
             ExprKind::Do { exprs } => Box::pin(async move {
                 let exprs = Arc::from(subexprs!(exprs));
                 Ok(Expr {

@@ -352,7 +352,7 @@ fn typedef() -> impl Strategy<Value = Expr> {
     (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), typexp()).prop_map(
         |(name, params, typ)| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef { name, params, typ }.to_expr_nopos()
+            ExprKind::TypeDef(TypeDef { name, params, typ }).to_expr_nopos()
         },
     )
 }
@@ -1143,8 +1143,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             )
         }
         (
-            ExprKind::TypeDef { name: name0, params: p0, typ: typ0 },
-            ExprKind::TypeDef { name: name1, params: p1, typ: typ1 },
+            ExprKind::TypeDef(TypeDef { name: name0, params: p0, typ: typ0 }),
+            ExprKind::TypeDef(TypeDef { name: name1, params: p1, typ: typ1 }),
         ) => {
             dbg!(name0 == name1)
                 && dbg!(
