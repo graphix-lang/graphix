@@ -1,7 +1,7 @@
 use crate::{
     expr::{
         get_origin, set_origin, Arg, Bind, Expr, ExprId, ExprKind, Lambda, ModPath,
-        ModuleKind, Origin, Pattern, StructurePattern,
+        ModuleKind, Origin, Pattern, Sandbox, SigItem, StructurePattern, TypeDef,
     },
     typ::{FnArgType, FnType, TVar, Type},
 };
@@ -351,6 +351,81 @@ parser! {
 }
 
 parser! {
+    fn sig_item[I]()(I) -> SigItem
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        choice((
+            typedef().map(|e| match e.kind {
+                ExprKind::TypeDef(td) => SigItem::TypeDef(td),
+                _ => unreachable!()
+            }),
+            string("val").with(space()).with((spfname(), sptoken(':').with(typexp())))
+                .map(|(name, typ)| {
+                    SigItem::Bind(name, typ)
+                }),
+            string("mod").with(space()).with((
+                spfname(),
+                between(sptoken('{'), sptoken('}'),
+                    sep_by1(sig_item(), attempt(sptoken(';'))))
+            )).map(|(name, items): (ArcStr, SmallVec<[SigItem; 8]>)| {
+                SigItem::Module(name, Arc::from_iter(items))
+            })
+        ))
+    }
+}
+
+parser! {
+    fn sandbox[I]()(I) -> Sandbox
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        choice((
+            string("unrestricted").map(|_| Sandbox::Unrestricted),
+            string("blacklist").with(between(
+                sptoken('['), sptoken(']'),
+                sep_by1(modpath(), csep())
+            )).map(|l: Vec<ModPath>| Sandbox::Blacklist(Arc::from(l))),
+            string("whitelist").with(between(
+                sptoken('['), sptoken(']'),
+                sep_by1(modpath(), csep())
+            )).map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l)))
+        ))
+    }
+}
+
+parser! {
+    fn dynamic_module[I]()(I) -> ModuleKind
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        space().with(string("dynamic")).with(between(
+            sptoken('{'), sptoken('}'),
+            (
+                spstring("sandbox").with(space()).with(sandbox()),
+                spstring("sig").with(between(
+                    sptoken('{'), sptoken('}'),
+                    sep_by1(sig_item(), attempt(sptoken(';')))
+                        .map(|i: Vec<SigItem>| Arc::from(i))
+                )),
+                spstring("source").with(space()).with(expr())
+            )
+        )).map(|(sandbox, sig, source)| {
+            ModuleKind::Dynamic { sandbox, sig, source: Arc::new(source) }
+        })
+    }
+}
+
+parser! {
+    fn inline_module[I]()(I) -> ModuleKind
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        between(
+            sptoken('{'), sptoken('}'),
+            sep_by(expr(), attempt(sptoken(';')))
+        )
+        .map(|m: Vec<Expr>| ModuleKind::Inline(Arc::from(m)))
+    }
+}
+
+parser! {
     fn module[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
@@ -358,11 +433,10 @@ parser! {
             position(),
             optional(string("pub").skip(space())).map(|o| o.is_some()),
             spstring("mod").with(space()).with(spfname()),
-            optional(attempt(between(sptoken('{'), sptoken('}'), sep_by(expr(), attempt(sptoken(';'))))))
-                .map(|m: Option<Vec<Expr>>| match m {
-                    Some(m) => ModuleKind::Inline(Arc::from(m)),
-                    None => ModuleKind::Unresolved
-                }),
+            optional(choice((
+                attempt(inline_module()),
+                attempt(dynamic_module())
+            ))).map(|m| m.unwrap_or(ModuleKind::Unresolved))
         )
             .map(|(pos, export, name, value)| {
                 ExprKind::Module { name, export, value }.to_expr(pos)
@@ -1346,7 +1420,7 @@ parser! {
                         Arc::from_iter(ps.into_iter())
                     })
                     .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from(Vec::new()));
-                ExprKind::TypeDef { name, params, typ }.to_expr(pos)
+                ExprKind::TypeDef(TypeDef { name, params, typ }).to_expr(pos)
             })
     }
 }

@@ -1,11 +1,128 @@
-use super::{parser, Bind, Expr, ExprKind, Lambda, ModuleKind};
+use crate::expr::{
+    parser, Bind, Expr, ExprKind, Lambda, ModuleKind, Sandbox, SigItem, TypeDef,
+};
 use compact_str::{format_compact, CompactString};
 use netidx::{
     path::Path,
     utils::{self, Either},
 };
 use netidx_value::Value;
-use std::fmt::{self, Write};
+use std::fmt::{self, Formatter, Write};
+
+impl fmt::Display for TypeDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { name, params, typ } = self;
+        write!(f, "type {name}")?;
+        if !params.is_empty() {
+            write!(f, "<")?;
+            for (i, (tv, ct)) in params.iter().enumerate() {
+                write!(f, "{tv}")?;
+                if let Some(ct) = ct {
+                    write!(f, ": {ct}")?;
+                }
+                if i < params.len() - 1 {
+                    write!(f, ", ")?;
+                }
+            }
+            write!(f, ">")?;
+        }
+        write!(f, " = {typ}")
+    }
+}
+
+impl fmt::Display for Sandbox {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        macro_rules! write_sandbox {
+            ($kind:literal, $l:expr) => {{
+                write!(f, "sandbox {} [ ", $kind)?;
+                for (i, p) in $l.iter().enumerate() {
+                    if i < $l.len() - 1 {
+                        write!(f, "{};", p)?
+                    } else {
+                        write!(f, "{}", p)?
+                    }
+                }
+                write!(f, " ];")
+            }};
+        }
+        match self {
+            Sandbox::Unrestricted => writeln!(f, "sandbox unrestricted;"),
+            Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
+            Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
+        }
+    }
+}
+
+fn push_indent(indent: usize, buf: &mut String) {
+    buf.extend((0..indent).into_iter().map(|_| ' '));
+}
+
+fn pretty_print_sandbox(indent: usize, buf: &mut String, s: &Sandbox) -> fmt::Result {
+    macro_rules! write_sandbox {
+        ($kind:literal, $l:expr) => {{
+            writeln!(buf, "sandbox {} [", $kind)?;
+            for (i, p) in $l.iter().enumerate() {
+                push_indent(indent + 4, buf);
+                if i < $l.len() - 1 {
+                    writeln!(buf, "{};", p)?
+                } else {
+                    writeln!(buf, "{}", p)?
+                }
+            }
+            writeln!(buf, "];")
+        }};
+    }
+    push_indent(indent, buf);
+    match s {
+        Sandbox::Unrestricted => writeln!(buf, "sandbox unrestricted;"),
+        Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
+        Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
+    }
+}
+
+fn pretty_print_sig_items(
+    indent: usize,
+    buf: &mut String,
+    it: &[SigItem],
+) -> fmt::Result {
+    for (i, si) in it.iter().enumerate() {
+        push_indent(indent, buf);
+        match si {
+            SigItem::TypeDef(td) => write!(buf, "{td}")?,
+            SigItem::Bind(name, typ) => write!(buf, "val {name}: {typ}")?,
+            SigItem::Module(name, sig) => {
+                writeln!(buf, "mod {name} {{")?;
+                pretty_print_sig_items(indent + 2, buf, sig)?;
+                push_indent(indent, buf);
+                write!(buf, "}}")?
+            }
+        }
+        if i < it.len() - 1 {
+            writeln!(buf, ";")?
+        } else {
+            writeln!(buf, "")?
+        }
+    }
+    Ok(())
+}
+
+fn fmt_sig_items(f: &mut Formatter, it: &[SigItem]) -> fmt::Result {
+    for (i, si) in it.iter().enumerate() {
+        match si {
+            SigItem::TypeDef(td) => write!(f, "{td}")?,
+            SigItem::Bind(name, typ) => write!(f, "val {name}: {typ}")?,
+            SigItem::Module(name, sig) => {
+                write!(f, "mod {name} {{ ")?;
+                fmt_sig_items(f, sig)?;
+                write!(f, " }}")?
+            }
+        }
+        if i < it.len() - 1 {
+            write!(f, "; ")?
+        }
+    }
+    Ok(())
+}
 
 impl ExprKind {
     pub fn to_string_pretty(&self, col_limit: usize) -> String {
@@ -69,9 +186,6 @@ impl ExprKind {
                     }
                 }
             }};
-        }
-        fn push_indent(indent: usize, buf: &mut String) {
-            buf.extend((0..indent).into_iter().map(|_| ' '));
         }
         fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
             indent: usize,
@@ -173,6 +287,23 @@ impl ExprKind {
                 try_single_line!(true);
                 write!(buf, "{}mod {name} ", exp(*export))?;
                 pretty_print_exprs(indent, limit, buf, exprs, "{", "}", ";")
+            }
+            ExprKind::Module {
+                name,
+                export,
+                value: ModuleKind::Dynamic { sandbox, sig, source },
+            } => {
+                try_single_line!(true);
+                writeln!(buf, "{}mod {name} dynamic {{", exp(*export))?;
+                pretty_print_sandbox(indent + 2, buf, sandbox)?;
+                push_indent(indent + 2, buf);
+                writeln!(buf, "sig {{")?;
+                pretty_print_sig_items(indent + 2, buf, sig)?;
+                push_indent(indent + 2, buf);
+                writeln!(buf, "}};")?;
+                push_indent(indent + 2, buf);
+                write!(buf, "source ")?;
+                source.kind.pretty_print(indent + 2, limit, false, buf)
             }
             ExprKind::Do { exprs } => {
                 try_single_line!(true);
@@ -532,26 +663,17 @@ impl fmt::Display for ExprKind {
                 match value {
                     ModuleKind::Resolved(_) | ModuleKind::Unresolved => Ok(()),
                     ModuleKind::Inline(exprs) => print_exprs(f, &**exprs, "{", "}", "; "),
+                    ModuleKind::Dynamic { sandbox, sig, source } => {
+                        write!(f, " dynamic {{ {sandbox} ")?;
+                        write!(f, "sig {{ ")?;
+                        fmt_sig_items(f, sig)?;
+                        write!(f, "}}; ")?;
+                        write!(f, "source {source} }}")
+                    }
                 }
             }
             ExprKind::TypeCast { expr, typ } => write!(f, "cast<{typ}>({expr})"),
-            ExprKind::TypeDef { name, params, typ } => {
-                write!(f, "type {name}")?;
-                if !params.is_empty() {
-                    write!(f, "<")?;
-                    for (i, (tv, ct)) in params.iter().enumerate() {
-                        write!(f, "{tv}")?;
-                        if let Some(ct) = ct {
-                            write!(f, ": {ct}")?;
-                        }
-                        if i < params.len() - 1 {
-                            write!(f, ", ")?;
-                        }
-                    }
-                    write!(f, ">")?;
-                }
-                write!(f, " = {typ}")
-            }
+            ExprKind::TypeDef(td) => write!(f, "{td}"),
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
             ExprKind::Lambda(l) => {
                 let Lambda { args, vargs, rtype, constraints, body } = &**l;

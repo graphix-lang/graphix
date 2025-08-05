@@ -63,7 +63,29 @@ pub struct Arg {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct TypeDef {
+    name: ArcStr,
+    params: Arc<[(TVar, Option<Type>)]>,
+    typ: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub enum SigItem {
+    TypeDef(TypeDef),
+    Bind(ArcStr, Type),
+    Module(ArcStr, Arc<[SigItem]>),
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub enum Sandbox {
+    Unrestricted,
+    Blacklist(Arc<[ModPath]>),
+    Whitelist(Arc<[ModPath]>),
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ModuleKind {
+    Dynamic { sandbox: Sandbox, sig: Arc<[SigItem]>, source: Arc<Expr> },
     Inline(Arc<[Expr]>),
     Resolved(Arc<[Expr]>),
     Unresolved,
@@ -103,7 +125,7 @@ pub enum ExprKind {
     ArraySlice { source: Arc<Expr>, start: Option<Arc<Expr>>, end: Option<Arc<Expr>> },
     StructWith { source: Arc<Expr>, replace: Arc<[(ArcStr, Expr)]> },
     Lambda(Arc<Lambda>),
-    TypeDef { name: ArcStr, params: Arc<[(TVar, Option<Type>)]>, typ: Type },
+    TypeDef(TypeDef),
     TypeCast { expr: Arc<Expr>, typ: Type },
     Apply { args: Arc<[(Option<ArcStr>, Expr)]>, function: Arc<Expr> },
     Any { args: Arc<[Expr]> },
@@ -336,6 +358,10 @@ impl Expr {
             ExprKind::Module { value: ModuleKind::Resolved(exprs), .. } => {
                 exprs.iter().fold(init, |init, e| e.fold(init, f))
             }
+            ExprKind::Module {
+                value: ModuleKind::Dynamic { sandbox: _, sig: _, source },
+                ..
+            } => source.fold(init, f),
             ExprKind::Module { value: ModuleKind::Unresolved, .. } => init,
             ExprKind::Do { exprs } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::Bind(b) => b.value.fold(init, f),
