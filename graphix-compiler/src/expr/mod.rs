@@ -64,9 +64,9 @@ pub struct Arg {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct TypeDef {
-    name: ArcStr,
-    params: Arc<[(TVar, Option<Type>)]>,
-    typ: Type,
+    pub name: ArcStr,
+    pub params: Arc<[(TVar, Option<Type>)]>,
+    pub typ: Type,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]

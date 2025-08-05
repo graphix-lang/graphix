@@ -9,7 +9,7 @@ use super::{
     StringInterpolate, TypeCast, TypeDef, Use,
 };
 use crate::{
-    expr::{Expr, ExprId, ExprKind, ModPath, ModuleKind},
+    expr::{self, Expr, ExprId, ExprKind, ModPath, ModuleKind},
     ExecCtx, Node, Rt, UserEvent,
 };
 use anyhow::{bail, Context, Result};
@@ -68,6 +68,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     ctx.env.modules.insert_cow(scope.clone());
                     Ok(res)
                 }
+                ModuleKind::Dynamic { sandbox: _, sig: _, source: _ } => unimplemented!(),
             }
         }
         ExprKind::Use { name } => Use::compile(ctx, spec.clone(), scope, name),
@@ -102,7 +103,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::TypeCast { expr, typ } => {
             TypeCast::compile(ctx, spec.clone(), scope, top_id, expr, typ)
         }
-        ExprKind::TypeDef { name, params, typ } => {
+        ExprKind::TypeDef(expr::TypeDef { name, params, typ }) => {
             TypeDef::compile(ctx, spec.clone(), scope, name, params, typ)
         }
         ExprKind::Not { expr } => Not::compile(ctx, spec.clone(), scope, top_id, expr),
