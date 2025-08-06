@@ -355,7 +355,7 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         choice((
-            attempt(typedef()).map(|e| match e.kind {
+            attempt(spaces().with(typedef())).map(|e| match e.kind {
                 ExprKind::TypeDef(td) => SigItem::TypeDef(td),
                 _ => unreachable!()
             }),
@@ -382,11 +382,11 @@ parser! {
             spstring("unrestricted").map(|_| Sandbox::Unrestricted),
             spstring("blacklist").with(between(
                 sptoken('['), sptoken(']'),
-                sep_by1(modpath(), csep())
+                sep_by1(spaces().with(modpath()), csep())
             )).map(|l: Vec<ModPath>| Sandbox::Blacklist(Arc::from(l))),
             spstring("whitelist").with(between(
                 sptoken('['), sptoken(']'),
-                sep_by1(modpath(), csep())
+                sep_by1(spaces().with(modpath()), csep())
             )).map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l)))
         ))
         .skip(sptoken(';'))

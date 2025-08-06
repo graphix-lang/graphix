@@ -37,7 +37,7 @@ impl fmt::Display for Sandbox {
                 write!(f, "sandbox {} [ ", $kind)?;
                 for (i, p) in $l.iter().enumerate() {
                     if i < $l.len() - 1 {
-                        write!(f, "{};", p)?
+                        write!(f, "{}, ", p)?
                     } else {
                         write!(f, "{}", p)?
                     }
@@ -64,7 +64,7 @@ fn pretty_print_sandbox(indent: usize, buf: &mut String, s: &Sandbox) -> fmt::Re
             for (i, p) in $l.iter().enumerate() {
                 push_indent(indent + 4, buf);
                 if i < $l.len() - 1 {
-                    writeln!(buf, "{};", p)?
+                    writeln!(buf, "{},", p)?
                 } else {
                     writeln!(buf, "{}", p)?
                 }
@@ -303,7 +303,8 @@ impl ExprKind {
                 writeln!(buf, "}};")?;
                 push_indent(indent + 2, buf);
                 write!(buf, "source ")?;
-                source.kind.pretty_print(indent + 2, limit, false, buf)
+                source.kind.pretty_print(indent + 2, limit, false, buf)?;
+                writeln!(buf, "}}")
             }
             ExprKind::Do { exprs } => {
                 try_single_line!(true);

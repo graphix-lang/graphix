@@ -1321,8 +1321,9 @@ fn tupleref() {
 
 #[test]
 fn prop0() {
+    // mod a dynamic { sandbox unrestricted; sig { mod a { type A = _ }}; source u32:0 }
     let s = r#"
-mod a dynamic { sandbox unrestricted; sig { val a: _}; source u32:0 }
+dynamic { sandbox blacklist [ a, a ]; sig { val a: _}; source u32:0 }
 "#;
-    dbg!(parse_one(s).unwrap());
+    dbg!(parse_dynamic_module(s).unwrap());
 }
