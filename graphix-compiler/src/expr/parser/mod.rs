@@ -355,19 +355,19 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         choice((
-            typedef().map(|e| match e.kind {
+            attempt(typedef()).map(|e| match e.kind {
                 ExprKind::TypeDef(td) => SigItem::TypeDef(td),
                 _ => unreachable!()
             }),
-            string("val").with(space()).with((spfname(), sptoken(':').with(typexp())))
+            attempt(spstring("val").with(space()).with((spfname(), sptoken(':').with(typexp()))))
                 .map(|(name, typ)| {
                     SigItem::Bind(name, typ)
                 }),
-            string("mod").with(space()).with((
+            attempt(spstring("mod").with(space()).with((
                 spfname(),
                 between(sptoken('{'), sptoken('}'),
                     sep_by1(sig_item(), attempt(sptoken(';'))))
-            )).map(|(name, items): (ArcStr, SmallVec<[SigItem; 8]>)| {
+            ))).map(|(name, items): (ArcStr, SmallVec<[SigItem; 8]>)| {
                 SigItem::Module(name, Arc::from_iter(items))
             })
         ))
@@ -379,16 +379,17 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         choice((
-            string("unrestricted").map(|_| Sandbox::Unrestricted),
-            string("blacklist").with(between(
+            spstring("unrestricted").map(|_| Sandbox::Unrestricted),
+            spstring("blacklist").with(between(
                 sptoken('['), sptoken(']'),
                 sep_by1(modpath(), csep())
             )).map(|l: Vec<ModPath>| Sandbox::Blacklist(Arc::from(l))),
-            string("whitelist").with(between(
+            spstring("whitelist").with(between(
                 sptoken('['), sptoken(']'),
                 sep_by1(modpath(), csep())
             )).map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l)))
         ))
+        .skip(sptoken(';'))
     }
 }
 
@@ -396,7 +397,7 @@ parser! {
     fn dynamic_module[I]()(I) -> ModuleKind
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        space().with(string("dynamic")).with(between(
+        space().with(spstring("dynamic")).with(between(
             sptoken('{'), sptoken('}'),
             (
                 spstring("sandbox").with(space()).with(sandbox()),
@@ -404,7 +405,8 @@ parser! {
                     sptoken('{'), sptoken('}'),
                     sep_by1(sig_item(), attempt(sptoken(';')))
                         .map(|i: Vec<SigItem>| Arc::from(i))
-                )),
+                ))
+                .skip(sptoken(';')),
                 spstring("source").with(space()).with(expr())
             )
         )).map(|(sandbox, sig, source)| {

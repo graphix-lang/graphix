@@ -597,7 +597,7 @@ macro_rules! deref {
     };
 }
 
-macro_rules! inlinemodule {
+macro_rules! inline_module {
     ($inner:expr) => {
         (any::<bool>(), random_fname(), collection::vec($inner, (0, 10))).prop_map(
             |(export, name, body)| {
@@ -609,6 +609,54 @@ macro_rules! inlinemodule {
                 .to_expr_nopos()
             },
         )
+    };
+}
+
+fn module_sigitem() -> impl Strategy<Value = SigItem> {
+    let leaf = prop_oneof![
+        (random_fname(), typexp()).prop_map(|(name, typ)| SigItem::Bind(name, typ)),
+        typedef().prop_map(|td| match td.kind {
+            ExprKind::TypeDef(td) => SigItem::TypeDef(td),
+            _ => unreachable!(),
+        })
+    ];
+    leaf.prop_recursive(5, 20, 10, |inner| {
+        (random_fname(), collection::vec(inner, (1, 10)))
+            .prop_map(|(name, items)| SigItem::Module(name, Arc::from(items)))
+    })
+}
+
+fn module_sandbox() -> impl Strategy<Value = Sandbox> {
+    prop_oneof![
+        Just(Sandbox::Unrestricted),
+        (collection::vec(modpath(), (1, 10)))
+            .prop_map(|l| Sandbox::Blacklist(Arc::from(l))),
+        (collection::vec(modpath(), (1, 10)))
+            .prop_map(|l| Sandbox::Whitelist(Arc::from(l)))
+    ]
+}
+
+macro_rules! dynamic_module {
+    ($inner:expr) => {
+        (
+            any::<bool>(),
+            random_fname(),
+            module_sandbox(),
+            collection::vec(module_sigitem(), (1, 10)),
+            $inner,
+        )
+            .prop_map(|(export, name, sandbox, sig, source)| {
+                ExprKind::Module {
+                    export,
+                    name,
+                    value: ModuleKind::Dynamic {
+                        sandbox,
+                        sig: Arc::from(sig),
+                        source: Arc::new(source),
+                    },
+                }
+                .to_expr_nopos()
+            })
     };
 }
 
@@ -662,7 +710,8 @@ fn expr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![constant(), reference(), usestmt(), typedef(), module()];
     leaf.prop_recursive(5, 100, 25, |inner| {
         prop_oneof![
-            inlinemodule!(inner.clone()),
+            inline_module!(inner.clone()),
+            dynamic_module!(inner.clone()),
             arrayref!(inner.clone()),
             arrayslice!(inner.clone()),
             qop!(inner.clone()),
@@ -858,6 +907,38 @@ fn check_opt(s0: &Option<Arc<Expr>>, s1: &Option<Arc<Expr>>) -> bool {
     }
 }
 
+fn check_typedef(td0: &TypeDef, td1: &TypeDef) -> bool {
+    let TypeDef { name: name0, params: p0, typ: typ0 } = td0;
+    let TypeDef { name: name1, params: p1, typ: typ1 } = td1;
+    dbg!(name0 == name1)
+        && dbg!(
+            p0.len() == p1.len()
+                && p0.iter().zip(p1.iter()).all(|((t0, c0), (t1, c1))| {
+                    t0 == t1
+                        && match (c0.as_ref(), c1.as_ref()) {
+                            (Some(c0), Some(c1)) => check_type(c0, c1),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                })
+        )
+        && dbg!(check_type(&typ0, &typ1))
+}
+
+fn check_module_sig(s0: &Arc<[SigItem]>, s1: &Arc<[SigItem]>) -> bool {
+    s0.len() == s1.len()
+        && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
+            (SigItem::Bind(n0, t0), SigItem::Bind(n1, t1)) => {
+                n0 == n1 && check_type(t0, t1)
+            }
+            (SigItem::TypeDef(td0), SigItem::TypeDef(td1)) => check_typedef(td0, td1),
+            (SigItem::Module(n0, s0), SigItem::Module(n1, s1)) => {
+                n0 == n1 && check_module_sig(s0, s1)
+            }
+            (_, _) => false,
+        })
+}
+
 fn check(s0: &Expr, s1: &Expr) -> bool {
     match (&s0.kind, &s1.kind) {
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => match (v0, v1) {
@@ -1037,6 +1118,23 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 value: ModuleKind::Unresolved,
             },
         ) => dbg!(dbg!(name0 == name1) && dbg!(export0 == export1)),
+        (
+            ExprKind::Module {
+                name: name0,
+                export: export0,
+                value: ModuleKind::Dynamic { sandbox: sb0, sig: si0, source: sr0 },
+            },
+            ExprKind::Module {
+                name: name1,
+                export: export1,
+                value: ModuleKind::Dynamic { sandbox: sb1, sig: si1, source: sr1 },
+            },
+        ) => {
+            dbg!(dbg!(name0 == name1) && dbg!(export0 == export1))
+                && dbg!(sb0 == sb1)
+                && dbg!(check_module_sig(si0, si1))
+                && dbg!(check(sr0, sr1))
+        }
         (ExprKind::Do { exprs: exprs0 }, ExprKind::Do { exprs: exprs1 }) => {
             exprs0.len() == exprs1.len()
                 && exprs0.iter().zip(exprs1.iter()).all(|(v0, v1)| check(v0, v1))
@@ -1142,24 +1240,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                             && dbg!(check_pattern(pat0, pat1))))
             )
         }
-        (
-            ExprKind::TypeDef(TypeDef { name: name0, params: p0, typ: typ0 }),
-            ExprKind::TypeDef(TypeDef { name: name1, params: p1, typ: typ1 }),
-        ) => {
-            dbg!(name0 == name1)
-                && dbg!(
-                    p0.len() == p1.len()
-                        && p0.iter().zip(p1.iter()).all(|((t0, c0), (t1, c1))| {
-                            t0 == t1
-                                && match (c0.as_ref(), c1.as_ref()) {
-                                    (Some(c0), Some(c1)) => check_type(c0, c1),
-                                    (None, None) => true,
-                                    _ => false,
-                                }
-                        })
-                )
-                && dbg!(check_type(&typ0, &typ1))
-        }
+        (ExprKind::TypeDef(td0), ExprKind::TypeDef(td1)) => check_typedef(td0, td1),
         (
             ExprKind::TypeCast { expr: expr0, typ: typ0 },
             ExprKind::TypeCast { expr: expr1, typ: typ1 },
