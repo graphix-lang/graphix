@@ -19,6 +19,7 @@ pub(crate) mod array;
 pub(crate) mod callsite;
 pub(crate) mod compiler;
 pub(crate) mod data;
+pub(crate) mod dynamic;
 pub mod genn;
 pub(crate) mod lambda;
 pub(crate) mod op;

@@ -1,9 +1,9 @@
 use crate::{
-    expr::{Arg, ModPath},
+    expr::{Arg, ModPath, Sandbox},
     typ::{FnType, TVar, Type},
     BindId, InitFn, LambdaId, Rt, UserEvent,
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
@@ -122,6 +122,94 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
             by_id: self.by_id.clone(),
             lambdas: self.lambdas.clone(),
             byref_chain: self.byref_chain.clone(),
+        }
+    }
+
+    pub fn apply_sandbox(&self, spec: &Sandbox) -> Result<Self> {
+        fn get_bind_name(n: &ModPath) -> Result<(&str, &str)> {
+            let dir = Path::dirname(&**n).ok_or_else(|| anyhow!("unknown module {n}"))?;
+            let k = Path::basename(&**n).ok_or_else(|| anyhow!("unknown module {n}"))?;
+            Ok((dir, k))
+        }
+        match spec {
+            Sandbox::Unrestricted => Ok(self.clone()),
+            Sandbox::Blacklist(bl) => {
+                let mut t = self.clone();
+                for n in bl.iter() {
+                    if t.modules.remove_cow(n) {
+                        t.binds.remove_cow(n);
+                        t.typedefs.remove_cow(n);
+                    } else {
+                        let (dir, k) = get_bind_name(n)?;
+                        let vals = t.binds.get_mut_cow(dir).ok_or_else(|| {
+                            anyhow!("no value {k} in module {dir} and no module {n}")
+                        })?;
+                        if let None = vals.remove_cow(&CompactString::from(k)) {
+                            bail!("no value {k} in module {dir} and no module {n}")
+                        }
+                    }
+                }
+                Ok(t)
+            }
+            Sandbox::Whitelist(wl) => {
+                let mut t = self.clone();
+                let mut modules = FxHashSet::default();
+                let mut names: FxHashMap<_, FxHashSet<_>> = FxHashMap::default();
+                for w in wl.iter() {
+                    if t.modules.contains(w) {
+                        modules.insert(w.clone());
+                    } else {
+                        let (dir, n) = get_bind_name(w)?;
+                        let dir = ModPath(Path::from(ArcStr::from(dir)));
+                        let n = CompactString::from(n);
+                        t.binds.get(&dir).and_then(|v| v.get(&n)).ok_or_else(|| {
+                            anyhow!("no value {n} in module {dir} and no module {w}")
+                        })?;
+                        names.entry(dir).or_default().insert(n);
+                    }
+                }
+                t.typedefs = t.typedefs.update_many(
+                    t.typedefs.into_iter().map(|(k, v)| (k.clone(), v.clone())),
+                    |k, v, _| {
+                        if modules.contains(&k) || names.contains_key(&k) {
+                            Some((k, v))
+                        } else {
+                            None
+                        }
+                    },
+                );
+                t.modules =
+                    t.modules.update_many(t.modules.into_iter().cloned(), |k, _| {
+                        if modules.contains(&k) || names.contains_key(&k) {
+                            Some(k)
+                        } else {
+                            None
+                        }
+                    });
+                t.binds = t.binds.update_many(
+                    t.binds.into_iter().map(|(k, v)| (k.clone(), v.clone())),
+                    |k, v, _| {
+                        if modules.contains(&k) {
+                            Some((k, v))
+                        } else if let Some(names) = names.get(&k) {
+                            let v = v.update_many(
+                                v.into_iter().map(|(k, v)| (k.clone(), v.clone())),
+                                |kn, vn, _| {
+                                    if names.contains(&kn) {
+                                        Some((kn, vn))
+                                    } else {
+                                        None
+                                    }
+                                },
+                            );
+                            Some((k, v))
+                        } else {
+                            None
+                        }
+                    },
+                );
+                Ok(t)
+            }
         }
     }
 
