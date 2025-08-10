@@ -622,7 +622,7 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
     ];
     leaf.prop_recursive(5, 20, 10, |inner| {
         (random_fname(), collection::vec(inner, (1, 10)))
-            .prop_map(|(name, items)| SigItem::Module(name, Arc::from(items)))
+            .prop_map(|(name, items)| SigItem::Module(name, Sig(Arc::from(items))))
     })
 }
 
@@ -651,7 +651,7 @@ macro_rules! dynamic_module {
                     name,
                     value: ModuleKind::Dynamic {
                         sandbox,
-                        sig: Arc::from(sig),
+                        sig: Sig(Arc::from(sig)),
                         source: Arc::new(source),
                     },
                 }
@@ -925,7 +925,7 @@ fn check_typedef(td0: &TypeDef, td1: &TypeDef) -> bool {
         && dbg!(check_type(&typ0, &typ1))
 }
 
-fn check_module_sig(s0: &Arc<[SigItem]>, s1: &Arc<[SigItem]>) -> bool {
+fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (SigItem::Bind(n0, t0), SigItem::Bind(n1, t1)) => {

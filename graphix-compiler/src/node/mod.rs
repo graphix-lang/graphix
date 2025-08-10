@@ -410,6 +410,23 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         Ok(Box::new(Self { spec, typ, pattern, node, top_id }))
     }
+
+    /// Return the id if this bind has only a single binding, otherwise return None
+    pub(crate) fn single_id(&self) -> Option<BindId> {
+        let mut id = None;
+        let mut n = 0;
+        self.pattern.ids(&mut |i| {
+            if n == 0 {
+                id = Some(i)
+            }
+            n += 1
+        });
+        if n == 1 {
+            id
+        } else {
+            None
+        }
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {

@@ -18,6 +18,7 @@ use std::{
     cell::RefCell,
     cmp::{Ordering, PartialEq, PartialOrd},
     fmt,
+    ops::Deref,
     path::PathBuf,
     result,
     str::FromStr,
@@ -73,7 +74,28 @@ pub struct TypeDef {
 pub enum SigItem {
     TypeDef(TypeDef),
     Bind(ArcStr, Type),
-    Module(ArcStr, Arc<[SigItem]>),
+    Module(ArcStr, Sig),
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct Sig(Arc<[SigItem]>);
+
+impl Deref for Sig {
+    type Target = [SigItem];
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Sig {
+    /// find the signature of the submodule in this sig with name
+    pub fn find_module<'a>(&'a self, name: &str) -> Option<&'a Sig> {
+        self.iter().find_map(|si| match si {
+            SigItem::Module(n, sig) if name == n => Some(sig),
+            SigItem::Bind(_, _) | SigItem::Module(_, _) | SigItem::TypeDef(_) => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -85,7 +107,7 @@ pub enum Sandbox {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ModuleKind {
-    Dynamic { sandbox: Sandbox, sig: Arc<[SigItem]>, source: Arc<Expr> },
+    Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
     Inline(Arc<[Expr]>),
     Resolved(Arc<[Expr]>),
     Unresolved,

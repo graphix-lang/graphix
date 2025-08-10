@@ -1,7 +1,7 @@
 use crate::{
     expr::{
         get_origin, set_origin, Arg, Bind, Expr, ExprId, ExprKind, Lambda, ModPath,
-        ModuleKind, Origin, Pattern, Sandbox, SigItem, StructurePattern, TypeDef,
+        ModuleKind, Origin, Pattern, Sandbox, Sig, SigItem, StructurePattern, TypeDef,
     },
     typ::{FnArgType, FnType, TVar, Type},
 };
@@ -364,11 +364,11 @@ parser! {
                     SigItem::Bind(name, typ)
                 }),
             attempt(spstring("mod").with(space()).with((
-                spfname(),
+                spfname().skip(sptoken(':')).skip(spstring("sig")),
                 between(sptoken('{'), sptoken('}'),
                     sep_by1(sig_item(), attempt(sptoken(';'))))
             ))).map(|(name, items): (ArcStr, SmallVec<[SigItem; 8]>)| {
-                SigItem::Module(name, Arc::from_iter(items))
+                SigItem::Module(name, Sig(Arc::from_iter(items)))
             })
         ))
     }
@@ -404,7 +404,7 @@ parser! {
                 spstring("sig").with(between(
                     sptoken('{'), sptoken('}'),
                     sep_by1(sig_item(), attempt(sptoken(';')))
-                        .map(|i: Vec<SigItem>| Arc::from(i))
+                        .map(|i: Vec<SigItem>| Sig(Arc::from(i)))
                 ))
                 .skip(sptoken(';')),
                 spstring("source").with(space()).with(expr())

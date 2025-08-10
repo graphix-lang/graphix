@@ -9,6 +9,8 @@ use netidx::{
 use netidx_value::Value;
 use std::fmt::{self, Formatter, Write};
 
+use super::Sig;
+
 impl fmt::Display for TypeDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { name, params, typ } = self;
@@ -42,7 +44,7 @@ impl fmt::Display for Sandbox {
                         write!(f, "{}", p)?
                     }
                 }
-                write!(f, " ];")
+                write!(f, " ]")
             }};
         }
         match self {
@@ -50,6 +52,29 @@ impl fmt::Display for Sandbox {
             Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
             Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
         }
+    }
+}
+
+impl fmt::Display for SigItem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            SigItem::TypeDef(td) => write!(f, "{td}"),
+            SigItem::Bind(name, typ) => write!(f, "val {name}: {typ}"),
+            SigItem::Module(name, sig) => write!(f, "mod {name}: {sig}"),
+        }
+    }
+}
+
+impl fmt::Display for Sig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "sig {{ ")?;
+        for (i, si) in self.iter().enumerate() {
+            write!(f, "{si}")?;
+            if i < self.len() - 1 {
+                write!(f, "; ")?
+            }
+        }
+        write!(f, " }}")
     }
 }
 
@@ -91,7 +116,7 @@ fn pretty_print_sig_items(
             SigItem::TypeDef(td) => write!(buf, "{td}")?,
             SigItem::Bind(name, typ) => write!(buf, "val {name}: {typ}")?,
             SigItem::Module(name, sig) => {
-                writeln!(buf, "mod {name} {{")?;
+                writeln!(buf, "mod {name}: sig {{")?;
                 pretty_print_sig_items(indent + 2, buf, sig)?;
                 push_indent(indent, buf);
                 write!(buf, "}}")?
@@ -101,24 +126,6 @@ fn pretty_print_sig_items(
             writeln!(buf, ";")?
         } else {
             writeln!(buf, "")?
-        }
-    }
-    Ok(())
-}
-
-fn fmt_sig_items(f: &mut Formatter, it: &[SigItem]) -> fmt::Result {
-    for (i, si) in it.iter().enumerate() {
-        match si {
-            SigItem::TypeDef(td) => write!(f, "{td}")?,
-            SigItem::Bind(name, typ) => write!(f, "val {name}: {typ}")?,
-            SigItem::Module(name, sig) => {
-                write!(f, "mod {name} {{ ")?;
-                fmt_sig_items(f, sig)?;
-                write!(f, " }}")?
-            }
-        }
-        if i < it.len() - 1 {
-            write!(f, "; ")?
         }
     }
     Ok(())
@@ -665,11 +672,9 @@ impl fmt::Display for ExprKind {
                     ModuleKind::Resolved(_) | ModuleKind::Unresolved => Ok(()),
                     ModuleKind::Inline(exprs) => print_exprs(f, &**exprs, "{", "}", "; "),
                     ModuleKind::Dynamic { sandbox, sig, source } => {
-                        write!(f, " dynamic {{ {sandbox} ")?;
-                        write!(f, "sig {{ ")?;
-                        fmt_sig_items(f, sig)?;
-                        write!(f, "}}; ")?;
-                        write!(f, "source {source} }}")
+                        write!(f, " dynamic {{ {sandbox};")?;
+                        write!(f, " {sig};")?;
+                        write!(f, " source {source} }}")
                     }
                 }
             }
