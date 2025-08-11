@@ -48,7 +48,7 @@ impl fmt::Display for Sandbox {
             }};
         }
         match self {
-            Sandbox::Unrestricted => write!(f, "sandbox unrestricted;"),
+            Sandbox::Unrestricted => write!(f, "sandbox unrestricted"),
             Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
             Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
         }

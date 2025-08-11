@@ -53,7 +53,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
             let scope = ModPath(scope.append(&name));
             match value {
                 ModuleKind::Unresolved => {
-                    bail!("external modules are not allowed in this context, use an inline or dynamic module")
+                    bail!("external modules are not allowed in this context")
                 }
                 ModuleKind::Resolved(exprs) => {
                     let res =
