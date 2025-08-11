@@ -1353,3 +1353,57 @@ run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
+
+#[cfg(test)]
+const DYNAMIC_MODULE0: &str = r#"
+{
+    let source = "let add = |x| x + 1; let sub = |x| x - 1; let cfg = \[1, 2, 3, 4, 5\]; let hidden = 42";
+    net::publish("/local/foo", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            val add: fn(i64) -> i64;
+            val sub: fn(i64) -> i64;
+            val cfg: Array<i64>
+        };
+        source cast<string>(net::subscribe("/local/foo"))
+    };
+    select status {
+        error as e => never(dbg(e)),
+        null as _ => foo::add(foo::cfg[0]?)
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module0, DYNAMIC_MODULE0, |v: Result<&Value>| match v {
+    Ok(Value::I64(2)) => true,
+    _ => false,
+});
+
+#[cfg(test)]
+const DYNAMIC_MODULE1: &str = r#"
+{
+    let source = "let add = |x| x + 1.; let sub = |x| x - 1; let cfg = \[1, 2, 3, 4, 5\]; let hidden = 42";
+    net::publish("/local/foo", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            val add: fn(i64) -> i64;
+            val sub: fn(i64) -> i64;
+            val cfg: Array<i64>
+        };
+        source cast<string>(net::subscribe("/local/foo"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => foo::add(foo::cfg[0]?)
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
+    Ok(Value::Error(_)) => true,
+    _ => false,
+});

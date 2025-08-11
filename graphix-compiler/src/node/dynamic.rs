@@ -7,7 +7,7 @@ use crate::{
     },
     node::{Bind, Block},
     typ::Type,
-    wrap, BindId, Event, ExecCtx, Node, Refs, Rt, Update, UserEvent,
+    wrap, BindId, Event, ExecCtx, Node, Refs, Rt, Update, UserEvent, KNOWN,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -26,6 +26,7 @@ fn bind_sig<R: Rt, E: UserEvent>(
     for si in sig.iter() {
         match si {
             SigItem::Bind(name, typ) => {
+                KNOWN.with_borrow_mut(|known| typ.alias_tvars(known));
                 env.bind_variable(&scope, name, typ.clone());
             }
             SigItem::TypeDef(td) => {
@@ -60,7 +61,10 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_id) = binds.get(&CompactString::from(name.as_str()))
             && let Some(proxy_bind) = env.by_id.get(&proxy_id)
         {
-            if bind.typ != proxy_bind.typ {
+            bind.typ.unbind_tvars();
+            if !(bind.typ.contains(env, &proxy_bind.typ)?
+                && proxy_bind.typ.contains(env, &bind.typ)?)
+            {
                 bail!(
                     "signature mismatch in bind {name}, expected type {}, found type {}",
                     bind.typ,
@@ -202,11 +206,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
         event: &mut Event<E>,
     ) -> Option<netidx_value::Value> {
         let mut compiled = false;
-        if let Some(Value::String(s)) = self.source.update(ctx, event) {
+        if let Some(v) = self.source.update(ctx, event) {
             self.clear_compiled(ctx);
-            if let Err(e) = self.compile_inner(ctx, s) {
-                let m = format!("invalid dynamic module, compile error {e:?}");
-                return Some(Value::Error(m.into()));
+            match v {
+                Value::Error(_) => return Some(v),
+                Value::String(s) => {
+                    if let Err(e) = self.compile_inner(ctx, s) {
+                        let m = format!("invalid dynamic module, compile error {e:?}");
+                        return Some(Value::Error(m.into()));
+                    }
+                }
+                v => return Some(Value::Error(format!("unexpected {v}").into())),
             }
             compiled = true;
         }
@@ -253,7 +263,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
 
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck(ctx))?;
-        let t = Type::Primitive(Typ::String.into());
+        let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))
     }
 }
