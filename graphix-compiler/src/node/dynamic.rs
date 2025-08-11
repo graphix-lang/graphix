@@ -61,14 +61,12 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_id) = binds.get(&CompactString::from(name.as_str()))
             && let Some(proxy_bind) = env.by_id.get(&proxy_id)
         {
-            bind.typ.unbind_tvars();
-            if !(bind.typ.contains(env, &proxy_bind.typ)?
-                && proxy_bind.typ.contains(env, &bind.typ)?)
-            {
+            proxy_bind.typ.unbind_tvars();
+            if !dbg!(&proxy_bind.typ).contains(env, dbg!(&bind.typ))? {
                 bail!(
                     "signature mismatch in bind {name}, expected type {}, found type {}",
-                    bind.typ,
-                    proxy_bind.typ
+                    proxy_bind.typ,
+                    bind.typ
                 )
             }
             proxy.insert(id, *proxy_id);

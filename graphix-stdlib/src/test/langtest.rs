@@ -1407,3 +1407,28 @@ run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
 });
+
+#[cfg(test)]
+const DYNAMIC_MODULE2: &str = r#"
+{
+    let source = "let add = 'a: Number |x: 'a| -> 'a x + x";
+    net::publish("/local/foo", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            val add: fn(i64) -> i64
+        };
+        source cast<string>(net::subscribe("/local/foo"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => foo::add(2)
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
+    Ok(Value::I64(4)) => true,
+    _ => false,
+});

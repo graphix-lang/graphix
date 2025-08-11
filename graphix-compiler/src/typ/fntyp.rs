@@ -331,6 +331,18 @@ impl FnType {
         let slen = self.args.len() - sul;
         let tlen = t.args.len() - tul;
         Ok(slen == tlen
+            && t.args[tul..]
+                .iter()
+                .zip(self.args[sul..].iter())
+                .map(|(t, s)| t.typ.contains_int(env, hist, &s.typ))
+                .collect::<Result<AndAc>>()?
+                .0
+            && match (&t.vargs, &self.vargs) {
+                (Some(tv), Some(sv)) => tv.contains_int(env, hist, sv)?,
+                (None, None) => true,
+                (_, _) => false,
+            }
+            && self.rtype.contains_int(env, hist, &t.rtype)?
             && self
                 .constraints
                 .read()
@@ -343,19 +355,7 @@ impl FnType {
                 .iter()
                 .map(|(tv, tc)| tc.contains_int(env, hist, &Type::TVar(tv.clone())))
                 .collect::<Result<AndAc>>()?
-                .0
-            && t.args[tul..]
-                .iter()
-                .zip(self.args[sul..].iter())
-                .map(|(t, s)| t.typ.contains_int(env, hist, &s.typ))
-                .collect::<Result<AndAc>>()?
-                .0
-            && match (&t.vargs, &self.vargs) {
-                (Some(tv), Some(sv)) => tv.contains_int(env, hist, sv)?,
-                (None, None) => true,
-                (_, _) => false,
-            }
-            && self.rtype.contains_int(env, hist, &t.rtype)?)
+                .0)
     }
 
     pub fn check_contains<R: Rt, E: UserEvent>(
