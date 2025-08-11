@@ -1,19 +1,20 @@
-use std::any::Any;
-
 use crate::{
     compiler::compile,
     env::Env,
     expr::{
-        Expr, ExprId, ExprKind, ModPath, Sandbox, Sig, SigItem, StructurePattern, TypeDef,
+        parser, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigItem, Source,
+        StructurePattern, TypeDef,
     },
     node::{Bind, Block},
     typ::Type,
-    BindId, ExecCtx, Node, Rt, Update, UserEvent,
+    wrap, BindId, Event, ExecCtx, Node, Refs, Rt, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
+use netidx_value::{Typ, Value};
+use std::{any::Any, mem};
 use triomphe::Arc;
 
 fn bind_sig<R: Rt, E: UserEvent>(
@@ -25,9 +26,6 @@ fn bind_sig<R: Rt, E: UserEvent>(
     for si in sig.iter() {
         match si {
             SigItem::Bind(name, typ) => {
-                if &**name == "dynload_status" {
-                    bail!("cannot use reserved name dynload_status in a dynamic module")
-                }
                 env.bind_variable(&scope, name, typ.clone());
             }
             SigItem::TypeDef(td) => {
@@ -128,56 +126,69 @@ fn check_sig<R: Rt, E: UserEvent>(
 }
 
 #[derive(Debug)]
-struct DynamicModule<R: Rt, E: UserEvent> {
+pub(super) struct DynamicModule<R: Rt, E: UserEvent> {
     spec: Expr,
+    typ: Type,
     source: Node<R, E>,
     env: Env<R, E>,
     sig: Sig,
     scope: ModPath,
     proxy: FxHashMap<BindId, BindId>,
     nodes: Box<[Node<R, E>]>,
-    status: BindId,
     top_id: ExprId,
 }
 
 impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
-    pub(crate) fn compile(
+    pub(super) fn compile(
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         scope: &ModPath,
         sandbox: Sandbox,
         sig: Sig,
         source: Arc<Expr>,
-        name: ArcStr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, (*source).clone(), scope, top_id)?;
         let env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
-        let scope = ModPath(scope.append(&name));
         bind_sig(&mut ctx.env, &scope, &sig).context("binding module signature")?;
-        let status = ctx
-            .env
-            .bind_variable(
-                &scope,
-                "dynload_status",
-                Type::Ref {
-                    scope: ModPath::from(["core"]),
-                    name: ModPath::from(["DynLoadStatus"]),
-                    params: Arc::from_iter([]),
-                },
-            )
-            .id;
         Ok(Box::new(Self {
             spec,
+            typ: Type::Primitive(Typ::Error | Typ::Null),
             env,
             sig,
             source,
-            scope,
+            scope: scope.clone(),
             proxy: FxHashMap::default(),
             nodes: Box::new([]),
-            status,
             top_id,
         }))
+    }
+
+    fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
+        let ori = Origin { parent: None, source: Source::Unspecified, text };
+        let exprs = parser::parse(ori)?;
+        let nodes = ctx.with_restored(self.env.clone(), |ctx| -> Result<_> {
+            let mut nodes = exprs
+                .iter()
+                .map(|e| compile(ctx, e.clone(), &self.scope, self.top_id))
+                .collect::<Result<Vec<_>>>()?;
+            for n in &mut nodes {
+                n.typecheck(ctx)?
+            }
+            Ok(nodes)
+        })?;
+        check_sig(&ctx.env, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
+        self.nodes = Box::from(nodes);
+        Ok(())
+    }
+
+    fn clear_compiled(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.proxy.clear();
+        ctx.with_restored(self.env.clone(), |ctx| {
+            for mut n in mem::take(&mut self.nodes) {
+                n.delete(ctx)
+            }
+        })
     }
 }
 
@@ -185,21 +196,43 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        event: &mut crate::Event<E>,
+        event: &mut Event<E>,
     ) -> Option<netidx_value::Value> {
-        todo!()
+        let mut compiled = false;
+        if let Some(Value::String(s)) = self.source.update(ctx, event) {
+            self.clear_compiled(ctx);
+            if let Err(e) = self.compile_inner(ctx, s) {
+                let m = format!("invalid dynamic module, compile error {e:?}");
+                return Some(Value::Error(m.into()));
+            }
+            compiled = true;
+        }
+        for n in &mut self.nodes {
+            n.update(ctx, event);
+        }
+        for (inner_id, proxy_id) in &self.proxy {
+            if let Some(v) = event.variables.remove(inner_id) {
+                event.variables.insert(*proxy_id, v);
+            }
+        }
+        compiled.then(|| Value::Null)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        todo!()
+        self.source.delete(ctx);
+        self.clear_compiled(ctx);
     }
 
-    fn refs(&self, refs: &mut crate::Refs) {
-        todo!()
+    fn refs(&self, refs: &mut Refs) {
+        self.source.refs(refs);
+        for n in &self.nodes {
+            n.refs(refs)
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        todo!()
+        self.source.sleep(ctx);
+        self.clear_compiled(ctx);
     }
 
     fn spec(&self) -> &Expr {
@@ -207,10 +240,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        &self.typ
     }
 
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        todo!()
+        wrap!(self.source, self.source.typecheck(ctx))?;
+        let t = Type::Primitive(Typ::String.into());
+        wrap!(self.source, t.check_contains(&self.env, self.source.typ()))
     }
 }

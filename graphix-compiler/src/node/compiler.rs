@@ -2,6 +2,7 @@ use super::{
     array::{Array, ArrayRef, ArraySlice},
     callsite::CallSite,
     data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
+    dynamic::DynamicModule,
     lambda::Lambda,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Not, Or, Sub},
     select::Select,
@@ -68,7 +69,15 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     ctx.env.modules.insert_cow(scope.clone());
                     Ok(res)
                 }
-                ModuleKind::Dynamic { sandbox: _, sig: _, source: _ } => unimplemented!(),
+                ModuleKind::Dynamic { sandbox, sig, source } => DynamicModule::compile(
+                    ctx,
+                    spec.clone(),
+                    &scope,
+                    sandbox.clone(),
+                    sig.clone(),
+                    source.clone(),
+                    top_id,
+                ),
             }
         }
         ExprKind::Use { name } => Use::compile(ctx, spec.clone(), scope, name),
