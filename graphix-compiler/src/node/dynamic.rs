@@ -210,9 +210,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
             }
             compiled = true;
         }
+        let init = event.init;
+        if compiled {
+            event.init = true;
+        }
         for n in &mut self.nodes {
             n.update(ctx, event);
         }
+        event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.remove(inner_id) {
                 event.variables.insert(*proxy_id, v);
