@@ -167,6 +167,7 @@ impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = parser::parse(ori)?;
+        ctx.builtins_allowed = false;
         let nodes = ctx.with_restored(self.env.clone(), |ctx| -> Result<_> {
             let mut nodes = exprs
                 .iter()
@@ -176,7 +177,9 @@ impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
                 n.typecheck(ctx)?
             }
             Ok(nodes)
-        })?;
+        });
+        ctx.builtins_allowed = true;
+        let nodes = nodes?;
         check_sig(&ctx.env, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
         self.nodes = Box::from(nodes);
         Ok(())

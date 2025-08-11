@@ -284,7 +284,12 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
             }
             Either::Right(builtin) => match ctx.builtins.get(builtin.as_str()) {
                 None => bail!("unknown builtin function {builtin}"),
-                Some((styp, _)) => Arc::new(styp.clone().scope_refs(&_scope)),
+                Some((styp, _)) => {
+                    if !ctx.builtins_allowed {
+                        bail!("defining builtins is not allowed in this context")
+                    }
+                    Arc::new(styp.clone().scope_refs(&_scope))
+                }
             },
         };
         KNOWN.with_borrow_mut(|known| {

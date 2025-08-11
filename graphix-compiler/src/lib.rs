@@ -463,6 +463,7 @@ pub trait Rt: Debug + 'static {
 
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     builtins: FxHashMap<&'static str, (FnType, BuiltInInitFn<R, E>)>,
+    builtins_allowed: bool,
     tags: FxHashSet<ArcStr>,
     pub env: Env<R, E>,
     pub cached: FxHashMap<BindId, Value>,
@@ -487,6 +488,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         Self {
             env: Env::new(),
             builtins: FxHashMap::default(),
+            builtins_allowed: true,
             tags: FxHashSet::default(),
             cached: HashMap::default(),
             rt: user,
