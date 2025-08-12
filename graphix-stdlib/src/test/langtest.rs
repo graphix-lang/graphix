@@ -1432,3 +1432,32 @@ run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
 });
+
+#[cfg(test)]
+const DYNAMIC_MODULE3: &str = r#"
+{
+    let source = "let foo = never(); let bar = never(); select foo { x => bar <- dbg(x) }";
+    net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox whitelist [core];
+        sig {
+            val foo: string;
+            val bar: string
+        };
+        source cast<string>(net::subscribe("/local/test"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module3, DYNAMIC_MODULE3, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) if s == "hello world" => true,
+    _ => false,
+});

@@ -42,27 +42,27 @@ fn bind_sig<R: Rt, E: UserEvent>(
 }
 
 fn check_sig<R: Rt, E: UserEvent>(
-    env: &Env<R, E>,
+    ctx: &mut ExecCtx<R, E>,
+    top_id: ExprId,
     proxy: &mut FxHashMap<BindId, BindId>,
     scope: &ModPath,
     sig: &Sig,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
-    let binds = env.binds.get(scope);
     let mut has_bind: FxHashSet<ArcStr> = FxHashSet::default();
     let mut has_mod: FxHashSet<ArcStr> = FxHashSet::default();
     let mut has_def: FxHashSet<ArcStr> = FxHashSet::default();
     for n in nodes {
-        if let Some(binds) = binds
+        if let Some(binds) = ctx.env.binds.get(scope)
             && let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
             && let Expr { kind: ExprKind::Bind(bexp), .. } = &bind.spec
             && let StructurePattern::Bind(name) = &bexp.pattern
             && let Some(id) = bind.single_id()
             && let Some(proxy_id) = binds.get(&CompactString::from(name.as_str()))
-            && let Some(proxy_bind) = env.by_id.get(&proxy_id)
+            && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            if !dbg!(&proxy_bind.typ).contains(env, dbg!(&bind.typ))? {
+            if !proxy_bind.typ.contains(&ctx.env, &bind.typ)? {
                 bail!(
                     "signature mismatch in bind {name}, expected type {}, found type {}",
                     proxy_bind.typ,
@@ -70,15 +70,17 @@ fn check_sig<R: Rt, E: UserEvent>(
                 )
             }
             proxy.insert(id, *proxy_id);
+            ctx.rt.ref_var(id, top_id);
+            ctx.rt.ref_var(*proxy_id, top_id);
             has_bind.insert(name.clone());
         }
         if let Expr { kind: ExprKind::Module { name, .. }, .. } = n.spec()
             && let Some(block) = (&**n as &dyn Any).downcast_ref::<Block<R, E>>()
             && let scope = ModPath(scope.append(name.as_str()))
-            && env.modules.contains(&scope)
+            && ctx.env.modules.contains(&scope)
             && let Some(sig) = sig.find_module(name)
         {
-            check_sig(env, proxy, &scope, sig, &block.children)?;
+            check_sig(ctx, top_id, proxy, &scope, sig, &block.children)?;
             has_mod.insert(name.clone());
         }
         if let Expr { kind: ExprKind::Module { name, .. }, .. } = n.spec()
@@ -95,7 +97,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             has_mod.insert(name.clone());
         }
         if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
-            && let Some(defs) = env.typedefs.get(scope)
+            && let Some(defs) = ctx.env.typedefs.get(scope)
             && let Some(sig_td) = defs.get(&CompactString::from(td.name.as_str()))
         {
             let sig_td = TypeDef {
@@ -182,13 +184,16 @@ impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
         });
         ctx.builtins_allowed = true;
         let nodes = nodes?;
-        check_sig(&ctx.env, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
+        check_sig(ctx, self.top_id, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
         self.nodes = Box::from(nodes);
         Ok(())
     }
 
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.proxy.clear();
+        for (id, proxy_id) in self.proxy.drain() {
+            ctx.rt.unref_var(id, self.top_id);
+            ctx.rt.unref_var(proxy_id, self.top_id);
+        }
         ctx.with_restored(self.env.clone(), |ctx| {
             for mut n in mem::take(&mut self.nodes) {
                 n.delete(ctx)
@@ -221,6 +226,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
         let init = event.init;
         if compiled {
             event.init = true;
+        }
+        for (inner_id, proxy_id) in &self.proxy {
+            if let Some(v) = event.variables.get(proxy_id) {
+                event.variables.insert(*inner_id, v.clone());
+            }
         }
         for n in &mut self.nodes {
             n.update(ctx, event);
