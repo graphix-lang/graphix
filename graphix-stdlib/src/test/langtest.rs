@@ -1357,7 +1357,12 @@ run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
 #[cfg(test)]
 const DYNAMIC_MODULE0: &str = r#"
 {
-    let source = "let add = |x| x + 1; let sub = |x| x - 1; let cfg = \[1, 2, 3, 4, 5\]; let hidden = 42";
+    let source = "
+        let add = |x| x + 1;
+        let sub = |x| x - 1;
+        let cfg = \[1, 2, 3, 4, 5\];
+        let hidden = 42
+    ";
     net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
         sandbox whitelist [core];
@@ -1384,7 +1389,12 @@ run!(dynamic_module0, DYNAMIC_MODULE0, |v: Result<&Value>| match v {
 #[cfg(test)]
 const DYNAMIC_MODULE1: &str = r#"
 {
-    let source = "let add = |x| x + 1.; let sub = |x| x - 1; let cfg = \[1, 2, 3, 4, 5\]; let hidden = 42";
+    let source = "
+        let add = |x| x + 1.;
+        let sub = |x| x - 1;
+        let cfg = \[1, 2, 3, 4, 5\];
+        let hidden = 42
+    ";
     net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
         sandbox whitelist [core];
@@ -1436,7 +1446,11 @@ run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
 #[cfg(test)]
 const DYNAMIC_MODULE3: &str = r#"
 {
-    let source = "let foo = never(); let bar = never(); select foo { x => bar <- dbg(x) }";
+    let source = "
+        let foo = never();
+        let bar = never();
+        select foo { x => bar <- dbg(x) }
+    ";
     net::publish("/local/test", source)?;
     let status = mod test dynamic {
         sandbox whitelist [core];
@@ -1458,6 +1472,175 @@ const DYNAMIC_MODULE3: &str = r#"
 
 #[cfg(test)]
 run!(dynamic_module3, DYNAMIC_MODULE3, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) if s == "hello world" => true,
+    _ => false,
+});
+
+#[cfg(test)]
+const DYNAMIC_MODULE4: &str = r#"
+{
+    let source = "
+        let foo = never();
+        let bar = never();
+        select foo { x => bar <- dbg(x) }
+    ";
+    net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox whitelist [core];
+        sig {
+            val foo: string;
+            val bar: string;
+            val baz: string
+        };
+        source cast<string>(net::subscribe("/local/test"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module4, DYNAMIC_MODULE4, |v: Result<&Value>| match v {
+    Ok(Value::Error(_)) => true,
+    _ => false,
+});
+
+#[cfg(test)]
+const DYNAMIC_MODULE5: &str = r#"
+{
+    let source = "
+        let foo = never();
+        let bar = never();
+        select foo { x => bar <- dbg(x) };
+        net::subscribe(\"/local/test\")
+    ";
+    net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox whitelist [core];
+        sig {
+            val foo: string;
+            val bar: string
+        };
+        source cast<string>(net::subscribe("/local/test"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module5, DYNAMIC_MODULE5, |v: Result<&Value>| match v {
+    Ok(Value::Error(_)) => true,
+    _ => false,
+});
+
+#[cfg(test)]
+const DYNAMIC_MODULE6: &str = r#"
+{
+    let source = "
+        let foo = never();
+        let bar = never(); select foo { x => bar <- dbg(x) };
+        net::subscribe(\"/local/test\")
+    ";
+    net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox blacklist [net::publish];
+        sig {
+            val foo: string;
+            val bar: string
+        };
+        source cast<string>(net::subscribe("/local/test"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module6, DYNAMIC_MODULE6, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) if s == "hello world" => true,
+    _ => false,
+});
+
+#[cfg(test)]
+const DYNAMIC_MODULE7: &str = r#"
+{
+    let source = "
+        let foo = never();
+        let bar = never();
+        select foo { x => bar <- dbg(x) };
+        net::publish(\"/local/test\", 42)
+    ";
+    net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox blacklist [net::publish];
+        sig {
+            val foo: string;
+            val bar: string
+        };
+        source cast<string>(net::subscribe("/local/test"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module7, DYNAMIC_MODULE7, |v: Result<&Value>| match v {
+    Ok(Value::Error(_)) => true,
+    _ => false,
+});
+
+#[cfg(test)]
+const DYNAMIC_MODULE8: &str = r#"
+{
+    let source = "
+        let foo = never();
+        let bar = never();
+        select foo { x => bar <- dbg(x) };
+        net::subscribe(\"/local/test\")
+    ";
+    net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox whitelist [core, net::subscribe];
+        sig {
+            val foo: string;
+            val bar: string
+        };
+        source cast<string>(net::subscribe("/local/test"))
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+#[cfg(test)]
+run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
 });
