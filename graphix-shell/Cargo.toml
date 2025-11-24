@@ -1,6 +1,6 @@
 [package]
 name = "graphix-shell"
-version = "0.1.18"
+version = "0.2.0"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 license = "MIT"
@@ -44,9 +44,9 @@ enumflags2 = { workspace = true }
 flexi_logger = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.1.9", path = "../graphix-compiler" }
-graphix-rt = { version = "0.1.9", path = "../graphix-rt" }
-graphix-stdlib = { version = "0.1.9", path = "../graphix-stdlib" }
+graphix-compiler = { version = "0.2.0", path = "../graphix-compiler" }
+graphix-rt = { version = "0.2.0", path = "../graphix-rt" }
+graphix-stdlib = { version = "0.2.0", path = "../graphix-stdlib" }
 log = { workspace = true }
 netidx = { workspace = true }
 parking_lot = { workspace = true }

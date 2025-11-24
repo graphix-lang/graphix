@@ -283,7 +283,7 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// finish will be called when every lambda instance has produced
     /// a value for the updated array. Out contains the output of the
     /// predicate lambda for each index i, and a is the array. out and
-    /// a are guaranteed to have the same length. out[i].cur is
+    /// a are guaranteed to have the same length. out\[i\].cur is
     /// guaranteed to be Some.
     fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
 }
