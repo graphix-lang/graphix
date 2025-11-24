@@ -1,3 +1,9 @@
+# 0.2.0
+
+- Add i8, u8, i16, and u16 to the language
+- Initial file and filesystem api in the standard library `fs` module
+- Refactor the graphix-shell interface a bit
+
 # 0.1.13
 
 - fix a bunch of type checker and runtime bugs found while writing docs
