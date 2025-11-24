@@ -59,10 +59,10 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
 pub const RESERVED: LazyLock<FxHashSet<&str>> = LazyLock::new(|| {
     FxHashSet::from_iter([
         "true", "false", "ok", "null", "mod", "let", "select", "pub", "type", "fn",
-        "cast", "if", "u32", "v32", "i32", "z32", "u64", "v64", "i64", "z64", "f32",
-        "f64", "decimal", "datetime", "duration", "bool", "string", "bytes", "result",
-        "null", "_", "?", "fn", "Array", "Map", "any", "Any", "use", "rec", "catch",
-        "try",
+        "cast", "if", "i8", "u8", "i16", "u16", "u32", "v32", "i32", "z32", "u64", "v64",
+        "i64", "z64", "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
+        "bytes", "result", "null", "_", "?", "fn", "Array", "Map", "any", "Any", "use",
+        "rec", "catch", "try",
     ])
 });
 
@@ -687,6 +687,10 @@ where
     I::Range: Range,
 {
     choice((
+        attempt(spstring("i8").map(|_| Typ::I8)),
+        attempt(spstring("u8").map(|_| Typ::U8)),
+        attempt(spstring("i16").map(|_| Typ::I16)),
+        attempt(spstring("u16").map(|_| Typ::U16)),
         attempt(spstring("u32").map(|_| Typ::U32)),
         attempt(spstring("v32").map(|_| Typ::V32)),
         attempt(spstring("i32").map(|_| Typ::I32)),

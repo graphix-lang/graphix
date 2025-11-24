@@ -42,6 +42,10 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
 
 fn value() -> impl Strategy<Value = Value> {
     let leaf = prop_oneof![
+        any::<i8>().prop_map(Value::I8),
+        any::<u8>().prop_map(Value::U8),
+        any::<i16>().prop_map(Value::I16),
+        any::<u16>().prop_map(Value::U16),
         any::<u32>().prop_map(Value::U32),
         any::<u32>().prop_map(Value::V32),
         any::<i32>().prop_map(Value::I32),
@@ -186,6 +190,10 @@ fn reference() -> impl Strategy<Value = Expr> {
 
 fn typ() -> impl Strategy<Value = Typ> {
     prop_oneof![
+        Just(Typ::I8),
+        Just(Typ::U8),
+        Just(Typ::I16),
+        Just(Typ::U16),
         Just(Typ::U32),
         Just(Typ::V32),
         Just(Typ::I32),
