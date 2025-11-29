@@ -56,6 +56,18 @@ This document tracks improvements and additions needed for both the Graphix comp
 - **Context**: Mentioned as "work in progress" in modules/overview.md
 - **Effort**: Unknown (depends on design decisions)
 
+### Log $ operator errors
+
+When the $ operator eats an error, allow the user to log it, by
+default log it as warn. Possibly allow the user to change to log level
+and target.
+
+### Per module flags
+
+Allow manipulating compiler flags at the module level. For example a
+critical module might turn on warnings about unhandled arith, where
+the majority of the project leaves it off.
+
 ### Type System
 - Once gxi files/module sigs are added add abstract types
 
