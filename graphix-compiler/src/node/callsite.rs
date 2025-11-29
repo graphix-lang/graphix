@@ -44,14 +44,15 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 fn is_arith_error(t: &Type) -> bool {
     t.with_deref(|t| {
         t.map(|t| match t {
+            Type::Variant(name, param) => {
+                &**name == "ArithError"
+                    && param.len() == 1
+                    && param[0] == Type::Primitive(Typ::String.into())
+            }
             Type::Error(e) => match &**e {
+                t @ Type::Variant(_, _) => is_arith_error(t),
                 Type::Ref { scope: _, name, params } => {
                     *name == *ECHAIN && params.len() == 1 && is_arith_error(&params[0])
-                }
-                Type::Variant(name, param) => {
-                    &**name == "ArithError"
-                        && param.len() == 1
-                        && param[0] == Type::Primitive(Typ::String.into())
                 }
                 _ => false,
             },
@@ -390,6 +391,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         };
                     }
                 }
+                Err(_) if t == Type::Bottom => (), // it doesn't throw any errors
                 Err(_) if is_arith_error(&t) => {
                     if self
                         .flags
@@ -407,7 +409,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         )
                     }
                 }
-                Err(_) if t != Type::Bottom => {
+                Err(_) => {
                     if self
                         .flags
                         .contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
@@ -424,7 +426,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         )
                     }
                 }
-                Err(_) => (),
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
