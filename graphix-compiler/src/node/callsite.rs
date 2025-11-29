@@ -91,6 +91,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         event: &mut Event<E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
+        let mut flags = flags;
+        // we already warned about this
+        flags.remove(CFlag::WarnUnhandled);
         macro_rules! compile_default {
             ($i:expr, $f:expr) => {{
                 match &$f.argspec[$i].labeled {
@@ -282,24 +285,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self.spec
     }
 
-    /*
-    // propagate auto constraints to this callsite. auto constraints are
-    // discovered during the lambda typecheck
-    match self.fnode.typ().with_deref(|t| t.cloned()) {
-        Some(Type::Fn(ftype)) => {
-            *self.ftype.constraints.write() = ftype
-                .constraints
-                .read()
-                .iter()
-                .map(|(tv, tc)| (TVar::empty_named(tv.name.clone()), tc.clone()))
-                .collect();
-            self.ftype.alias_tvars(&mut LPooled::take());
-        }
-        _ => format_with_flags(PrintFlag::DerefTVars, || {
-            bail!("expected a function type saw {}", self.fnode.typ())
-        })?,
-    }
-    */
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck(ctx))?;
         let ftype = match self.ftype.as_ref() {
@@ -370,17 +355,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for (tv, tc) in ftype.constraints.read().iter() {
             wrap!(self, tc.check_contains(&ctx.env, &Type::TVar(tv.clone())))?;
         }
-        if let Some(t) = ftype.throws.with_deref(|t| t.cloned())
-            && let Ok(id) = ctx.env.lookup_catch(&self.scope.dynamic)
-            && let Some(bind) = ctx.env.by_id.get(&id)
-            && let Type::TVar(tv) = &bind.typ
-        {
-            let tv = tv.read();
-            let mut ty = tv.typ.write();
-            *ty = match &*ty {
-                None => Some(t),
-                Some(inner) => Some(inner.union(&ctx.env, &t)?),
-            };
+        if let Some(t) = ftype.throws.with_deref(|t| t.cloned()) {
+            match ctx.env.lookup_catch(&self.scope.dynamic) {
+                Ok(id) => {
+                    if let Some(bind) = ctx.env.by_id.get(&id)
+                        && let Type::TVar(tv) = &bind.typ
+                    {
+                        let tv = tv.read();
+                        let mut ty = tv.typ.write();
+                        *ty = match &*ty {
+                            None => Some(t),
+                            Some(inner) => Some(inner.union(&ctx.env, &t)?),
+                        };
+                    }
+                }
+                Err(_) => {
+                    if self
+                        .flags
+                        .contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
+                    {
+                        bail!("ERROR: in {} at {} error raised from function call will not be caught", self.spec.ori, self.spec.pos)
+                    }
+                    if self.flags.contains(CFlag::WarnUnhandled) {
+                        eprintln!("WARNING: in {} at {} error raised from function call will not be caught", self.spec.ori, self.spec.pos)
+                    }
+                }
+            }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         Ok(())
