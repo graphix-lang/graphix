@@ -369,17 +369,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         };
                     }
                 }
-                Err(_) => {
+                Err(_) if t != Type::Bottom => {
                     if self
                         .flags
                         .contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
                     {
-                        bail!("ERROR: in {} at {} error raised from function call will not be caught", self.spec.ori, self.spec.pos)
+                        bail!(
+                            "ERROR: {} at {} error {} raised from function call {} will not be caught",
+                            self.spec.ori, self.spec.pos, t, self.fnode.spec()
+                        )
                     }
                     if self.flags.contains(CFlag::WarnUnhandled) {
-                        eprintln!("WARNING: in {} at {} error raised from function call will not be caught", self.spec.ori, self.spec.pos)
+                        eprintln!(
+                            "WARNING: {} at {} error {} raised from function call {} will not be caught",
+                            self.spec.ori, self.spec.pos, t, self.fnode.spec()
+                        )
                     }
                 }
+                Err(_) => (),
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;

@@ -166,14 +166,14 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             None => {
                 if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
                     bail!(
-                        "ERROR: in {} at {} error raised by ? will not be caught",
+                        "ERROR: {} at {} error raised by ? will not be caught",
                         spec.ori,
                         spec.pos
                     )
                 }
                 if flags.contains(CFlag::WarnUnhandled) {
                     eprintln!(
-                        "WARNING: in {} at {} error raised by ? will not be caught",
+                        "WARNING: {} at {} error raised by ? will not be caught",
                         spec.ori, spec.pos
                     );
                 }
