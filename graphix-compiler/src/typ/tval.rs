@@ -21,12 +21,8 @@ impl<'a, R: Rt, E: UserEvent> TVal<'a, R, E> {
     ) -> fmt::Result {
         if !self.typ.is_a(&self.env, &self.v) {
             return format_with_flags(PrintFlag::DerefTVars, || {
-                write!(
-                    f,
-                    "error, type {} does not match value {}",
-                    self.typ,
-                    NakedValue(self.v)
-                )
+                eprintln!("error, type {} does not match value {:?}", self.typ, self.v);
+                write!(f, "{}", NakedValue(self.v))
             });
         }
         match (&self.typ, &self.v) {
