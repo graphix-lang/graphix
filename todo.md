@@ -62,6 +62,11 @@ When the $ operator eats an error, allow the user to log it, by
 default log it as warn. Possibly allow the user to change to log level
 and target.
 
+### Add an "unwrap" operator (maybe !)
+
+Three ways to deal with errors. ? raise it, $ log it, and ! crash and
+print a backtrace.
+
 ### Per module flags
 
 Allow manipulating compiler flags at the module level. For example a
