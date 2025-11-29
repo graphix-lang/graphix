@@ -17,7 +17,8 @@ use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, sync::LazyLock};
 use triomphe::Arc;
 
-static ECHAIN: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
+pub(super) static ECHAIN: LazyLock<ModPath> =
+    LazyLock::new(|| ModPath::from(["ErrChain"]));
 
 fn typ_echain(param: Type) -> Type {
     Type::Ref {
