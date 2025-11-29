@@ -137,7 +137,7 @@ impl Params {
     async fn get_pub_sub(&self) -> Result<(Publisher, Subscriber)> {
         let res = async {
             let cfg = match &self.config {
-                None => Config::load_default()?,
+                None => Config::load_default_or_local_only()?,
                 Some(p) => Config::load(p)?,
             };
             let auth = match &self.auth {
@@ -174,6 +174,7 @@ impl Params {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    Config::maybe_run_machine_local_resolver()?;
     let p = Params::parse();
     if let Some(dir) = &p.log_dir {
         let _ = Logger::try_with_env()
