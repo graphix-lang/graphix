@@ -1,3 +1,9 @@
+# 0.2.1
+
+- support netidx local only resolver with zero configuration
+- fix a bug that prevented tracking checked exceptions from call sites
+- fix a bug that caused dbg to potentially use the wrong type when printing
+
 # 0.2.0
 
 - Add i8, u8, i16, and u16 to the language
