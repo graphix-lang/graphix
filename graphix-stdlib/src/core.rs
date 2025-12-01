@@ -979,6 +979,7 @@ impl FromValue for LogDest {
 struct Dbg {
     spec: Expr,
     dest: LogDest,
+    typ: Type,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
@@ -987,7 +988,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, _| {
-            Ok(Box::new(Dbg { spec: from[1].spec().clone(), dest: LogDest::Stderr }))
+            Ok(Box::new(Dbg {
+                spec: from[1].spec().clone(),
+                dest: LogDest::Stderr,
+                typ: Type::Bottom,
+            }))
         })
     }
 }
@@ -1005,7 +1010,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
             self.dest = d;
         }
         from[1].update(ctx, event).map(|v| {
-            let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
+            let tv = TVal { env: &ctx.env, typ: &self.typ, v: &v };
             match self.dest {
                 LogDest::Stderr => {
                     eprintln!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
@@ -1036,6 +1041,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn typecheck(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+    ) -> Result<()> {
+        self.typ = from[1].typ().clone();
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
