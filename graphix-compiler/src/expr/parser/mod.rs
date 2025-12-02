@@ -412,7 +412,6 @@ parser! {
                 sep_by1(spaces().with(modpath()), csep())
             )).map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l)))
         ))
-        .skip(sptoken(';'))
     }
 }
 
@@ -427,9 +426,8 @@ parser! {
                 spstring("sig").with(between(
                     sptoken('{'), sptoken('}'),
                     sep_by1(sig_item(), attempt(sptoken(';')))
-                        .map(|i: Vec<SigItem>| Sig(Arc::from(i)))
-                ))
-                .skip(sptoken(';')),
+                        .map(|i: Vec<SigItem>| Sig { toplevel: true, items: Arc::from(i) })
+                )),
                 spstring("source").with(space()).with(expr())
             )
         )).map(|(sandbox, sig, source)| {

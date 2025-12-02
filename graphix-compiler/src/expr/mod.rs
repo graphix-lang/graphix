@@ -8,6 +8,7 @@ use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
 pub use pattern::{Pattern, StructurePattern};
+use poolshark::local::LPooled;
 use regex::Regex;
 pub use resolver::ModuleResolver;
 use serde::{
@@ -29,7 +30,7 @@ use triomphe::Arc;
 mod modpath;
 pub mod parser;
 mod pattern;
-mod print;
+pub mod print;
 mod resolver;
 #[cfg(test)]
 mod test;
@@ -73,27 +74,48 @@ pub struct Arg {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct Doc(Option<ArcStr>);
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct TypeDef {
     pub name: ArcStr,
+    pub doc: Doc,
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub enum SigItem {
-    TypeDef(TypeDef),
-    Bind(ArcStr, Type),
-    Module(ArcStr, Sig),
+pub struct BindSig {
+    name: ArcStr,
+    doc: Doc,
+    typ: Type,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct Sig(Arc<[SigItem]>);
+pub struct ModSig {
+    name: ArcStr,
+    doc: Doc,
+    sig: Sig,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub enum SigItem {
+    TypeDef(TypeDef),
+    Bind(BindSig),
+    Module(ModSig),
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct Sig {
+    items: Arc<[SigItem]>,
+    toplevel: bool,
+}
 
 impl Deref for Sig {
     type Target = [SigItem];
 
     fn deref(&self) -> &Self::Target {
-        &*self.0
+        &*self.items
     }
 }
 
@@ -125,10 +147,9 @@ pub enum ModuleKind {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct Bind {
     pub rec: bool,
-    pub doc: Option<ArcStr>,
+    pub doc: Doc,
     pub pattern: StructurePattern,
     pub typ: Option<Type>,
-    pub export: bool,
     pub value: Expr,
 }
 
@@ -151,9 +172,32 @@ pub struct TryCatch {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct StructWith {
+    pub source: Arc<Expr>,
+    pub replace: Arc<[(ArcStr, Expr)]>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct Struct {
+    pub args: Arc<[(ArcStr, Expr)]>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct ApplyExpr {
+    pub args: Arc<[(Option<ArcStr>, Expr)]>,
+    pub function: Arc<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct SelectExpr {
+    pub arg: Arc<Expr>,
+    pub arms: Arc<[(Pattern, Expr)]>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ExprKind {
     Constant(Value),
-    Module { name: ArcStr, export: bool, value: ModuleKind },
+    Module { name: ArcStr, value: ModuleKind },
     Do { exprs: Arc<[Expr]> },
     Use { name: ModPath },
     Bind(Arc<Bind>),
@@ -165,18 +209,18 @@ pub enum ExprKind {
     ArrayRef { source: Arc<Expr>, i: Arc<Expr> },
     ArraySlice { source: Arc<Expr>, start: Option<Arc<Expr>>, end: Option<Arc<Expr>> },
     MapRef { source: Arc<Expr>, key: Arc<Expr> },
-    StructWith { source: Arc<Expr>, replace: Arc<[(ArcStr, Expr)]> },
+    StructWith(StructWith),
     Lambda(Arc<Lambda>),
     TypeDef(TypeDef),
     TypeCast { expr: Arc<Expr>, typ: Type },
-    Apply { args: Arc<[(Option<ArcStr>, Expr)]>, function: Arc<Expr> },
+    Apply(ApplyExpr),
     Any { args: Arc<[Expr]> },
     Array { args: Arc<[Expr]> },
     Map { args: Arc<[(Expr, Expr)]> },
     Tuple { args: Arc<[Expr]> },
     Variant { tag: ArcStr, args: Arc<[Expr]> },
-    Struct { args: Arc<[(ArcStr, Expr)]> },
-    Select { arg: Arc<Expr>, arms: Arc<[(Pattern, Expr)]> },
+    Struct(Struct),
+    Select(SelectExpr),
     Qop(Arc<Expr>),
     OrNever(Arc<Expr>),
     TryCatch(Arc<TryCatch>),
@@ -321,6 +365,12 @@ pub struct Expr {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.kind)
+    }
+}
+
+impl PrettyDisplay for Expr {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        self.kind.fmt_pretty(buf)
     }
 }
 

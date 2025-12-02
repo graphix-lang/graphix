@@ -1,3 +1,4 @@
+use crate::expr::PrettyDisplay;
 use crate::{
     env::Env, expr::ModPath, format_with_flags, PrintFlag, Rt, UserEvent, PRINT_FLAGS,
 };
@@ -2139,5 +2140,19 @@ impl fmt::Display for Type {
                 }
             }
         }
+    }
+}
+
+impl PrettyDisplay for Type {
+    fn can_fmt_single(&self) -> bool {
+        true
+    }
+
+    fn fmt_pretty_inner(
+        &self,
+        ctx: crate::expr::PrettyContext,
+        buf: &mut String,
+    ) -> fmt::Result {
+        todo!()
     }
 }
