@@ -5,11 +5,10 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::{literal, ArcStr};
-use compact_str::CompactString;
 use graphix_compiler::errf;
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-use std::{os::unix::ffi::OsStrExt, result};
+use std::result;
 use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug)]
@@ -98,9 +97,9 @@ impl EvalCachedAsync for ReadDirEv {
                 Ok(Err(e)) => errf!("IOError", "walkdir failed {e:?}"),
                 Ok(Ok(mut ents)) => {
                     let ents = ents.drain(..).map(|ent| {
-                        let file_name: Value =
-                            CompactString::from_utf8_lossy(ent.file_name().as_bytes())
-                                .into();
+                        let file_name: Value = Value::String(ArcStr::from(
+                            &*ent.file_name().to_string_lossy(),
+                        ));
                         let depth: Value = (ent.depth() as i64).into();
                         let kind = convert_filetype(ent.file_type());
                         let path: Value = convert_path(ent.path()).into();

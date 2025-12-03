@@ -1,7 +1,7 @@
 use crate::deftype;
 use anyhow::{anyhow, bail};
 use arcstr::{literal, ArcStr};
-use compact_str::{format_compact, CompactString};
+use compact_str::format_compact;
 use enumflags2::{bitflags, BitFlags};
 use futures::{channel::mpsc, future::join_all, SinkExt, StreamExt};
 use fxhash::{FxHashMap, FxHashSet};
@@ -26,7 +26,6 @@ use std::{
     any::Any,
     collections::{hash_set, VecDeque},
     ffi::OsString,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     result::Result,
     sync::{Arc, LazyLock},
@@ -430,11 +429,7 @@ impl PathStatus {
 }
 
 fn utf8_path(path: &PathBuf) -> ArcStr {
-    let path = path.as_os_str().as_bytes();
-    match str::from_utf8(path) {
-        Ok(s) => ArcStr::from(s),
-        Err(_) => ArcStr::from(CompactString::from_utf8_lossy(path).as_str()),
-    }
+    ArcStr::from(&*path.as_os_str().to_string_lossy())
 }
 
 #[derive(Debug, Clone)]
