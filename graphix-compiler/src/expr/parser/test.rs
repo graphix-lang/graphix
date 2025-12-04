@@ -1360,21 +1360,6 @@ fn tupleref() {
 
 #[test]
 fn prop0() {
-    /*
-
-    */
-    let s = r#"
-// Filesystem metadata. Not all kind fields are possible on all platforms.
-// permissions will only be set on unix platforms, windows will only
-// expose the ReadOnly flag.
-type Metadata = {
-    accessed: [datetime, null],
-    created: [datetime, null],
-    modified: [datetime, null],
-    kind: [`Dir, `File, `Symlink, `SymlinkDir, `BlockDev, `CharDev, `Fifo, `Socket, null],
-    len: u64,
-    permissions: [u32, `ReadOnly(bool)]
-}
-"#;
+    let s = r#"fs::write_all(#path: "C:\\Users\\eesto\\AppData\\Local\\Temp\\.tmpx5Lcxt\\utf8.txt", "Hello, 世界! 🦀")"#;
     dbg!(parse_one(s).unwrap());
 }

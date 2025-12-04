@@ -1,3 +1,4 @@
+use super::escape_path;
 use crate::test::init;
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -77,9 +78,10 @@ macro_rules! write_test {
             let code = format!(
                 r#"{}(#path: "{}", {})"#,
                 $func,
-                test_file.display(),
+                escape_path(test_file.display()),
                 $content
             );
+            eprintln!("{code}");
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
             let eid = compiled.exprs[0].id;
 

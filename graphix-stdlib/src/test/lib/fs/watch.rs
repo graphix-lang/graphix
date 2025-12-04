@@ -1,3 +1,4 @@
+use super::escape_path;
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use netidx::subscriber::Value;
@@ -73,7 +74,7 @@ macro_rules! watch_test {
             // Start watching
             let code = format!(
                 r#"fs::watch(#interest: {}, "{}")"#,
-                $interest, watch_path.display()
+                $interest, escape_path(watch_path.display())
             );
 
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
@@ -367,8 +368,8 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let ctx = init(tx).await?;
     let temp_dir = tempfile::tempdir()?;
 
-    let file1 = temp_dir.path().join("a/b/file.txt");
-    let file2 = temp_dir.path().join("a/b/c/file.txt");
+    let file1 = temp_dir.path().join("a").join("b").join("file.txt");
+    let file2 = temp_dir.path().join("a").join("b").join("c").join("file.txt");
 
     // Ensure nothing exists
     let _ = fs::remove_dir_all(temp_dir.path().join("a")).await;
@@ -376,11 +377,11 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     // Watch both files
     let code1 = format!(
         r#"fs::watch(#interest: [`Established, `Create], "{}")"#,
-        file1.display()
+        escape_path(file1.display())
     );
     let code2 = format!(
         r#"fs::watch(#interest: [`Established, `Create], "{}")"#,
-        file2.display()
+        escape_path(file2.display())
     );
 
     let compiled1 = ctx.rt.compile(ArcStr::from(code1)).await?;
