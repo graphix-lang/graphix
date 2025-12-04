@@ -1,14 +1,13 @@
-use super::escape_path;
+use crate::{
+    run,
+    test::{escape_path, init},
+};
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
-use netidx::subscriber::Value;
-use tokio::fs;
-use tokio::time::Duration;
-
-use crate::{run, test::init};
 use graphix_rt::GXEvent;
+use netidx::subscriber::Value;
 use poolshark::global::GPooled;
-use tokio::sync::mpsc;
+use tokio::{fs, sync::mpsc, time::Duration};
 
 /// Macro to create fs::watch tests with common setup/teardown logic.
 /// Supports both simple single-action tests and complex multi-event sequences.

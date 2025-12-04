@@ -73,6 +73,18 @@ macro_rules! run {
     };
 }
 
+use graphix_compiler::expr::parser::GRAPHIX_ESC;
+use poolshark::local::LPooled;
+use std::{fmt::Write, path::Display};
+
+fn escape_path(path: Display) -> LPooled<String> {
+    let mut buf: LPooled<String> = LPooled::take();
+    let mut res: LPooled<String> = LPooled::take();
+    write!(buf, "{path}").unwrap();
+    GRAPHIX_ESC.escape_to(&*buf, &mut res);
+    res
+}
+
 /// run a test with a temp dir and setup code. The final output of the setup
 /// block is a path that will be passed to the code using format!
 #[macro_export]
@@ -134,7 +146,7 @@ macro_rules! run_with_tempdir {
             // Run setup block which should return test_file
             let test_file = { $setup };
 
-            let code = format!($code, test_file.display());
+            let code = format!($code, crate::test::escape_path(test_file.display()));
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
             let eid = compiled.exprs[0].id;
 
