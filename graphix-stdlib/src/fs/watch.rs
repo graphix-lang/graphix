@@ -611,6 +611,7 @@ impl Watched {
         batch: &mut GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>,
         ev: Result<notify::Event, notify::Error>,
     ) -> LPooled<Vec<BindId>> {
+        eprintln!("watch event {ev:?}");
         let mut by_id: LPooled<FxHashMap<BindId, WatchEvent>> = LPooled::take();
         let mut status_changed: LPooled<Vec<BindId>> = LPooled::take();
         match ev {

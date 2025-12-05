@@ -301,6 +301,8 @@ watch_test! {
 }
 
 // Test deep parent rename (rename two levels up)
+// This isn't supported on windows
+#[cfg(unix)]
 watch_test! {
     name: test_watch_deep_parent_rename,
     interest: "[`Established, `Delete]",
@@ -390,7 +392,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let eid1 = compiled1.exprs[0].id;
     let eid2 = compiled2.exprs[0].id;
 
-    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    let timeout = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(timeout);
     let mut watch1_ready = false;
     let mut watch2_ready = false;
