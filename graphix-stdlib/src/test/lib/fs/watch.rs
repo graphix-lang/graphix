@@ -310,6 +310,7 @@ watch_test! {
         fs::create_dir_all(&d).await?;
         let test_file = d.join("file.txt");
         fs::write(&test_file, b"content").await?;
+        eprintln!("test file: {}", test_file.display());
         test_file
     },
     state: {
@@ -321,6 +322,7 @@ watch_test! {
             let b = a.join("b");
             let b2 = a.join("b2");
             eprintln!("Renaming /a/b to /a/b2 (two levels up)");
+            eprintln!("rename {} to {}", b.display(), b2.display());
             fs::rename(&b, &b2).await?;
         } else {
             *got_delete = true;
