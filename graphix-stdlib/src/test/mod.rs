@@ -3,7 +3,8 @@ use enumflags2::BitFlags;
 use graphix_compiler::ExecCtx;
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use poolshark::global::GPooled;
-use tokio::sync::mpsc;
+use std::sync::OnceLock;
+use tokio::sync::{mpsc, Mutex};
 
 #[cfg(test)]
 mod lang;
@@ -16,9 +17,23 @@ pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
 }
 
+// Serialize InternalOnly creation to work around Windows socket binding issues.
+// tokio::net::TcpListener only sets SO_REUSEADDR on Unix, not Windows, causing
+// error 10013 (WSAEACCES) when multiple tests try to bind concurrently.
+static INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>) -> Result<TestCtx> {
     let _ = env_logger::try_init();
+
+    // Acquire lock to serialize InternalOnly::new() calls
+    let lock = INIT_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().await;
+
     let env = netidx::InternalOnly::new().await?;
+
+    // Release lock after socket is bound
+    drop(_guard);
+
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(
         env.publisher().clone(),
         env.subscriber().clone(),
