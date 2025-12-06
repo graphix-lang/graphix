@@ -135,11 +135,12 @@ struct Params {
 
 impl Params {
     async fn get_pub_sub(&self) -> Result<(Publisher, Subscriber)> {
+        let cfg = match &self.config {
+            None => Config::load_default_or_local_only(),
+            Some(p) => Config::load(p),
+        };
         let res = async {
-            let cfg = match &self.config {
-                None => Config::load_default_or_local_only()?,
-                Some(p) => Config::load(p)?,
-            };
+            let cfg = cfg?;
             let auth = match &self.auth {
                 None => cfg.default_auth(),
                 Some(a) => a.clone(),
