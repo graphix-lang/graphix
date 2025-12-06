@@ -1,6 +1,6 @@
 [package]
 name = "graphix-shell"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 license = "MIT"
