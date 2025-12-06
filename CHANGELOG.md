@@ -1,3 +1,7 @@
+# 0.2.2
+
+- fix windows build
+
 # 0.2.1
 
 - support netidx local only resolver with zero configuration
