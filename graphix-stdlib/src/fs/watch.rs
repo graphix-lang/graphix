@@ -438,11 +438,13 @@ struct WatchInt {
     path_status: PathStatus,
 }
 
+#[derive(Debug)]
 enum AddAction {
     AddWatch { path: PathBuf, notify: bool },
     AddPending { watch_path: PathBuf, full_path: PathBuf, notify: bool },
 }
 
+#[derive(Debug)]
 struct ChangeOfStatus {
     remove: Option<PathBuf>,
     add: Option<AddAction>,
@@ -611,7 +613,6 @@ impl Watched {
         batch: &mut GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>,
         ev: Result<notify::Event, notify::Error>,
     ) -> LPooled<Vec<BindId>> {
-        eprintln!("watch event {ev:?}");
         let mut by_id: LPooled<FxHashMap<BindId, WatchEvent>> = LPooled::take();
         let mut status_changed: LPooled<Vec<BindId>> = LPooled::take();
         match ev {
@@ -763,11 +764,10 @@ async fn file_watcher_loop(
         };
     }
     macro_rules! status_change {
-        ($id:expr, $synthetic:expr) => {{
+        ($id:expr) => {{
             let stc = watched.change_status($id).await;
             if let Some(path) = stc.remove {
-                if $synthetic
-                    && stc.syn
+                if stc.syn
                     && let Some(w) = watched.by_id.get(&$id)
                     && w.watch.interest.intersects(
                         Interest::Delete
@@ -783,8 +783,7 @@ async fn file_watcher_loop(
                 None => (),
                 Some(AddAction::AddWatch { path, .. }) => {
                     add_watch!(&path, $id, on_success: {
-                        if $synthetic
-                            && let Some(w) = watched.by_id.get(&$id)
+                        if let Some(w) = watched.by_id.get(&$id)
                             && w.watch.interest.intersects(
                                 Interest::Create
                                 | Interest::CreateFile
@@ -806,7 +805,7 @@ async fn file_watcher_loop(
             _ = poll_interval.tick() => {
                 if watched.poll_batch() > 0 {
                     for id in watched.poll_cycle().await.drain(..) {
-                        status_change!(id, true)
+                        status_change!(id)
                     }
                 }
             },
@@ -817,7 +816,7 @@ async fn file_watcher_loop(
                 for ev in recv_buf.drain(..) {
                     let mut status = watched.process_event(&mut batch, ev).await;
                     for id in status.drain(..) {
-                        status_change!(id, false)
+                        status_change!(id)
                     }
                 }
             },
@@ -1110,7 +1109,7 @@ watch!(
     graphix_type: "fn(?#interest:Array<Interest>, string) -> Result<string, `WatchError(string)>",
     handle_event: |id, ctx, w| {
         match &w.event {
-            WatchEventKind::Event(_) => {
+            WatchEventKind::Event(e) => {
                 for p in w.paths.drain() {
                     ctx.rt.set_var(id, Value::String(p))
                 }
