@@ -1109,7 +1109,7 @@ watch!(
     graphix_type: "fn(?#interest:Array<Interest>, string) -> Result<string, `WatchError(string)>",
     handle_event: |id, ctx, w| {
         match &w.event {
-            WatchEventKind::Event(e) => {
+            WatchEventKind::Event(_) => {
                 for p in w.paths.drain() {
                     ctx.rt.set_var(id, Value::String(p))
                 }
