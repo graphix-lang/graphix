@@ -12,8 +12,15 @@ mod lang;
 mod lib;
 
 pub struct TestCtx {
-    pub _internal_only: netidx::InternalOnly,
+    pub internal_only: netidx::InternalOnly,
     pub rt: GXHandle<NoExt>,
+}
+
+impl TestCtx {
+    pub async fn shutdown(self) {
+        drop(self.rt);
+        self.internal_only.shutdown().await
+    }
 }
 
 pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>) -> Result<TestCtx> {
@@ -25,7 +32,7 @@ pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>) -> Result<Tes
     ));
     let (root, mods) = crate::register(&mut ctx, BitFlags::all())?;
     Ok(TestCtx {
-        _internal_only: env,
+        internal_only: env,
         rt: GXConfig::builder(ctx, sub)
             .root(root)
             .resolvers(vec![mods])
@@ -42,7 +49,7 @@ macro_rules! run {
         async fn $name() -> ::anyhow::Result<()> {
             let (tx, mut rx) = tokio::sync::mpsc::channel(10);
             let ctx = $crate::test::init(tx).await?;
-            let bs = ctx.rt;
+            let bs = &ctx.rt;
             match bs.compile(arcstr::ArcStr::from($code)).await {
                 Err(e) => assert!($pred(dbg!(Err(e)))),
                 Ok(e) => {
@@ -68,6 +75,7 @@ macro_rules! run {
                     }
                 }
             }
+            ctx.shutdown().await;
             Ok(())
         }
     };
