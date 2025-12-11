@@ -210,8 +210,8 @@ run_with_tempdir! {
     name: test_create_and_remove_dir_sequence,
     code: r#"{{
         let dir = "{}";
-        fs::create_dir(dir)?;
-        fs::remove_dir(dir)
+        let created = fs::create_dir(dir)?;
+        fs::remove_dir(created ~ dir)
     }}"#,
     setup: |temp_dir| {
         temp_dir.path().join("seq_test")
@@ -226,10 +226,10 @@ run_with_tempdir! {
     name: test_create_write_remove_file_sequence,
     code: r#"{{
         let dir = "{}";
-        fs::create_dir(dir)?;
-        let file = fs::join_path(dir, "data.txt");
-        fs::write_all(#path: file, "test data")?;
-        fs::remove_file(file)
+        let created = fs::create_dir(dir)?;
+        let file = fs::join_path(created ~ dir, "data.txt");
+        let written = fs::write_all(#path: file, "test data")?;
+        fs::remove_file(written ~ file)
     }}"#,
     setup: |temp_dir| {
         temp_dir.path().join("fileseq")

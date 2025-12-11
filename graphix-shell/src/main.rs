@@ -134,12 +134,9 @@ struct Params {
 }
 
 impl Params {
-    async fn get_pub_sub(&self) -> Result<(Publisher, Subscriber)> {
+    async fn get_pub_sub(&self, cfg: Result<Config>) -> Result<(Publisher, Subscriber)> {
         let res = async {
-            let cfg = match &self.config {
-                None => Config::load_default_or_local_only()?,
-                Some(p) => Config::load(p)?,
-            };
+            let cfg = cfg?;
             let auth = match &self.auth {
                 None => cfg.default_auth(),
                 Some(a) => a.clone(),
@@ -173,9 +170,7 @@ impl Params {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    Config::maybe_run_machine_local_resolver()?;
-    let p = Params::parse();
+async fn tokio_main(p: Params, cfg: Result<Config>) -> Result<()> {
     if let Some(dir) = &p.log_dir {
         let _ = Logger::try_with_env()
             .context("initializing log")?
@@ -196,7 +191,7 @@ async fn main() -> Result<()> {
         _internal = Some(i);
         (p, s)
     } else {
-        p.get_pub_sub().await?
+        p.get_pub_sub(cfg).await?
     };
     let mut shell = ShellBuilder::<NoExt>::default();
     shell = shell.no_init(p.no_init);
@@ -245,4 +240,14 @@ async fn main() -> Result<()> {
         .build()?
         .run()
         .await
+}
+
+fn main() -> Result<()> {
+    Config::maybe_run_machine_local_resolver()?;
+    let p = Params::parse();
+    let cfg = match &p.config {
+        None => Config::load_default_or_local_only(),
+        Some(p) => Config::load(p),
+    };
+    tokio_main(p, cfg)
 }

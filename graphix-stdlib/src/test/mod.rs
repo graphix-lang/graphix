@@ -12,8 +12,15 @@ mod lang;
 mod lib;
 
 pub struct TestCtx {
-    pub _internal_only: netidx::InternalOnly,
+    pub internal_only: netidx::InternalOnly,
     pub rt: GXHandle<NoExt>,
+}
+
+impl TestCtx {
+    pub async fn shutdown(self) {
+        drop(self.rt);
+        self.internal_only.shutdown().await
+    }
 }
 
 pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>) -> Result<TestCtx> {
@@ -25,7 +32,7 @@ pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>) -> Result<Tes
     ));
     let (root, mods) = crate::register(&mut ctx, BitFlags::all())?;
     Ok(TestCtx {
-        _internal_only: env,
+        internal_only: env,
         rt: GXConfig::builder(ctx, sub)
             .root(root)
             .resolvers(vec![mods])
@@ -42,7 +49,7 @@ macro_rules! run {
         async fn $name() -> ::anyhow::Result<()> {
             let (tx, mut rx) = tokio::sync::mpsc::channel(10);
             let ctx = $crate::test::init(tx).await?;
-            let bs = ctx.rt;
+            let bs = &ctx.rt;
             match bs.compile(arcstr::ArcStr::from($code)).await {
                 Err(e) => assert!($pred(dbg!(Err(e)))),
                 Ok(e) => {
@@ -68,9 +75,22 @@ macro_rules! run {
                     }
                 }
             }
+            ctx.shutdown().await;
             Ok(())
         }
     };
+}
+
+use graphix_compiler::expr::parser::GRAPHIX_ESC;
+use poolshark::local::LPooled;
+use std::{fmt::Write, path::Display};
+
+fn escape_path(path: Display) -> LPooled<String> {
+    let mut buf: LPooled<String> = LPooled::take();
+    let mut res: LPooled<String> = LPooled::take();
+    write!(buf, "{path}").unwrap();
+    GRAPHIX_ESC.escape_to(&*buf, &mut res);
+    res
 }
 
 /// run a test with a temp dir and setup code. The final output of the setup
@@ -134,7 +154,7 @@ macro_rules! run_with_tempdir {
             // Run setup block which should return test_file
             let test_file = { $setup };
 
-            let code = format!($code, test_file.display());
+            let code = format!($code, crate::test::escape_path(test_file.display()));
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
             let eid = compiled.exprs[0].id;
 

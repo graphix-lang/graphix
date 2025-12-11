@@ -1,13 +1,13 @@
+use crate::{
+    run,
+    test::{escape_path, init},
+};
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
-use netidx::subscriber::Value;
-use tokio::fs;
-use tokio::time::Duration;
-
-use crate::{run, test::init};
 use graphix_rt::GXEvent;
+use netidx::subscriber::Value;
 use poolshark::global::GPooled;
-use tokio::sync::mpsc;
+use tokio::{fs, sync::mpsc, time::Duration};
 
 /// Macro to create fs::watch tests with common setup/teardown logic.
 /// Supports both simple single-action tests and complex multi-event sequences.
@@ -73,7 +73,7 @@ macro_rules! watch_test {
             // Start watching
             let code = format!(
                 r#"fs::watch(#interest: {}, "{}")"#,
-                $interest, watch_path.display()
+                $interest, escape_path(watch_path.display())
             );
 
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
@@ -301,6 +301,8 @@ watch_test! {
 }
 
 // Test deep parent rename (rename two levels up)
+// This isn't supported on windows
+#[cfg(unix)]
 watch_test! {
     name: test_watch_deep_parent_rename,
     interest: "[`Established, `Delete]",
@@ -310,6 +312,7 @@ watch_test! {
         fs::create_dir_all(&d).await?;
         let test_file = d.join("file.txt");
         fs::write(&test_file, b"content").await?;
+        eprintln!("test file: {}", test_file.display());
         test_file
     },
     state: {
@@ -321,6 +324,7 @@ watch_test! {
             let b = a.join("b");
             let b2 = a.join("b2");
             eprintln!("Renaming /a/b to /a/b2 (two levels up)");
+            eprintln!("rename {} to {}", b.display(), b2.display());
             fs::rename(&b, &b2).await?;
         } else {
             *got_delete = true;
@@ -367,8 +371,8 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let ctx = init(tx).await?;
     let temp_dir = tempfile::tempdir()?;
 
-    let file1 = temp_dir.path().join("a/b/file.txt");
-    let file2 = temp_dir.path().join("a/b/c/file.txt");
+    let file1 = temp_dir.path().join("a").join("b").join("file.txt");
+    let file2 = temp_dir.path().join("a").join("b").join("c").join("file.txt");
 
     // Ensure nothing exists
     let _ = fs::remove_dir_all(temp_dir.path().join("a")).await;
@@ -376,11 +380,11 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     // Watch both files
     let code1 = format!(
         r#"fs::watch(#interest: [`Established, `Create], "{}")"#,
-        file1.display()
+        escape_path(file1.display())
     );
     let code2 = format!(
         r#"fs::watch(#interest: [`Established, `Create], "{}")"#,
-        file2.display()
+        escape_path(file2.display())
     );
 
     let compiled1 = ctx.rt.compile(ArcStr::from(code1)).await?;
@@ -388,7 +392,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let eid1 = compiled1.exprs[0].id;
     let eid2 = compiled2.exprs[0].id;
 
-    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    let timeout = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(timeout);
     let mut watch1_ready = false;
     let mut watch2_ready = false;

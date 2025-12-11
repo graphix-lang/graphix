@@ -1,12 +1,10 @@
-use crate::test::init;
+use crate::test::{escape_path, init};
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_rt::GXEvent;
 use netidx::subscriber::Value;
 use poolshark::global::GPooled;
-use tokio::fs;
-use tokio::sync::mpsc;
-use tokio::time::Duration;
+use tokio::{fs, sync::mpsc, time::Duration};
 
 /// Macro to create fs::write_* tests with common setup/teardown logic
 macro_rules! write_test {
@@ -77,9 +75,10 @@ macro_rules! write_test {
             let code = format!(
                 r#"{}(#path: "{}", {})"#,
                 $func,
-                test_file.display(),
+                escape_path(test_file.display()),
                 $content
             );
+            eprintln!("{code}");
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
             let eid = compiled.exprs[0].id;
 

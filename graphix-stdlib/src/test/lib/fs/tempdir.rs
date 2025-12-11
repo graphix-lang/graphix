@@ -78,24 +78,20 @@ const TEMPDIR_WITH_IN_AND_PREFIX: &str = r#"{
   fs::is_dir(child)
 }"#;
 
-run!(
-    test_tempdir_with_in_and_prefix,
-    TEMPDIR_WITH_IN_AND_PREFIX,
-    |v: Result<&Value>| {
-        match v {
-            Ok(Value::String(path)) => {
-                // Verify the directory name has the expected prefix
-                let p = Path::new(&**path);
-                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    name.starts_with("test_")
-                } else {
-                    false
-                }
+run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Value>| {
+    match v {
+        Ok(Value::String(path)) => {
+            // Verify the directory name has the expected prefix
+            let p = Path::new(&**path);
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                name.starts_with("test_")
+            } else {
+                false
             }
-            _ => false,
         }
+        _ => false,
     }
-);
+});
 
 // Test tempdir with both parent dir and suffix
 // Verify it's a directory using fs::is_dir and check the suffix format
@@ -105,24 +101,20 @@ const TEMPDIR_WITH_IN_AND_SUFFIX: &str = r#"{
   fs::is_dir(child)
 }"#;
 
-run!(
-    test_tempdir_with_in_and_suffix,
-    TEMPDIR_WITH_IN_AND_SUFFIX,
-    |v: Result<&Value>| {
-        match v {
-            Ok(Value::String(path)) => {
-                // Verify the directory name has the expected suffix
-                let p = Path::new(&**path);
-                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    name.ends_with("_test")
-                } else {
-                    false
-                }
+run!(test_tempdir_with_in_and_suffix, TEMPDIR_WITH_IN_AND_SUFFIX, |v: Result<&Value>| {
+    match v {
+        Ok(Value::String(path)) => {
+            // Verify the directory name has the expected suffix
+            let p = Path::new(&**path);
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                name.ends_with("_test")
+            } else {
+                false
             }
-            _ => false,
         }
+        _ => false,
     }
-);
+});
 
 // Note: Tests for tempdir trigger updates are not included here because
 // they would require mutable state management which is not easily testable
@@ -133,11 +125,9 @@ run!(
 const TEMPDIR_INVALID_PARENT: &str =
     r#"fs::tempdir(#in: "/this/path/should/not/exist/anywhere", null)"#;
 
-run!(
-    test_tempdir_invalid_parent,
-    TEMPDIR_INVALID_PARENT,
-    |v: Result<&Value>| { matches!(v, Ok(Value::Error(_))) }
-);
+run!(test_tempdir_invalid_parent, TEMPDIR_INVALID_PARENT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(_)))
+});
 
 // Test using tempdir for write/read cycle
 // Verify directory, write, read, and file existence using fs functions
@@ -150,10 +140,6 @@ const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
   fs::read_all(verified_file)
 }"#;
 
-run!(
-    test_tempdir_write_read_cycle,
-    TEMPDIR_WRITE_READ_CYCLE,
-    |v: Result<&Value>| {
-        matches!(v, Ok(Value::String(s)) if &**s == "Hello from tempdir!")
-    }
-);
+run!(test_tempdir_write_read_cycle, TEMPDIR_WRITE_READ_CYCLE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "Hello from tempdir!")
+});

@@ -32,7 +32,7 @@ use std::{
 use tokio::{
     fs, select,
     sync::mpsc::{self as tmpsc, error::SendTimeoutError, UnboundedReceiver},
-    task::{self, JoinError, JoinSet},
+    task::{JoinError, JoinSet},
     time::{self, Instant},
 };
 use triomphe::Arc;
@@ -109,6 +109,7 @@ pub(super) struct GX<X: GXExt> {
     last_rpc_gc: Instant,
     batch_pool: Pool<Vec<GXEvent<X>>>,
     flags: BitFlags<CFlag>,
+    commit_tasks: JoinSet<()>,
 }
 
 impl<X: GXExt> GX<X> {
@@ -143,6 +144,7 @@ impl<X: GXExt> GX<X> {
             last_rpc_gc: Instant::now(),
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
+            commit_tasks: JoinSet::new(),
         };
         let st = Instant::now();
         if let Some(root) = cfg.root {
@@ -270,7 +272,8 @@ impl<X: GXExt> GX<X> {
             let batch =
                 mem::replace(&mut self.ctx.rt.batch, self.ctx.rt.publisher.start_batch());
             let timeout = self.publish_timeout;
-            task::spawn(async move { batch.commit(timeout).await });
+            while let Some(_) = self.commit_tasks.try_join_next() {}
+            self.commit_tasks.spawn(async move { batch.commit(timeout).await });
         }
     }
 

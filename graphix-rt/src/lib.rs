@@ -27,13 +27,13 @@ use netidx_value::FromValue;
 use poolshark::global::GPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::{fmt, future, time::Duration};
+use std::{fmt, future, sync::Arc, time::Duration};
 use tokio::{
     sync::{
         mpsc::{self as tmpsc},
         oneshot,
     },
-    task,
+    task::{self, JoinHandle},
 };
 
 mod gx;
@@ -126,7 +126,7 @@ pub struct CompExp<X: GXExt> {
 
 impl<X: GXExt> Drop for CompExp<X> {
     fn drop(&mut self) {
-        let _ = self.rt.0.send(ToGX::Delete { id: self.id });
+        let _ = self.rt.0.tx.send(ToGX::Delete { id: self.id });
     }
 }
 
@@ -148,7 +148,7 @@ pub struct Ref<X: GXExt> {
 
 impl<X: GXExt> Drop for Ref<X> {
     fn drop(&mut self) {
-        let _ = self.rt.0.send(ToGX::Delete { id: self.id });
+        let _ = self.rt.0.tx.send(ToGX::Delete { id: self.id });
     }
 }
 
@@ -255,7 +255,7 @@ pub struct Callable<X: GXExt> {
 
 impl<X: GXExt> Drop for Callable<X> {
     fn drop(&mut self) {
-        let _ = self.rt.0.send(ToGX::DeleteCallable { id: self.id });
+        let _ = self.rt.0.tx.send(ToGX::DeleteCallable { id: self.id });
     }
 }
 
@@ -284,6 +284,7 @@ impl<X: GXExt> Callable<X> {
     pub async fn call_unchecked(&self, args: ValArray) -> Result<()> {
         self.rt
             .0
+            .tx
             .send(ToGX::Call { id: self.id, args })
             .map_err(|_| anyhow!("runtime is dead"))
     }
@@ -439,10 +440,21 @@ pub enum GXEvent<X: GXExt> {
     Env(Env<GXRt<X>, X::UserEvent>),
 }
 
+struct GXHandleInner<X: GXExt> {
+    tx: tmpsc::UnboundedSender<ToGX<X>>,
+    task: JoinHandle<()>,
+}
+
+impl<X: GXExt> Drop for GXHandleInner<X> {
+    fn drop(&mut self) {
+        self.task.abort()
+    }
+}
+
 /// A handle to a running GX instance.
 ///
 /// Drop the handle to shutdown the associated background tasks.
-pub struct GXHandle<X: GXExt>(tmpsc::UnboundedSender<ToGX<X>>);
+pub struct GXHandle<X: GXExt>(Arc<GXHandleInner<X>>);
 
 impl<X: GXExt> fmt::Debug for GXHandle<X> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -459,7 +471,7 @@ impl<X: GXExt> Clone for GXHandle<X> {
 impl<X: GXExt> GXHandle<X> {
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
         let (tx, rx) = oneshot::channel();
-        self.0.send(f(tx)).map_err(|_| anyhow!("runtime is dead"))?;
+        self.0.tx.send(f(tx)).map_err(|_| anyhow!("runtime is dead"))?;
         Ok(rx.await.map_err(|_| anyhow!("runtime did not respond"))?)
     }
 
@@ -574,7 +586,7 @@ impl<X: GXExt> GXHandle<X> {
     /// as`Ref::set` and `TRef::set`
     pub fn set<T: Into<Value>>(&self, id: BindId, v: T) -> Result<()> {
         let v = v.into();
-        self.0.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
+        self.0.tx.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
     }
 }
 
@@ -624,7 +636,7 @@ impl<X: GXExt> GXConfig<X> {
     pub async fn start(self) -> Result<GXHandle<X>> {
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();
-        task::spawn(async move {
+        let task = task::spawn(async move {
             match GX::new(self).await {
                 Ok(bs) => {
                     let _ = init_tx.send(Ok(()));
@@ -638,6 +650,6 @@ impl<X: GXExt> GXConfig<X> {
             };
         });
         init_rx.await??;
-        Ok(GXHandle(tx))
+        Ok(GXHandle(Arc::new(GXHandleInner { tx, task })))
     }
 }
