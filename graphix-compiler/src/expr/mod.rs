@@ -1,4 +1,5 @@
 use crate::{
+    expr::print::{PrettyBuf, PrettyDisplay},
     typ::{TVar, Type},
     PrintFlag, PRINT_FLAGS,
 };
@@ -8,7 +9,6 @@ use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
 pub use pattern::{Pattern, StructurePattern};
-use poolshark::local::LPooled;
 use regex::Regex;
 pub use resolver::ModuleResolver;
 use serde::{
@@ -79,7 +79,6 @@ pub struct Doc(Option<ArcStr>);
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct TypeDef {
     pub name: ArcStr,
-    pub doc: Doc,
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
 }
@@ -87,22 +86,26 @@ pub struct TypeDef {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct BindSig {
     name: ArcStr,
-    doc: Doc,
     typ: Type,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct ModSig {
     name: ArcStr,
-    doc: Doc,
     sig: Sig,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub enum SigItem {
+pub enum SigKind {
     TypeDef(TypeDef),
     Bind(BindSig),
     Module(ModSig),
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct SigItem {
+    doc: Doc,
+    kind: SigKind,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -147,7 +150,6 @@ pub enum ModuleKind {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct Bind {
     pub rec: bool,
-    pub doc: Doc,
     pub pattern: StructurePattern,
     pub typ: Option<Type>,
     pub value: Expr,
@@ -196,6 +198,7 @@ pub struct SelectExpr {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ExprKind {
+    NoOp,
     Constant(Value),
     Module { name: ArcStr, value: ModuleKind },
     Do { exprs: Arc<[Expr]> },
@@ -494,7 +497,7 @@ impl Expr {
             ExprKind::Module { value: ModuleKind::Unresolved, .. } => init,
             ExprKind::Do { exprs } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::Bind(b) => b.value.fold(init, f),
-            ExprKind::StructWith { replace, .. } => {
+            ExprKind::StructWith(StructWith { replace, .. }) => {
                 replace.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
             ExprKind::Connect { value, .. } => value.fold(init, f),
@@ -503,7 +506,7 @@ impl Expr {
                 Either::Right(_) => init,
             },
             ExprKind::TypeCast { expr, .. } => expr.fold(init, f),
-            ExprKind::Apply { args, function: _ } => {
+            ExprKind::Apply(ApplyExpr { args, function: _ }) => {
                 args.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
             ExprKind::Any { args }
@@ -528,10 +531,10 @@ impl Expr {
                     Some(e) => e.fold(init, f),
                 }
             }
-            ExprKind::Struct { args } => {
+            ExprKind::Struct(Struct { args }) => {
                 args.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
-            ExprKind::Select { arg, arms } => {
+            ExprKind::Select(SelectExpr { arg, arms }) => {
                 let init = arg.fold(init, f);
                 arms.iter().fold(init, |init, (p, e)| {
                     let init = match p.guard.as_ref() {
