@@ -11,7 +11,7 @@ use netidx::{publisher::Value, utils::Either};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-pub(super) fn array<I>(t: char) -> impl Parser<I, Output = Expr>
+pub(super) fn array<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,

@@ -338,52 +338,60 @@ where
     )
 }
 
-parser! {
-    fn mapref[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), ref_pexp(), between(sptoken('{'), sptoken('}'), expr())).map(|(pos, source, key)| {
+fn mapref<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), ref_pexp(), between(sptoken('{'), sptoken('}'), expr())).map(
+        |(pos, source, key)| {
             ExprKind::MapRef { source: Arc::new(source), key: Arc::new(key) }.to_expr(pos)
+        },
+    )
+}
+
+fn any<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        string("any").with(between(
+            sptoken('('),
+            sptoken(')'),
+            sep_by_tok(expr(), csep(), sptoken(')')),
+        )),
+    )
+        .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
+            ExprKind::Any { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
         })
-    }
 }
 
-parser! {
-    fn any[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            string("any").with(between(sptoken('('), sptoken(')'), sep_by(expr(), csep()))),
-        )
-            .map(|(pos, args): (_, Vec<Expr>)| {
-                ExprKind::Any { args: Arc::from(args) }.to_expr(pos)
-            })
-    }
-}
-
-parser! {
-    fn letbind[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            string("let")
-                .with(space())
-                .with((
-                    optional(attempt(spstring("rec").with(space()))),
-                    structure_pattern(),
-                    optional(attempt(sptoken(':').with(typexp())))
-                ))
-                .skip(spstring("=")),
-            expr(),
-        )
-            .map(|(pos, doc, export, (rec, pattern, typ), value)| {
-                let rec = rec.is_some();
-                ExprKind::Bind(Arc::new(Bind { rec, pattern, typ, value }))
-                    .to_expr(pos)
-            })
-    }
+fn letbind<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        string("let")
+            .with(spaces1())
+            .with((
+                optional(string("rec").with(spaces1())),
+                structure_pattern(),
+                spaces().then(|_| optional(token(':').with(typexp()))),
+            ))
+            .skip(spstring("=")),
+        expr(),
+    )
+        .map(|(pos, doc, export, (rec, pattern, typ), value)| {
+            let rec = rec.is_some();
+            ExprKind::Bind(Arc::new(Bind { rec, pattern, typ, value })).to_expr(pos)
+        })
 }
 
 parser! {
