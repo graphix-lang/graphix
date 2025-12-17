@@ -1,19 +1,16 @@
 use crate::{
     expr::{
-        get_origin, set_origin, ApplyExpr, Arg, Bind, BindSig, Doc, Expr, ExprId,
-        ExprKind, Lambda, ModPath, ModSig, ModuleKind, Origin, Pattern, Sandbox,
-        SelectExpr, Sig, SigItem, SigKind, Struct, StructWith, StructurePattern,
-        TryCatch, TypeDef,
+        set_origin, Bind, Doc, Expr, ExprKind, ModPath, Origin, Pattern, SelectExpr,
+        SigItem, Struct, StructWith, StructurePattern, TryCatch,
     },
-    typ::{FnArgType, FnType, TVar, Type},
+    typ::{FnType, Type},
 };
-use anyhow::{bail, Result};
 use arcstr::{literal, ArcStr};
 use combine::{
-    attempt, between, chainl1, choice, eof, look_ahead, many, many1, none_of,
-    not_followed_by, optional,
+    attempt, between, chainl1, choice, eof, look_ahead, many, none_of, not_followed_by,
+    optional,
     parser::{
-        char::{alpha_num, digit, space, string},
+        char::{space, string},
         combinator::recognize,
         range::{take_while, take_while1},
     },
@@ -27,21 +24,28 @@ use combine::{
 use compact_str::CompactString;
 use escaping::Escape;
 use fxhash::FxHashSet;
-use netidx::{
-    path::Path,
-    publisher::{Typ, Value},
-    utils::Either,
-};
+use netidx::{path::Path, publisher::Value, utils::Either};
 use netidx_value::parser::{
     escaped_string, int, value as parse_value, VAL_ESC, VAL_MUST_ESC,
 };
-use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
-#[cfg(test)]
-mod test;
+mod interp;
+use interp::interpolated;
+
+mod modexp;
+use modexp::{module, sig_item, use_module};
+
+mod typ;
+use typ::{fntype, typedef, typexp};
+
+mod lambdaexp;
+use lambdaexp::{apply, lambda};
+
+mod arrayexp;
+use arrayexp::{array, arrayref};
 
 fn escape_generic(c: char) -> bool {
     c.is_control()
@@ -68,16 +72,17 @@ pub const RESERVED: LazyLock<FxHashSet<&str>> = LazyLock::new(|| {
 });
 
 // sep_by1, but a separator terminator is allowed, and ignored
-fn sep_by1_tok<I, O, EP, SP, TP>(
+fn sep_by1_tok<I, O, OC, EP, SP, TP>(
     p: EP,
     sep: SP,
     term: TP,
-) -> impl Parser<I, Output = LPooled<Vec<O>>>
+) -> impl Parser<I, Output = OC>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Range: Range,
+    OC: Extend<O>,
     SP: Parser<I>,
-    EP: Parser<I, Output = O>,
+    EP: Parser<I, Output = OC>,
     TP: Parser<I>,
 {
     sep_by1(choice((look_ahead(term).map(None), p.map(Some))), sep)
@@ -85,14 +90,15 @@ where
 }
 
 // sep_by, but a separator terminator is allowed, and ignored
-fn sep_by_tok<I, O, EP, SP, TP>(
+fn sep_by_tok<I, O, OC, EP, SP, TP>(
     p: EP,
     sep: SP,
     term: TP,
-) -> impl Parser<I, Output = LPooled<Vec<O>>>
+) -> impl Parser<I, Output = OC>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Range: Range,
+    OC: Extend<O>,
     SP: Parser<I>,
     EP: Parser<I, Output = O>,
     TP: Parser<I>,
@@ -102,15 +108,16 @@ where
 }
 
 // sep_by1 but a separator terminator is allowed and mapped to an output value
-fn sep_by1_tok_exp<I, O, F, EP, SP, TP>(
+fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
     p: EP,
     sep: SP,
     term: TP,
     f: F,
-) -> impl Parser<I, Output = LPooled<Vec<O>>>
+) -> impl Parser<I, Output = OC>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Range: Range,
+    OC: Extend<O>,
     SP: Parser<I>,
     EP: Parser<I, Output = O>,
     TP: Parser<I>,
@@ -134,12 +141,21 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::parser::char::spaces().with(skip_many(attempt(
+    combine::parser::char::spaces().with(skip_many(
         string("//")
             .with(not_followed_by(token('/')))
             .with(skip_many(none_of(['\n'])))
             .with(combine::parser::char::spaces()),
-    )))
+    ))
+}
+
+fn spaces1<I>() -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    space().then(|_| spaces())
 }
 
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
@@ -224,15 +240,6 @@ where
     })
 }
 
-fn sptypname<I>() -> impl Parser<I, Output = ArcStr>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(typname())
-}
-
 pub(crate) fn modpath<I>() -> impl Parser<I, Output = ModPath>
 where
     I: RangeStream<Token = char>,
@@ -252,45 +259,13 @@ where
     spaces().with(modpath())
 }
 
-fn typath<I>() -> impl Parser<I, Output = ModPath>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    sep_by1(choice((attempt(spfname()), sptypname())), string("::")).then(
-        |mut parts: LPooled<Vec<ArcStr>>| {
-            if parts.len() == 0 {
-                unexpected_any("empty type path").left()
-            } else {
-                match parts.last().unwrap().chars().next() {
-                    None => unexpected_any("empty name").left(),
-                    Some(c) if c.is_lowercase() => {
-                        unexpected_any("type names must be capitalized").left()
-                    }
-                    Some(_) => value(ModPath::from(parts.drain(..))).right(),
-                }
-            }
-        },
-    )
-}
-
-fn sptypath<I>() -> impl Parser<I, Output = ModPath>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(typath())
-}
-
 fn csep<I>() -> impl Parser<I, Output = char>
 where
     I: RangeStream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(spaces().with(token(',')))
+    attempt(spaces().with(token(',')).skip(spaces()))
 }
 
 fn sptoken<I>(t: char) -> impl Parser<I, Output = char>
@@ -302,404 +277,65 @@ where
     spaces().with(token(t))
 }
 
-parser! {
-    fn interpolated[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        #[derive(Debug, Clone)]
-        enum Intp {
-            Lit(SourcePosition, String),
-            Expr(Expr),
-        }
-        impl Intp {
-            fn to_expr(self) -> Expr {
-                match self {
-                    Intp::Lit(pos, s) => Expr {
-                        id: ExprId::new(),
-                        ori: get_origin(),
-                        pos,
-                        kind: ExprKind::Constant(Value::from(s)),
-                    },
-                    Intp::Expr(s) => s,
-                }
-            }
-        }
-        (
-            position(),
-            between(
-                token('"'),
-                token('"'),
-                many(choice((
-                    attempt(between(token('['), sptoken(']'), expr()).map(Intp::Expr)),
-                    (position(), escaped_string(&GRAPHIX_MUST_ESC, &GRAPHIX_ESC))
-                    .then(|(pos, s)| {
-                        if s.is_empty() {
-                            unexpected_any("empty string").right()
-                        } else {
-                            value(Intp::Lit(pos, s)).left()
-                        }
-                    }),
-                ))),
-            ),
-        )
-            .map(|(pos, mut toks): (_, LPooled<Vec<Intp>>)| {
-                let mut argvec = vec![];
-                toks.drain(..)
-                    .fold(None, |src, tok| -> Option<Expr> {
-                        match (src, tok) {
-                            (None, t @ Intp::Lit(_, _)) => Some(t.to_expr()),
-                            (None, Intp::Expr(s)) => {
-                                argvec.push(s);
-                                Some(
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter(argvec.clone().into_iter()),
-                                    }
-                                    .to_expr(pos),
-                                )
-                            }
-                            (Some(src @ Expr { kind: ExprKind::Constant(_), .. }), s) => {
-                                argvec.extend([src, s.to_expr()]);
-                                Some(
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter(argvec.clone().into_iter()),
-                                    }
-                                    .to_expr(pos),
-                                )
-                            }
-                            (
-                                Some(Expr {
-                                    kind: ExprKind::StringInterpolate { args: _ },
-                                    ..
-                                }),
-                                s,
-                            ) => {
-                                argvec.push(s.to_expr());
-                                Some(
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter(argvec.clone().into_iter()),
-                                    }
-                                    .to_expr(pos),
-                                )
-                            }
-                            (Some(Expr { kind: ExprKind::Bind { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::StructWith { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Array { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Map { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::MapRef { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Any { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::StructRef { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::TupleRef { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Tuple { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Variant { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Struct { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Qop(_), .. }), _)
-                                | (Some(Expr { kind: ExprKind::OrNever(_), .. }), _)
-                                | (Some(Expr { kind: ExprKind::TryCatch(_), .. }), _)
-                                | (Some(Expr { kind: ExprKind::NoOp, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Do { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Module { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Use { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Connect { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Ref { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Eq { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Ne { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Lt { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Gt { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Gte { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Lte { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::And { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Or { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Not { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Add { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Sub { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Mul { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Div { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Mod { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Select { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::TypeCast { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::TypeDef { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::ArrayRef { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::ArraySlice { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Apply { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::ByRef(_), .. }), _)
-                                | (Some(Expr { kind: ExprKind::Deref(_), .. }), _)
-                                | (Some(Expr { kind: ExprKind::Sample { .. }, .. }), _)
-                                | (Some(Expr { kind: ExprKind::Lambda { .. }, .. }), _) => {
-                                    unreachable!()
-                                }
-                        }
-                    })
-                    .unwrap_or_else(|| ExprKind::Constant(Value::from("")).to_expr(pos))
-            })
-    }
-}
-
-parser! {
-    fn sig_item[I]()(I) -> SigItem
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        doc_comment().skip(spaces()).then(|doc| {
-            choice((
-                typedef().map(|e| match e.kind {
-                    ExprKind::TypeDef(td) => SigItem { doc, kind: SigKind::TypeDef(td) },
-                    _ => unreachable!()
-                }),
-                string("val").with(space()).with((spfname(), sptoken(':').with(typexp())))
-                    .map(|(name, typ)| {
-                        SigItem { doc, kind: SigKind::Bind(BindSig { name, typ }) }
-                    }),
-                string("mod").with(space()).with((
-                    spfname().skip(sptoken(':')).skip(spstring("sig")),
-                    between(
-                        sptoken('{'),
-                        sptoken('}'),
-                        sep_by1_tok(
-                            sig_item(),
-                            attempt(sptoken(';')),
-                            sptoken('}')
-                        )
-                    )
-                )).map(|(name, mut items): (ArcStr, LPooled<Vec<Option<SigItem>>>)| {
-                    let items = Arc::from_iter(items.drain(..).filter_map(|e| e));
-                    let sig = Sig { items, toplevel: false };
-                    SigItem { doc, kind: SigKind::Module(ModSig { name, sig }) }
-                })
-            ))
-        })
-    }
-}
-
-parser! {
-    fn sandbox[I]()(I) -> Sandbox
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        choice((
-            spstring("unrestricted").map(|_| Sandbox::Unrestricted),
-            spstring("blacklist").with(between(
-                sptoken('['), sptoken(']'),
-                sep_by1_tok(spaces().with(modpath()), csep(), sptoken(']'))
-            )).map(|l: Vec<ModPath>| Sandbox::Blacklist(Arc::from(l))),
-            spstring("whitelist").with(between(
-                sptoken('['), sptoken(']'),
-                sep_by1_tok(spaces().with(modpath()), csep(), sptoken(']'))
-            )).map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l)))
-        ))
-    }
-}
-
-parser! {
-    fn dynamic_module[I]()(I) -> ModuleKind
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        space().with(spstring("dynamic")).with(between(
-            sptoken('{'), sptoken('}'),
-            (
-                spstring("sandbox").with(space()).with(sandbox()),
-                spstring("sig").with(between(
-                    sptoken('{'), sptoken('}'),
-                    sep_by1_tok(sig_item(), attempt(sptoken(';')), sptoken('}'))
-                        .map(|i: Vec<SigItem>| Sig { toplevel: true, items: Arc::from(i) })
-                )),
-                spstring("source").with(space()).with(expr())
-            )
-        )).map(|(sandbox, sig, source)| {
-            ModuleKind::Dynamic { sandbox, sig, source: Arc::new(source) }
-        })
-    }
-}
-
-parser! {
-    fn inline_module[I]()(I) -> ModuleKind
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        between(
-            sptoken('{'), sptoken('}'),
-            sep_by(
-                (
-                    position(),
-                    choice((
-                        look_ahead(sptoken('}')).map(None),
-                        expr().map(Some)
-                    ))
-                ),
-                attempt(sptoken(';'))
-            )
-        ).map(|m: LPooled<Vec<(SourcePosition, Option<Expr>)>>| {
-            let exprs = Arc::from_iter(m.drain(..).map(|(pos, e)| match e {
-                Some(e) => e,
-                None => ExprKind::NoOp.to_expr(pos)
-            }));
-            ModuleKind::Inline(exprs)
-        })
-    }
-}
-
-parser! {
-    fn module[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            string("mod").with(space()).with(spfname()),
-            optional(choice((
-                attempt(inline_module()),
-                attempt(dynamic_module())
-            ))).map(|m| m.unwrap_or(ModuleKind::Unresolved))
-        )
-            .map(|(pos, name, value)| {
-                ExprKind::Module { name, value }.to_expr(pos)
-            })
-    }
-}
-
-fn use_module<I>() -> impl Parser<I, Output = Expr>
+fn do_block<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char, Position = SourcePosition>,
+    I: RangeStream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), string("use").with(space()).with(spmodpath()))
-        .map(|(pos, name)| ExprKind::Use { name }.to_expr(pos))
-}
-
-parser! {
-    fn do_block[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            between(
-                token('{'),
-                sptoken('}'),
-                sep_by1_tok(
-                    expr(),
-                    attempt(sptoken(';')),
-                    sptoken('}')
-                )
-            ),
-        ).then(|(pos, mut args): (_, LPooled<Vec<(_, Option<Expr>)>>)| {
+    (
+        position(),
+        between(
+            token('{'),
+            sptoken('}'),
+            sep_by1_tok(expr(), attempt(sptoken(';')), sptoken('}')),
+        ),
+    )
+        .then(|(pos, mut args): (_, LPooled<Vec<(_, Option<Expr>)>>)| {
             if args.len() < 2 {
                 unexpected_any("do must contain at least 2 expressions").left()
             } else {
                 let exprs = Arc::from_iter(args.drain(..).map(|(pos, e)| match e {
                     Some(e) => e,
-                    None => ExprKind::NoOp.to_expr(pos)
+                    None => ExprKind::NoOp.to_expr(pos),
                 }));
                 value(ExprKind::Do { exprs }.to_expr(pos)).right()
             }
         })
-    }
 }
 
-parser! {
-    fn array[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), between(token('['), sptoken(']'), sep_by(expr(), csep()))).map(
-            |(pos, mut args): (_, LPooled<Vec<Expr>>)| {
-                ExprKind::Array { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
-            },
-        )
-    }
+fn ref_pexp<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    spaces()
+        .then(|_| choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
 }
 
-parser! {
-    fn apply_pexp[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        choice((
-            attempt(spaces().with(qop(reference()))),
-            between(sptoken('('), sptoken(')'), expr()),
-        ))
-    }
+fn structref<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), ref_pexp().skip(sptoken('.')), spfname()).map(|(pos, source, field)| {
+        ExprKind::StructRef { source: Arc::new(source), field }.to_expr(pos)
+    })
 }
 
-parser! {
-    fn ref_pexp[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        choice((
-            attempt(spaces().with(qop(reference()))),
-            between(sptoken('('), sptoken(')'), expr()),
-        ))
-    }
-}
-
-parser! {
-    fn structref[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), ref_pexp().skip(sptoken('.')), spfname()).map(|(pos, source, field)| {
-            ExprKind::StructRef { source: Arc::new(source), field }.to_expr(pos)
-        })
-    }
-}
-
-parser! {
-    fn tupleref[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), ref_pexp().skip(sptoken('.')), int::<_, usize>()).map(
-            |(pos, source, field)| {
-                ExprKind::TupleRef { source: Arc::new(source), field }.to_expr(pos)
-            },
-        )
-    }
-}
-
-parser! {
-    fn arrayref[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            ref_pexp(),
-            between(
-                token('['),
-                sptoken(']'),
-                choice((
-                    attempt(
-                        (
-                            position(),
-                            spaces().with(optional(many1(digit()))).skip(spstring("..")),
-                            spaces().with(optional(many1(digit()))),
-                        )
-                            .skip(look_ahead(sptoken(']'))),
-                    )
-                        .map(
-                            |(pos, start, end): (
-                                _,
-                                Option<CompactString>,
-                                Option<CompactString>,
-                            )| {
-                                let start = start.map(|i| Value::U64(i.parse().unwrap()));
-                                let start = start.map(|e| ExprKind::Constant(e).to_expr(pos));
-                                let end = end.map(|i| Value::U64(i.parse().unwrap()));
-                                let end = end.map(|e| ExprKind::Constant(e).to_expr(pos));
-                                Either::Left((start, end))
-                            },
-                        ),
-                    attempt((
-                        optional(attempt(expr())).skip(spstring("..")),
-                        optional(attempt(expr())),
-                    ))
-                        .map(|(start, end)| Either::Left((start, end))),
-                    attempt(expr()).map(|e| Either::Right(e)),
-                )),
-            ),
-        )
-            .map(|(pos, a, args)| match args {
-                Either::Left((start, end)) => ExprKind::ArraySlice {
-                    source: Arc::new(a),
-                    start: start.map(Arc::new),
-                    end: end.map(Arc::new),
-                }
-                .to_expr(pos),
-                Either::Right(i) => {
-                    ExprKind::ArrayRef { source: Arc::new(a), i: Arc::new(i) }.to_expr(pos)
-                }
-            })
-    }
+fn tupleref<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), ref_pexp().skip(sptoken('.')), int::<_, usize>()).map(
+        |(pos, source, field)| {
+            ExprKind::TupleRef { source: Arc::new(source), field }.to_expr(pos)
+        },
+    )
 }
 
 parser! {
@@ -713,54 +349,6 @@ parser! {
 }
 
 parser! {
-    fn apply[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            apply_pexp(),
-            between(
-                sptoken('('),
-                sptoken(')'),
-                sep_by(
-                    choice((
-                        attempt((sptoken('#').with(fname()).skip(token(':')), expr()))
-                            .map(|(n, e)| (Some(n), e)),
-                        attempt((
-                            position(),
-                            sptoken('#').with(fname()),
-                        ))
-                            .map(|(pos, n)| {
-                                let e = ExprKind::Ref { name: [n.clone()].into() }.to_expr(pos);
-                                (Some(n), e)
-                            }),
-                        expr().map(|e| (None, e)),
-                    )),
-                    csep(),
-                ),
-            ),
-        )
-            .then(|(pos, function, args): (_, Expr, Vec<(Option<ArcStr>, Expr)>)| {
-                let mut anon = false;
-                for (a, _) in &args {
-                    if a.is_some() && anon {
-                        return unexpected_any(
-                            "labeled arguments must come before anonymous arguments",
-                        )
-                            .right();
-                    }
-                    anon |= a.is_none();
-                }
-                value((pos, function, args)).left()
-            })
-            .map(|(pos, function, args): (_, Expr, Vec<(Option<ArcStr>, Expr)>)| {
-                ExprKind::Apply(ApplyExpr { function: Arc::new(function), args: Arc::from(args) })
-                .to_expr(pos)
-            })
-    }
-}
-
-parser! {
     fn any[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
@@ -770,312 +358,6 @@ parser! {
         )
             .map(|(pos, args): (_, Vec<Expr>)| {
                 ExprKind::Any { args: Arc::from(args) }.to_expr(pos)
-            })
-    }
-}
-
-fn typeprim<I>() -> impl Parser<I, Output = Typ>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice((
-        string("i8").map(|_| Typ::I8),
-        string("u8").map(|_| Typ::U8),
-        string("i16").map(|_| Typ::I16),
-        string("u16").map(|_| Typ::U16),
-        string("u32").map(|_| Typ::U32),
-        string("v32").map(|_| Typ::V32),
-        string("i32").map(|_| Typ::I32),
-        string("z32").map(|_| Typ::Z32),
-        string("u64").map(|_| Typ::U64),
-        string("v64").map(|_| Typ::V64),
-        string("i64").map(|_| Typ::I64),
-        string("z64").map(|_| Typ::Z64),
-        string("f32").map(|_| Typ::F32),
-        string("f64").map(|_| Typ::F64),
-        string("decimal").map(|_| Typ::Decimal),
-        string("datetime").map(|_| Typ::DateTime),
-        string("duration").map(|_| Typ::Duration),
-        string("bool").map(|_| Typ::Bool),
-        string("string").map(|_| Typ::String),
-        string("bytes").map(|_| Typ::Bytes),
-        string("error").map(|_| Typ::Error),
-        string("array").map(|_| Typ::Array),
-        string("null").map(|_| Typ::Null),
-    ))
-    .skip(not_followed_by(choice((alpha_num(), token('_')))))
-}
-
-parser! {
-    fn fntype[I]()(I) -> FnType
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        string("fn")
-            .with((
-                optional(attempt(between(
-                    token('<'),
-                    sptoken('>'),
-                    sep_by1_tok((spaces().with(tvar()).skip(sptoken(':')), typexp()), csep(), sptoken('>')),
-                )))
-                    .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| match cs {
-                        Some(cs) => Arc::new(RwLock::new(cs)),
-                        None => Arc::new(RwLock::new(LPooled::take())),
-                    }),
-                between(
-                    token('('),
-                    sptoken(')'),
-                    sep_by(
-                        choice((
-                            attempt(
-                                (
-                                    spaces()
-                                        .with(optional(token('?')).map(|o| o.is_some()))
-                                        .skip(token('#')),
-                                    fname().skip(token(':')),
-                                    typexp(),
-                                )
-                                    .map(
-                                        |(optional, name, typ)| {
-                                            Either::Left(FnArgType {
-                                                label: Some((name.into(), optional)),
-                                                typ,
-                                            })
-                                        },
-                                    ),
-                            ),
-                            attempt(
-                                typexp()
-                                    .map(|typ| Either::Left(FnArgType { label: None, typ })),
-                            ),
-                            attempt(
-                                spstring("@args:").with(typexp()).map(|e| Either::Right(e)),
-                            ),
-                        )),
-                        csep(),
-                    ),
-                ),
-                spstring("->").with(typexp()),
-                optional(attempt(space().with(spstring("throws")).with(space()).with(typexp())))
-            ))
-            .then(
-                |(constraints, mut args, rtype, throws): (
-                    Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>,
-                    Vec<Either<FnArgType, Type>>,
-                    Type,
-                    Option<Type>
-                )| {
-                    let vargs = match args.pop() {
-                        None => None,
-                        Some(Either::Right(t)) => Some(t),
-                        Some(Either::Left(t)) => {
-                            args.push(Either::Left(t));
-                            None
-                        }
-                    };
-                    if !args.iter().all(|a| a.is_left()) {
-                        return unexpected_any(
-                            "vargs must appear once at the end of the args",
-                        )
-                            .left();
-                    }
-                    let args = Arc::from_iter(args.into_iter().map(|t| match t {
-                        Either::Left(t) => t,
-                        Either::Right(_) => unreachable!(),
-                    }));
-                    let mut anon = false;
-                    for a in args.iter() {
-                        if anon && a.label.is_some() {
-                            return unexpected_any(
-                                "anonymous args must appear after labeled args",
-                            )
-                                .left();
-                        }
-                        anon |= a.label.is_none();
-                    }
-                    let throws = throws.unwrap_or(Type::Bottom);
-                    value(FnType { args, vargs, rtype, constraints, throws }).right()
-                },
-            )
-    }
-}
-
-fn tvar<I>() -> impl Parser<I, Output = TVar>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    token('\'').with(fname()).map(TVar::empty_named)
-}
-
-parser! {
-    fn typexp[I]()(I) -> Type
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        spaces().then(|_| choice((
-            token('&').with(typexp()).map(|t| Type::ByRef(Arc::new(t))),
-            token('_').map(|_| Type::Bottom),
-            between(token('['), sptoken(']'), sep_by_tok(typexp(), csep(), sptoken(']')))
-                .map(|mut ts: LPooled<Vec<Type>>| Type::flatten_set(ts.drain(..))),
-            between(
-                token('('),
-                sptoken(')'),
-                sep_by1_tok(typexp(), csep(), sptoken(')'))
-            ).map(
-                |mut exps: LPooled<Vec<Type>>| {
-                    if exps.len() == 1 {
-                        exps.pop().unwrap()
-                    } else {
-                        Type::Tuple(Arc::from_iter(exps.drain(..)))
-                    }
-                },
-            ),
-            between(
-                token('{'),
-                sptoken('}'),
-                sep_by1_tok((spfname().skip(sptoken(':')), typexp()), csep(), sptoken('}')),
-            ).then(|mut exps: LPooled<Vec<(ArcStr, Type)>>| {
-                let s = exps.iter().map(|(n, _)| n).collect::<LPooled<FxHashSet<_>>>();
-                if s.len() < exps.len() {
-                    return unexpected_any("struct field names must be unique").left();
-                }
-                drop(s);
-                exps.sort_by_key(|(n, _)| n.clone());
-                value(Type::Struct(Arc::from_iter(exps.drain(..)))).right()
-            }),
-            (
-                token('`').with(ident(true)),
-                optional(attempt(between(
-                    token('('),
-                    sptoken(')'),
-                    sep_by1_tok(typexp(), csep(), sptoken(')')),
-                ))),
-            ).map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
-                let mut t = match typs {
-                    None => LPooled::take(),
-                    Some(v) => v,
-                };
-                Type::Variant(tag.clone(), Arc::from_iter(t.drain(..)))
-            }),
-            fntype().map(|f| Type::Fn(Arc::new(f))),
-            string("Array").with(between(sptoken('<'), sptoken('>'), typexp()))
-                .map(|t| Type::Array(Arc::new(t))),
-            string("Map").with(between(
-                sptoken('<'), sptoken('>'),
-                (typexp().skip(sptoken(',')), typexp())
-            )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
-            string("Error").with(between(sptoken('<'), sptoken('>'), typexp()))
-                .map(|t| Type::Error(Arc::new(t))),
-            string("Any").map(|_| Type::Any),
-            typeprim().map(|typ| Type::Primitive(typ.into())),
-            tvar().map(|tv| Type::TVar(tv)),
-            (
-                typath(),
-                optional(attempt(between(
-                    sptoken('<'),
-                    sptoken('>'),
-                    sep_by1_tok(typexp(), csep(), sptoken('>')),
-                ))),
-            ).map(|(n, params): (ModPath, Option<LPooled<Vec<Type>>>)| {
-                let params = params
-                    .map(|mut a| Arc::from_iter(a.drain(..)))
-                    .unwrap_or_else(|| Arc::from_iter([]));
-                Type::Ref { scope: ModPath::root(), name: n, params }
-            }),
-        )))
-    }
-}
-
-parser! {
-    fn lambda_args[I]()(I) -> (LPooled<Vec<Arg>>, Option<Option<Type>>)
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        sep_by(
-            (
-                choice((
-                    attempt(spaces().with(structure_pattern())).map(|p| (false, p)),
-                    attempt(spaces().with(token('#').with(fname())))
-                        .map(|b| (true, StructurePattern::Bind(b))),
-                    attempt(spstring("@args"))
-                        .map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
-                )),
-                optional(attempt(sptoken(':').with(typexp()))),
-                optional(attempt(sptoken('=').with(expr()))),
-            ),
-            csep(),
-        )
-            .then(|v: Vec<((bool, StructurePattern), Option<Type>, Option<Expr>)>| {
-                let args = v
-                    .into_iter()
-                    .map(|((labeled, pattern), constraint, default)| {
-                        if !labeled && default.is_some() {
-                            bail!("labeled")
-                        } else {
-                            Ok(Arg { labeled: labeled.then_some(default), pattern, constraint })
-                        }
-                    })
-                    .collect::<Result<LPooled<Vec<_>>>>();
-                match args {
-                    Ok(a) => value(a).right(),
-                    Err(_) => {
-                        unexpected_any("only labeled arguments may have a default value").left()
-                    }
-                }
-            })
-        // @args must be last
-            .then(|mut v: LPooled<Vec<Arg>>| {
-                match v.iter().enumerate().find(|(_, a)| match &a.pattern {
-                    StructurePattern::Bind(n) if n == "@args" => true,
-                    _ => false,
-                }) {
-                    None => value((v, None)).left(),
-                    Some((i, _)) => {
-                        if i == v.len() - 1 {
-                            let a = v.pop().unwrap();
-                            value((v, Some(a.constraint))).left()
-                        } else {
-                            unexpected_any("@args must be the last argument").right()
-                        }
-                    }
-                }
-            })
-        // labeled before anonymous args
-            .then(|(v, vargs): (LPooled<Vec<Arg>>, Option<Option<Type>>)| {
-                let mut anon = false;
-                for a in v.iter() {
-                    if a.labeled.is_some() && anon {
-                        return unexpected_any("labeled args must come before anon args").right();
-                    }
-                    anon |= a.labeled.is_none();
-                }
-                value((v, vargs)).left()
-            })
-    }
-}
-
-parser! {
-    fn lambda[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            attempt(sep_by((spaces().with(tvar()).skip(sptoken(':')), typexp()), csep()))
-                .map(|mut tvs: LPooled<Vec<(TVar, Type)>>| Arc::from_iter(tvs.drain(..))),
-            between(sptoken('|'), sptoken('|'), lambda_args()),
-            optional(attempt(spstring("->").with(typexp()))),
-            optional(attempt(space().with(spstring("throws").with(space()).with(typexp())))),
-            space().with(choice((
-                attempt(sptoken('\'').with(fname()).skip(not_followed_by(sptoken(':'))))
-                    .map(Either::Right),
-                expr().map(|e| Either::Left(e)),
-            ))),
-        )
-            .map(|(pos, constraints, (mut args, vargs), rtype, throws, body)| {
-                let args = Arc::from_iter(args.drain(..));
-                ExprKind::Lambda(Arc::new(Lambda { args, vargs, rtype, throws, constraints, body }))
-                    .to_expr(pos)
             })
     }
 }
@@ -1565,31 +847,6 @@ parser! {
 }
 
 parser! {
-    fn typedef[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            position(),
-            string("type").with(sptypname()),
-            optional(attempt(between(
-                sptoken('<'),
-                sptoken('>'),
-                sep_by1_tok((spaces().with(tvar()), optional(attempt(sptoken(':').with(typexp())))), csep(), sptoken('>')),
-            ))),
-            sptoken('=').with(typexp()),
-        )
-            .map(|(pos, name, params, typ)| {
-                let params = params
-                    .map(|mut ps: LPooled<Vec<(TVar, Option<Type>)>>| {
-                        Arc::from_iter(ps.drain(..))
-                    })
-                    .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from(Vec::new()));
-                ExprKind::TypeDef(TypeDef { name, params, typ }).to_expr(pos)
-            })
-    }
-}
-
-parser! {
     fn tuple[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
@@ -1662,7 +919,7 @@ parser! {
         (
             position(),
             token('`').with(ident(true)),
-            optional(attempt(between(token('('), sptoken(')'), sep_by1(expr(), csep())))),
+            optional(attempt(between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), sptoken(')'))))),
         )
             .map(|(pos, tag, args): (_, ArcStr, Option<LPooled<Vec<Expr>>>)| {
                 let mut args = match args {
@@ -1685,7 +942,7 @@ parser! {
                 sptoken('}'),
                 (
                     ref_pexp().skip(space()).skip(spstring("with")).skip(space()),
-                    sep_by1((spfname(), optional(attempt(sptoken(':').with(expr())))), csep()),
+                    sep_by1_tok((spfname(), optional(attempt(sptoken(':').with(expr())))), csep(), sptoken('}')),
                 ),
             ),
         )
@@ -1721,7 +978,7 @@ parser! {
     {
         (
             position().skip(string("try")).skip(space()),
-            sep_by1(expr(), attempt(sptoken(';'))),
+            sep_by1_tok(expr(), attempt(sptoken(';')), spstring("catch")),
             spstring("catch").with(
                 between(
                     sptoken('('),
@@ -1819,22 +1076,16 @@ parser! {
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
-    let mut r: LPooled<Vec<(_, Option<Expr>)>> = sep_by1(
-        (
-            position(),
-            choice((look_ahead(spaces().with(eof())).map(|_| None), expr().map(Some))),
-        ),
-        attempt(sptoken(';')),
-    )
-    .skip(spaces())
-    .skip(eof())
-    .easy_parse(position::Stream::new(&*ori.text))
-    .map(|(r, _)| r)
-    .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
-    Ok(Arc::from_iter(r.drain(..).map(|(pos, e)| match e {
-        Some(e) => e,
-        None => ExprKind::NoOp.to_expr(pos),
-    })))
+    let mut r: LPooled<Vec<Expr>> =
+        sep_by1_tok_exp(expr(), attempt(sptoken(';')), spaces().with(eof()), |pos| {
+            ExprKind::NoOp.to_expr(pos)
+        })
+        .skip(spaces())
+        .skip(eof())
+        .easy_parse(position::Stream::new(&*ori.text))
+        .map(|(r, _)| r)
+        .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
+    Ok(Arc::from_iter(r.drain(..)))
 }
 
 /// Parse one or more signature expressions
