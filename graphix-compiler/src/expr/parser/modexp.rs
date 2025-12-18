@@ -1,6 +1,6 @@
 use super::{
     csep, doc_comment, expr, modpath, sep_by1_tok, spaces, spfname, spmodpath, spstring,
-    sptoken, typedef, typexp,
+    sptoken, typ, typedef,
 };
 use crate::expr::{
     BindSig, Expr, ExprKind, ModPath, ModSig, ModuleKind, Sandbox, Sig, SigItem, SigKind,
@@ -26,7 +26,7 @@ parser! {
                     ExprKind::TypeDef(td) => SigItem { doc, kind: SigKind::TypeDef(td) },
                     _ => unreachable!()
                 }),
-                string("val").with(space()).with((spfname(), sptoken(':').with(typexp())))
+                string("val").with(space()).with((spfname(), sptoken(':').with(typ())))
                     .map(|(name, typ)| {
                         SigItem { doc, kind: SigKind::Bind(BindSig { name, typ }) }
                     }),

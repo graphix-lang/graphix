@@ -31,14 +31,14 @@ use poolshark::local::LPooled;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
-mod interp;
-use interp::interpolated;
+mod interpolateexp;
+use interpolateexp::interpolated;
 
 mod modexp;
 use modexp::{module, sig_item, use_module};
 
-mod typ;
-use typ::{fntype, typedef, typexp};
+mod typexp;
+use typexp::{fntype, typ, typedef};
 
 mod lambdaexp;
 use lambdaexp::{apply, lambda};
@@ -387,7 +387,7 @@ where
             .with((
                 optional(string("rec").with(spaces1())),
                 structure_pattern(),
-                spaces().with(optional(token(':').with(typexp()))),
+                spaces().with(optional(token(':').with(typ()))),
             ))
             .skip(spstring("=")),
         expr(),
@@ -515,7 +515,7 @@ where
 {
     (
         position(),
-        string("cast").with(between(sptoken('<'), sptoken('>'), typexp())),
+        string("cast").with(between(sptoken('<'), sptoken('>'), typ())),
         between(sptoken('('), sptoken(')'), expr()),
     )
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
@@ -686,7 +686,7 @@ where
         spstring("catch").with(between(
             sptoken('('),
             sptoken(')'),
-            (spfname(), spaces().with(optional(token(':').with(typexp())))),
+            (spfname(), spaces().with(optional(token(':').with(typ())))),
         )),
         spstring("=>").with(expr()),
     )
@@ -839,7 +839,7 @@ pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
 
 /// Parse one type expression
 pub fn parse_type(s: &str) -> anyhow::Result<Type> {
-    typexp()
+    typ()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))

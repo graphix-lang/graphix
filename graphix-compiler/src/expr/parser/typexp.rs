@@ -106,7 +106,7 @@ where
             token('<'),
             sptoken('>'),
             sep_by1_tok(
-                (spaces().with(tvar()).skip(sptoken(':')), typexp()),
+                (spaces().with(tvar()).skip(sptoken(':')), typ()),
                 csep(),
                 sptoken('>'),
             ),
@@ -124,7 +124,7 @@ where
     I::Range: Range,
 {
     choice((string("?#").map(|_| true), string("#").map(|_| false))).then(|optional| {
-        (fname().skip(sptoken(':')), typexp())
+        (fname().skip(sptoken(':')), typ())
             .map(|(name, typ)| FnArgType { label: Some((name.into(), optional)), typ })
     })
 }
@@ -141,9 +141,9 @@ where
         sep_by_tok(
             spaces().then(|_| {
                 choice((
-                    string("@args:").with(typexp()).map(|e| Either::Right(e)),
+                    string("@args:").with(typ()).map(|e| Either::Right(e)),
                     fnlabeled().map(Either::Left),
-                    typexp().map(|typ| Either::Left(FnArgType { label: None, typ })),
+                    typ().map(|typ| Either::Left(FnArgType { label: None, typ })),
                 ))
             }),
             csep(),
@@ -162,8 +162,8 @@ where
         .with((
             fnconstraints(),
             fnargs(),
-            spstring("->").with(typexp()),
-            spaces1().with(optional(string("throws").with(spaces1()).with(typexp()))),
+            spstring("->").with(typ()),
+            spaces1().with(optional(string("throws").with(spaces1()).with(typ()))),
         ))
         .then(|(constraints, mut args, rtype, throws)| {
             let vargs = match args.pop() {
@@ -217,7 +217,7 @@ where
         spaces().with(optional(between(
             token('('),
             sptoken(')'),
-            sep_by1_tok(typexp(), csep(), sptoken(')')),
+            sep_by1_tok(typ(), csep(), sptoken(')')),
         ))),
     )
         .map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
@@ -238,7 +238,7 @@ where
     between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok((spfname().skip(sptoken(':')), typexp()), csep(), sptoken('}')),
+        sep_by1_tok((spfname().skip(sptoken(':')), typ()), csep(), sptoken('}')),
     )
     .then(|mut exps: LPooled<Vec<(ArcStr, Type)>>| {
         let s = exps.iter().map(|(n, _)| n).collect::<LPooled<FxHashSet<_>>>();
@@ -257,7 +257,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(token('('), sptoken(')'), sep_by1_tok(typexp(), csep(), sptoken(')'))).map(
+    between(token('('), sptoken(')'), sep_by1_tok(typ(), csep(), sptoken(')'))).map(
         |mut exps: LPooled<Vec<Type>>| {
             if exps.len() == 1 {
                 exps.pop().unwrap()
@@ -279,7 +279,7 @@ where
         spaces().with(optional(between(
             token('<'),
             sptoken('>'),
-            sep_by1_tok(typexp(), csep(), sptoken('>')),
+            sep_by1_tok(typ(), csep(), sptoken('>')),
         ))),
     )
         .map(|(n, params): (ModPath, Option<LPooled<Vec<Type>>>)| {
@@ -291,25 +291,25 @@ where
 }
 
 parser! {
-    pub(super) fn typexp[I]()(I) -> Type
+    pub(super) fn typ[I]()(I) -> Type
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         spaces().with(choice((
-            token('&').with(typexp()).map(|t| Type::ByRef(Arc::new(t))),
+            token('&').with(typ()).map(|t| Type::ByRef(Arc::new(t))),
             token('_').map(|_| Type::Bottom),
-            between(token('['), sptoken(']'), sep_by_tok(typexp(), csep(), sptoken(']')))
+            between(token('['), sptoken(']'), sep_by_tok(typ(), csep(), sptoken(']')))
                 .map(|mut ts: LPooled<Vec<Type>>| Type::flatten_set(ts.drain(..))),
             tupletyp(),
             structtyp(),
             varianttyp(),
             fntype().map(|f| Type::Fn(Arc::new(f))),
-            string("Array").with(between(sptoken('<'), sptoken('>'), typexp()))
+            string("Array").with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Array(Arc::new(t))),
             string("Map").with(between(
                 sptoken('<'), sptoken('>'),
-                (typexp().skip(sptoken(',')), typexp())
+                (typ().skip(sptoken(',')), typ())
             )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
-            string("Error").with(between(sptoken('<'), sptoken('>'), typexp()))
+            string("Error").with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
             string("Any").map(|_| Type::Any),
             typeprim().map(|typ| Type::Primitive(typ.into())),
@@ -334,13 +334,13 @@ where
             sep_by1_tok(
                 (
                     spaces().with(tvar()),
-                    spaces().then(|_| optional(token(':').with(typexp()))),
+                    spaces().then(|_| optional(token(':').with(typ()))),
                 ),
                 csep(),
                 sptoken('>'),
             ),
         ))),
-        sptoken('=').with(typexp()),
+        sptoken('=').with(typ()),
     )
         .map(|(pos, name, params, typ)| {
             let params = params

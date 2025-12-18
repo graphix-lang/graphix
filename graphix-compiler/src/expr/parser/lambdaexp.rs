@@ -1,6 +1,6 @@
 use super::{
     csep, expr, fname, qop, reference, spaces, sptoken, structure_pattern,
-    typ::{tvar, typexp},
+    typexp::{tvar, typ},
 };
 use crate::{
     expr::{
@@ -98,7 +98,7 @@ where
                 token('#').with(fname()).map(|b| (true, StructurePattern::Bind(b))),
                 structure_pattern().map(|p| (false, p)),
             ))),
-            spaces().with(optional(token(':').with(typexp()))),
+            spaces().with(optional(token(':').with(typ()))),
             spaces().with(optional(token('=').with(expr()))),
         ),
         csep(),
@@ -160,13 +160,11 @@ where
     (
         position(),
         spaces()
-            .with(sep_by((tvar().skip(sptoken(':')), typexp()), csep()))
+            .with(sep_by((tvar().skip(sptoken(':')), typ()), csep()))
             .map(|mut tvs: LPooled<Vec<(TVar, Type)>>| Arc::from_iter(tvs.drain(..))),
         between(sptoken('|'), sptoken('|'), lambda_args()),
-        spaces().with(optional(string("->").with(typexp()))),
-        optional(attempt(
-            spaces1().with(string("throws").with(spaces1()).with(typexp())),
-        )),
+        spaces().with(optional(string("->").with(typ()))),
+        optional(attempt(spaces1().with(string("throws").with(spaces1()).with(typ())))),
         spaces1().with(choice((
             token('\'')
                 .with(fname())

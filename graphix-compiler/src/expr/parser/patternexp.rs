@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         parser::{
-            csep, expr, fname, sep_by1_tok, sep_by_tok, spaces, spstring, sptoken,
-            typexp, typname,
+            csep, expr, fname, sep_by1_tok, sep_by_tok, spaces, spstring, sptoken, typ,
+            typname,
         },
         Expr, Pattern, StructurePattern,
     },
@@ -227,7 +227,7 @@ where
     I::Range: Range,
 {
     (
-        optional(attempt(typexp().skip(space().with(spstring("as "))))),
+        optional(attempt(typ().skip(space().with(spstring("as "))))),
         structure_pattern(),
         optional(attempt(space().with(spstring("if").with(space()).with(expr())))),
     )
