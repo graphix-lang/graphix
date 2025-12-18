@@ -1,14 +1,13 @@
 use crate::{
     expr::{
         set_origin, Bind, Doc, Expr, ExprKind, ModPath, Origin, Pattern, SelectExpr,
-        SigItem, Struct, StructWith, StructurePattern, TryCatch,
+        SigItem, Struct, StructWith, TryCatch,
     },
     typ::{FnType, Type},
 };
 use arcstr::{literal, ArcStr};
 use combine::{
-    attempt, between, chainl1, choice, eof, look_ahead, many, none_of, not_followed_by,
-    optional,
+    attempt, between, choice, eof, look_ahead, many, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
@@ -24,7 +23,7 @@ use combine::{
 use compact_str::CompactString;
 use escaping::Escape;
 use fxhash::FxHashSet;
-use netidx::{path::Path, publisher::Value, utils::Either};
+use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
     escaped_string, int, value as parse_value, VAL_ESC, VAL_MUST_ESC,
 };
@@ -46,6 +45,12 @@ use lambdaexp::{apply, lambda};
 
 mod arrayexp;
 use arrayexp::{array, arrayref};
+
+mod arithexp;
+use arithexp::arith;
+
+mod patternexp;
+use patternexp::{pattern, structure_pattern};
 
 fn escape_generic(c: char) -> bool {
     c.is_control()
@@ -207,13 +212,13 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    ident(false).then(|s| {
+    attempt(ident(false).then(|s| {
         if RESERVED.contains(&s.as_str()) {
             unexpected_any("can't use keyword as a function or variable name").left()
         } else {
             value(s).right()
         }
-    })
+    }))
 }
 
 fn spfname<I>() -> impl Parser<I, Output = ArcStr>
@@ -394,17 +399,18 @@ where
         })
 }
 
-parser! {
-    fn connect[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), optional(token('*')), spmodpath().skip(spstring("<-")), expr()).map(
-            |(pos, deref, name, e)| {
-                ExprKind::Connect { name, value: Arc::new(e), deref: deref.is_some() }
+fn connect<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), optional(token('*')), spmodpath().skip(spstring("<-")), expr()).map(
+        |(pos, deref, name, e)| {
+            ExprKind::Connect { name, value: Arc::new(e), deref: deref.is_some() }
                 .to_expr(pos)
-            },
-        )
-    }
+        },
+    )
 }
 
 fn literal<I>() -> impl Parser<I, Output = Expr>
@@ -431,245 +437,32 @@ where
     (position(), modpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
 }
 
-parser! {
-    fn deref_arith[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), token('*').with(arith_term()))
-            .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
+fn qop<I, P>(p: P) -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    P: Parser<I, Output = Expr>,
+{
+    enum Op {
+        Qop,
+        OrNever,
     }
-}
-
-parser! {
-    fn qop[I, P](p: P)(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range, P: Parser<I, Output = Expr>]
-    {
-        enum Op {
-            Qop,
-            OrNever,
-        }
-        (
-            position(),
-            p,
+    (
+        position(),
+        p,
+        spaces().then(|_| {
             optional(choice((
-                attempt(sptoken('?')).map(|_| Op::Qop),
-                attempt(sptoken('$')).map(|_| Op::OrNever)
+                token('?').map(|_| Op::Qop),
+                token('$').map(|_| Op::OrNever),
             )))
-        ).map(|(pos, e, qop)| match qop {
+        }),
+    )
+        .map(|(pos, e, qop)| match qop {
             None => e,
             Some(Op::Qop) => ExprKind::Qop(Arc::new(e)).to_expr(pos),
-            Some(Op::OrNever) => ExprKind::OrNever(Arc::new(e)).to_expr(pos)
+            Some(Op::OrNever) => ExprKind::OrNever(Arc::new(e)).to_expr(pos),
         })
-    }
-}
-
-parser! {
-    fn arith_term[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        spaces().then(|_| choice((
-            qop(deref_arith()),
-            raw_string(),
-            array(),
-            byref_arith(),
-            qop(select()),
-            variant(),
-            qop(cast()),
-            qop(any()),
-            interpolated(),
-            (position(), token('!').with(arith()))
-                .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-            attempt(tuple()),
-            attempt(structwith()),
-            attempt(structure()),
-            attempt(map()),
-            attempt(qop(arrayref())),
-            attempt(qop(tupleref())),
-            attempt(qop(structref())),
-            attempt(qop(mapref())),
-            attempt(qop(apply())),
-            attempt(qop(do_block())),
-            attempt(literal()),
-            attempt(qop(reference())),
-            attempt(between(token('('), sptoken(')'), spaces().with(arith()))),
-        )))
-            .skip(spaces())
-    }
-}
-
-parser! {
-    fn arith[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        choice((
-            attempt(chainl1(
-                arith_term(),
-                choice((
-                    string("+"),
-                    string("-"),
-                    string("*"),
-                    string("/"),
-                    string("%"),
-                    string("=="),
-                    string("!="),
-                    string(">="),
-                    string("<="),
-                    string(">"),
-                    string("<"),
-                    string("&&"),
-                    string("||"),
-                    string("~"),
-                ))
-                    .map(|op: &str| match op {
-                        "+" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Add { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "-" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Sub { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "*" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Mul { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "/" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Div { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "%" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Mod { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "==" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Eq { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "!=" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Ne { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        ">" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Gt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "<" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Lt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        ">=" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Gte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "<=" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Lte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "&&" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::And { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "||" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Or { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-                        },
-                        "~" => |lhs: Expr, rhs: Expr| {
-                            let pos = lhs.pos;
-                            ExprKind::Sample { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }
-                            .to_expr(pos)
-                        },
-                        _ => unreachable!(),
-                    }),
-            )),
-            (position(), token('!').with(arith_term()))
-                .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-            between(token('('), sptoken(')'), spaces().with(arith())),
-        ))
-    }
-}
-
-parser! {
-    fn slice_pattern[I]()(I) -> StructurePattern
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        macro_rules! all_left {
-            ($pats:expr) => {{
-                let mut err = false;
-                let pats: Arc<[StructurePattern]> =
-                    Arc::from_iter($pats.drain(..).map(|s| match s {
-                        Either::Left(s) => s,
-                        Either::Right(_) => {
-                            err = true;
-                            StructurePattern::Ignore
-                        }
-                    }));
-                if err {
-                    return unexpected_any("invalid pattern").left();
-                }
-                pats
-            }};
-        }
-        (
-            optional(attempt(spfname().skip(sptoken('@')))),
-            between(
-                sptoken('['),
-                sptoken(']'),
-                sep_by(
-                    choice((
-                        attempt(spstring("..")).map(|_| Either::Right(None)),
-                        attempt(spfname().skip(spstring("..")))
-                            .map(|n| Either::Right(Some(n))),
-                        structure_pattern().map(|p| Either::Left(p)),
-                    )),
-                    csep(),
-                ),
-            ),
-        )
-            .then(
-                |(all, mut pats): (
-                    Option<ArcStr>,
-                    LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>,
-                )| {
-                    if pats.len() == 0 {
-                        value(StructurePattern::Slice { all, binds: Arc::from_iter([]) })
-                            .right()
-                    } else if pats.len() == 1 {
-                        match pats.pop().unwrap() {
-                            Either::Left(s) => value(StructurePattern::Slice {
-                                all,
-                                binds: Arc::from_iter([s]),
-                            })
-                                .right(),
-                            Either::Right(_) => {
-                                unexpected_any("invalid singular range match").left()
-                            }
-                        }
-                    } else {
-                        match (&pats[0], &pats[pats.len() - 1]) {
-                            (Either::Right(_), Either::Right(_)) => {
-                                unexpected_any("invalid pattern").left()
-                            }
-                            (Either::Right(_), Either::Left(_)) => {
-                                let head = pats.remove(0).right().unwrap();
-                                let suffix = all_left!(pats);
-                                value(StructurePattern::SliceSuffix { all, head, suffix })
-                                    .right()
-                            }
-                            (Either::Left(_), Either::Right(_)) => {
-                                let tail = pats.pop().unwrap().right().unwrap();
-                                let prefix = all_left!(pats);
-                                value(StructurePattern::SlicePrefix { all, tail, prefix })
-                                    .right()
-                            }
-                            (Either::Left(_), Either::Left(_)) => {
-                                value(StructurePattern::Slice { all, binds: all_left!(pats) })
-                                    .right()
-                            }
-                        }
-                    }
-                },
-            )
-    }
 }
 
 fn raw_string<I>() -> impl Parser<I, Output = Expr>
@@ -685,139 +478,6 @@ where
         .map(|(pos, s): (_, String)| {
             ExprKind::Constant(Value::String(s.into())).to_expr(pos)
         })
-}
-
-parser! {
-    fn tuple_pattern[I]()(I) -> StructurePattern
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            optional(attempt(spfname().skip(sptoken('@')))),
-            between(sptoken('('), sptoken(')'), sep_by1_tok(structure_pattern(), csep(), sptoken(')'))),
-        )
-            .then(|(all, mut binds): (Option<ArcStr>, LPooled<Vec<StructurePattern>>)| {
-                if binds.len() < 2 {
-                    unexpected_any("tuples must have at least 2 elements").left()
-                } else {
-                    value(StructurePattern::Tuple { all, binds: Arc::from_iter(binds.drain(..)) })
-                        .right()
-                }
-            })
-    }
-}
-
-parser! {
-    fn variant_pattern[I]()(I) -> StructurePattern
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            optional(attempt(spfname().skip(sptoken('@')))),
-            sptoken('`').with(typname()),
-            optional(attempt(between(
-                sptoken('('),
-                sptoken(')'),
-                sep_by1_tok(structure_pattern(), csep(), sptoken(')')),
-            ))),
-        )
-            .map(
-                |(all, tag, binds): (
-                    Option<ArcStr>,
-                    ArcStr,
-                    Option<LPooled<Vec<StructurePattern>>>,
-                )| {
-                    let mut binds = match binds {
-                        None => LPooled::take(),
-                        Some(a) => a,
-                    };
-                    StructurePattern::Variant { all, tag, binds: Arc::from_iter(binds.drain(..)) }
-                },
-            )
-    }
-}
-
-parser! {
-    fn struct_pattern[I]()(I) -> StructurePattern
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            optional(attempt(spfname().skip(sptoken('@')))),
-            between(
-                sptoken('{'),
-                sptoken('}'),
-                sep_by1_tok(
-                    choice((
-                        attempt((spfname().skip(sptoken(':')), structure_pattern()))
-                            .map(|(s, p)| (s, p, true)),
-                        attempt(spfname()).map(|s| {
-                            let p = StructurePattern::Bind(s.clone());
-                            (s, p, true)
-                        }),
-                        spstring("..")
-                            .map(|_| (literal!(""), StructurePattern::Ignore, false)),
-                    )),
-                    csep(),
-                    sptoken('}')
-                ),
-            ),
-        )
-            .then(
-                |(all, mut binds): (
-                    Option<ArcStr>,
-                    LPooled<Vec<(ArcStr, StructurePattern, bool)>>,
-                )| {
-                    let mut exhaustive = true;
-                    binds.retain(|(_, _, ex)| {
-                        exhaustive &= *ex;
-                        *ex
-                    });
-                    binds.sort_by_key(|(s, _, _)| s.clone());
-                    let s = binds.iter().map(|(s, _, _)| s).collect::<LPooled<FxHashSet<_>>>();
-                    if s.len() < binds.len() {
-                        unexpected_any("struct fields must be unique").left()
-                    } else {
-                        drop(s);
-                        let binds = Arc::from_iter(binds.drain(..).map(|(s, p, _)| (s, p)));
-                        value(StructurePattern::Struct { all, exhaustive, binds }).right()
-                    }
-                },
-            )
-    }
-}
-
-parser! {
-    fn structure_pattern[I]()(I) -> StructurePattern
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        choice((
-            attempt(slice_pattern()),
-            attempt(tuple_pattern()),
-            attempt(struct_pattern()),
-            attempt(variant_pattern()),
-            attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_followed_by(token('_'))))
-                .map(|v| StructurePattern::Literal(v)),
-            attempt(sptoken('_')).map(|_| StructurePattern::Ignore),
-            spfname().map(|name| StructurePattern::Bind(name)),
-        ))
-    }
-}
-
-parser! {
-    fn pattern[I]()(I) -> Pattern
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (
-            optional(attempt(typexp().skip(space().with(spstring("as "))))),
-            structure_pattern(),
-            optional(attempt(space().with(spstring("if").with(space()).with(expr())))),
-        )
-            .map(
-                |(type_predicate, structure_predicate, guard): (
-                    Option<Type>,
-                    StructurePattern,
-                    Option<Expr>,
-                )| { Pattern { type_predicate, structure_predicate, guard } },
-            )
-    }
 }
 
 parser! {
@@ -1014,15 +674,6 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         (position(), token('&').with(expr()))
-            .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
-    }
-}
-
-parser! {
-    fn byref_arith[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        (position(), token('&').with(arith_term()))
             .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
     }
 }
