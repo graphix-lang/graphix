@@ -48,13 +48,11 @@ where
         token('['),
         sptoken(']'),
         sep_by_tok(
-            spaces().then(|_| {
-                choice((
-                    string("..").map(|_| Either::Right(None)),
-                    fname().skip(spstring("..")).map(|n| Either::Right(Some(n))),
-                    structure_pattern().map(|p| Either::Left(p)),
-                ))
-            }),
+            spaces().with(choice((
+                string("..").map(|_| Either::Right(None)),
+                fname().skip(spstring("..")).map(|n| Either::Right(Some(n))),
+                structure_pattern().map(|p| Either::Left(p)),
+            ))),
             csep(),
             sptoken(']'),
         ),
@@ -147,17 +145,15 @@ where
         token('{'),
         sptoken('}'),
         sep_by1_tok(
-            spaces().then(|_| {
-                choice((
-                    string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
-                    attempt(fname().with(not_followed_by(sptoken(':')))).map(|s| {
-                        let p = StructurePattern::Bind(s.clone());
-                        (s, p, true)
-                    }),
-                    (fname().skip(sptoken(':')), structure_pattern())
-                        .map(|(s, p)| (s, p, true)),
-                ))
-            }),
+            spaces().with(choice((
+                string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
+                attempt(fname().with(not_followed_by(sptoken(':')))).map(|s| {
+                    let p = StructurePattern::Bind(s.clone());
+                    (s, p, true)
+                }),
+                (fname().skip(sptoken(':')), structure_pattern())
+                    .map(|(s, p)| (s, p, true)),
+            ))),
             csep(),
             sptoken('}'),
         ),

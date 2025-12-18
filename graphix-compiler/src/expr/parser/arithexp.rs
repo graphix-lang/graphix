@@ -32,35 +32,32 @@ where
     I::Range: Range,
 {
     spaces()
-        .then(|_| {
-            choice((
-                qop(deref_arith()),
-                raw_string(),
-                array(),
-                byref_arith(),
-                qop(select()),
-                variant(),
-                qop(cast()),
-                qop(any()),
-                interpolated(),
-                (position(), token('!').with(arith())).map(|(pos, expr)| {
-                    ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)
-                }),
-                attempt(tuple()),
-                attempt(structwith()),
-                attempt(structure()),
-                attempt(map()),
-                qop(do_block()),
-                attempt(qop(arrayref())),
-                attempt(qop(tupleref())),
-                attempt(qop(structref())),
-                attempt(qop(mapref())),
-                attempt(qop(apply())),
-                between(token('('), sptoken(')'), spaces().with(arith())),
-                qop(reference()),
-                literal(),
-            ))
-        })
+        .with(choice((
+            qop(deref_arith()),
+            raw_string(),
+            array(),
+            byref_arith(),
+            qop(select()),
+            variant(),
+            qop(cast()),
+            qop(any()),
+            interpolated(),
+            (position(), token('!').with(arith()))
+                .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
+            attempt(tuple()),
+            attempt(structwith()),
+            attempt(structure()),
+            attempt(map()),
+            qop(do_block()),
+            attempt(qop(arrayref())),
+            attempt(qop(tupleref())),
+            attempt(qop(structref())),
+            attempt(qop(mapref())),
+            attempt(qop(apply())),
+            between(token('('), sptoken(')'), spaces().with(arith())),
+            qop(reference()),
+            literal(),
+        )))
         .skip(spaces())
 }
 

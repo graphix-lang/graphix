@@ -101,8 +101,8 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces().then(|_| {
-        optional(between(
+    spaces()
+        .with(optional(between(
             token('<'),
             sptoken('>'),
             sep_by1_tok(
@@ -110,12 +110,11 @@ where
                 csep(),
                 sptoken('>'),
             ),
-        ))
+        )))
         .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| match cs {
             Some(cs) => Arc::new(RwLock::new(cs)),
             None => Arc::new(RwLock::new(LPooled::take())),
         })
-    })
 }
 
 fn fnlabeled<I>() -> impl Parser<I, Output = FnArgType>
@@ -136,23 +135,21 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces().then(|_| {
-        between(
-            token('('),
+    spaces().with(between(
+        token('('),
+        sptoken(')'),
+        sep_by_tok(
+            spaces().then(|_| {
+                choice((
+                    string("@args:").with(typexp()).map(|e| Either::Right(e)),
+                    fnlabeled().map(Either::Left),
+                    typexp().map(|typ| Either::Left(FnArgType { label: None, typ })),
+                ))
+            }),
+            csep(),
             sptoken(')'),
-            sep_by_tok(
-                spaces().then(|_| {
-                    choice((
-                        string("@args:").with(typexp()).map(|e| Either::Right(e)),
-                        fnlabeled().map(Either::Left),
-                        typexp().map(|typ| Either::Left(FnArgType { label: None, typ })),
-                    ))
-                }),
-                csep(),
-                sptoken(')'),
-            ),
-        )
-    })
+        ),
+    ))
 }
 
 pub(super) fn fntype<I>() -> impl Parser<I, Output = FnType>
@@ -166,7 +163,7 @@ where
             fnconstraints(),
             fnargs(),
             spstring("->").with(typexp()),
-            spaces1().then(|_| optional(string("throws").with(spaces1()).with(typexp()))),
+            spaces1().with(optional(string("throws").with(spaces1()).with(typexp()))),
         ))
         .then(|(constraints, mut args, rtype, throws)| {
             let vargs = match args.pop() {
@@ -217,13 +214,11 @@ where
 {
     (
         token('`').with(ident(true)),
-        spaces().then(|_| {
-            optional(between(
-                token('('),
-                sptoken(')'),
-                sep_by1_tok(typexp(), csep(), sptoken(')')),
-            ))
-        }),
+        spaces().with(optional(between(
+            token('('),
+            sptoken(')'),
+            sep_by1_tok(typexp(), csep(), sptoken(')')),
+        ))),
     )
         .map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
             let mut t = match typs {
@@ -281,13 +276,11 @@ where
 {
     (
         typath(),
-        spaces().then(|_| {
-            optional(between(
-                token('<'),
-                sptoken('>'),
-                sep_by1_tok(typexp(), csep(), sptoken('>')),
-            ))
-        }),
+        spaces().with(optional(between(
+            token('<'),
+            sptoken('>'),
+            sep_by1_tok(typexp(), csep(), sptoken('>')),
+        ))),
     )
         .map(|(n, params): (ModPath, Option<LPooled<Vec<Type>>>)| {
             let params = params
@@ -301,7 +294,7 @@ parser! {
     pub(super) fn typexp[I]()(I) -> Type
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        spaces().then(|_| choice((
+        spaces().with(choice((
             token('&').with(typexp()).map(|t| Type::ByRef(Arc::new(t))),
             token('_').map(|_| Type::Bottom),
             between(token('['), sptoken(']'), sep_by_tok(typexp(), csep(), sptoken(']')))
@@ -335,20 +328,18 @@ where
     (
         position(),
         string("type").with(sptypname()),
-        spaces().then(|_| {
-            optional(between(
-                token('<'),
-                sptoken('>'),
-                sep_by1_tok(
-                    (
-                        spaces().with(tvar()),
-                        spaces().then(|_| optional(token(':').with(typexp()))),
-                    ),
-                    csep(),
-                    sptoken('>'),
+        spaces().with(optional(between(
+            token('<'),
+            sptoken('>'),
+            sep_by1_tok(
+                (
+                    spaces().with(tvar()),
+                    spaces().then(|_| optional(token(':').with(typexp()))),
                 ),
-            ))
-        }),
+                csep(),
+                sptoken('>'),
+            ),
+        ))),
         sptoken('=').with(typexp()),
     )
         .map(|(pos, name, params, typ)| {

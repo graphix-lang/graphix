@@ -160,7 +160,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    space().then(|_| spaces())
+    space().with(spaces())
 }
 
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
@@ -315,8 +315,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces()
-        .then(|_| choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
+    spaces().with(choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
 }
 
 fn structref<I>() -> impl Parser<I, Output = Expr>
@@ -388,7 +387,7 @@ where
             .with((
                 optional(string("rec").with(spaces1())),
                 structure_pattern(),
-                spaces().then(|_| optional(token(':').with(typexp()))),
+                spaces().with(optional(token(':').with(typexp()))),
             ))
             .skip(spstring("=")),
         expr(),
@@ -451,12 +450,10 @@ where
     (
         position(),
         p,
-        spaces().then(|_| {
-            optional(choice((
-                token('?').map(|_| Op::Qop),
-                token('$').map(|_| Op::OrNever),
-            )))
-        }),
+        spaces().with(optional(choice((
+            token('?').map(|_| Op::Qop),
+            token('$').map(|_| Op::OrNever),
+        )))),
     )
         .map(|(pos, e, qop)| match qop {
             None => e,

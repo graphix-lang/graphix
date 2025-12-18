@@ -25,8 +25,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces()
-        .then(|_| choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
+    spaces().with(choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
 }
 
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
@@ -94,16 +93,13 @@ where
 {
     sep_by(
         (
-            spaces().then(|_| {
-                choice((
-                    string("@args")
-                        .map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
-                    token('#').with(fname()).map(|b| (true, StructurePattern::Bind(b))),
-                    structure_pattern().map(|p| (false, p)),
-                ))
-            }),
-            spaces().then(|_| optional(token(':').with(typexp()))),
-            spaces().then(|_| optional(token('=').with(expr()))),
+            spaces().with(choice((
+                string("@args").map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
+                token('#').with(fname()).map(|b| (true, StructurePattern::Bind(b))),
+                structure_pattern().map(|p| (false, p)),
+            ))),
+            spaces().with(optional(token(':').with(typexp()))),
+            spaces().with(optional(token('=').with(expr()))),
         ),
         csep(),
     )
@@ -164,22 +160,20 @@ where
     (
         position(),
         spaces()
-            .then(|_| sep_by((tvar().skip(sptoken(':')), typexp()), csep()))
+            .with(sep_by((tvar().skip(sptoken(':')), typexp()), csep()))
             .map(|mut tvs: LPooled<Vec<(TVar, Type)>>| Arc::from_iter(tvs.drain(..))),
         between(sptoken('|'), sptoken('|'), lambda_args()),
-        spaces().then(|_| optional(string("->").with(typexp()))),
+        spaces().with(optional(string("->").with(typexp()))),
         optional(attempt(
             spaces1().with(string("throws").with(spaces1()).with(typexp())),
         )),
-        spaces1().then(|_| {
-            choice((
-                token('\'')
-                    .with(fname())
-                    .skip(not_followed_by(sptoken(':')))
-                    .map(Either::Right),
-                expr().map(|e| Either::Left(e)),
-            ))
-        }),
+        spaces1().with(choice((
+            token('\'')
+                .with(fname())
+                .skip(not_followed_by(sptoken(':')))
+                .map(Either::Right),
+            expr().map(|e| Either::Left(e)),
+        ))),
     )
         .map(|(pos, constraints, (mut args, vargs), rtype, throws, body)| {
             let args = Arc::from_iter(args.drain(..));
