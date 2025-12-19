@@ -1,7 +1,7 @@
 use super::{compiler::compile, Cached};
 use crate::{
     deref_typ,
-    expr::{Expr, ExprId, ExprKind},
+    expr::{Expr, ExprId, ExprKind, StructWithExpr},
     typ::Type,
     update_args, wrap, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
     UserEvent,
@@ -226,7 +226,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck(ctx))?;
         let fields = match &self.spec.kind {
-            ExprKind::StructWith { source: _, replace } => {
+            ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
                 replace.iter().map(|(n, _)| n.clone()).collect::<SmallVec<[ArcStr; 8]>>()
             }
             _ => bail!("BUG: miscompiled structwith"),

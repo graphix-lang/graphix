@@ -368,7 +368,7 @@ fn typedef() -> impl Strategy<Value = Expr> {
     (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), typexp()).prop_map(
         |(name, params, typ)| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef(TypeDef { name, params, typ }).to_expr_nopos()
+            ExprKind::TypeDef(TypeDefExpr { name, params, typ }).to_expr_nopos()
         },
     )
 }
@@ -979,9 +979,9 @@ fn check_opt(s0: &Option<Arc<Expr>>, s1: &Option<Arc<Expr>>) -> bool {
     }
 }
 
-fn check_typedef(td0: &TypeDef, td1: &TypeDef) -> bool {
-    let TypeDef { name: name0, params: p0, typ: typ0 } = td0;
-    let TypeDef { name: name1, params: p1, typ: typ1 } = td1;
+fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
+    let TypeDefExpr { name: name0, params: p0, typ: typ0 } = td0;
+    let TypeDefExpr { name: name1, params: p1, typ: typ1 } = td1;
     dbg!(name0 == name1)
         && dbg!(
             p0.len() == p1.len()
@@ -1214,7 +1214,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(name0 == name1)
         }
         (ExprKind::Bind(b0), ExprKind::Bind(b1)) => {
-            let Bind {
+            let BindExpr {
                 rec: r0,
                 doc: d0,
                 pattern: p0,
@@ -1222,7 +1222,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 value: value0,
                 typ: typ0,
             } = &**b0;
-            let Bind {
+            let BindExpr {
                 rec: r1,
                 doc: d1,
                 pattern: p1,
@@ -1246,8 +1246,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Qop(e0), ExprKind::Qop(e1)) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),
         (ExprKind::TryCatch(tc0), ExprKind::TryCatch(tc1)) => {
-            let TryCatch { bind: b0, constraint: c0, handler: h0, exprs: e0 } = &**tc0;
-            let TryCatch { bind: b1, constraint: c1, handler: h1, exprs: e1 } = &**tc1;
+            let TryCatchExpr { bind: b0, constraint: c0, handler: h0, exprs: e0 } =
+                &**tc0;
+            let TryCatchExpr { bind: b1, constraint: c1, handler: h1, exprs: e1 } =
+                &**tc1;
             b0 == b1
                 && check_type_opt(c0, c1)
                 && check(h0, h1)
@@ -1259,7 +1261,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         }
         (ExprKind::Lambda(l0), ExprKind::Lambda(l1)) => match (&**l0, &**l1) {
             (
-                Lambda {
+                LambdaExpr {
                     args: args0,
                     vargs: vargs0,
                     rtype: rtype0,
@@ -1267,7 +1269,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     throws: throws0,
                     body: Either::Left(body0),
                 },
-                Lambda {
+                LambdaExpr {
                     args: args1,
                     vargs: vargs1,
                     rtype: rtype1,
@@ -1292,7 +1294,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     && dbg!(check(body0, body1))
             ),
             (
-                Lambda {
+                LambdaExpr {
                     args: args0,
                     vargs: vargs0,
                     rtype: rtype0,
@@ -1300,7 +1302,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     throws: throws0,
                     body: Either::Right(b0),
                 },
-                Lambda {
+                LambdaExpr {
                     args: args1,
                     vargs: vargs1,
                     rtype: rtype1,

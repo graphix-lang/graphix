@@ -3,7 +3,7 @@ use super::{
     sptoken, typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ModPath, TypeDef},
+    expr::{Expr, ExprKind, ModPath, TypeDefExpr},
     typ::{FnArgType, FnType, TVar, Type},
 };
 use arcstr::ArcStr;
@@ -52,15 +52,6 @@ where
     )
 }
 
-fn sptypath<I>() -> impl Parser<I, Output = ModPath>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(typath())
-}
-
 fn typeprim<I>() -> impl Parser<I, Output = Typ>
 where
     I: RangeStream<Token = char>,
@@ -95,9 +86,9 @@ where
     .skip(not_followed_by(choice((alpha_num(), token('_')))))
 }
 
-fn fnconstraints<I>() -> impl Parser<I, Output = Arc<RwLock<Vec<(TVar, Type)>>>>
+fn fnconstraints<I>() -> impl Parser<I, Output = Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -119,19 +110,21 @@ where
 
 fn fnlabeled<I>() -> impl Parser<I, Output = FnArgType>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
     choice((string("?#").map(|_| true), string("#").map(|_| false))).then(|optional| {
-        (fname().skip(sptoken(':')), typ())
-            .map(|(name, typ)| FnArgType { label: Some((name.into(), optional)), typ })
+        (fname().skip(sptoken(':')), typ()).map(move |(name, typ)| FnArgType {
+            label: Some((name.into(), optional)),
+            typ,
+        })
     })
 }
 
 fn fnargs<I>() -> impl Parser<I, Output = LPooled<Vec<Either<FnArgType, Type>>>>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -154,7 +147,7 @@ where
 
 pub(super) fn fntype<I>() -> impl Parser<I, Output = FnType>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -178,7 +171,7 @@ where
                 return unexpected_any("vargs must appear once at the end of the args")
                     .left();
             }
-            let args = Arc::from_iter(args.into_iter().map(|t| match t {
+            let args = Arc::from_iter(args.drain(..).map(|t| match t {
                 Either::Left(t) => t,
                 Either::Right(_) => unreachable!(),
             }));
@@ -199,7 +192,7 @@ where
 
 pub(super) fn tvar<I>() -> impl Parser<I, Output = TVar>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -208,7 +201,7 @@ where
 
 fn varianttyp<I>() -> impl Parser<I, Output = Type>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -231,7 +224,7 @@ where
 
 fn structtyp<I>() -> impl Parser<I, Output = Type>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -253,7 +246,7 @@ where
 
 fn tupletyp<I>() -> impl Parser<I, Output = Type>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -270,7 +263,7 @@ where
 
 fn typref<I>() -> impl Parser<I, Output = Type>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -321,7 +314,7 @@ parser! {
 
 pub(super) fn typedef<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -348,6 +341,6 @@ where
                     Arc::from_iter(ps.drain(..))
                 })
                 .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from(Vec::new()));
-            ExprKind::TypeDef(TypeDef { name, params, typ }).to_expr(pos)
+            ExprKind::TypeDef(TypeDefExpr { name, params, typ }).to_expr(pos)
         })
 }

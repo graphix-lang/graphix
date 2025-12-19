@@ -1,7 +1,8 @@
 use crate::{
     expr::{
-        parser, Bind, CouldNotResolve, Expr, ExprId, ExprKind, Lambda, ModPath,
-        ModuleKind, Origin, Pattern, Source, TryCatch,
+        parser, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
+        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Source, StructExpr,
+        StructWithExpr, TryCatchExpr,
     },
     format_with_flags, PrintFlag,
 };
@@ -66,7 +67,6 @@ async fn resolve(
     id: ExprId,
     parent: Arc<Origin>,
     pos: SourcePosition,
-    export: bool,
     name: ArcStr,
 ) -> Result<Expr> {
     let jh = task::spawn(async move {
@@ -141,7 +141,7 @@ async fn resolve(
                 parser::parse(ori.clone())
                     .with_context(|| format!("parsing file {ori:?}"))?,
             );
-            let kind = ExprKind::Module { name: name.clone().into(), export, value };
+            let kind = ExprKind::Module { name: name.clone().into(), value };
             format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
                 info!("load and parse {ori} {:?}", ts.elapsed())
             });
@@ -244,7 +244,7 @@ impl Expr {
             return Box::pin(async { Ok(self.clone()) });
         }
         match self.kind.clone() {
-            ExprKind::Module { value: ModuleKind::Unresolved, export, name } => {
+            ExprKind::Module { value: ModuleKind::Unresolved, name } => {
                 let (id, pos, prepend, resolvers) =
                     (self.id, self.pos, prepend.clone(), Arc::clone(resolvers));
                 Box::pin(async move {
@@ -255,7 +255,6 @@ impl Expr {
                         id,
                         self.ori.clone(),
                         pos,
-                        export,
                         name.clone(),
                     )
                     .await
@@ -265,12 +264,13 @@ impl Expr {
                 })
             }
             ExprKind::Constant(_)
+            | ExprKind::NoOp(_)
             | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::StructRef { .. }
             | ExprKind::TupleRef { .. }
             | ExprKind::TypeDef { .. } => Box::pin(async move { Ok(self.clone()) }),
-            ExprKind::Module { value: ModuleKind::Inline(exprs), export, name } => {
+            ExprKind::Module { value: ModuleKind::Inline(exprs), name } => {
                 Box::pin(async move {
                     let scope = ModPath(scope.append(&*name));
                     let exprs = try_join_all(exprs.iter().map(|e| async {
@@ -280,11 +280,10 @@ impl Expr {
                     expr!(ExprKind::Module {
                         value: ModuleKind::Inline(Arc::from(exprs)),
                         name,
-                        export,
                     })
                 })
             }
-            ExprKind::Module { value: ModuleKind::Resolved(exprs), export, name } => {
+            ExprKind::Module { value: ModuleKind::Resolved(exprs), name } => {
                 Box::pin(async move {
                     let prepend = match &self.ori.source {
                         Source::Unspecified | Source::Internal(_) => None,
@@ -309,13 +308,11 @@ impl Expr {
                     expr!(ExprKind::Module {
                         value: ModuleKind::Resolved(Arc::from(exprs)),
                         name,
-                        export,
                     })
                 })
             }
             ExprKind::Module {
                 name,
-                export,
                 value: ModuleKind::Dynamic { sandbox, sig, source },
             } => Box::pin(async move {
                 let source = Arc::new(
@@ -323,7 +320,6 @@ impl Expr {
                 );
                 expr!(ExprKind::Module {
                     name,
-                    export,
                     value: ModuleKind::Dynamic { sandbox, sig, source },
                 })
             }),
@@ -332,38 +328,38 @@ impl Expr {
                 expr!(ExprKind::Do { exprs })
             }),
             ExprKind::Bind(b) => Box::pin(async move {
-                let Bind { rec, doc, pattern, typ, export, value } = &*b;
+                let BindExpr { rec, pattern, typ, value } = &*b;
                 let value = value.resolve_modules_int(scope, prepend, resolvers).await?;
-                expr!(ExprKind::Bind(Arc::new(Bind {
+                expr!(ExprKind::Bind(Arc::new(BindExpr {
                     rec: *rec,
-                    doc: doc.clone(),
                     pattern: pattern.clone(),
                     typ: typ.clone(),
-                    export: *export,
                     value,
                 })))
             }),
-            ExprKind::StructWith { source, replace } => Box::pin(async move {
-                expr!(ExprKind::StructWith {
-                    source: Arc::new(
-                        source.resolve_modules_int(scope, prepend, resolvers).await?,
-                    ),
-                    replace: Arc::from(subtuples!(replace)),
+            ExprKind::StructWith(StructWithExpr { source, replace }) => {
+                Box::pin(async move {
+                    expr!(ExprKind::StructWith(StructWithExpr {
+                        source: Arc::new(
+                            source.resolve_modules_int(scope, prepend, resolvers).await?,
+                        ),
+                        replace: Arc::from(subtuples!(replace)),
+                    }))
                 })
-            }),
+            }
             ExprKind::Connect { name, value, deref } => Box::pin(async move {
                 let value = value.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Connect { name, value: Arc::new(value), deref })
             }),
             ExprKind::Lambda(l) => Box::pin(async move {
-                let Lambda { args, vargs, rtype, constraints, throws, body } = &*l;
+                let LambdaExpr { args, vargs, rtype, constraints, throws, body } = &*l;
                 let body = match body {
                     Either::Right(s) => Either::Right(s.clone()),
                     Either::Left(e) => Either::Left(
                         e.resolve_modules_int(scope, prepend, resolvers).await?,
                     ),
                 };
-                let l = Lambda {
+                let l = LambdaExpr {
                     args: args.clone(),
                     vargs: vargs.clone(),
                     rtype: rtype.clone(),
@@ -377,8 +373,11 @@ impl Expr {
                 let expr = expr.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::TypeCast { expr: Arc::new(expr), typ })
             }),
-            ExprKind::Apply { args, function } => Box::pin(async move {
-                expr!(ExprKind::Apply { args: Arc::from(subtuples!(args)), function })
+            ExprKind::Apply(ApplyExpr { args, function }) => Box::pin(async move {
+                expr!(ExprKind::Apply(ApplyExpr {
+                    args: Arc::from(subtuples!(args)),
+                    function
+                }))
             }),
             ExprKind::Any { args } => only_args!(Any, args),
             ExprKind::Array { args } => only_args!(Array, args),
@@ -396,9 +395,9 @@ impl Expr {
             }),
             ExprKind::Tuple { args } => only_args!(Tuple, args),
             ExprKind::StringInterpolate { args } => only_args!(StringInterpolate, args),
-            ExprKind::Struct { args } => Box::pin(async move {
+            ExprKind::Struct(StructExpr { args }) => Box::pin(async move {
                 let args = Arc::from(subtuples!(args));
-                expr!(ExprKind::Struct { args })
+                expr!(ExprKind::Struct(StructExpr { args }))
             }),
             ExprKind::ArrayRef { source, i } => Box::pin(async move {
                 let source = Arc::new(
@@ -429,7 +428,7 @@ impl Expr {
                 let args = Arc::from(subexprs!(args));
                 expr!(ExprKind::Variant { tag, args })
             }),
-            ExprKind::Select { arg, arms } => Box::pin(async move {
+            ExprKind::Select(SelectExpr { arg, arms }) => Box::pin(async move {
                 let arg =
                     Arc::new(arg.resolve_modules_int(scope, prepend, resolvers).await?);
                 let arms = try_join_all(arms.iter().map(|(p, e)| async {
@@ -449,7 +448,7 @@ impl Expr {
                     Ok::<_, anyhow::Error>((p, e))
                 }))
                 .await?;
-                expr!(ExprKind::Select { arg, arms: Arc::from(arms) })
+                expr!(ExprKind::Select(SelectExpr { arg, arms: Arc::from(arms) }))
             }),
             ExprKind::Qop(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
@@ -466,7 +465,7 @@ impl Expr {
                 .await?;
                 let handler =
                     tc.handler.resolve_modules_int(scope, prepend, resolvers).await?;
-                expr!(ExprKind::TryCatch(Arc::new(TryCatch {
+                expr!(ExprKind::TryCatch(Arc::new(TryCatchExpr {
                     bind: tc.bind.clone(),
                     constraint: tc.constraint.clone(),
                     handler: Arc::new(handler),

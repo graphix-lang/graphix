@@ -27,9 +27,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
-        b: &expr::Bind,
+        b: &expr::BindExpr,
     ) -> Result<Node<R, E>> {
-        let expr::Bind { rec, doc, pattern, typ, export: _, value } = b;
+        let expr::BindExpr { rec, pattern, typ, value } = b;
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
                 bail!("at {} can't use rec on a complex pattern", spec.pos)
@@ -76,13 +76,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         };
         if pattern.is_refutable() {
             bail!("at {} refutable patterns are not allowed in let", spec.pos);
-        }
-        if let Some(doc) = doc {
-            pattern.ids(&mut |id| {
-                if let Some(b) = ctx.env.by_id.get_mut_cow(&id) {
-                    b.doc = Some(doc.clone());
-                }
-            });
         }
         Ok(Box::new(Self { spec, typ, pattern, node }))
     }

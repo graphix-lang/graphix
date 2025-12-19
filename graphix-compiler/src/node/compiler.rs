@@ -12,7 +12,10 @@ use super::{
     TypeDef, Use,
 };
 use crate::{
-    expr::{self, Expr, ExprId, ExprKind, ModuleKind},
+    expr::{
+        self, ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
+        StructWithExpr,
+    },
     node::{
         error::OrNever,
         map::{Map, MapRef},
@@ -31,6 +34,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     match &spec.kind {
+        ExprKind::NoOp(_) => todo!(),
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
             let scope = scope.append(&format_compact!("do{}", spec.id.inner()));
@@ -61,10 +65,10 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::Variant { tag, args } => {
             Variant::compile(ctx, flags, spec.clone(), scope, top_id, tag, args)
         }
-        ExprKind::Struct { args } => {
+        ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        ExprKind::Module { name, export: _, value } => {
+        ExprKind::Module { name, value } => {
             let scope = scope.append(&name);
             match value {
                 ModuleKind::Unresolved => {
@@ -123,7 +127,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::Any { args } => {
             Any::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        ExprKind::Apply { args, function: f } => {
+        ExprKind::Apply(ApplyExpr { args, function: f }) => {
             CallSite::compile(ctx, flags, spec.clone(), scope, top_id, args, f)
         }
         ExprKind::Bind(b) => Bind::compile(ctx, flags, spec.clone(), scope, top_id, b),
@@ -143,16 +147,16 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::StructRef { source, field } => {
             StructRef::compile(ctx, flags, spec.clone(), scope, top_id, source, field)
         }
-        ExprKind::StructWith { source, replace } => {
+        ExprKind::StructWith(StructWithExpr { source, replace }) => {
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
-        ExprKind::Select { arg, arms } => {
+        ExprKind::Select(SelectExpr { arg, arms }) => {
             Select::compile(ctx, flags, spec.clone(), scope, top_id, arg, arms)
         }
         ExprKind::TypeCast { expr, typ } => {
             TypeCast::compile(ctx, flags, spec.clone(), scope, top_id, expr, typ)
         }
-        ExprKind::TypeDef(expr::TypeDef { name, params, typ }) => {
+        ExprKind::TypeDef(expr::TypeDefExpr { name, params, typ }) => {
             TypeDef::compile(ctx, spec.clone(), scope, name, params, typ)
         }
         ExprKind::Map { args } => {

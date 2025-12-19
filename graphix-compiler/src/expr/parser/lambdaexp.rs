@@ -5,15 +5,18 @@ use super::{
 use crate::{
     expr::{
         parser::{sep_by_tok, spaces1},
-        ApplyExpr, Arg, Expr, ExprKind, Lambda, StructurePattern,
+        ApplyExpr, Arg, Expr, ExprKind, LambdaExpr, StructurePattern,
     },
     typ::{TVar, Type},
 };
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, not_followed_by, optional, parser::char::string, position,
-    sep_by, stream::Range, token, unexpected_any, value, ParseError, Parser, RangeStream,
+    attempt, between, choice, not_followed_by, optional,
+    parser::char::string,
+    position, sep_by,
+    stream::{position::SourcePosition, Range},
+    token, unexpected_any, value, ParseError, Parser, RangeStream,
 };
 use netidx::utils::Either;
 use poolshark::local::LPooled;
@@ -21,7 +24,7 @@ use triomphe::Arc;
 
 fn apply_pexp<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -30,19 +33,20 @@ where
 
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    position().with(spaces()).then(|pos| {
+    position().skip(spaces()).then(|pos| {
         choice((
-            token('#').with(fname()).skip(spaces()).then(|name| {
-                optional(token(':').with(expr())).map(|e| match e {
-                    Some(e) => (Some(name), e),
+            token('#').with(fname()).skip(spaces()).then(move |name| {
+                let name = name.clone();
+                optional(token(':').with(expr())).map(move |e| match e {
+                    Some(e) => (Some(name.clone()), e),
                     None => {
                         let e =
                             ExprKind::Ref { name: [name.clone()].into() }.to_expr(pos);
-                        (Some(name), e)
+                        (Some(name.clone()), e)
                     }
                 })
             }),
@@ -53,7 +57,7 @@ where
 
 pub(super) fn apply<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -87,7 +91,7 @@ where
 pub(super) fn lambda_args<I>(
 ) -> impl Parser<I, Output = (LPooled<Vec<Arg>>, Option<Option<Type>>)>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -103,24 +107,31 @@ where
         ),
         csep(),
     )
-    .then(|v: LPooled<Vec<((bool, StructurePattern), Option<Type>, Option<Expr>)>>| {
-        let args = v
-            .into_iter()
-            .map(|((labeled, pattern), constraint, default)| {
-                if !labeled && default.is_some() {
-                    bail!("labeled")
-                } else {
-                    Ok(Arg { labeled: labeled.then_some(default), pattern, constraint })
+    .then(
+        |mut v: LPooled<Vec<((bool, StructurePattern), Option<Type>, Option<Expr>)>>| {
+            let args = v
+                .drain(..)
+                .map(|((labeled, pattern), constraint, default)| {
+                    if !labeled && default.is_some() {
+                        bail!("labeled")
+                    } else {
+                        Ok(Arg {
+                            labeled: labeled.then_some(default),
+                            pattern,
+                            constraint,
+                        })
+                    }
+                })
+                .collect::<Result<LPooled<Vec<_>>>>();
+            match args {
+                Ok(a) => value(a).right(),
+                Err(_) => {
+                    unexpected_any("only labeled arguments may have a default value")
+                        .left()
                 }
-            })
-            .collect::<Result<LPooled<Vec<_>>>>();
-        match args {
-            Ok(a) => value(a).right(),
-            Err(_) => {
-                unexpected_any("only labeled arguments may have a default value").left()
             }
-        }
-    })
+        },
+    )
     // @args must be last
     .then(|mut v: LPooled<Vec<Arg>>| {
         match v.iter().enumerate().find(|(_, a)| match &a.pattern {
@@ -153,7 +164,7 @@ where
 
 pub(super) fn lambda<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -175,7 +186,7 @@ where
     )
         .map(|(pos, constraints, (mut args, vargs), rtype, throws, body)| {
             let args = Arc::from_iter(args.drain(..));
-            ExprKind::Lambda(Arc::new(Lambda {
+            ExprKind::Lambda(Arc::new(LambdaExpr {
                 args,
                 vargs,
                 rtype,

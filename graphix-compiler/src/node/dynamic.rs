@@ -3,8 +3,8 @@ use crate::{
     env::Env,
     errf,
     expr::{
-        parser, Expr, ExprId, ExprKind, Origin, Sandbox, Sig, SigItem, Source,
-        StructurePattern, TypeDef,
+        parser, BindSig, Expr, ExprId, ExprKind, ModSig, Origin, Sandbox, Sig, SigKind,
+        Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Block},
     typ::Type,
@@ -26,16 +26,16 @@ fn bind_sig<R: Rt, E: UserEvent>(
     sig: &Sig,
 ) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
-    for si in sig.iter() {
-        match si {
-            SigItem::Bind(name, typ) => {
+    for si in sig.items.iter() {
+        match &si.kind {
+            SigKind::Bind(BindSig { name, typ }) => {
                 typ.alias_tvars(&mut LPooled::take());
                 env.bind_variable(&scope.lexical, name, typ.clone());
             }
-            SigItem::TypeDef(td) => {
+            SigKind::TypeDef(td) => {
                 env.deftype(&scope.lexical, &td.name, td.params.clone(), td.typ.clone())?
             }
-            SigItem::Module(name, sig) => {
+            SigKind::Module(ModSig { name, sig }) => {
                 let scope = scope.append(&name);
                 bind_sig(env, &scope, sig)?
             }
@@ -103,7 +103,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
             && let Some(sig_td) = defs.get(&CompactString::from(td.name.as_str()))
         {
-            let sig_td = TypeDef {
+            let sig_td = TypeDefExpr {
                 name: td.name.clone(),
                 params: sig_td.params.clone(),
                 typ: sig_td.typ.clone(),
@@ -119,11 +119,11 @@ fn check_sig<R: Rt, E: UserEvent>(
             has_def.insert(td.name.clone());
         }
     }
-    for si in sig.iter() {
-        let missing = match si {
-            SigItem::Bind(name, _) => !has_bind.contains(name),
-            SigItem::Module(name, _) => !has_mod.contains(name),
-            SigItem::TypeDef(td) => !has_def.contains(&td.name),
+    for si in sig.items.iter() {
+        let missing = match &si.kind {
+            SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
+            SigKind::Module(ModSig { name, .. }) => !has_mod.contains(name),
+            SigKind::TypeDef(TypeDefExpr { name, .. }) => !has_def.contains(name),
         };
         if missing {
             bail!("missing required sig item {si}")

@@ -25,40 +25,39 @@ where
         .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
 }
 
-fn arith_term<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces()
-        .with(choice((
-            qop(deref_arith()),
-            raw_string(),
-            array(),
-            byref_arith(),
-            qop(select()),
-            variant(),
-            qop(cast()),
-            qop(any()),
-            interpolated(),
-            (position(), token('!').with(arith()))
-                .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-            attempt(tuple()),
-            attempt(structwith()),
-            attempt(structure()),
-            attempt(map()),
-            qop(do_block()),
-            attempt(qop(arrayref())),
-            attempt(qop(tupleref())),
-            attempt(qop(structref())),
-            attempt(qop(mapref())),
-            attempt(qop(apply())),
-            between(token('('), sptoken(')'), spaces().with(arith())),
-            qop(reference()),
-            literal(),
-        )))
-        .skip(spaces())
+parser! {
+    pub(crate) fn arith_term[I]()(I) -> Expr
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        spaces()
+            .with(choice((
+                qop(deref_arith()),
+                raw_string(),
+                array(),
+                byref_arith(),
+                qop(select()),
+                variant(),
+                qop(cast()),
+                qop(any()),
+                interpolated(),
+                (position(), token('!').with(arith()))
+                    .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
+                attempt(tuple()),
+                attempt(structwith()),
+                attempt(structure()),
+                attempt(map()),
+                qop(do_block()),
+                attempt(qop(arrayref())),
+                attempt(qop(tupleref())),
+                attempt(qop(structref())),
+                attempt(qop(mapref())),
+                attempt(qop(apply())),
+                between(token('('), sptoken(')'), spaces().with(arith())),
+                qop(reference()),
+                literal(),
+            )))
+            .skip(spaces())
+    }
 }
 
 fn deref_arith<I>() -> impl Parser<I, Output = Expr>
@@ -70,6 +69,38 @@ where
     (position(), token('*').with(arith_term()))
         .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
+
+/*
+fn oplist<I>() -> impl Parser<I, Output = (LPooled<Vec<(Expr, &'static str)>>, Expr)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        many1((
+            arith_term(),
+            choice((
+                string("+"),
+                string("-"),
+                string("*"),
+                string("/"),
+                string("%"),
+                string("=="),
+                string("!="),
+                string(">="),
+                string("<="),
+                string(">"),
+                string("<"),
+                string("&&"),
+                string("||"),
+                string("~"),
+            )),
+        )),
+        arith_term(),
+    )
+}
+*/
 
 fn infix_arith<I>() -> impl Parser<I, Output = Expr>
 where

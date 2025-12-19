@@ -3,7 +3,7 @@ use crate::expr::{get_origin, Expr, ExprId, ExprKind};
 use combine::{
     attempt, between, choice, many, position,
     stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, Parser, RangeStream,
+    token, unexpected_any, value, RangeStream,
 };
 use netidx::publisher::Value;
 use netidx_value::parser::escaped_string;
@@ -103,7 +103,7 @@ parser! {
                                 | (Some(Expr { kind: ExprKind::Qop(_), .. }), _)
                                 | (Some(Expr { kind: ExprKind::OrNever(_), .. }), _)
                                 | (Some(Expr { kind: ExprKind::TryCatch(_), .. }), _)
-                                | (Some(Expr { kind: ExprKind::NoOp, .. }), _)
+                                | (Some(Expr { kind: ExprKind::NoOp {..}, .. }), _)
                                 | (Some(Expr { kind: ExprKind::Do { .. }, .. }), _)
                                 | (Some(Expr { kind: ExprKind::Module { .. }, .. }), _)
                                 | (Some(Expr { kind: ExprKind::Use { .. }, .. }), _)

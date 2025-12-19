@@ -72,7 +72,7 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
-        tc: &Arc<expr::TryCatch>,
+        tc: &Arc<expr::TryCatchExpr>,
     ) -> Result<Node<R, E>> {
         let inner_name = format_compact!("tc{}", BindId::new().inner());
         let inner_scope = scope.append(inner_name.as_str());

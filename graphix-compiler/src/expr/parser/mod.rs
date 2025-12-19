@@ -1,7 +1,7 @@
 use crate::{
     expr::{
-        set_origin, Bind, Doc, Expr, ExprKind, ModPath, Origin, Pattern, SelectExpr,
-        SigItem, Struct, StructWith, TryCatch,
+        set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, Pattern, SelectExpr,
+        SigItem, StructExpr, StructWithExpr, TryCatchExpr,
     },
     typ::{FnType, Type},
 };
@@ -83,15 +83,21 @@ fn sep_by1_tok<I, O, OC, EP, SP, TP>(
     term: TP,
 ) -> impl Parser<I, Output = OC>
 where
-    I: RangeStream<Token = char, Position = SourcePosition>,
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
-    OC: Extend<O>,
+    OC: Extend<O> + Default,
     SP: Parser<I>,
-    EP: Parser<I, Output = OC>,
+    EP: Parser<I, Output = O>,
     TP: Parser<I>,
 {
-    sep_by1(choice((look_ahead(term).map(None), p.map(Some))), sep)
-        .map(|mut e: LPooled<Vec<Option<O>>>| e.drain(..).filter_map(|e| e).collect())
+    sep_by1(choice((look_ahead(term).map(|_| None::<O>), p.map(Some))), sep).map(
+        |mut e: LPooled<Vec<Option<O>>>| {
+            let mut res = OC::default();
+            res.extend(e.drain(..).filter_map(|e| e));
+            res
+        },
+    )
 }
 
 // sep_by, but a separator terminator is allowed, and ignored
@@ -101,15 +107,21 @@ fn sep_by_tok<I, O, OC, EP, SP, TP>(
     term: TP,
 ) -> impl Parser<I, Output = OC>
 where
-    I: RangeStream<Token = char, Position = SourcePosition>,
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
-    OC: Extend<O>,
+    OC: Extend<O> + Default,
     SP: Parser<I>,
     EP: Parser<I, Output = O>,
     TP: Parser<I>,
 {
-    sep_by(choice((look_ahead(term).map(None), p.map(Some))), sep)
-        .map(|mut e: LPooled<Vec<Option<O>>>| e.drain(..).filter_map(|e| e).collect())
+    sep_by(choice((look_ahead(term).map(|_| None::<O>), p.map(Some))), sep).map(
+        |mut e: LPooled<Vec<Option<O>>>| {
+            let mut res = OC::default();
+            res.extend(e.drain(..).filter_map(|e| e));
+            res
+        },
+    )
 }
 
 // sep_by1 but a separator terminator is allowed and mapped to an output value
@@ -120,24 +132,24 @@ fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
     f: F,
 ) -> impl Parser<I, Output = OC>
 where
-    I: RangeStream<Token = char, Position = SourcePosition>,
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
-    OC: Extend<O>,
+    OC: Extend<O> + Default,
     SP: Parser<I>,
     EP: Parser<I, Output = O>,
     TP: Parser<I>,
-    F: Fn(SourcePosition) -> O,
+    F: Fn(I::Position) -> O,
 {
-    sep_by1((position(), choice((look_ahead(term).map(None), p.map(Some)))), sep).map(
-        |(pos, mut e): LPooled<Vec<(_, Option<O>)>>| {
-            e.drain(..)
-                .map(|e| match e {
-                    Some(e) => e,
-                    None => f(pos),
-                })
-                .collect()
-        },
-    )
+    sep_by1((position(), choice((look_ahead(term).map(|_| None::<O>), p.map(Some)))), sep)
+        .map(move |mut e: LPooled<Vec<(_, Option<O>)>>| {
+            let mut res = OC::default();
+            res.extend(e.drain(..).map(|(pos, e)| match e {
+                Some(e) => e,
+                None => f(pos),
+            }));
+            res
+        })
 }
 
 fn spaces<I>() -> impl Parser<I, Output = ()>
@@ -284,7 +296,7 @@ where
 
 fn do_block<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -293,17 +305,16 @@ where
         between(
             token('{'),
             sptoken('}'),
-            sep_by1_tok(expr(), attempt(sptoken(';')), sptoken('}')),
+            sep_by1_tok_exp(expr(), attempt(sptoken(';')), sptoken('}'), |pos| {
+                ExprKind::NoOp(";").to_expr(pos)
+            }),
         ),
     )
-        .then(|(pos, mut args): (_, LPooled<Vec<(_, Option<Expr>)>>)| {
+        .then(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
             if args.len() < 2 {
                 unexpected_any("do must contain at least 2 expressions").left()
             } else {
-                let exprs = Arc::from_iter(args.drain(..).map(|(pos, e)| match e {
-                    Some(e) => e,
-                    None => ExprKind::NoOp.to_expr(pos),
-                }));
+                let exprs = Arc::from_iter(args.drain(..));
                 value(ExprKind::Do { exprs }.to_expr(pos)).right()
             }
         })
@@ -311,7 +322,7 @@ where
 
 fn ref_pexp<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -320,7 +331,7 @@ where
 
 fn structref<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -331,7 +342,7 @@ where
 
 fn tupleref<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -344,7 +355,7 @@ where
 
 fn mapref<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -357,7 +368,7 @@ where
 
 fn any<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -376,7 +387,7 @@ where
 
 fn letbind<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -392,15 +403,15 @@ where
             .skip(spstring("=")),
         expr(),
     )
-        .map(|(pos, doc, export, (rec, pattern, typ), value)| {
+        .map(|(pos, (rec, pattern, typ), value)| {
             let rec = rec.is_some();
-            ExprKind::Bind(Arc::new(Bind { rec, pattern, typ, value })).to_expr(pos)
+            ExprKind::Bind(Arc::new(BindExpr { rec, pattern, typ, value })).to_expr(pos)
         })
 }
 
 fn connect<I>() -> impl Parser<I, Output = Expr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -576,8 +587,10 @@ where
                     (n, e)
                 }
             });
-            value(ExprKind::Struct(Struct { args: Arc::from_iter(args) }).to_expr(pos))
-                .right()
+            value(
+                ExprKind::Struct(StructExpr { args: Arc::from_iter(args) }).to_expr(pos),
+            )
+            .right()
         })
 }
 
@@ -664,7 +677,7 @@ where
                         (name, e)
                     }
                 });
-                let e = ExprKind::StructWith(StructWith {
+                let e = ExprKind::StructWith(StructWithExpr {
                     source: Arc::new(source),
                     replace: Arc::from_iter(exprs),
                 })
@@ -697,7 +710,7 @@ where
                 _,
                 _,
             )| {
-                ExprKind::TryCatch(Arc::new(TryCatch {
+                ExprKind::TryCatch(Arc::new(TryCatchExpr {
                     bind,
                     constraint,
                     exprs: Arc::from_iter(exprs.drain(..)),
@@ -778,7 +791,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     set_origin(ori.clone());
     let mut r: LPooled<Vec<Expr>> =
         sep_by1_tok_exp(expr(), attempt(sptoken(';')), spaces().with(eof()), |pos| {
-            ExprKind::NoOp.to_expr(pos)
+            ExprKind::NoOp(";").to_expr(pos)
         })
         .skip(spaces())
         .skip(eof())

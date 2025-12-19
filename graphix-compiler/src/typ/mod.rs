@@ -1,8 +1,12 @@
-use crate::expr::PrettyDisplay;
 use crate::{
-    env::Env, expr::ModPath, format_with_flags, PrintFlag, Rt, UserEvent, PRINT_FLAGS,
+    env::Env,
+    errf,
+    expr::{
+        print::{PrettyBuf, PrettyDisplay},
+        ModPath,
+    },
+    format_with_flags, PrintFlag, Rt, UserEvent, CAST_ERR_TAG, PRINT_FLAGS,
 };
-use crate::{errf, CAST_ERR_TAG};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use enumflags2::bitflags;
@@ -2144,15 +2148,7 @@ impl fmt::Display for Type {
 }
 
 impl PrettyDisplay for Type {
-    fn can_fmt_single(&self) -> bool {
-        true
-    }
-
-    fn fmt_pretty_inner(
-        &self,
-        ctx: crate::expr::PrettyContext,
-        buf: &mut String,
-    ) -> fmt::Result {
+    fn fmt_pretty_inner(&self, _buf: &mut PrettyBuf) -> fmt::Result {
         todo!()
     }
 }

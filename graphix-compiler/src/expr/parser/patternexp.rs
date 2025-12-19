@@ -23,7 +23,7 @@ use triomphe::Arc;
 
 fn slice_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -57,7 +57,8 @@ where
             sptoken(']'),
         ),
     )
-    .then(|mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
+    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
+        let all = all.clone();
         if pats.len() == 0 {
             value(StructurePattern::Slice { all, binds: Arc::from_iter([]) }).right()
         } else if pats.len() == 1 {
@@ -93,7 +94,7 @@ where
 
 fn tuple_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -102,10 +103,11 @@ where
         sptoken(')'),
         sep_by1_tok(structure_pattern(), csep(), sptoken(')')),
     )
-    .then(|mut binds: LPooled<Vec<StructurePattern>>| {
+    .then(move |mut binds: LPooled<Vec<StructurePattern>>| {
         if binds.len() < 2 {
             unexpected_any("tuples must have at least 2 elements").left()
         } else {
+            let all = all.clone();
             value(StructurePattern::Tuple { all, binds: Arc::from_iter(binds.drain(..)) })
                 .right()
         }
@@ -114,7 +116,7 @@ where
 
 fn variant_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -126,18 +128,25 @@ where
             sep_by1_tok(structure_pattern(), csep(), sptoken(')')),
         )),
     )
-        .map(|(tag, binds): (ArcStr, Option<LPooled<Vec<StructurePattern>>>)| {
-            let mut binds = match binds {
-                None => LPooled::take(),
-                Some(a) => a,
-            };
-            StructurePattern::Variant { all, tag, binds: Arc::from_iter(binds.drain(..)) }
-        })
+        .map(
+            move |(tag, binds): (ArcStr, Option<LPooled<Vec<StructurePattern>>>)| {
+                let all = all.clone();
+                let mut binds = match binds {
+                    None => LPooled::take(),
+                    Some(a) => a,
+                };
+                StructurePattern::Variant {
+                    all,
+                    tag,
+                    binds: Arc::from_iter(binds.drain(..)),
+                }
+            },
+        )
 }
 
 fn struct_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -147,7 +156,7 @@ where
         sep_by1_tok(
             spaces().with(choice((
                 string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
-                attempt(fname().with(not_followed_by(sptoken(':')))).map(|s| {
+                attempt(fname().skip(not_followed_by(sptoken(':')))).map(|s| {
                     let p = StructurePattern::Bind(s.clone());
                     (s, p, true)
                 }),
@@ -158,7 +167,7 @@ where
             sptoken('}'),
         ),
     )
-    .then(|mut binds: LPooled<Vec<(ArcStr, StructurePattern, bool)>>| {
+    .then(move |mut binds: LPooled<Vec<(ArcStr, StructurePattern, bool)>>| {
         let mut exhaustive = true;
         binds.retain(|(_, _, ex)| {
             exhaustive &= *ex;
@@ -170,8 +179,54 @@ where
             unexpected_any("struct fields must be unique").left()
         } else {
             drop(s);
+            let all = all.clone();
             let binds = Arc::from_iter(binds.drain(..).map(|(s, p, _)| (s, p)));
             value(StructurePattern::Struct { all, exhaustive, binds }).right()
+        }
+    })
+}
+
+fn underbar_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    token('_').then(move |_| {
+        if all {
+            unexpected_any("all patterns are not supported by _").left()
+        } else {
+            value(StructurePattern::Ignore).right()
+        }
+    })
+}
+
+fn bind_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    fname().then(move |name| {
+        if all {
+            unexpected_any("all patterns are not supported by bind").left()
+        } else {
+            value(StructurePattern::Bind(name)).right()
+        }
+    })
+}
+
+fn literal_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    parse_value(&VAL_MUST_ESC, &VAL_ESC).then(move |v| {
+        if all {
+            unexpected_any("all patterns are not supported by literals").left()
+        } else {
+            value(StructurePattern::Literal(v)).right()
         }
     })
 }
@@ -190,39 +245,20 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         spaces().with(optional(attempt(all_pattern()))).then(|all| choice((
-            slice_pattern(all),
-            tuple_pattern(all),
-            struct_pattern(all),
-            variant_pattern(all),
-            token('_').then(|_| {
-                if all.is_some() {
-                    unexpected_any("all patterns are not supported by _").left()
-                } else {
-                    value(StructurePattern::Ignore).right()
-                }
-            }),
-            fname().map(|name| {
-                if all.is_some() {
-                    unexpected_any("all patterns are not supported by bind").left()
-                } else {
-                    value(StructurePattern::Bind(name)).right()
-                }
-            }),
-            parse_value(&VAL_MUST_ESC, &VAL_ESC)
-                .then(|v| {
-                    if all.is_some() {
-                        unexpected_any("all patterns are not supported by literals").left()
-                    } else {
-                        value(StructurePattern::Literal(v)).right()
-                    }
-                }),
+            slice_pattern(all.clone()),
+            tuple_pattern(all.clone()),
+            struct_pattern(all.clone()),
+            variant_pattern(all.clone()),
+            underbar_pattern(all.is_some()),
+            bind_pattern(all.is_some()),
+            literal_pattern(all.is_some())
         )))
     }
 }
 
 pub(crate) fn pattern<I>() -> impl Parser<I, Output = Pattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {

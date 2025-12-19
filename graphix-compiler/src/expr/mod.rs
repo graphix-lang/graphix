@@ -77,7 +77,7 @@ pub struct Arg {
 pub struct Doc(Option<ArcStr>);
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct TypeDef {
+pub struct TypeDefExpr {
     pub name: ArcStr,
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
@@ -85,33 +85,33 @@ pub struct TypeDef {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct BindSig {
-    name: ArcStr,
-    typ: Type,
+    pub name: ArcStr,
+    pub typ: Type,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct ModSig {
-    name: ArcStr,
-    sig: Sig,
+    pub name: ArcStr,
+    pub sig: Sig,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum SigKind {
-    TypeDef(TypeDef),
+    TypeDef(TypeDefExpr),
     Bind(BindSig),
     Module(ModSig),
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct SigItem {
-    doc: Doc,
-    kind: SigKind,
+    pub doc: Doc,
+    pub kind: SigKind,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct Sig {
-    items: Arc<[SigItem]>,
-    toplevel: bool,
+    pub items: Arc<[SigItem]>,
+    pub toplevel: bool,
 }
 
 impl Deref for Sig {
@@ -125,9 +125,9 @@ impl Deref for Sig {
 impl Sig {
     /// find the signature of the submodule in this sig with name
     pub fn find_module<'a>(&'a self, name: &str) -> Option<&'a Sig> {
-        self.iter().find_map(|si| match si {
-            SigItem::Module(n, sig) if name == n => Some(sig),
-            SigItem::Bind(_, _) | SigItem::Module(_, _) | SigItem::TypeDef(_) => None,
+        self.items.iter().find_map(|si| match &si.kind {
+            SigKind::Module(ModSig { name: n, sig }) if name == n => Some(sig),
+            SigKind::Bind(_) | SigKind::Module(_) | SigKind::TypeDef(_) => None,
         })
     }
 }
@@ -148,7 +148,7 @@ pub enum ModuleKind {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct Bind {
+pub struct BindExpr {
     pub rec: bool,
     pub pattern: StructurePattern,
     pub typ: Option<Type>,
@@ -156,7 +156,7 @@ pub struct Bind {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct Lambda {
+pub struct LambdaExpr {
     pub args: Arc<[Arg]>,
     pub vargs: Option<Option<Type>>,
     pub rtype: Option<Type>,
@@ -166,7 +166,7 @@ pub struct Lambda {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct TryCatch {
+pub struct TryCatchExpr {
     pub bind: ArcStr,
     pub constraint: Option<Type>,
     pub handler: Arc<Expr>,
@@ -174,13 +174,13 @@ pub struct TryCatch {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct StructWith {
+pub struct StructWithExpr {
     pub source: Arc<Expr>,
     pub replace: Arc<[(ArcStr, Expr)]>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct Struct {
+pub struct StructExpr {
     pub args: Arc<[(ArcStr, Expr)]>,
 }
 
@@ -198,12 +198,12 @@ pub struct SelectExpr {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ExprKind {
-    NoOp,
+    NoOp(&'static str),
     Constant(Value),
     Module { name: ArcStr, value: ModuleKind },
     Do { exprs: Arc<[Expr]> },
     Use { name: ModPath },
-    Bind(Arc<Bind>),
+    Bind(Arc<BindExpr>),
     Ref { name: ModPath },
     Connect { name: ModPath, value: Arc<Expr>, deref: bool },
     StringInterpolate { args: Arc<[Expr]> },
@@ -212,9 +212,9 @@ pub enum ExprKind {
     ArrayRef { source: Arc<Expr>, i: Arc<Expr> },
     ArraySlice { source: Arc<Expr>, start: Option<Arc<Expr>>, end: Option<Arc<Expr>> },
     MapRef { source: Arc<Expr>, key: Arc<Expr> },
-    StructWith(StructWith),
-    Lambda(Arc<Lambda>),
-    TypeDef(TypeDef),
+    StructWith(StructWithExpr),
+    Lambda(Arc<LambdaExpr>),
+    TypeDef(TypeDefExpr),
     TypeCast { expr: Arc<Expr>, typ: Type },
     Apply(ApplyExpr),
     Any { args: Arc<[Expr]> },
@@ -222,11 +222,11 @@ pub enum ExprKind {
     Map { args: Arc<[(Expr, Expr)]> },
     Tuple { args: Arc<[Expr]> },
     Variant { tag: ArcStr, args: Arc<[Expr]> },
-    Struct(Struct),
+    Struct(StructExpr),
     Select(SelectExpr),
     Qop(Arc<Expr>),
     OrNever(Arc<Expr>),
-    TryCatch(Arc<TryCatch>),
+    TryCatch(Arc<TryCatchExpr>),
     ByRef(Arc<Expr>),
     Deref(Arc<Expr>),
     Eq { lhs: Arc<Expr>, rhs: Arc<Expr> },
@@ -460,15 +460,12 @@ impl Expr {
         Expr { id: ExprId::new(), ori: get_origin(), pos, kind }
     }
 
-    pub fn to_string_pretty(&self, col_limit: usize) -> String {
-        self.kind.to_string_pretty(col_limit)
-    }
-
     /// fold over self and all of self's sub expressions
     pub fn fold<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
         let init = f(init, self);
         match &self.kind {
             ExprKind::Constant(_)
+            | ExprKind::NoOp(_)
             | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::TypeDef { .. } => init,
@@ -497,7 +494,7 @@ impl Expr {
             ExprKind::Module { value: ModuleKind::Unresolved, .. } => init,
             ExprKind::Do { exprs } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::Bind(b) => b.value.fold(init, f),
-            ExprKind::StructWith(StructWith { replace, .. }) => {
+            ExprKind::StructWith(StructWithExpr { replace, .. }) => {
                 replace.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
             ExprKind::Connect { value, .. } => value.fold(init, f),
@@ -531,7 +528,7 @@ impl Expr {
                     Some(e) => e.fold(init, f),
                 }
             }
-            ExprKind::Struct(Struct { args }) => {
+            ExprKind::Struct(StructExpr { args }) => {
                 args.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
             ExprKind::Select(SelectExpr { arg, arms }) => {

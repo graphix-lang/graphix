@@ -1,12 +1,13 @@
 use super::Sig;
 use crate::{
     expr::{
-        parser, ApplyExpr, Bind, BindSig, Doc, Expr, ExprKind, Lambda, ModSig,
-        ModuleKind, Sandbox, SelectExpr, SigItem, Struct, StructWith, TypeDef,
+        parser, ApplyExpr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModSig,
+        ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
+        TypeDefExpr,
     },
     typ::Type,
 };
-use compact_str::{format_compact, CompactString};
+use compact_str::format_compact;
 use netidx::{path::Path, utils::Either};
 use netidx_value::{parser::VAL_ESC, Value};
 use poolshark::local::LPooled;
@@ -152,7 +153,7 @@ impl PrettyDisplay for Doc {
     }
 }
 
-impl TypeDef {
+impl TypeDefExpr {
     fn write_name_and_params(&self, f: &mut impl fmt::Write) -> fmt::Result {
         write!(f, "type {}", self.name)?;
         if !self.params.is_empty() {
@@ -172,19 +173,17 @@ impl TypeDef {
     }
 }
 
-impl fmt::Display for TypeDef {
+impl fmt::Display for TypeDefExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.doc);
         self.write_name_and_params(f)?;
         write!(f, " = {}", self.typ)
     }
 }
 
-impl PrettyDisplay for TypeDef {
+impl PrettyDisplay for TypeDefExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        self.doc.fmt_pretty(buf)?;
         self.write_name_and_params(buf)?;
-        writeln!(buf, " =");
+        writeln!(buf, " =")?;
         buf.with_indent(2, |buf| self.typ.fmt_pretty(buf))
     }
 }
@@ -226,28 +225,26 @@ impl PrettyDisplay for Sandbox {
                         }
                     }
                     Ok(())
-                });
+                })?;
                 write!(buf, " ]")
             }};
         }
         match self {
-            Sandbox::Unrestricted => writeln!(buf, "sandbox unrestricted"),
             Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
             Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
+            Sandbox::Unrestricted => writeln!(buf, "sandbox unrestricted"),
         }
     }
 }
 
 impl fmt::Display for BindSig {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.doc);
         write!(f, "val {}: {}", self.name, self.typ)
     }
 }
 
 impl PrettyDisplay for BindSig {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        self.doc.fmt_pretty(buf)?;
         write!(buf, "val {}: ", self.name)?;
         self.typ.fmt_pretty(buf)
     }
@@ -255,14 +252,12 @@ impl PrettyDisplay for BindSig {
 
 impl fmt::Display for ModSig {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.doc);
         write!(f, "mod {}: {}", self.name, self.sig)
     }
 }
 
 impl PrettyDisplay for ModSig {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        self.doc.fmt_pretty(buf)?;
         writeln!(buf, "mod {}:", self.name)?;
         self.sig.fmt_pretty(buf)
     }
@@ -270,20 +265,22 @@ impl PrettyDisplay for ModSig {
 
 impl fmt::Display for SigItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            SigItem::TypeDef(td) => write!(f, "{td}"),
-            SigItem::Bind(bind) => write!(f, "{bind}"),
-            SigItem::Module(sig) => write!(f, "{sig}"),
+        writeln!(f, "{}", self.doc)?;
+        match &self.kind {
+            SigKind::TypeDef(td) => write!(f, "{td}"),
+            SigKind::Bind(bind) => write!(f, "{bind}"),
+            SigKind::Module(sig) => write!(f, "{sig}"),
         }
     }
 }
 
 impl PrettyDisplay for SigItem {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        match self {
-            SigItem::Bind(b) => b.fmt_pretty(buf),
-            SigItem::TypeDef(d) => d.fmt_pretty(buf),
-            SigItem::Module(m) => m.fmt_pretty(buf),
+        writeln!(buf, "{}", self.doc)?;
+        match &self.kind {
+            SigKind::Bind(b) => b.fmt_pretty(buf),
+            SigKind::TypeDef(d) => d.fmt_pretty(buf),
+            SigKind::Module(m) => m.fmt_pretty(buf),
         }
     }
 }
@@ -328,9 +325,9 @@ impl PrettyDisplay for Sig {
     }
 }
 
-impl fmt::Display for Bind {
+impl fmt::Display for BindExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let Bind { rec, pattern, typ, value } = self;
+        let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
         match typ {
             None => write!(f, "let{} {pattern} = {value}", rec),
@@ -339,9 +336,9 @@ impl fmt::Display for Bind {
     }
 }
 
-impl PrettyDisplay for Bind {
+impl PrettyDisplay for BindExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let Bind { rec, pattern, typ, value } = self;
+        let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
         match typ {
             None => writeln!(buf, "let{} {pattern} = ", rec)?,
@@ -351,7 +348,7 @@ impl PrettyDisplay for Bind {
     }
 }
 
-impl fmt::Display for StructWith {
+impl fmt::Display for StructWithExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let Self { source, replace } = self;
         match &source.kind {
@@ -376,7 +373,7 @@ impl fmt::Display for StructWith {
     }
 }
 
-impl PrettyDisplay for StructWith {
+impl PrettyDisplay for StructWithExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let Self { source, replace } = self;
         match &source.kind {
@@ -408,7 +405,7 @@ impl PrettyDisplay for StructWith {
     }
 }
 
-impl fmt::Display for Struct {
+impl fmt::Display for StructExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let Self { args } = self;
         write!(f, "{{ ")?;
@@ -430,7 +427,7 @@ impl fmt::Display for Struct {
     }
 }
 
-impl PrettyDisplay for Struct {
+impl PrettyDisplay for StructExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let Self { args } = self;
         writeln!(buf, "{{")?;
@@ -524,14 +521,15 @@ impl PrettyDisplay for ApplyExpr {
                     writeln!(buf, ",")?
                 }
             }
+            Ok(())
         })?;
         writeln!(buf, ")")
     }
 }
 
-impl fmt::Display for Lambda {
+impl fmt::Display for LambdaExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let Lambda { args, vargs, rtype, constraints, throws, body } = self;
+        let LambdaExpr { args, vargs, rtype, constraints, throws, body } = self;
         for (i, (tvar, typ)) in constraints.iter().enumerate() {
             write!(f, "{tvar}: {typ}")?;
             if i < constraints.len() - 1 {
@@ -563,8 +561,8 @@ impl fmt::Display for Lambda {
         }
         if let Some(typ) = vargs {
             match typ {
-                None => write!(f, "@args"),
-                Some(typ) => write!(f, "@args: {typ}"),
+                None => write!(f, "@args")?,
+                Some(typ) => write!(f, "@args: {typ}")?,
             }
         }
         write!(f, "| ")?;
@@ -588,9 +586,9 @@ impl fmt::Display for Lambda {
     }
 }
 
-impl PrettyDisplay for Lambda {
+impl PrettyDisplay for LambdaExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let Lambda { args, vargs, rtype, constraints, throws, body } = self;
+        let LambdaExpr { args, vargs, rtype, constraints, throws, body } = self;
         for (i, (tvar, typ)) in constraints.iter().enumerate() {
             write!(buf, "{tvar}: {typ}")?;
             if i < constraints.len() - 1 {
@@ -608,7 +606,7 @@ impl PrettyDisplay for Lambda {
                 }
                 Some(def) => {
                     write!(buf, "#{}", a.pattern)?;
-                    if let Some(t) = a.constraint {
+                    if let Some(t) = &a.constraint {
                         write!(buf, ": {t}")?
                     }
                     if let Some(def) = def {
@@ -724,6 +722,7 @@ impl PrettyDisplay for ExprKind {
         }
         match self {
             ExprKind::Constant(_)
+            | ExprKind::NoOp(_)
             | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::StructRef { .. }
@@ -895,12 +894,11 @@ impl fmt::Display for ExprKind {
             }
             write!(f, "{close}")
         }
-        let mut tbuf = CompactString::new("");
-        let exp = |export| if export { "pub " } else { "" };
         match self {
             ExprKind::Constant(v @ Value::String(_)) => {
                 v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
             }
+            ExprKind::NoOp(s) => write!(f, "{s}"),
             ExprKind::Constant(v) => v.fmt_ext(f, &VAL_ESC, true),
             ExprKind::Bind(b) => write!(f, "{b}"),
             ExprKind::StructWith(sw) => write!(f, "{sw}"),

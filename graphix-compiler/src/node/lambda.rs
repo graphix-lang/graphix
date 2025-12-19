@@ -194,7 +194,7 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
-        l: &expr::Lambda,
+        l: &expr::LambdaExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let mut s: LPooled<Vec<&ArcStr>> = LPooled::take();
