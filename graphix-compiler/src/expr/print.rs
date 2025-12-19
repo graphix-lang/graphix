@@ -121,6 +121,13 @@ pub trait PrettyDisplay: fmt::Display {
             self.fmt_pretty_inner(buf)
         }
     }
+
+    /// Pretty print to a pooled string
+    fn to_string_pretty(&self, limit: usize) -> LPooled<String> {
+        let mut buf = PrettyBuf::new(limit);
+        self.fmt_pretty(&mut buf).unwrap();
+        buf.buf
+    }
 }
 
 impl fmt::Display for Doc {

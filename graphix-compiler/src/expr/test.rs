@@ -357,7 +357,8 @@ fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
         pat.guard = guard;
         (pat, expr)
     });
-    ExprKind::Select { arg: Arc::new(arg), arms: Arc::from_iter(arms) }.to_expr_nopos()
+    ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms: Arc::from_iter(arms) })
+        .to_expr_nopos()
 }
 
 fn usestmt() -> impl Strategy<Value = Expr> {
@@ -391,25 +392,12 @@ macro_rules! tupleref {
 
 macro_rules! bind {
     ($inner:expr) => {
-        (
-            $inner,
-            any::<bool>(),
-            option::of(arcstr()),
-            structure_pattern(),
-            any::<bool>(),
-            option::of(typexp()),
+        ($inner, any::<bool>(), structure_pattern(), option::of(typexp())).prop_map(
+            |(value, rec, p, typ)| {
+                ExprKind::Bind(Arc::new(BindExpr { rec, pattern: p, value, typ }))
+                    .to_expr_nopos()
+            },
         )
-            .prop_map(|(value, rec, doc, p, exp, typ)| {
-                ExprKind::Bind(Arc::new(Bind {
-                    rec,
-                    doc,
-                    export: exp,
-                    pattern: p,
-                    value,
-                    typ,
-                }))
-                .to_expr_nopos()
-            })
     };
 }
 
@@ -440,7 +428,7 @@ macro_rules! try_catch {
     ($inner:expr) => {
         (random_fname(), option::of(typexp()), $inner, collection::vec($inner, (1, 10)))
             .prop_map(|(bind, constraint, handler, exprs)| {
-                ExprKind::TryCatch(Arc::new(TryCatch {
+                ExprKind::TryCatch(Arc::new(TryCatchExpr {
                     bind,
                     constraint,
                     exprs: Arc::from_iter(exprs),
@@ -471,8 +459,11 @@ macro_rules! apply {
         ($inner, collection::vec((option::of(random_fname()), $inner), (0, 10))).prop_map(
             |(f, mut args)| {
                 args.sort_unstable_by(|(n0, _), (n1, _)| n1.cmp(n0));
-                ExprKind::Apply { function: Arc::new(f), args: Arc::from(args) }
-                    .to_expr_nopos()
+                ExprKind::Apply(ApplyExpr {
+                    function: Arc::new(f),
+                    args: Arc::from(args),
+                })
+                .to_expr_nopos()
             },
         )
     };
@@ -534,7 +525,7 @@ macro_rules! lambda {
                     let constraints = Arc::from_iter(
                         constraints.into_iter().map(|(a, t)| (TVar::empty_named(a), t)),
                     );
-                    ExprKind::Lambda(Arc::new(Lambda {
+                    ExprKind::Lambda(Arc::new(LambdaExpr {
                         args: Arc::from_iter(args),
                         vargs,
                         rtype,
@@ -563,7 +554,7 @@ macro_rules! structure {
         collection::vec((random_fname(), $inner), (1, 10)).prop_map(|mut a| {
             a.sort_by_key(|(n, _)| n.clone());
             a.dedup_by_key(|(n, _)| n.clone());
-            ExprKind::Struct { args: Arc::from_iter(a) }.to_expr_nopos()
+            ExprKind::Struct(StructExpr { args: Arc::from_iter(a) }).to_expr_nopos()
         })
     };
 }
@@ -646,8 +637,11 @@ macro_rules! structwith {
                 let source = Arc::new(source);
                 replace.sort_by_key(|(f, _)| f.clone());
                 replace.dedup_by_key(|(f, _)| f.clone());
-                ExprKind::StructWith { source, replace: Arc::from_iter(replace) }
-                    .to_expr_nopos()
+                ExprKind::StructWith(StructWithExpr {
+                    source,
+                    replace: Arc::from_iter(replace),
+                })
+                .to_expr_nopos()
             },
         )
     };
@@ -667,30 +661,34 @@ macro_rules! deref {
 
 macro_rules! inline_module {
     ($inner:expr) => {
-        (any::<bool>(), random_fname(), collection::vec($inner, (0, 10))).prop_map(
-            |(export, name, body)| {
-                ExprKind::Module {
-                    export,
-                    name,
-                    value: ModuleKind::Inline(Arc::from(body)),
-                }
+        (random_fname(), collection::vec($inner, (0, 10))).prop_map(|(name, body)| {
+            ExprKind::Module { name, value: ModuleKind::Inline(Arc::from(body)) }
                 .to_expr_nopos()
-            },
-        )
+        })
     };
 }
 
 fn module_sigitem() -> impl Strategy<Value = SigItem> {
     let leaf = prop_oneof![
-        (random_fname(), typexp()).prop_map(|(name, typ)| SigItem::Bind(name, typ)),
-        typedef().prop_map(|td| match td.kind {
-            ExprKind::TypeDef(td) => SigItem::TypeDef(td),
+        (random_fname(), typexp(), option::of(arcstr())).prop_map(|(name, typ, doc)| {
+            SigItem { kind: SigKind::Bind(BindSig { name, typ }), doc: Doc(doc) }
+        }),
+        (typedef(), option::of(arcstr())).prop_map(|(td, doc)| match td.kind {
+            ExprKind::TypeDef(td) =>
+                SigItem { kind: SigKind::TypeDef(td), doc: Doc(doc) },
             _ => unreachable!(),
         })
     ];
     leaf.prop_recursive(5, 20, 10, |inner| {
-        (random_fname(), collection::vec(inner, (1, 10)))
-            .prop_map(|(name, items)| SigItem::Module(name, Sig(Arc::from(items))))
+        (random_fname(), option::of(arcstr()), collection::vec(inner, (1, 10))).prop_map(
+            |(name, doc, items)| SigItem {
+                kind: SigKind::Module(ModSig {
+                    name,
+                    sig: Sig { items: Arc::from(items), toplevel: false },
+                }),
+                doc: Doc(doc),
+            },
+        )
     })
 }
 
@@ -707,19 +705,17 @@ fn module_sandbox() -> impl Strategy<Value = Sandbox> {
 macro_rules! dynamic_module {
     ($inner:expr) => {
         (
-            any::<bool>(),
             random_fname(),
             module_sandbox(),
             collection::vec(module_sigitem(), (1, 10)),
             $inner,
         )
-            .prop_map(|(export, name, sandbox, sig, source)| {
+            .prop_map(|(name, sandbox, sig, source)| {
                 ExprKind::Module {
-                    export,
                     name,
                     value: ModuleKind::Dynamic {
                         sandbox,
-                        sig: Sig(Arc::from(sig)),
+                        sig: Sig { items: Arc::from(sig), toplevel: true },
                         source: Arc::new(source),
                     },
                 }
@@ -729,8 +725,8 @@ macro_rules! dynamic_module {
 }
 
 fn module() -> impl Strategy<Value = Expr> {
-    (any::<bool>(), random_fname()).prop_map(|(export, name)| {
-        ExprKind::Module { export, name, value: ModuleKind::Unresolved }.to_expr_nopos()
+    (random_fname()).prop_map(|name| {
+        ExprKind::Module { name, value: ModuleKind::Unresolved }.to_expr_nopos()
     })
 }
 
@@ -1000,13 +996,18 @@ fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
 fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
-            (SigItem::Bind(n0, t0), SigItem::Bind(n1, t1)) => {
-                n0 == n1 && check_type(t0, t1)
-            }
-            (SigItem::TypeDef(td0), SigItem::TypeDef(td1)) => check_typedef(td0, td1),
-            (SigItem::Module(n0, s0), SigItem::Module(n1, s1)) => {
-                n0 == n1 && check_module_sig(s0, s1)
-            }
+            (
+                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0 },
+                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1 },
+            ) => n0 == n1 && check_type(t0, t1) && d0 == d1,
+            (
+                SigItem { kind: SigKind::TypeDef(td0), doc: d0 },
+                SigItem { kind: SigKind::TypeDef(td1), doc: d1 },
+            ) => check_typedef(td0, td1) && d0 == d1,
+            (
+                SigItem { kind: SigKind::Module(ModSig { name: n0, sig: s0 }), doc: d0 },
+                SigItem { kind: SigKind::Module(ModSig { name: n1, sig: s1 }), doc: d1 },
+            ) => n0 == n1 && check_module_sig(s0, s1) && d0 == d1,
             (_, _) => false,
         })
 }
@@ -1037,7 +1038,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::MapRef { source: s0, key: k0 },
             ExprKind::MapRef { source: s1, key: k1 },
         ) => check(s0, s1) && check(k0, k1),
-        (ExprKind::Struct { args: a0 }, ExprKind::Struct { args: a1 }) => {
+        (
+            ExprKind::Struct(StructExpr { args: a0 }),
+            ExprKind::Struct(StructExpr { args: a1 }),
+        ) => {
             a0.len() == a1.len()
                 && a0
                     .iter()
@@ -1045,8 +1049,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     .all(|((n0, e0), (n1, e1))| n0 == n1 && check(e0, e1))
         }
         (
-            ExprKind::StructWith { source: s0, replace: r0 },
-            ExprKind::StructWith { source: s1, replace: r1 },
+            ExprKind::StructWith(StructWithExpr { source: s0, replace: r0 }),
+            ExprKind::StructWith(StructWithExpr { source: s1, replace: r1 }),
         ) => {
             check(s0, s1)
                 && r0.len() == r1.len()
@@ -1092,8 +1096,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 .fold(true, |r, (s0, s1)| r && check(s0, s1)))
         }
         (
-            ExprKind::Apply { args: srs0, function: f0 },
-            ExprKind::Apply { args: srs1, function: f1 },
+            ExprKind::Apply(ApplyExpr { args: srs0, function: f0 }),
+            ExprKind::Apply(ApplyExpr { args: srs1, function: f1 }),
         ) if check(f0, f1) && srs0.len() == srs1.len() => {
             dbg!(srs0
                 .iter()
@@ -1156,20 +1160,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(check(expr0, expr1))
         }
         (
-            ExprKind::Module {
-                name: name0,
-                export: export0,
-                value: ModuleKind::Inline(value0),
-            },
-            ExprKind::Module {
-                name: name1,
-                export: export1,
-                value: ModuleKind::Inline(value1),
-            },
+            ExprKind::Module { name: name0, value: ModuleKind::Inline(value0) },
+            ExprKind::Module { name: name1, value: ModuleKind::Inline(value1) },
         ) => {
             dbg!(
                 dbg!(name0 == name1)
-                    && dbg!(export0 == export1)
                     && dbg!(value0.len() == value1.len())
                     && dbg!(value0
                         .iter()
@@ -1178,30 +1173,20 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             )
         }
         (
-            ExprKind::Module {
-                name: name0,
-                export: export0,
-                value: ModuleKind::Unresolved,
-            },
-            ExprKind::Module {
-                name: name1,
-                export: export1,
-                value: ModuleKind::Unresolved,
-            },
-        ) => dbg!(dbg!(name0 == name1) && dbg!(export0 == export1)),
+            ExprKind::Module { name: name0, value: ModuleKind::Unresolved },
+            ExprKind::Module { name: name1, value: ModuleKind::Unresolved },
+        ) => dbg!(name0 == name1),
         (
             ExprKind::Module {
                 name: name0,
-                export: export0,
                 value: ModuleKind::Dynamic { sandbox: sb0, sig: si0, source: sr0 },
             },
             ExprKind::Module {
                 name: name1,
-                export: export1,
                 value: ModuleKind::Dynamic { sandbox: sb1, sig: si1, source: sr1 },
             },
         ) => {
-            dbg!(dbg!(name0 == name1) && dbg!(export0 == export1))
+            dbg!(name0 == name1)
                 && dbg!(sb0 == sb1)
                 && dbg!(check_module_sig(si0, si1))
                 && dbg!(check(sr0, sr1))
@@ -1214,27 +1199,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(name0 == name1)
         }
         (ExprKind::Bind(b0), ExprKind::Bind(b1)) => {
-            let BindExpr {
-                rec: r0,
-                doc: d0,
-                pattern: p0,
-                export: export0,
-                value: value0,
-                typ: typ0,
-            } = &**b0;
-            let BindExpr {
-                rec: r1,
-                doc: d1,
-                pattern: p1,
-                export: export1,
-                value: value1,
-                typ: typ1,
-            } = &**b1;
+            let BindExpr { rec: r0, pattern: p0, value: value0, typ: typ0 } = &**b0;
+            let BindExpr { rec: r1, pattern: p1, value: value1, typ: typ1 } = &**b1;
             dbg!(
                 dbg!(r0 == r1)
                     && dbg!(check_structure_pattern(p0, p1))
-                    && dbg!(d0 == d1)
-                    && dbg!(export0 == export1)
                     && dbg!(check_type_opt(typ0, typ1))
                     && dbg!(check(value0, value1))
             )
@@ -1329,8 +1298,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             (_, _) => false,
         },
         (
-            ExprKind::Select { arg: arg0, arms: arms0 },
-            ExprKind::Select { arg: arg1, arms: arms1 },
+            ExprKind::Select(SelectExpr { arg: arg0, arms: arms0 }),
+            ExprKind::Select(SelectExpr { arg: arg1, arms: arms1 }),
         ) => {
             dbg!(
                 dbg!(check(arg0, arg1))
