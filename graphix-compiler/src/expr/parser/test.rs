@@ -1103,7 +1103,7 @@ fn arrayref1() {
 fn arrayref2() {
     let e = ExprKind::ArraySlice {
         source: Arc::new(ExprKind::Ref { name: ["foo"].into() }.to_expr_nopos()),
-        start: Some(Arc::new(ExprKind::Constant(Value::U64(1)).to_expr_nopos())),
+        start: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
         end: None,
     }
     .to_expr_nopos();
@@ -1117,7 +1117,7 @@ fn arrayref3() {
     let e = ExprKind::ArraySlice {
         source: Arc::new(ExprKind::Ref { name: ["foo"].into() }.to_expr_nopos()),
         start: None,
-        end: Some(Arc::new(ExprKind::Constant(Value::U64(1)).to_expr_nopos())),
+        end: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
     }
     .to_expr_nopos();
     let s = "foo[..1]";
@@ -1129,8 +1129,8 @@ fn arrayref3() {
 fn arrayref4() {
     let e = ExprKind::ArraySlice {
         source: Arc::new(ExprKind::Ref { name: ["foo"].into() }.to_expr_nopos()),
-        start: Some(Arc::new(ExprKind::Constant(Value::U64(1)).to_expr_nopos())),
-        end: Some(Arc::new(ExprKind::Constant(Value::U64(10)).to_expr_nopos())),
+        start: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
+        end: Some(Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos())),
     }
     .to_expr_nopos();
     let s = "foo[1..10]";
@@ -1324,13 +1324,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = r#"select foo(b) {
-    Array<i64> as [a, _, b] if a < 10 => a * 2,
-    Array<i64> as [a, b..] => a,
-    Array<i64> as [a.., b] => a,
-    Array<i64> as [1, 2, 42, a] => a,
-    Foo as { foo: 42, bar: _, baz, foobar: a, .. } => a,
-    a => a
-}"#;
-    dbg!(parse_prop0(s).unwrap());
+    let s = "foo[1..]";
+    dbg!(parse_one(s).unwrap());
 }
