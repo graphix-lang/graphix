@@ -1,7 +1,10 @@
 use super::AndAc;
 use crate::{
     env::Env,
-    expr::ModPath,
+    expr::{
+        print::{PrettyBuf, PrettyDisplay},
+        ModPath,
+    },
     typ::{ContainsFlags, TVar, Type},
     Rt, UserEvent,
 };
@@ -14,7 +17,7 @@ use poolshark::local::LPooled;
 use smallvec::{smallvec, SmallVec};
 use std::{
     cmp::{Eq, Ordering, PartialEq},
-    fmt::{self, Debug},
+    fmt::{self, Debug, Write},
 };
 use triomphe::Arc;
 
@@ -543,6 +546,81 @@ impl fmt::Display for FnType {
             Type::Bottom => Ok(()),
             Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
             t => write!(f, " throws {t}"),
+        }
+    }
+}
+
+impl PrettyDisplay for FnType {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        let constraints = self.constraints.read();
+        if constraints.is_empty() {
+            writeln!(buf, "fn(")?;
+        } else {
+            writeln!(buf, "fn<")?;
+            buf.with_indent(2, |buf| {
+                for (i, (tv, t)) in constraints.iter().enumerate() {
+                    write!(buf, "{tv}: ")?;
+                    buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                    if i < constraints.len() - 1 {
+                        buf.kill_newline();
+                        writeln!(buf, ",")?;
+                    }
+                }
+                Ok(())
+            })?;
+            writeln!(buf, ">(")?;
+        }
+        buf.with_indent(2, |buf| {
+            for (i, a) in self.args.iter().enumerate() {
+                match &a.label {
+                    Some((l, true)) => write!(buf, "?#{l}: ")?,
+                    Some((l, false)) => write!(buf, "#{l}: ")?,
+                    None => (),
+                }
+                buf.with_indent(2, |buf| a.typ.fmt_pretty(buf))?;
+                if i < self.args.len() - 1 || self.vargs.is_some() {
+                    buf.kill_newline();
+                    writeln!(buf, ",")?;
+                }
+            }
+            if let Some(vargs) = &self.vargs {
+                write!(buf, "@args: ")?;
+                buf.with_indent(2, |buf| vargs.fmt_pretty(buf))?;
+            }
+            Ok(())
+        })?;
+        match &self.rtype {
+            Type::Fn(ft) => {
+                write!(buf, ") -> (")?;
+                ft.fmt_pretty(buf)?;
+                buf.kill_newline();
+                writeln!(buf, ")")?;
+            }
+            Type::ByRef(t) => match &**t {
+                Type::Fn(ft) => {
+                    write!(buf, ") -> &(")?;
+                    ft.fmt_pretty(buf)?;
+                    buf.kill_newline();
+                    writeln!(buf, ")")?;
+                }
+                t => {
+                    write!(buf, ") -> &")?;
+                    t.fmt_pretty(buf)?;
+                }
+            },
+            t => {
+                write!(buf, ") -> ")?;
+                t.fmt_pretty(buf)?;
+            }
+        }
+        match &self.throws {
+            Type::Bottom => Ok(()),
+            Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
+            t => {
+                buf.kill_newline();
+                write!(buf, " throws ")?;
+                t.fmt_pretty(buf)
+            }
         }
     }
 }

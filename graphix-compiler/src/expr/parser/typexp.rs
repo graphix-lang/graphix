@@ -59,26 +59,26 @@ where
     I::Range: Range,
 {
     choice((
-        string("i8").map(|_| Typ::I8),
-        string("u8").map(|_| Typ::U8),
-        string("i16").map(|_| Typ::I16),
-        string("u16").map(|_| Typ::U16),
-        string("u32").map(|_| Typ::U32),
-        string("v32").map(|_| Typ::V32),
-        string("i32").map(|_| Typ::I32),
-        string("z32").map(|_| Typ::Z32),
-        string("u64").map(|_| Typ::U64),
-        string("v64").map(|_| Typ::V64),
+        attempt(string("i8")).map(|_| Typ::I8),
+        attempt(string("i16")).map(|_| Typ::I16),
+        attempt(string("i32")).map(|_| Typ::I32),
         string("i64").map(|_| Typ::I64),
+        attempt(string("u8")).map(|_| Typ::U8),
+        attempt(string("u16")).map(|_| Typ::U16),
+        attempt(string("u32")).map(|_| Typ::U32),
+        string("u64").map(|_| Typ::U64),
+        attempt(string("v32")).map(|_| Typ::V32),
+        string("v64").map(|_| Typ::V64),
+        attempt(string("z32")).map(|_| Typ::Z32),
         string("z64").map(|_| Typ::Z64),
-        string("f32").map(|_| Typ::F32),
+        attempt(string("f32")).map(|_| Typ::F32),
         string("f64").map(|_| Typ::F64),
-        string("decimal").map(|_| Typ::Decimal),
-        string("datetime").map(|_| Typ::DateTime),
+        attempt(string("decimal")).map(|_| Typ::Decimal),
+        attempt(string("datetime")).map(|_| Typ::DateTime),
         string("duration").map(|_| Typ::Duration),
+        attempt(string("bytes")).map(|_| Typ::Bytes),
         string("bool").map(|_| Typ::Bool),
         string("string").map(|_| Typ::String),
-        string("bytes").map(|_| Typ::Bytes),
         string("error").map(|_| Typ::Error),
         string("array").map(|_| Typ::Array),
         string("null").map(|_| Typ::Null),
@@ -151,7 +151,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    string("fn")
+    attempt(string("fn"))
         .with((
             fnconstraints(),
             fnargs(),
@@ -296,15 +296,15 @@ parser! {
             structtyp(),
             varianttyp(),
             fntype().map(|f| Type::Fn(Arc::new(f))),
-            string("Array").with(between(sptoken('<'), sptoken('>'), typ()))
+            attempt(string("Array")).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Array(Arc::new(t))),
+            string("Any").map(|_| Type::Any),
             string("Map").with(between(
                 sptoken('<'), sptoken('>'),
                 (typ().skip(sptoken(',')), typ())
             )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
             string("Error").with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
-            string("Any").map(|_| Type::Any),
             typeprim().map(|typ| Type::Primitive(typ.into())),
             tvar().map(|tv| Type::TVar(tv)),
             typref(),
@@ -320,7 +320,7 @@ where
 {
     (
         position(),
-        string("type").with(sptypname()),
+        attempt(string("type")).with(sptypname()),
         spaces().with(optional(between(
             token('<'),
             sptoken('>'),

@@ -12,7 +12,7 @@ use combine::{
     parser::char::{space, string},
     position,
     stream::{position::SourcePosition, Range},
-    ParseError, Parser, RangeStream,
+    token, ParseError, Parser, RangeStream,
 };
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -123,7 +123,7 @@ where
     I::Range: Range,
 {
     between(
-        sptoken('{'),
+        token('{'),
         sptoken('}'),
         sep_by1_tok_exp(expr(), attempt(sptoken(';')), sptoken('}'), |pos| {
             ExprKind::NoOp(";").to_expr(pos)
@@ -140,8 +140,9 @@ where
 {
     (
         position(),
-        string("mod").with(space()).with(spfname()),
-        optional(choice((attempt(inline_module()), attempt(dynamic_module()))))
+        attempt(string("mod")).with(space()).with(spfname()),
+        spaces()
+            .with(optional(choice((inline_module(), dynamic_module()))))
             .map(|m| m.unwrap_or(ModuleKind::Unresolved)),
     )
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
@@ -153,6 +154,6 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), string("use").with(space()).with(spmodpath()))
+    (position(), attempt(string("use")).with(space()).with(spmodpath()))
         .map(|(pos, name)| ExprKind::Use { name }.to_expr(pos))
 }

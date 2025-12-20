@@ -23,7 +23,7 @@ use smallvec::{smallvec, SmallVec};
 use std::{
     cmp::{Eq, PartialEq},
     collections::hash_map::Entry,
-    fmt::{self, Debug},
+    fmt::{self, Debug, Write},
     iter,
 };
 use triomphe::Arc;
@@ -2148,7 +2148,116 @@ impl fmt::Display for Type {
 }
 
 impl PrettyDisplay for Type {
-    fn fmt_pretty_inner(&self, _buf: &mut PrettyBuf) -> fmt::Result {
-        todo!()
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        match self {
+            Self::Bottom => writeln!(buf, "_"),
+            Self::Any => writeln!(buf, "Any"),
+            Self::Ref { scope: _, name, params } => {
+                if params.is_empty() {
+                    writeln!(buf, "{name}")
+                } else {
+                    writeln!(buf, "{name}<")?;
+                    buf.with_indent(2, |buf| {
+                        for (i, t) in params.iter().enumerate() {
+                            t.fmt_pretty(buf)?;
+                            if i < params.len() - 1 {
+                                buf.kill_newline();
+                                writeln!(buf, ",")?;
+                            }
+                        }
+                        Ok(())
+                    })?;
+                    writeln!(buf, ">")
+                }
+            }
+            Self::TVar(tv) => writeln!(buf, "{tv}"),
+            Self::Fn(t) => t.fmt_pretty(buf),
+            Self::Error(t) => {
+                writeln!(buf, "Error<")?;
+                buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                writeln!(buf, ">")
+            }
+            Self::Array(t) => {
+                writeln!(buf, "Array<")?;
+                buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                writeln!(buf, ">")
+            }
+            Self::Map { key, value } => {
+                writeln!(buf, "Map<")?;
+                buf.with_indent(2, |buf| {
+                    key.fmt_pretty(buf)?;
+                    buf.kill_newline();
+                    writeln!(buf, ",")?;
+                    value.fmt_pretty(buf)
+                })?;
+                writeln!(buf, ">")
+            }
+            Self::ByRef(t) => {
+                write!(buf, "&")?;
+                t.fmt_pretty(buf)
+            }
+            Self::Tuple(ts) => {
+                writeln!(buf, "(")?;
+                buf.with_indent(2, |buf| {
+                    for (i, t) in ts.iter().enumerate() {
+                        t.fmt_pretty(buf)?;
+                        if i < ts.len() - 1 {
+                            buf.kill_newline();
+                            writeln!(buf, ",")?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                writeln!(buf, ")")
+            }
+            Self::Variant(tag, ts) if ts.is_empty() => writeln!(buf, "`{tag}"),
+            Self::Variant(tag, ts) => {
+                writeln!(buf, "`{tag}(")?;
+                buf.with_indent(2, |buf| {
+                    for (i, t) in ts.iter().enumerate() {
+                        t.fmt_pretty(buf)?;
+                        if i < ts.len() - 1 {
+                            buf.kill_newline();
+                            writeln!(buf, ",")?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                writeln!(buf, ")")
+            }
+            Self::Struct(ts) => {
+                writeln!(buf, "{{")?;
+                buf.with_indent(2, |buf| {
+                    for (i, (n, t)) in ts.iter().enumerate() {
+                        write!(buf, "{n}: ")?;
+                        buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                        if i < ts.len() - 1 {
+                            buf.kill_newline();
+                            writeln!(buf, ",")?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                writeln!(buf, "}}")
+            }
+            Self::Set(s) => {
+                writeln!(buf, "[")?;
+                buf.with_indent(2, |buf| {
+                    for (i, t) in s.iter().enumerate() {
+                        t.fmt_pretty(buf)?;
+                        if i < s.len() - 1 {
+                            buf.kill_newline();
+                            writeln!(buf, ",")?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                writeln!(buf, "]")
+            }
+            Self::Primitive(_) => {
+                // Primitives are simple enough to just use Display
+                writeln!(buf, "{self}")
+            }
+        }
     }
 }

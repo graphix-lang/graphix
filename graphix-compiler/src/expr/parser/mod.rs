@@ -49,6 +49,9 @@ use arrayexp::{array, arrayref};
 mod arithexp;
 use arithexp::arith;
 
+#[cfg(test)]
+mod test;
+
 mod patternexp;
 use patternexp::{pattern, structure_pattern};
 
@@ -159,7 +162,7 @@ where
     I::Range: Range,
 {
     combine::parser::char::spaces().with(skip_many(
-        string("//")
+        attempt(string("//"))
             .with(not_followed_by(token('/')))
             .with(skip_many(none_of(['\n'])))
             .with(combine::parser::char::spaces()),
@@ -374,7 +377,7 @@ where
 {
     (
         position(),
-        string("any").with(between(
+        attempt(string("any")).with(between(
             sptoken('('),
             sptoken(')'),
             sep_by_tok(expr(), csep(), sptoken(')')),
@@ -393,14 +396,14 @@ where
 {
     (
         position(),
-        string("let")
+        attempt(string("let"))
             .with(spaces1())
             .with((
-                optional(string("rec").with(spaces1())),
+                optional(attempt(string("rec")).with(spaces1())),
                 structure_pattern(),
                 spaces().with(optional(token(':').with(typ()))),
             ))
-            .skip(spstring("=")),
+            .skip(sptoken('=')),
         expr(),
     )
         .map(|(pos, (rec, pattern, typ), value)| {
@@ -482,7 +485,10 @@ where
     static MUST_ESC: [char; 2] = ['\\', '\''];
     static ESC: LazyLock<Escape> =
         LazyLock::new(|| Escape::new('\\', &MUST_ESC, &[], None).unwrap());
-    (position(), between(string("r\'"), token('\''), escaped_string(&MUST_ESC, &ESC)))
+    (
+        position(),
+        between(attempt(string("r\'")), token('\''), escaped_string(&MUST_ESC, &ESC)),
+    )
         .map(|(pos, s): (_, String)| {
             ExprKind::Constant(Value::String(s.into())).to_expr(pos)
         })
@@ -496,7 +502,7 @@ where
 {
     (
         position(),
-        string("select").with(space()).with((
+        attempt(string("select")).with(space()).with((
             expr(),
             between(
                 sptoken('{'),
@@ -526,7 +532,7 @@ where
 {
     (
         position(),
-        string("cast").with(between(sptoken('<'), sptoken('>'), typ())),
+        attempt(string("cast")).with(between(sptoken('<'), sptoken('>'), typ())),
         between(sptoken('('), sptoken(')'), expr()),
     )
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
@@ -694,8 +700,8 @@ where
     I::Range: Range,
 {
     (
-        position().skip(string("try")).skip(space()),
-        sep_by1_tok(expr(), attempt(sptoken(';')), spstring("catch")),
+        position().skip(attempt(string("try"))).skip(space()),
+        sep_by1_tok(expr(), attempt(sptoken(';')), attempt(spstring("catch"))),
         spstring("catch").with(between(
             sptoken('('),
             sptoken(')'),

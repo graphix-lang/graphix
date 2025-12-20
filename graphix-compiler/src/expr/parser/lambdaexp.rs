@@ -22,7 +22,7 @@ use netidx::utils::Either;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-fn apply_pexp<I>() -> impl Parser<I, Output = Expr>
+pub(super) fn apply_pexp<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
