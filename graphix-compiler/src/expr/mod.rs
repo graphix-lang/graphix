@@ -198,7 +198,7 @@ pub struct SelectExpr {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ExprKind {
-    NoOp(&'static str),
+    NoOp,
     Constant(Value),
     Module { name: ArcStr, value: ModuleKind },
     Do { exprs: Arc<[Expr]> },
@@ -465,7 +465,7 @@ impl Expr {
         let init = f(init, self);
         match &self.kind {
             ExprKind::Constant(_)
-            | ExprKind::NoOp(_)
+            | ExprKind::NoOp
             | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::TypeDef { .. } => init,

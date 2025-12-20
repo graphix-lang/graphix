@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         parser::{
-            csep, expr, fname, sep_by1_tok, sep_by_tok, spaces, spstring, sptoken, typ,
-            typname,
+            csep, expr, fname, sep_by1_tok, sep_by_tok, spaces, spaces1, spstring,
+            sptoken, typ, typname,
         },
         Expr, Pattern, StructurePattern,
     },
@@ -10,8 +10,8 @@ use crate::{
 };
 use arcstr::{literal, ArcStr};
 use combine::{
-    attempt, between, choice, not_followed_by, optional,
-    parser::char::{space, string},
+    attempt, between, choice, optional,
+    parser::char::string,
     stream::{position::SourcePosition, Range},
     token, unexpected_any, value, ParseError, Parser, RangeStream,
 };
@@ -21,7 +21,9 @@ use netidx_value::parser::{value as parse_value, VAL_ESC, VAL_MUST_ESC};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-fn slice_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
+pub(super) fn slice_pattern<I>(
+    all: Option<ArcStr>,
+) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -50,11 +52,11 @@ where
         sep_by_tok(
             spaces().with(choice((
                 string("..").map(|_| Either::Right(None)),
-                fname().skip(spstring("..")).map(|n| Either::Right(Some(n))),
+                attempt(fname().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
                 structure_pattern().map(|p| Either::Left(p)),
             ))),
             csep(),
-            sptoken(']'),
+            token(']'),
         ),
     )
     .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
@@ -101,7 +103,7 @@ where
     between(
         token('('),
         sptoken(')'),
-        sep_by1_tok(structure_pattern(), csep(), sptoken(')')),
+        sep_by1_tok(structure_pattern(), csep(), token(')')),
     )
     .then(move |mut binds: LPooled<Vec<StructurePattern>>| {
         if binds.len() < 2 {
@@ -125,7 +127,7 @@ where
         optional(between(
             token('('),
             sptoken(')'),
-            sep_by1_tok(structure_pattern(), csep(), sptoken(')')),
+            sep_by1_tok(structure_pattern(), csep(), token(')')),
         )),
     )
         .map(
@@ -144,7 +146,9 @@ where
         )
 }
 
-fn struct_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
+pub(super) fn struct_pattern<I>(
+    all: Option<ArcStr>,
+) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -153,19 +157,26 @@ where
     between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok(
-            spaces().with(choice((
+        spaces().with(sep_by1_tok(
+            choice((
                 string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
-                attempt(fname().skip(not_followed_by(sptoken(':')))).map(|s| {
-                    let p = StructurePattern::Bind(s.clone());
-                    (s, p, true)
-                }),
-                (fname().skip(sptoken(':')), structure_pattern())
-                    .map(|(s, p)| (s, p, true)),
-            ))),
+                fname()
+                    .skip(spaces())
+                    .then(|name| {
+                        optional(token(':').with(structure_pattern()))
+                            .map(move |pat| (name.clone(), pat))
+                    })
+                    .map(|(name, pat)| match pat {
+                        Some(pat) => (name, pat, true),
+                        None => {
+                            let pat = StructurePattern::Bind(name.clone());
+                            (name, pat, true)
+                        }
+                    }),
+            )),
             csep(),
-            sptoken('}'),
-        ),
+            token('}'),
+        )),
     )
     .then(move |mut binds: LPooled<Vec<(ArcStr, StructurePattern, bool)>>| {
         let mut exhaustive = true;
@@ -263,9 +274,9 @@ where
     I::Range: Range,
 {
     (
-        optional(attempt(typ().skip(space().with(spstring("as "))))),
+        optional(attempt(typ().skip(spaces1()).skip(string("as")).skip(spaces1()))),
         structure_pattern(),
-        optional(attempt(space().with(spstring("if").with(space()).with(expr())))),
+        optional(attempt(spaces1().with(string("if")).with(spaces1()).with(expr()))),
     )
         .map(
             |(type_predicate, structure_predicate, guard): (

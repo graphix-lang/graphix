@@ -14,7 +14,7 @@ use arcstr::ArcStr;
 use combine::{
     attempt, between, choice, not_followed_by, optional,
     parser::char::string,
-    position, sep_by,
+    position,
     stream::{position::SourcePosition, Range},
     token, unexpected_any, value, ParseError, Parser, RangeStream,
 };
@@ -64,7 +64,7 @@ where
     (
         position(),
         apply_pexp(),
-        between(sptoken('('), sptoken(')'), sep_by_tok(applyarg(), csep(), sptoken(')'))),
+        between(sptoken('('), sptoken(')'), sep_by_tok(applyarg(), csep(), token(')'))),
     )
         .then(|(pos, function, args): (_, Expr, Vec<(Option<ArcStr>, Expr)>)| {
             let mut anon = false;
@@ -95,7 +95,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    sep_by(
+    sep_by_tok(
         (
             spaces().with(choice((
                 string("@args").map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
@@ -106,6 +106,7 @@ where
             spaces().with(optional(token('=').with(expr()))),
         ),
         csep(),
+        sptoken('|'),
     )
     .then(
         |mut v: LPooled<Vec<((bool, StructurePattern), Option<Type>, Option<Expr>)>>| {
@@ -171,7 +172,7 @@ where
     (
         position(),
         spaces()
-            .with(sep_by((tvar().skip(sptoken(':')), typ()), csep()))
+            .with(sep_by_tok((tvar().skip(sptoken(':')), typ()), csep(), token('|')))
             .map(|mut tvs: LPooled<Vec<(TVar, Type)>>| Arc::from_iter(tvs.drain(..))),
         between(sptoken('|'), sptoken('|'), lambda_args()),
         optional(attempt(spaces().with(string("->")).with(typ()))),

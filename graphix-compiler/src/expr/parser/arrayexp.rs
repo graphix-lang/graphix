@@ -22,7 +22,7 @@ where
 {
     (
         position(),
-        between(token('['), sptoken(']'), sep_by_tok(expr(), csep(), sptoken(']'))),
+        between(token('['), sptoken(']'), sep_by_tok(expr(), csep(), token(']'))),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
             ExprKind::Array { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)

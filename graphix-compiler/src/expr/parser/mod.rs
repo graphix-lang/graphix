@@ -227,13 +227,13 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(ident(false).then(|s| {
+    ident(false).then(|s| {
         if RESERVED.contains(&s.as_str()) {
             unexpected_any("can't use keyword as a function or variable name").left()
         } else {
             value(s).right()
         }
-    }))
+    })
 }
 
 fn spfname<I>() -> impl Parser<I, Output = ArcStr>
@@ -316,9 +316,9 @@ where
         position(),
         between(
             token('{'),
-            token('}'),
+            sptoken('}'),
             sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp(";").to_expr(pos)
+                ExprKind::NoOp.to_expr(pos)
             }),
         ),
     )
@@ -511,16 +511,16 @@ where
 {
     (
         position(),
-        attempt(string("select")).with(space()).with((
+        attempt(string("select")).with(spaces1()).with((
             expr(),
             between(
                 sptoken('{'),
                 sptoken('}'),
-                sep_by1_tok(
+                spaces().with(sep_by1_tok(
                     (pattern(), spstring("=>").with(expr())),
                     csep(),
-                    sptoken('}'),
-                ),
+                    token('}'),
+                )),
             ),
         )),
     )
@@ -555,7 +555,7 @@ where
 {
     (
         position(),
-        between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), sptoken(')'))),
+        between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), token(')'))),
     )
         .then(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
             if exprs.len() < 2 {
@@ -581,11 +581,11 @@ where
         between(
             token('{'),
             sptoken('}'),
-            sep_by1_tok(
-                (spfname(), spaces().with(optional(token(':').with(expr())))),
+            spaces().with(sep_by1_tok(
+                (fname(), spaces().with(optional(token(':').with(expr())))),
                 csep(),
-                sptoken('}'),
-            ),
+                token('}'),
+            )),
         ),
     )
         .then(|(pos, mut exprs): (_, LPooled<Vec<(ArcStr, Option<Expr>)>>)| {
@@ -620,7 +620,7 @@ where
         between(
             token('{'),
             sptoken('}'),
-            sep_by_tok((expr(), spstring("=>").with(expr())), csep(), sptoken('}')),
+            sep_by_tok((expr(), spstring("=>").with(expr())), csep(), token('}')),
         ),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<(Expr, Expr)>>)| {
@@ -640,7 +640,7 @@ where
         spaces().with(optional(between(
             token('('),
             sptoken(')'),
-            sep_by1_tok(expr(), csep(), sptoken(')')),
+            sep_by1_tok(expr(), csep(), token(')')),
         ))),
     )
         .map(|(pos, tag, args): (_, ArcStr, Option<LPooled<Vec<Expr>>>)| {
@@ -668,7 +668,7 @@ where
                 sep_by1_tok(
                     (spfname(), spaces().with(optional(token(':').with(expr())))),
                     csep(),
-                    sptoken('}'),
+                    token('}'),
                 ),
             ),
         ),
@@ -710,8 +710,8 @@ where
 {
     (
         position().skip(attempt(string("try"))).skip(space()),
-        sep_by1_tok(expr(), semisep(), attempt(string("catch"))),
-        string("catch").with(between(
+        sep_by1_tok(expr(), semisep(), string("catch")),
+        spstring("catch").with(between(
             sptoken('('),
             sptoken(')'),
             (spfname(), spaces().with(optional(token(':').with(typ())))),
@@ -805,7 +805,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<Expr>> =
-        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp(";").to_expr(pos))
+        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp.to_expr(pos))
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(&*ori.text))

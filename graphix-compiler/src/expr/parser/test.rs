@@ -739,8 +739,8 @@ fn inline_module() {
         ])),
     }
     .to_expr_nopos();
-    let s = r#"pub mod foo {
-        pub let z = 42;
+    let s = r#"mod foo {
+        let z = 42;
         let m = 42
     }"#;
     assert_eq!(exp, parse_one(s).unwrap());
@@ -750,7 +750,7 @@ fn inline_module() {
 fn external_module() {
     let exp = ExprKind::Module { name: literal!("foo"), value: ModuleKind::Unresolved }
         .to_expr_nopos();
-    let s = r#"pub mod foo"#;
+    let s = r#"mod foo"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
 
@@ -1143,8 +1143,8 @@ fn qop() {
     let e = ExprKind::Qop(Arc::new(
         ExprKind::ArraySlice {
             source: Arc::new(ExprKind::Ref { name: ["foo"].into() }.to_expr_nopos()),
-            start: Some(Arc::new(ExprKind::Constant(Value::U64(1)).to_expr_nopos())),
-            end: Some(Arc::new(ExprKind::Constant(Value::U64(10)).to_expr_nopos())),
+            start: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
+            end: Some(Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos())),
         }
         .to_expr_nopos(),
     ))
@@ -1314,7 +1314,7 @@ fn tupleref() {
 
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
-    crate::expr::parser::do_block()
+    crate::expr::parser::select()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1324,6 +1324,13 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = r#"{ let baz = 42; baz }"#;
-    dbg!(parse_one(s).unwrap());
+    let s = r#"select foo(b) {
+    Array<i64> as [a, _, b] if a < 10 => a * 2,
+    Array<i64> as [a, b..] => a,
+    Array<i64> as [a.., b] => a,
+    Array<i64> as [1, 2, 42, a] => a,
+    Foo as { foo: 42, bar: _, baz, foobar: a, .. } => a,
+    a => a
+}"#;
+    dbg!(parse_prop0(s).unwrap());
 }

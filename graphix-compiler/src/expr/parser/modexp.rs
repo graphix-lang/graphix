@@ -41,7 +41,7 @@ parser! {
                     spfname().skip(sptoken(':')).skip(spstring("sig")),
                     spaces().with(between(
                         token('{'),
-                        token('}'),
+                        sptoken('}'),
                         sep_by1_tok(sig_item(), semisep(), token('}'))
                     ))
                 )).map({
@@ -69,14 +69,14 @@ where
             .with(between(
                 sptoken('['),
                 sptoken(']'),
-                sep_by1_tok(spaces().with(modpath()), csep(), sptoken(']')),
+                sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
             ))
             .map(|l: Vec<ModPath>| Sandbox::Blacklist(Arc::from(l))),
         spstring("whitelist")
             .with(between(
                 sptoken('['),
                 sptoken(']'),
-                sep_by1_tok(spaces().with(modpath()), csep(), sptoken(']')),
+                sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
             ))
             .map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l))),
     ))
@@ -97,7 +97,7 @@ where
                 spstring("sandbox").with(space()).with(sandbox()),
                 spstring("sig").with(spaces()).with(between(
                     token('{'),
-                    token('}'),
+                    sptoken('}'),
                     sep_by1_tok(sig_item(), semisep(), token('}')).map(
                         |i: Vec<SigItem>| Sig { toplevel: true, items: Arc::from(i) },
                     ),
@@ -120,9 +120,9 @@ where
 {
     between(
         token('{'),
-        token('}'),
+        sptoken('}'),
         sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-            ExprKind::NoOp(";").to_expr(pos)
+            ExprKind::NoOp.to_expr(pos)
         }),
     )
     .map(|mut m: LPooled<Vec<Expr>>| ModuleKind::Inline(Arc::from_iter(m.drain(..))))

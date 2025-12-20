@@ -8,7 +8,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, not_followed_by, optional,
+    attempt, between, choice, look_ahead, not_followed_by, optional,
     parser::char::{alpha_num, string},
     position, sep_by1,
     stream::{position::SourcePosition, Range},
@@ -35,7 +35,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    sep_by1(choice((attempt(spfname()), sptypname())), string("::")).then(
+    sep_by1(spaces().with(choice((fname(), typname()))), string("::")).then(
         |mut parts: LPooled<Vec<ArcStr>>| {
             if parts.len() == 0 {
                 unexpected_any("empty type path").left()
@@ -62,26 +62,26 @@ where
         attempt(string("i8")).map(|_| Typ::I8),
         attempt(string("i16")).map(|_| Typ::I16),
         attempt(string("i32")).map(|_| Typ::I32),
-        string("i64").map(|_| Typ::I64),
+        attempt(string("i64")).map(|_| Typ::I64),
         attempt(string("u8")).map(|_| Typ::U8),
         attempt(string("u16")).map(|_| Typ::U16),
         attempt(string("u32")).map(|_| Typ::U32),
-        string("u64").map(|_| Typ::U64),
+        attempt(string("u64")).map(|_| Typ::U64),
         attempt(string("v32")).map(|_| Typ::V32),
-        string("v64").map(|_| Typ::V64),
+        attempt(string("v64")).map(|_| Typ::V64),
         attempt(string("z32")).map(|_| Typ::Z32),
-        string("z64").map(|_| Typ::Z64),
+        attempt(string("z64")).map(|_| Typ::Z64),
         attempt(string("f32")).map(|_| Typ::F32),
-        string("f64").map(|_| Typ::F64),
+        attempt(string("f64")).map(|_| Typ::F64),
         attempt(string("decimal")).map(|_| Typ::Decimal),
         attempt(string("datetime")).map(|_| Typ::DateTime),
-        string("duration").map(|_| Typ::Duration),
+        attempt(string("duration")).map(|_| Typ::Duration),
         attempt(string("bytes")).map(|_| Typ::Bytes),
-        string("bool").map(|_| Typ::Bool),
-        string("string").map(|_| Typ::String),
-        string("error").map(|_| Typ::Error),
-        string("array").map(|_| Typ::Array),
-        string("null").map(|_| Typ::Null),
+        attempt(string("bool")).map(|_| Typ::Bool),
+        attempt(string("string")).map(|_| Typ::String),
+        attempt(string("error")).map(|_| Typ::Error),
+        attempt(string("array")).map(|_| Typ::Array),
+        attempt(string("null")).map(|_| Typ::Null),
     ))
     .skip(not_followed_by(choice((alpha_num(), token('_')))))
 }
@@ -99,7 +99,7 @@ where
             sep_by1_tok(
                 (spaces().with(tvar()).skip(sptoken(':')), typ()),
                 csep(),
-                sptoken('>'),
+                token('>'),
             ),
         )))
         .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| match cs {
@@ -140,7 +140,7 @@ where
                 ))
             }),
             csep(),
-            sptoken(')'),
+            token(')'),
         ),
     ))
 }
@@ -210,7 +210,7 @@ where
         spaces().with(optional(between(
             token('('),
             sptoken(')'),
-            sep_by1_tok(typ(), csep(), sptoken(')')),
+            sep_by1_tok(typ(), csep(), token(')')),
         ))),
     )
         .map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
@@ -231,7 +231,7 @@ where
     between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok((spfname().skip(sptoken(':')), typ()), csep(), sptoken('}')),
+        sep_by1_tok((spfname().skip(sptoken(':')), typ()), csep(), token('}')),
     )
     .then(|mut exps: LPooled<Vec<(ArcStr, Type)>>| {
         let s = exps.iter().map(|(n, _)| n).collect::<LPooled<FxHashSet<_>>>();
@@ -250,7 +250,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(token('('), sptoken(')'), sep_by1_tok(typ(), csep(), sptoken(')'))).map(
+    between(token('('), sptoken(')'), sep_by1_tok(typ(), csep(), token(')'))).map(
         |mut exps: LPooled<Vec<Type>>| {
             if exps.len() == 1 {
                 exps.pop().unwrap()
@@ -261,7 +261,7 @@ where
     )
 }
 
-fn typref<I>() -> impl Parser<I, Output = Type>
+pub(super) fn typref<I>() -> impl Parser<I, Output = Type>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -269,11 +269,16 @@ where
 {
     (
         typath(),
-        spaces().with(optional(between(
-            token('<'),
-            sptoken('>'),
-            sep_by1_tok(typ(), csep(), sptoken('>')),
-        ))),
+        look_ahead(optional(attempt(sptoken('<')))).then(|o| match o {
+            None => value(None).left(),
+            Some(_) => between(
+                sptoken('<'),
+                sptoken('>'),
+                sep_by1_tok(typ(), csep(), token('>')),
+            )
+            .map(Some)
+            .right(),
+        }),
     )
         .map(|(n, params): (ModPath, Option<LPooled<Vec<Type>>>)| {
             let params = params
@@ -290,7 +295,7 @@ parser! {
         spaces().with(choice((
             token('&').with(typ()).map(|t| Type::ByRef(Arc::new(t))),
             token('_').map(|_| Type::Bottom),
-            between(token('['), sptoken(']'), sep_by_tok(typ(), csep(), sptoken(']')))
+            between(token('['), sptoken(']'), sep_by_tok(typ(), csep(), token(']')))
                 .map(|mut ts: LPooled<Vec<Type>>| Type::flatten_set(ts.drain(..))),
             tupletyp(),
             structtyp(),
@@ -298,12 +303,12 @@ parser! {
             fntype().map(|f| Type::Fn(Arc::new(f))),
             attempt(string("Array")).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Array(Arc::new(t))),
-            string("Any").map(|_| Type::Any),
-            string("Map").with(between(
+            attempt(string("Any")).map(|_| Type::Any),
+            attempt(string("Map")).with(between(
                 sptoken('<'), sptoken('>'),
                 (typ().skip(sptoken(',')), typ())
             )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
-            string("Error").with(between(sptoken('<'), sptoken('>'), typ()))
+            attempt(string("Error")).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
             typeprim().map(|typ| Type::Primitive(typ.into())),
             tvar().map(|tv| Type::TVar(tv)),
@@ -330,7 +335,7 @@ where
                     spaces().then(|_| optional(token(':').with(typ()))),
                 ),
                 csep(),
-                sptoken('>'),
+                token('>'),
             ),
         ))),
         sptoken('=').with(typ()),

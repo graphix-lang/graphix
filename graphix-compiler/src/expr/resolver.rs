@@ -264,7 +264,7 @@ impl Expr {
                 })
             }
             ExprKind::Constant(_)
-            | ExprKind::NoOp(_)
+            | ExprKind::NoOp
             | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::StructRef { .. }

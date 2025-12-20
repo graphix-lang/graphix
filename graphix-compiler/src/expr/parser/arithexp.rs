@@ -116,14 +116,14 @@ where
             string("*"),
             string("/"),
             string("%"),
-            string("=="),
-            string("!="),
+            attempt(string("==")),
+            attempt(string("!=")),
             attempt(string(">=")),
             attempt(string("<=")),
             string(">"),
             string("<"),
-            string("&&"),
-            string("||"),
+            attempt(string("&&")),
+            attempt(string("||")),
             string("~"),
         ))
         .map(|op: &str| match op {
