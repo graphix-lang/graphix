@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     expr::{
-        parser::lambdaexp::apply_pexp, ApplyExpr, Arg, BindExpr, Doc, LambdaExpr,
-        ModuleKind, SelectExpr, StructExpr, StructurePattern,
+        ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
+        StructurePattern,
     },
     typ::{FnArgType, TVar, Type},
 };
@@ -1313,8 +1313,8 @@ fn tupleref() {
 }
 
 #[allow(unused)]
-fn parse_(s: &str) -> anyhow::Result<Expr> {
-    apply()
+fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
+    crate::expr::parser::do_block()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1324,7 +1324,6 @@ fn parse_(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "a(|a, @args| 'a)";
-    let s = "a(42)";
+    let s = r#"{ let baz = 42; baz }"#;
     dbg!(parse_one(s).unwrap());
 }

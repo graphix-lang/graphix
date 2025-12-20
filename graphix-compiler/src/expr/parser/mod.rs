@@ -288,6 +288,15 @@ where
     attempt(spaces().with(token(',')).skip(spaces()))
 }
 
+fn semisep<I>() -> impl Parser<I, Output = char>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(spaces().with(token(';')).skip(spaces()))
+}
+
 fn sptoken<I>(t: char) -> impl Parser<I, Output = char>
 where
     I: RangeStream<Token = char>,
@@ -307,8 +316,8 @@ where
         position(),
         between(
             token('{'),
-            sptoken('}'),
-            sep_by1_tok_exp(expr(), attempt(sptoken(';')), sptoken('}'), |pos| {
+            token('}'),
+            sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
                 ExprKind::NoOp(";").to_expr(pos)
             }),
         ),
@@ -701,8 +710,8 @@ where
 {
     (
         position().skip(attempt(string("try"))).skip(space()),
-        sep_by1_tok(expr(), attempt(sptoken(';')), attempt(spstring("catch"))),
-        spstring("catch").with(between(
+        sep_by1_tok(expr(), semisep(), attempt(string("catch"))),
+        string("catch").with(between(
             sptoken('('),
             sptoken(')'),
             (spfname(), spaces().with(optional(token(':').with(typ())))),
@@ -796,14 +805,12 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<Expr>> =
-        sep_by1_tok_exp(expr(), attempt(sptoken(';')), spaces().with(eof()), |pos| {
-            ExprKind::NoOp(";").to_expr(pos)
-        })
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(&*ori.text))
-        .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
+        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp(";").to_expr(pos))
+            .skip(spaces())
+            .skip(eof())
+            .easy_parse(position::Stream::new(&*ori.text))
+            .map(|(r, _)| r)
+            .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
     Ok(Arc::from_iter(r.drain(..)))
 }
 
@@ -814,16 +821,13 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Arc<[SigItem]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
-    let mut r: LPooled<Vec<Option<SigItem>>> = sep_by1(
-        choice((sig_item().map(Some), look_ahead(spaces().with(eof())).map(|_| None))),
-        attempt(sptoken(';')),
-    )
-    .skip(spaces())
-    .skip(eof())
-    .easy_parse(position::Stream::new(&*ori.text))
-    .map(|(r, _)| r)
-    .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
-    Ok(Arc::from_iter(r.drain(..).filter_map(|e| e)))
+    let mut r: LPooled<Vec<SigItem>> = sep_by1_tok(sig_item(), semisep(), eof())
+        .skip(spaces())
+        .skip(eof())
+        .easy_parse(position::Stream::new(&*ori.text))
+        .map(|(r, _)| r)
+        .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
+    Ok(Arc::from_iter(r.drain(..)))
 }
 
 /// Parse one and only one expression.

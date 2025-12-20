@@ -174,12 +174,12 @@ where
             .with(sep_by((tvar().skip(sptoken(':')), typ()), csep()))
             .map(|mut tvs: LPooled<Vec<(TVar, Type)>>| Arc::from_iter(tvs.drain(..))),
         between(sptoken('|'), sptoken('|'), lambda_args()),
-        spaces().with(optional(string("->").with(typ()))),
-        optional(attempt(spaces1().with(string("throws").with(spaces1()).with(typ())))),
+        optional(attempt(spaces().with(string("->")).with(typ()))),
+        optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),
         spaces1().with(choice((
             token('\'')
                 .with(fname())
-                .skip(not_followed_by(sptoken(':')))
+                .skip(not_followed_by(attempt(sptoken(':'))))
                 .map(Either::Right),
             expr().map(|e| Either::Left(e)),
         ))),

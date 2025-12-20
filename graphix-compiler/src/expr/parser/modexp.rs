@@ -3,7 +3,7 @@ use super::{
     sptoken, typ, typedef,
 };
 use crate::expr::{
-    parser::{sep_by1_tok_exp, spaces1},
+    parser::{semisep, sep_by1_tok_exp, spaces1},
     BindSig, Expr, ExprKind, ModPath, ModSig, ModuleKind, Sandbox, Sig, SigItem, SigKind,
 };
 use arcstr::ArcStr;
@@ -39,15 +39,11 @@ parser! {
                     }),
                 string("mod").with(space()).with((
                     spfname().skip(sptoken(':')).skip(spstring("sig")),
-                    between(
-                        sptoken('{'),
-                        sptoken('}'),
-                        sep_by1_tok(
-                            sig_item(),
-                            attempt(sptoken(';')),
-                            sptoken('}')
-                        )
-                    )
+                    spaces().with(between(
+                        token('{'),
+                        token('}'),
+                        sep_by1_tok(sig_item(), semisep(), token('}'))
+                    ))
                 )).map({
                     let doc = doc.clone();
                     move |(name, mut items): (ArcStr, LPooled<Vec<SigItem>>)| {
@@ -99,10 +95,10 @@ where
             sptoken('}'),
             (
                 spstring("sandbox").with(space()).with(sandbox()),
-                spstring("sig").with(between(
-                    sptoken('{'),
-                    sptoken('}'),
-                    sep_by1_tok(sig_item(), attempt(sptoken(';')), sptoken('}')).map(
+                spstring("sig").with(spaces()).with(between(
+                    token('{'),
+                    token('}'),
+                    sep_by1_tok(sig_item(), semisep(), token('}')).map(
                         |i: Vec<SigItem>| Sig { toplevel: true, items: Arc::from(i) },
                     ),
                 )),
@@ -124,8 +120,8 @@ where
 {
     between(
         token('{'),
-        sptoken('}'),
-        sep_by1_tok_exp(expr(), attempt(sptoken(';')), sptoken('}'), |pos| {
+        token('}'),
+        sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
             ExprKind::NoOp(";").to_expr(pos)
         }),
     )
