@@ -53,8 +53,8 @@ parser! {
                 attempt(qop(mapref())),
                 attempt(qop(apply())),
                 between(token('('), sptoken(')'), spaces().with(arith())),
-                qop(reference()),
                 literal(),
+                qop(reference()),
             )))
             .skip(spaces())
     }

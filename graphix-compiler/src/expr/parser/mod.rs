@@ -13,7 +13,7 @@ use combine::{
         combinator::recognize,
         range::{take_while, take_while1},
     },
-    position, sep_by, sep_by1, skip_many,
+    position, sep_by1, skip_many,
     stream::{
         position::{self, SourcePosition},
         Range,
@@ -25,7 +25,8 @@ use escaping::Escape;
 use fxhash::FxHashSet;
 use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
-    escaped_string, int, value as parse_value, VAL_ESC, VAL_MUST_ESC,
+    escaped_string, int, sep_by1_tok, sep_by_tok, value as parse_value, VAL_ESC,
+    VAL_MUST_ESC,
 };
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
@@ -79,56 +80,8 @@ pub const RESERVED: LazyLock<FxHashSet<&str>> = LazyLock::new(|| {
     ])
 });
 
-// sep_by1, but a separator terminator is allowed, and ignored
-fn sep_by1_tok<I, O, OC, EP, SP, TP>(
-    p: EP,
-    sep: SP,
-    term: TP,
-) -> impl Parser<I, Output = OC>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-    OC: Extend<O> + Default,
-    SP: Parser<I>,
-    EP: Parser<I, Output = O>,
-    TP: Parser<I>,
-{
-    sep_by1(choice((look_ahead(term).map(|_| None::<O>), p.map(Some))), sep).map(
-        |mut e: LPooled<Vec<Option<O>>>| {
-            let mut res = OC::default();
-            res.extend(e.drain(..).filter_map(|e| e));
-            res
-        },
-    )
-}
-
-// sep_by, but a separator terminator is allowed, and ignored
-fn sep_by_tok<I, O, OC, EP, SP, TP>(
-    p: EP,
-    sep: SP,
-    term: TP,
-) -> impl Parser<I, Output = OC>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-    OC: Extend<O> + Default,
-    SP: Parser<I>,
-    EP: Parser<I, Output = O>,
-    TP: Parser<I>,
-{
-    sep_by(choice((look_ahead(term).map(|_| None::<O>), p.map(Some))), sep).map(
-        |mut e: LPooled<Vec<Option<O>>>| {
-            let mut res = OC::default();
-            res.extend(e.drain(..).filter_map(|e| e));
-            res
-        },
-    )
-}
-
 // sep_by1 but a separator terminator is allowed and mapped to an output value
-fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
+pub fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
     p: EP,
     sep: SP,
     term: TP,
@@ -285,7 +238,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(spaces().with(token(',')).skip(spaces()))
+    attempt(spaces().with(token(','))).skip(spaces())
 }
 
 fn semisep<I>() -> impl Parser<I, Output = char>
@@ -294,7 +247,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(spaces().with(token(';')).skip(spaces()))
+    attempt(spaces().with(token(';'))).skip(spaces())
 }
 
 fn sptoken<I>(t: char) -> impl Parser<I, Output = char>
@@ -444,7 +397,7 @@ where
     (position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_followed_by(token('_'))))
         .then(|(pos, v)| match v {
             Value::String(_) => {
-                unexpected_any("parse error in string interpolation").left()
+                unexpected_any("parse error in st ring interpolation").left()
             }
             v => value(ExprKind::Constant(v).to_expr(pos)).right(),
         })

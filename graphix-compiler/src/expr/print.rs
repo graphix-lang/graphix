@@ -905,7 +905,7 @@ impl fmt::Display for ExprKind {
             ExprKind::Constant(v @ Value::String(_)) => {
                 v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
             }
-            ExprKind::NoOp => write!(f, ";"),
+            ExprKind::NoOp => Ok(()),
             ExprKind::Constant(v) => v.fmt_ext(f, &VAL_ESC, true),
             ExprKind::Bind(b) => write!(f, "{b}"),
             ExprKind::StructWith(sw) => write!(f, "{sw}"),

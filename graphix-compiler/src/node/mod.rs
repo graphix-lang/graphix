@@ -2,8 +2,7 @@ use crate::{
     env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     typ::{TVal, TVar, Type},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
-    CAST_ERR,
+    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent, CAST_ERR,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};

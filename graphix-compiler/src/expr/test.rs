@@ -16,7 +16,7 @@ use prop::option;
 use proptest::{collection, prelude::*};
 use rust_decimal::Decimal;
 use smallvec::SmallVec;
-use std::time::Duration;
+use std::{iter, time::Duration};
 
 const SLEN: usize = 16;
 
@@ -478,8 +478,23 @@ macro_rules! any {
 
 macro_rules! do_block {
     ($inner:expr) => {
-        collection::vec(prop_oneof![typedef(), usestmt(), $inner], (2, 10))
-            .prop_map(|e| ExprKind::Do { exprs: Arc::from(e) }.to_expr_nopos())
+        (
+            collection::vec(prop_oneof![typedef(), usestmt(), $inner], (2, 10)),
+            any::<bool>(),
+        )
+            .prop_map(|(e, nop)| {
+                if nop {
+                    ExprKind::Do {
+                        exprs: Arc::from_iter(
+                            e.into_iter()
+                                .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
+                        ),
+                    }
+                    .to_expr_nopos()
+                } else {
+                    ExprKind::Do { exprs: Arc::from(e) }.to_expr_nopos()
+                }
+            })
     };
 }
 
@@ -661,10 +676,23 @@ macro_rules! deref {
 
 macro_rules! inline_module {
     ($inner:expr) => {
-        (random_fname(), collection::vec($inner, (0, 10))).prop_map(|(name, body)| {
-            ExprKind::Module { name, value: ModuleKind::Inline(Arc::from(body)) }
-                .to_expr_nopos()
-        })
+        (random_fname(), collection::vec($inner, (0, 10)), any::<bool>()).prop_map(
+            |(name, body, nop)| {
+                if nop {
+                    ExprKind::Module {
+                        name,
+                        value: ModuleKind::Inline(Arc::from_iter(
+                            body.into_iter()
+                                .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
+                        )),
+                    }
+                    .to_expr_nopos()
+                } else {
+                    ExprKind::Module { name, value: ModuleKind::Inline(Arc::from(body)) }
+                        .to_expr_nopos()
+                }
+            },
+        )
     };
 }
 
@@ -1325,6 +1353,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::Sample { lhs: l0, rhs: r0 },
             ExprKind::Sample { lhs: l1, rhs: r1 },
         ) => check(l0, l1) && check(r0, r1),
+        (ExprKind::NoOp, ExprKind::NoOp) => true,
         (_, _) => false,
     }
 }
