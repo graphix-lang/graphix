@@ -156,7 +156,9 @@ where
             fnconstraints(),
             fnargs(),
             spstring("->").with(typ()),
-            spaces1().with(optional(string("throws").with(spaces1()).with(typ()))),
+            optional(
+                attempt(spaces1().with(string("throws"))).with(spaces1()).with(typ()),
+            ),
         ))
         .then(|(constraints, mut args, rtype, throws)| {
             let vargs = match args.pop() {

@@ -43,9 +43,9 @@ parser! {
                 (position(), token('!').with(arith()))
                     .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
                 attempt(tuple()),
+                attempt(map()),
                 attempt(structwith()),
                 attempt(structure()),
-                attempt(map()),
                 qop(do_block()),
                 attempt(qop(arrayref())),
                 attempt(qop(tupleref())),

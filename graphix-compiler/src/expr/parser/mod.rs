@@ -1,7 +1,7 @@
 use crate::{
     expr::{
         set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, Pattern, SelectExpr,
-        SigItem, StructExpr, StructWithExpr, TryCatchExpr,
+        Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
     },
     typ::{FnType, Type},
 };
@@ -115,8 +115,7 @@ where
     I::Range: Range,
 {
     combine::parser::char::spaces().with(skip_many(
-        attempt(string("//"))
-            .with(not_followed_by(token('/')))
+        attempt(string("//").with(not_followed_by(token('/'))))
             .with(skip_many(none_of(['\n'])))
             .with(combine::parser::char::spaces()),
     ))
@@ -663,7 +662,7 @@ where
 {
     (
         position().skip(attempt(string("try"))).skip(space()),
-        sep_by1_tok(expr(), semisep(), string("catch")),
+        sep_by1_tok(expr(), semisep(), attempt(string("catch"))),
         spstring("catch").with(between(
             sptoken('('),
             sptoken(')'),
@@ -771,7 +770,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 ///
 /// followed by (optional) whitespace and then eof. At least one
 /// expression is required otherwise this function will fail.
-pub fn parse_sig(ori: Origin) -> anyhow::Result<Arc<[SigItem]>> {
+pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<SigItem>> = sep_by1_tok(sig_item(), semisep(), eof())
@@ -780,7 +779,7 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Arc<[SigItem]>> {
         .easy_parse(position::Stream::new(&*ori.text))
         .map(|(r, _)| r)
         .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
-    Ok(Arc::from_iter(r.drain(..)))
+    Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
 }
 
 /// Parse one and only one expression.

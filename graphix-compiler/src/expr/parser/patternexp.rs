@@ -10,7 +10,7 @@ use crate::{
 };
 use arcstr::{literal, ArcStr};
 use combine::{
-    attempt, between, choice, optional,
+    attempt, between, choice, not_followed_by, optional,
     parser::char::string,
     stream::{position::SourcePosition, Range},
     token, unexpected_any, value, ParseError, Parser, RangeStream,
@@ -233,13 +233,15 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    parse_value(&VAL_MUST_ESC, &VAL_ESC).then(move |v| {
-        if all {
-            unexpected_any("all patterns are not supported by literals").left()
-        } else {
-            value(StructurePattern::Literal(v)).right()
-        }
-    })
+    attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)).skip(not_followed_by(token('_'))).then(
+        move |v| {
+            if all {
+                unexpected_any("all patterns are not supported by literals").left()
+            } else {
+                value(StructurePattern::Literal(v)).right()
+            }
+        },
+    )
 }
 
 fn all_pattern<I>() -> impl Parser<I, Output = ArcStr>
@@ -261,8 +263,8 @@ parser! {
             struct_pattern(all.clone()),
             variant_pattern(all.clone()),
             underbar_pattern(all.is_some()),
+            literal_pattern(all.is_some()),
             bind_pattern(all.is_some()),
-            literal_pattern(all.is_some())
         )))
     }
 }

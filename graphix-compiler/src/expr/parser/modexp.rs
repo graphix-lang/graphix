@@ -82,27 +82,36 @@ where
     ))
 }
 
-fn dynamic_module<I>() -> impl Parser<I, Output = ModuleKind>
+pub(crate) fn dynamic_module<I>() -> impl Parser<I, Output = ModuleKind>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces1()
-        .with(string("dynamic"))
+    attempt(spaces1().with(string("dynamic")))
         .with(between(
             sptoken('{'),
             sptoken('}'),
             (
-                spstring("sandbox").with(space()).with(sandbox()),
-                spstring("sig").with(spaces()).with(between(
-                    token('{'),
-                    sptoken('}'),
-                    sep_by1_tok(sig_item(), semisep(), token('}')).map(
-                        |i: Vec<SigItem>| Sig { toplevel: true, items: Arc::from(i) },
-                    ),
-                )),
-                spstring("source").with(space()).with(expr()),
+                spstring("sandbox").with(space()).with(sandbox()).skip(sptoken(';')),
+                spstring("sig")
+                    .with(spaces())
+                    .with(between(
+                        token('{'),
+                        sptoken('}'),
+                        sep_by1_tok(sig_item(), semisep(), token('}')).map(
+                            |i: Vec<SigItem>| Sig {
+                                toplevel: false,
+                                items: Arc::from(i),
+                            },
+                        ),
+                    ))
+                    .skip(sptoken(';')),
+                spstring("source")
+                    .with(space())
+                    .with(expr())
+                    .skip(spaces())
+                    .skip(optional(token(';'))),
             ),
         ))
         .map(|(sandbox, sig, source)| ModuleKind::Dynamic {
@@ -118,13 +127,11 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(
-        token('{'),
+    attempt(between(
+        sptoken('{'),
         sptoken('}'),
-        sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-            ExprKind::NoOp.to_expr(pos)
-        }),
-    )
+        sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| ExprKind::NoOp.to_expr(pos)),
+    ))
     .map(|mut m: LPooled<Vec<Expr>>| ModuleKind::Inline(Arc::from_iter(m.drain(..))))
 }
 
@@ -137,8 +144,7 @@ where
     (
         position(),
         attempt(string("mod")).with(space()).with(spfname()),
-        spaces()
-            .with(optional(choice((inline_module(), dynamic_module()))))
+        optional(choice((dynamic_module(), inline_module())))
             .map(|m| m.unwrap_or(ModuleKind::Unresolved)),
     )
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))

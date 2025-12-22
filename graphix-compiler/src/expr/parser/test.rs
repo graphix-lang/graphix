@@ -1314,7 +1314,7 @@ fn tupleref() {
 
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
-    crate::expr::parser::arithexp::arith()
+    crate::expr::parser::map()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1324,6 +1324,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "(z32:-81754 / u16:28397)";
+    let s = "{}";
     dbg!(parse_one(s).unwrap());
 }

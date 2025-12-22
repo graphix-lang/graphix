@@ -272,7 +272,7 @@ impl PrettyDisplay for ModSig {
 
 impl fmt::Display for SigItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}", self.doc)?;
+        write!(f, "{}", self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
@@ -283,7 +283,7 @@ impl fmt::Display for SigItem {
 
 impl PrettyDisplay for SigItem {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        writeln!(buf, "{}", self.doc)?;
+        write!(buf, "{}", self.doc)?;
         match &self.kind {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
@@ -294,7 +294,7 @@ impl PrettyDisplay for SigItem {
 
 impl fmt::Display for Sig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.toplevel {
+        if !self.toplevel {
             write!(f, "sig {{ ")?;
         }
         for (i, si) in self.iter().enumerate() {
@@ -303,7 +303,7 @@ impl fmt::Display for Sig {
                 write!(f, "; ")?
             }
         }
-        if self.toplevel {
+        if !self.toplevel {
             write!(f, " }}")?
         }
         Ok(())
@@ -312,7 +312,7 @@ impl fmt::Display for Sig {
 
 impl PrettyDisplay for Sig {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        if self.toplevel {
+        if !self.toplevel {
             writeln!(buf, "sig {{")?;
         }
         buf.with_indent(2, |buf| {
@@ -325,7 +325,7 @@ impl PrettyDisplay for Sig {
             }
             Ok(())
         })?;
-        if self.toplevel {
+        if !self.toplevel {
             writeln!(buf, "}}")?
         }
         Ok(())

@@ -743,7 +743,7 @@ macro_rules! dynamic_module {
                     name,
                     value: ModuleKind::Dynamic {
                         sandbox,
-                        sig: Sig { items: Arc::from(sig), toplevel: true },
+                        sig: Sig { items: Arc::from(sig), toplevel: false },
                         source: Arc::new(source),
                     },
                 }
