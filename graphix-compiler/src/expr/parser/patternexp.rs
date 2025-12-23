@@ -123,9 +123,9 @@ where
     I::Range: Range,
 {
     (
-        token('`').with(typname()).skip(spaces()),
+        token('`').with(typname()),
         optional(between(
-            token('('),
+            attempt(sptoken('(')),
             sptoken(')'),
             sep_by1_tok(structure_pattern(), csep(), token(')')),
         )),

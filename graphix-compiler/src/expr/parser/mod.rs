@@ -9,7 +9,7 @@ use arcstr::{literal, ArcStr};
 use combine::{
     attempt, between, choice, eof, look_ahead, many, none_of, not_followed_by, optional,
     parser::{
-        char::{space, string},
+        char::{alpha_num, space, string},
         combinator::recognize,
         range::{take_while, take_while1},
     },
@@ -290,7 +290,10 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    spaces().with(choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
+    choice((
+        between(attempt(sptoken('(')), sptoken(')'), expr()),
+        spaces().with(qop(reference())),
+    ))
 }
 
 fn structref<I>() -> impl Parser<I, Output = Expr>
@@ -338,11 +341,12 @@ where
 {
     (
         position(),
-        attempt(string("any")).with(between(
-            sptoken('('),
-            sptoken(')'),
-            sep_by_tok(expr(), csep(), sptoken(')')),
-        )),
+        attempt(string("any").skip(not_followed_by(choice((token('_'), alpha_num())))))
+            .with(between(
+                sptoken('('),
+                sptoken(')'),
+                sep_by_tok(expr(), csep(), sptoken(')')),
+            )),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
             ExprKind::Any { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
@@ -357,8 +361,7 @@ where
 {
     (
         position(),
-        attempt(string("let"))
-            .with(spaces1())
+        attempt(string("let").skip(spaces1()))
             .with((
                 optional(attempt(string("rec")).with(spaces1())),
                 structure_pattern(),
@@ -425,10 +428,10 @@ where
     (
         position(),
         p,
-        spaces().with(optional(choice((
+        optional(attempt(spaces().with(choice((
             token('?').map(|_| Op::Qop),
             token('$').map(|_| Op::OrNever),
-        )))),
+        ))))),
     )
         .map(|(pos, e, qop)| match qop {
             None => e,
@@ -742,8 +745,8 @@ parser! {
             attempt(structwith()),
             qop(do_block()),
             attempt(lambda()),
-            attempt(literal()),
             between(token('('), sptoken(')'), expr()),
+            attempt(literal()),
             qop(reference())
         )))
     }

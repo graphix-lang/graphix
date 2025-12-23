@@ -59,31 +59,31 @@ where
     I::Range: Range,
 {
     choice((
+        string("string").map(|_| Typ::String),
+        string("error").map(|_| Typ::Error),
+        string("array").map(|_| Typ::Array),
+        string("null").map(|_| Typ::Null),
         attempt(string("i8")).map(|_| Typ::I8),
         attempt(string("i16")).map(|_| Typ::I16),
         attempt(string("i32")).map(|_| Typ::I32),
-        attempt(string("i64")).map(|_| Typ::I64),
+        string("i64").map(|_| Typ::I64),
         attempt(string("u8")).map(|_| Typ::U8),
         attempt(string("u16")).map(|_| Typ::U16),
         attempt(string("u32")).map(|_| Typ::U32),
-        attempt(string("u64")).map(|_| Typ::U64),
+        string("u64").map(|_| Typ::U64),
         attempt(string("v32")).map(|_| Typ::V32),
-        attempt(string("v64")).map(|_| Typ::V64),
+        string("v64").map(|_| Typ::V64),
         attempt(string("z32")).map(|_| Typ::Z32),
-        attempt(string("z64")).map(|_| Typ::Z64),
+        string("z64").map(|_| Typ::Z64),
         attempt(string("f32")).map(|_| Typ::F32),
-        attempt(string("f64")).map(|_| Typ::F64),
+        string("f64").map(|_| Typ::F64),
         attempt(string("decimal")).map(|_| Typ::Decimal),
         attempt(string("datetime")).map(|_| Typ::DateTime),
-        attempt(string("duration")).map(|_| Typ::Duration),
+        string("duration").map(|_| Typ::Duration),
         attempt(string("bytes")).map(|_| Typ::Bytes),
-        attempt(string("bool")).map(|_| Typ::Bool),
-        attempt(string("string")).map(|_| Typ::String),
-        attempt(string("error")).map(|_| Typ::Error),
-        attempt(string("array")).map(|_| Typ::Array),
-        attempt(string("null")).map(|_| Typ::Null),
+        string("bool").map(|_| Typ::Bool),
     ))
-    .skip(not_followed_by(choice((alpha_num(), token('_')))))
+    .skip(not_followed_by(choice((token('_'), alpha_num()))))
 }
 
 fn fnconstraints<I>() -> impl Parser<I, Output = Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>>
@@ -151,7 +151,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(string("fn"))
+    attempt(string("fn").skip(not_followed_by(choice((token('_'), alpha_num())))))
         .with((
             fnconstraints(),
             fnargs(),
@@ -209,11 +209,11 @@ where
 {
     (
         token('`').with(ident(true)),
-        spaces().with(optional(between(
-            token('('),
+        optional(between(
+            attempt(sptoken('(')),
             sptoken(')'),
             sep_by1_tok(typ(), csep(), token(')')),
-        ))),
+        )),
     )
         .map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
             let mut t = match typs {
@@ -312,7 +312,7 @@ parser! {
             )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
             attempt(string("Error")).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
-            typeprim().map(|typ| Type::Primitive(typ.into())),
+            attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
             tvar().map(|tv| Type::TVar(tv)),
             typref(),
         )))

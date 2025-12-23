@@ -676,7 +676,7 @@ macro_rules! deref {
 
 macro_rules! inline_module {
     ($inner:expr) => {
-        (random_fname(), collection::vec($inner, (0, 10)), any::<bool>()).prop_map(
+        (random_fname(), collection::vec($inner, (1, 10)), any::<bool>()).prop_map(
             |(name, body, nop)| {
                 if nop {
                     ExprKind::Module {

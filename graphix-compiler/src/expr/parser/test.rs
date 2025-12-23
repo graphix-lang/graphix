@@ -1314,7 +1314,7 @@ fn tupleref() {
 
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
-    crate::expr::parser::map()
+    crate::expr::parser::lambda()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1324,6 +1324,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "{}";
-    dbg!(parse_one(s).unwrap());
+    let s = "|| 'a: _|| i8:0";
+    dbg!(parse_prop0(s).unwrap());
 }

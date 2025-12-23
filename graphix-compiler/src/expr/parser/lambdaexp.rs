@@ -178,10 +178,10 @@ where
         optional(attempt(spaces().with(string("->")).with(typ()))),
         optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),
         spaces1().with(choice((
-            token('\'')
-                .with(fname())
-                .skip(not_followed_by(attempt(sptoken(':'))))
-                .map(Either::Right),
+            attempt(
+                token('\'').with(fname()).skip(not_followed_by(attempt(sptoken(':')))),
+            )
+            .map(Either::Right),
             expr().map(|e| Either::Left(e)),
         ))),
     )

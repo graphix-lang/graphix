@@ -53,7 +53,7 @@ parser! {
                 attempt(qop(mapref())),
                 attempt(qop(apply())),
                 between(token('('), sptoken(')'), spaces().with(arith())),
-                literal(),
+                attempt(literal()),
                 qop(reference()),
             )))
             .skip(spaces())
@@ -102,7 +102,7 @@ where
 }
 */
 
-fn infix_arith<I>() -> impl Parser<I, Output = Expr>
+pub(super) fn infix_arith<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -111,19 +111,19 @@ where
     chainl1(
         arith_term(),
         choice((
+            attempt(string("==")),
+            attempt(string("!=")),
+            attempt(string(">=")),
+            attempt(string("<=")),
+            attempt(string("&&")),
+            attempt(string("||")),
+            string(">"),
+            string("<"),
             string("+"),
             string("-"),
             string("*"),
             string("/"),
             string("%"),
-            attempt(string("==")),
-            attempt(string("!=")),
-            attempt(string(">=")),
-            attempt(string("<=")),
-            string(">"),
-            string("<"),
-            attempt(string("&&")),
-            attempt(string("||")),
             string("~"),
         ))
         .map(|op: &str| match op {
