@@ -200,11 +200,11 @@ where
 {
     (
         token('`').with(ident(true)),
-        optional(between(
-            attempt(sptoken('(')),
+        optional(attempt(between(
+            sptoken('('),
             sptoken(')'),
             sep_by1_tok(typ(), csep(), token(')')),
-        )),
+        ))),
     )
         .map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
             let mut t = match typs {

@@ -1324,6 +1324,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "mod a dynamic { sandbox unrestricted; sig { mod a: sig { val a: Any_ } }; source i8:0 }";
+    let s = "|| throws `A (i8:0).a";
     dbg!(parse_prop0(s).unwrap());
 }

@@ -673,7 +673,7 @@ where
     I::Range: Range,
 {
     (
-        position().skip(attempt(string("try"))).skip(space()),
+        position().skip(attempt(string("try").skip(space()))),
         sep_by1_tok(expr(), semisep(), attempt(string("catch"))),
         spstring("catch").with(between(
             sptoken('('),

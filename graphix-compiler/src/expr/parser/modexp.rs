@@ -143,7 +143,7 @@ where
 {
     (
         position(),
-        attempt(string("mod")).with(space()).with(spfname()),
+        attempt(string("mod").with(space())).with(spfname()),
         optional(choice((dynamic_module(), inline_module())))
             .map(|m| m.unwrap_or(ModuleKind::Unresolved)),
     )
@@ -156,6 +156,6 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), attempt(string("use")).with(space()).with(spmodpath()))
+    (position(), attempt(string("use").with(space())).with(spmodpath()))
         .map(|(pos, name)| ExprKind::Use { name }.to_expr(pos))
 }
