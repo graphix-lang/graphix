@@ -10,7 +10,7 @@ use crate::{
 };
 use arcstr::{literal, ArcStr};
 use combine::{
-    attempt, between, choice, not_followed_by, optional,
+    attempt, between, choice, optional,
     parser::char::string,
     stream::{position::SourcePosition, Range},
     token, unexpected_any, value, ParseError, Parser, RangeStream,
@@ -20,6 +20,8 @@ use netidx::utils::Either;
 use netidx_value::parser::{value as parse_value, VAL_ESC, VAL_MUST_ESC};
 use poolshark::local::LPooled;
 use triomphe::Arc;
+
+use super::not_prefix;
 
 pub(super) fn slice_pattern<I>(
     all: Option<ArcStr>,
@@ -233,15 +235,13 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)).skip(not_followed_by(token('_'))).then(
-        move |v| {
-            if all {
-                unexpected_any("all patterns are not supported by literals").left()
-            } else {
-                value(StructurePattern::Literal(v)).right()
-            }
-        },
-    )
+    attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)).skip(not_prefix()).then(move |v| {
+        if all {
+            unexpected_any("all patterns are not supported by literals").left()
+        } else {
+            value(StructurePattern::Literal(v)).right()
+        }
+    })
 }
 
 fn all_pattern<I>() -> impl Parser<I, Output = ArcStr>

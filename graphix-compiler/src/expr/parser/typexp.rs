@@ -1,6 +1,6 @@
 use super::{
-    csep, fname, ident, sep_by1_tok, sep_by_tok, spaces, spaces1, spfname, spstring,
-    sptoken, typname,
+    csep, fname, ident, not_prefix, sep_by1_tok, sep_by_tok, spaces, spaces1, spfname,
+    spstring, sptoken, typname,
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
@@ -19,15 +19,6 @@ use netidx::{publisher::Typ, utils::Either};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use triomphe::Arc;
-
-fn sptypname<I>() -> impl Parser<I, Output = ArcStr>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(typname())
-}
 
 pub(super) fn typath<I>() -> impl Parser<I, Output = ModPath>
 where
@@ -83,7 +74,7 @@ where
         attempt(string("bytes")).map(|_| Typ::Bytes),
         string("bool").map(|_| Typ::Bool),
     ))
-    .skip(not_followed_by(choice((token('_'), alpha_num()))))
+    .skip(not_prefix())
 }
 
 fn fnconstraints<I>() -> impl Parser<I, Output = Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>>
@@ -303,14 +294,14 @@ parser! {
             structtyp(),
             varianttyp(),
             fntype().map(|f| Type::Fn(Arc::new(f))),
-            attempt(string("Array")).with(between(sptoken('<'), sptoken('>'), typ()))
+            attempt(string("Array").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Array(Arc::new(t))),
-            attempt(string("Any")).map(|_| Type::Any),
-            attempt(string("Map")).with(between(
+            attempt(string("Any").skip(not_prefix())).map(|_| Type::Any),
+            attempt(string("Map").skip(not_prefix())).with(between(
                 sptoken('<'), sptoken('>'),
                 (typ().skip(sptoken(',')), typ())
             )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
-            attempt(string("Error")).with(between(sptoken('<'), sptoken('>'), typ()))
+            attempt(string("Error").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
             attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
             tvar().map(|tv| Type::TVar(tv)),
@@ -327,7 +318,7 @@ where
 {
     (
         position(),
-        attempt(string("type")).with(sptypname()),
+        attempt(string("type").skip(spaces1())).with(typname()),
         spaces().with(optional(between(
             token('<'),
             sptoken('>'),

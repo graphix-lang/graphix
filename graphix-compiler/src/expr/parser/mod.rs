@@ -130,6 +130,15 @@ where
     space().with(spaces())
 }
 
+fn not_prefix<I>() -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    not_followed_by(choice((token('_'), alpha_num())))
+}
+
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
 where
     I: RangeStream<Token = char>,
@@ -341,12 +350,11 @@ where
 {
     (
         position(),
-        attempt(string("any").skip(not_followed_by(choice((token('_'), alpha_num())))))
-            .with(between(
-                sptoken('('),
-                sptoken(')'),
-                sep_by_tok(expr(), csep(), sptoken(')')),
-            )),
+        attempt(string("any").skip(not_prefix())).with(between(
+            sptoken('('),
+            sptoken(')'),
+            sep_by_tok(expr(), csep(), sptoken(')')),
+        )),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
             ExprKind::Any { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
@@ -396,13 +404,14 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_followed_by(token('_'))))
-        .then(|(pos, v)| match v {
+    (position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix())).then(
+        |(pos, v)| match v {
             Value::String(_) => {
                 unexpected_any("parse error in st ring interpolation").left()
             }
             v => value(ExprKind::Constant(v).to_expr(pos)).right(),
-        })
+        },
+    )
 }
 
 fn reference<I>() -> impl Parser<I, Output = Expr>
