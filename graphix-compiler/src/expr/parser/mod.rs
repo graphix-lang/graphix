@@ -505,7 +505,11 @@ where
 {
     (
         position(),
-        attempt(string("cast")).with(between(sptoken('<'), sptoken('>'), typ())),
+        attempt(string("cast").skip(not_prefix())).with(between(
+            sptoken('<'),
+            sptoken('>'),
+            typ(),
+        )),
         between(sptoken('('), sptoken(')'), expr()),
     )
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
