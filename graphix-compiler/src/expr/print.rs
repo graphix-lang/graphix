@@ -114,6 +114,9 @@ pub trait PrettyDisplay: fmt::Display {
         use fmt::Write;
         let start = buf.len();
         writeln!(buf, "{}", self)?;
+        // CR codex for eric: This compares total bytes written, not line width. If we're mid-line
+        // or have indentation, we can exceed the intended column limit while still passing this
+        // check. The old printer tracked line start/indent; consider restoring per-line width.
         if buf.len() - start <= buf.limit {
             return Ok(());
         } else {
@@ -758,6 +761,9 @@ impl PrettyDisplay for ExprKind {
                 name,
                 value: ModuleKind::Dynamic { sandbox, sig, source },
             } => {
+                // CR codex for eric: This branch never writes the closing `}` and doesn't emit
+                // semicolons between sandbox/sig/source, so the pretty output is not valid syntax
+                // (Display adds `;` separators and a closing brace). Should mirror that here.
                 writeln!(buf, "mod {name} dynamic {{")?;
                 buf.with_indent(2, |buf| {
                     sandbox.fmt_pretty(buf)?;

@@ -407,7 +407,7 @@ where
     (position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix())).then(
         |(pos, v)| match v {
             Value::String(_) => {
-                unexpected_any("parse error in st ring interpolation").left()
+                unexpected_any("parse error in string interpolation").left()
             }
             v => value(ExprKind::Constant(v).to_expr(pos)).right(),
         },
