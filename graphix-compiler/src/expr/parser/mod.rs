@@ -9,7 +9,7 @@ use arcstr::{literal, ArcStr};
 use combine::{
     attempt, between, choice, eof, look_ahead, many, none_of, not_followed_by, optional,
     parser::{
-        char::{alpha_num, space, string},
+        char::{space, string},
         combinator::recognize,
         range::{take_while, take_while1},
     },
@@ -25,8 +25,8 @@ use escaping::Escape;
 use fxhash::FxHashSet;
 use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
-    escaped_string, int, sep_by1_tok, sep_by_tok, value as parse_value, VAL_ESC,
-    VAL_MUST_ESC,
+    escaped_string, int, not_prefix, sep_by1_tok, sep_by_tok, value as parse_value,
+    VAL_ESC, VAL_MUST_ESC,
 };
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
@@ -128,15 +128,6 @@ where
     I::Range: Range,
 {
     space().with(spaces())
-}
-
-fn not_prefix<I>() -> impl Parser<I, Output = ()>
-where
-    I: RangeStream<Token = char>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    not_followed_by(choice((token('_'), alpha_num())))
 }
 
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
