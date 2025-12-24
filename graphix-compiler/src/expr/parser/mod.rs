@@ -371,7 +371,7 @@ where
         position(),
         attempt(string("let").skip(spaces1()))
             .with((
-                optional(attempt(string("rec")).with(spaces1())),
+                optional(attempt(string("rec").with(spaces1()))),
                 structure_pattern(),
                 spaces().with(optional(token(':').with(typ()))),
             ))
