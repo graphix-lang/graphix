@@ -25,16 +25,26 @@ where
         .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
 }
 
+fn deref_arith<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), token('*').with(arith_term()))
+        .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
+}
+
 parser! {
     pub(crate) fn arith_term[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         spaces()
             .with(choice((
-                qop(deref_arith()),
                 raw_string(),
                 array(),
                 byref_arith(),
+                qop(deref_arith()),
                 qop(select()),
                 variant(),
                 qop(cast()),
@@ -58,16 +68,6 @@ parser! {
             )))
             .skip(spaces())
     }
-}
-
-fn deref_arith<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token('*').with(arith_term()))
-        .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
 
 /*
