@@ -729,7 +729,7 @@ parser! {
             attempt(connect()),
             attempt(arith()),
             byref(),
-            qop(deref()), // CR estokes: add deref_arith
+            qop(deref()),
             between(token('('), sptoken(')'), expr()),
             attempt(literal()),
             qop(reference())
