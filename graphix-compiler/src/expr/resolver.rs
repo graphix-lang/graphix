@@ -323,6 +323,10 @@ impl Expr {
                     value: ModuleKind::Dynamic { sandbox, sig, source },
                 })
             }),
+            ExprKind::ExplicitParens(e) => Box::pin(async move {
+                let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::ExplicitParens(Arc::new(e)))
+            }),
             ExprKind::Do { exprs } => Box::pin(async move {
                 let exprs = Arc::from(subexprs!(exprs));
                 expr!(ExprKind::Do { exprs })

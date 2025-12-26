@@ -35,6 +35,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
 ) -> Result<Node<R, E>> {
     match &spec.kind {
         ExprKind::NoOp => todo!(),
+        ExprKind::ExplicitParens(_) => todo!(),
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
             let scope = scope.append(&format_compact!("do{}", spec.id.inner()));

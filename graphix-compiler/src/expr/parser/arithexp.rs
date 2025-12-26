@@ -7,7 +7,7 @@ use crate::expr::{
     Expr, ExprKind,
 };
 use combine::{
-    attempt, between, chainl1, choice, many, many1, optional,
+    attempt, between, choice, many,
     parser::char::string,
     position,
     stream::{position::SourcePosition, Range},
@@ -71,7 +71,114 @@ parser! {
     }
 }
 
-fn oplist<I>() -> impl Parser<I, Output = (Expr, LPooled<Vec<(&'static str, Expr)>>)>
+fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
+    match op {
+        "+" => {
+            let pos = lhs.pos;
+            ExprKind::Add { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "-" => {
+            let pos = lhs.pos;
+            ExprKind::Sub { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "*" => {
+            let pos = lhs.pos;
+            ExprKind::Mul { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "/" => {
+            let pos = lhs.pos;
+            ExprKind::Div { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "%" => {
+            let pos = lhs.pos;
+            ExprKind::Mod { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "==" => {
+            let pos = lhs.pos;
+            ExprKind::Eq { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "!=" => {
+            let pos = lhs.pos;
+            ExprKind::Ne { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        ">" => {
+            let pos = lhs.pos;
+            ExprKind::Gt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "<" => {
+            let pos = lhs.pos;
+            ExprKind::Lt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        ">=" => {
+            let pos = lhs.pos;
+            ExprKind::Gte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "<=" => {
+            let pos = lhs.pos;
+            ExprKind::Lte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "&&" => {
+            let pos = lhs.pos;
+            ExprKind::And { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "||" => {
+            let pos = lhs.pos;
+            ExprKind::Or { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        "~" => {
+            let pos = lhs.pos;
+            ExprKind::Sample { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Returns (precedence, left_associative) for an operator.
+/// Higher precedence binds tighter.
+fn precedence(op: &str) -> (u8, bool) {
+    match op {
+        "||" => (1, true),
+        "&&" => (2, true),
+        "==" | "!=" => (3, true),
+        "<" | ">" | "<=" | ">=" => (4, true),
+        "+" | "-" => (5, true),
+        "/" | "%" => (6, true),
+        "*" => (7, true),
+        "~" => (8, true),
+        _ => unreachable!(),
+    }
+}
+
+/// Shunting-yard algorithm to build an expression tree respecting precedence.
+/// Thank you Djikstra.
+fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(&'static str, Expr)>>) -> Expr {
+    let mut output: LPooled<Vec<Expr>> = LPooled::take();
+    let mut ops: LPooled<Vec<&'static str>> = LPooled::take();
+    output.push(first);
+    for (op, expr) in rest.drain(..) {
+        let (prec, left_assoc) = precedence(op);
+        while let Some(&top) = ops.last() {
+            let (top_prec, _) = precedence(top);
+            if top_prec > prec || (top_prec == prec && left_assoc) {
+                let rhs = output.pop().unwrap();
+                let lhs = output.pop().unwrap();
+                output.push(mke(lhs, ops.pop().unwrap(), rhs));
+            } else {
+                break;
+            }
+        }
+        ops.push(op);
+        output.push(expr);
+    }
+    while let Some(op) = ops.pop() {
+        let rhs = output.pop().unwrap();
+        let lhs = output.pop().unwrap();
+        output.push(mke(lhs, op, rhs));
+    }
+    output.pop().unwrap()
+}
+
+fn infix_arith<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -81,110 +188,33 @@ where
         arith_term(),
         many((
             attempt(spaces().with(choice((
+                attempt(string("==")),
+                attempt(string("!=")),
+                attempt(string(">=")),
+                attempt(string("<=")),
+                attempt(string("&&")),
+                attempt(string("||")),
+                string(">"),
+                string("<"),
                 string("+"),
                 string("-"),
                 string("*"),
                 string("/"),
                 string("%"),
-                string("=="),
-                string("!="),
-                string(">="),
-                string("<="),
-                string(">"),
-                string("<"),
-                string("&&"),
-                string("||"),
                 string("~"),
             )))),
             arith_term(),
         )),
     )
-}
-
-pub(super) fn infix_arith<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    chainl1(
-        arith_term(),
-        choice((
-            attempt(string("==")),
-            attempt(string("!=")),
-            attempt(string(">=")),
-            attempt(string("<=")),
-            attempt(string("&&")),
-            attempt(string("||")),
-            string(">"),
-            string("<"),
-            string("+"),
-            string("-"),
-            string("*"),
-            string("/"),
-            string("%"),
-            string("~"),
-        ))
-        .map(|op: &str| match op {
-            "+" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Add { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        .map(
+            |(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
+                if exprs.is_empty() {
+                    e
+                } else {
+                    shunting_yard(e, exprs)
+                }
             },
-            "-" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Sub { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "*" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Mul { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "/" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Div { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "%" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Mod { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "==" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Eq { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "!=" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Ne { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            ">" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Gt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "<" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Lt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            ">=" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Gte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "<=" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Lte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "&&" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::And { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "||" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Or { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            "~" => |lhs: Expr, rhs: Expr| {
-                let pos = lhs.pos;
-                ExprKind::Sample { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-            },
-            _ => unreachable!(),
-        }),
-    )
+        )
 }
 
 parser! {

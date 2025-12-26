@@ -724,10 +724,8 @@ impl PrettyDisplay for ExprKind {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         macro_rules! binop {
             ($sep:literal, $lhs:expr, $rhs:expr) => {{
-                write!(buf, "(")?;
                 writeln!(buf, "{} {}", $lhs, $sep)?;
-                $rhs.fmt_pretty(buf)?;
-                write!(buf, ")")
+                $rhs.fmt_pretty(buf)
             }};
         }
         match self {
@@ -747,6 +745,11 @@ impl PrettyDisplay for ExprKind {
                 value: ModuleKind::Unresolved | ModuleKind::Resolved(_),
             } => {
                 writeln!(buf, "{self}")
+            }
+            ExprKind::ExplicitParens(e) => {
+                writeln!(buf, "(")?;
+                buf.with_indent(2, |buf| e.fmt_pretty(buf))?;
+                writeln!(buf, ")")
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
@@ -881,16 +884,6 @@ impl PrettyDisplay for ExprKind {
 
 impl fmt::Display for ExprKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fn write_binop(
-            f: &mut fmt::Formatter,
-            op: &str,
-            lhs: &Expr,
-            rhs: &Expr,
-        ) -> fmt::Result {
-            write!(f, "(")?;
-            write!(f, "{lhs} {op} {rhs}")?;
-            write!(f, ")")
-        }
         fn print_exprs(
             f: &mut fmt::Formatter,
             exprs: &[Expr],
@@ -912,6 +905,7 @@ impl fmt::Display for ExprKind {
                 v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
             }
             ExprKind::NoOp => Ok(()),
+            ExprKind::ExplicitParens(e) => write!(f, "({e})"),
             ExprKind::Constant(v) => v.fmt_ext(f, &VAL_ESC, true),
             ExprKind::Bind(b) => write!(f, "{b}"),
             ExprKind::StructWith(sw) => write!(f, "{sw}"),
@@ -1030,20 +1024,20 @@ impl fmt::Display for ExprKind {
             }
             ExprKind::Apply(ap) => write!(f, "{ap}"),
             ExprKind::Select(se) => write!(f, "{se}"),
-            ExprKind::Eq { lhs, rhs } => write_binop(f, "==", lhs, rhs),
-            ExprKind::Ne { lhs, rhs } => write_binop(f, "!=", lhs, rhs),
-            ExprKind::Gt { lhs, rhs } => write_binop(f, ">", lhs, rhs),
-            ExprKind::Lt { lhs, rhs } => write_binop(f, "<", lhs, rhs),
-            ExprKind::Gte { lhs, rhs } => write_binop(f, ">=", lhs, rhs),
-            ExprKind::Lte { lhs, rhs } => write_binop(f, "<=", lhs, rhs),
-            ExprKind::And { lhs, rhs } => write_binop(f, "&&", lhs, rhs),
-            ExprKind::Or { lhs, rhs } => write_binop(f, "||", lhs, rhs),
-            ExprKind::Add { lhs, rhs } => write_binop(f, "+", lhs, rhs),
-            ExprKind::Sub { lhs, rhs } => write_binop(f, "-", lhs, rhs),
-            ExprKind::Mul { lhs, rhs } => write_binop(f, "*", lhs, rhs),
-            ExprKind::Div { lhs, rhs } => write_binop(f, "/", lhs, rhs),
-            ExprKind::Mod { lhs, rhs } => write_binop(f, "%", lhs, rhs),
-            ExprKind::Sample { lhs, rhs } => write_binop(f, "~", lhs, rhs),
+            ExprKind::Eq { lhs, rhs } => write!(f, "{lhs} == {rhs}"),
+            ExprKind::Ne { lhs, rhs } => write!(f, "{lhs} != {rhs}"),
+            ExprKind::Gt { lhs, rhs } => write!(f, "{lhs} > {rhs}"),
+            ExprKind::Lt { lhs, rhs } => write!(f, "{lhs} < {rhs}"),
+            ExprKind::Gte { lhs, rhs } => write!(f, "{lhs} >= {rhs}"),
+            ExprKind::Lte { lhs, rhs } => write!(f, "{lhs} <= {rhs}"),
+            ExprKind::And { lhs, rhs } => write!(f, "{lhs} && {rhs}"),
+            ExprKind::Or { lhs, rhs } => write!(f, "{lhs} || {rhs}"),
+            ExprKind::Add { lhs, rhs } => write!(f, "{lhs} + {rhs}"),
+            ExprKind::Sub { lhs, rhs } => write!(f, "{lhs} - {rhs}"),
+            ExprKind::Mul { lhs, rhs } => write!(f, "{lhs} * {rhs}"),
+            ExprKind::Div { lhs, rhs } => write!(f, "{lhs} / {rhs}"),
+            ExprKind::Mod { lhs, rhs } => write!(f, "{lhs} % {rhs}"),
+            ExprKind::Sample { lhs, rhs } => write!(f, "{lhs} ~ {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => match &e.kind {
                 ExprKind::Qop(e) => write!(f, "*({e}?)"),

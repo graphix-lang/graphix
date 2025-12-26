@@ -201,6 +201,7 @@ pub enum ExprKind {
     NoOp,
     Constant(Value),
     Module { name: ArcStr, value: ModuleKind },
+    ExplicitParens(Arc<Expr>),
     Do { exprs: Arc<[Expr]> },
     Use { name: ModPath },
     Bind(Arc<BindExpr>),
@@ -469,6 +470,7 @@ impl Expr {
             | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::TypeDef { .. } => init,
+            ExprKind::ExplicitParens(e) => e.fold(init, f),
             ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
                 source.fold(init, f)
             }
