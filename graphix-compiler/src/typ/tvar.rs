@@ -36,7 +36,8 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
         Type::Struct(ts) => ts.iter().any(|(_, t)| would_cycle_inner(addr, t)),
         Type::Set(s) => s.iter().any(|t| would_cycle_inner(addr, t)),
         Type::Fn(f) => {
-            let FnType { args, vargs, rtype, constraints, throws } = &**f;
+            let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } =
+                &**f;
             args.iter().any(|t| would_cycle_inner(addr, &t.typ))
                 || match vargs {
                     None => false,

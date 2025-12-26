@@ -263,8 +263,16 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                     None => None,
                 };
                 let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
+                let explicit_throws = throws.is_some();
                 let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
-                Arc::new(FnType { constraints, args, vargs, rtype, throws })
+                Arc::new(FnType {
+                    constraints,
+                    args,
+                    vargs,
+                    rtype,
+                    throws,
+                    explicit_throws,
+                })
             }
             Either::Right(builtin) => match ctx.builtins.get(builtin.as_str()) {
                 None => bail!("unknown builtin function {builtin}"),

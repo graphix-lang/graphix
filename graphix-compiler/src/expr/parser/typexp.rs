@@ -178,8 +178,10 @@ where
                 }
                 anon |= a.label.is_none();
             }
+            let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);
-            value(FnType { args, vargs, rtype, constraints, throws }).right()
+            value(FnType { args, vargs, rtype, constraints, throws, explicit_throws })
+                .right()
         })
 }
 

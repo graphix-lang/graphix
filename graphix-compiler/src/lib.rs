@@ -357,6 +357,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
                 rtype: Type::Bottom,
                 throws: Type::Bottom,
                 vargs: None,
+                explicit_throws: false,
             })
         });
         Arc::clone(&*EMPTY)

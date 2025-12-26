@@ -257,7 +257,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                 option::of(inner.clone()),
                 inner.clone(),
                 collection::vec((random_fname(), inner.clone()), (0, 4)),
-                inner.clone()
+                option::of(inner.clone())
             )
                 .prop_map(|(mut args, vargs, rtype, constraints, throws)| {
                     args.sort_by(|(k0, _, _), (k1, _, _)| k1.cmp(k0));
@@ -265,6 +265,8 @@ fn typexp() -> impl Strategy<Value = Type> {
                         label: name.map(|n| (n, optional)),
                         typ,
                     });
+                    let explicit_throws = throws.is_some();
+                    let throws = throws.unwrap_or(Type::Bottom);
                     Type::Fn(Arc::new(FnType {
                         args: Arc::from_iter(args),
                         vargs,
@@ -276,6 +278,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                                 .collect(),
                         )),
                         throws,
+                        explicit_throws,
                     }))
                 })
         ]

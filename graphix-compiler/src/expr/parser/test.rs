@@ -1024,6 +1024,7 @@ fn labeled_argument_lambda() {
             vargs: None,
             rtype: Type::Primitive(Typ::String.into()),
             throws: Type::Bottom,
+            explicit_throws: false,
             constraints: Arc::new(RwLock::new(LPooled::take())),
         }))),
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
@@ -1324,6 +1325,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "let rec_@`A = i8:0";
-    dbg!(parse_prop0(s).unwrap());
+    let s = "|| -> &&fn(_) -> _ throws _ i8:0";
+    dbg!(parse_one(s).unwrap());
 }

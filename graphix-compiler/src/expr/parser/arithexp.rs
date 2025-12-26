@@ -7,12 +7,13 @@ use crate::expr::{
     Expr, ExprKind,
 };
 use combine::{
-    attempt, between, chainl1, choice,
+    attempt, between, chainl1, choice, many, many1, optional,
     parser::char::string,
     position,
     stream::{position::SourcePosition, Range},
     token, ParseError, Parser, RangeStream,
 };
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
 fn byref_arith<I>() -> impl Parser<I, Output = Expr>
@@ -70,17 +71,16 @@ parser! {
     }
 }
 
-/*
-fn oplist<I>() -> impl Parser<I, Output = (LPooled<Vec<(Expr, &'static str)>>, Expr)>
+fn oplist<I>() -> impl Parser<I, Output = (Expr, LPooled<Vec<(&'static str, Expr)>>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
     (
-        many1((
-            arith_term(),
-            choice((
+        arith_term(),
+        many((
+            attempt(spaces().with(choice((
                 string("+"),
                 string("-"),
                 string("*"),
@@ -95,12 +95,11 @@ where
                 string("&&"),
                 string("||"),
                 string("~"),
-            )),
+            )))),
+            arith_term(),
         )),
-        arith_term(),
     )
 }
-*/
 
 pub(super) fn infix_arith<I>() -> impl Parser<I, Output = Expr>
 where

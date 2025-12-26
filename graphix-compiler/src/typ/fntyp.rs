@@ -34,6 +34,7 @@ pub struct FnType {
     pub rtype: Type,
     pub constraints: Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>,
     pub throws: Type,
+    pub explicit_throws: bool,
 }
 
 impl PartialEq for FnType {
@@ -44,6 +45,7 @@ impl PartialEq for FnType {
             rtype: rtype0,
             constraints: constraints0,
             throws: th0,
+            explicit_throws: _,
         } = self;
         let Self {
             args: args1,
@@ -51,6 +53,7 @@ impl PartialEq for FnType {
             rtype: rtype1,
             constraints: constraints1,
             throws: th1,
+            explicit_throws: _,
         } = other;
         args0 == args1
             && vargs0 == vargs1
@@ -71,6 +74,7 @@ impl PartialOrd for FnType {
             rtype: rtype0,
             constraints: constraints0,
             throws: th0,
+            explicit_throws: _,
         } = self;
         let Self {
             args: args1,
@@ -78,6 +82,7 @@ impl PartialOrd for FnType {
             rtype: rtype1,
             constraints: constraints1,
             throws: th1,
+            explicit_throws: _,
         } = other;
         match args0.partial_cmp(&args1) {
             Some(Ordering::Equal) => match vargs0.partial_cmp(vargs1) {
@@ -111,13 +116,14 @@ impl Default for FnType {
             rtype: Default::default(),
             constraints: Arc::new(RwLock::new(LPooled::take())),
             throws: Default::default(),
+            explicit_throws: false,
         }
     }
 }
 
 impl FnType {
     pub(super) fn normalize(&self) -> Self {
-        let Self { args, vargs, rtype, constraints, throws } = self;
+        let Self { args, vargs, rtype, constraints, throws, explicit_throws } = self;
         let args = Arc::from_iter(
             args.iter()
                 .map(|a| FnArgType { label: a.label.clone(), typ: a.typ.normalize() }),
@@ -132,11 +138,12 @@ impl FnType {
                 .collect(),
         ));
         let throws = throws.normalize();
-        FnType { args, vargs, rtype, constraints, throws }
+        let explicit_throws = *explicit_throws;
+        FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
 
     pub fn unbind_tvars(&self) {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for arg in args.iter() {
             arg.typ.unbind_tvars()
         }
@@ -166,7 +173,7 @@ impl FnType {
     }
 
     pub fn reset_tvars(&self) -> Self {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws } = self;
         let args = Arc::from_iter(
             args.iter()
                 .map(|a| FnArgType { label: a.label.clone(), typ: a.typ.reset_tvars() }),
@@ -181,11 +188,12 @@ impl FnType {
                 .collect(),
         ));
         let throws = throws.reset_tvars();
-        FnType { args, vargs, rtype, constraints, throws }
+        let explicit_throws = *explicit_throws;
+        FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
 
     pub fn replace_tvars(&self, known: &FxHashMap<ArcStr, Type>) -> Self {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws } = self;
         let args = Arc::from_iter(args.iter().map(|a| FnArgType {
             label: a.label.clone(),
             typ: a.typ.replace_tvars(known),
@@ -194,7 +202,8 @@ impl FnType {
         let rtype = rtype.replace_tvars(known);
         let constraints = constraints.clone();
         let throws = throws.replace_tvars(known);
-        FnType { args, vargs, rtype, constraints, throws }
+        let explicit_throws = *explicit_throws;
+        FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
 
     /// replace automatically constrained type variables with their
@@ -202,7 +211,7 @@ impl FnType {
     /// types in IDEs and shells.
     pub fn replace_auto_constrained(&self) -> Self {
         let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
-        let Self { args, vargs, rtype, constraints, throws } = self;
+        let Self { args, vargs, rtype, constraints, throws, explicit_throws } = self;
         let constraints: LPooled<Vec<(TVar, Type)>> = constraints
             .read()
             .iter()
@@ -222,11 +231,12 @@ impl FnType {
         let vargs = vargs.as_ref().map(|t| t.replace_tvars(&known));
         let rtype = rtype.replace_tvars(&known);
         let throws = throws.replace_tvars(&known);
-        Self { args, vargs, rtype, constraints, throws }
+        let explicit_throws = *explicit_throws;
+        Self { args, vargs, rtype, constraints, throws, explicit_throws }
     }
 
     pub fn has_unbound(&self) -> bool {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         args.iter().any(|a| a.typ.has_unbound())
             || vargs.as_ref().map(|t| t.has_unbound()).unwrap_or(false)
             || rtype.has_unbound()
@@ -238,7 +248,7 @@ impl FnType {
     }
 
     pub fn bind_as(&self, t: &Type) {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for a in args.iter() {
             a.typ.bind_as(t)
         }
@@ -258,7 +268,7 @@ impl FnType {
     }
 
     pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for arg in args.iter() {
             arg.typ.alias_tvars(known)
         }
@@ -274,7 +284,7 @@ impl FnType {
     }
 
     pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
-        let FnType { args, vargs, rtype, constraints, throws } = self;
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for arg in args.iter() {
             arg.typ.collect_tvars(known)
         }
@@ -410,6 +420,7 @@ impl FnType {
             rtype: rtype0,
             constraints: constraints0,
             throws: tr0,
+            explicit_throws: _,
         } = self;
         let Self {
             args: args1,
@@ -417,6 +428,7 @@ impl FnType {
             rtype: rtype1,
             constraints: constraints1,
             throws: tr1,
+            explicit_throws: _,
         } = other;
         Ok(args0.len() == args1.len()
             && args0
@@ -501,6 +513,7 @@ impl FnType {
             constraints: Arc::new(RwLock::new(cres.into_iter().collect())),
             vargs,
             throws,
+            explicit_throws: self.explicit_throws,
         }
     }
 }
@@ -614,8 +627,13 @@ impl PrettyDisplay for FnType {
             }
         }
         match &self.throws {
-            Type::Bottom => Ok(()),
-            Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
+            Type::Bottom if !self.explicit_throws => Ok(()),
+            Type::TVar(tv)
+                if *tv.read().typ.read() == Some(Type::Bottom)
+                    && !self.explicit_throws =>
+            {
+                Ok(())
+            }
             t => {
                 buf.kill_newline();
                 write!(buf, " throws ")?;
