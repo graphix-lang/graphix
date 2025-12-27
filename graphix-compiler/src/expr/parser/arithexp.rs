@@ -42,6 +42,8 @@ parser! {
     {
         spaces()
             .with(choice((
+                (position(), token('!').with(arith_term()))
+                    .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
                 raw_string(),
                 array(),
                 byref_arith(),
@@ -63,7 +65,9 @@ parser! {
                 attempt(qop(tupleref())),
                 attempt(qop(structref())),
                 attempt(qop(apply())),
-                between(token('('), sptoken(')'), spaces().with(arith())),
+                (position(), between(token('('), sptoken(')'), spaces().with(arith()))).map(|(pos, e)| {
+                    ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
+                }),
                 attempt(literal()),
                 qop(reference()),
             )))
@@ -72,70 +76,34 @@ parser! {
 }
 
 fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
+    macro_rules! mk {
+        ($ctor:ident) => {{
+            let pos = lhs.pos;
+            ExprKind::$ctor { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+        }};
+    }
     match op {
-        "+" => {
-            let pos = lhs.pos;
-            ExprKind::Add { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "-" => {
-            let pos = lhs.pos;
-            ExprKind::Sub { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "*" => {
-            let pos = lhs.pos;
-            ExprKind::Mul { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "/" => {
-            let pos = lhs.pos;
-            ExprKind::Div { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "%" => {
-            let pos = lhs.pos;
-            ExprKind::Mod { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "==" => {
-            let pos = lhs.pos;
-            ExprKind::Eq { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "!=" => {
-            let pos = lhs.pos;
-            ExprKind::Ne { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        ">" => {
-            let pos = lhs.pos;
-            ExprKind::Gt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "<" => {
-            let pos = lhs.pos;
-            ExprKind::Lt { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        ">=" => {
-            let pos = lhs.pos;
-            ExprKind::Gte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "<=" => {
-            let pos = lhs.pos;
-            ExprKind::Lte { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "&&" => {
-            let pos = lhs.pos;
-            ExprKind::And { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "||" => {
-            let pos = lhs.pos;
-            ExprKind::Or { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
-        "~" => {
-            let pos = lhs.pos;
-            ExprKind::Sample { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
-        }
+        "+" => mk!(Add),
+        "-" => mk!(Sub),
+        "*" => mk!(Mul),
+        "/" => mk!(Div),
+        "%" => mk!(Mod),
+        "==" => mk!(Eq),
+        "!=" => mk!(Ne),
+        ">" => mk!(Gt),
+        "<" => mk!(Lt),
+        ">=" => mk!(Gte),
+        "<=" => mk!(Lte),
+        "&&" => mk!(And),
+        "||" => mk!(Or),
+        "~" => mk!(Sample),
         _ => unreachable!(),
     }
 }
 
 /// Returns (precedence, left_associative) for an operator.
 /// Higher precedence binds tighter.
-fn precedence(op: &str) -> (u8, bool) {
+pub(crate) fn precedence(op: &str) -> (u8, bool) {
     match op {
         "||" => (1, true),
         "&&" => (2, true),
@@ -178,45 +146,42 @@ fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(&'static str, Expr)>>) -> E
     output.pop().unwrap()
 }
 
-fn infix_arith<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        arith_term(),
-        many((
-            attempt(spaces().with(choice((
-                attempt(string("==")),
-                attempt(string("!=")),
-                attempt(string(">=")),
-                attempt(string("<=")),
-                attempt(string("&&")),
-                attempt(string("||")),
-                string(">"),
-                string("<"),
-                string("+"),
-                string("-"),
-                string("*"),
-                string("/"),
-                string("%"),
-                string("~"),
-            )))),
+parser! {
+    pub(crate) fn arith[I]()(I) -> Expr
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        (
             arith_term(),
-        )),
-    )
-        .map(
-            |(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
-                if exprs.is_empty() {
-                    e
-                } else {
-                    shunting_yard(e, exprs)
-                }
-            },
-        )
+            many((
+                attempt(spaces().with(choice((
+                    attempt(string("==")),
+                    attempt(string("!=")),
+                    attempt(string(">=")),
+                    attempt(string("<=")),
+                    attempt(string("&&")),
+                    attempt(string("||")),
+                    string(">"),
+                    string("<"),
+                    string("+"),
+                    string("-"),
+                    string("*"),
+                    string("/"),
+                    string("%"),
+                    string("~"),
+                )))),
+                arith_term(),
+            )),
+        ).map(|(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
+            if exprs.is_empty() {
+                e
+            } else {
+                shunting_yard(e, exprs)
+            }
+        })
+    }
 }
 
+/*
 parser! {
     pub(crate) fn arith[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
@@ -225,7 +190,8 @@ parser! {
             attempt(infix_arith()),
             (position(), token('!').with(arith_term()))
                 .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-            between(token('('), sptoken(')'), spaces().with(arith())),
+//            between(token('('), sptoken(')'), spaces().with(arith())),
         ))
     }
 }
+*/

@@ -761,6 +761,76 @@ fn module() -> impl Strategy<Value = Expr> {
     })
 }
 
+/// Returns the precedence of an expression if it's a binary operator.
+/// Higher values bind tighter. Returns None for non-binary-op expressions.
+fn binop_precedence(e: &ExprKind) -> Option<u8> {
+    use parser::arithexp::precedence;
+    let op = match e {
+        ExprKind::Or { .. } => "||",
+        ExprKind::And { .. } => "&&",
+        ExprKind::Eq { .. } => "==",
+        ExprKind::Ne { .. } => "!=",
+        ExprKind::Lt { .. } => "<",
+        ExprKind::Gt { .. } => ">",
+        ExprKind::Lte { .. } => "<=",
+        ExprKind::Gte { .. } => ">=",
+        ExprKind::Add { .. } => "+",
+        ExprKind::Sub { .. } => "-",
+        ExprKind::Mul { .. } => "*",
+        ExprKind::Div { .. } => "/",
+        ExprKind::Mod { .. } => "%",
+        ExprKind::Sample { .. } => "~",
+        _ => return None,
+    };
+    Some(precedence(op).0)
+}
+
+/// Wraps a child expression in ExplicitParens if it has lower precedence than the parent.
+fn maybe_paren(child: Expr, parent_prec: u8) -> Expr {
+    match binop_precedence(&child.kind) {
+        Some(child_prec) if child_prec < parent_prec => {
+            ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
+        }
+        _ => child,
+    }
+}
+
+/// Recursively adds ExplicitParens where needed to make the expression tree
+/// consistent with precedence rules. This ensures the round-trip test works
+/// for randomly generated expressions.
+fn add_parens(e: Expr) -> Expr {
+    macro_rules! fix_binop {
+        ($op:literal, $ctor:ident, $lhs:expr, $rhs:expr) => {{
+            let prec = crate::expr::parser::arithexp::precedence($op).0;
+            let lhs = Arc::new(maybe_paren(add_parens(Arc::unwrap_or_clone($lhs)), prec));
+            let rhs = Arc::new(maybe_paren(add_parens(Arc::unwrap_or_clone($rhs)), prec));
+            ExprKind::$ctor { lhs, rhs }
+        }};
+    }
+    let kind = match e.kind {
+        ExprKind::Or { lhs, rhs } => fix_binop!("||", Or, lhs, rhs),
+        ExprKind::And { lhs, rhs } => fix_binop!("&&", And, lhs, rhs),
+        ExprKind::Eq { lhs, rhs } => fix_binop!("==", Eq, lhs, rhs),
+        ExprKind::Ne { lhs, rhs } => fix_binop!("!=", Ne, lhs, rhs),
+        ExprKind::Lt { lhs, rhs } => fix_binop!("<", Lt, lhs, rhs),
+        ExprKind::Gt { lhs, rhs } => fix_binop!(">", Gt, lhs, rhs),
+        ExprKind::Lte { lhs, rhs } => fix_binop!("<=", Lte, lhs, rhs),
+        ExprKind::Gte { lhs, rhs } => fix_binop!(">=", Gte, lhs, rhs),
+        ExprKind::Add { lhs, rhs } => fix_binop!("+", Add, lhs, rhs),
+        ExprKind::Sub { lhs, rhs } => fix_binop!("-", Sub, lhs, rhs),
+        ExprKind::Mul { lhs, rhs } => fix_binop!("*", Mul, lhs, rhs),
+        ExprKind::Div { lhs, rhs } => fix_binop!("/", Div, lhs, rhs),
+        ExprKind::Mod { lhs, rhs } => fix_binop!("%", Mod, lhs, rhs),
+        ExprKind::Sample { lhs, rhs } => fix_binop!("~", Sample, lhs, rhs),
+        ExprKind::Not { expr } => {
+            ExprKind::Not { expr: Arc::new(add_parens(Arc::unwrap_or_clone(expr))) }
+        }
+        // For non-binop expressions, just return as-is
+        other => other,
+    };
+    Expr { kind, ..e }
+}
+
 fn arithexpr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![constant(), reference()];
     leaf.prop_recursive(5, 20, 10, |inner| {
@@ -800,6 +870,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             binop!(inner.clone(), Sample)
         ]
     })
+    .prop_map(add_parens)
 }
 
 fn expr() -> impl Strategy<Value = Expr> {
@@ -1045,6 +1116,7 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
 
 fn check(s0: &Expr, s1: &Expr) -> bool {
     match (&s0.kind, &s1.kind) {
+        (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0.approx_eq(v1),
         (ExprKind::Array { args: a0 }, ExprKind::Array { args: a1 })
         | (ExprKind::Tuple { args: a0 }, ExprKind::Tuple { args: a1 }) => {

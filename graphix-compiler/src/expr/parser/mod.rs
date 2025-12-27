@@ -47,7 +47,7 @@ use lambdaexp::{apply, lambda};
 mod arrayexp;
 use arrayexp::{array, arrayref};
 
-mod arithexp;
+pub(crate) mod arithexp;
 use arithexp::arith;
 
 #[cfg(test)]
@@ -730,7 +730,9 @@ parser! {
             attempt(arith()),
             byref(),
             qop(deref()),
-            between(token('('), sptoken(')'), expr()),
+            (position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
+                ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
+            }),
             attempt(literal()),
             qop(reference())
         )))
