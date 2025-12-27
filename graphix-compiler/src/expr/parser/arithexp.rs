@@ -180,18 +180,3 @@ parser! {
         })
     }
 }
-
-/*
-parser! {
-    pub(crate) fn arith[I]()(I) -> Expr
-    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
-    {
-        choice((
-            attempt(infix_arith()),
-            (position(), token('!').with(arith_term()))
-                .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-//            between(token('('), sptoken(')'), spaces().with(arith())),
-        ))
-    }
-}
-*/
