@@ -856,11 +856,7 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Sample { lhs, rhs } => binop!("~", lhs, rhs),
             ExprKind::Not { expr } => match &expr.kind {
                 ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";"),
-                _ => {
-                    writeln!(buf, "!(")?;
-                    expr.fmt_pretty(buf)?;
-                    writeln!(buf, ")")
-                }
+                _ => expr.fmt_pretty(buf),
             },
             ExprKind::ByRef(e) => {
                 write!(buf, "&")?;
@@ -1044,9 +1040,7 @@ impl fmt::Display for ExprKind {
                 ExprKind::Connect { .. } => write!(f, "*({e})"),
                 _ => write!(f, "*{e}"),
             },
-            ExprKind::Not { expr } => {
-                write!(f, "(!{expr})")
-            }
+            ExprKind::Not { expr } => write!(f, "!{expr}"),
         }
     }
 }
