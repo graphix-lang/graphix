@@ -785,10 +785,22 @@ fn binop_precedence(e: &ExprKind) -> Option<u8> {
     Some(precedence(op).0)
 }
 
-/// Wraps a child expression in ExplicitParens if it has lower precedence than the parent.
-fn maybe_paren(child: Expr, parent_prec: u8) -> Expr {
+/// Wraps a left child in ExplicitParens if it has lower precedence than the parent.
+fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
     match binop_precedence(&child.kind) {
         Some(child_prec) if child_prec < parent_prec => {
+            ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
+        }
+        _ => child,
+    }
+}
+
+/// Wraps a right child in ExplicitParens if it has lower or equal precedence than the parent.
+/// Equal precedence needs parens on the right because all operators are left-associative:
+/// `a - b - c` parses as `(a - b) - c`, so `Sub(a, Sub(b, c))` must print as `a - (b - c)`.
+fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
+    match binop_precedence(&child.kind) {
+        Some(child_prec) if child_prec <= parent_prec => {
             ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
         }
         _ => child,
@@ -799,11 +811,14 @@ fn maybe_paren(child: Expr, parent_prec: u8) -> Expr {
 /// consistent with precedence rules. This ensures the round-trip test works
 /// for randomly generated expressions.
 fn add_parens(e: Expr) -> Expr {
+    use parser::arithexp::precedence;
     macro_rules! fix_binop {
         ($op:literal, $ctor:ident, $lhs:expr, $rhs:expr) => {{
-            let prec = crate::expr::parser::arithexp::precedence($op).0;
-            let lhs = Arc::new(maybe_paren(add_parens(Arc::unwrap_or_clone($lhs)), prec));
-            let rhs = Arc::new(maybe_paren(add_parens(Arc::unwrap_or_clone($rhs)), prec));
+            let prec = precedence($op).0;
+            let lhs =
+                Arc::new(maybe_paren_lhs(add_parens(Arc::unwrap_or_clone($lhs)), prec));
+            let rhs =
+                Arc::new(maybe_paren_rhs(add_parens(Arc::unwrap_or_clone($rhs)), prec));
             ExprKind::$ctor { lhs, rhs }
         }};
     }
