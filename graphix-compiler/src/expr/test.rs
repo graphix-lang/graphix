@@ -667,34 +667,38 @@ macro_rules! structwith {
 
 macro_rules! byref {
     ($inner:expr) => {
-        $inner.prop_map(|e| ExprKind::ByRef(Arc::new(e)).to_expr_nopos())
+        $inner
+            .prop_map(|e| ExprKind::ByRef(Arc::new(e)).to_expr_nopos())
+            .prop_map(add_parens)
     };
 }
 
 macro_rules! deref {
     ($inner:expr) => {
-        $inner.prop_map(|e| match &e.kind {
-            ExprKind::Qop(e) => ExprKind::Deref(Arc::new(
-                ExprKind::ExplicitParens(Arc::new(
-                    ExprKind::Qop(e.clone()).to_expr_nopos(),
-                ))
-                .to_expr_nopos(),
-            ))
-            .to_expr_nopos(),
-            ExprKind::Connect { name, value, deref } => ExprKind::Deref(Arc::new(
-                ExprKind::ExplicitParens(Arc::new(
-                    ExprKind::Connect {
-                        name: name.clone(),
-                        value: value.clone(),
-                        deref: *deref,
-                    }
+        $inner
+            .prop_map(|e| match &e.kind {
+                ExprKind::Qop(e) => ExprKind::Deref(Arc::new(
+                    ExprKind::ExplicitParens(Arc::new(
+                        ExprKind::Qop(e.clone()).to_expr_nopos(),
+                    ))
                     .to_expr_nopos(),
                 ))
                 .to_expr_nopos(),
-            ))
-            .to_expr_nopos(),
-            _ => ExprKind::Deref(Arc::new(e)).to_expr_nopos(),
-        })
+                ExprKind::Connect { name, value, deref } => ExprKind::Deref(Arc::new(
+                    ExprKind::ExplicitParens(Arc::new(
+                        ExprKind::Connect {
+                            name: name.clone(),
+                            value: value.clone(),
+                            deref: *deref,
+                        }
+                        .to_expr_nopos(),
+                    ))
+                    .to_expr_nopos(),
+                ))
+                .to_expr_nopos(),
+                _ => ExprKind::Deref(Arc::new(e)).to_expr_nopos(),
+            })
+            .prop_map(add_parens)
     };
 }
 
