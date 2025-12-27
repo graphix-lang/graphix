@@ -673,7 +673,28 @@ macro_rules! byref {
 
 macro_rules! deref {
     ($inner:expr) => {
-        $inner.prop_map(|e| ExprKind::Deref(Arc::new(e)).to_expr_nopos())
+        $inner.prop_map(|e| match &e.kind {
+            ExprKind::Qop(e) => ExprKind::Deref(Arc::new(
+                ExprKind::ExplicitParens(Arc::new(
+                    ExprKind::Qop(e.clone()).to_expr_nopos(),
+                ))
+                .to_expr_nopos(),
+            ))
+            .to_expr_nopos(),
+            ExprKind::Connect { name, value, deref } => ExprKind::Deref(Arc::new(
+                ExprKind::ExplicitParens(Arc::new(
+                    ExprKind::Connect {
+                        name: name.clone(),
+                        value: value.clone(),
+                        deref: *deref,
+                    }
+                    .to_expr_nopos(),
+                ))
+                .to_expr_nopos(),
+            ))
+            .to_expr_nopos(),
+            _ => ExprKind::Deref(Arc::new(e)).to_expr_nopos(),
+        })
     };
 }
 
@@ -837,8 +858,14 @@ fn add_parens(e: Expr) -> Expr {
         ExprKind::Div { lhs, rhs } => fix_binop!("/", Div, lhs, rhs),
         ExprKind::Mod { lhs, rhs } => fix_binop!("%", Mod, lhs, rhs),
         ExprKind::Sample { lhs, rhs } => fix_binop!("~", Sample, lhs, rhs),
-        ExprKind::Not { expr } => {
-            ExprKind::Not { expr: Arc::new(add_parens(Arc::unwrap_or_clone(expr))) }
+        ExprKind::Not { expr } => ExprKind::Not {
+            expr: Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(expr), 255)),
+        },
+        ExprKind::Deref(e) => {
+            ExprKind::Deref(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
+        }
+        ExprKind::ByRef(e) => {
+            ExprKind::ByRef(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
         }
         // For non-binop expressions, just return as-is
         other => other,

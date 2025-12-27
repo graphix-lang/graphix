@@ -862,17 +862,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "&")?;
                 e.fmt_pretty(buf)
             }
-            ExprKind::Deref(e) => match &e.kind {
-                ExprKind::Connect { .. } | ExprKind::Qop(_) => {
-                    writeln!(buf, "*(")?;
-                    buf.with_indent(2, |buf| e.fmt_pretty(buf))?;
-                    writeln!(buf, ")")
-                }
-                _ => {
-                    write!(buf, "*")?;
-                    buf.with_indent(2, |buf| e.fmt_pretty(buf))
-                }
-            },
+            ExprKind::Deref(e) => {
+                write!(buf, "*")?;
+                buf.with_indent(2, |buf| e.fmt_pretty(buf))
+            }
             ExprKind::Select(se) => se.fmt_pretty(buf),
         }
     }
@@ -1035,11 +1028,7 @@ impl fmt::Display for ExprKind {
             ExprKind::Mod { lhs, rhs } => write!(f, "{lhs} % {rhs}"),
             ExprKind::Sample { lhs, rhs } => write!(f, "{lhs} ~ {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
-            ExprKind::Deref(e) => match &e.kind {
-                ExprKind::Qop(e) => write!(f, "*({e}?)"),
-                ExprKind::Connect { .. } => write!(f, "*({e})"),
-                _ => write!(f, "*{e}"),
-            },
+            ExprKind::Deref(e) => write!(f, "*{e}"),
             ExprKind::Not { expr } => write!(f, "!{expr}"),
         }
     }
