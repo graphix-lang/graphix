@@ -897,23 +897,24 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             variant!(inner.clone().prop_map(add_parens)),
             byref!(inner.clone().prop_map(add_parens)),
             deref!(inner.clone().prop_map(add_parens)),
-            binop!(inner.clone(), Eq),
-            binop!(inner.clone(), Ne),
-            binop!(inner.clone(), Lt),
-            binop!(inner.clone(), Gt),
-            binop!(inner.clone(), Gte),
-            binop!(inner.clone(), Lte),
-            binop!(inner.clone(), And),
-            binop!(inner.clone(), Or),
+            binop!(inner.clone().prop_map(add_parens), Eq),
+            binop!(inner.clone().prop_map(add_parens), Ne),
+            binop!(inner.clone().prop_map(add_parens), Lt),
+            binop!(inner.clone().prop_map(add_parens), Gt),
+            binop!(inner.clone().prop_map(add_parens), Gte),
+            binop!(inner.clone().prop_map(add_parens), Lte),
+            binop!(inner.clone().prop_map(add_parens), And),
+            binop!(inner.clone().prop_map(add_parens), Or),
             inner
                 .clone()
+                .prop_map(add_parens)
                 .prop_map(|e0| ExprKind::Not { expr: Arc::new(e0) }.to_expr_nopos()),
-            binop!(inner.clone(), Add),
-            binop!(inner.clone(), Sub),
-            binop!(inner.clone(), Mul),
-            binop!(inner.clone(), Div),
-            binop!(inner.clone(), Mod),
-            binop!(inner.clone(), Sample)
+            binop!(inner.clone().prop_map(add_parens), Add),
+            binop!(inner.clone().prop_map(add_parens), Sub),
+            binop!(inner.clone().prop_map(add_parens), Mul),
+            binop!(inner.clone().prop_map(add_parens), Div),
+            binop!(inner.clone().prop_map(add_parens), Mod),
+            binop!(inner.clone().prop_map(add_parens), Sample)
         ]
     })
     .prop_map(add_parens)
