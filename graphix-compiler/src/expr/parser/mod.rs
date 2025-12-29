@@ -342,7 +342,7 @@ where
     (
         position(),
         attempt(string("any").skip(not_prefix())).with(between(
-            sptoken('('),
+            token('('),
             sptoken(')'),
             sep_by_tok(expr(), csep(), token(')')),
         )),

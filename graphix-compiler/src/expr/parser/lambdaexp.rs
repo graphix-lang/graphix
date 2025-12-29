@@ -64,7 +64,11 @@ where
     (
         position(),
         apply_pexp(),
-        between(sptoken('('), sptoken(')'), sep_by_tok(applyarg(), csep(), token(')'))),
+        between(
+            token('('),
+            sptoken(')'),
+            spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
+        ),
     )
         .then(|(pos, function, args): (_, Expr, Vec<(Option<ArcStr>, Expr)>)| {
             let mut anon = false;
