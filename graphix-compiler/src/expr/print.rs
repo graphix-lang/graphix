@@ -764,16 +764,20 @@ impl PrettyDisplay for ExprKind {
                 name,
                 value: ModuleKind::Dynamic { sandbox, sig, source },
             } => {
-                // CR codex for eric: This branch never writes the closing `}` and doesn't emit
-                // semicolons between sandbox/sig/source, so the pretty output is not valid syntax
-                // (Display adds `;` separators and a closing brace). Should mirror that here.
                 writeln!(buf, "mod {name} dynamic {{")?;
                 buf.with_indent(2, |buf| {
                     sandbox.fmt_pretty(buf)?;
+                    buf.kill_newline();
+                    writeln!(buf, ";")?;
                     sig.fmt_pretty(buf)?;
+                    buf.kill_newline();
+                    writeln!(buf, ";")?;
                     write!(buf, "source ")?;
-                    buf.with_indent(2, |buf| source.fmt_pretty(buf))
-                })
+                    buf.with_indent(2, |buf| source.fmt_pretty(buf))?;
+                    buf.kill_newline();
+                    writeln!(buf, ";")
+                })?;
+                writeln!(buf, "}}")
             }
             ExprKind::Connect { name, value, deref } => {
                 let deref = if *deref { "*" } else { "" };

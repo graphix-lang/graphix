@@ -1315,7 +1315,7 @@ fn tupleref() {
 
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
-    crate::expr::parser::letbind()
+    crate::expr::parser::modexp::module()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1325,6 +1325,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "|| -> &&fn(_) -> _ throws _ i8:0";
-    dbg!(parse_one(s).unwrap());
+    let s = "mod a dynamic {\n  sandbox unrestricted;\n  sig { val a: _ };\n  source use a__________;\n}";
+    dbg!(parse_prop0(s).unwrap());
 }

@@ -344,7 +344,7 @@ where
         attempt(string("any").skip(not_prefix())).with(between(
             sptoken('('),
             sptoken(')'),
-            sep_by_tok(expr(), csep(), sptoken(')')),
+            sep_by_tok(expr(), csep(), token(')')),
         )),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
