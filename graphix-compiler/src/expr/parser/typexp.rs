@@ -203,7 +203,7 @@ where
     (
         token('`').with(ident(true)),
         optional(attempt(between(
-            sptoken('('),
+            token('('),
             sptoken(')'),
             sep_by1_tok(typ(), csep(), token(')')),
         ))),

@@ -127,7 +127,7 @@ where
     (
         token('`').with(typname()),
         optional(between(
-            attempt(sptoken('(')),
+            token('('),
             sptoken(')'),
             sep_by1_tok(structure_pattern(), csep(), token(')')),
         )),
