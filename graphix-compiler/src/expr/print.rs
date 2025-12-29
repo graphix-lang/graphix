@@ -860,7 +860,10 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Sample { lhs, rhs } => binop!("~", lhs, rhs),
             ExprKind::Not { expr } => match &expr.kind {
                 ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";"),
-                _ => expr.fmt_pretty(buf),
+                _ => {
+                    write!(buf, "!")?;
+                    expr.fmt_pretty(buf)
+                }
             },
             ExprKind::ByRef(e) => {
                 write!(buf, "&")?;

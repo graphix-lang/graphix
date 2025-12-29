@@ -1325,7 +1325,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s ="(type A<'a> = a__::a_::a__________::A____________<Any, Any, Any, Any, Any, _>)(\n)\n";
     let s = "a(\n)\n";
     dbg!(parse_prop0(s).unwrap());
 }
