@@ -21,7 +21,7 @@ use netidx::{
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use std::{path::PathBuf, pin::Pin, str::FromStr, time::Duration};
-use tokio::{task, time::Instant, try_join};
+use tokio::{join, task, time::Instant, try_join};
 use triomphe::Arc;
 
 #[derive(Debug, Clone)]
@@ -186,62 +186,64 @@ async fn resolve(
     pos: SourcePosition,
     name: ArcStr,
 ) -> Result<Expr> {
-    let jh = task::spawn(async move {
-        macro_rules! check {
-            ($res:expr) => {
-                match $res {
-                    Resolution::Resolved { interface, implementation } => {
-                        (interface, implementation)
-                    }
-                    Resolution::TryNextMethod => continue,
+    macro_rules! check {
+        ($res:expr) => {
+            match $res {
+                Resolution::Resolved { interface, implementation } => {
+                    (interface, implementation)
                 }
-            };
-        }
-        let ts = Instant::now();
-        let name = Path::from(name);
-        let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
-        for r in prepend.iter().map(|r| r.as_ref()).chain(resolvers.iter()) {
-            let (interface, implementation) = match r {
-                ModuleResolver::VFS(vfs) => {
-                    check!(resolve_from_vfs(&scope, &parent, &name, vfs))
-                }
-                ModuleResolver::Files(base) => {
-                    check!(resolve_from_files(&parent, &name, base, &mut errors).await)
-                }
-                ModuleResolver::Netidx { subscriber, base, timeout } => {
-                    let r = resolve_from_netidx(
-                        &parent,
-                        &name,
-                        subscriber,
-                        base,
-                        timeout,
-                        &mut errors,
-                    )
-                    .await;
-                    check!(r)
-                }
-            };
-            let value = ModuleKind::Resolved {
-                exprs: parser::parse(implementation.clone())
-                    .with_context(|| format!("parsing file {implementation:?}"))?,
-                sig: interface
-                    .as_ref()
-                    .map(|o| parser::parse_sig(o.clone()))
-                    .transpose()
-                    .with_context(|| format!("parsing file {interface:?}"))?,
-            };
-            let kind = ExprKind::Module { name: name.clone().into(), value };
-            format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
-                info!(
-                    "load and parse {implementation:?} and {interface:?} {:?}",
-                    ts.elapsed()
+                Resolution::TryNextMethod => continue,
+            }
+        };
+    }
+    let ts = Instant::now();
+    let name = Path::from(name);
+    let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
+    for r in prepend.iter().map(|r| r.as_ref()).chain(resolvers.iter()) {
+        let (interface, implementation) = match r {
+            ModuleResolver::VFS(vfs) => {
+                check!(resolve_from_vfs(&scope, &parent, &name, vfs))
+            }
+            ModuleResolver::Files(base) => {
+                check!(resolve_from_files(&parent, &name, base, &mut errors).await)
+            }
+            ModuleResolver::Netidx { subscriber, base, timeout } => {
+                let r = resolve_from_netidx(
+                    &parent,
+                    &name,
+                    subscriber,
+                    base,
+                    timeout,
+                    &mut errors,
                 )
-            });
-            return Ok(Expr { id, ori: Arc::new(implementation), pos, kind });
-        }
-        bail!("module {name} could not be found {errors:?}")
-    });
-    jh.await?
+                .await;
+                check!(r)
+            }
+        };
+        let exprs = task::spawn_blocking({
+            let ori = implementation.clone();
+            move || parser::parse(ori)
+        });
+        let sig = {
+            let ori = interface.clone();
+            task::spawn_blocking(move || ori.map(parser::parse_sig))
+        };
+        let (exprs, sig) = join!(exprs, sig);
+        let (exprs, sig) = (
+            exprs?.with_context(|| format!("parsing file {implementation:?}"))?,
+            sig?.transpose().with_context(|| format!("parsing file {interface:?}"))?,
+        );
+        let value = ModuleKind::Resolved { exprs, sig };
+        let kind = ExprKind::Module { name: name.clone().into(), value };
+        format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
+            info!(
+                "load and parse {implementation:?} and {interface:?} {:?}",
+                ts.elapsed()
+            )
+        });
+        return Ok(Expr { id, ori: Arc::new(implementation), pos, kind });
+    }
+    bail!("module {name} could not be found {errors:?}")
 }
 
 impl Expr {
