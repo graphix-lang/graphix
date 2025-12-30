@@ -75,7 +75,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                 ModuleKind::Unresolved => {
                     bail!("external modules are not allowed in this context")
                 }
-                ModuleKind::Resolved(exprs) => {
+                ModuleKind::Resolved { exprs, sig: _ } => {
                     let res = Block::compile(
                         ctx,
                         flags,
@@ -89,7 +89,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     ctx.env.modules.insert_cow(scope.lexical.clone());
                     Ok(res)
                 }
-                ModuleKind::Inline(exprs) => {
+                ModuleKind::Inline { exprs, sig: _ } => {
                     let res = Block::compile(
                         ctx,
                         flags,
