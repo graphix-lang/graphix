@@ -161,16 +161,17 @@ async fn resolve_from_netidx(
     }
     let impl_path = base.append(&format_compact!("{name}.gx"));
     let intf_path = base.append(&format_compact!("{name}.gxi"));
-    let sub = subscriber.subscribe_nondurable_one(impl_path.clone(), *timeout).await;
-    let implementation = match sub {
+    let impl_sub = subscriber.subscribe_nondurable_one(impl_path.clone(), *timeout);
+    let intf_sub = subscriber.subscribe_nondurable_one(intf_path.clone(), *timeout);
+    let (impl_sub, intf_sub) = join!(impl_sub, intf_sub);
+    let implementation = match impl_sub {
         Ok(v) => ori!(v, impl_path),
         Err(e) => {
             errors.push(e);
             return Resolution::TryNextMethod;
         }
     };
-    let sub = subscriber.subscribe_nondurable_one(intf_path.clone(), *timeout).await;
-    let interface = match sub {
+    let interface = match intf_sub {
         Ok(v) => Some(ori!(v, intf_path)),
         Err(_) => None,
     };
@@ -224,15 +225,18 @@ async fn resolve(
             let ori = implementation.clone();
             move || parser::parse(ori)
         });
-        let sig = {
-            let ori = interface.clone();
-            task::spawn_blocking(move || ori.map(parser::parse_sig))
+        let sig = match &interface {
+            None => None,
+            Some(ori) => {
+                let ori = ori.clone();
+                let sig = task::spawn_blocking(move || parser::parse_sig(ori))
+                    .await?
+                    .with_context(|| format!("parsing file {interface:?}"))?;
+                Some(sig)
+            }
         };
-        let (exprs, sig) = join!(exprs, sig);
-        let (exprs, sig) = (
-            exprs?.with_context(|| format!("parsing file {implementation:?}"))?,
-            sig?.transpose().with_context(|| format!("parsing file {interface:?}"))?,
-        );
+        let exprs =
+            exprs.await?.with_context(|| format!("parsing file {implementation:?}"))?;
         let value = ModuleKind::Resolved { exprs, sig };
         let kind = ExprKind::Module { name: name.clone().into(), value };
         format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {

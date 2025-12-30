@@ -704,23 +704,34 @@ macro_rules! deref {
 
 macro_rules! inline_module {
     ($inner:expr) => {
-        (random_fname(), collection::vec($inner, (1, 10)), any::<bool>()).prop_map(
-            |(name, body, nop)| {
+        (
+            random_fname(),
+            collection::vec($inner, (1, 10)),
+            option::of(collection::vec(module_sigitem(), (1, 10))),
+            any::<bool>(),
+        )
+            .prop_map(|(name, body, sig, nop)| {
+                let sig = sig.map(|sig| Sig { items: Arc::from(sig), toplevel: false });
                 if nop {
                     ExprKind::Module {
                         name,
-                        value: ModuleKind::Inline(Arc::from_iter(
-                            body.into_iter()
-                                .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
-                        )),
+                        value: ModuleKind::Inline {
+                            exprs: Arc::from_iter(
+                                body.into_iter()
+                                    .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
+                            ),
+                            sig,
+                        },
                     }
                     .to_expr_nopos()
                 } else {
-                    ExprKind::Module { name, value: ModuleKind::Inline(Arc::from(body)) }
-                        .to_expr_nopos()
+                    ExprKind::Module {
+                        name,
+                        value: ModuleKind::Inline { exprs: Arc::from(body), sig },
+                    }
+                    .to_expr_nopos()
                 }
-            },
-        )
+            })
     };
 }
 
@@ -1310,8 +1321,14 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(check(expr0, expr1))
         }
         (
-            ExprKind::Module { name: name0, value: ModuleKind::Inline(value0) },
-            ExprKind::Module { name: name1, value: ModuleKind::Inline(value1) },
+            ExprKind::Module {
+                name: name0,
+                value: ModuleKind::Inline { exprs: value0, sig: sig0 },
+            },
+            ExprKind::Module {
+                name: name1,
+                value: ModuleKind::Inline { exprs: value1, sig: sig1 },
+            },
         ) => {
             dbg!(
                 dbg!(name0 == name1)
@@ -1320,6 +1337,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                         .iter()
                         .zip(value1.iter())
                         .all(|(v0, v1)| check(v0, v1)))
+                    && match (sig0, sig1) {
+                        (Some(sig0), Some(sig1)) => check_module_sig(&sig0, &sig1),
+                        (None, None) => true,
+                        (Some(_), _) | (_, Some(_)) => false,
+                    }
             )
         }
         (
