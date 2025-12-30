@@ -57,6 +57,20 @@ parser! {
     }
 }
 
+fn sig<I>() -> impl Parser<I, Output = Sig>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    spstring("sig").with(spaces()).with(between(
+        token('{'),
+        sptoken('}'),
+        sep_by1_tok(sig_item(), semisep(), token('}'))
+            .map(|i: Vec<SigItem>| Sig { toplevel: false, items: Arc::from(i) }),
+    ))
+}
+
 fn sandbox<I>() -> impl Parser<I, Output = Sandbox>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -94,19 +108,7 @@ where
             sptoken('}'),
             (
                 spstring("sandbox").with(space()).with(sandbox()).skip(sptoken(';')),
-                spstring("sig")
-                    .with(spaces())
-                    .with(between(
-                        token('{'),
-                        sptoken('}'),
-                        sep_by1_tok(sig_item(), semisep(), token('}')).map(
-                            |i: Vec<SigItem>| Sig {
-                                toplevel: false,
-                                items: Arc::from(i),
-                            },
-                        ),
-                    ))
-                    .skip(sptoken(';')),
+                sig().skip(sptoken(';')),
                 spstring("source")
                     .with(space())
                     .with(expr())
@@ -127,12 +129,20 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(between(
-        sptoken('{'),
-        sptoken('}'),
-        sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| ExprKind::NoOp.to_expr(pos)),
+    attempt((
+        optional(attempt(spaces().with(token(':'))).with(sig())),
+        between(
+            sptoken('{'),
+            sptoken('}'),
+            sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
+                ExprKind::NoOp.to_expr(pos)
+            }),
+        ),
     ))
-    .map(|mut m: LPooled<Vec<Expr>>| ModuleKind::Inline(Arc::from_iter(m.drain(..))))
+    .map(|(sig, mut m): (_, LPooled<Vec<Expr>>)| ModuleKind::Inline {
+        exprs: Arc::from_iter(m.drain(..)),
+        sig,
+    })
 }
 
 pub(super) fn module<I>() -> impl Parser<I, Output = Expr>

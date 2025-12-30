@@ -142,8 +142,8 @@ pub enum Sandbox {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ModuleKind {
     Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
-    Inline(Arc<[Expr]>),
-    Resolved(Arc<[Expr]>),
+    Inline { exprs: Arc<[Expr]>, sig: Option<Sig> },
+    Resolved { exprs: Arc<[Expr]>, sig: Option<Sig> },
     Unresolved,
 }
 
@@ -483,10 +483,10 @@ impl Expr {
                 let init = source.fold(init, f);
                 key.fold(init, f)
             }
-            ExprKind::Module { value: ModuleKind::Inline(e), .. } => {
+            ExprKind::Module { value: ModuleKind::Inline { exprs: e, .. }, .. } => {
                 e.iter().fold(init, |init, e| e.fold(init, f))
             }
-            ExprKind::Module { value: ModuleKind::Resolved(exprs), .. } => {
+            ExprKind::Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
                 exprs.iter().fold(init, |init, e| e.fold(init, f))
             }
             ExprKind::Module {

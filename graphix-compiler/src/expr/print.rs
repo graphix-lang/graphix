@@ -742,7 +742,7 @@ impl PrettyDisplay for ExprKind {
             | ExprKind::StringInterpolate { .. }
             | ExprKind::Module {
                 name: _,
-                value: ModuleKind::Unresolved | ModuleKind::Resolved(_),
+                value: ModuleKind::Unresolved | ModuleKind::Resolved { .. },
             } => {
                 writeln!(buf, "{self}")
             }
@@ -756,8 +756,14 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
             ExprKind::Bind(b) => b.fmt_pretty(buf),
             ExprKind::StructWith(sw) => sw.fmt_pretty(buf),
-            ExprKind::Module { name, value: ModuleKind::Inline(exprs) } => {
+            ExprKind::Module { name, value: ModuleKind::Inline { exprs, sig } } => {
                 write!(buf, "mod {name} ")?;
+                if let Some(sig) = sig {
+                    write!(buf, ": ")?;
+                    sig.fmt_pretty(buf)?;
+                    buf.kill_newline();
+                    write!(buf, " ")?
+                }
                 pretty_print_exprs(buf, exprs, "{", "}", ";")
             }
             ExprKind::Module {
@@ -930,8 +936,13 @@ impl fmt::Display for ExprKind {
             ExprKind::Module { name, value } => {
                 write!(f, "mod {name}")?;
                 match value {
-                    ModuleKind::Resolved(_) | ModuleKind::Unresolved => Ok(()),
-                    ModuleKind::Inline(exprs) => print_exprs(f, &**exprs, "{", "}", "; "),
+                    ModuleKind::Resolved { .. } | ModuleKind::Unresolved => Ok(()),
+                    ModuleKind::Inline { exprs, sig } => {
+                        if let Some(sig) = sig {
+                            write!(f, ": {sig} ")?
+                        }
+                        print_exprs(f, &**exprs, "{", "}", "; ")
+                    }
                     ModuleKind::Dynamic { sandbox, sig, source } => {
                         write!(f, " dynamic {{ {sandbox};")?;
                         write!(f, " {sig};")?;

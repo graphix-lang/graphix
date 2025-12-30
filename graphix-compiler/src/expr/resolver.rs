@@ -9,6 +9,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
+use compact_str::format_compact;
 use futures::future::try_join_all;
 use fxhash::FxHashMap;
 use log::info;
@@ -18,6 +19,7 @@ use netidx::{
     utils::Either,
 };
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use std::{path::PathBuf, pin::Pin, str::FromStr, time::Duration};
 use tokio::{task, time::Instant, try_join};
 use triomphe::Arc;
@@ -60,6 +62,121 @@ impl ModuleResolver {
     }
 }
 
+enum Resolution {
+    Resolved { interface: Option<Origin>, implementation: Origin },
+    TryNextMethod,
+}
+
+fn resolve_from_vfs(
+    scope: &ModPath,
+    parent: &Arc<Origin>,
+    name: &Path,
+    vfs: &FxHashMap<Path, ArcStr>,
+) -> Resolution {
+    macro_rules! ori {
+        ($s:expr) => {
+            Origin {
+                parent: Some(parent.clone()),
+                source: Source::Internal(name.clone().into()),
+                text: $s.clone(),
+            }
+        };
+    }
+    let scoped_intf = scope.append(&format_compact!("{name}.gxi"));
+    let scoped_impl = scope.append(&format_compact!("{name}.gx"));
+    let implementation = match vfs.get(&scoped_impl) {
+        Some(s) => ori!(s),
+        None => return Resolution::TryNextMethod,
+    };
+    let interface = vfs.get(&scoped_intf).map(|s| ori!(s));
+    Resolution::Resolved { interface, implementation }
+}
+
+async fn resolve_from_files(
+    parent: &Arc<Origin>,
+    name: &Path,
+    base: &PathBuf,
+    errors: &mut Vec<anyhow::Error>,
+) -> Resolution {
+    macro_rules! ori {
+        ($s:expr, $path:expr) => {
+            Origin {
+                parent: Some(parent.clone()),
+                source: Source::File($path),
+                text: ArcStr::from($s),
+            }
+        };
+    }
+    let mut impl_path = base.clone();
+    for part in Path::parts(&name) {
+        impl_path.push(part);
+    }
+    impl_path.set_extension("gx");
+    let mut intf_path = impl_path.with_extension("gxi");
+    let implementation = match tokio::fs::read_to_string(&impl_path).await {
+        Ok(s) => ori!(s, impl_path),
+        Err(_) => {
+            impl_path.set_extension("");
+            impl_path.push("mod.gx");
+            intf_path.set_extension("");
+            intf_path.push("mod.gxi");
+            match tokio::fs::read_to_string(&impl_path).await {
+                Ok(s) => ori!(s, impl_path.clone()),
+                Err(e) => {
+                    errors.push(anyhow::Error::from(e));
+                    return Resolution::TryNextMethod;
+                }
+            }
+        }
+    };
+    let interface = match tokio::fs::read_to_string(&intf_path).await {
+        Ok(s) => Some(ori!(s, intf_path)),
+        Err(_) => None,
+    };
+    Resolution::Resolved { interface, implementation }
+}
+
+async fn resolve_from_netidx(
+    parent: &Arc<Origin>,
+    name: &Path,
+    subscriber: &Subscriber,
+    base: &Path,
+    timeout: &Option<Duration>,
+    errors: &mut Vec<anyhow::Error>,
+) -> Resolution {
+    macro_rules! ori {
+        ($v:expr, $p:expr) => {
+            match $v.last() {
+                Event::Update(Value::String(text)) => Origin {
+                    parent: Some(parent.clone()),
+                    source: Source::Netidx($p.clone()),
+                    text,
+                },
+                Event::Unsubscribed | Event::Update(_) => {
+                    errors.push(anyhow!("expected string"));
+                    return Resolution::TryNextMethod;
+                }
+            }
+        };
+    }
+    let impl_path = base.append(&format_compact!("{name}.gx"));
+    let intf_path = base.append(&format_compact!("{name}.gxi"));
+    let sub = subscriber.subscribe_nondurable_one(impl_path.clone(), *timeout).await;
+    let implementation = match sub {
+        Ok(v) => ori!(v, impl_path),
+        Err(e) => {
+            errors.push(e);
+            return Resolution::TryNextMethod;
+        }
+    };
+    let sub = subscriber.subscribe_nondurable_one(intf_path.clone(), *timeout).await;
+    let interface = match sub {
+        Ok(v) => Some(ori!(v, intf_path)),
+        Err(_) => None,
+    };
+    Resolution::Resolved { interface, implementation }
+}
+
 async fn resolve(
     scope: ModPath,
     prepend: Option<Arc<ModuleResolver>>,
@@ -70,82 +187,57 @@ async fn resolve(
     name: ArcStr,
 ) -> Result<Expr> {
     let jh = task::spawn(async move {
-        let ts = Instant::now();
-        let name = Path::from(name);
-        let mut errors = vec![];
-        for r in prepend.iter().map(|r| r.as_ref()).chain(resolvers.iter()) {
-            let ori = match r {
-                ModuleResolver::VFS(vfs) => {
-                    let scoped = scope.append(&name);
-                    match vfs.get(&scoped) {
-                        Some(s) => Origin {
-                            parent: Some(parent.clone()),
-                            source: Source::Internal(name.clone().into()),
-                            text: s.clone(),
-                        },
-                        None => continue,
+        macro_rules! check {
+            ($res:expr) => {
+                match $res {
+                    Resolution::Resolved { interface, implementation } => {
+                        (interface, implementation)
                     }
-                }
-                ModuleResolver::Files(base) => {
-                    let mut full_path = base.clone();
-                    for part in Path::parts(&name) {
-                        full_path.push(part);
-                    }
-                    full_path.set_extension("gx");
-                    match tokio::fs::read_to_string(&full_path).await {
-                        Ok(s) => Origin {
-                            parent: Some(parent.clone()),
-                            source: Source::File(full_path),
-                            text: ArcStr::from(s),
-                        },
-                        Err(_) => {
-                            full_path.set_extension("");
-                            full_path.push("mod.gx");
-                            match tokio::fs::read_to_string(&full_path).await {
-                                Ok(s) => Origin {
-                                    parent: Some(parent.clone()),
-                                    source: Source::File(full_path),
-                                    text: ArcStr::from(s),
-                                },
-                                Err(e) => {
-                                    errors.push(anyhow::Error::from(e));
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-                ModuleResolver::Netidx { subscriber, base, timeout } => {
-                    let full_path = base.append(&name);
-                    let source = Source::Netidx(full_path.clone());
-                    let sub =
-                        subscriber.subscribe_nondurable_one(full_path, *timeout).await;
-                    match sub {
-                        Err(e) => {
-                            errors.push(e);
-                            continue;
-                        }
-                        Ok(v) => match v.last() {
-                            Event::Update(Value::String(text)) => {
-                                Origin { parent: Some(parent.clone()), source, text }
-                            }
-                            Event::Unsubscribed | Event::Update(_) => {
-                                errors.push(anyhow!("expected string"));
-                                continue;
-                            }
-                        },
-                    }
+                    Resolution::TryNextMethod => continue,
                 }
             };
-            let value = ModuleKind::Resolved(
-                parser::parse(ori.clone())
-                    .with_context(|| format!("parsing file {ori:?}"))?,
-            );
+        }
+        let ts = Instant::now();
+        let name = Path::from(name);
+        let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
+        for r in prepend.iter().map(|r| r.as_ref()).chain(resolvers.iter()) {
+            let (interface, implementation) = match r {
+                ModuleResolver::VFS(vfs) => {
+                    check!(resolve_from_vfs(&scope, &parent, &name, vfs))
+                }
+                ModuleResolver::Files(base) => {
+                    check!(resolve_from_files(&parent, &name, base, &mut errors).await)
+                }
+                ModuleResolver::Netidx { subscriber, base, timeout } => {
+                    let r = resolve_from_netidx(
+                        &parent,
+                        &name,
+                        subscriber,
+                        base,
+                        timeout,
+                        &mut errors,
+                    )
+                    .await;
+                    check!(r)
+                }
+            };
+            let value = ModuleKind::Resolved {
+                exprs: parser::parse(implementation.clone())
+                    .with_context(|| format!("parsing file {implementation:?}"))?,
+                sig: interface
+                    .as_ref()
+                    .map(|o| parser::parse_sig(o.clone()))
+                    .transpose()
+                    .with_context(|| format!("parsing file {interface:?}"))?,
+            };
             let kind = ExprKind::Module { name: name.clone().into(), value };
             format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
-                info!("load and parse {ori} {:?}", ts.elapsed())
+                info!(
+                    "load and parse {implementation:?} and {interface:?} {:?}",
+                    ts.elapsed()
+                )
             });
-            return Ok(Expr { id, ori: Arc::new(ori), pos, kind });
+            return Ok(Expr { id, ori: Arc::new(implementation), pos, kind });
         }
         bail!("module {name} could not be found {errors:?}")
     });
@@ -270,7 +362,7 @@ impl Expr {
             | ExprKind::StructRef { .. }
             | ExprKind::TupleRef { .. }
             | ExprKind::TypeDef { .. } => Box::pin(async move { Ok(self.clone()) }),
-            ExprKind::Module { value: ModuleKind::Inline(exprs), name } => {
+            ExprKind::Module { value: ModuleKind::Inline { exprs, sig }, name } => {
                 Box::pin(async move {
                     let scope = ModPath(scope.append(&*name));
                     let exprs = try_join_all(exprs.iter().map(|e| async {
@@ -278,12 +370,12 @@ impl Expr {
                     }))
                     .await?;
                     expr!(ExprKind::Module {
-                        value: ModuleKind::Inline(Arc::from(exprs)),
+                        value: ModuleKind::Inline { exprs: Arc::from(exprs), sig },
                         name,
                     })
                 })
             }
-            ExprKind::Module { value: ModuleKind::Resolved(exprs), name } => {
+            ExprKind::Module { value: ModuleKind::Resolved { exprs, sig }, name } => {
                 Box::pin(async move {
                     let prepend = match &self.ori.source {
                         Source::Unspecified | Source::Internal(_) => None,
@@ -306,7 +398,7 @@ impl Expr {
                     }))
                     .await?;
                     expr!(ExprKind::Module {
-                        value: ModuleKind::Resolved(Arc::from(exprs)),
+                        value: ModuleKind::Resolved { exprs: Arc::from(exprs), sig },
                         name,
                     })
                 })

@@ -721,22 +721,25 @@ fn connect() {
 fn inline_module() {
     let exp = ExprKind::Module {
         name: literal!("foo"),
-        value: ModuleKind::Inline(Arc::from_iter([
-            ExprKind::Bind(Arc::new(BindExpr {
-                rec: false,
-                typ: None,
-                pattern: StructurePattern::Bind(literal!("z")),
-                value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-            }))
-            .to_expr_nopos(),
-            ExprKind::Bind(Arc::new(BindExpr {
-                rec: false,
-                typ: None,
-                pattern: StructurePattern::Bind(literal!("m")),
-                value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-            }))
-            .to_expr_nopos(),
-        ])),
+        value: ModuleKind::Inline {
+            exprs: Arc::from_iter([
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec: false,
+                    typ: None,
+                    pattern: StructurePattern::Bind(literal!("z")),
+                    value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
+                }))
+                .to_expr_nopos(),
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec: false,
+                    typ: None,
+                    pattern: StructurePattern::Bind(literal!("m")),
+                    value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
+                }))
+                .to_expr_nopos(),
+            ]),
+            sig: None,
+        },
     }
     .to_expr_nopos();
     let s = r#"mod foo {
@@ -957,13 +960,16 @@ fn apply_typed_lambda() {
 fn mod_interpolate() {
     let e = ExprKind::Module {
         name: literal!("a"),
-        value: ModuleKind::Inline(Arc::from_iter([ExprKind::StringInterpolate {
-            args: Arc::from_iter([
-                ExprKind::Constant(Value::from("foo_")).to_expr_nopos(),
-                ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-            ]),
-        }
-        .to_expr_nopos()])),
+        value: ModuleKind::Inline {
+            exprs: Arc::from_iter([ExprKind::StringInterpolate {
+                args: Arc::from_iter([
+                    ExprKind::Constant(Value::from("foo_")).to_expr_nopos(),
+                    ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
+                ]),
+            }
+            .to_expr_nopos()]),
+            sig: None,
+        },
     }
     .to_expr_nopos();
     let s = "mod a{\"foo_[42]\"}";
