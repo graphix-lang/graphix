@@ -17,11 +17,11 @@ pub(crate) mod bind;
 pub(crate) mod callsite;
 pub(crate) mod compiler;
 pub(crate) mod data;
-pub(crate) mod dynamic;
 pub(crate) mod error;
 pub mod genn;
 pub(crate) mod lambda;
 pub(crate) mod map;
+pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
 pub(crate) mod select;
@@ -123,6 +123,55 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
     }
 
     fn refs(&self, _refs: &mut Refs) {}
+}
+
+#[derive(Debug)]
+pub(crate) struct ExplicitParens<R: Rt, E: UserEvent> {
+    spec: Expr,
+    n: Node<R, E>,
+}
+
+impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+    ) -> Result<Node<R, E>> {
+        let n = compile(ctx, flags, spec.clone(), scope, top_id)?;
+        Ok(Box::new(ExplicitParens { spec, n }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+        self.n.update(ctx, event)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.sleep(ctx);
+    }
+
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck(ctx)
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.n.typ()
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
 }
 
 #[derive(Debug)]

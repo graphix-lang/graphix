@@ -3,9 +3,9 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-    dynamic::DynamicModule,
     error::{Qop, TryCatch},
     lambda::Lambda,
+    module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Not, Or, Sub},
     select::Select,
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
@@ -19,7 +19,9 @@ use crate::{
     node::{
         error::OrNever,
         map::{Map, MapRef},
+        ExplicitParens, Nop,
     },
+    typ::Type,
     CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use anyhow::{bail, Context, Result};
@@ -34,8 +36,10 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     match &spec.kind {
-        ExprKind::NoOp => todo!(),
-        ExprKind::ExplicitParens(_) => todo!(),
+        ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
+        ExprKind::ExplicitParens(s) => {
+            ExplicitParens::compile(ctx, flags, (**s).clone(), scope, top_id)
+        }
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
             let scope = scope.append(&format_compact!("do{}", spec.id.inner()));
@@ -72,23 +76,6 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::Module { name, value } => {
             let scope = scope.append(&name);
             match value {
-                ModuleKind::Unresolved => {
-                    bail!("external modules are not allowed in this context")
-                }
-                ModuleKind::Resolved { exprs, sig: _ } => {
-                    let res = Block::compile(
-                        ctx,
-                        flags,
-                        spec.clone(),
-                        &scope,
-                        top_id,
-                        true,
-                        exprs,
-                    )
-                    .with_context(|| spec.ori.clone())?;
-                    ctx.env.modules.insert_cow(scope.lexical.clone());
-                    Ok(res)
-                }
                 ModuleKind::Inline { exprs, sig: _ } => {
                     let res = Block::compile(
                         ctx,
@@ -103,7 +90,33 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     ctx.env.modules.insert_cow(scope.lexical.clone());
                     Ok(res)
                 }
-                ModuleKind::Dynamic { sandbox, sig, source } => DynamicModule::compile(
+                ModuleKind::Unresolved => {
+                    bail!("external modules are not allowed in this context")
+                }
+                ModuleKind::Resolved { exprs, sig: None } => {
+                    let res = Block::compile(
+                        ctx,
+                        flags,
+                        spec.clone(),
+                        &scope,
+                        top_id,
+                        true,
+                        exprs,
+                    )
+                    .with_context(|| spec.ori.clone())?;
+                    ctx.env.modules.insert_cow(scope.lexical.clone());
+                    Ok(res)
+                }
+                ModuleKind::Resolved { exprs, sig: Some(sig) } => Module::compile_static(
+                    ctx,
+                    flags,
+                    spec.clone(),
+                    &scope,
+                    sig.clone(),
+                    exprs.clone(),
+                    top_id,
+                ),
+                ModuleKind::Dynamic { sandbox, sig, source } => Module::compile_dynamic(
                     ctx,
                     flags,
                     spec.clone(),

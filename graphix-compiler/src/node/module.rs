@@ -6,7 +6,7 @@ use crate::{
         parser, BindSig, Expr, ExprId, ExprKind, ModSig, Origin, Sandbox, Sig, SigKind,
         Source, StructurePattern, TypeDefExpr,
     },
-    node::{bind::Bind, Block},
+    node::{bind::Bind, Block, Nop},
     typ::Type,
     wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
@@ -87,7 +87,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             has_mod.insert(name.clone());
         }
         if let Expr { kind: ExprKind::Module { name, .. }, .. } = n.spec()
-            && let Some(dynmod) = (&**n as &dyn Any).downcast_ref::<DynamicModule<R, E>>()
+            && let Some(dynmod) = (&**n as &dyn Any).downcast_ref::<Module<R, E>>()
             && let Some(sub_sig) = sig.find_module(name)
         {
             if &dynmod.sig != sub_sig {
@@ -140,7 +140,7 @@ static TYP: LazyLock<Type> = LazyLock::new(|| {
 });
 
 #[derive(Debug)]
-pub(super) struct DynamicModule<R: Rt, E: UserEvent> {
+pub(super) struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
     source: Node<R, E>,
@@ -149,11 +149,12 @@ pub(super) struct DynamicModule<R: Rt, E: UserEvent> {
     scope: Scope,
     proxy: FxHashMap<BindId, BindId>,
     nodes: Box<[Node<R, E>]>,
+    is_static: bool,
     top_id: ExprId,
 }
 
-impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
-    pub(super) fn compile(
+impl<R: Rt, E: UserEvent> Module<R, E> {
+    pub(super) fn compile_dynamic(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
@@ -175,14 +176,47 @@ impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
             scope: scope.clone(),
             proxy: FxHashMap::default(),
             nodes: Box::new([]),
+            is_static: false,
             top_id,
         }))
     }
 
-    fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
+    pub(super) fn compile_static(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        sig: Sig,
+        exprs: Arc<[Expr]>,
+        top_id: ExprId,
+    ) -> Result<Node<R, E>> {
+        let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
+        let env = ctx.env.clone();
+        bind_sig(&mut ctx.env, &scope, &sig).context("binding module signature")?;
+        let mut t = Self {
+            spec,
+            flags,
+            env,
+            sig,
+            source,
+            scope: scope.clone(),
+            proxy: FxHashMap::default(),
+            nodes: Box::new([]),
+            is_static: true,
+            top_id,
+        };
+        t.compile_inner(ctx, &exprs)?;
+        Ok(Box::new(t))
+    }
+
+    fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = parser::parse(ori)?;
-        ctx.builtins_allowed = false;
+        self.compile_inner(ctx, &exprs)
+    }
+
+    fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
+        ctx.builtins_allowed = self.is_static;
         let nodes = ctx.with_restored(self.env.clone(), |ctx| -> Result<_> {
             let mut nodes = exprs
                 .iter()
@@ -213,18 +247,20 @@ impl<R: Rt, E: UserEvent> DynamicModule<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
+impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<netidx_value::Value> {
         let mut compiled = false;
-        if let Some(v) = self.source.update(ctx, event) {
+        if !self.is_static
+            && let Some(v) = self.source.update(ctx, event)
+        {
             self.clear_compiled(ctx);
             match v {
                 Value::String(s) => {
-                    if let Err(e) = self.compile_inner(ctx, s) {
+                    if let Err(e) = self.compile_source(ctx, s) {
                         return Some(errf!(ERR_TAG, "compile error {e:?}"));
                     }
                 }
@@ -241,21 +277,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
                 event.variables.insert(*inner_id, v.clone());
             }
         }
-        for n in &mut self.nodes {
-            n.update(ctx, event);
-        }
+        let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.remove(inner_id) {
                 event.variables.insert(*proxy_id, v);
             }
         }
-        compiled.then(|| Value::Null)
+        if self.is_static {
+            res
+        } else {
+            compiled.then(|| Value::Null)
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.delete(ctx);
-        self.clear_compiled(ctx);
+        if self.is_static {
+            self.env = ctx.with_restored(self.env.clone(), |ctx| {
+                for n in &mut self.nodes {
+                    n.delete(ctx);
+                }
+                ctx.env.clone()
+            });
+        } else {
+            self.source.delete(ctx);
+            self.clear_compiled(ctx);
+        }
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -266,8 +313,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.sleep(ctx);
-        self.clear_compiled(ctx);
+        if self.is_static {
+            self.env = ctx.with_restored(self.env.clone(), |ctx| {
+                for n in &mut self.nodes {
+                    n.sleep(ctx);
+                }
+                ctx.env.clone()
+            });
+        } else {
+            self.source.sleep(ctx);
+            self.clear_compiled(ctx);
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -275,7 +331,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for DynamicModule<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &TYP
+        if self.is_static {
+            self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
+        } else {
+            &TYP
+        }
     }
 
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
