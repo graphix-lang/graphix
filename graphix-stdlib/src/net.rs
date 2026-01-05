@@ -724,7 +724,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 }
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<Write>()?;
     ctx.register_builtin::<Subscribe>()?;
     ctx.register_builtin::<RpcCall>()?;
@@ -732,5 +732,5 @@ pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<A
     ctx.register_builtin::<ListTable>()?;
     ctx.register_builtin::<Publish<R, E>>()?;
     ctx.register_builtin::<PublishRpc<R, E>>()?;
-    Ok(literal!(include_str!("net.gx")))
+    Ok((literal!(include_str!("net.gx")), literal!(include_str!("net.gxi"))))
 }

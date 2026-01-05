@@ -734,39 +734,57 @@ pub fn register<R: Rt, E: UserEvent>(
     modules: BitFlags<Module>,
 ) -> Result<(ArcStr, ModuleResolver)> {
     let mut tbl = FxHashMap::default();
-    tbl.insert(Path::from("/core"), core::register(ctx)?);
+    let (core_impl, core_intf) = core::register(ctx)?;
+    tbl.insert(Path::from("/core.gx"), core_impl);
+    tbl.insert(Path::from("/core.gxi"), core_intf);
     let mut root = String::from("pub mod core;\nuse core;\n");
     for module in modules {
         match module {
             Module::Array => {
                 root.push_str("pub mod array;\n");
-                tbl.insert(Path::from("/array"), array::register(ctx)?);
+                let (impl_code, intf_code) = array::register(ctx)?;
+                tbl.insert(Path::from("/array.gx"), impl_code);
+                tbl.insert(Path::from("/array.gxi"), intf_code);
             }
             Module::Map => {
                 root.push_str("pub mod map;\n");
-                tbl.insert(Path::from("/map"), map::register(ctx)?);
+                let (impl_code, intf_code) = map::register(ctx)?;
+                tbl.insert(Path::from("/map.gx"), impl_code);
+                tbl.insert(Path::from("/map.gxi"), intf_code);
             }
             Module::NetAndTime => {
                 root.push_str("pub mod time;\n");
-                tbl.insert(Path::from("/time"), time::register(ctx)?);
+                let (impl_code, intf_code) = time::register(ctx)?;
+                tbl.insert(Path::from("/time.gx"), impl_code);
+                tbl.insert(Path::from("/time.gxi"), intf_code);
                 root.push_str("pub mod net;\n");
-                tbl.insert(Path::from("/net"), net::register(ctx)?);
+                let (impl_code, intf_code) = net::register(ctx)?;
+                tbl.insert(Path::from("/net.gx"), impl_code);
+                tbl.insert(Path::from("/net.gxi"), intf_code);
             }
             Module::Rand => {
                 root.push_str("pub mod rand;\n");
-                tbl.insert(Path::from("/rand"), rand::register(ctx)?);
+                let (impl_code, intf_code) = rand::register(ctx)?;
+                tbl.insert(Path::from("/rand.gx"), impl_code);
+                tbl.insert(Path::from("/rand.gxi"), intf_code);
             }
             Module::Re => {
                 root.push_str("pub mod re;\n");
-                tbl.insert(Path::from("/re"), re::register(ctx)?);
+                let (impl_code, intf_code) = re::register(ctx)?;
+                tbl.insert(Path::from("/re.gx"), impl_code);
+                tbl.insert(Path::from("/re.gxi"), intf_code);
             }
             Module::Str => {
                 root.push_str("pub mod str;\n");
-                tbl.insert(Path::from("/str"), str::register(ctx)?);
+                let (impl_code, intf_code) = str::register(ctx)?;
+                tbl.insert(Path::from("/str.gx"), impl_code);
+                tbl.insert(Path::from("/str.gxi"), intf_code);
             }
             Module::Fs => {
                 root.push_str("pub mod fs;\n");
-                tbl.insert(Path::from("/fs"), fs::register(ctx)?);
+                let (impl_code, intf_code) = fs::register(ctx)?;
+                tbl.insert(Path::from("/fs.gx"), impl_code);
+                tbl.insert(Path::from("/fs.gxi"), intf_code);
             }
         }
     }

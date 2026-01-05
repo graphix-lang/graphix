@@ -1,13 +1,6 @@
 use tui::table;
 
-type MoveCursor = [
-    `Left(i64),
-    `Right(i64),
-    `Up(i64),
-    `Down(i64)
-];
-
-pub let browser = |
+let browser = |
     #selected_style: Style = style(#bg:`Indexed(20), #fg:`Indexed(227)),
     #header_style: Style = style(#fg:`Indexed(111)),
     #style: Style = style(#fg:`Indexed(227), #bg:`Indexed(234)),

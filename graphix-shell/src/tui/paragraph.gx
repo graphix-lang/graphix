@@ -1,11 +1,3 @@
-type Paragraph = {
-  alignment: &[Alignment, null],
-  lines: &[Array<Line>, string],
-  scroll: &{ x: i64, y: i64 }, // y is in lines, x is in chars
-  style: &Style,
-  trim: &bool // trim leading whitespace when wrapping
-};
-
 let paragraph = |
   #style: &Style = &style(),
   #alignment: &[Alignment, null] = &null,

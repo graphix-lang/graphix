@@ -273,9 +273,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<AfterIdle>()?;
     ctx.register_builtin::<Timer>()?;
     ctx.register_builtin::<Now>()?;
-    Ok(literal!(include_str!("time.gx")))
+    Ok((literal!(include_str!("time.gx")), literal!(include_str!("time.gxi"))))
 }

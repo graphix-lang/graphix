@@ -787,7 +787,7 @@ impl EvalCached for ParseEv {
 
 type Parse = CachedArgs<ParseEv>;
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<StartsWith>()?;
     ctx.register_builtin::<EndsWith>()?;
     ctx.register_builtin::<Contains>()?;
@@ -817,5 +817,5 @@ pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<A
     ctx.register_builtin::<Len>()?;
     ctx.register_builtin::<Sub>()?;
     ctx.register_builtin::<Parse>()?;
-    Ok(literal!(include_str!("str.gx")))
+    Ok((literal!(include_str!("str.gx")), literal!(include_str!("str.gxi"))))
 }

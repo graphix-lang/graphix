@@ -125,9 +125,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
     }
 }
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<Rand>()?;
     ctx.register_builtin::<Pick>()?;
     ctx.register_builtin::<Shuffle>()?;
-    Ok(literal!(include_str!("rand.gx")))
+    Ok((literal!(include_str!("rand.gx")), literal!(include_str!("rand.gxi"))))
 }

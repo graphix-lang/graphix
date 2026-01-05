@@ -1,0 +1,32 @@
+type Table = { rows: Array<string>, columns: Array<(string, v64)> };
+type ArgSpec = { name: string, doc: string, default: Any };
+
+/// write the value to the specified path
+val write: fn(string, Any) -> _;
+
+/// subscribe to the specified path
+val subscribe: fn(string) -> Any;
+
+/// call the specified rpc
+val call: fn(string, Any) -> Any;
+
+/// Publish an rpc. When the rpc is called f will be called with the arguments
+/// sent by the caller, and whatever f returns will be sent back to the caller.
+/// If f does not return, the caller will hang waiting for a reply.
+val rpc: fn(#path: string, #doc: string, #spec: Array<ArgSpec>, #f: fn(Any) -> Any) -> _;
+
+/// list paths under the specified path. If #update is specified, then the list will
+/// be refreshed each time clock is triggered. If update is not specified, the list will
+/// be updated each second
+val list: fn(?#update: Any, string) -> Array<string>;
+
+/// list the table under the specified path. If #update is specified, then the table
+/// will be refreshed each time clock is triggered. If update is not specifed, the table
+/// will be updated each second
+val list_table: fn(?#clock: Any, string) -> Table;
+
+/// Publish the specifed value at the specified path. Whenever the value updates,
+/// the new value will be sent to subscribers. If #on_write is specified, then if
+/// subscribers write to the value on_write will be called with the written value.
+/// on_write need not return anything.
+val publish: fn(?#on_write: fn(Any) -> _, string, Any) -> _;

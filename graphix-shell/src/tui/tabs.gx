@@ -1,14 +1,3 @@
-type Tabs = {
-  divider: &[Span, null],
-  highlight_style: &[Style, null],
-  padding_left: &[Line, null],
-  padding_right: &[Line, null],
-  selected: &[i64, null],
-  size: &[Size, null],
-  style: &[Style, null],
-  tabs: &Array<(Line, Tui)>
-};
-
 let tabs = |
   #divider: &[Span, null] = &null,
   #highlight_style: &[Style, null] = &null,

@@ -22,6 +22,7 @@ use triomphe::Arc;
 
 fn bind_sig<R: Rt, E: UserEvent>(
     env: &mut Env<R, E>,
+    mod_env: &mut Env<R, E>,
     scope: &Scope,
     sig: &Sig,
 ) -> Result<()> {
@@ -33,11 +34,17 @@ fn bind_sig<R: Rt, E: UserEvent>(
                 env.bind_variable(&scope.lexical, name, typ.clone());
             }
             SigKind::TypeDef(td) => {
-                env.deftype(&scope.lexical, &td.name, td.params.clone(), td.typ.clone())?
+                env.deftype(&scope.lexical, &td.name, td.params.clone(), td.typ.clone())?;
+                mod_env.deftype(
+                    &scope.lexical,
+                    &td.name,
+                    td.params.clone(),
+                    td.typ.clone(),
+                )?
             }
             SigKind::Module(ModSig { name, sig }) => {
                 let scope = scope.append(&name);
-                bind_sig(env, &scope, sig)?
+                bind_sig(env, mod_env, &scope, sig)?
             }
         }
     }
@@ -116,14 +123,13 @@ fn check_sig<R: Rt, E: UserEvent>(
                     td
                 )
             }
-            has_def.insert(td.name.clone());
         }
     }
     for si in sig.items.iter() {
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
             SigKind::Module(ModSig { name, .. }) => !has_mod.contains(name),
-            SigKind::TypeDef(TypeDefExpr { name, .. }) => !has_def.contains(name),
+            SigKind::TypeDef(TypeDefExpr { .. }) => false,
         };
         if missing {
             bail!("missing required sig item {si}")
@@ -165,8 +171,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, (*source).clone(), scope, top_id)?;
-        let env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
-        bind_sig(&mut ctx.env, &scope, &sig).context("binding module signature")?;
+        let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
+        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
+            .context("binding module signature")?;
         Ok(Box::new(Self {
             spec,
             flags,
@@ -191,8 +198,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
-        let env = ctx.env.clone();
-        bind_sig(&mut ctx.env, &scope, &sig).context("binding module signature")?;
+        let mut env = ctx.env.clone();
+        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
+            .context("binding module signature")?;
         let mut t = Self {
             spec,
             flags,
@@ -293,11 +301,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if self.is_static {
-            self.env = ctx.with_restored(self.env.clone(), |ctx| {
+            ctx.with_restored(self.env.clone(), |ctx| {
                 for n in &mut self.nodes {
                     n.delete(ctx);
                 }
-                ctx.env.clone()
             });
         } else {
             self.source.delete(ctx);
@@ -314,11 +321,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         if self.is_static {
-            self.env = ctx.with_restored(self.env.clone(), |ctx| {
+            ctx.with_restored(self.env.clone(), |ctx| {
                 for n in &mut self.nodes {
                     n.sleep(ctx);
                 }
-                ctx.env.clone()
             });
         } else {
             self.source.sleep(ctx);
