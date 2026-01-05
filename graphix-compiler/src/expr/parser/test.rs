@@ -718,39 +718,7 @@ fn connect() {
 }
 
 #[test]
-fn inline_module() {
-    let exp = ExprKind::Module {
-        name: literal!("foo"),
-        value: ModuleKind::Inline {
-            exprs: Arc::from_iter([
-                ExprKind::Bind(Arc::new(BindExpr {
-                    rec: false,
-                    typ: None,
-                    pattern: StructurePattern::Bind(literal!("z")),
-                    value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-                }))
-                .to_expr_nopos(),
-                ExprKind::Bind(Arc::new(BindExpr {
-                    rec: false,
-                    typ: None,
-                    pattern: StructurePattern::Bind(literal!("m")),
-                    value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-                }))
-                .to_expr_nopos(),
-            ]),
-            sig: None,
-        },
-    }
-    .to_expr_nopos();
-    let s = r#"mod foo {
-        let z = 42;
-        let m = 42
-    }"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn external_module() {
+fn module() {
     let exp = ExprKind::Module { name: literal!("foo"), value: ModuleKind::Unresolved }
         .to_expr_nopos();
     let s = r#"mod foo"#;
@@ -952,27 +920,6 @@ fn apply_typed_lambda() {
     })
     .to_expr_nopos();
     let s = "a(|a, b: [null, Number], @args: string| -> _ 'a)";
-    let pe = parse_one(s).unwrap();
-    assert_eq!(e, pe)
-}
-
-#[test]
-fn mod_interpolate() {
-    let e = ExprKind::Module {
-        name: literal!("a"),
-        value: ModuleKind::Inline {
-            exprs: Arc::from_iter([ExprKind::StringInterpolate {
-                args: Arc::from_iter([
-                    ExprKind::Constant(Value::from("foo_")).to_expr_nopos(),
-                    ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
-                ]),
-            }
-            .to_expr_nopos()]),
-            sig: None,
-        },
-    }
-    .to_expr_nopos();
-    let s = "mod a{\"foo_[42]\"}";
     let pe = parse_one(s).unwrap();
     assert_eq!(e, pe)
 }

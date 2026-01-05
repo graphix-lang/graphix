@@ -1,7 +1,7 @@
 use super::Sig;
 use crate::{
     expr::{
-        parser, ApplyExpr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModSig,
+        parser, ApplyExpr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr,
         ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
         TypeDefExpr,
     },
@@ -260,26 +260,14 @@ impl PrettyDisplay for BindSig {
     }
 }
 
-impl fmt::Display for ModSig {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "mod {}: {}", self.name, self.sig)
-    }
-}
-
-impl PrettyDisplay for ModSig {
-    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        writeln!(buf, "mod {}:", self.name)?;
-        self.sig.fmt_pretty(buf)
-    }
-}
-
 impl fmt::Display for SigItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
-            SigKind::Module(sig) => write!(f, "{sig}"),
+            SigKind::Module(name) => write!(f, "mod {name}"),
+            SigKind::Use(path) => write!(f, "use {path}"),
         }
     }
 }
@@ -290,7 +278,8 @@ impl PrettyDisplay for SigItem {
         match &self.kind {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
-            SigKind::Module(m) => m.fmt_pretty(buf),
+            SigKind::Module(name) => writeln!(buf, "mod {name}"),
+            SigKind::Use(path) => writeln!(buf, "use {path}"),
         }
     }
 }
@@ -756,16 +745,6 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
             ExprKind::Bind(b) => b.fmt_pretty(buf),
             ExprKind::StructWith(sw) => sw.fmt_pretty(buf),
-            ExprKind::Module { name, value: ModuleKind::Inline { exprs, sig } } => {
-                write!(buf, "mod {name} ")?;
-                if let Some(sig) = sig {
-                    write!(buf, ": ")?;
-                    sig.fmt_pretty(buf)?;
-                    buf.kill_newline();
-                    write!(buf, " ")?
-                }
-                pretty_print_exprs(buf, exprs, "{", "}", ";")
-            }
             ExprKind::Module {
                 name,
                 value: ModuleKind::Dynamic { sandbox, sig, source },
@@ -937,12 +916,6 @@ impl fmt::Display for ExprKind {
                 write!(f, "mod {name}")?;
                 match value {
                     ModuleKind::Resolved { .. } | ModuleKind::Unresolved => Ok(()),
-                    ModuleKind::Inline { exprs, sig } => {
-                        if let Some(sig) = sig {
-                            write!(f, ": {sig} ")?
-                        }
-                        print_exprs(f, &**exprs, "{", "}", "; ")
-                    }
                     ModuleKind::Dynamic { sandbox, sig, source } => {
                         write!(f, " dynamic {{ {sandbox};")?;
                         write!(f, " {sig};")?;

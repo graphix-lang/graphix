@@ -90,16 +90,11 @@ pub struct BindSig {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct ModSig {
-    pub name: ArcStr,
-    pub sig: Sig,
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum SigKind {
     TypeDef(TypeDefExpr),
     Bind(BindSig),
-    Module(ModSig),
+    Module(ArcStr),
+    Use(ModPath),
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -122,16 +117,6 @@ impl Deref for Sig {
     }
 }
 
-impl Sig {
-    /// find the signature of the submodule in this sig with name
-    pub fn find_module<'a>(&'a self, name: &str) -> Option<&'a Sig> {
-        self.items.iter().find_map(|si| match &si.kind {
-            SigKind::Module(ModSig { name: n, sig }) if name == n => Some(sig),
-            SigKind::Bind(_) | SigKind::Module(_) | SigKind::TypeDef(_) => None,
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum Sandbox {
     Unrestricted,
@@ -142,7 +127,6 @@ pub enum Sandbox {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ModuleKind {
     Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
-    Inline { exprs: Arc<[Expr]>, sig: Option<Sig> },
     Resolved { exprs: Arc<[Expr]>, sig: Option<Sig> },
     Unresolved,
 }
@@ -482,9 +466,6 @@ impl Expr {
             ExprKind::MapRef { source, key } => {
                 let init = source.fold(init, f);
                 key.fold(init, f)
-            }
-            ExprKind::Module { value: ModuleKind::Inline { exprs: e, .. }, .. } => {
-                e.iter().fold(init, |init, e| e.fold(init, f))
             }
             ExprKind::Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
                 exprs.iter().fold(init, |init, e| e.fold(init, f))

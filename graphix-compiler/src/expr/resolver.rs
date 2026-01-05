@@ -342,6 +342,13 @@ impl Expr {
             return Box::pin(async { Ok(self.clone()) });
         }
         match self.kind.clone() {
+            ExprKind::Constant(_)
+            | ExprKind::NoOp
+            | ExprKind::Use { .. }
+            | ExprKind::Ref { .. }
+            | ExprKind::StructRef { .. }
+            | ExprKind::TupleRef { .. }
+            | ExprKind::TypeDef { .. } => Box::pin(async move { Ok(self.clone()) }),
             ExprKind::Module { value: ModuleKind::Unresolved, name } => {
                 let (id, pos, prepend, resolvers) =
                     (self.id, self.pos, prepend.clone(), Arc::clone(resolvers));
@@ -359,26 +366,6 @@ impl Expr {
                     .with_context(|| CouldNotResolve(name.clone()))?;
                     let scope = ModPath(scope.append(&*name));
                     e.resolve_modules_int(&scope, &prepend, &resolvers).await
-                })
-            }
-            ExprKind::Constant(_)
-            | ExprKind::NoOp
-            | ExprKind::Use { .. }
-            | ExprKind::Ref { .. }
-            | ExprKind::StructRef { .. }
-            | ExprKind::TupleRef { .. }
-            | ExprKind::TypeDef { .. } => Box::pin(async move { Ok(self.clone()) }),
-            ExprKind::Module { value: ModuleKind::Inline { exprs, sig }, name } => {
-                Box::pin(async move {
-                    let scope = ModPath(scope.append(&*name));
-                    let exprs = try_join_all(exprs.iter().map(|e| async {
-                        e.resolve_modules_int(&scope, prepend, resolvers).await
-                    }))
-                    .await?;
-                    expr!(ExprKind::Module {
-                        value: ModuleKind::Inline { exprs: Arc::from(exprs), sig },
-                        name,
-                    })
                 })
             }
             ExprKind::Module { value: ModuleKind::Resolved { exprs, sig }, name } => {

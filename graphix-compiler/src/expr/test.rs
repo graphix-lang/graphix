@@ -702,41 +702,8 @@ macro_rules! deref {
     };
 }
 
-macro_rules! inline_module {
-    ($inner:expr) => {
-        (
-            random_fname(),
-            collection::vec($inner, (1, 10)),
-            option::of(collection::vec(module_sigitem(), (1, 10))),
-            any::<bool>(),
-        )
-            .prop_map(|(name, body, sig, nop)| {
-                let sig = sig.map(|sig| Sig { items: Arc::from(sig), toplevel: false });
-                if nop {
-                    ExprKind::Module {
-                        name,
-                        value: ModuleKind::Inline {
-                            exprs: Arc::from_iter(
-                                body.into_iter()
-                                    .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
-                            ),
-                            sig,
-                        },
-                    }
-                    .to_expr_nopos()
-                } else {
-                    ExprKind::Module {
-                        name,
-                        value: ModuleKind::Inline { exprs: Arc::from(body), sig },
-                    }
-                    .to_expr_nopos()
-                }
-            })
-    };
-}
-
 fn module_sigitem() -> impl Strategy<Value = SigItem> {
-    let leaf = prop_oneof![
+    prop_oneof![
         (random_fname(), typexp(), option::of(arcstr())).prop_map(|(name, typ, doc)| {
             SigItem { kind: SigKind::Bind(BindSig { name, typ }), doc: Doc(doc) }
         }),
@@ -744,19 +711,14 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
             ExprKind::TypeDef(td) =>
                 SigItem { kind: SigKind::TypeDef(td), doc: Doc(doc) },
             _ => unreachable!(),
+        }),
+        (modpath(), option::of(arcstr()))
+            .prop_map(|(path, doc)| SigItem { kind: SigKind::Use(path), doc: Doc(doc) }),
+        (random_fname(), option::of(arcstr())).prop_map(|(name, doc)| SigItem {
+            kind: SigKind::Module(name),
+            doc: Doc(doc),
         })
-    ];
-    leaf.prop_recursive(5, 20, 10, |inner| {
-        (random_fname(), option::of(arcstr()), collection::vec(inner, (1, 10))).prop_map(
-            |(name, doc, items)| SigItem {
-                kind: SigKind::Module(ModSig {
-                    name,
-                    sig: Sig { items: Arc::from(items), toplevel: false },
-                }),
-                doc: Doc(doc),
-            },
-        )
-    })
+    ]
 }
 
 fn module_sandbox() -> impl Strategy<Value = Sandbox> {
@@ -935,7 +897,6 @@ fn expr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![constant(), reference(), usestmt(), typedef(), module()];
     leaf.prop_recursive(5, 100, 25, |inner| {
         prop_oneof![
-            inline_module!(inner.clone()),
             dynamic_module!(inner.clone()),
             arrayref!(inner.clone()),
             arrayslice!(inner.clone()),
@@ -1165,9 +1126,13 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
                 SigItem { kind: SigKind::TypeDef(td1), doc: d1 },
             ) => check_typedef(td0, td1) && d0 == d1,
             (
-                SigItem { kind: SigKind::Module(ModSig { name: n0, sig: s0 }), doc: d0 },
-                SigItem { kind: SigKind::Module(ModSig { name: n1, sig: s1 }), doc: d1 },
-            ) => n0 == n1 && check_module_sig(s0, s1) && d0 == d1,
+                SigItem { kind: SigKind::Use(path0), doc: d0 },
+                SigItem { kind: SigKind::Use(path1), doc: d1 },
+            ) => path0 == path1 && d0 == d1,
+            (
+                SigItem { kind: SigKind::Module(n0), doc: d0 },
+                SigItem { kind: SigKind::Module(n1), doc: d1 },
+            ) => n0 == n1 && d0 == d1,
             (_, _) => false,
         })
 }
@@ -1319,30 +1284,6 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => dbg!(dbg!(check(lhs0, lhs1)) && dbg!(check(rhs0, rhs1))),
         (ExprKind::Not { expr: expr0 }, ExprKind::Not { expr: expr1 }) => {
             dbg!(check(expr0, expr1))
-        }
-        (
-            ExprKind::Module {
-                name: name0,
-                value: ModuleKind::Inline { exprs: value0, sig: sig0 },
-            },
-            ExprKind::Module {
-                name: name1,
-                value: ModuleKind::Inline { exprs: value1, sig: sig1 },
-            },
-        ) => {
-            dbg!(
-                dbg!(name0 == name1)
-                    && dbg!(value0.len() == value1.len())
-                    && dbg!(value0
-                        .iter()
-                        .zip(value1.iter())
-                        .all(|(v0, v1)| check(v0, v1)))
-                    && match (sig0, sig1) {
-                        (Some(sig0), Some(sig1)) => check_module_sig(&sig0, &sig1),
-                        (None, None) => true,
-                        (Some(_), _) | (_, Some(_)) => false,
-                    }
-            )
         }
         (
             ExprKind::Module { name: name0, value: ModuleKind::Unresolved },

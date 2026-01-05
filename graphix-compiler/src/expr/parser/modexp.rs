@@ -3,8 +3,8 @@ use super::{
     sptoken, typ, typedef,
 };
 use crate::expr::{
-    parser::{semisep, sep_by1_tok_exp, spaces1},
-    BindSig, Expr, ExprKind, ModPath, ModSig, ModuleKind, Sandbox, Sig, SigItem, SigKind,
+    parser::{semisep, spaces1},
+    BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
 };
 use arcstr::ArcStr;
 use combine::{
@@ -14,7 +14,6 @@ use combine::{
     stream::{position::SourcePosition, Range},
     token, ParseError, Parser, RangeStream,
 };
-use poolshark::local::LPooled;
 use triomphe::Arc;
 
 parser! {
@@ -37,20 +36,13 @@ parser! {
                             SigItem { doc: doc.clone(), kind: SigKind::Bind(BindSig { name, typ }) }
                         }
                     }),
-                string("mod").with(space()).with((
-                    spfname().skip(sptoken(':')).skip(spstring("sig")),
-                    spaces().with(between(
-                        token('{'),
-                        sptoken('}'),
-                        sep_by1_tok(sig_item(), semisep(), token('}'))
-                    ))
-                )).map({
+                string("use").with(space()).with(modpath()).map({
                     let doc = doc.clone();
-                    move |(name, mut items): (ArcStr, LPooled<Vec<SigItem>>)| {
-                        let items = Arc::from_iter(items.drain(..));
-                        let sig = Sig { items, toplevel: false };
-                        SigItem { doc: doc.clone(), kind: SigKind::Module(ModSig { name, sig }) }
-                    }
+                    move |path| SigItem { doc: doc.clone(), kind: SigKind::Use(path) }
+                }),
+                string("mod").with(space()).with(spfname().skip(spaces())).map({
+                    let doc = doc.clone();
+                    move |n: ArcStr| SigItem { doc: doc.clone(), kind: SigKind::Module(n) }
                 })
             ))
         })
@@ -123,28 +115,6 @@ where
         })
 }
 
-fn inline_module<I>() -> impl Parser<I, Output = ModuleKind>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    attempt((
-        optional(attempt(spaces().with(token(':'))).with(sig())),
-        between(
-            sptoken('{'),
-            sptoken('}'),
-            sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos)
-            }),
-        ),
-    ))
-    .map(|(sig, mut m): (_, LPooled<Vec<Expr>>)| ModuleKind::Inline {
-        exprs: Arc::from_iter(m.drain(..)),
-        sig,
-    })
-}
-
 pub(super) fn module<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -154,8 +124,7 @@ where
     (
         position(),
         attempt(string("mod").with(space())).with(spfname()),
-        optional(choice((dynamic_module(), inline_module())))
-            .map(|m| m.unwrap_or(ModuleKind::Unresolved)),
+        optional(dynamic_module()).map(|m| m.unwrap_or(ModuleKind::Unresolved)),
     )
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
 }
