@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         parser, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
-        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Source, StructExpr,
-        StructWithExpr, TryCatchExpr,
+        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
+        StructExpr, StructWithExpr, TryCatchExpr,
     },
     format_with_flags, PrintFlag,
 };
@@ -11,7 +11,7 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use log::info;
 use netidx::{
     path::Path,
@@ -178,6 +178,33 @@ async fn resolve_from_netidx(
     Resolution::Resolved { interface, implementation }
 }
 
+fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
+    let mut in_sig: LPooled<FxHashSet<&ArcStr>> = LPooled::take();
+    for si in &*sig.items {
+        if let SigKind::Module(name) = &si.kind {
+            in_sig.insert(name);
+        }
+    }
+    for e in &*exprs {
+        if let ExprKind::Module { name, .. } = &e.kind {
+            in_sig.remove(&name);
+        }
+    }
+    if in_sig.is_empty() {
+        drop(in_sig);
+        exprs
+    } else {
+        let synthetic = in_sig.drain().map(|n| {
+            ExprKind::Module {
+                name: n.clone(),
+                value: ModuleKind::Unresolved { from_interface: true },
+            }
+            .to_expr_nopos()
+        });
+        Arc::from_iter(synthetic.chain(exprs.iter().map(|e| e.clone())))
+    }
+}
+
 async fn resolve(
     scope: ModPath,
     prepend: Option<Arc<ModuleResolver>>,
@@ -186,6 +213,7 @@ async fn resolve(
     parent: Arc<Origin>,
     pos: SourcePosition,
     name: ArcStr,
+    from_interface: bool,
 ) -> Result<Expr> {
     macro_rules! check {
         ($res:expr) => {
@@ -237,7 +265,11 @@ async fn resolve(
         };
         let exprs =
             exprs.await?.with_context(|| format!("parsing file {implementation:?}"))?;
-        let value = ModuleKind::Resolved { exprs, sig };
+        let exprs = match &sig {
+            Some(sig) => add_interface_modules(exprs, &sig),
+            None => exprs,
+        };
+        let value = ModuleKind::Resolved { exprs, sig, from_interface };
         let kind = ExprKind::Module { name: name.clone().into(), value };
         format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
             info!(

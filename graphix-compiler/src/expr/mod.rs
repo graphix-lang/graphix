@@ -127,8 +127,8 @@ pub enum Sandbox {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ModuleKind {
     Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
-    Resolved { exprs: Arc<[Expr]>, sig: Option<Sig> },
-    Unresolved,
+    Resolved { exprs: Arc<[Expr]>, sig: Option<Sig>, from_interface: bool },
+    Unresolved { from_interface: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -474,7 +474,7 @@ impl Expr {
                 value: ModuleKind::Dynamic { sandbox: _, sig: _, source },
                 ..
             } => source.fold(init, f),
-            ExprKind::Module { value: ModuleKind::Unresolved, .. } => init,
+            ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => init,
             ExprKind::Do { exprs } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::Bind(b) => b.value.fold(init, f),
             ExprKind::StructWith(StructWithExpr { replace, .. }) => {

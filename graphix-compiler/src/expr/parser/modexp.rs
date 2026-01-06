@@ -124,7 +124,8 @@ where
     (
         position(),
         attempt(string("mod").with(space())).with(spfname()),
-        optional(dynamic_module()).map(|m| m.unwrap_or(ModuleKind::Unresolved)),
+        optional(dynamic_module())
+            .map(|m| m.unwrap_or(ModuleKind::Unresolved { from_interface: false })),
     )
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
 }

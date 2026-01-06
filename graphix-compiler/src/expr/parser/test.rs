@@ -719,8 +719,11 @@ fn connect() {
 
 #[test]
 fn module() {
-    let exp = ExprKind::Module { name: literal!("foo"), value: ModuleKind::Unresolved }
-        .to_expr_nopos();
+    let exp = ExprKind::Module {
+        name: literal!("foo"),
+        value: ModuleKind::Unresolved { from_interface: false },
+    }
+    .to_expr_nopos();
     let s = r#"mod foo"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }

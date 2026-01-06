@@ -731,7 +731,7 @@ impl PrettyDisplay for ExprKind {
             | ExprKind::StringInterpolate { .. }
             | ExprKind::Module {
                 name: _,
-                value: ModuleKind::Unresolved | ModuleKind::Resolved { .. },
+                value: ModuleKind::Unresolved { .. } | ModuleKind::Resolved { .. },
             } => {
                 writeln!(buf, "{self}")
             }
@@ -912,10 +912,16 @@ impl fmt::Display for ExprKind {
                 }
                 source => write!(f, "({source}).{field}"),
             },
+            ExprKind::Module {
+                value:
+                    ModuleKind::Resolved { from_interface: true, .. }
+                    | ModuleKind::Unresolved { from_interface: true },
+                ..
+            } => Ok(()),
             ExprKind::Module { name, value } => {
                 write!(f, "mod {name}")?;
                 match value {
-                    ModuleKind::Resolved { .. } | ModuleKind::Unresolved => Ok(()),
+                    ModuleKind::Resolved { .. } | ModuleKind::Unresolved { .. } => Ok(()),
                     ModuleKind::Dynamic { sandbox, sig, source } => {
                         write!(f, " dynamic {{ {sandbox};")?;
                         write!(f, " {sig};")?;
