@@ -13,7 +13,7 @@ let join_path = |path, @args| 'fs_join_path;
 let is_file = |path| 'fs_is_file;
 let is_dir = |path| 'fs_is_dir;
 let metadata = |#follow_symlinks = true, path| 'fs_metadata;
-pub let readdir = |
+let readdir = |
     #max_depth = 1,
     #min_depth = 1,
     #contents_first = false,
