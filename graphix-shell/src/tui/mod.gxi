@@ -121,6 +121,18 @@ type Marker = [
 
 type Size = { width: i64, height: i64 };
 
+/// The size of the terminal window. Setting this can't change
+/// the terminal window size.
+val size: Size;
+
+/// The raw event stream from the terminal. Use input_handlers
+/// to route events to widets in a more ergonomic way.
+val event: input_handler::Event;
+
+/// True if mouse input is enabled (and supported by the
+/// terminal). Set this to true to enable mouse input.
+val mouse: bool;
+
 mod input_handler;
 mod text;
 mod paragraph;
@@ -138,15 +150,3 @@ mod table;
 mod calendar;
 mod canvas;
 mod browser;
-
-/// The size of the terminal window. Setting this can't change
-/// the terminal window size.
-val size: Size;
-
-/// The raw event stream from the terminal. Use input_handlers
-/// to route events to widets in a more ergonomic way.
-val event: input_handler::Event;
-
-/// True if mouse input is enabled (and supported by the
-/// terminal). Set this to true to enable mouse input.
-val mouse: bool;

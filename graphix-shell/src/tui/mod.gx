@@ -23,24 +23,6 @@ let line = |
   spans: [Array<Span>, string]
 | -> Line { style, alignment, spans };
 
-mod input_handler;
-mod text;
-mod paragraph;
-mod block;
-mod scrollbar;
-mod layout;
-mod tabs;
-mod barchart;
-mod chart;
-mod sparkline;
-mod line_gauge;
-mod gauge;
-mod list;
-mod table;
-mod calendar;
-mod canvas;
-mod browser;
-
 let size: Size = never();
 let event: input_handler::Event = never();
 let mouse: bool = never()

@@ -1,5 +1,3 @@
-use tui::table;
-
 let browser = |
     #selected_style: Style = style(#bg:`Indexed(20), #fg:`Indexed(227)),
     #header_style: Style = style(#fg:`Indexed(111)),
