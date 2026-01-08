@@ -1285,7 +1285,7 @@ fn prop0() {
         let set_global_watch_parameters = |
             #poll_interval = null,
             #poll_batch_size = null
-        | 'fs_set_global_watch_parameters;
+        | 'fs_set_global_watch_parameters
     "#;
     dbg!(parse_one(s).unwrap());
 }
