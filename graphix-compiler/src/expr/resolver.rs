@@ -1,7 +1,7 @@
 use crate::{
     expr::{
         parser, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
-        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
+        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigKind, Source,
         StructExpr, StructWithExpr, TryCatchExpr,
     },
     format_with_flags, PrintFlag,
@@ -218,10 +218,10 @@ async fn resolve(
     macro_rules! check {
         ($res:expr) => {
             match $res {
+                Resolution::TryNextMethod => continue,
                 Resolution::Resolved { interface, implementation } => {
                     (interface, implementation)
                 }
-                Resolution::TryNextMethod => continue,
             }
         };
     }
@@ -286,7 +286,7 @@ impl Expr {
     pub fn has_unresolved_modules(&self) -> bool {
         self.fold(false, &mut |acc, e| {
             acc || match &e.kind {
-                ExprKind::Module { value: ModuleKind::Unresolved, .. } => true,
+                ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => true,
                 _ => false,
             }
         })
@@ -381,7 +381,10 @@ impl Expr {
             | ExprKind::StructRef { .. }
             | ExprKind::TupleRef { .. }
             | ExprKind::TypeDef { .. } => Box::pin(async move { Ok(self.clone()) }),
-            ExprKind::Module { value: ModuleKind::Unresolved, name } => {
+            ExprKind::Module {
+                value: ModuleKind::Unresolved { from_interface },
+                name,
+            } => {
                 let (id, pos, prepend, resolvers) =
                     (self.id, self.pos, prepend.clone(), Arc::clone(resolvers));
                 Box::pin(async move {
@@ -393,6 +396,7 @@ impl Expr {
                         self.ori.clone(),
                         pos,
                         name.clone(),
+                        from_interface,
                     )
                     .await
                     .with_context(|| CouldNotResolve(name.clone()))?;
@@ -400,34 +404,39 @@ impl Expr {
                     e.resolve_modules_int(&scope, &prepend, &resolvers).await
                 })
             }
-            ExprKind::Module { value: ModuleKind::Resolved { exprs, sig }, name } => {
-                Box::pin(async move {
-                    let prepend = match &self.ori.source {
-                        Source::Unspecified | Source::Internal(_) => None,
-                        Source::File(p) => {
-                            p.parent().map(|p| Arc::new(ModuleResolver::Files(p.into())))
+            ExprKind::Module {
+                value: ModuleKind::Resolved { exprs, sig, from_interface },
+                name,
+            } => Box::pin(async move {
+                let prepend = match &self.ori.source {
+                    Source::Unspecified | Source::Internal(_) => None,
+                    Source::File(p) => {
+                        p.parent().map(|p| Arc::new(ModuleResolver::Files(p.into())))
+                    }
+                    Source::Netidx(p) => resolvers.iter().find_map(|m| match m {
+                        ModuleResolver::Netidx { subscriber, timeout, .. } => {
+                            Some(Arc::new(ModuleResolver::Netidx {
+                                subscriber: subscriber.clone(),
+                                base: p.clone(),
+                                timeout: *timeout,
+                            }))
                         }
-                        Source::Netidx(p) => resolvers.iter().find_map(|m| match m {
-                            ModuleResolver::Netidx { subscriber, timeout, .. } => {
-                                Some(Arc::new(ModuleResolver::Netidx {
-                                    subscriber: subscriber.clone(),
-                                    base: p.clone(),
-                                    timeout: *timeout,
-                                }))
-                            }
-                            ModuleResolver::Files(_) | ModuleResolver::VFS(_) => None,
-                        }),
-                    };
-                    let exprs = try_join_all(exprs.iter().map(|e| async {
-                        e.resolve_modules_int(&scope, &prepend, resolvers).await
-                    }))
-                    .await?;
-                    expr!(ExprKind::Module {
-                        value: ModuleKind::Resolved { exprs: Arc::from(exprs), sig },
-                        name,
-                    })
+                        ModuleResolver::Files(_) | ModuleResolver::VFS(_) => None,
+                    }),
+                };
+                let exprs = try_join_all(exprs.iter().map(|e| async {
+                    e.resolve_modules_int(&scope, &prepend, resolvers).await
+                }))
+                .await?;
+                expr!(ExprKind::Module {
+                    value: ModuleKind::Resolved {
+                        exprs: Arc::from(exprs),
+                        sig,
+                        from_interface
+                    },
+                    name,
                 })
-            }
+            }),
             ExprKind::Module {
                 name,
                 value: ModuleKind::Dynamic { sandbox, sig, source },

@@ -3,10 +3,10 @@ use crate::{
     env::Env,
     errf,
     expr::{
-        parser, BindSig, Expr, ExprId, ExprKind, ModSig, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefExpr,
+        parser, BindSig, Expr, ExprId, ExprKind, Origin, Sandbox, Sig, SigKind, Source,
+        StructurePattern, TypeDefExpr,
     },
-    node::{bind::Bind, Block, Nop},
+    node::{bind::Bind, Nop},
     typ::Type,
     wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
@@ -29,6 +29,11 @@ fn bind_sig<R: Rt, E: UserEvent>(
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
         match &si.kind {
+            SigKind::Module(_) => (),
+            SigKind::Use(name) => {
+                env.use_in_scope(scope, name)?;
+                mod_env.use_in_scope(scope, name)?;
+            }
             SigKind::Bind(BindSig { name, typ }) => {
                 typ.alias_tvars(&mut LPooled::take());
                 env.bind_variable(&scope.lexical, name, typ.clone());
@@ -41,10 +46,6 @@ fn bind_sig<R: Rt, E: UserEvent>(
                     td.params.clone(),
                     td.typ.clone(),
                 )?
-            }
-            SigKind::Module(ModSig { name, sig }) => {
-                let scope = scope.append(&name);
-                bind_sig(env, mod_env, &scope, sig)?
             }
         }
     }
@@ -59,9 +60,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     sig: &Sig,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
-    let mut has_bind: FxHashSet<ArcStr> = FxHashSet::default();
-    let mut has_mod: FxHashSet<ArcStr> = FxHashSet::default();
-    let mut has_def: FxHashSet<ArcStr> = FxHashSet::default();
+    let mut has_bind: LPooled<FxHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
         if let Some(binds) = ctx.env.binds.get(&scope.lexical)
             && let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
@@ -83,28 +82,6 @@ fn check_sig<R: Rt, E: UserEvent>(
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
             has_bind.insert(name.clone());
-        }
-        if let Expr { kind: ExprKind::Module { name, .. }, .. } = n.spec()
-            && let Some(block) = (&**n as &dyn Any).downcast_ref::<Block<R, E>>()
-            && let scope = scope.append(name.as_str())
-            && ctx.env.modules.contains(&scope.lexical)
-            && let Some(sig) = sig.find_module(name)
-        {
-            check_sig(ctx, top_id, proxy, &scope, sig, &block.children)?;
-            has_mod.insert(name.clone());
-        }
-        if let Expr { kind: ExprKind::Module { name, .. }, .. } = n.spec()
-            && let Some(dynmod) = (&**n as &dyn Any).downcast_ref::<Module<R, E>>()
-            && let Some(sub_sig) = sig.find_module(name)
-        {
-            if &dynmod.sig != sub_sig {
-                bail!(
-                    "signature mismatch in mod {name}, expected {}, found {}",
-                    sub_sig,
-                    dynmod.sig
-                )
-            }
-            has_mod.insert(name.clone());
         }
         if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
             && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
@@ -128,8 +105,9 @@ fn check_sig<R: Rt, E: UserEvent>(
     for si in sig.items.iter() {
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
-            SigKind::Module(ModSig { name, .. }) => !has_mod.contains(name),
-            SigKind::TypeDef(TypeDefExpr { .. }) => false,
+            SigKind::Module(_)
+            | SigKind::Use(_)
+            | SigKind::TypeDef(TypeDefExpr { .. }) => false,
         };
         if missing {
             bail!("missing required sig item {si}")

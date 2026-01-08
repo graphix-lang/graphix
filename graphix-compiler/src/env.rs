@@ -440,4 +440,23 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
             }
         }
     }
+
+    pub fn use_in_scope(&mut self, scope: &Scope, name: &ModPath) -> Result<()> {
+        match self.canonical_modpath(&scope.lexical, name) {
+            None => bail!("no such module {name}"),
+            Some(_) => {
+                let used = self.used.get_or_default_cow(scope.lexical.clone());
+                Ok(Arc::make_mut(used).push(name.clone()))
+            }
+        }
+    }
+
+    pub fn stop_use_in_scope(&mut self, scope: &Scope, name: &ModPath) {
+        if let Some(used) = self.used.get_mut_cow(&scope.lexical) {
+            Arc::make_mut(used).retain(|n| n != name);
+            if used.is_empty() {
+                self.used.remove_cow(&scope.lexical);
+            }
+        }
+    }
 }

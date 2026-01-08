@@ -76,24 +76,10 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::Module { name, value } => {
             let scope = scope.append(&name);
             match value {
-                ModuleKind::Inline { exprs, sig: _ } => {
-                    let res = Block::compile(
-                        ctx,
-                        flags,
-                        spec.clone(),
-                        &scope,
-                        top_id,
-                        true,
-                        exprs,
-                    )
-                    .with_context(|| spec.ori.clone())?;
-                    ctx.env.modules.insert_cow(scope.lexical.clone());
-                    Ok(res)
-                }
-                ModuleKind::Unresolved => {
+                ModuleKind::Unresolved { .. } => {
                     bail!("external modules are not allowed in this context")
                 }
-                ModuleKind::Resolved { exprs, sig: None } => {
+                ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
                     let res = Block::compile(
                         ctx,
                         flags,
@@ -107,15 +93,17 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     ctx.env.modules.insert_cow(scope.lexical.clone());
                     Ok(res)
                 }
-                ModuleKind::Resolved { exprs, sig: Some(sig) } => Module::compile_static(
-                    ctx,
-                    flags,
-                    spec.clone(),
-                    &scope,
-                    sig.clone(),
-                    exprs.clone(),
-                    top_id,
-                ),
+                ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
+                    Module::compile_static(
+                        ctx,
+                        flags,
+                        spec.clone(),
+                        &scope,
+                        sig.clone(),
+                        exprs.clone(),
+                        top_id,
+                    )
+                }
                 ModuleKind::Dynamic { sandbox, sig, source } => Module::compile_dynamic(
                     ctx,
                     flags,

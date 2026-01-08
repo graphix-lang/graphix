@@ -755,7 +755,8 @@ macro_rules! dynamic_module {
 
 fn module() -> impl Strategy<Value = Expr> {
     (random_fname()).prop_map(|name| {
-        ExprKind::Module { name, value: ModuleKind::Unresolved }.to_expr_nopos()
+        ExprKind::Module { name, value: ModuleKind::Unresolved { from_interface: false } }
+            .to_expr_nopos()
     })
 }
 
@@ -1286,9 +1287,15 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(check(expr0, expr1))
         }
         (
-            ExprKind::Module { name: name0, value: ModuleKind::Unresolved },
-            ExprKind::Module { name: name1, value: ModuleKind::Unresolved },
-        ) => dbg!(name0 == name1),
+            ExprKind::Module {
+                name: name0,
+                value: ModuleKind::Unresolved { from_interface: fi0 },
+            },
+            ExprKind::Module {
+                name: name1,
+                value: ModuleKind::Unresolved { from_interface: fi1 },
+            },
+        ) => dbg!(name0 == name1) && fi0 == fi1,
         (
             ExprKind::Module {
                 name: name0,

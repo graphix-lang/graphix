@@ -4,7 +4,7 @@ use crate::{
     typ::{TVal, TVar, Type},
     BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent, CAST_ERR,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use compiler::compile;
 use enumflags2::BitFlags;
@@ -207,7 +207,7 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
 #[derive(Debug)]
 pub(crate) struct Use {
     spec: Expr,
-    scope: ModPath,
+    scope: Scope,
     name: ModPath,
 }
 
@@ -218,18 +218,10 @@ impl Use {
         scope: &Scope,
         name: &ModPath,
     ) -> Result<Node<R, E>> {
-        match ctx.env.canonical_modpath(&scope.lexical, name) {
-            None => bail!("at {} no such module {name}", spec.pos),
-            Some(_) => {
-                let used = ctx.env.used.get_or_default_cow(scope.lexical.clone());
-                Arc::make_mut(used).push(name.clone());
-                Ok(Box::new(Self {
-                    spec,
-                    scope: scope.lexical.clone(),
-                    name: name.clone(),
-                }))
-            }
-        }
+        ctx.env
+            .use_in_scope(scope, name)
+            .map_err(|e| anyhow!("at {} {e:?}", spec.pos))?;
+        Ok(Box::new(Self { spec, scope: scope.clone(), name: name.clone() }))
     }
 }
 
@@ -253,12 +245,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(used) = ctx.env.used.get_mut_cow(&self.scope) {
-            Arc::make_mut(used).retain(|n| n != &self.name);
-            if used.is_empty() {
-                ctx.env.used.remove_cow(&self.scope);
-            }
-        }
+        ctx.env.stop_use_in_scope(&self.scope, &self.name);
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
