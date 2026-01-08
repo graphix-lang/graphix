@@ -501,7 +501,7 @@ fn arith_nested() {
         ),
     }
     .to_expr_nopos();
-    let s = r#"((a + b + c) == (a - b - c)) && !a"#;
+    let s = r#"a + b + c == a - b - c && !a"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
 
@@ -713,7 +713,7 @@ fn connect() {
         deref: false,
     }
     .to_expr_nopos();
-    let s = r#"m::foo <- (a + 1)"#;
+    let s = r#"m::foo <- a + 1"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
 
@@ -819,7 +819,7 @@ fn lambda() {
         ),
     }))
     .to_expr_nopos();
-    let s = r#"|foo, bar| (a + b + c)"#;
+    let s = r#"|foo, bar| a + b + c"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
 
@@ -855,7 +855,7 @@ fn nested_lambda() {
         ),
     }))
     .to_expr_nopos();
-    let s = r#"|| || (a + b + c)"#;
+    let s = r#"|| || a + b + c"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
 
