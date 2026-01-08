@@ -335,9 +335,10 @@ impl<X: GXExt> GX<X> {
 
     async fn compile_root(&mut self, flags: BitFlags<CFlag>, text: ArcStr) -> Result<()> {
         let scope = Scope::root();
-        let ori = Origin { parent: None, source: Source::Unspecified, text };
-        let exprs =
-            expr::parser::parse(ori.clone()).context("parsing the root module")?;
+        let ori =
+            Origin { parent: None, source: Source::Unspecified, text: text.clone() };
+        let exprs = expr::parser::parse(ori.clone())
+            .with_context(|| format!("parsing the root module {text}"))?;
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;

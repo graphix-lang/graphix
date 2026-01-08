@@ -80,8 +80,14 @@ fn tui_mods() -> ModuleResolver {
     ModuleResolver::VFS(HashMap::from_iter([
         (Path::from("/tui.gx"), literal!(include_str!("tui/mod.gx"))),
         (Path::from("/tui.gxi"), literal!(include_str!("tui/mod.gxi"))),
-        (Path::from("/tui/input_handler.gx"), literal!(include_str!("tui/input_handler.gx"))),
-        (Path::from("/tui/input_handler.gxi"), literal!(include_str!("tui/input_handler.gxi"))),
+        (
+            Path::from("/tui/input_handler.gx"),
+            literal!(include_str!("tui/input_handler.gx")),
+        ),
+        (
+            Path::from("/tui/input_handler.gxi"),
+            literal!(include_str!("tui/input_handler.gxi")),
+        ),
         (Path::from("/tui/text.gx"), literal!(include_str!("tui/text.gx"))),
         (Path::from("/tui/text.gxi"), literal!(include_str!("tui/text.gxi"))),
         (Path::from("/tui/paragraph.gx"), literal!(include_str!("tui/paragraph.gx"))),
