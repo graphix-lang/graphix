@@ -110,7 +110,7 @@ where
             spaces().with(optional(token('=').with(expr()))),
         ),
         csep(),
-        sptoken('|'),
+        token('|'),
     )
     .then(
         |mut v: LPooled<Vec<((bool, StructurePattern), Option<Type>, Option<Expr>)>>| {

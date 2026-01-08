@@ -1271,7 +1271,7 @@ fn tupleref() {
 
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
-    crate::expr::parser::lambdaexp::apply()
+    crate::expr::parser::lambda()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1281,6 +1281,17 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "a(\n)\n";
+    let s = r#"
+        let set_global_watch_parameters = |
+            #poll_interval = null,
+            #poll_batch_size = null
+        | 'fs_set_global_watch_parameters;
+    "#;
+    let s = r#"
+        |
+            #poll_interval = null,
+            #poll_batch_size = null
+        | 'fs_set_global_watch_parameters
+    "#;
     dbg!(parse_prop0(s).unwrap());
 }
