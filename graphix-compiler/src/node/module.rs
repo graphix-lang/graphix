@@ -35,17 +35,14 @@ fn bind_sig<R: Rt, E: UserEvent>(
                 mod_env.use_in_scope(scope, name)?;
             }
             SigKind::Bind(BindSig { name, typ }) => {
+                let typ = typ.scope_refs(&scope.lexical);
                 typ.alias_tvars(&mut LPooled::take());
-                env.bind_variable(&scope.lexical, name, typ.clone());
+                env.bind_variable(&scope.lexical, name, typ);
             }
             SigKind::TypeDef(td) => {
-                env.deftype(&scope.lexical, &td.name, td.params.clone(), td.typ.clone())?;
-                mod_env.deftype(
-                    &scope.lexical,
-                    &td.name,
-                    td.params.clone(),
-                    td.typ.clone(),
-                )?
+                let typ = td.typ.scope_refs(&scope.lexical);
+                env.deftype(&scope.lexical, &td.name, td.params.clone(), typ.clone())?;
+                mod_env.deftype(&scope.lexical, &td.name, td.params.clone(), typ)?
             }
         }
     }
@@ -71,9 +68,11 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            if !proxy_bind.typ.contains(&ctx.env, bind.typ())? {
+            if !(proxy_bind.typ.contains(&ctx.env, bind.typ())?
+                && bind.typ().contains(&ctx.env, &proxy_bind.typ)?)
+            {
                 bail!(
-                    "signature mismatch in bind {name}, expected type {}, found type {}",
+                    "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
                     proxy_bind.typ,
                     bind.typ()
                 )
@@ -178,7 +177,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
         let mut env = ctx.env.clone();
         bind_sig(&mut ctx.env, &mut env, &scope, &sig)
-            .context("binding module signature")?;
+            .with_context(|| format!("binding signature for module {}", scope.lexical))?;
         let mut t = Self {
             spec,
             flags,
@@ -191,7 +190,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             is_static: true,
             top_id,
         };
-        t.compile_inner(ctx, &exprs)?;
+        t.compile_inner(ctx, &exprs)
+            .with_context(|| format!("compiling module {}", scope.lexical))?;
         Ok(Box::new(t))
     }
 

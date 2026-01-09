@@ -769,7 +769,7 @@ struct ParseEv;
 
 impl EvalCached for ParseEv {
     const NAME: &str = "string_parse";
-    deftype!("str", "fn(string) -> Result<PrimNoErr, `ParseError(string)>");
+    deftype!("str", "fn(string) -> Result<PrimNoErr, Any>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -787,7 +787,9 @@ impl EvalCached for ParseEv {
 
 type Parse = CachedArgs<ParseEv>;
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<StartsWith>()?;
     ctx.register_builtin::<EndsWith>()?;
     ctx.register_builtin::<Contains>()?;

@@ -83,7 +83,7 @@ val skip: fn(#n:Any, 'a) -> 'a;
 val seq: fn(i64, i64) -> Result<i64, `SeqError(string)>;
 
 /// return true if any argument is true
-val or: fn('a) -> Error<'a>;
+val or: fn(@args: bool) -> bool;
 
 /// return the product of all arguments
 val product: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number;

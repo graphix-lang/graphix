@@ -209,7 +209,7 @@ pub enum PrintFlag {
 }
 
 thread_local! {
-    static PRINT_FLAGS: Cell<BitFlags<PrintFlag>> = Cell::new(PrintFlag::ReplacePrims | PrintFlag::NoSource);
+    static PRINT_FLAGS: Cell<BitFlags<PrintFlag>> = Cell::new(PrintFlag::ReplacePrims.into());
 }
 
 /// global pool of channel watch batches

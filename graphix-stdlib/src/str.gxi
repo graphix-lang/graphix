@@ -38,17 +38,17 @@ val dirname: fn(string) -> Option<string>;
 val basename: fn(string) -> Option<string>;
 
 /// return a single string with the arguments concatenated and separated by #sep
-val join: fn(#sep: string, @args: Any) -> string;
+val join: fn(#sep:string, @args: [string, Array<string>]) -> string;
 
 /// concatenate the specified strings into a single string
-val concat: fn(@args: string) -> string;
+val concat: fn(@args: [string, Array<string>]) -> string;
 
 /// escape all the charachters in #to_escape in s with the escape charachter #escape.
 /// The escape charachter must appear in #to_escape
-val escape: fn(?#esc: Escape, string) -> string;
+val escape: fn(?#esc:Escape, string) -> Result<string, `StringError(string)>;
 
 /// unescape all the charachters in s escaped by the specified #escape charachter
-val unescape: fn(?#esc: Escape, string) -> string;
+val unescape: fn(?#esc:Escape, string) -> Result<string, `StringError(string)>;
 
 /// split the string by the specified #pat and return an array of each part
 val split: fn(#pat: string, string) -> Array<string>;
@@ -58,19 +58,19 @@ val rsplit: fn(#pat: string, string) -> Array<string>;
 
 /// split the string at most #n times by the specified #pat and return an array of
 /// each part
-val splitn: fn(#pat: string, #n: i64, string) -> Array<string>;
+val splitn: fn(#pat:string, #n:i64, string) -> Result<Array<string>, `StringSplitError(string)>;
 
 /// reverse split the string at most #n times by the specified #pat and return an array of
 /// each part
-val rsplitn: fn(#pat: string, #n: i64, string) -> Array<string>;
+val rsplitn: fn(#pat:string, #n:i64, string) -> Result<Array<string>, `StringSplitError(string)>;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
 /// of parts delimited by it's non escaped separator characters.
-val split_escaped: fn(#esc: string, #sep: string, string) -> Array<string>;
+val split_escaped: fn(#esc:string, #sep:string, string) -> Result<Array<string>, `SplitEscError(string)>;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
 /// of at most #n parts delimited by it's non escaped separator characters.
-val splitn_escaped: fn(#n: i64, #esc: string, #sep: string, string) -> Array<string>;
+val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, string) -> Result<Array<string>, `SplitNEscError(string)>;
 
 /// split the string once from the beginning by #pat and return a
 /// tuple of strings, or return null if #pat was not found in the string
@@ -96,9 +96,9 @@ val len: fn(string) -> i64;
 /// both #start and #len are unicode character indexes,
 /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
 /// will return "💖💖"
-val sub: fn(#start: i64, #len: i64, string) -> string;
+val sub: fn(#start:i64, #len:i64, string) -> Result<string, `SubError(string)>;
 
 /// parse the specified string as a value. return the value on success or an
 /// error on failure. Note, if you feed the parser a well formed error then
 /// parse will also return an error
-val parse: fn(string) -> Any;
+val parse: fn(string) -> Result<PrimNoErr, Any>;

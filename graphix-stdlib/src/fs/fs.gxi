@@ -170,10 +170,14 @@ val write_all_bin: fn(#path: string, bytes) -> Result<_, Any>;
 ///
 /// if `name` is specified, the temporary directory will have either a prefix of name
 /// or a suffix of name.
-val tempdir: fn(?#in: string, ?#name: [`Prefix(string), `Suffix(string)], Any) -> Result<string, Any>;
+val tempdir: fn(
+    ?#in:[null, string],
+    ?#name:[null, `Prefix(string), `Suffix(string)],
+    Any
+) -> Result<string, `IOError(string)>;
 
 /// join parts to path using the OS specific path separator
-val join_path: fn(string, @args: string) -> string;
+val join_path: fn(string, @args: [string, Array<string>]) -> string;
 
 /// if path is a file then return path
 /// otherwise return an IOError. Check again every time path updates.
