@@ -127,6 +127,20 @@ fn valid_fname() -> impl Strategy<Value = ArcStr> {
         Just(ArcStr::from("get")),
         Just(ArcStr::from("store")),
         Just(ArcStr::from("set")),
+        Just(ArcStr::from("selected")),
+        Just(ArcStr::from("throwsstuff")),
+        Just(ArcStr::from("anything")),
+        Just(ArcStr::from("letstuff")),
+        Just(ArcStr::from("recval")),
+        Just(ArcStr::from("castval")),
+        Just(ArcStr::from("withval")),
+        Just(ArcStr::from("catchit")),
+        Just(ArcStr::from("valn")),
+        Just(ArcStr::from("used")),
+        Just(ArcStr::from("mods")),
+        Just(ArcStr::from("sigs")),
+        Just(ArcStr::from("as_thing")),
+        Just(ArcStr::from("if_thing")),
     ]
 }
 

@@ -466,7 +466,7 @@ where
 {
     (
         position(),
-        attempt(string("select")).with(spaces1()).with((
+        attempt(string("select").with(not_prefix())).with(spaces1()).with((
             expr(),
             between(
                 sptoken('{'),

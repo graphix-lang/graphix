@@ -1513,16 +1513,14 @@ run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
 });
 
 const NESTED_OPTIONAL0: &str = r#"
-mod b {
-  mod a {
+{
     type T = { foo: i64, bar: i64 };
     let f = |#foo: i64 = 42, #bar: i64 = 42| -> T { foo, bar };
     type U = { f: T, baz: i64 };
-    let g = |#f: T = f(), baz: i64| -> U { f, baz }
-  };
+    let g = |#f: T = f(), baz: i64| -> U { f, baz };
 
-  let r = a::g(42);
-  r.baz
+    let r = g(42);
+    r.baz
 }
 "#;
 
