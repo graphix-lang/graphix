@@ -83,6 +83,15 @@ type DirEntry = {
     kind: FileType
 };
 
+/// Set global parameters for all watches.
+///
+/// poll_interval: How often to poll a batch, set this to 0 to disable polling. default 1 second.
+/// poll_batch_size: How many files to poll per batch, must be positive, default 100
+val set_global_watch_parameters: fn(
+    ?#poll_interval:[duration, null],
+    ?#poll_batch_size:[i64, null]
+) -> Result<null, `WatchError(string)>;
+
 /// Watch the specified path for events matching #interest. Return the canonical
 /// path of the filesystem object involved in the event, or an error if the
 /// watch could not be established. watch updates when,
