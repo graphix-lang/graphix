@@ -260,14 +260,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.get(proxy_id) {
+                let v = v.clone();
                 event.variables.insert(*inner_id, v.clone());
+                ctx.cached.insert(*inner_id, v);
             }
         }
         let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.remove(inner_id) {
-                event.variables.insert(*proxy_id, v);
+                event.variables.insert(*proxy_id, v.clone());
+                ctx.cached.insert(*proxy_id, v);
             }
         }
         if self.is_static {

@@ -12,7 +12,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx::subscriber::Value;
 use netidx_value::Typ;
-use smallvec::{smallvec, SmallVec};
+use poolshark::local::LPooled;
 use std::collections::hash_map::Entry;
 
 atomic_id!(SelectId);
@@ -21,7 +21,7 @@ atomic_id!(SelectId);
 pub(crate) struct Select<R: Rt, E: UserEvent> {
     selected: Option<usize>,
     arg: Cached<R, E>,
-    arms: SmallVec<[(PatternNode<R, E>, Cached<R, E>); 8]>,
+    arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
     typ: Type,
     spec: Expr,
 }
@@ -46,7 +46,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 let n = Cached::new(compile(ctx, flags, spec.clone(), &scope, top_id)?);
                 Ok((pat, n))
             })
-            .collect::<Result<SmallVec<_>>>()
+            .collect::<Result<Vec<_>>>()
             .with_context(|| format!("in select at {}", spec.pos))?;
         let typ = Type::empty_tvar();
         Ok(Box::new(Self { spec, typ, arg, arms, selected: None }))
@@ -107,7 +107,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     }
                 }
                 (Some(i), Some(_) | None) => {
-                    let mut set: SmallVec<[BindId; 32]> = smallvec![];
+                    let mut set: LPooled<Vec<BindId>> = LPooled::take();
                     if let Some(j) = *selected {
                         arms[j].1.node.sleep(ctx);
                     }
@@ -127,7 +127,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     event.init = true;
                     arms[i].1.update(ctx, event);
                     event.init = init;
-                    for id in set {
+                    for id in set.drain(..) {
                         event.variables.remove(&id);
                     }
                     arms[i].1.cached.clone()

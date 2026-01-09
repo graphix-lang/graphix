@@ -1167,7 +1167,9 @@ macro_rules! printfn {
 printfn!(Print, "print", print, eprint);
 printfn!(Println, "println", println, eprintln);
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<Queue>()?;
     ctx.register_builtin::<Hold>()?;
     ctx.register_builtin::<All>()?;
