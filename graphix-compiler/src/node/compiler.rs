@@ -75,6 +75,9 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         }
         ExprKind::Module { name, value } => {
             let scope = scope.append(&name);
+            if ctx.env.modules.contains(&scope.lexical) {
+                bail!("duplicate module definition {}", scope.lexical)
+            }
             match value {
                 ModuleKind::Unresolved { .. } => {
                     bail!("external modules are not allowed in this context")

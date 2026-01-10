@@ -11,7 +11,8 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::{FxBuildHasher, FxHashMap};
+use indexmap::IndexSet;
 use log::info;
 use netidx::{
     path::Path,
@@ -179,7 +180,7 @@ async fn resolve_from_netidx(
 }
 
 fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
-    let mut in_sig: LPooled<FxHashSet<&ArcStr>> = LPooled::take();
+    let mut in_sig: IndexSet<&ArcStr, FxBuildHasher> = IndexSet::default();
     for si in &*sig.items {
         if let SigKind::Module(name) = &si.kind {
             in_sig.insert(name);
@@ -187,14 +188,14 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     }
     for e in &*exprs {
         if let ExprKind::Module { name, .. } = &e.kind {
-            in_sig.remove(&name);
+            in_sig.shift_remove(&name);
         }
     }
     if in_sig.is_empty() {
         drop(in_sig);
         exprs
     } else {
-        let synthetic = in_sig.drain().map(|n| {
+        let synthetic = in_sig.drain(..).map(|n| {
             ExprKind::Module {
                 name: n.clone(),
                 value: ModuleKind::Unresolved { from_interface: true },

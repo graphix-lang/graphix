@@ -29,7 +29,10 @@ fn bind_sig<R: Rt, E: UserEvent>(
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
         match &si.kind {
-            SigKind::Module(_) => (),
+            SigKind::Module(name) => {
+                let scope = scope.append(name);
+                env.modules.insert_cow(scope.lexical.clone());
+            }
             SigKind::Use(name) => {
                 env.use_in_scope(scope, name)?;
                 mod_env.use_in_scope(scope, name)?;
