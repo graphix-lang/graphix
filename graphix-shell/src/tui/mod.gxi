@@ -125,6 +125,8 @@ type Size = { width: i64, height: i64 };
 /// the terminal window size.
 val size: Size;
 
+mod input_handler;
+
 /// The raw event stream from the terminal. Use input_handlers
 /// to route events to widets in a more ergonomic way.
 val event: input_handler::Event;
@@ -133,7 +135,6 @@ val event: input_handler::Event;
 /// terminal). Set this to true to enable mouse input.
 val mouse: bool;
 
-mod input_handler;
 mod text;
 mod paragraph;
 mod block;

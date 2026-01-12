@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         parser, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
-        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigKind, Source,
-        StructExpr, StructWithExpr, TryCatchExpr,
+        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
+        StructExpr, StructWithExpr, StructurePattern, TryCatchExpr,
     },
     format_with_flags, PrintFlag,
 };
@@ -11,8 +11,7 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
-use fxhash::{FxBuildHasher, FxHashMap};
-use indexmap::IndexSet;
+use fxhash::{FxHashMap, FxHashSet};
 use log::info;
 use netidx::{
     path::Path,
@@ -179,31 +178,102 @@ async fn resolve_from_netidx(
     Resolution::Resolved { interface, implementation }
 }
 
+// add modules that are only mentioned in the interface to the implementation
+// keep their relative location and order intact
 fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
-    let mut in_sig: IndexSet<&ArcStr, FxBuildHasher> = IndexSet::default();
+    let mut in_sig: LPooled<FxHashSet<&ArcStr>> = LPooled::take();
+    let mut after_bind: LPooled<FxHashMap<&ArcStr, &ArcStr>> = LPooled::take();
+    let mut after_td: LPooled<FxHashMap<&ArcStr, &ArcStr>> = LPooled::take();
+    let mut after_mod: LPooled<FxHashMap<&ArcStr, &ArcStr>> = LPooled::take();
+    let mut after_use: LPooled<FxHashMap<&ModPath, &ArcStr>> = LPooled::take();
+    let mut first: Option<&ArcStr> = None;
+    let mut last: Option<&SigItem> = None;
     for si in &*sig.items {
         if let SigKind::Module(name) = &si.kind {
             in_sig.insert(name);
+            match last {
+                None => first = Some(name),
+                Some(si) => {
+                    match &si.kind {
+                        SigKind::Bind(v) => after_bind.insert(&v.name, name),
+                        SigKind::Module(m) => after_mod.insert(m, name),
+                        SigKind::TypeDef(td) => after_td.insert(&td.name, name),
+                        SigKind::Use(n) => after_use.insert(n, name),
+                    };
+                }
+            }
         }
+        last = Some(si);
     }
     for e in &*exprs {
         if let ExprKind::Module { name, .. } = &e.kind {
-            in_sig.shift_remove(&name);
+            in_sig.remove(&name);
         }
     }
     if in_sig.is_empty() {
         drop(in_sig);
-        exprs
-    } else {
-        let synthetic = in_sig.drain(..).map(|n| {
-            ExprKind::Module {
-                name: n.clone(),
-                value: ModuleKind::Unresolved { from_interface: true },
-            }
-            .to_expr_nopos()
-        });
-        Arc::from_iter(synthetic.chain(exprs.iter().map(|e| e.clone())))
+        drop(after_bind);
+        drop(after_td);
+        drop(after_mod);
+        drop(after_use);
+        return exprs;
     }
+    let synth = |name: &ArcStr| {
+        ExprKind::Module {
+            name: name.clone(),
+            value: ModuleKind::Unresolved { from_interface: true },
+        }
+        .to_expr_nopos()
+    };
+    let mut res: LPooled<Vec<Expr>> = LPooled::take();
+    if let Some(name) = first.take() {
+        res.push(synth(name));
+    }
+    let mut iter = exprs.iter();
+    loop {
+        match res.last().map(|e| &e.kind) {
+            Some(ExprKind::Bind(v)) => match &v.pattern {
+                StructurePattern::Bind(n) => {
+                    if let Some(name) = after_bind.remove(n) {
+                        in_sig.remove(name);
+                        res.push(synth(name));
+                        continue;
+                    }
+                }
+                _ => (),
+            },
+            Some(ExprKind::TypeDef(td)) => {
+                if let Some(name) = after_td.remove(&td.name) {
+                    in_sig.remove(name);
+                    res.push(synth(name));
+                    continue;
+                }
+            }
+            Some(ExprKind::Module { name, .. }) => {
+                if let Some(name) = after_mod.remove(name) {
+                    in_sig.remove(name);
+                    res.push(synth(name));
+                    continue;
+                }
+            }
+            Some(ExprKind::Use { name }) => {
+                if let Some(name) = after_use.remove(name) {
+                    in_sig.remove(name);
+                    res.push(synth(name));
+                    continue;
+                }
+            }
+            _ => (),
+        };
+        match iter.next() {
+            None => break,
+            Some(e) => res.push(e.clone()),
+        }
+    }
+    for name in in_sig.drain() {
+        res.push(synth(name));
+    }
+    Arc::from_iter(res.drain(..))
 }
 
 async fn resolve(

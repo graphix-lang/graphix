@@ -3,8 +3,8 @@ use crate::{
     env::Env,
     errf,
     expr::{
-        parser, BindSig, Expr, ExprId, ExprKind, Origin, Sandbox, Sig, SigKind, Source,
-        StructurePattern, TypeDefExpr,
+        parser, BindSig, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
+        Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
     typ::Type,
@@ -50,6 +50,38 @@ fn bind_sig<R: Rt, E: UserEvent>(
         }
     }
     Ok(())
+}
+
+// copy the exported signature of all the exported inner modules in this sig to
+// the global env
+fn export_sig<R: Rt, E: UserEvent>(
+    env: &mut Env<R, E>,
+    inner_env: &Env<R, E>,
+    scope: &Scope,
+    sig: &Sig,
+) {
+    for si in sig.items.iter() {
+        if let SigKind::Module(name) = &si.kind {
+            use std::fmt::Write;
+            let mut buf: LPooled<String> = LPooled::take();
+            let scope = scope.append(name);
+            env.modules.insert_cow(scope.lexical.clone());
+            macro_rules! copy_sig {
+                ($kind:ident) => {
+                    let iter = inner_env.$kind.range::<ModPath, _>(&scope.lexical..);
+                    for (path, inner) in iter {
+                        buf.clear();
+                        write!(buf, "{}/", scope.lexical).unwrap();
+                        if path == &scope.lexical || path.starts_with(&*buf) {
+                            env.$kind.insert_cow(path.clone(), inner.clone());
+                        }
+                    }
+                };
+            }
+            copy_sig!(binds);
+            copy_sig!(typedefs);
+        }
+    }
 }
 
 fn check_sig<R: Rt, E: UserEvent>(
@@ -206,7 +238,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
         ctx.builtins_allowed = self.is_static;
-        let nodes = ctx.with_restored(self.env.clone(), |ctx| -> Result<_> {
+        let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
             let mut nodes = exprs
                 .iter()
                 .map(|e| compile(ctx, self.flags, e.clone(), &self.scope, self.top_id))
@@ -220,6 +252,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let nodes = nodes?;
         check_sig(ctx, self.top_id, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
         self.nodes = Box::from(nodes);
+        export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
     }
 

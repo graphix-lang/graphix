@@ -9,7 +9,7 @@ use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
-use std::{cell::RefCell, fmt, iter, ops::Bound, sync::Weak};
+use std::{cell::RefCell, fmt, iter, mem, ops::Bound, sync::Weak};
 use triomphe::Arc;
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
@@ -124,6 +124,19 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
             used: other.used,
             modules: other.modules,
             typedefs: other.typedefs,
+            by_id: self.by_id.clone(),
+            lambdas: self.lambdas.clone(),
+            catch: self.catch.clone(),
+            byref_chain: self.byref_chain.clone(),
+        }
+    }
+
+    pub(super) fn restore_lexical_env_mut(&self, other: &mut Self) -> Self {
+        Self {
+            binds: mem::take(&mut other.binds),
+            used: mem::take(&mut other.used),
+            modules: mem::take(&mut other.modules),
+            typedefs: mem::take(&mut other.typedefs),
             by_id: self.by_id.clone(),
             lambdas: self.lambdas.clone(),
             catch: self.catch.clone(),
