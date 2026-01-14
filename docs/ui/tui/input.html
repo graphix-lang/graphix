@@ -175,7 +175,238 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="input"><a class="header" href="#input">input</a></h1>
+                        <h1 id="input-handling"><a class="header" href="#input-handling">Input Handling</a></h1>
+<p>The input handling system allows TUI applications to respond to keyboard, mouse,
+and other terminal events. Input handlers wrap widgets and intercept events
+before they propagate further.</p>
+<h2 id="the-event-type"><a class="header" href="#the-event-type">The Event Type</a></h2>
+<p>All terminal events are represented by the <code>Event</code> type:</p>
+<pre><code class="language-graphix">type Event = [
+  `FocusGained,
+  `FocusLost,
+  `Key(KeyEvent),
+  `Mouse(MouseEvent),
+  `Paste(string),
+  `Resize(i64, i64)
+];
+</code></pre>
+<ul>
+<li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes</li>
+<li><code>Key</code>: Keyboard input</li>
+<li><code>Mouse</code>: Mouse input (requires <code>tui::mouse &lt;- true</code>)</li>
+<li><code>Paste</code>: Bracketed paste content</li>
+<li><code>Resize</code>: Terminal was resized to (columns, rows)</li>
+</ul>
+<h2 id="keyboard-events"><a class="header" href="#keyboard-events">Keyboard Events</a></h2>
+<p>Keyboard events contain detailed information about key presses:</p>
+<pre><code class="language-graphix">type KeyEvent = {
+  code: KeyCode,
+  kind: KeyEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  state: Array&lt;KeyEventState&gt;
+};
+</code></pre>
+<h3 id="key-codes"><a class="header" href="#key-codes">Key Codes</a></h3>
+<pre><code class="language-graphix">type KeyCode = [
+  `Backspace,
+  `Enter,
+  `Left,
+  `Right,
+  `Up,
+  `Down,
+  `Home,
+  `End,
+  `PageUp,
+  `PageDown,
+  `Tab,
+  `BackTab,
+  `Delete,
+  `Insert,
+  `F(i64),
+  `Char(string),
+  `Null,
+  `Esc,
+  `CapsLock,
+  `ScrollLock,
+  `NumLock,
+  `PrintScreen,
+  `Pause,
+  `Menu,
+  `KeypadBegin,
+  `Media(MediaKeyCode),
+  `Modifier(ModifierKeyCode)
+];
+</code></pre>
+<p>Character keys use <code>Char(string)</code>, e.g., <code>Char("a")</code> or <code>Char("A")</code>.
+Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
+<h3 id="key-event-kind"><a class="header" href="#key-event-kind">Key Event Kind</a></h3>
+<pre><code class="language-graphix">type KeyEventKind = [
+  `Press,
+  `Repeat,
+  `Release
+];
+</code></pre>
+<p>Most applications only care about <code>Press</code> events.</p>
+<h3 id="key-modifiers"><a class="header" href="#key-modifiers">Key Modifiers</a></h3>
+<pre><code class="language-graphix">type KeyModifier = [
+  `Shift,
+  `Control,
+  `Alt,
+  `Super,
+  `Hyper,
+  `Meta
+];
+</code></pre>
+<p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
+<h2 id="mouse-events"><a class="header" href="#mouse-events">Mouse Events</a></h2>
+<p>Mouse events require enabling mouse support first:</p>
+<pre><code class="language-graphix">tui::mouse &lt;- true
+</code></pre>
+<p>Mouse events contain position and action information:</p>
+<pre><code class="language-graphix">type MouseEvent = {
+  column: i64,
+  kind: MouseEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  row: i64
+};
+
+type MouseEventKind = [
+  `Down(MouseButton),
+  `Up(MouseButton),
+  `Drag(MouseButton),
+  `Moved,
+  `ScrollDown,
+  `ScrollUp,
+  `ScrollLeft,
+  `ScrollRight
+];
+
+type MouseButton = [
+  `Left,
+  `Right,
+  `Middle
+];
+</code></pre>
+<h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
+<p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
+<pre><code class="language-graphix">val input_handler: fn(
+  ?#enabled: &amp;[bool, null],
+  #handle: &amp;fn(Event) -&gt; [`Stop, `Continue] throws 'e,
+  &amp;Tui
+) -&gt; Tui throws 'e;
+</code></pre>
+<p>The handler function receives events and returns:</p>
+<ul>
+<li><code>Stop</code>: The event was handled; don't propagate to other handlers</li>
+<li><code>Continue</code>: Pass the event to the next handler</li>
+</ul>
+<h3 id="basic-example"><a class="header" href="#basic-example">Basic Example</a></h3>
+<pre><code class="language-graphix">let count = 0;
+
+tui::input_handler::input_handler(
+  #handle: &amp;|event| select event {
+    `Key({ code: `Char("q"), .. }) =&gt; {
+      // Exit on 'q'
+      `Stop
+    },
+    e@ `Key({ code: `Up, .. }) =&gt; {
+      count &lt;- e ~ count + 1;
+      `Stop
+    },
+    e@ `Key({ code: `Down, .. }) =&gt; {
+      count &lt;- e ~ count - 1;
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;tui::paragraph::paragraph("[count]")
+)
+</code></pre>
+<h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
+<p>The <code>#enabled</code> parameter allows dynamically enabling/disabling a handler:</p>
+<pre><code class="language-graphix">let editing = false;
+
+tui::input_handler::input_handler(
+  #enabled: &amp;editing,
+  #handle: &amp;|event| select event {
+    `Key({ code: `Esc, .. }) =&gt; {
+      editing &lt;- false;
+      `Stop
+    },
+    `Key({ code: `Char(c), .. }) =&gt; {
+      // Handle character input when editing
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;tui::paragraph::paragraph("Edit mode")
+)
+</code></pre>
+<h2 id="event-propagation"><a class="header" href="#event-propagation">Event Propagation</a></h2>
+<p>Input handlers form a stack. Events flow from the outermost handler inward:</p>
+<pre><code class="language-graphix">tui::input_handler::input_handler(
+  #handle: &amp;|e| /* handler A */ `Continue,
+  &amp;tui::input_handler::input_handler(
+    #handle: &amp;|e| /* handler B */ `Continue,
+    &amp;widget
+  )
+)
+</code></pre>
+<p>If handler A returns <code>Continue</code>, the event reaches handler B. If either returns
+<code>Stop</code>, propagation stops.</p>
+<h2 id="the-raw-event-stream"><a class="header" href="#the-raw-event-stream">The Raw Event Stream</a></h2>
+<p>For advanced use cases, you can access the raw event stream directly via
+<code>tui::event</code>:</p>
+<pre><code class="language-graphix">select tui::event {
+  `Key(k) =&gt; dbg(k),
+  _ =&gt; ()
+}
+</code></pre>
+<p>However, using <code>input_handler</code> is preferred as it integrates properly with the
+widget tree and supports the enable/disable pattern.</p>
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<h3 id="vim-style-mode-switching"><a class="header" href="#vim-style-mode-switching">Vim-style Mode Switching</a></h3>
+<pre><code class="language-graphix">type Mode = [`Normal, `Insert];
+let mode: Mode = `Normal;
+
+tui::input_handler::input_handler(
+  #handle: &amp;|event| select (mode, event) {
+    (`Normal, `Key({ code: `Char("i"), .. })) =&gt; {
+      mode &lt;- `Insert;
+      `Stop
+    },
+    (`Insert, `Key({ code: `Esc, .. })) =&gt; {
+      mode &lt;- `Normal;
+      `Stop
+    },
+    (`Insert, `Key({ code: `Char(c), .. })) =&gt; {
+      // Insert character
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;content
+)
+</code></pre>
+<h3 id="focus-management"><a class="header" href="#focus-management">Focus Management</a></h3>
+<pre><code class="language-graphix">let focused = 0;
+let num_widgets = 3;
+
+tui::input_handler::input_handler(
+  #handle: &amp;|event| select event {
+    `Key({ code: `Tab, .. }) =&gt; {
+      focused &lt;- (focused + 1) % num_widgets;
+      `Stop
+    },
+    `Key({ code: `BackTab, .. }) =&gt; {
+      focused &lt;- (focused - 1 + num_widgets) % num_widgets;
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;widgets
+)
+</code></pre>
 
                     </main>
 

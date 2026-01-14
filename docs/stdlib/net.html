@@ -176,45 +176,43 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="net"><a class="header" href="#net">Net</a></h1>
-<pre><code class="language-graphix">mod net: sig {
-    type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
-    type ArgSpec = { name: string, doc: string, default: Any };
+<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
+type ArgSpec = { name: string, doc: string, default: Any };
 
-    /// write the value to the specified path
-    val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+/// write the value to the specified path
+val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
-    /// subscribe to the specified path
-    val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+/// subscribe to the specified path
+val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
 
-    /// call the specified rpc
-    val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+/// call the specified rpc
+val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
 
-    /// Publish an rpc. When the rpc is called f will be called with the arguments
-    /// sent by the caller, and whatever f returns will be sent back to the caller.
-    /// If f does not return, the caller will hang waiting for a reply.
-    val rpc: fn(
-        #path:string,
-        #doc:string,
-        #spec:Array&lt;ArgSpec&gt;,
-        #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
-    ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
+/// Publish an rpc. When the rpc is called f will be called with the arguments
+/// sent by the caller, and whatever f returns will be sent back to the caller.
+/// If f does not return, the caller will hang waiting for a reply.
+val rpc: fn(
+    #path:string,
+    #doc:string,
+    #spec:Array&lt;ArgSpec&gt;,
+    #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-    /// list paths under the specified path. If #update is specified, then the list will
-    /// be refreshed each time clock is triggered. If update is not specified, the list will
-    /// be updated each second
-    val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+/// list paths under the specified path. If #update is specified, then the list will
+/// be refreshed each time clock is triggered. If update is not specified, the list will
+/// be updated each second
+val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-    /// list the table under the specified path. If #update is specified, then the table
-    /// will be refreshed each time clock is triggered. If update is not specified, the table
-    /// will be updated each second
-    val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+/// list the table under the specified path. If #update is specified, then the table
+/// will be refreshed each time clock is triggered. If update is not specified, the table
+/// will be updated each second
+val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-    /// Publish the specified value at the specified path. Whenever the value updates,
-    /// the new value will be sent to subscribers. If #on_write is specified, then if
-    /// subscribers write to the value on_write will be called with the written value.
-    /// on_write need not return anything.
-    val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
-}
+/// Publish the specified value at the specified path. Whenever the value updates,
+/// the new value will be sent to subscribers. If #on_write is specified, then if
+/// subscribers write to the value on_write will be called with the written value.
+/// on_write need not return anything.
+val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
                     </main>

@@ -176,46 +176,44 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="map"><a class="header" href="#map">Map</a></h1>
-<pre><code class="language-graphix">mod map: sig {
-    /// return a new map where each element is the output of f applied to
-    /// the corresponding key value pair in the current map
-    val map: fn(Map&lt;'a, 'b&gt;, fn(('a, 'b)) -&gt; ('c, 'd) throws 'e) -&gt; Map&lt;'c, 'd&gt; throws 'e;
+<pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
+/// the corresponding key value pair in the current map
+val map: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
-    /// return a new map containing only the key-value pairs where f applied to
-    /// (key, value) returns true
-    val filter: fn(Map&lt;'a, 'b&gt;, fn(('a, 'b)) -&gt; bool throws 'e) -&gt; Map&lt;'a, 'b&gt; throws 'e;
+/// return a new map containing only the key-value pairs where f applied to
+/// (key, value) returns true
+val filter: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
 
-    /// filter_map returns a new map containing the outputs of f
-    /// that were not null
-    val filter_map: fn(Map&lt;'a, 'b&gt;, fn(('a, 'b)) -&gt; Option&lt;('c, 'd)&gt; throws 'e) -&gt; Map&lt;'c, 'd&gt; throws 'e;
+/// filter_map returns a new map containing the outputs of f
+/// that were not null
+val filter_map: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
-    /// return the result of f applied to the init and every k, v pair of m in
-    /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
-    val fold: fn(Map&lt;'a, 'b&gt;, 'c, fn('c, ('a, 'b)) -&gt; 'c throws 'e) -&gt; 'c throws 'e;
+/// return the result of f applied to the init and every k, v pair of m in
+/// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
+val fold: fn(Map&lt;'k, 'v&gt;, 'acc, fn('acc, ('k, 'v)) -&gt; 'acc throws 'e) -&gt; 'acc throws 'e;
 
-    /// return the length of the map
-    val len: fn(Map&lt;'a, 'b&gt;) -&gt; i64;
+/// return the length of the map
+val len: fn(Map&lt;'k, 'v&gt;) -&gt; i64;
 
-    /// get the value associated with the key k in the map m, or null if not present
-    val get: fn(Map&lt;'a, 'b&gt;, 'a) -&gt; Option&lt;'b&gt;;
+/// get the value associated with the key k in the map m, or null if not present
+val get: fn(Map&lt;'k, 'v&gt;, 'k) -&gt; Option&lt;'v&gt;;
 
-    /// insert a new value into the map
-    val insert: fn(Map&lt;'a, 'b&gt;, 'a, 'b) -&gt; Map&lt;'a, 'b&gt;;
+/// insert a new value into the map
+val insert: fn(Map&lt;'k, 'v&gt;, 'k, 'v) -&gt; Map&lt;'k, 'v&gt;;
 
-    /// remove the value associated with the specified key from the map
-    val remove: fn(Map&lt;'a, 'b&gt;, 'a) -&gt; Map&lt;'a, 'b&gt;;
+/// remove the value associated with the specified key from the map
+val remove: fn(Map&lt;'k, 'v&gt;, 'k) -&gt; Map&lt;'k, 'v&gt;;
 
-    /// iter produces an update for every key-value pair in the map m.
-    /// updates are produced in the order they appear in m.
-    val iter: fn(Map&lt;'a, 'b&gt;) -&gt; ('a, 'b);
+/// iter produces an update for every key-value pair in the map m.
+/// updates are produced in the order they appear in m.
+val iter: fn(Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 
-    /// iterq produces an update for each value in m, but only when clock updates. If
-    /// clock does not update but m does, then iterq will store each m in an internal
-    /// fifo queue. If clock updates but m does not, iterq will record the number of
-    /// times it was triggered, and will update immediately that many times when m
-    /// updates.
-    val iterq: fn(#clock:Any, Map&lt;'a, 'b&gt;) -&gt; ('a, 'b);
-}
+/// iterq produces an update for each value in m, but only when clock updates. If
+/// clock does not update but m does, then iterq will store each m in an internal
+/// fifo queue. If clock updates but m does not, iterq will record the number of
+/// times it was triggered, and will update immediately that many times when m
+/// updates.
+val iterq: fn(#clock: Any, Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 </code></pre>
 
                     </main>

@@ -175,7 +175,143 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="style"><a class="header" href="#style">style</a></h1>
+                        <h1 id="style"><a class="header" href="#style">Style</a></h1>
+<p>Styles control the visual appearance of TUI widgets, including colors and text
+modifiers. Most widgets accept style parameters to customize their appearance.</p>
+<h2 id="colors"><a class="header" href="#colors">Colors</a></h2>
+<p>The <code>Color</code> type defines available colors:</p>
+<pre><code class="language-graphix">type Color = [
+  `Reset,
+  `Black,
+  `Red,
+  `Green,
+  `Yellow,
+  `Blue,
+  `Magenta,
+  `Cyan,
+  `Gray,
+  `DarkGray,
+  `LightRed,
+  `LightGreen,
+  `LightYellow,
+  `LightBlue,
+  `LightMagenta,
+  `LightCyan,
+  `White,
+  `Rgb({ r: i64, g: i64, b: i64 }),
+  `Indexed(i64)
+];
+</code></pre>
+<p>Use <code>Reset</code> to return to the terminal's default color. Use <code>Rgb</code> for 24-bit true
+color, or <code>Indexed</code> for 256-color palette indices.</p>
+<h2 id="modifiers"><a class="header" href="#modifiers">Modifiers</a></h2>
+<p>Text modifiers change the appearance of text:</p>
+<pre><code class="language-graphix">type Modifier = [
+  `Bold,
+  `Italic
+];
+</code></pre>
+<h2 id="the-style-type"><a class="header" href="#the-style-type">The Style Type</a></h2>
+<p>A <code>Style</code> combines foreground color, background color, underline color, and
+modifiers:</p>
+<pre><code class="language-graphix">type Style = {
+  fg: [Color, null],
+  bg: [Color, null],
+  underline_color: [Color, null],
+  add_modifier: [Array&lt;Modifier&gt;, null],
+  sub_modifier: [Array&lt;Modifier&gt;, null]
+};
+</code></pre>
+<h2 id="creating-styles"><a class="header" href="#creating-styles">Creating Styles</a></h2>
+<p>Use the <code>tui::style</code> function to create styles. All parameters are optional:</p>
+<pre><code class="language-graphix">val style: fn(
+  ?#fg: [Color, null],
+  ?#bg: [Color, null],
+  ?#underline_color: [Color, null],
+  ?#add_modifier: [Array&lt;Modifier&gt;, null],
+  ?#sub_modifier: [Array&lt;Modifier&gt;, null]
+) -&gt; Style;
+</code></pre>
+<p>Examples:</p>
+<pre><code class="language-graphix">// Red foreground
+tui::style(#fg: `Red)
+
+// Green text on black background
+tui::style(#fg: `Green, #bg: `Black)
+
+// Bold yellow text
+tui::style(#fg: `Yellow, #add_modifier: [`Bold])
+
+// Bold italic text with RGB color
+tui::style(#fg: `Rgb({ r: 255, g: 128, b: 0 }), #add_modifier: [`Bold, `Italic])
+
+// Default style (no customization)
+tui::style()
+</code></pre>
+<h2 id="spans-and-lines"><a class="header" href="#spans-and-lines">Spans and Lines</a></h2>
+<p>Styles are commonly used with <code>Span</code> and <code>Line</code> types to create styled text.</p>
+<h3 id="spans"><a class="header" href="#spans">Spans</a></h3>
+<p>A <code>Span</code> is a piece of text with a single style:</p>
+<pre><code class="language-graphix">type Span = {
+  style: Style,
+  content: string
+};
+
+val span: fn(?#style: Style, string) -&gt; Span;
+</code></pre>
+<p>Example:</p>
+<pre><code class="language-graphix">// Create a red "Error:" span
+tui::span(#style: tui::style(#fg: `Red), "Error:")
+
+// Plain text span (default style)
+tui::span("Hello")
+</code></pre>
+<h3 id="lines"><a class="header" href="#lines">Lines</a></h3>
+<p>A <code>Line</code> contains one or more spans with optional alignment:</p>
+<pre><code class="language-graphix">type Alignment = [
+  `Left,
+  `Center,
+  `Right
+];
+
+type Line = {
+  style: Style,
+  alignment: [Alignment, null],
+  spans: [Array&lt;Span&gt;, string]
+};
+
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], [Array&lt;Span&gt;, string]) -&gt; Line;
+</code></pre>
+<p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
+simple string (which will use the line's style).</p>
+<p>Examples:</p>
+<pre><code class="language-graphix">// Simple centered line
+tui::line(#alignment: `Center, "Centered Text")
+
+// Line with mixed styles
+tui::line([
+  tui::span(#style: tui::style(#fg: `Red, #add_modifier: [`Bold]), "Error: "),
+  tui::span("Something went wrong")
+])
+
+// Right-aligned with style
+tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
+</code></pre>
+<h2 id="using-styles-with-widgets"><a class="header" href="#using-styles-with-widgets">Using Styles with Widgets</a></h2>
+<p>Most widgets accept style parameters. For example:</p>
+<pre><code class="language-graphix">// Styled paragraph
+tui::paragraph::paragraph(
+  #style: tui::style(#fg: `White, #bg: `Blue),
+  "Hello, styled world!"
+)
+
+// Styled gauge
+tui::gauge::gauge(
+  #style: tui::style(#fg: `Green),
+  #ratio: 0.75
+)
+</code></pre>
+<p>See individual widget documentation for specific style parameters they accept.</p>
 
                     </main>
 

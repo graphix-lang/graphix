@@ -176,20 +176,18 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="rand"><a class="header" href="#rand">Rand</a></h1>
-<pre><code class="language-graphix">mod rand: sig {
-    /// generate a random number between #start and #end (exclusive)
-    /// every time #clock updates. If start and end are not specified,
-    /// they default to 0.0 and 1.0
-    val rand: fn&lt;'a: [Int, Float]&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
+<pre><code class="language-graphix">/// generate a random number between #start and #end (exclusive)
+/// every time #clock updates. If start and end are not specified,
+/// they default to 0.0 and 1.0
+val rand: fn&lt;'a: [Int, Float]&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
 
-    /// pick a random element from the array and return it. Update
-    /// each time the array updates. If the array is empty return
-    /// nothing.
-    val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
+/// pick a random element from the array and return it. Update
+/// each time the array updates. If the array is empty return
+/// nothing.
+val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
 
-    /// return a shuffled copy of a
-    val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
-}
+/// return a shuffled copy of a
+val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 
                     </main>

@@ -3131,490 +3131,473 @@ The modules are documented in the sig format used by dynamic module signatures.<
 </ul>
 <p>The standard library is a work in progress.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="core"><a class="header" href="#core">Core</a></h1>
-<pre><code class="language-graphix">mod core: sig {
-    type Sint = [ i32, z32, i64, z64 ];
-    type Uint = [ u32, v32, u64, v64 ];
-    type Int = [ Sint, Uint ];
-    type Float = [ f32, f64 ];
-    type Real = [ Float, decimal ];
-    type Number = [ Int, Real ];
-    type NotNull = [Number, string, error, array, datetime, duration];
-    type Primitive = [NotNull, null];
-    type PrimNoErr = [Number, string, array, datetime, duration, null];
-    type Log = [`Trace, `Debug, `Info, `Warn, `Error, `Stdout, `Stderr];
-    type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;];
-    type Option&lt;'a&gt; = ['a, null];
+<pre><code class="language-graphix">type Sint = [ i8, i16, i32, z32, i64, z64 ];
+type Uint = [ u8, u16, u32, v32, u64, v64 ];
+type Int = [ Sint, Uint ];
+type Float = [ f32, f64 ];
+type Real = [ Float, decimal ];
+type Number = [ Int, Real ];
+type NotNull = [Number, string, error, array, datetime, duration, bytes, bool];
+type Primitive = [NotNull, null];
+type PrimNoErr = [Number, string, array, datetime, duration, bytes, null];
+type Log = [`Trace, `Debug, `Info, `Warn, `Error, `Stdout, `Stderr];
+type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;];
+type Option&lt;'a&gt; = ['a, null];
 
-    type Pos = {
-        line: i32,
-        column: i32
-    };
+type Pos = {
+    line: i32,
+    column: i32
+};
 
-    type Source = [
-        `File(string),
-        `Netidx(string),
-        `Internal(string),
-        `Unspecified
-    ];
+type Source = [
+    `File(string),
+    `Netidx(string),
+    `Internal(string),
+    `Unspecified
+];
 
-    type Ori = {
-        parent: [Ori, null],
-        source: Source,
-        text: string
-    };
+type Ori = {
+    parent: [Ori, null],
+    source: Source,
+    text: string
+};
 
-    type ErrChain&lt;'a&gt; = {
-        cause: [ErrChain&lt;'a&gt;, null],
-        error: 'a,
-        ori: Ori,
-        pos: Pos
-    };
+type ErrChain&lt;'a&gt; = {
+    cause: [ErrChain&lt;'a&gt;, null],
+    error: 'a,
+    ori: Ori,
+    pos: Pos
+};
 
-    /// return the first argument when all arguments are equal, otherwise return nothing
-    val all: fn(@args: Any) -&gt; Any;
+/// return the first argument when all arguments are equal, otherwise return nothing
+val all: fn(@args: Any) -&gt; Any;
 
-    /// return true if all arguments are true, otherwise return false
-    val and: fn(@args: bool) -&gt; bool;
+/// return true if all arguments are true, otherwise return false
+val and: fn(@args: bool) -&gt; bool;
 
-    /// return the number of times x has updated
-    val count: fn(Any) -&gt; i64;
+/// return the number of times x has updated
+val count: fn(Any) -&gt; i64;
 
-    /// return the first argument divided by all subsequent arguments
-    val divide: fn('a, @args:'a) -&gt; 'a;
+/// return the first argument divided by all subsequent arguments
+val divide: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
-    /// return e only if e is an error
-    val filter_err: fn(Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
+/// return e only if e is an error
+val filter_err: fn(Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
 
-    /// return v if f(v) is true, otherwise return nothing
-    val filter: fn('a, fn('a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
+/// return v if f(v) is true, otherwise return nothing
+val filter: fn('a, fn('a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
 
-    /// return true if e is an error
-    val is_err: fn(Any) -&gt; bool;
+/// return true if e is an error
+val is_err: fn(Any) -&gt; bool;
 
-    /// construct an error from the specified string
-    val error: fn('a) -&gt; Error&lt;'a&gt;;
+/// construct an error from the specified string
+val error: fn('a) -&gt; Error&lt;'a&gt;;
 
-    /// return the maximum value of any argument
-    val max: fn('a, @args: 'a) -&gt; 'a;
+/// return the maximum value of any argument
+val max: fn('a, @args: 'a) -&gt; 'a;
 
-    /// return the mean of the passed in arguments
-    val mean: fn([Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
+/// return the mean of the passed in arguments
+val mean: fn([Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
-    /// return the minimum value of any argument
-    val min: fn('a, @args:'a) -&gt; 'a;
+/// return the minimum value of any argument
+val min: fn('a, @args:'a) -&gt; 'a;
 
-    /// return v only once, subsequent updates to v will be ignored
-    /// and once will return nothing
-    val once: fn('a) -&gt; 'a;
+/// return v only once, subsequent updates to v will be ignored
+/// and once will return nothing
+val once: fn('a) -&gt; 'a;
 
-    /// seq will update j - i times, starting at i and ending at j - 1
-    val seq: fn(i64, i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
+/// take n updates from e and drop the rest. The internal count is reset when n updates.
+val take: fn(#n:Any, 'a) -&gt; 'a;
 
-    /// return true if any argument is true
-    val or: fn(@args: bool) -&gt; bool;
+/// skip n updates from e and return the rest. The internal count is reset when n updates.
+val skip: fn(#n:Any, 'a) -&gt; 'a;
 
-    /// return the product of all arguments
-    val product: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
+/// seq will update j - i times, starting at i and ending at j - 1
+val seq: fn(i64, i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
 
-    /// return the sum of all arguments
-    val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
+/// return true if any argument is true
+val or: fn(@args: bool) -&gt; bool;
 
-    /// when v updates return v if the new value is different from the previous value,
-    /// otherwise return nothing.
-    val uniq: fn('a) -&gt; 'a;
+/// return the product of all arguments
+val product: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
-    /// when v updates place it's value in an internal fifo queue. when clock updates
-    /// return the oldest value from the fifo queue. If clock updates and the queue is
-    /// empty, record the number of clock updates, and produce that number of
-    /// values from the queue when they are available.
-    val queue: fn(#clock:Any, 'a) -&gt; 'a;
+/// return the sum of all arguments
+val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
-    /// hold the most recent value of v internally until clock updates. If v updates
-    /// more than once before clock updates, older values of v will be discarded,
-    /// only the most recent value will be retained. If clock updates when no v is held
-    /// internally, record the number of times it updated, and pass that many v updates
-    /// through immediately when they happen.
-    val hold: fn(#clock:Any, 'a) -&gt; 'a;
+/// when v updates return v if the new value is different from the previous value,
+/// otherwise return nothing.
+val uniq: fn('a) -&gt; 'a;
 
-    /// ignore updates to any argument and never return anything
-    val never: fn(@args: Any) -&gt; _;
+/// when v updates place it's value in an internal fifo queue. when clock updates
+/// return the oldest value from the fifo queue. If clock updates and the queue is
+/// empty, record the number of clock updates, and produce that number of
+/// values from the queue when they are available.
+val queue: fn(#clock:Any, 'a) -&gt; 'a;
 
-    /// when v updates, return it, but also print it along
-    /// with the position of the expression to the specified sink
-    val dbg: fn(?#dest:[`Stdout, `Stderr, Log], 'a) -&gt; 'a;
+/// hold the most recent value of v internally until clock updates. If v updates
+/// more than once before clock updates, older values of v will be discarded,
+/// only the most recent value will be retained. If clock updates when no v is held
+/// internally, record the number of times it updated, and pass that many v updates
+/// through immediately when they happen.
+val hold: fn(#clock:Any, 'a) -&gt; 'a;
 
-    /// print a log message to stdout, stderr or the specified log level using the rust log
-    /// crate. Unlike dbg, log does not also return the value.
-    val log: fn(?#dest:Log, 'a) -&gt; _;
+/// ignore updates to any argument and never return anything
+val never: fn(@args: Any) -&gt; 'a;
 
-    /// print a raw value to stdout, stderr or the specified log level using the rust log
-    /// crate. Unlike dbg, log does not also return the value. Does not automatically insert
-    /// a newline and does not add the source module/location.
-    val print: fn(?#dest:Log, 'a) -&gt; _;
+/// when v updates, return it, but also print it along
+/// with the position of the expression to the specified sink
+val dbg: fn(?#dest:[`Stdout, `Stderr, Log], 'a) -&gt; 'a;
 
-    /// print a raw value to stdout, stderr or the specified log level using the rust log
-    /// crate followed by a newline. Unlike dbg, log does not also return the value.
-    val println: fn(?#dest:Log, 'a) -&gt; _;
+/// print a log message to stdout, stderr or the specified log level using the rust log
+/// crate. Unlike dbg, log does not also return the value.
+val log: fn(?#dest:Log, 'a) -&gt; _;
 
-    /// Throttle v so it updates at most every #rate, where rate is a
-    /// duration (default 0.5 seconds). Intermediate updates that push v
-    /// over the #rate will be discarded. The most recent update will always
-    /// be delivered. If the sequence, m0, m1, ..., mN, arrives simultaneously
-    /// after a period of silence, first m0 will be delivered, then after the rate
-    /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
-    val throttle: fn(?#rate:duration, 'a) -&gt; 'a;
-}
+/// print a raw value to stdout, stderr or the specified log level using the rust log
+/// crate. Unlike dbg, log does not also return the value. Does not automatically insert
+/// a newline and does not add the source module/location.
+val print: fn(?#dest:Log, 'a) -&gt; _;
+
+/// print a raw value to stdout, stderr or the specified log level using the rust log
+/// crate followed by a newline. Unlike dbg, log does not also return the value.
+val println: fn(?#dest:Log, 'a) -&gt; _;
+
+/// Throttle v so it updates at most every #rate, where rate is a
+/// duration (default 0.5 seconds). Intermediate updates that push v
+/// over the #rate will be discarded. The most recent update will always
+/// be delivered. If the sequence, m0, m1, ..., mN, arrives simultaneously
+/// after a period of silence, first m0 will be delivered, then after the rate
+/// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
+val throttle: fn(?#rate:duration, 'a) -&gt; 'a;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="net"><a class="header" href="#net">Net</a></h1>
-<pre><code class="language-graphix">mod net: sig {
-    type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
-    type ArgSpec = { name: string, doc: string, default: Any };
+<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
+type ArgSpec = { name: string, doc: string, default: Any };
 
-    /// write the value to the specified path
-    val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+/// write the value to the specified path
+val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
-    /// subscribe to the specified path
-    val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+/// subscribe to the specified path
+val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
 
-    /// call the specified rpc
-    val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+/// call the specified rpc
+val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
 
-    /// Publish an rpc. When the rpc is called f will be called with the arguments
-    /// sent by the caller, and whatever f returns will be sent back to the caller.
-    /// If f does not return, the caller will hang waiting for a reply.
-    val rpc: fn(
-        #path:string,
-        #doc:string,
-        #spec:Array&lt;ArgSpec&gt;,
-        #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
-    ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
+/// Publish an rpc. When the rpc is called f will be called with the arguments
+/// sent by the caller, and whatever f returns will be sent back to the caller.
+/// If f does not return, the caller will hang waiting for a reply.
+val rpc: fn(
+    #path:string,
+    #doc:string,
+    #spec:Array&lt;ArgSpec&gt;,
+    #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-    /// list paths under the specified path. If #update is specified, then the list will
-    /// be refreshed each time clock is triggered. If update is not specified, the list will
-    /// be updated each second
-    val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+/// list paths under the specified path. If #update is specified, then the list will
+/// be refreshed each time clock is triggered. If update is not specified, the list will
+/// be updated each second
+val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-    /// list the table under the specified path. If #update is specified, then the table
-    /// will be refreshed each time clock is triggered. If update is not specified, the table
-    /// will be updated each second
-    val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+/// list the table under the specified path. If #update is specified, then the table
+/// will be refreshed each time clock is triggered. If update is not specified, the table
+/// will be updated each second
+val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-    /// Publish the specified value at the specified path. Whenever the value updates,
-    /// the new value will be sent to subscribers. If #on_write is specified, then if
-    /// subscribers write to the value on_write will be called with the written value.
-    /// on_write need not return anything.
-    val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
-}
+/// Publish the specified value at the specified path. Whenever the value updates,
+/// the new value will be sent to subscribers. If #on_write is specified, then if
+/// subscribers write to the value on_write will be called with the written value.
+/// on_write need not return anything.
+val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="array-1"><a class="header" href="#array-1">Array</a></h1>
-<pre><code class="language-graphix">mod array: sig {
-    type Direction = [
-        `Ascending,
-        `Descending
-    ];
+<pre><code class="language-graphix">/// filter returns a new array containing only elements where f returned true
+val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
-    /// filter returns a new array containing only elements where f returned true
-    val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+/// filter_map returns a new array containing the outputs of f
+/// that were not null
+val filter_map: fn(Array&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
-    /// filter_map returns a new array containing the outputs of f
-    /// that were not null
-    val filter_map: fn(Array&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+/// return a new array where each element is the output of f applied to the
+/// corresponding element in a
+val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
-    /// return a new array where each element is the output of f applied to the
-    /// corresponding element in a
-    val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+/// return a new array where each element is the output of f applied to the
+/// corresponding element in a, except that if f returns an array then it's
+/// elements will be concatenated to the end of the output instead of nesting.
+val flat_map: fn(Array&lt;'a&gt;, fn('a) -&gt; ['b, Array&lt;'b&gt;] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
-    /// return a new array where each element is the output of f applied to the
-    /// corresponding element in a, except that if f returns an array then it's
-    /// elements will be concatenated to the end of the output instead of nesting.
-    val flat_map: fn(Array&lt;'a&gt;, fn('a) -&gt; ['b, Array&lt;'b&gt;] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+/// return the result of f applied to the init and every element of a in
+/// sequence. f(f(f(init, a[0]), a[1]), ...)
+val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 
-    /// return the result of f applied to the init and every element of a in
-    /// sequence. f(f(f(init, a[0]), a[1]), ...)
-    val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+/// each time v updates group places the value of v in an internal buffer
+/// and calls f with the length of the internal buffer and the value of v.
+/// If f returns true then group returns the internal buffer as an array
+/// otherwise group returns nothing.
+val group: fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
-    /// each time v updates group places the value of v in an internal buffer
-    /// and calls f with the length of the internal buffer and the value of v.
-    /// If f returns true then group returns the internal buffer as an array
-    /// otherwise group returns nothing.
-    val group: fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+/// iter produces an update for every value in the array a. updates are produced
+/// in the order they appear in a.
+val iter: fn(Array&lt;'a&gt;) -&gt; 'a;
 
-    /// iter produces an update for every value in the array a. updates are produced
-    /// in the order they appear in a.
-    val iter: fn(Array&lt;'a&gt;) -&gt; 'a;
+/// iterq produces an update for each value in a, but only when clock updates. If
+/// clock does not update but a does, then iterq will store each a in an internal
+/// fifo queue. If clock updates but a does not, iterq will record the number of
+/// times it was triggered, and will update immediately that many times when a
+/// updates.
+val iterq: fn(#clock:Any, Array&lt;'a&gt;) -&gt; 'a;
 
-    /// iterq produces an update for each value in a, but only when clock updates. If
-    /// clock does not update but a does, then iterq will store each a in an internal
-    /// fifo queue. If clock updates but a does not, iterq will record the number of
-    /// times it was triggered, and will update immediately that many times when a
-    /// updates.
-    val iterq: fn(#clock:Any, Array&lt;'a&gt;) -&gt; 'a;
+/// returns the length of a
+val len: fn(Array&lt;'a&gt;) -&gt; i64;
 
-    /// returns the length of a
-    val len: fn(Array&lt;'a&gt;) -&gt; i64;
+/// returns the concatenation of two or more arrays. O(N) where
+/// N is the size of the final array.
+val concat: fn(Array&lt;'a&gt;, @args: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
-    /// returns the concatenation of two or more arrays. O(N) where
-    /// N is the size of the final array.
-    val concat: fn(Array&lt;'a&gt;, @args: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+/// return an array with the args added to the end. O(N)
+/// where N is the size of the final array
+val push: fn(Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
-    /// return an array with the args added to the end. O(N)
-    /// where N is the size of the final array
-    val push: fn(Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+/// return an array with the args added to the front. O(N)
+/// where N is the size of the final array
+val push_front: fn(Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
-    /// return an array with the args added to the front. O(N)
-    /// where N is the size of the final array
-    val push_front: fn(Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+/// return an array no larger than #n with the args
+/// added to the back. If pushing the args would cause the
+/// array to become bigger than #n, remove values from the
+/// front. O(N) where N is the window size.
+val window: fn(#n:i64, Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
-    /// return an array no larger than #n with the args
-    /// added to the back. If pushing the args would cause the
-    /// array to become bigger than #n, remove values from the
-    /// front. O(N) where N is the window size.
-    val window: fn(#n:i64, Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+/// flatten takes an array with two levels of nesting and produces a flat array
+/// with all the nested elements concatenated together.
+val flatten: fn(Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
 
-    /// flatten takes an array with two levels of nesting and produces a flat array
-    /// with all the nested elements concatenated together.
-    val flatten: fn(Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
+/// applies f to every element in a and returns the first element for which f
+/// returns true, or null if no element returns true
+val find: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
 
-    /// applies f to every element in a and returns the first element for which f
-    /// returns true, or null if no element returns true
-    val find: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
+/// applies f to every element in a and returns the first non null output of f
+val find_map: fn(Array&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
 
-    /// applies f to every element in a and returns the first non null output of f
-    val find_map: fn(Array&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
+type Direction = [
+    `Ascending,
+    `Descending
+];
 
-    /// return a new copy of a sorted ascending (by default). If numeric is true then
-    /// values will be cast to numbers before comparison, resulting in a numeric sort
-    /// even if the values are strings.
-    val sort: fn(?#dir:Direction, ?#numeric:bool, Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+/// return a new copy of a sorted ascending (by default). If numeric is true then
+/// values will be cast to numbers before comparison, resulting in a numeric sort
+/// even if the values are strings.
+val sort: fn(?#dir:Direction, ?#numeric:bool, Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
-    /// return an array of pairs where the first element is the index in
-    /// the array and the second element is the value.
-    val enumerate: fn(Array&lt;'a&gt;) -&gt; Array&lt;(i64, 'a)&gt;;
+/// return an array of pairs where the first element is the index in
+/// the array and the second element is the value.
+val enumerate: fn(Array&lt;'a&gt;) -&gt; Array&lt;(i64, 'a)&gt;;
 
-    /// given two arrays, return a single array of pairs where the first
-    /// element in the pair is from the first array and the second element in
-    /// the pair is from the second array. The final array's length will be the
-    /// minimum of the length of the input arrays
-    val zip: fn(Array&lt;'a&gt;, Array&lt;'b&gt;) -&gt; Array&lt;('a, 'b)&gt;;
+/// given two arrays, return a single array of pairs where the first
+/// element in the pair is from the first array and the second element in
+/// the pair is from the second array. The final array's length will be the
+/// minimum of the length of the input arrays
+val zip: fn(Array&lt;'a&gt;, Array&lt;'b&gt;) -&gt; Array&lt;('a, 'b)&gt;;
 
-    /// given an array of pairs, return two arrays with the first array
-    /// containing all the elements from the first pair element and second
-    /// array containing all the elements of the second pair element.
-    val unzip: fn(Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;);
-}
+/// given an array of pairs, return two arrays with the first array
+/// containing all the elements from the first pair element and second
+/// array containing all the elements of the second pair element.
+val unzip: fn(Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;);
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
-<pre><code class="language-graphix">mod map: sig {
-    /// return a new map where each element is the output of f applied to
-    /// the corresponding key value pair in the current map
-    val map: fn(Map&lt;'a, 'b&gt;, fn(('a, 'b)) -&gt; ('c, 'd) throws 'e) -&gt; Map&lt;'c, 'd&gt; throws 'e;
+<pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
+/// the corresponding key value pair in the current map
+val map: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
-    /// return a new map containing only the key-value pairs where f applied to
-    /// (key, value) returns true
-    val filter: fn(Map&lt;'a, 'b&gt;, fn(('a, 'b)) -&gt; bool throws 'e) -&gt; Map&lt;'a, 'b&gt; throws 'e;
+/// return a new map containing only the key-value pairs where f applied to
+/// (key, value) returns true
+val filter: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
 
-    /// filter_map returns a new map containing the outputs of f
-    /// that were not null
-    val filter_map: fn(Map&lt;'a, 'b&gt;, fn(('a, 'b)) -&gt; Option&lt;('c, 'd)&gt; throws 'e) -&gt; Map&lt;'c, 'd&gt; throws 'e;
+/// filter_map returns a new map containing the outputs of f
+/// that were not null
+val filter_map: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
-    /// return the result of f applied to the init and every k, v pair of m in
-    /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
-    val fold: fn(Map&lt;'a, 'b&gt;, 'c, fn('c, ('a, 'b)) -&gt; 'c throws 'e) -&gt; 'c throws 'e;
+/// return the result of f applied to the init and every k, v pair of m in
+/// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
+val fold: fn(Map&lt;'k, 'v&gt;, 'acc, fn('acc, ('k, 'v)) -&gt; 'acc throws 'e) -&gt; 'acc throws 'e;
 
-    /// return the length of the map
-    val len: fn(Map&lt;'a, 'b&gt;) -&gt; i64;
+/// return the length of the map
+val len: fn(Map&lt;'k, 'v&gt;) -&gt; i64;
 
-    /// get the value associated with the key k in the map m, or null if not present
-    val get: fn(Map&lt;'a, 'b&gt;, 'a) -&gt; Option&lt;'b&gt;;
+/// get the value associated with the key k in the map m, or null if not present
+val get: fn(Map&lt;'k, 'v&gt;, 'k) -&gt; Option&lt;'v&gt;;
 
-    /// insert a new value into the map
-    val insert: fn(Map&lt;'a, 'b&gt;, 'a, 'b) -&gt; Map&lt;'a, 'b&gt;;
+/// insert a new value into the map
+val insert: fn(Map&lt;'k, 'v&gt;, 'k, 'v) -&gt; Map&lt;'k, 'v&gt;;
 
-    /// remove the value associated with the specified key from the map
-    val remove: fn(Map&lt;'a, 'b&gt;, 'a) -&gt; Map&lt;'a, 'b&gt;;
+/// remove the value associated with the specified key from the map
+val remove: fn(Map&lt;'k, 'v&gt;, 'k) -&gt; Map&lt;'k, 'v&gt;;
 
-    /// iter produces an update for every key-value pair in the map m.
-    /// updates are produced in the order they appear in m.
-    val iter: fn(Map&lt;'a, 'b&gt;) -&gt; ('a, 'b);
+/// iter produces an update for every key-value pair in the map m.
+/// updates are produced in the order they appear in m.
+val iter: fn(Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 
-    /// iterq produces an update for each value in m, but only when clock updates. If
-    /// clock does not update but m does, then iterq will store each m in an internal
-    /// fifo queue. If clock updates but m does not, iterq will record the number of
-    /// times it was triggered, and will update immediately that many times when m
-    /// updates.
-    val iterq: fn(#clock:Any, Map&lt;'a, 'b&gt;) -&gt; ('a, 'b);
-}
+/// iterq produces an update for each value in m, but only when clock updates. If
+/// clock does not update but m does, then iterq will store each m in an internal
+/// fifo queue. If clock updates but m does not, iterq will record the number of
+/// times it was triggered, and will update immediately that many times when m
+/// updates.
+val iterq: fn(#clock: Any, Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="str"><a class="header" href="#str">Str</a></h1>
-<pre><code class="language-graphix">mod str: sig {
-    type Escape = {
-        escape: string,
-        escape_char: string,
-        tr: Array&lt;(string, string)&gt;
-    };
+<pre><code class="language-graphix">type Escape = {
+    escape: string,
+    escape_char: string,
+    tr: Array&lt;(string, string)&gt;
+};
 
-    /// the default escaping config escapes \, /, \n, \r, \t, \0, and non printable
-    /// characters to Unicode \u{HHHH} format
-    val default_escape: Escape = {
-        escape: "\\/\n\r\t\0",
-        escape_char: "\\",
-        tr: [("\n", "n"), ("\r", "r"), ("\t", "t"), ("\0", "0")]
-    };
+/// return true if s starts with #pfx, otherwise return false
+val starts_with: fn(#pfx: string, string) -&gt; bool;
 
-    /// return true if s starts with #pfx, otherwise return false
-    val starts_with: fn(#pfx:string, string) -&gt; bool;
+/// return true if s ends with #sfx otherwise return false
+val ends_with: fn(#sfx: string, string) -&gt; bool;
 
-    /// return true if s ends with #sfx otherwise return false
-    val ends_with: fn(#sfx:string, string) -&gt; bool;
+/// return true if s contains #part, otherwise return false
+val contains: fn(#part: string, string) -&gt; bool;
 
-    /// return true if s contains #part, otherwise return false
-    val contains: fn(#part:string, string) -&gt; bool;
+/// if s starts with #pfx then return s with #pfx stripped otherwise return null
+val strip_prefix: fn(#pfx: string, string) -&gt; Option&lt;string&gt;;
 
-    /// if s starts with #pfx then return s with #pfx stripped otherwise return null
-    val strip_prefix: fn(#pfx:string, string) -&gt; Option&lt;string&gt;;
+/// if s ends with #sfx then return s with #sfx stripped otherwise return null
+val strip_suffix: fn(#sfx: string, string) -&gt; Option&lt;string&gt;;
 
-    /// if s ends with #sfx then return s with #sfx stripped otherwise return null
-    val strip_suffix: fn(#sfx:string, string) -&gt; Option&lt;string&gt;;
+/// return s with leading and trailing whitespace removed
+val trim: fn(string) -&gt; string;
 
-    /// return s with leading and trailing whitespace removed
-    val trim: fn(string) -&gt; string;
+/// return s with leading whitespace removed
+val trim_start: fn(string) -&gt; string;
 
-    /// return s with leading whitespace removed
-    val trim_start: fn(string) -&gt; string;
+/// return s with trailing whitespace removed
+val trim_end: fn(string) -&gt; string;
 
-    /// return s with trailing whitespace removed
-    val trim_end: fn(string) -&gt; string;
+/// replace all instances of #pat in s with #rep and return s
+val replace: fn(#pat: string, #rep: string, string) -&gt; string;
 
-    /// replace all instances of #pat in s with #rep and return s
-    val replace: fn(#pat:string, #rep:string, string) -&gt; string;
+/// return the parent path of s, or null if s does not have a parent path
+val dirname: fn(string) -&gt; Option&lt;string&gt;;
 
-    /// return the parent path of s, or null if s does not have a parent path
-    val dirname: fn(string) -&gt; Option&lt;string&gt;;
+/// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -&gt; bar
+val basename: fn(string) -&gt; Option&lt;string&gt;;
 
-    /// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -&gt; bar
-    val basename: fn(string) -&gt; Option&lt;string&gt;;
+/// return a single string with the arguments concatenated and separated by #sep
+val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 
-    /// return a single string with the arguments concatenated and separated by #sep
-    val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
+/// concatenate the specified strings into a single string
+val concat: fn(@args: [string, Array&lt;string&gt;]) -&gt; string;
 
-    /// concatenate the specified strings into a single string
-    val concat: fn(@args: [string, Array&lt;string&gt;]) -&gt; string;
+/// escape all the characters in #to_escape in s with the escape character #escape.
+/// The escape character must appear in #to_escape
+val escape: fn(?#esc:Escape, string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
-    /// escape all the characters in #to_escape in s with the escape character #escape.
-    /// The escape character must appear in #to_escape
-    val escape: fn(?#esc:Escape, string) -&gt; Result&lt;string, `StringError(string)&gt;;
+/// unescape all the characters in s escaped by the specified #escape character
+val unescape: fn(?#esc:Escape, string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
-    /// unescape all the characters in s escaped by the specified #escape character
-    val unescape: fn(?#esc:Escape, string) -&gt; Result&lt;string, `StringError(string)&gt;;
+/// split the string by the specified #pat and return an array of each part
+val split: fn(#pat: string, string) -&gt; Array&lt;string&gt;;
 
-    /// split the string by the specified #pat and return an array of each part
-    val split: fn(#pat:string, string) -&gt; Array&lt;string&gt;;
+/// reverse split the string by the specified #pat and return an array of each part
+val rsplit: fn(#pat: string, string) -&gt; Array&lt;string&gt;;
 
-    /// reverse split the string by the specified #pat and return an array of each part
-    val rsplit: fn(#pat:string, string) -&gt; Array&lt;string&gt;;
+/// split the string at most #n times by the specified #pat and return an array of
+/// each part
+val splitn: fn(#pat:string, #n:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
-    /// split the string at most #n times by the specified #pat and return an array of
-    /// each part
-    val splitn: fn(#pat:string, #n:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
+/// reverse split the string at most #n times by the specified #pat and return an array of
+/// each part
+val rsplitn: fn(#pat:string, #n:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
-    /// reverse split the string at most #n times by the specified #pat and return an array of
-    /// each part
-    val rsplitn: fn(#pat:string, #n:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
+/// give an escape character #esc, and a #sep character, split the string s into an array
+/// of parts delimited by it's non escaped separator characters.
+val split_escaped: fn(#esc:string, #sep:string, string) -&gt; Result&lt;Array&lt;string&gt;, `SplitEscError(string)&gt;;
 
-    /// give an escape character #esc, and a #sep character, split the string s into an array
-    /// of parts delimited by it's non escaped separator characters.
-    val split_escaped: fn(#esc:string, #sep:string, string) -&gt; Result&lt;Array&lt;string&gt;, `SplitEscError(string)&gt;;
+/// give an escape character #esc, and a #sep character, split the string s into an array
+/// of at most #n parts delimited by it's non escaped separator characters.
+val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, string) -&gt; Result&lt;Array&lt;string&gt;, `SplitNEscError(string)&gt;;
 
-    /// give an escape character #esc, and a #sep character, split the string s into an array
-    /// of at most #n parts delimited by it's non escaped separator characters.
-    val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, string) -&gt; Result&lt;Array&lt;string&gt;, `SplitNEscError(string)&gt;;
+/// split the string once from the beginning by #pat and return a
+/// tuple of strings, or return null if #pat was not found in the string
+val split_once: fn(#pat: string, string) -&gt; Option&lt;(string, string)&gt;;
 
-    /// split the string once from the beginning by #pat and return a
-    /// tuple of strings, or return null if #pat was not found in the string
-    val split_once: fn(#pat:string, string) -&gt; Option&lt;(string, string)&gt;;
+/// split the string once from the end by #pat and return a tuple of strings
+/// or return null if #pat was not found in the string
+val rsplit_once: fn(#pat: string, string) -&gt; Option&lt;(string, string)&gt;;
 
-    /// split the string once from the end by #pat and return a tuple of strings
-    /// or return null if #pat was not found in the string
-    val rsplit_once: fn(#pat:string, string) -&gt; Option&lt;(string, string)&gt;;
+/// change the string to lowercase
+val to_lower: fn(string) -&gt; string;
 
-    /// change the string to lowercase
-    val to_lower: fn(string) -&gt; string;
+/// change the string to uppercase
+val to_upper: fn(string) -&gt; string;
 
-    /// change the string to uppercase
-    val to_upper: fn(string) -&gt; string;
+/// C style sprintf, implements most C standard format args
+val sprintf: fn(string, @args: Any) -&gt; string;
 
-    /// C style sprintf, implements most C standard format args
-    val sprintf: fn(string, @args: Any) -&gt; string;
+/// return the length of the string in bytes
+val len: fn(string) -&gt; i64;
 
-    /// return the length of the string in bytes
-    val len: fn(string) -&gt; i64;
+/// extract a substring of s starting at #start with length #len.
+/// both #start and #len are Unicode character indexes,
+/// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
+/// will return "💖💖"
+val sub: fn(#start:i64, #len:i64, string) -&gt; Result&lt;string, `SubError(string)&gt;;
 
-    /// extract a substring of s starting at #start with length #len.
-    /// both #start and #len are Unicode character indexes,
-    /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
-    /// will return "💖💖"
-    val sub: fn(#start:i64, #len:i64, string) -&gt; Result&lt;string, `SubError(string)&gt;;
-
-    /// parse the specified string as a value. return the value on success or an
-    /// error on failure. Note, if you feed the parser a well formed error then
-    /// parse will also return an error
-    val parse: fn(string) -&gt; Result&lt;PrimNoErr, `ParseError(string)&gt;;
-}
+/// parse the specified string as a value. return the value on success or an
+/// error on failure. Note, if you feed the parser a well formed error then
+/// parse will also return an error
+val parse: fn(string) -&gt; Result&lt;PrimNoErr, Any&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="re"><a class="header" href="#re">Re</a></h1>
-<pre><code class="language-graphix">mod re: sig {
-    /// return true if the string is matched by #pat, otherwise return false.
-    /// return an error if #pat is invalid.
-    val is_match: fn(#pat:string, string) -&gt; Result&lt;bool, `ReError(string)&gt;;
+<pre><code class="language-graphix">/// return true if the string is matched by #pat, otherwise return false.
+/// return an error if #pat is invalid.
+val is_match: fn(#pat: string, string) -&gt; Result&lt;bool, `ReError(string)&gt;;
 
-    /// return an array of instances of #pat in s. return an error if #pat is
-    /// invalid.
-    val find: fn(#pat:string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+/// return an array of instances of #pat in s. return an error if #pat is
+/// invalid.
+val find: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
-    /// return an array of captures matched by #pat. The array will have an element for each
-    /// capture, regardless of whether it matched or not. If it did not match the corresponding
-    /// element will be null. Return an error if #pat is invalid.
-    val captures: fn(#pat:string, string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
+/// return an array of captures matched by #pat. The array will have an element for each
+/// capture group, which will have an element for each capture, regardless of whether it
+/// matched or not. If it did not match the corresponding element will be null. Return an
+/// error if #pat is invalid.
+val captures: fn(#pat: string, string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
 
-    /// return an array of strings split by #pat. return an error if #pat is invalid.
-    val split: fn(#pat:string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+/// return an array of strings split by #pat. return an error if #pat is invalid.
+val split: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
-    /// split the string by #pat at most #limit times and return an array of the parts.
-    /// return an error if #pat is invalid
-    val splitn: fn(#pat:string, #limit:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
-}
+/// split the string by #pat at most #limit times and return an array of the parts.
+/// return an error if #pat is invalid
+val splitn: fn(#pat: string, #limit: i64, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="time"><a class="header" href="#time">Time</a></h1>
-<pre><code class="language-graphix">mod time: sig {
-    /// When v updates wait timeout and then return it. If v updates again
-    /// before timeout expires, reset the timeout and continue waiting.
-    val after_idle: fn([duration, Number], 'a) -&gt; 'a;
+<pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
+/// before timeout expires, reset the timeout and continue waiting.
+val after_idle: fn([duration, Number], 'a) -&gt; 'a;
 
-    /// timer will wait timeout and then update with the current time.
-    /// If repeat is true, it will do this forever. If repeat is a number n,
-    /// it will do this n times and then stop. If repeat is false, it will do
-    /// this once.
-    val timer: fn([duration, Number], [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
+/// timer will wait timeout and then update with the current time.
+/// If repeat is true, it will do this forever. If repeat is a number n,
+/// it will do this n times and then stop. If repeat is false, it will do
+/// this once.
+val timer: fn([duration, Number], [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
 
-    /// return the current time each time trigger updates
-    val now: fn(Any) -&gt; datetime;
-}
+/// return the current time each time trigger updates
+val now: fn(Any) -&gt; datetime;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="rand"><a class="header" href="#rand">Rand</a></h1>
-<pre><code class="language-graphix">mod rand: sig {
-    /// generate a random number between #start and #end (exclusive)
-    /// every time #clock updates. If start and end are not specified,
-    /// they default to 0.0 and 1.0
-    val rand: fn&lt;'a: [Int, Float]&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
+<pre><code class="language-graphix">/// generate a random number between #start and #end (exclusive)
+/// every time #clock updates. If start and end are not specified,
+/// they default to 0.0 and 1.0
+val rand: fn&lt;'a: [Int, Float]&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
 
-    /// pick a random element from the array and return it. Update
-    /// each time the array updates. If the array is empty return
-    /// nothing.
-    val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
+/// pick a random element from the array and return it. Update
+/// each time the array updates. If the array is empty return
+/// nothing.
+val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
 
-    /// return a shuffled copy of a
-    val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
-}
+/// return a shuffled copy of a
+val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="building-uis-with-graphix"><a class="header" href="#building-uis-with-graphix">Building UIs With Graphix</a></h1>
 <p>Graphix excels at building user interfaces thanks to its reactive dataflow nature. Changes in data automatically propagate through the UI graph, updating only the components that need to change. This makes building complex, interactive applications surprisingly straightforward.</p>
@@ -3776,7 +3759,143 @@ gauge(
   &amp;(temperature / 100.0)
 )
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="style"><a class="header" href="#style">style</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="style"><a class="header" href="#style">Style</a></h1>
+<p>Styles control the visual appearance of TUI widgets, including colors and text
+modifiers. Most widgets accept style parameters to customize their appearance.</p>
+<h2 id="colors"><a class="header" href="#colors">Colors</a></h2>
+<p>The <code>Color</code> type defines available colors:</p>
+<pre><code class="language-graphix">type Color = [
+  `Reset,
+  `Black,
+  `Red,
+  `Green,
+  `Yellow,
+  `Blue,
+  `Magenta,
+  `Cyan,
+  `Gray,
+  `DarkGray,
+  `LightRed,
+  `LightGreen,
+  `LightYellow,
+  `LightBlue,
+  `LightMagenta,
+  `LightCyan,
+  `White,
+  `Rgb({ r: i64, g: i64, b: i64 }),
+  `Indexed(i64)
+];
+</code></pre>
+<p>Use <code>Reset</code> to return to the terminal's default color. Use <code>Rgb</code> for 24-bit true
+color, or <code>Indexed</code> for 256-color palette indices.</p>
+<h2 id="modifiers"><a class="header" href="#modifiers">Modifiers</a></h2>
+<p>Text modifiers change the appearance of text:</p>
+<pre><code class="language-graphix">type Modifier = [
+  `Bold,
+  `Italic
+];
+</code></pre>
+<h2 id="the-style-type"><a class="header" href="#the-style-type">The Style Type</a></h2>
+<p>A <code>Style</code> combines foreground color, background color, underline color, and
+modifiers:</p>
+<pre><code class="language-graphix">type Style = {
+  fg: [Color, null],
+  bg: [Color, null],
+  underline_color: [Color, null],
+  add_modifier: [Array&lt;Modifier&gt;, null],
+  sub_modifier: [Array&lt;Modifier&gt;, null]
+};
+</code></pre>
+<h2 id="creating-styles"><a class="header" href="#creating-styles">Creating Styles</a></h2>
+<p>Use the <code>tui::style</code> function to create styles. All parameters are optional:</p>
+<pre><code class="language-graphix">val style: fn(
+  ?#fg: [Color, null],
+  ?#bg: [Color, null],
+  ?#underline_color: [Color, null],
+  ?#add_modifier: [Array&lt;Modifier&gt;, null],
+  ?#sub_modifier: [Array&lt;Modifier&gt;, null]
+) -&gt; Style;
+</code></pre>
+<p>Examples:</p>
+<pre><code class="language-graphix">// Red foreground
+tui::style(#fg: `Red)
+
+// Green text on black background
+tui::style(#fg: `Green, #bg: `Black)
+
+// Bold yellow text
+tui::style(#fg: `Yellow, #add_modifier: [`Bold])
+
+// Bold italic text with RGB color
+tui::style(#fg: `Rgb({ r: 255, g: 128, b: 0 }), #add_modifier: [`Bold, `Italic])
+
+// Default style (no customization)
+tui::style()
+</code></pre>
+<h2 id="spans-and-lines"><a class="header" href="#spans-and-lines">Spans and Lines</a></h2>
+<p>Styles are commonly used with <code>Span</code> and <code>Line</code> types to create styled text.</p>
+<h3 id="spans"><a class="header" href="#spans">Spans</a></h3>
+<p>A <code>Span</code> is a piece of text with a single style:</p>
+<pre><code class="language-graphix">type Span = {
+  style: Style,
+  content: string
+};
+
+val span: fn(?#style: Style, string) -&gt; Span;
+</code></pre>
+<p>Example:</p>
+<pre><code class="language-graphix">// Create a red "Error:" span
+tui::span(#style: tui::style(#fg: `Red), "Error:")
+
+// Plain text span (default style)
+tui::span("Hello")
+</code></pre>
+<h3 id="lines"><a class="header" href="#lines">Lines</a></h3>
+<p>A <code>Line</code> contains one or more spans with optional alignment:</p>
+<pre><code class="language-graphix">type Alignment = [
+  `Left,
+  `Center,
+  `Right
+];
+
+type Line = {
+  style: Style,
+  alignment: [Alignment, null],
+  spans: [Array&lt;Span&gt;, string]
+};
+
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], [Array&lt;Span&gt;, string]) -&gt; Line;
+</code></pre>
+<p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
+simple string (which will use the line's style).</p>
+<p>Examples:</p>
+<pre><code class="language-graphix">// Simple centered line
+tui::line(#alignment: `Center, "Centered Text")
+
+// Line with mixed styles
+tui::line([
+  tui::span(#style: tui::style(#fg: `Red, #add_modifier: [`Bold]), "Error: "),
+  tui::span("Something went wrong")
+])
+
+// Right-aligned with style
+tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
+</code></pre>
+<h2 id="using-styles-with-widgets"><a class="header" href="#using-styles-with-widgets">Using Styles with Widgets</a></h2>
+<p>Most widgets accept style parameters. For example:</p>
+<pre><code class="language-graphix">// Styled paragraph
+tui::paragraph::paragraph(
+  #style: tui::style(#fg: `White, #bg: `Blue),
+  "Hello, styled world!"
+)
+
+// Styled gauge
+tui::gauge::gauge(
+  #style: tui::style(#fg: `Green),
+  #ratio: 0.75
+)
+</code></pre>
+<p>See individual widget documentation for specific style parameters they accept.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
 <p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
 <h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
@@ -4920,7 +5039,238 @@ layout(
 <li><a href="ui/tui/sparkline.html">sparkline</a> - For historical trend display</li>
 <li><a href="ui/tui/barchart.html">barchart</a> - For categorical value comparison</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="input"><a class="header" href="#input">input</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="input-handling-1"><a class="header" href="#input-handling-1">Input Handling</a></h1>
+<p>The input handling system allows TUI applications to respond to keyboard, mouse,
+and other terminal events. Input handlers wrap widgets and intercept events
+before they propagate further.</p>
+<h2 id="the-event-type"><a class="header" href="#the-event-type">The Event Type</a></h2>
+<p>All terminal events are represented by the <code>Event</code> type:</p>
+<pre><code class="language-graphix">type Event = [
+  `FocusGained,
+  `FocusLost,
+  `Key(KeyEvent),
+  `Mouse(MouseEvent),
+  `Paste(string),
+  `Resize(i64, i64)
+];
+</code></pre>
+<ul>
+<li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes</li>
+<li><code>Key</code>: Keyboard input</li>
+<li><code>Mouse</code>: Mouse input (requires <code>tui::mouse &lt;- true</code>)</li>
+<li><code>Paste</code>: Bracketed paste content</li>
+<li><code>Resize</code>: Terminal was resized to (columns, rows)</li>
+</ul>
+<h2 id="keyboard-events"><a class="header" href="#keyboard-events">Keyboard Events</a></h2>
+<p>Keyboard events contain detailed information about key presses:</p>
+<pre><code class="language-graphix">type KeyEvent = {
+  code: KeyCode,
+  kind: KeyEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  state: Array&lt;KeyEventState&gt;
+};
+</code></pre>
+<h3 id="key-codes"><a class="header" href="#key-codes">Key Codes</a></h3>
+<pre><code class="language-graphix">type KeyCode = [
+  `Backspace,
+  `Enter,
+  `Left,
+  `Right,
+  `Up,
+  `Down,
+  `Home,
+  `End,
+  `PageUp,
+  `PageDown,
+  `Tab,
+  `BackTab,
+  `Delete,
+  `Insert,
+  `F(i64),
+  `Char(string),
+  `Null,
+  `Esc,
+  `CapsLock,
+  `ScrollLock,
+  `NumLock,
+  `PrintScreen,
+  `Pause,
+  `Menu,
+  `KeypadBegin,
+  `Media(MediaKeyCode),
+  `Modifier(ModifierKeyCode)
+];
+</code></pre>
+<p>Character keys use <code>Char(string)</code>, e.g., <code>Char("a")</code> or <code>Char("A")</code>.
+Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
+<h3 id="key-event-kind"><a class="header" href="#key-event-kind">Key Event Kind</a></h3>
+<pre><code class="language-graphix">type KeyEventKind = [
+  `Press,
+  `Repeat,
+  `Release
+];
+</code></pre>
+<p>Most applications only care about <code>Press</code> events.</p>
+<h3 id="key-modifiers"><a class="header" href="#key-modifiers">Key Modifiers</a></h3>
+<pre><code class="language-graphix">type KeyModifier = [
+  `Shift,
+  `Control,
+  `Alt,
+  `Super,
+  `Hyper,
+  `Meta
+];
+</code></pre>
+<p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
+<h2 id="mouse-events"><a class="header" href="#mouse-events">Mouse Events</a></h2>
+<p>Mouse events require enabling mouse support first:</p>
+<pre><code class="language-graphix">tui::mouse &lt;- true
+</code></pre>
+<p>Mouse events contain position and action information:</p>
+<pre><code class="language-graphix">type MouseEvent = {
+  column: i64,
+  kind: MouseEventKind,
+  modifiers: Array&lt;KeyModifier&gt;,
+  row: i64
+};
+
+type MouseEventKind = [
+  `Down(MouseButton),
+  `Up(MouseButton),
+  `Drag(MouseButton),
+  `Moved,
+  `ScrollDown,
+  `ScrollUp,
+  `ScrollLeft,
+  `ScrollRight
+];
+
+type MouseButton = [
+  `Left,
+  `Right,
+  `Middle
+];
+</code></pre>
+<h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
+<p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
+<pre><code class="language-graphix">val input_handler: fn(
+  ?#enabled: &amp;[bool, null],
+  #handle: &amp;fn(Event) -&gt; [`Stop, `Continue] throws 'e,
+  &amp;Tui
+) -&gt; Tui throws 'e;
+</code></pre>
+<p>The handler function receives events and returns:</p>
+<ul>
+<li><code>Stop</code>: The event was handled; don't propagate to other handlers</li>
+<li><code>Continue</code>: Pass the event to the next handler</li>
+</ul>
+<h3 id="basic-example"><a class="header" href="#basic-example">Basic Example</a></h3>
+<pre><code class="language-graphix">let count = 0;
+
+tui::input_handler::input_handler(
+  #handle: &amp;|event| select event {
+    `Key({ code: `Char("q"), .. }) =&gt; {
+      // Exit on 'q'
+      `Stop
+    },
+    e@ `Key({ code: `Up, .. }) =&gt; {
+      count &lt;- e ~ count + 1;
+      `Stop
+    },
+    e@ `Key({ code: `Down, .. }) =&gt; {
+      count &lt;- e ~ count - 1;
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;tui::paragraph::paragraph("[count]")
+)
+</code></pre>
+<h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
+<p>The <code>#enabled</code> parameter allows dynamically enabling/disabling a handler:</p>
+<pre><code class="language-graphix">let editing = false;
+
+tui::input_handler::input_handler(
+  #enabled: &amp;editing,
+  #handle: &amp;|event| select event {
+    `Key({ code: `Esc, .. }) =&gt; {
+      editing &lt;- false;
+      `Stop
+    },
+    `Key({ code: `Char(c), .. }) =&gt; {
+      // Handle character input when editing
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;tui::paragraph::paragraph("Edit mode")
+)
+</code></pre>
+<h2 id="event-propagation"><a class="header" href="#event-propagation">Event Propagation</a></h2>
+<p>Input handlers form a stack. Events flow from the outermost handler inward:</p>
+<pre><code class="language-graphix">tui::input_handler::input_handler(
+  #handle: &amp;|e| /* handler A */ `Continue,
+  &amp;tui::input_handler::input_handler(
+    #handle: &amp;|e| /* handler B */ `Continue,
+    &amp;widget
+  )
+)
+</code></pre>
+<p>If handler A returns <code>Continue</code>, the event reaches handler B. If either returns
+<code>Stop</code>, propagation stops.</p>
+<h2 id="the-raw-event-stream"><a class="header" href="#the-raw-event-stream">The Raw Event Stream</a></h2>
+<p>For advanced use cases, you can access the raw event stream directly via
+<code>tui::event</code>:</p>
+<pre><code class="language-graphix">select tui::event {
+  `Key(k) =&gt; dbg(k),
+  _ =&gt; ()
+}
+</code></pre>
+<p>However, using <code>input_handler</code> is preferred as it integrates properly with the
+widget tree and supports the enable/disable pattern.</p>
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<h3 id="vim-style-mode-switching"><a class="header" href="#vim-style-mode-switching">Vim-style Mode Switching</a></h3>
+<pre><code class="language-graphix">type Mode = [`Normal, `Insert];
+let mode: Mode = `Normal;
+
+tui::input_handler::input_handler(
+  #handle: &amp;|event| select (mode, event) {
+    (`Normal, `Key({ code: `Char("i"), .. })) =&gt; {
+      mode &lt;- `Insert;
+      `Stop
+    },
+    (`Insert, `Key({ code: `Esc, .. })) =&gt; {
+      mode &lt;- `Normal;
+      `Stop
+    },
+    (`Insert, `Key({ code: `Char(c), .. })) =&gt; {
+      // Insert character
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;content
+)
+</code></pre>
+<h3 id="focus-management"><a class="header" href="#focus-management">Focus Management</a></h3>
+<pre><code class="language-graphix">let focused = 0;
+let num_widgets = 3;
+
+tui::input_handler::input_handler(
+  #handle: &amp;|event| select event {
+    `Key({ code: `Tab, .. }) =&gt; {
+      focused &lt;- (focused + 1) % num_widgets;
+      `Stop
+    },
+    `Key({ code: `BackTab, .. }) =&gt; {
+      focused &lt;- (focused - 1 + num_widgets) % num_widgets;
+      `Stop
+    },
+    _ =&gt; `Continue
+  },
+  &amp;widgets
+)
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-layout-widget"><a class="header" href="#the-layout-widget">The Layout Widget</a></h1>
 <p>The <code>layout</code> widget arranges child widgets in horizontal or vertical layouts with flexible sizing constraints. It's the primary tool for organizing complex TUI interfaces and supports focus management for interactive applications.</p>
 <h2 id="apis-6"><a class="header" href="#apis-6">APIs</a></h2>
