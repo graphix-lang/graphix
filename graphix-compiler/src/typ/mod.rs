@@ -128,7 +128,15 @@ impl Type {
                         ct.check_contains(env, arg)?;
                     }
                     if !tv.would_cycle(arg) {
-                        *tv.read().typ.write() = Some(arg.clone());
+                        match arg {
+                            Type::TVar(arg_tv) => match &*arg_tv.read().typ.read() {
+                                None => *tv.read().typ.write() = Some(arg.clone()),
+                                Some(t) => *tv.read().typ.write() = Some(t.clone()),
+                            },
+                            _ => {
+                                *tv.read().typ.write() = Some(arg.clone());
+                            }
+                        }
                     }
                 }
                 Ok(&def.typ)
@@ -606,14 +614,20 @@ impl Type {
         self.could_match_int(env, &mut LPooled::take(), t)
     }
 
-    pub fn sig_matches(&self, impl_type: &Self) -> Result<()> {
-        self.sig_matches_int(impl_type, &mut LPooled::take())
+    pub fn sig_matches<R: Rt, E: UserEvent>(
+        &self,
+        env: &Env<R, E>,
+        impl_type: &Self,
+    ) -> Result<()> {
+        self.sig_matches_int(env, impl_type, &mut LPooled::take(), &mut LPooled::take())
     }
 
-    pub(crate) fn sig_matches_int(
+    pub(crate) fn sig_matches_int<R: Rt, E: UserEvent>(
         &self,
+        env: &Env<R, E>,
         impl_type: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
+        hist: &mut FxHashSet<(usize, usize)>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
             return Ok(());
@@ -627,32 +641,52 @@ impl Type {
                 Self::Ref { scope: s1, name: n1, params: p1 },
             ) if s0 == s1 && n0 == n1 && p0.len() == p1.len() => {
                 for (t0, t1) in p0.iter().zip(p1.iter()) {
-                    t0.sig_matches_int(t1, tvar_map)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
-            (Self::Fn(f0), Self::Fn(f1)) => f0.sig_matches_int(f1, tvar_map),
+            (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+                let t0 = t0.lookup_ref(env)?;
+                let t1 = t1.lookup_ref(env)?;
+                let t0_addr = (t0 as *const Type).addr();
+                let t1_addr = (t1 as *const Type).addr();
+                if hist.contains(&(t0_addr, t1_addr)) {
+                    Ok(())
+                } else {
+                    hist.insert((t0_addr, t1_addr));
+                    t0.sig_matches_int(env, t1, tvar_map, hist)
+                }
+            }
+            (Self::Fn(f0), Self::Fn(f1)) => f0.sig_matches_int(env, f1, tvar_map, hist),
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
-                    t0.sig_matches_int(t1, tvar_map)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
-            (Self::Error(e0), Self::Error(e1)) => e0.sig_matches_int(e1, tvar_map),
-            (Self::Array(a0), Self::Array(a1)) => a0.sig_matches_int(a1, tvar_map),
-            (Self::ByRef(b0), Self::ByRef(b1)) => b0.sig_matches_int(b1, tvar_map),
+            (Self::Error(e0), Self::Error(e1)) => {
+                e0.sig_matches_int(env, e1, tvar_map, hist)
+            }
+            (Self::Array(a0), Self::Array(a1)) => {
+                a0.sig_matches_int(env, a1, tvar_map, hist)
+            }
+            (Self::ByRef(b0), Self::ByRef(b1)) => {
+                b0.sig_matches_int(env, b1, tvar_map, hist)
+            }
             (Self::Tuple(t0), Self::Tuple(t1)) if t0.len() == t1.len() => {
                 for (t0, t1) in t0.iter().zip(t1.iter()) {
-                    t0.sig_matches_int(t1, tvar_map)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
             (Self::Struct(s0), Self::Struct(s1)) if s0.len() == s1.len() => {
                 for ((n0, t0), (n1, t1)) in s0.iter().zip(s1.iter()) {
                     if n0 != n1 {
-                        bail!("struct field name mismatch: {n0} vs {n1}");
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            bail!("struct field name mismatch: {n0} vs {n1}")
+                        })?
                     }
-                    t0.sig_matches_int(t1, tvar_map)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
@@ -660,33 +694,37 @@ impl Type {
                 if tag0 == tag1 && t0.len() == t1.len() =>
             {
                 for (t0, t1) in t0.iter().zip(t1.iter()) {
-                    t0.sig_matches_int(t1, tvar_map)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
             (Self::Map { key: k0, value: v0 }, Self::Map { key: k1, value: v1 }) => {
-                k0.sig_matches_int(k1, tvar_map)?;
-                v0.sig_matches_int(v1, tvar_map)
+                k0.sig_matches_int(env, k1, tvar_map, hist)?;
+                v0.sig_matches_int(env, v1, tvar_map, hist)
             }
             (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
-                bail!("signature type variable {sig_tv} does not match implementation {impl_tv}")
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    bail!("signature type variable {sig_tv} does not match implementation {impl_tv}")
+                })
             }
             (sig_type, Self::TVar(impl_tv)) => {
-                let impl_tv_addr = impl_tv.canonical_addr();
+                let impl_tv_addr = impl_tv.inner_addr();
                 match tvar_map.get(&impl_tv_addr) {
                     Some(prev_sig_type) => {
                         let matches = match (sig_type, prev_sig_type) {
                             (Type::TVar(tv0), Type::TVar(tv1)) => {
-                                tv0.canonical_addr() == tv1.canonical_addr()
+                                tv0.inner_addr() == tv1.inner_addr()
                             }
                             _ => sig_type == prev_sig_type,
                         };
                         if matches {
                             Ok(())
                         } else {
-                            bail!(
-                                "type variable usage mismatch: expected {prev_sig_type}, got {sig_type}"
-                            )
+                            format_with_flags(PrintFlag::DerefTVars, || {
+                                bail!(
+                                    "type variable usage mismatch: expected {prev_sig_type}, got {sig_type}"
+                                )
+                            })
                         }
                     }
                     None => {
@@ -696,11 +734,13 @@ impl Type {
                 }
             }
             (Self::TVar(sig_tv), impl_type) => {
-                bail!("signature has type variable '{sig_tv} where implementation has {impl_type}")
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    bail!("signature has type variable '{sig_tv} where implementation has {impl_type}")
+                })
             }
-            (sig_type, impl_type) => {
+            (sig_type, impl_type) => format_with_flags(PrintFlag::DerefTVars, || {
                 bail!("type mismatch: signature has {sig_type}, implementation has {impl_type}")
-            }
+            }),
         }
     }
 

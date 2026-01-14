@@ -257,6 +257,19 @@ impl Default for Source {
 }
 
 impl Source {
+    pub fn has_filename(&self, name: &str) -> bool {
+        match self {
+            Self::File(buf) => match buf.file_name() {
+                None => false,
+                Some(os) => match os.to_str() {
+                    None => false,
+                    Some(s) => s == name,
+                },
+            },
+            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
+        }
+    }
+
     pub fn is_file(&self) -> bool {
         match self {
             Self::File(_) => true,

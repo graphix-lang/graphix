@@ -11,7 +11,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use smallvec::{smallvec, SmallVec};
@@ -151,9 +151,8 @@ impl FnType {
             t.unbind_tvars()
         }
         rtype.unbind_tvars();
-        for (tv, tc) in constraints.read().iter() {
+        for (tv, _) in constraints.read().iter() {
             tv.unbind();
-            tc.unbind_tvars()
         }
         throws.unbind_tvars();
     }
@@ -474,14 +473,20 @@ impl FnType {
         Ok(())
     }
 
-    pub fn sig_matches(&self, impl_fn: &Self) -> Result<()> {
-        self.sig_matches_int(impl_fn, &mut LPooled::take())
+    pub fn sig_matches<R: Rt, E: UserEvent>(
+        &self,
+        env: &Env<R, E>,
+        impl_fn: &Self,
+    ) -> Result<()> {
+        self.sig_matches_int(env, impl_fn, &mut LPooled::take(), &mut LPooled::take())
     }
 
-    pub(super) fn sig_matches_int(
+    pub(super) fn sig_matches_int<R: Rt, E: UserEvent>(
         &self,
+        env: &Env<R, E>,
         impl_fn: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
+        hist: &mut FxHashSet<(usize, usize)>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
@@ -518,14 +523,14 @@ impl FnType {
             }
             sig_arg
                 .typ
-                .sig_matches_int(&impl_arg.typ, tvar_map)
+                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
                 .with_context(|| format!("in argument {i}"))?;
         }
         match (sig_vargs, impl_vargs) {
             (None, None) => (),
             (Some(sig_va), Some(impl_va)) => {
                 sig_va
-                    .sig_matches_int(impl_va, tvar_map)
+                    .sig_matches_int(env, impl_va, tvar_map, hist)
                     .context("in variadic argument")?;
             }
             (None, Some(_)) => {
@@ -535,8 +540,12 @@ impl FnType {
                 bail!("signature has variadic args but implementation does not")
             }
         }
-        sig_rtype.sig_matches_int(impl_rtype, tvar_map).context("in return type")?;
-        sig_throws.sig_matches_int(impl_throws, tvar_map).context("in throws clause")?;
+        sig_rtype
+            .sig_matches_int(env, impl_rtype, tvar_map, hist)
+            .context("in return type")?;
+        sig_throws
+            .sig_matches_int(env, impl_throws, tvar_map, hist)
+            .context("in throws clause")?;
         let sig_cons = sig_constraints.read();
         let impl_cons = impl_constraints.read();
         for (sig_tv, sig_tc) in sig_cons.iter() {
@@ -548,10 +557,10 @@ impl FnType {
             }
         }
         for (impl_tv, impl_tc) in impl_cons.iter() {
-            match tvar_map.get(&impl_tv.canonical_addr()).cloned() {
+            match tvar_map.get(&impl_tv.inner_addr()).cloned() {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {
-                    sig_type.sig_matches_int(impl_tc, tvar_map).with_context(|| {
+                    sig_type.sig_matches_int(env, impl_tc, tvar_map, hist).with_context(|| {
                         format!(
                             "signature has concrete type {sig_type}, implementation constraint is {impl_tc}"
                         )

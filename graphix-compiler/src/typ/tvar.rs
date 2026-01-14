@@ -222,9 +222,7 @@ impl TVar {
         Arc::as_ptr(&self.0).addr()
     }
 
-    /// Returns the address of the inner typ Arc, which is shared between aliased TVars.
-    /// This should be used for identifying TVars that represent the same logical type variable.
-    pub(super) fn canonical_addr(&self) -> usize {
+    pub(super) fn inner_addr(&self) -> usize {
         Arc::as_ptr(&self.read().typ).addr()
     }
 }

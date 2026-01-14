@@ -416,7 +416,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
                 .typ
                 .with_deref(|t| t.cloned())
                 .unwrap_or(Type::Bottom)
-                .scope_refs(&self.def.scope.lexical);
+                .scope_refs(&self.def.scope.lexical)
+                .normalize();
             wrap!(self, ftyp.throws.check_contains(&ctx.env, &inferred_throws))?;
             ftyp.constrain_known();
             Ok(())
