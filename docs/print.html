@@ -1582,7 +1582,8 @@ flags you can change the compilers behavior in this respect.</p>
 <h2 id="the--operator-aka-or-never"><a class="header" href="#the--operator-aka-or-never">The $ Operator, aka Or Never</a></h2>
 <p>The <code>$</code> operator goes in the same position as <code>?</code>, and is best described as "or
 never". If the expression on it's left is a non error, then <code>$</code> doesn't do
-anything, otherwise it returns nothing. This is a concise way of writing,</p>
+anything, otherwise it logs the error at the <code>warn!</code> log level and returns
+nothing. This is a concise way of writing,</p>
 <pre><code class="language-graphix">select might_fail(1, 2, 3) {
   error as _ =&gt; never(),
   v =&gt; v
@@ -1591,8 +1592,8 @@ anything, otherwise it returns nothing. This is a concise way of writing,</p>
 <p>can instead be written as,</p>
 <pre><code class="language-graphix">might_fail(1, 2, 3)$
 </code></pre>
-<p>The <code>$</code> operator should be used cautiously, as it silently ignores
-errors, however often it is useful.</p>
+<p>The <code>$</code> operator logs errors rather than silently discarding them, making it
+easier to debug issues while still allowing execution to continue.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="functions-1"><a class="header" href="#functions-1">Functions</a></h1>
 <p>Functions are first class values. They can be stored in variables, in data
 structures, and they can be passed around to other functions. Etc. They are

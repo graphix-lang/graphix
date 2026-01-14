@@ -123,7 +123,8 @@ flags you can change the compilers behavior in this respect.
 
 The `$` operator goes in the same position as `?`, and is best described as "or
 never". If the expression on it's left is a non error, then `$` doesn't do
-anything, otherwise it returns nothing. This is a concise way of writing,
+anything, otherwise it logs the error at the `warn!` log level and returns
+nothing. This is a concise way of writing,
 
 ```graphix
 select might_fail(1, 2, 3) {
@@ -138,5 +139,5 @@ can instead be written as,
 might_fail(1, 2, 3)$
 ```
 
-The `$` operator should be used cautiously, as it silently ignores
-errors, however often it is useful.
+The `$` operator logs errors rather than silently discarding them, making it
+easier to debug issues while still allowing execution to continue.
