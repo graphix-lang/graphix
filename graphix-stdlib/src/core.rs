@@ -913,7 +913,7 @@ struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "never";
-    deftype!("core", "fn(@args: Any) -> _");
+    deftype!("core", "fn(@args: Any) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Never)))

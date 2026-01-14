@@ -355,7 +355,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
                 args: Arc::from_iter([]),
                 constraints: Arc::new(RwLock::new(LPooled::take())),
                 rtype: Type::Bottom,
-                throws: Arc::new(RwLock::new(Type::Bottom)),
+                throws: Type::Bottom,
                 vargs: None,
                 explicit_throws: false,
             })

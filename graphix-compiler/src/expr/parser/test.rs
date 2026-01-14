@@ -979,7 +979,7 @@ fn labeled_argument_lambda() {
             ]),
             vargs: None,
             rtype: Type::Primitive(Typ::String.into()),
-            throws: Arc::new(RwLock::new(Type::Bottom)),
+            throws: Type::Bottom,
             explicit_throws: false,
             constraints: Arc::new(RwLock::new(LPooled::take())),
         }))),

@@ -280,7 +280,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                         typ,
                     });
                     let explicit_throws = throws.is_some();
-                    let throws = Arc::new(RwLock::new(throws.unwrap_or(Type::Bottom)));
+                    let throws = throws.unwrap_or(Type::Bottom);
                     Type::Fn(Arc::new(FnType {
                         args: Arc::from_iter(args),
                         vargs,

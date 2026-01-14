@@ -8,7 +8,7 @@ use crate::{
     typ::{ContainsFlags, TVar, Type},
     Rt, UserEvent,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use fxhash::FxHashMap;
@@ -33,7 +33,7 @@ pub struct FnType {
     pub vargs: Option<Type>,
     pub rtype: Type,
     pub constraints: Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>,
-    pub throws: Arc<RwLock<Type>>,
+    pub throws: Type,
     pub explicit_throws: bool,
 }
 
@@ -59,7 +59,7 @@ impl PartialEq for FnType {
             && vargs0 == vargs1
             && rtype0 == rtype1
             && &*constraints0.read() == &*constraints1.read()
-            && &*th0.read() == &*th1.read()
+            && th0 == th1
     }
 }
 
@@ -89,7 +89,7 @@ impl PartialOrd for FnType {
                 Some(Ordering::Equal) => match rtype0.partial_cmp(rtype1) {
                     Some(Ordering::Equal) => {
                         match constraints0.read().partial_cmp(&*constraints1.read()) {
-                            Some(Ordering::Equal) => th0.read().partial_cmp(&*th1.read()),
+                            Some(Ordering::Equal) => th0.partial_cmp(th1),
                             r => r,
                         }
                     }
@@ -137,7 +137,7 @@ impl FnType {
                 .map(|(tv, t)| (tv.clone(), t.normalize()))
                 .collect(),
         ));
-        let throws = Arc::new(RwLock::new(throws.read().normalize()));
+        let throws = throws.normalize();
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -155,7 +155,7 @@ impl FnType {
             tv.unbind();
             tc.unbind_tvars()
         }
-        throws.read().unbind_tvars();
+        throws.unbind_tvars();
     }
 
     pub fn constrain_known(&self) {
@@ -190,7 +190,7 @@ impl FnType {
                 .map(|(tv, tc)| (TVar::empty_named(tv.name.clone()), tc.reset_tvars()))
                 .collect(),
         ));
-        let throws = Arc::new(RwLock::new(throws.read().reset_tvars()));
+        let throws = throws.reset_tvars();
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -204,7 +204,7 @@ impl FnType {
         let vargs = vargs.as_ref().map(|t| t.replace_tvars(known));
         let rtype = rtype.replace_tvars(known);
         let constraints = constraints.clone();
-        let throws = Arc::new(RwLock::new(throws.read().replace_tvars(known)));
+        let throws = throws.replace_tvars(known);
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -233,7 +233,7 @@ impl FnType {
         }));
         let vargs = vargs.as_ref().map(|t| t.replace_tvars(&known));
         let rtype = rtype.replace_tvars(&known);
-        let throws = Arc::new(RwLock::new(throws.read().replace_tvars(&known)));
+        let throws = throws.replace_tvars(&known);
         let explicit_throws = *explicit_throws;
         Self { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -247,7 +247,7 @@ impl FnType {
                 .read()
                 .iter()
                 .any(|(tv, tc)| tv.read().typ.read().is_none() || tc.has_unbound())
-            || throws.read().has_unbound()
+            || throws.has_unbound()
     }
 
     pub fn bind_as(&self, t: &Type) {
@@ -267,7 +267,7 @@ impl FnType {
             }
             tc.bind_as(t)
         }
-        throws.read().bind_as(t);
+        throws.bind_as(t);
     }
 
     pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
@@ -283,7 +283,7 @@ impl FnType {
             Type::TVar(tv.clone()).alias_tvars(known);
             tc.alias_tvars(known);
         }
-        throws.read().alias_tvars(known);
+        throws.alias_tvars(known);
     }
 
     pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
@@ -299,7 +299,7 @@ impl FnType {
             Type::TVar(tv.clone()).collect_tvars(known);
             tc.collect_tvars(known);
         }
-        throws.read().collect_tvars(known);
+        throws.collect_tvars(known);
     }
 
     pub fn contains<R: Rt, E: UserEvent>(
@@ -396,7 +396,7 @@ impl FnType {
                 })
                 .collect::<Result<AndAc>>()?
                 .0
-            && self.throws.read().contains_int(flags, env, hist, &t.throws.read())?)
+            && self.throws.contains_int(flags, env, hist, &t.throws)?)
     }
 
     pub fn check_contains<R: Rt, E: UserEvent>(
@@ -410,9 +410,9 @@ impl FnType {
         Ok(())
     }
 
-    /// Return true if function signatures match. This is contains,
+    /// Return true if function signatures are contained. This is contains,
     /// but does not allow labeled argument subtyping.
-    pub fn sigmatch<R: Rt, E: UserEvent>(
+    pub fn sig_contains<R: Rt, E: UserEvent>(
         &self,
         env: &Env<R, E>,
         other: &Self,
@@ -460,16 +460,104 @@ impl FnType {
                 .map(|(tv, tc)| tc.contains(env, &Type::TVar(tv.clone())))
                 .collect::<Result<AndAc>>()?
                 .0
-            && tr0.read().contains(env, &tr1.read())?)
+            && tr0.contains(env, tr1)?)
     }
 
-    pub fn check_sigmatch<R: Rt, E: UserEvent>(
+    pub fn check_sig_contains<R: Rt, E: UserEvent>(
         &self,
         env: &Env<R, E>,
         other: &Self,
     ) -> Result<()> {
-        if !self.sigmatch(env, other)? {
-            bail!("Fn signatures do not match {self} does not match {other}")
+        if !self.sig_contains(env, other)? {
+            bail!("Fn signature {self} does not contain {other}")
+        }
+        Ok(())
+    }
+
+    pub fn sig_matches(&self, impl_fn: &Self) -> Result<()> {
+        self.sig_matches_int(impl_fn, &mut LPooled::take())
+    }
+
+    pub(super) fn sig_matches_int(
+        &self,
+        impl_fn: &Self,
+        tvar_map: &mut FxHashMap<usize, Type>,
+    ) -> Result<()> {
+        let Self {
+            args: sig_args,
+            vargs: sig_vargs,
+            rtype: sig_rtype,
+            constraints: sig_constraints,
+            throws: sig_throws,
+            explicit_throws: _,
+        } = self;
+        let Self {
+            args: impl_args,
+            vargs: impl_vargs,
+            rtype: impl_rtype,
+            constraints: impl_constraints,
+            throws: impl_throws,
+            explicit_throws: _,
+        } = impl_fn;
+        if sig_args.len() != impl_args.len() {
+            bail!(
+                "argument count mismatch: signature has {}, implementation has {}",
+                sig_args.len(),
+                impl_args.len()
+            );
+        }
+        for (i, (sig_arg, impl_arg)) in sig_args.iter().zip(impl_args.iter()).enumerate()
+        {
+            if sig_arg.label != impl_arg.label {
+                bail!(
+                    "argument {} label mismatch: signature has {:?}, implementation has {:?}",
+                    i,
+                    sig_arg.label,
+                    impl_arg.label
+                );
+            }
+            sig_arg
+                .typ
+                .sig_matches_int(&impl_arg.typ, tvar_map)
+                .with_context(|| format!("in argument {i}"))?;
+        }
+        match (sig_vargs, impl_vargs) {
+            (None, None) => (),
+            (Some(sig_va), Some(impl_va)) => {
+                sig_va
+                    .sig_matches_int(impl_va, tvar_map)
+                    .context("in variadic argument")?;
+            }
+            (None, Some(_)) => {
+                bail!("signature has no variadic args but implementation does")
+            }
+            (Some(_), None) => {
+                bail!("signature has variadic args but implementation does not")
+            }
+        }
+        sig_rtype.sig_matches_int(impl_rtype, tvar_map).context("in return type")?;
+        sig_throws.sig_matches_int(impl_throws, tvar_map).context("in throws clause")?;
+        let sig_cons = sig_constraints.read();
+        let impl_cons = impl_constraints.read();
+        for (sig_tv, sig_tc) in sig_cons.iter() {
+            if !impl_cons
+                .iter()
+                .any(|(impl_tv, impl_tc)| sig_tv == impl_tv && sig_tc == impl_tc)
+            {
+                bail!("missing constraint {sig_tv}: {sig_tc} in implementation")
+            }
+        }
+        for (impl_tv, impl_tc) in impl_cons.iter() {
+            match tvar_map.get(&impl_tv.canonical_addr()).cloned() {
+                None | Some(Type::TVar(_)) => (),
+                Some(sig_type) => {
+                    sig_type.sig_matches_int(impl_tc, tvar_map).with_context(|| {
+                        format!(
+                            "signature has concrete type {sig_type}, implementation constraint is {impl_tc}"
+                        )
+                    })?;
+                }
+            }
         }
         Ok(())
     }
@@ -509,7 +597,7 @@ impl FnType {
             let tc = tc.scope_refs(scope);
             cres.push((tv, tc));
         }
-        let throws = Arc::new(RwLock::new(self.throws.read().scope_refs(scope)));
+        let throws = self.throws.scope_refs(scope);
         FnType {
             args,
             rtype,
@@ -558,7 +646,7 @@ impl fmt::Display for FnType {
             },
             t => write!(f, ") -> {t}")?,
         }
-        match &*self.throws.read() {
+        match &self.throws {
             Type::Bottom => Ok(()),
             Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
             t => write!(f, " throws {t}"),
@@ -629,7 +717,7 @@ impl PrettyDisplay for FnType {
                 t.fmt_pretty(buf)?;
             }
         }
-        match &*self.throws.read() {
+        match &self.throws {
             Type::Bottom if !self.explicit_throws => Ok(()),
             Type::TVar(tv)
                 if *tv.read().typ.read() == Some(Type::Bottom)

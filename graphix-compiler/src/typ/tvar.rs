@@ -48,7 +48,7 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
                     Arc::as_ptr(&a.0.read().typ).addr() == addr
                         || would_cycle_inner(addr, &a.1)
                 })
-                || would_cycle_inner(addr, &*throws.read())
+                || would_cycle_inner(addr, &throws)
         }
     }
 }
@@ -220,5 +220,11 @@ impl TVar {
 
     pub(super) fn addr(&self) -> usize {
         Arc::as_ptr(&self.0).addr()
+    }
+
+    /// Returns the address of the inner typ Arc, which is shared between aliased TVars.
+    /// This should be used for identifying TVars that represent the same logical type variable.
+    pub(super) fn canonical_addr(&self) -> usize {
+        Arc::as_ptr(&self.read().typ).addr()
     }
 }

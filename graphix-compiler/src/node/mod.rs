@@ -742,9 +742,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
-        let typ =
-            Type::Set(Arc::from_iter(n.iter().map(|n| n.typ().clone()))).normalize();
-        Ok(Box::new(Self { spec, typ, n }))
+        Ok(Box::new(Self { spec, typ: Type::empty_tvar(), n }))
     }
 }
 
@@ -780,12 +778,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck(ctx))?
         }
-        let rtyp = Type::Primitive(BitFlags::empty());
+        let rtyp = Type::Bottom;
         let rtyp = wrap!(
             self,
-            self.n.iter().fold(Ok(rtyp), |rtype, n| n.typ().union(&ctx.env, &rtype?))
+            self.n.iter().fold(Ok(rtyp), |rtype, n| rtype?.union(&ctx.env, n.typ()))
         )?;
-        Ok(self.typ.check_contains(&ctx.env, &rtyp)?)
+        let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
+        self.typ.check_contains(&ctx.env, &rtyp)?;
+        Ok(())
     }
 }
 

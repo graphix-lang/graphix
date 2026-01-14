@@ -186,7 +186,6 @@ pub(crate) struct Lambda<R: Rt, E: UserEvent> {
     def: SArc<LambdaDef<R, E>>,
     flags: BitFlags<CFlag>,
     typ: Type,
-    scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Lambda<R, E> {
@@ -267,9 +266,7 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                 };
                 let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
                 let explicit_throws = throws.is_some();
-                let throws = Arc::new(RwLock::new(
-                    throws.clone().unwrap_or_else(|| Type::empty_tvar()),
-                ));
+                let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
                 Arc::new(FnType {
                     constraints,
                     args,
@@ -340,17 +337,16 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                 },
             })
         });
-        let def =
-            SArc::new(LambdaDef { id, typ: typ.clone(), env, argspec, init, scope });
-        ctx.env.lambdas.insert_cow(id, SArc::downgrade(&def));
-        Ok(Box::new(Self {
-            spec,
-            def,
-            typ: Type::Fn(typ),
-            top_id,
-            flags,
+        let def = SArc::new(LambdaDef {
+            id,
+            typ: typ.clone(),
+            env,
+            argspec,
+            init,
             scope: original_scope,
-        }))
+        });
+        ctx.env.lambdas.insert_cow(id, SArc::downgrade(&def));
+        Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
     }
 }
 
@@ -419,19 +415,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
             let inferred_throws = ctx.env.by_id[&faux_id]
                 .typ
                 .with_deref(|t| t.cloned())
-                .unwrap_or(Type::Bottom);
-            wrap!(self, ftyp.throws.read().check_contains(&ctx.env, &inferred_throws))?;
-            if !ftyp.explicit_throws {
-                let mut throws = ftyp.throws.write();
-                let typ = match &*throws {
-                    Type::TVar(tv) => match &*tv.read().typ.read() {
-                        None | Some(Type::Bottom) => Type::Bottom,
-                        Some(t) => t.clone(),
-                    },
-                    t => t.clone(),
-                };
-                *throws = typ.scope_refs(&self.scope.lexical);
-            }
+                .unwrap_or(Type::Bottom)
+                .scope_refs(&self.def.scope.lexical);
+            wrap!(self, ftyp.throws.check_contains(&ctx.env, &inferred_throws))?;
             ftyp.constrain_known();
             Ok(())
         });

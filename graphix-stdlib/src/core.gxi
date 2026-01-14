@@ -109,7 +109,7 @@ val queue: fn(#clock:Any, 'a) -> 'a;
 val hold: fn(#clock:Any, 'a) -> 'a;
 
 /// ignore updates to any argument and never return anything
-val never: fn(@args: Any) -> _;
+val never: fn(@args: Any) -> 'a;
 
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink

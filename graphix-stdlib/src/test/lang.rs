@@ -1541,8 +1541,8 @@ const DYNAMIC_MODULE0: &str = r#"
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
-            val add: fn(i64) -> i64;
-            val sub: fn(i64) -> i64;
+            val add: fn(i64) -> i64 throws Error<ErrChain<`ArithError(string)>>;
+            val sub: fn(i64) -> i64 throws Error<ErrChain<`ArithError(string)>>;
             val cfg: Array<i64>
         };
         source cast<string>(net::subscribe("/local/foo")$)$
@@ -1596,7 +1596,7 @@ const DYNAMIC_MODULE2: &str = r#"
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
-            val add: fn(i64) -> i64
+            val add: fn<'a: Number>('a) -> 'a throws Error<ErrChain<`ArithError(string)>>
         };
         source cast<string>(net::subscribe("/local/foo"))
     };

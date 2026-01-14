@@ -103,13 +103,13 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            if &proxy_bind.typ != bind.typ() {
-                bail!(
+            proxy_bind.typ.sig_matches(bind.typ()).with_context(|| {
+                format!(
                     "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
                     proxy_bind.typ,
                     bind.typ()
                 )
-            }
+            })?;
             proxy.insert(id, *proxy_id);
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
