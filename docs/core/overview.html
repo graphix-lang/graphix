@@ -193,8 +193,8 @@
 count &lt;- timer ~ (count + 1)
 </code></pre>
 <p>You're telling Graphix: "When <code>timer</code> updates, increment <code>count</code> for the next cycle." Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. It's also the only looping construct in Graphix—there's no <code>for</code> or <code>while</code>, just connect and select working together.</p>
-<h2 id="select-pattern-matching-with-power"><a class="header" href="#select-pattern-matching-with-power">Select: Pattern Matching with Power</a></h2>
-<p>The <code>select</code> expression is Graphix's answer to <code>switch</code>, <code>match</code>, and <code>if/else</code>—but much more powerful. It lets you match on types, destructure complex data, and ensure at compile time that you've handled every case.</p>
+<h2 id="select-powerful-pattern-matching"><a class="header" href="#select-powerful-pattern-matching">Select: Powerful Pattern Matching</a></h2>
+<p>The <code>select</code> expression is Graphix's answer to <code>switch</code>, <code>match</code>, and <code>if/else</code>. It lets you match on types, destructure complex data, and ensure at compile time that you've handled every case.</p>
 <p><strong><a href="./select.html">Select</a></strong> shows you how to:</p>
 <ul>
 <li>Match on union types and ensure you handle all variants</li>

@@ -336,7 +336,11 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         match self.n.update(ctx, event) {
-            None | Some(Value::Error(_)) => None,
+            None => None,
+            Some(Value::Error(e)) => {
+                log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos);
+                None
+            }
             Some(v) => Some(v),
         }
     }

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Inline Modules - The Graphix Programming Language</title>
+        <title>Implementation Files - The Graphix Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -175,20 +175,127 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="inline-modules"><a class="header" href="#inline-modules">Inline Modules</a></h1>
-<p>In a single file, you can define modules inline. Expressions in modules are semi
-colon separated. expressions defined in a module may be referred to directly
-e.g. <code>m::name</code> or by bringing the module into scope with <code>use m</code>.</p>
-<pre><code class="language-graphix">mod m {
-  let hello = "hello world";
-  let goodbye = "goodbye world"
-};
+                        <h1 id="implementation-files"><a class="header" href="#implementation-files">Implementation Files</a></h1>
+<p>Module implementations are stored in <code>.gx</code> files. A module may be defined in
+either a file or by a value in netidx.</p>
+<p>For files, the file name must end in <code>.gx</code> and the part before that is the name
+of the module. For example a file <code>m.gx</code> contains the expressions defining the
+module <code>m</code>. The name of the module is taken from the filename.</p>
+<p>Modules may optionally have an interface file (<code>.gxi</code>) that defines their public
+API. See <a href="./interfaces.html">Interface Files</a> for details.</p>
+<p>In netidx, the naming convention is the same as for files: implementations end
+in <code>.gx</code> and interfaces end in <code>.gxi</code>. For example, to publish a module named
+<code>strops</code>, you would publish the implementation at <code>/libs/graphix/strops.gx</code> and
+optionally the interface at <code>/libs/graphix/strops.gxi</code>.</p>
+<p>Here is a simple example,</p>
+<pre><code>$ ls
+m.gx  test.gx
+</code></pre>
+<p><code>test.gx</code> is the program that we will run, <code>m.gx</code> is a module it will load.</p>
+<p><code>test.gx</code></p>
+<pre><code class="language-graphix">mod m;
 
-"we say [m::hello] followed by [m::goodbye]"
+m::hello
+</code></pre>
+<p><code>m.gx</code></p>
+<pre><code class="language-graphix">let hello = "hello world"
 </code></pre>
 <p>running this we get,</p>
 <pre><code>$ graphix test.gx
-"we say hello world followed by goodbye world"
+"hello world"
+</code></pre>
+<h2 id="module-load-path"><a class="header" href="#module-load-path">Module Load Path</a></h2>
+<p>The graphix shell reads the <code>GRAPHIX_MODPATH</code> environment variable at startup
+and appends it's contents to the built in list of module paths. The syntax is a
+comma separated list of paths. Paths that start with <code>netidx:</code> are netidx paths,
+otherwise file paths are expected. The comma separator can be escaped with <code>\</code>.
+For example,</p>
+<pre><code>GRAPHIX_MODPATH=netidx:/foo,/home/user/graphix-modules,/very/str\,ange/path
+</code></pre>
+<p>would add</p>
+<ul>
+<li>netidx:/foo</li>
+<li>/home/user/graphix-modules</li>
+<li>/very/str,ange/path</li>
+</ul>
+<p>to the Graphix module path</p>
+<h3 id="default-module-path"><a class="header" href="#default-module-path">Default Module Path</a></h3>
+<p>By default the module resolve path has several entries,</p>
+<ul>
+<li>
+<p>the parent directory of the program file passed on the command line. e.g. if
+we are running <code>/home/user/test.gx</code> then Graphix will look for modules in
+<code>/home/user</code></p>
+</li>
+<li>
+<p>the Graphix init directory. This is a platform specific directory where you
+can put Graphix modules.</p>
+<ul>
+<li>On Linux <code>~/.local/share/graphix</code></li>
+<li>On Windows <code>%APPDATA%\Roaming\graphix</code></li>
+<li>On Mac OS <code>~/Library/Application Support/graphix</code></li>
+</ul>
+</li>
+</ul>
+<p>In REPL mode, which is when it's given no argument, the <code>graphix</code> command will
+try to load the module <code>init</code>. If no such module exists it will silently carry
+on. You can use this to load commonly used utilities in the repl automatically.</p>
+<h2 id="modules-in-netidx"><a class="header" href="#modules-in-netidx">Modules in Netidx</a></h2>
+<p>We can publish the same code as the files example in netidx and use it in
+Graphix directly. First lets publish it,</p>
+<pre><code>$ printf \
+  "/local/graphix/test.gx|string|%s\n/local/graphix/m.gx|string|%s" \
+  "$(tr \n ' ' &lt;test.gx)" "$(tr \n ' ' &lt;m.gx)" \
+  | netidx publisher
+</code></pre>
+<p>Graphix doesn't care about whitespaces like newline, so we can just translate
+them to spaces to avoid confusing the command line publisher. Lets see if we
+published successfully.</p>
+<pre><code>$ netidx subscriber /local/graphix/test.gx
+/local/graphix/test.gx|string|"mod m;  m::hello"
+</code></pre>
+<p>Looks good, now lets run the code. We need to add to the resolve path to tell
+the Graphix shell where it should look for modules.</p>
+<pre><code>$ GRAPHIX_MODPATH=netidx:/local/graphix graphix test
+"hello world"
+</code></pre>
+<h2 id="module-hierarchies"><a class="header" href="#module-hierarchies">Module Hierarchies</a></h2>
+<p>Module hierarchies can be created using directories. To create <code>m::n</code> you would
+create a directory <code>m</code> and in it a file called <code>mod.gx</code> and a file called <code>n.gx</code>.
+Optionally, you can add interface files (<code>mod.gxi</code>, <code>n.gxi</code>) to define the public
+API of each module.</p>
+<pre><code>$ find .
+.
+./m
+./m/mod.gx
+./m/mod.gxi   # optional interface for module m
+./m/n.gx
+./m/n.gxi     # optional interface for module n
+./test.gx
+</code></pre>
+<p><code>test.gx</code> is the root of the hierarchy</p>
+<pre><code class="language-graphix">mod m;
+
+m::n::hello
+</code></pre>
+<p><code>m/mod.gx</code> is the root of module <code>m</code></p>
+<pre><code class="language-graphix">mod n
+</code></pre>
+<p><code>m/n.gx</code> is the <code>m::n</code> module</p>
+<pre><code class="language-graphix">let hello = "hello world"
+</code></pre>
+<p>if we run the program we get,</p>
+<pre><code>$ graphix test.gx
+"hello world"
+</code></pre>
+<h2 id="module-hierarchies-in-netidx"><a class="header" href="#module-hierarchies-in-netidx">Module Hierarchies in Netidx</a></h2>
+<p>Module hierarchies in netidx work the same as in the file system. To replicate
+the above example we'd publish,</p>
+<pre><code>/lib/graphix/test.gx     &lt;- the contents of test.gx
+/lib/graphix/m/mod.gx    &lt;- the contents of m/mod.gx
+/lib/graphix/m/mod.gxi   &lt;- the contents of m/mod.gxi (optional)
+/lib/graphix/m/n.gx      &lt;- the contents of m/n.gx
+/lib/graphix/m/n.gxi     &lt;- the contents of m/n.gxi (optional)
 </code></pre>
 
                     </main>
@@ -199,7 +306,7 @@ e.g. <code>m::name</code> or by bringing the module into scope with <code>use m<
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../modules/external.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../modules/interfaces.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -213,7 +320,7 @@ e.g. <code>m::name</code> or by bringing the module into scope with <code>use m<
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../modules/external.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../modules/interfaces.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

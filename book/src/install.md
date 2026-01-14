@@ -29,14 +29,10 @@ You need to install
 
 ## Netidx
 
-Graphix uses netidx to import and export data streams. So it is
-recommended that you set up at least a machine local installation of
-netidx when installing Graphix. Otherwise separate Graphix processes
-won't be able to communicate with each other and it will be difficult
-to get any data into Graphix.
+Graphix uses netidx to import and export data streams. Netidx works with zero
+configuration for local use on a single machine - separate Graphix processes can
+communicate with each other out of the box.
 
-See [here](https://netidx.github.io/netidx-book) for details
-
-If you don't want to set up netidx Graphix will still work, it just
-won't be able to use the net module to send anything outside the
-current process.
+For more advanced setups involving multiple machines, authentication, or custom
+resolver configurations, see the [netidx book](https://netidx.github.io/netidx-book)
+for details on setting up a netidx environment.

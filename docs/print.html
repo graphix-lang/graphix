@@ -259,15 +259,12 @@ as long as you have the prerequisites for rust installed.</p>
 <li>krb5-devel</li>
 </ul>
 <h2 id="netidx"><a class="header" href="#netidx">Netidx</a></h2>
-<p>Graphix uses netidx to import and export data streams. So it is
-recommended that you set up at least a machine local installation of
-netidx when installing Graphix. Otherwise separate Graphix processes
-won't be able to communicate with each other and it will be difficult
-to get any data into Graphix.</p>
-<p>See <a href="https://netidx.github.io/netidx-book">here</a> for details</p>
-<p>If you don't want to set up netidx Graphix will still work, it just
-won't be able to use the net module to send anything outside the
-current process.</p>
+<p>Graphix uses netidx to import and export data streams. Netidx works with zero
+configuration for local use on a single machine - separate Graphix processes can
+communicate with each other out of the box.</p>
+<p>For more advanced setups involving multiple machines, authentication, or custom
+resolver configurations, see the <a href="https://netidx.github.io/netidx-book">netidx book</a>
+for details on setting up a netidx environment.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
 <p>Welcome to Graphix! This tutorial will get you up and running in about 10-15 minutes. You'll learn how to use the interactive REPL, write your first expressions, and create a simple reactive program.</p>
 <p>By the end of this guide, you'll understand the basics of Graphix's reactive dataflow model and be ready to explore the language in depth.</p>
@@ -453,8 +450,8 @@ count &lt;- timer ~ (count + 1);
 count &lt;- timer ~ (count + 1)
 </code></pre>
 <p>You're telling Graphix: "When <code>timer</code> updates, increment <code>count</code> for the next cycle." Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. It's also the only looping construct in Graphix—there's no <code>for</code> or <code>while</code>, just connect and select working together.</p>
-<h2 id="select-pattern-matching-with-power"><a class="header" href="#select-pattern-matching-with-power">Select: Pattern Matching with Power</a></h2>
-<p>The <code>select</code> expression is Graphix's answer to <code>switch</code>, <code>match</code>, and <code>if/else</code>—but much more powerful. It lets you match on types, destructure complex data, and ensure at compile time that you've handled every case.</p>
+<h2 id="select-powerful-pattern-matching"><a class="header" href="#select-powerful-pattern-matching">Select: Powerful Pattern Matching</a></h2>
+<p>The <code>select</code> expression is Graphix's answer to <code>switch</code>, <code>match</code>, and <code>if/else</code>. It lets you match on types, destructure complex data, and ensure at compile time that you've handled every case.</p>
 <p><strong><a href="core/./select.html">Select</a></strong> shows you how to:</p>
 <ul>
 <li>Match on union types and ensure you handle all variants</li>
@@ -2334,50 +2331,31 @@ println("[v]")
 <p>We were able to pass <code>v</code> into <code>f</code> by reference and it was able to update it,
 even though the original bind of <code>v</code> isn't even in a scope that <code>f</code> can see.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
-<p>Graphix has a simple module system, with the minimal required functionality
-necessary to organize code into a project.</p>
-<p>The module system should be considered a work in progress, more features may be
-added in the future. In particular there are a few unfinished parts,</p>
-<ul>
-<li>no module renaming on use</li>
-<li>no access control, everything in a module is currently public</li>
-</ul>
-<p>These shortcomings may be fixed in a future release. Current features include,</p>
+<p>Graphix has a module system for organizing code into projects and controlling
+what parts of a module are publicly accessible.</p>
+<p>Current features include:</p>
 <ul>
 <li>module hierarchies</li>
-<li>inline modules (defined in the same file)</li>
-<li>modules defined in external files</li>
-<li>modules defined in netidx</li>
+<li>implementation files (<code>.gx</code>) for module code</li>
+<li>interface files (<code>.gxi</code>) for defining module APIs and controlling visibility</li>
+<li>modules stored in files or netidx</li>
 <li>modules dynamically loadable at runtime</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="inline-modules"><a class="header" href="#inline-modules">Inline Modules</a></h1>
-<p>In a single file, you can define modules inline. Expressions in modules are semi
-colon separated. expressions defined in a module may be referred to directly
-e.g. <code>m::name</code> or by bringing the module into scope with <code>use m</code>.</p>
-<pre><code class="language-graphix">mod m {
-  let hello = "hello world";
-  let goodbye = "goodbye world"
-};
-
-"we say [m::hello] followed by [m::goodbye]"
-</code></pre>
-<p>running this we get,</p>
-<pre><code>$ graphix test.gx
-"we say hello world followed by goodbye world"
-</code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="external-modules"><a class="header" href="#external-modules">External Modules</a></h1>
-<p>A simple external module may be defined in either a file or by a value in
-netidx. In the case of a file, the file name must end in <code>.gx</code> and the part
-before that is the name of the module. For example a file <code>m.gx</code> contains the
-expressions defining the module <code>m</code>. Expressions in the file do not need to be
-surrounded by a <code>mod m { ... }</code>, the name of the module is taken from the
-filename.</p>
-<p>In netidx, a string value containing Graphix source is published, and the final
-name in the path is the name of the module, no <code>.gx</code> is required for netidx
-modules. For example we might publish <code>/libs/graphix/strops</code>, the name of the
-module would be <code>strops</code>, and the resolver expects it to be a string containing
-valid Graphix code, just like a file.</p>
-<p>Here is a simple example with file modules,</p>
+<p>Note: module renaming on <code>use</code> is not yet supported but may be added in a future
+release.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="implementation-files"><a class="header" href="#implementation-files">Implementation Files</a></h1>
+<p>Module implementations are stored in <code>.gx</code> files. A module may be defined in
+either a file or by a value in netidx.</p>
+<p>For files, the file name must end in <code>.gx</code> and the part before that is the name
+of the module. For example a file <code>m.gx</code> contains the expressions defining the
+module <code>m</code>. The name of the module is taken from the filename.</p>
+<p>Modules may optionally have an interface file (<code>.gxi</code>) that defines their public
+API. See <a href="modules/./interfaces.html">Interface Files</a> for details.</p>
+<p>In netidx, the naming convention is the same as for files: implementations end
+in <code>.gx</code> and interfaces end in <code>.gxi</code>. For example, to publish a module named
+<code>strops</code>, you would publish the implementation at <code>/libs/graphix/strops.gx</code> and
+optionally the interface at <code>/libs/graphix/strops.gxi</code>.</p>
+<p>Here is a simple example,</p>
 <pre><code>$ ls
 m.gx  test.gx
 </code></pre>
@@ -2432,35 +2410,35 @@ try to load the module <code>init</code>. If no such module exists it will silen
 on. You can use this to load commonly used utilities in the repl automatically.</p>
 <h2 id="modules-in-netidx"><a class="header" href="#modules-in-netidx">Modules in Netidx</a></h2>
 <p>We can publish the same code as the files example in netidx and use it in
-Graphix directly, but we have to run it in a slightly different way, first lets
-publish it,</p>
+Graphix directly. First lets publish it,</p>
 <pre><code>$ printf \
-  "/local/graphix/test|string|%s\n/local/graphix/m|string|%s" \
+  "/local/graphix/test.gx|string|%s\n/local/graphix/m.gx|string|%s" \
   "$(tr \n ' ' &lt;test.gx)" "$(tr \n ' ' &lt;m.gx)" \
   | netidx publisher
 </code></pre>
 <p>Graphix doesn't care about whitespaces like newline, so we can just translate
 them to spaces to avoid confusing the command line publisher. Lets see if we
 published successfully.</p>
-<pre><code>$ netidx subscriber /local/graphix/test
-/local/graphix/test|string|"mod m;  m::hello"
+<pre><code>$ netidx subscriber /local/graphix/test.gx
+/local/graphix/test.gx|string|"mod m;  m::hello"
 </code></pre>
-<p>Looks good, now lets run the code. In order to do this we need to add to the
-resolve path to tell the Graphix shell where it should look for modules. We also
-don't pass a <code>.gx</code> extension, so we are telling Graphix to look for a module
-named <code>test</code> in it's configured module paths and run that.</p>
+<p>Looks good, now lets run the code. We need to add to the resolve path to tell
+the Graphix shell where it should look for modules.</p>
 <pre><code>$ GRAPHIX_MODPATH=netidx:/local/graphix graphix test
 "hello world"
 </code></pre>
 <h2 id="module-hierarchies"><a class="header" href="#module-hierarchies">Module Hierarchies</a></h2>
-<p>Module hierarchies can be created using directories, for example to create
-<code>m::n</code> you would create a directory <code>m</code> and in it a file called <code>mod.gx</code> and a
-file called <code>n.gx</code></p>
+<p>Module hierarchies can be created using directories. To create <code>m::n</code> you would
+create a directory <code>m</code> and in it a file called <code>mod.gx</code> and a file called <code>n.gx</code>.
+Optionally, you can add interface files (<code>mod.gxi</code>, <code>n.gxi</code>) to define the public
+API of each module.</p>
 <pre><code>$ find .
 .
 ./m
 ./m/mod.gx
+./m/mod.gxi   # optional interface for module m
 ./m/n.gx
+./m/n.gxi     # optional interface for module n
 ./test.gx
 </code></pre>
 <p><code>test.gx</code> is the root of the hierarchy</p>
@@ -2479,13 +2457,216 @@ m::n::hello
 "hello world"
 </code></pre>
 <h2 id="module-hierarchies-in-netidx"><a class="header" href="#module-hierarchies-in-netidx">Module Hierarchies in Netidx</a></h2>
-<p>Module hierarchies in netidx work the same as in the file system except that
-<code>mod.gx</code> is never needed because in <code>netidx</code> a value can also be a container. So
-to replicate the above example we'd publish,</p>
-<pre><code>/lib/graphix/test &lt;- the contents of test.gx
-/lib/graphix/m    &lt;- the contents of m/mod.gx
-/lib/graphix/m/n  &lt;- the contents of m/n.gx
+<p>Module hierarchies in netidx work the same as in the file system. To replicate
+the above example we'd publish,</p>
+<pre><code>/lib/graphix/test.gx     &lt;- the contents of test.gx
+/lib/graphix/m/mod.gx    &lt;- the contents of m/mod.gx
+/lib/graphix/m/mod.gxi   &lt;- the contents of m/mod.gxi (optional)
+/lib/graphix/m/n.gx      &lt;- the contents of m/n.gx
+/lib/graphix/m/n.gxi     &lt;- the contents of m/n.gxi (optional)
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="interface-files"><a class="header" href="#interface-files">Interface Files</a></h1>
+<p>Interface files (<code>.gxi</code> files) define the public API of a module. They serve a
+similar purpose to <code>.mli</code> files in OCaml or header files in C: they declare what
+a module exports without revealing the implementation details.</p>
+<h2 id="why-use-interface-files"><a class="header" href="#why-use-interface-files">Why Use Interface Files?</a></h2>
+<p>Interface files provide several benefits:</p>
+<ul>
+<li><strong>API Documentation</strong>: They serve as clear documentation of a module's public API</li>
+<li><strong>Encapsulation</strong>: Implementation details not in the interface are hidden from users</li>
+<li><strong>Type Checking</strong>: The compiler verifies that implementations match their interfaces</li>
+<li><strong>Stability</strong>: Changing internals won't break dependent code as long as the interface is preserved</li>
+</ul>
+<h2 id="file-naming-convention"><a class="header" href="#file-naming-convention">File Naming Convention</a></h2>
+<p>For a module named <code>foo</code>:</p>
+<ul>
+<li>Implementation file: <code>foo.gx</code></li>
+<li>Interface file: <code>foo.gxi</code></li>
+</ul>
+<p>For hierarchical modules using a directory:</p>
+<ul>
+<li>Implementation file: <code>foo/mod.gx</code></li>
+<li>Interface file: <code>foo/mod.gxi</code></li>
+</ul>
+<p>The interface file must be in the same directory as the implementation file.</p>
+<h2 id="interface-syntax"><a class="header" href="#interface-syntax">Interface Syntax</a></h2>
+<p>Interface files contain declarations of what the module exports. There are four
+types of declarations:</p>
+<h3 id="value-declarations-val"><a class="header" href="#value-declarations-val">Value Declarations (val)</a></h3>
+<p>Declare exported values and their types using <code>val</code>:</p>
+<pre><code class="language-graphix">val add: fn(i64, i64) -&gt; i64;
+val greeting: string;
+val config: Array&lt;i64&gt;;
+</code></pre>
+<p>The implementation must provide bindings with matching names and types.</p>
+<h3 id="type-definitions-type"><a class="header" href="#type-definitions-type">Type Definitions (type)</a></h3>
+<p>Export type definitions that users of the module can reference:</p>
+<pre><code class="language-graphix">type Color = [`Red, `Green, `Blue];
+type Point = { x: f64, y: f64 };
+type Result&lt;'a, 'e&gt; = ['a, Error&lt;'e&gt;];
+</code></pre>
+<p>Types can be polymorphic and recursive, just like in regular Graphix code.</p>
+<h3 id="module-declarations-mod"><a class="header" href="#module-declarations-mod">Module Declarations (mod)</a></h3>
+<p>Declare sub-modules that the module exports:</p>
+<pre><code class="language-graphix">mod utils;
+mod parser;
+</code></pre>
+<p>Each declared sub-module should have its own implementation file (e.g.,
+<code>utils.gx</code>) and optionally its own interface file (<code>utils.gxi</code>).</p>
+<h3 id="use-statements-use"><a class="header" href="#use-statements-use">Use Statements (use)</a></h3>
+<p>Re-export items from other modules:</p>
+<pre><code class="language-graphix">use other::module;
+</code></pre>
+<h2 id="a-complete-example"><a class="header" href="#a-complete-example">A Complete Example</a></h2>
+<p>Let's create a simple math utilities module with an interface.</p>
+<p><strong>math.gxi</strong> (interface):</p>
+<pre><code class="language-graphix">/// Add two numbers
+val add: fn(i64, i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+
+/// Subtract the second number from the first
+val sub: fn(i64, i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+
+/// Common mathematical constants
+type Constants = {
+    pi: f64,
+    e: f64
+};
+
+val constants: Constants;
+</code></pre>
+<p><strong>math.gx</strong> (implementation):</p>
+<pre><code class="language-graphix">let add = |a, b| a + b;
+let sub = |a, b| a - b;
+
+let constants = Constants {
+    pi: 3.14159265359,
+    e: 2.71828182845
+};
+
+let internal_helper = |x| x * 2
+</code></pre>
+<p>Note that the <code>Constants</code> type is defined in the interface and automatically
+available in the implementation - it doesn't need to be repeated. Also,
+<code>internal_helper</code> is not in the interface, so it is not accessible to users of
+the module.</p>
+<p><strong>main.gx</strong> (usage):</p>
+<pre><code class="language-graphix">mod math;
+
+let result = math::add(1, 2);
+let pi = math::constants.pi;
+
+// This would be an error - internal_helper is not exported:
+// math::internal_helper(5)
+</code></pre>
+<h2 id="interface-and-implementation-relationship"><a class="header" href="#interface-and-implementation-relationship">Interface and Implementation Relationship</a></h2>
+<p>When a module has an interface file:</p>
+<ol>
+<li>
+<p><strong>Type definitions, <code>mod</code> statements, and <code>use</code> statements</strong> declared in the
+interface automatically apply to the implementation. You do not need to
+duplicate them in the <code>.gx</code> file.</p>
+</li>
+<li>
+<p><strong>Value declarations (<code>val</code>)</strong> specify what bindings must exist in the
+implementation with matching types.</p>
+</li>
+<li>
+<p><strong>Extra items allowed</strong>: The implementation may contain additional items not
+in the interface; these are simply not accessible to users of the module.</p>
+</li>
+</ol>
+<p>If the implementation doesn't match the interface, you'll get a compile-time error.</p>
+<h2 id="documentation-comments"><a class="header" href="#documentation-comments">Documentation Comments</a></h2>
+<p>Interface files support documentation comments using <code>///</code>. These comments
+document the exported items and are the primary place to document your module's
+public API:</p>
+<pre><code class="language-graphix">/// Filter an array, keeping only elements where the predicate returns true.
+/// 
+/// The predicate function is called for each element. Elements for which
+/// the predicate returns true are included in the result.
+val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+</code></pre>
+<h2 id="polymorphic-functions"><a class="header" href="#polymorphic-functions">Polymorphic Functions</a></h2>
+<p>Interface files fully support polymorphic type signatures:</p>
+<pre><code class="language-graphix">/// Transform each element of an array using function f
+val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+
+/// Fold an array into a single value
+val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+</code></pre>
+<p>Type variables (like <code>'a</code>, <code>'b</code>, <code>'e</code>) work the same as in regular type
+annotations.</p>
+<h2 id="module-hierarchies-1"><a class="header" href="#module-hierarchies-1">Module Hierarchies</a></h2>
+<p>For module hierarchies, each level can have its own interface. Here's an example
+structure:</p>
+<pre><code>mylib/
+  mod.gx      # Root implementation
+  mod.gxi     # Root interface
+  utils.gx    # Sub-module implementation
+  utils.gxi   # Sub-module interface
+  parser/
+    mod.gx    # Nested module implementation
+    mod.gxi   # Nested module interface
+</code></pre>
+<p>The root interface (<code>mod.gxi</code>) declares the sub-modules:</p>
+<pre><code class="language-graphix">// mod.gxi
+type Config = { name: string, version: i64 };
+val config: Config;
+
+mod utils;
+mod parser;
+</code></pre>
+<h2 id="sub-module-visibility"><a class="header" href="#sub-module-visibility">Sub-module Visibility</a></h2>
+<p>Sub-modules can see everything in their parent that was declared before the
+<code>mod</code> statement that declared them. This includes private items not exported in
+the interface.</p>
+<p>The position of the <code>mod</code> statement controls what the sub-module can see:</p>
+<ul>
+<li>
+<p><strong>Module declared only in interface</strong>: The sub-module can see everything
+declared before the item it follows in the implementation. For example, if the
+interface has <code>val foo; mod child; val bar;</code>, and the implementation has
+<code>let foo = ...; let bar = ...;</code>, then <code>child</code> can see <code>foo</code> but not <code>bar</code>.</p>
+</li>
+<li>
+<p><strong>Module declared only in implementation</strong>: The sub-module can see everything
+declared before its <code>mod</code> statement, but it is not exported (not accessible to
+users of the parent module).</p>
+</li>
+<li>
+<p><strong>Module declared in both</strong>: The position in the implementation controls what
+the sub-module can see, while the interface declaration exports it. Use this
+for precise control over sub-module visibility.</p>
+</li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-graphix">// parent.gxi
+val public_helper: fn(i64) -&gt; i64;
+mod child;
+</code></pre>
+<pre><code class="language-graphix">// parent.gx
+let private_setup = ...;
+let public_helper = |x| x + 1;
+
+mod child;  // child can see private_setup and public_helper
+</code></pre>
+<h2 id="interfaces-with-netidx-modules"><a class="header" href="#interfaces-with-netidx-modules">Interfaces with Netidx Modules</a></h2>
+<p>Interface files also work with modules stored in netidx. The naming convention
+is the same as for files: if your module implementation is at
+<code>/libs/graphix/mymodule.gx</code>, the interface would be at
+<code>/libs/graphix/mymodule.gxi</code>.</p>
+<h2 id="interfaces-and-dynamic-modules"><a class="header" href="#interfaces-and-dynamic-modules">Interfaces and Dynamic Modules</a></h2>
+<p>Interface files work with static (file-based and netidx) modules. For dynamic
+modules loaded at runtime, use the inline <code>sig { ... }</code> syntax described in the
+<a href="modules/./dynamic.html">Dynamic Modules</a> chapter. The signature syntax in dynamic modules
+uses the same declaration forms (<code>val</code>, <code>type</code>, <code>mod</code>) as interface files.</p>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<ol>
+<li><strong>Document in interfaces</strong>: Put documentation comments in the <code>.gxi</code> file since that's what users see</li>
+<li><strong>Minimal interfaces</strong>: Only export what users need; keep implementation details private</li>
+<li><strong>Stable interfaces</strong>: Think carefully before changing an interface, as it may break dependent code</li>
+<li><strong>Type aliases</strong>: Export type aliases in the interface to give users convenient names for complex types</li>
+</ol>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="dynamic-modules"><a class="header" href="#dynamic-modules">Dynamic Modules</a></h1>
 <p>Graphix programs can dynamically load modules at runtime. The loaded code will
 be compiled, type checked, and the loader will return an error indicating any
@@ -2508,8 +2689,8 @@ net::publish(path, source)$;
 let status = mod foo dynamic {
     sandbox whitelist [core];
     sig {
-        val add: fn(i64) -&gt; i64;
-        val sub: fn(i64) -&gt; i64;
+        val add: fn(i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+        val sub: fn(i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
         val cfg: Array&lt;i64&gt;
     };
     source cast&lt;string&gt;(net::subscribe(path)$)$

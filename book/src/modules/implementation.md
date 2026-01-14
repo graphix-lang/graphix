@@ -1,19 +1,21 @@
-# External Modules
+# Implementation Files
 
-A simple external module may be defined in either a file or by a value in
-netidx. In the case of a file, the file name must end in `.gx` and the part
-before that is the name of the module. For example a file `m.gx` contains the
-expressions defining the module `m`. Expressions in the file do not need to be
-surrounded by a `mod m { ... }`, the name of the module is taken from the
-filename.
+Module implementations are stored in `.gx` files. A module may be defined in
+either a file or by a value in netidx.
 
-In netidx, a string value containing Graphix source is published, and the final
-name in the path is the name of the module, no `.gx` is required for netidx
-modules. For example we might publish `/libs/graphix/strops`, the name of the
-module would be `strops`, and the resolver expects it to be a string containing
-valid Graphix code, just like a file.
+For files, the file name must end in `.gx` and the part before that is the name
+of the module. For example a file `m.gx` contains the expressions defining the
+module `m`. The name of the module is taken from the filename.
 
-Here is a simple example with file modules,
+Modules may optionally have an interface file (`.gxi`) that defines their public
+API. See [Interface Files](./interfaces.md) for details.
+
+In netidx, the naming convention is the same as for files: implementations end
+in `.gx` and interfaces end in `.gxi`. For example, to publish a module named
+`strops`, you would publish the implementation at `/libs/graphix/strops.gx` and
+optionally the interface at `/libs/graphix/strops.gxi`.
+
+Here is a simple example,
 
 ```
 $ ls
@@ -80,12 +82,11 @@ on. You can use this to load commonly used utilities in the repl automatically.
 ## Modules in Netidx
 
 We can publish the same code as the files example in netidx and use it in
-Graphix directly, but we have to run it in a slightly different way, first lets
-publish it,
+Graphix directly. First lets publish it,
 
 ```
 $ printf \
-  "/local/graphix/test|string|%s\n/local/graphix/m|string|%s" \
+  "/local/graphix/test.gx|string|%s\n/local/graphix/m.gx|string|%s" \
   "$(tr \n ' ' <test.gx)" "$(tr \n ' ' <m.gx)" \
   | netidx publisher
 ```
@@ -95,14 +96,12 @@ them to spaces to avoid confusing the command line publisher. Lets see if we
 published successfully.
 
 ```
-$ netidx subscriber /local/graphix/test
-/local/graphix/test|string|"mod m;  m::hello"
+$ netidx subscriber /local/graphix/test.gx
+/local/graphix/test.gx|string|"mod m;  m::hello"
 ```
 
-Looks good, now lets run the code. In order to do this we need to add to the
-resolve path to tell the Graphix shell where it should look for modules. We also
-don't pass a `.gx` extension, so we are telling Graphix to look for a module
-named `test` in it's configured module paths and run that.
+Looks good, now lets run the code. We need to add to the resolve path to tell
+the Graphix shell where it should look for modules.
 
 ```
 $ GRAPHIX_MODPATH=netidx:/local/graphix graphix test
@@ -111,16 +110,19 @@ $ GRAPHIX_MODPATH=netidx:/local/graphix graphix test
 
 ## Module Hierarchies
 
-Module hierarchies can be created using directories, for example to create
-`m::n` you would create a directory `m` and in it a file called `mod.gx` and a
-file called `n.gx`
+Module hierarchies can be created using directories. To create `m::n` you would
+create a directory `m` and in it a file called `mod.gx` and a file called `n.gx`.
+Optionally, you can add interface files (`mod.gxi`, `n.gxi`) to define the public
+API of each module.
 
 ```
 $ find .
 .
 ./m
 ./m/mod.gx
+./m/mod.gxi   # optional interface for module m
 ./m/n.gx
+./m/n.gxi     # optional interface for module n
 ./test.gx
 ```
 
@@ -150,12 +152,13 @@ $ graphix test.gx
 
 ## Module Hierarchies in Netidx
 
-Module hierarchies in netidx work the same as in the file system except that
-`mod.gx` is never needed because in `netidx` a value can also be a container. So
-to replicate the above example we'd publish,
+Module hierarchies in netidx work the same as in the file system. To replicate
+the above example we'd publish,
 
 ```
-/lib/graphix/test <- the contents of test.gx
-/lib/graphix/m    <- the contents of m/mod.gx
-/lib/graphix/m/n  <- the contents of m/n.gx
+/lib/graphix/test.gx     <- the contents of test.gx
+/lib/graphix/m/mod.gx    <- the contents of m/mod.gx
+/lib/graphix/m/mod.gxi   <- the contents of m/mod.gxi (optional)
+/lib/graphix/m/n.gx      <- the contents of m/n.gx
+/lib/graphix/m/n.gxi     <- the contents of m/n.gxi (optional)
 ```

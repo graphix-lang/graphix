@@ -198,15 +198,12 @@ as long as you have the prerequisites for rust installed.</p>
 <li>krb5-devel</li>
 </ul>
 <h2 id="netidx"><a class="header" href="#netidx">Netidx</a></h2>
-<p>Graphix uses netidx to import and export data streams. So it is
-recommended that you set up at least a machine local installation of
-netidx when installing Graphix. Otherwise separate Graphix processes
-won't be able to communicate with each other and it will be difficult
-to get any data into Graphix.</p>
-<p>See <a href="https://netidx.github.io/netidx-book">here</a> for details</p>
-<p>If you don't want to set up netidx Graphix will still work, it just
-won't be able to use the net module to send anything outside the
-current process.</p>
+<p>Graphix uses netidx to import and export data streams. Netidx works with zero
+configuration for local use on a single machine - separate Graphix processes can
+communicate with each other out of the box.</p>
+<p>For more advanced setups involving multiple machines, authentication, or custom
+resolver configurations, see the <a href="https://netidx.github.io/netidx-book">netidx book</a>
+for details on setting up a netidx environment.</p>
 
                     </main>
 

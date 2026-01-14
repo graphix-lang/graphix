@@ -1,0 +1,433 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Interface Files - The Graphix Programming Language</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Graphix Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="interface-files"><a class="header" href="#interface-files">Interface Files</a></h1>
+<p>Interface files (<code>.gxi</code> files) define the public API of a module. They serve a
+similar purpose to <code>.mli</code> files in OCaml or header files in C: they declare what
+a module exports without revealing the implementation details.</p>
+<h2 id="why-use-interface-files"><a class="header" href="#why-use-interface-files">Why Use Interface Files?</a></h2>
+<p>Interface files provide several benefits:</p>
+<ul>
+<li><strong>API Documentation</strong>: They serve as clear documentation of a module's public API</li>
+<li><strong>Encapsulation</strong>: Implementation details not in the interface are hidden from users</li>
+<li><strong>Type Checking</strong>: The compiler verifies that implementations match their interfaces</li>
+<li><strong>Stability</strong>: Changing internals won't break dependent code as long as the interface is preserved</li>
+</ul>
+<h2 id="file-naming-convention"><a class="header" href="#file-naming-convention">File Naming Convention</a></h2>
+<p>For a module named <code>foo</code>:</p>
+<ul>
+<li>Implementation file: <code>foo.gx</code></li>
+<li>Interface file: <code>foo.gxi</code></li>
+</ul>
+<p>For hierarchical modules using a directory:</p>
+<ul>
+<li>Implementation file: <code>foo/mod.gx</code></li>
+<li>Interface file: <code>foo/mod.gxi</code></li>
+</ul>
+<p>The interface file must be in the same directory as the implementation file.</p>
+<h2 id="interface-syntax"><a class="header" href="#interface-syntax">Interface Syntax</a></h2>
+<p>Interface files contain declarations of what the module exports. There are four
+types of declarations:</p>
+<h3 id="value-declarations-val"><a class="header" href="#value-declarations-val">Value Declarations (val)</a></h3>
+<p>Declare exported values and their types using <code>val</code>:</p>
+<pre><code class="language-graphix">val add: fn(i64, i64) -&gt; i64;
+val greeting: string;
+val config: Array&lt;i64&gt;;
+</code></pre>
+<p>The implementation must provide bindings with matching names and types.</p>
+<h3 id="type-definitions-type"><a class="header" href="#type-definitions-type">Type Definitions (type)</a></h3>
+<p>Export type definitions that users of the module can reference:</p>
+<pre><code class="language-graphix">type Color = [`Red, `Green, `Blue];
+type Point = { x: f64, y: f64 };
+type Result&lt;'a, 'e&gt; = ['a, Error&lt;'e&gt;];
+</code></pre>
+<p>Types can be polymorphic and recursive, just like in regular Graphix code.</p>
+<h3 id="module-declarations-mod"><a class="header" href="#module-declarations-mod">Module Declarations (mod)</a></h3>
+<p>Declare sub-modules that the module exports:</p>
+<pre><code class="language-graphix">mod utils;
+mod parser;
+</code></pre>
+<p>Each declared sub-module should have its own implementation file (e.g.,
+<code>utils.gx</code>) and optionally its own interface file (<code>utils.gxi</code>).</p>
+<h3 id="use-statements-use"><a class="header" href="#use-statements-use">Use Statements (use)</a></h3>
+<p>Re-export items from other modules:</p>
+<pre><code class="language-graphix">use other::module;
+</code></pre>
+<h2 id="a-complete-example"><a class="header" href="#a-complete-example">A Complete Example</a></h2>
+<p>Let's create a simple math utilities module with an interface.</p>
+<p><strong>math.gxi</strong> (interface):</p>
+<pre><code class="language-graphix">/// Add two numbers
+val add: fn(i64, i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+
+/// Subtract the second number from the first
+val sub: fn(i64, i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+
+/// Common mathematical constants
+type Constants = {
+    pi: f64,
+    e: f64
+};
+
+val constants: Constants;
+</code></pre>
+<p><strong>math.gx</strong> (implementation):</p>
+<pre><code class="language-graphix">let add = |a, b| a + b;
+let sub = |a, b| a - b;
+
+let constants = Constants {
+    pi: 3.14159265359,
+    e: 2.71828182845
+};
+
+let internal_helper = |x| x * 2
+</code></pre>
+<p>Note that the <code>Constants</code> type is defined in the interface and automatically
+available in the implementation - it doesn't need to be repeated. Also,
+<code>internal_helper</code> is not in the interface, so it is not accessible to users of
+the module.</p>
+<p><strong>main.gx</strong> (usage):</p>
+<pre><code class="language-graphix">mod math;
+
+let result = math::add(1, 2);
+let pi = math::constants.pi;
+
+// This would be an error - internal_helper is not exported:
+// math::internal_helper(5)
+</code></pre>
+<h2 id="interface-and-implementation-relationship"><a class="header" href="#interface-and-implementation-relationship">Interface and Implementation Relationship</a></h2>
+<p>When a module has an interface file:</p>
+<ol>
+<li>
+<p><strong>Type definitions, <code>mod</code> statements, and <code>use</code> statements</strong> declared in the
+interface automatically apply to the implementation. You do not need to
+duplicate them in the <code>.gx</code> file.</p>
+</li>
+<li>
+<p><strong>Value declarations (<code>val</code>)</strong> specify what bindings must exist in the
+implementation with matching types.</p>
+</li>
+<li>
+<p><strong>Extra items allowed</strong>: The implementation may contain additional items not
+in the interface; these are simply not accessible to users of the module.</p>
+</li>
+</ol>
+<p>If the implementation doesn't match the interface, you'll get a compile-time error.</p>
+<h2 id="documentation-comments"><a class="header" href="#documentation-comments">Documentation Comments</a></h2>
+<p>Interface files support documentation comments using <code>///</code>. These comments
+document the exported items and are the primary place to document your module's
+public API:</p>
+<pre><code class="language-graphix">/// Filter an array, keeping only elements where the predicate returns true.
+/// 
+/// The predicate function is called for each element. Elements for which
+/// the predicate returns true are included in the result.
+val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+</code></pre>
+<h2 id="polymorphic-functions"><a class="header" href="#polymorphic-functions">Polymorphic Functions</a></h2>
+<p>Interface files fully support polymorphic type signatures:</p>
+<pre><code class="language-graphix">/// Transform each element of an array using function f
+val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+
+/// Fold an array into a single value
+val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+</code></pre>
+<p>Type variables (like <code>'a</code>, <code>'b</code>, <code>'e</code>) work the same as in regular type
+annotations.</p>
+<h2 id="module-hierarchies"><a class="header" href="#module-hierarchies">Module Hierarchies</a></h2>
+<p>For module hierarchies, each level can have its own interface. Here's an example
+structure:</p>
+<pre><code>mylib/
+  mod.gx      # Root implementation
+  mod.gxi     # Root interface
+  utils.gx    # Sub-module implementation
+  utils.gxi   # Sub-module interface
+  parser/
+    mod.gx    # Nested module implementation
+    mod.gxi   # Nested module interface
+</code></pre>
+<p>The root interface (<code>mod.gxi</code>) declares the sub-modules:</p>
+<pre><code class="language-graphix">// mod.gxi
+type Config = { name: string, version: i64 };
+val config: Config;
+
+mod utils;
+mod parser;
+</code></pre>
+<h2 id="sub-module-visibility"><a class="header" href="#sub-module-visibility">Sub-module Visibility</a></h2>
+<p>Sub-modules can see everything in their parent that was declared before the
+<code>mod</code> statement that declared them. This includes private items not exported in
+the interface.</p>
+<p>The position of the <code>mod</code> statement controls what the sub-module can see:</p>
+<ul>
+<li>
+<p><strong>Module declared only in interface</strong>: The sub-module can see everything
+declared before the item it follows in the implementation. For example, if the
+interface has <code>val foo; mod child; val bar;</code>, and the implementation has
+<code>let foo = ...; let bar = ...;</code>, then <code>child</code> can see <code>foo</code> but not <code>bar</code>.</p>
+</li>
+<li>
+<p><strong>Module declared only in implementation</strong>: The sub-module can see everything
+declared before its <code>mod</code> statement, but it is not exported (not accessible to
+users of the parent module).</p>
+</li>
+<li>
+<p><strong>Module declared in both</strong>: The position in the implementation controls what
+the sub-module can see, while the interface declaration exports it. Use this
+for precise control over sub-module visibility.</p>
+</li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-graphix">// parent.gxi
+val public_helper: fn(i64) -&gt; i64;
+mod child;
+</code></pre>
+<pre><code class="language-graphix">// parent.gx
+let private_setup = ...;
+let public_helper = |x| x + 1;
+
+mod child;  // child can see private_setup and public_helper
+</code></pre>
+<h2 id="interfaces-with-netidx-modules"><a class="header" href="#interfaces-with-netidx-modules">Interfaces with Netidx Modules</a></h2>
+<p>Interface files also work with modules stored in netidx. The naming convention
+is the same as for files: if your module implementation is at
+<code>/libs/graphix/mymodule.gx</code>, the interface would be at
+<code>/libs/graphix/mymodule.gxi</code>.</p>
+<h2 id="interfaces-and-dynamic-modules"><a class="header" href="#interfaces-and-dynamic-modules">Interfaces and Dynamic Modules</a></h2>
+<p>Interface files work with static (file-based and netidx) modules. For dynamic
+modules loaded at runtime, use the inline <code>sig { ... }</code> syntax described in the
+<a href="./dynamic.html">Dynamic Modules</a> chapter. The signature syntax in dynamic modules
+uses the same declaration forms (<code>val</code>, <code>type</code>, <code>mod</code>) as interface files.</p>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<ol>
+<li><strong>Document in interfaces</strong>: Put documentation comments in the <code>.gxi</code> file since that's what users see</li>
+<li><strong>Minimal interfaces</strong>: Only export what users need; keep implementation details private</li>
+<li><strong>Stable interfaces</strong>: Think carefully before changing an interface, as it may break dependent code</li>
+<li><strong>Type aliases</strong>: Export type aliases in the interface to give users convenient names for complex types</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../modules/implementation.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../modules/dynamic.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../modules/implementation.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../modules/dynamic.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../theme/graphix-highlight.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

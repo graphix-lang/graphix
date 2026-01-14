@@ -197,8 +197,8 @@ net::publish(path, source)$;
 let status = mod foo dynamic {
     sandbox whitelist [core];
     sig {
-        val add: fn(i64) -&gt; i64;
-        val sub: fn(i64) -&gt; i64;
+        val add: fn(i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+        val sub: fn(i64) -&gt; i64 throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
         val cfg: Array&lt;i64&gt;
     };
     source cast&lt;string&gt;(net::subscribe(path)$)$
@@ -264,7 +264,7 @@ ignored, and will be inaccessible to the loading program.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../modules/external.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../modules/interfaces.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -278,7 +278,7 @@ ignored, and will be inaccessible to the loading program.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../modules/external.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../modules/interfaces.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
