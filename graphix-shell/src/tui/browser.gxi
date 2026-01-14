@@ -18,4 +18,4 @@ val browser: fn(
     ?#rate: duration,
     #size: Size,
     string
-) -> Tui;
+) -> Tui throws Error<ErrChain<`ArithError(string)>>;

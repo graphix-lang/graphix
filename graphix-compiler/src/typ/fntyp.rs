@@ -33,7 +33,7 @@ pub struct FnType {
     pub vargs: Option<Type>,
     pub rtype: Type,
     pub constraints: Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>,
-    pub throws: Type,
+    pub throws: Arc<RwLock<Type>>,
     pub explicit_throws: bool,
 }
 
@@ -59,7 +59,7 @@ impl PartialEq for FnType {
             && vargs0 == vargs1
             && rtype0 == rtype1
             && &*constraints0.read() == &*constraints1.read()
-            && th0 == th1
+            && &*th0.read() == &*th1.read()
     }
 }
 
@@ -89,7 +89,7 @@ impl PartialOrd for FnType {
                 Some(Ordering::Equal) => match rtype0.partial_cmp(rtype1) {
                     Some(Ordering::Equal) => {
                         match constraints0.read().partial_cmp(&*constraints1.read()) {
-                            Some(Ordering::Equal) => th0.partial_cmp(th1),
+                            Some(Ordering::Equal) => th0.read().partial_cmp(&*th1.read()),
                             r => r,
                         }
                     }
@@ -137,7 +137,7 @@ impl FnType {
                 .map(|(tv, t)| (tv.clone(), t.normalize()))
                 .collect(),
         ));
-        let throws = throws.normalize();
+        let throws = Arc::new(RwLock::new(throws.read().normalize()));
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -155,7 +155,7 @@ impl FnType {
             tv.unbind();
             tc.unbind_tvars()
         }
-        throws.unbind_tvars();
+        throws.read().unbind_tvars();
     }
 
     pub fn constrain_known(&self) {
@@ -163,7 +163,10 @@ impl FnType {
         self.collect_tvars(&mut known);
         let mut constraints = self.constraints.write();
         for (name, tv) in known.drain() {
-            if let Some(t) = tv.read().typ.read().as_ref() {
+            if let Some(t) = tv.read().typ.read().as_ref()
+                && t != &Type::Bottom
+                && t != &Type::Any
+            {
                 if !constraints.iter().any(|(tv, _)| tv.name == name) {
                     t.bind_as(&Type::Any);
                     constraints.push((tv.clone(), t.normalize()));
@@ -187,7 +190,7 @@ impl FnType {
                 .map(|(tv, tc)| (TVar::empty_named(tv.name.clone()), tc.reset_tvars()))
                 .collect(),
         ));
-        let throws = throws.reset_tvars();
+        let throws = Arc::new(RwLock::new(throws.read().reset_tvars()));
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -201,7 +204,7 @@ impl FnType {
         let vargs = vargs.as_ref().map(|t| t.replace_tvars(known));
         let rtype = rtype.replace_tvars(known);
         let constraints = constraints.clone();
-        let throws = throws.replace_tvars(known);
+        let throws = Arc::new(RwLock::new(throws.read().replace_tvars(known)));
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -230,7 +233,7 @@ impl FnType {
         }));
         let vargs = vargs.as_ref().map(|t| t.replace_tvars(&known));
         let rtype = rtype.replace_tvars(&known);
-        let throws = throws.replace_tvars(&known);
+        let throws = Arc::new(RwLock::new(throws.read().replace_tvars(&known)));
         let explicit_throws = *explicit_throws;
         Self { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -244,7 +247,7 @@ impl FnType {
                 .read()
                 .iter()
                 .any(|(tv, tc)| tv.read().typ.read().is_none() || tc.has_unbound())
-            || throws.has_unbound()
+            || throws.read().has_unbound()
     }
 
     pub fn bind_as(&self, t: &Type) {
@@ -264,7 +267,7 @@ impl FnType {
             }
             tc.bind_as(t)
         }
-        throws.bind_as(t);
+        throws.read().bind_as(t);
     }
 
     pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
@@ -280,7 +283,7 @@ impl FnType {
             Type::TVar(tv.clone()).alias_tvars(known);
             tc.alias_tvars(known);
         }
-        throws.alias_tvars(known);
+        throws.read().alias_tvars(known);
     }
 
     pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
@@ -296,7 +299,7 @@ impl FnType {
             Type::TVar(tv.clone()).collect_tvars(known);
             tc.collect_tvars(known);
         }
-        throws.collect_tvars(known);
+        throws.read().collect_tvars(known);
     }
 
     pub fn contains<R: Rt, E: UserEvent>(
@@ -393,7 +396,7 @@ impl FnType {
                 })
                 .collect::<Result<AndAc>>()?
                 .0
-            && self.throws.contains_int(flags, env, hist, &t.throws)?)
+            && self.throws.read().contains_int(flags, env, hist, &t.throws.read())?)
     }
 
     pub fn check_contains<R: Rt, E: UserEvent>(
@@ -457,7 +460,7 @@ impl FnType {
                 .map(|(tv, tc)| tc.contains(env, &Type::TVar(tv.clone())))
                 .collect::<Result<AndAc>>()?
                 .0
-            && tr0.contains(env, tr1)?)
+            && tr0.read().contains(env, &tr1.read())?)
     }
 
     pub fn check_sigmatch<R: Rt, E: UserEvent>(
@@ -506,7 +509,7 @@ impl FnType {
             let tc = tc.scope_refs(scope);
             cres.push((tv, tc));
         }
-        let throws = self.throws.scope_refs(scope);
+        let throws = Arc::new(RwLock::new(self.throws.read().scope_refs(scope)));
         FnType {
             args,
             rtype,
@@ -555,7 +558,7 @@ impl fmt::Display for FnType {
             },
             t => write!(f, ") -> {t}")?,
         }
-        match &self.throws {
+        match &*self.throws.read() {
             Type::Bottom => Ok(()),
             Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
             t => write!(f, " throws {t}"),
@@ -626,7 +629,7 @@ impl PrettyDisplay for FnType {
                 t.fmt_pretty(buf)?;
             }
         }
-        match &self.throws {
+        match &*self.throws.read() {
             Type::Bottom if !self.explicit_throws => Ok(()),
             Type::TVar(tv)
                 if *tv.read().typ.read() == Some(Type::Bottom)

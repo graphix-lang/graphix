@@ -186,6 +186,7 @@ pub(crate) struct Lambda<R: Rt, E: UserEvent> {
     def: SArc<LambdaDef<R, E>>,
     flags: BitFlags<CFlag>,
     typ: Type,
+    scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Lambda<R, E> {
@@ -208,10 +209,6 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
             bail!("arguments must have unique names");
         }
         let id = LambdaId::new();
-        let scope = scope.append(&format_compact!("fn{}", id.0));
-        let _scope = scope.clone();
-        let env = ctx.env.clone();
-        let _env = ctx.env.clone();
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
@@ -246,6 +243,12 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
             })
             .collect::<Result<LPooled<Vec<_>>>>()?;
         let constraints = Arc::new(RwLock::new(constraints));
+        let original_scope = scope.clone();
+        let _original_scope = scope.clone();
+        let scope = scope.append(&format_compact!("fn{}", id.0));
+        let _scope = scope.clone();
+        let env = ctx.env.clone();
+        let _env = ctx.env.clone();
         let typ = match &l.body {
             Either::Left(_) => {
                 let args = Arc::from_iter(argspec.iter().map(|a| FnArgType {
@@ -264,7 +267,9 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                 };
                 let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
                 let explicit_throws = throws.is_some();
-                let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
+                let throws = Arc::new(RwLock::new(
+                    throws.clone().unwrap_or_else(|| Type::empty_tvar()),
+                ));
                 Arc::new(FnType {
                     constraints,
                     args,
@@ -280,7 +285,7 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                     if !ctx.builtins_allowed {
                         bail!("defining builtins is not allowed in this context")
                     }
-                    Arc::new(styp.clone().scope_refs(&_scope.lexical))
+                    Arc::new(styp.clone().scope_refs(&_original_scope.lexical))
                 }
             },
         };
@@ -338,7 +343,14 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
         let def =
             SArc::new(LambdaDef { id, typ: typ.clone(), env, argspec, init, scope });
         ctx.env.lambdas.insert_cow(id, SArc::downgrade(&def));
-        Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
+        Ok(Box::new(Self {
+            spec,
+            def,
+            typ: Type::Fn(typ),
+            top_id,
+            flags,
+            scope: original_scope,
+        }))
     }
 }
 
@@ -408,7 +420,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
                 .typ
                 .with_deref(|t| t.cloned())
                 .unwrap_or(Type::Bottom);
-            wrap!(self, ftyp.throws.check_contains(&ctx.env, &inferred_throws))?;
+            wrap!(self, ftyp.throws.read().check_contains(&ctx.env, &inferred_throws))?;
+            if !ftyp.explicit_throws {
+                let mut throws = ftyp.throws.write();
+                let typ = match &*throws {
+                    Type::TVar(tv) => match &*tv.read().typ.read() {
+                        None | Some(Type::Bottom) => Type::Bottom,
+                        Some(t) => t.clone(),
+                    },
+                    t => t.clone(),
+                };
+                *throws = typ.scope_refs(&self.scope.lexical);
+            }
             ftyp.constrain_known();
             Ok(())
         });

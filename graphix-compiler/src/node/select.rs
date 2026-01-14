@@ -221,7 +221,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
         let mut atype = self.arg.node.typ().clone().normalize();
         for (pat, _) in self.arms.iter() {
-            if !pat.type_predicate.could_match(&ctx.env, &atype)? {
+            if !&pat.type_predicate.could_match(&ctx.env, &atype)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(
                         "pattern {} will never match {}, unused match cases",

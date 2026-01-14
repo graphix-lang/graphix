@@ -377,7 +377,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for (tv, tc) in ftype.constraints.read().iter() {
             wrap!(self, tc.check_contains(&ctx.env, &Type::TVar(tv.clone())))?;
         }
-        if let Some(t) = ftype.throws.with_deref(|t| t.cloned()) {
+        if let Some(t) = ftype.throws.read().with_deref(|t| t.cloned()) {
             match ctx.env.lookup_catch(&self.scope.dynamic) {
                 Ok(id) => {
                     if let Some(bind) = ctx.env.by_id.get(&id)

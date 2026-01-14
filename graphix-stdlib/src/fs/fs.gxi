@@ -108,7 +108,7 @@ val set_global_watch_parameters: fn(
 ///
 /// Filesystem watches are a limited operating system resource, like file
 /// descriptors, or handles.
-val watch: fn(?#interest: Array<Interest>, string) -> Result<string, Any>;
+val watch: fn(?#interest: Array<Interest>, string) -> Result<string, `WatchError(string)>;
 
 /// Watch the specified path for events matching #interest. Return the full event
 /// describing what happened, or an error if the watch could not be established.
@@ -126,7 +126,7 @@ val watch: fn(?#interest: Array<Interest>, string) -> Result<string, Any>;
 ///
 /// Filesystem watches are a limited operating system resource, like file
 /// descriptors, or handles.
-val watch_full: fn(?#interest: Array<Interest>, string) -> Result<WatchEvent, Any>;
+val watch_full: fn(?#interest: Array<Interest>, string) -> Result<WatchEvent, `WatchError(string)>;
 
 /// Read the specified file into memory as a utf8 string and return it, or an
 /// error if,
@@ -138,7 +138,7 @@ val watch_full: fn(?#interest: Array<Interest>, string) -> Result<WatchEvent, An
 /// Reads are queued and executed in the order they are initiated. For example, if we
 /// read_all on path0 and path1, the read of path0 will complete before the read of path1
 /// begins. Results are always returned in the same order the reads were queued.
-val read_all: fn(string) -> Result<string, Any>;
+val read_all: fn(string) -> Result<string, `IOError(string)>;
 
 /// Read the specified file into memory as a bytes and return it, or an
 /// error if,
@@ -149,7 +149,7 @@ val read_all: fn(string) -> Result<string, Any>;
 /// Reads are queued and executed in the order they are initiated. For example, if we
 /// read_all_bin on path0 and path1, the read of path0 will complete before the read of
 /// path1 begins. Results are always returned in the same order the reads were queued.
-val read_all_bin: fn(string) -> Result<bytes, Any>;
+val read_all_bin: fn(string) -> Result<bytes, `IOError(string)>;
 
 /// Write data to path. If path does not exist it will be created. If path exists it
 /// will be truncated and it's contents will be replaced with data.
@@ -159,7 +159,7 @@ val read_all_bin: fn(string) -> Result<bytes, Any>;
 /// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
 /// before the write to "bar.txt" begins. Results are always returned in the same order the writes
 /// were queued.
-val write_all: fn(#path: string, string) -> Result<_, Any>;
+val write_all: fn(#path: string, string) -> Result<null, `IOError(string)>;
 
 /// Write data to path. If path does not exist it will be created. If path exists it
 /// will be truncated and it's contents will be replaced with data.
@@ -169,7 +169,7 @@ val write_all: fn(#path: string, string) -> Result<_, Any>;
 /// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
 /// before the write to "bar.txt" begins. Results are always returned in the same order the writes
 /// were queued.
-val write_all_bin: fn(#path: string, bytes) -> Result<_, Any>;
+val write_all_bin: fn(#path: string, bytes) -> Result<null, `IOError(string)>;
 
 /// Every time trigger updates, create and return a randomly generated
 /// temporary directory, and remove any previous temporary directories.
@@ -190,15 +190,15 @@ val join_path: fn(string, @args: [string, Array<string>]) -> string;
 
 /// if path is a file then return path
 /// otherwise return an IOError. Check again every time path updates.
-val is_file: fn(string) -> Result<string, Any>;
+val is_file: fn(string) -> Result<string, `IOError(string)>;
 
 /// if path is a directory then return path, otherwise return an IOError.
 /// check again every time path updates.
-val is_dir: fn(string) -> Result<string, Any>;
+val is_dir: fn(string) -> Result<string, `IOError(string)>;
 
 /// Return the metadata for a filesystem object, or an error. Check again every
 /// time an argument updates.
-val metadata: fn(?#follow_symlinks: bool, string) -> Result<Metadata, Any>;
+val metadata: fn(?#follow_symlinks: bool, string) -> Result<Metadata, `IOError(string)>;
 
 /// readdir reads a directory and returns an array of directory entries.
 /// By default it will read only immediate children, however it can be
@@ -222,15 +222,15 @@ val readdir: fn(
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
     string
-) -> Result<Array<DirEntry>, Any>;
+) -> Result<Array<DirEntry>, `IOError(string)>;
 
 /// create a directory. If all is true (default false) create all intermediate
 /// directories as well.
-val create_dir: fn(?#all: bool, string) -> Result<_, Any>;
+val create_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
 
 /// remove a directory. If all is true (default false) then recursively remove
 /// the contents as well. If all is false fail if the directory is not empty.
-val remove_dir: fn(?#all: bool, string) -> Result<_, Any>;
+val remove_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
 
 /// remove a file
-val remove_file: fn(string) -> Result<_, Any>;
+val remove_file: fn(string) -> Result<null, `IOError(string)>;

@@ -1,5 +1,5 @@
 let input_handler = |
   #enabled: &[bool, null] = &null,
-  #handle: &fn(Event) -> [`Stop, `Continue],
+  #handle: &fn(Event) -> [`Stop, `Continue] throws 'e,
   child: &Tui
-| -> Tui `InputHandler({ child, enabled, handle })
+| -> Tui throws 'e `InputHandler({ child, enabled, handle })

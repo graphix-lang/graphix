@@ -159,6 +159,10 @@ impl StructurePattern {
                     binds.iter().fold(Ok::<_, anyhow::Error>(Type::Bottom), |t, p| {
                         Ok(t?.union(env, &p.infer_type_predicate(env)?)?)
                     })?;
+                let t = match t {
+                    Type::Bottom => Type::empty_tvar(),
+                    t => t,
+                };
                 Ok(Type::Array(Arc::new(t)))
             }
             Self::Struct { all: _, exhaustive: _, binds } => {

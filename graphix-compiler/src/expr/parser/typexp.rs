@@ -179,7 +179,7 @@ where
                 anon |= a.label.is_none();
             }
             let explicit_throws = throws.is_some();
-            let throws = throws.unwrap_or(Type::Bottom);
+            let throws = Arc::new(RwLock::new(throws.unwrap_or(Type::Bottom)));
             value(FnType { args, vargs, rtype, constraints, throws, explicit_throws })
                 .right()
         })

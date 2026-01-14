@@ -48,7 +48,7 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
                     Arc::as_ptr(&a.0.read().typ).addr() == addr
                         || would_cycle_inner(addr, &a.1)
                 })
-                || would_cycle_inner(addr, throws)
+                || would_cycle_inner(addr, &*throws.read())
         }
     }
 }

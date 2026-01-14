@@ -203,6 +203,19 @@ impl Type {
                 }
                 Ok(true)
             }
+            (Self::Bottom, Self::TVar(t0)) => {
+                if let Some(Type::Bottom) = &*t0.read().typ.read() {
+                    return Ok(true);
+                }
+                if flags.contains(ContainsFlags::InitTVars) {
+                    *t0.read().typ.write() = Some(Self::Bottom);
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            (Self::Bottom, Self::Bottom) => Ok(true),
+            (Self::Bottom, _) => Ok(false),
+            (_, Self::Bottom) => Ok(true),
             (Self::TVar(t0), Self::Any) => {
                 if let Some(t0) = &*t0.read().typ.read() {
                     return t0.contains_int(flags, env, hist, t);
@@ -213,7 +226,6 @@ impl Type {
                 Ok(true)
             }
             (Self::Any, _) => Ok(true),
-            (Self::Bottom, _) | (_, Self::Bottom) => Ok(true),
             (Self::Primitive(p0), Self::Primitive(p1)) => Ok(p0.contains(*p1)),
             (
                 Self::Primitive(p),
@@ -566,9 +578,9 @@ impl Type {
                 Some(t1) => t0.could_match_int(env, hist, t1),
                 None => Ok(true),
             },
-            (Type::Any, _) | (_, Type::Any) | (Type::Bottom, _) | (_, Type::Bottom) => {
-                Ok(true)
-            }
+            (_, Type::Bottom) => Ok(true),
+            (Type::Bottom, _) => Ok(false),
+            (Type::Any, _) | (_, Type::Any) => Ok(true),
             (Type::Fn(_), _)
             | (_, Type::Fn(_))
             | (Type::Tuple(_), _)
@@ -593,6 +605,135 @@ impl Type {
     ) -> Result<bool> {
         self.could_match_int(env, &mut LPooled::take(), t)
     }
+
+    /*
+    fn sigmatch_int<R: Rt, E: UserEvent>(
+        &self,
+        env: &Env<R, E>,
+        hist: &mut FxHashMap<(usize, usize), bool>,
+        t: &Self,
+    ) -> Result<bool> {
+        let fl = BitFlags::empty();
+        match (self, t) {
+            (
+                Self::Ref { scope: s0, name: n0, params: p0 },
+                Self::Ref { scope: s1, name: n1, params: p1 },
+            ) if s0 == s1 && n0 == n1 => Ok(p0.len() == p1.len()
+                && p0
+                    .iter()
+                    .zip(p1.iter())
+                    .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
+                    .collect::<Result<AndAc>>()?
+                    .0),
+            (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+                let t0 = t0.lookup_ref(env)?;
+                let t1 = t1.lookup_ref(env)?;
+                let t0_addr = (t0 as *const Type).addr();
+                let t1_addr = (t1 as *const Type).addr();
+                match hist.get(&(t0_addr, t1_addr)) {
+                    Some(r) => Ok(*r),
+                    None => {
+                        hist.insert((t0_addr, t1_addr), true);
+                        match t0.could_match_int(env, hist, t1) {
+                            Ok(r) => {
+                                hist.insert((t0_addr, t1_addr), r);
+                                Ok(r)
+                            }
+                            Err(e) => {
+                                hist.remove(&(t0_addr, t1_addr));
+                                Err(e)
+                            }
+                        }
+                    }
+                }
+            }
+            (t0, Self::Primitive(s)) => {
+                for t1 in s.iter() {
+                    if t0.contains_int(fl, env, hist, &Type::Primitive(t1.into()))? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            (Type::Primitive(p), Type::Error(_)) => Ok(p.contains(Typ::Error)),
+            (Type::Error(t0), Type::Error(t1)) => t0.could_match_int(env, hist, t1),
+            (Type::Array(t0), Type::Array(t1)) => t0.could_match_int(env, hist, t1),
+            (Type::Primitive(p), Type::Array(_)) => Ok(p.contains(Typ::Array)),
+            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                Ok(k0.could_match_int(env, hist, k1)?
+                    && v0.could_match_int(env, hist, v1)?)
+            }
+            (Type::Primitive(p), Type::Map { .. }) => Ok(p.contains(Typ::Map)),
+            (Type::Tuple(ts0), Type::Tuple(ts1)) => Ok(ts0.len() == ts1.len()
+                && ts0
+                    .iter()
+                    .zip(ts1.iter())
+                    .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
+                    .collect::<Result<AndAc>>()?
+                    .0),
+            (Type::Struct(ts0), Type::Struct(ts1)) => Ok(ts0.len() == ts1.len()
+                && ts0
+                    .iter()
+                    .zip(ts1.iter())
+                    .map(|((n0, t0), (n1, t1))| {
+                        Ok(n0 == n1 && t0.could_match_int(env, hist, t1)?)
+                    })
+                    .collect::<Result<AndAc>>()?
+                    .0),
+            (Type::Variant(n0, ts0), Type::Variant(n1, ts1)) => Ok(ts0.len()
+                == ts1.len()
+                && n0 == n1
+                && ts0
+                    .iter()
+                    .zip(ts1.iter())
+                    .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
+                    .collect::<Result<AndAc>>()?
+                    .0),
+            (Type::ByRef(t0), Type::ByRef(t1)) => t0.could_match_int(env, hist, t1),
+            (t0, Self::Set(ts)) => {
+                for t1 in ts.iter() {
+                    if t0.could_match_int(env, hist, t1)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            (Type::Set(ts), t1) => {
+                for t0 in ts.iter() {
+                    if t0.could_match_int(env, hist, t1)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            (Type::TVar(t0), t1) => match &*t0.read().typ.read() {
+                Some(t0) => t0.could_match_int(env, hist, t1),
+                None => Ok(true),
+            },
+            (t0, Type::TVar(t1)) => match &*t1.read().typ.read() {
+                Some(t1) => t0.could_match_int(env, hist, t1),
+                None => Ok(true),
+            },
+            (Type::Any, _) | (_, Type::Any) | (Type::Bottom, _) | (_, Type::Bottom) => {
+                Ok(true)
+            }
+            (Type::Fn(_), _)
+            | (_, Type::Fn(_))
+            | (Type::Tuple(_), _)
+            | (_, Type::Tuple(_))
+            | (Type::Struct(_), _)
+            | (_, Type::Struct(_))
+            | (Type::Variant(_, _), _)
+            | (_, Type::Variant(_, _))
+            | (Type::ByRef(_), _)
+            | (_, Type::ByRef(_))
+            | (Type::Array(_), _)
+            | (_, Type::Array(_))
+            | (_, Type::Map { .. })
+            | (Type::Map { .. }, _) => Ok(false),
+        }
+    }
+    */
 
     fn union_int<R: Rt, E: UserEvent>(
         &self,

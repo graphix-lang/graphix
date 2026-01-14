@@ -2,7 +2,7 @@ type Table = { rows: Array<string>, columns: Array<(string, v64)> };
 type ArgSpec = { name: string, doc: string, default: Any };
 
 /// write the value to the specified path
-val write: fn(string, Any) -> _;
+val write: fn(string, Any) -> Result<_, `WriteError(string)>;
 
 /// subscribe to the specified path
 val subscribe: fn(string) -> Result<Primitive, `SubscribeError(string)>;
