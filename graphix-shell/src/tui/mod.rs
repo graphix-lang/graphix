@@ -30,8 +30,9 @@ use paragraph::ParagraphW;
 use ratatui::{
     layout::{Alignment, Direction, Flex, Rect},
     style::{Color, Modifier, Style},
+    symbols,
     text::{Line, Span},
-    widgets::block::Position,
+    widgets::TitlePosition,
     Frame,
 };
 use reedline::Signal;
@@ -207,6 +208,7 @@ impl FromValue for FlexV {
             "End" => Flex::End,
             "Center" => Flex::Center,
             "SpaceBetween" => Flex::SpaceBetween,
+            "SpaceEvenly" => Flex::SpaceEvenly,
             "SpaceAround" => Flex::SpaceAround,
             s => bail!("invalid flex {s}"),
         };
@@ -225,13 +227,13 @@ impl FromValue for ScrollV {
 }
 
 #[derive(Clone, Copy)]
-struct PositionV(Position);
+struct TitlePositionV(TitlePosition);
 
-impl FromValue for PositionV {
+impl FromValue for TitlePositionV {
     fn from_value(v: Value) -> Result<Self> {
         match &*v.cast_to::<ArcStr>()? {
-            "Top" => Ok(Self(Position::Top)),
-            "Bottom" => Ok(Self(Position::Bottom)),
+            "Top" => Ok(Self(TitlePosition::Top)),
+            "Bottom" => Ok(Self(TitlePosition::Bottom)),
             s => bail!("invalid position {s}"),
         }
     }
@@ -292,6 +294,26 @@ impl SizeV {
     fn from_terminal() -> Result<Self> {
         let (width, height) = terminal::size()?;
         Ok(Self { width, height })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MarkerV(symbols::Marker);
+
+impl FromValue for MarkerV {
+    fn from_value(v: Value) -> Result<Self> {
+        let m = match &*v.cast_to::<ArcStr>()? {
+            "Dot" => symbols::Marker::Dot,
+            "Block" => symbols::Marker::Block,
+            "Bar" => symbols::Marker::Bar,
+            "Braille" => symbols::Marker::Braille,
+            "HalfBlock" => symbols::Marker::HalfBlock,
+            "Quadrant" => symbols::Marker::Quadrant,
+            "Sextant" => symbols::Marker::Sextant,
+            "Octant" => symbols::Marker::Octant,
+            s => bail!("invalid marker {s}"),
+        };
+        Ok(Self(m))
     }
 }
 

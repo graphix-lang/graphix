@@ -39,7 +39,7 @@ netidx = { path = "../netidx/netidx", version = "0.31.0", default-features = fal
 parking_lot = "0.12.1"
 poolshark = { version = "0.2.6" }
 rand = "0.9"
-ratatui = { version = "0.29", features = ["widget-calendar"] }
+ratatui = { version = "0.30", features = ["widget-calendar"] }
 reedline = "0.44"
 regex = "1"
 rust_decimal = { version = "1", features = [

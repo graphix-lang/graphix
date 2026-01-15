@@ -1,5 +1,6 @@
 use super::{
-    into_borrowed_line, layout::ConstraintV, AlignmentV, LineV, StyleV, TuiW, TuiWidget,
+    into_borrowed_line, layout::ConstraintV, AlignmentV, LineV, MarkerV, StyleV, TuiW,
+    TuiWidget,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -12,29 +13,11 @@ use log::debug;
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
     layout::{Constraint, Rect},
-    symbols,
     widgets::{Axis, Chart, Dataset, GraphType, LegendPosition},
     Frame,
 };
 use smallvec::SmallVec;
 use tokio::try_join;
-
-#[derive(Clone, Copy)]
-struct MarkerV(symbols::Marker);
-
-impl FromValue for MarkerV {
-    fn from_value(v: Value) -> Result<Self> {
-        let m = match &*v.cast_to::<ArcStr>()? {
-            "Dot" => symbols::Marker::Dot,
-            "Block" => symbols::Marker::Block,
-            "Bar" => symbols::Marker::Bar,
-            "Braille" => symbols::Marker::Braille,
-            "HalfBlock" => symbols::Marker::HalfBlock,
-            s => bail!("invalid marker {s}"),
-        };
-        Ok(Self(m))
-    }
-}
 
 #[derive(Clone, Copy)]
 struct GraphTypeV(GraphType);

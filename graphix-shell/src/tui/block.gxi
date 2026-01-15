@@ -26,11 +26,18 @@ type Position = [
   `Bottom
 ];
 
+type MergeStrategy = [
+    `Replace,
+    `Exact,
+    `Fuzzy
+];
+
 type Block = {
   border: &[Array<Border>, `All, `None, null],
   border_style: &[Style, null],
   border_type: &[BorderType, null],
   child: &Tui,
+  merge_borders: &[MergeStrategy, null],
   padding: &[Padding, null],
   size: &[Size, null],
   style: &[Style, null],
@@ -46,6 +53,7 @@ val block: fn(
   ?#border: &[Array<Border>, `All, `None, null],
   ?#border_type: &[BorderType, null],
   ?#border_style: &[Style, null],
+  ?#merge_borders: &[MergeStrategy, null],
   ?#padding: &[Padding, null],
   ?#style: &[Style, null],
   ?#title: &[Line, null],

@@ -1,4 +1,4 @@
-use super::{ColorV, LineV, TuiW, TuiWidget};
+use super::{ColorV, LineV, MarkerV, TuiW, TuiWidget};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -10,7 +10,6 @@ use netidx::publisher::{FromValue, Value};
 use ratatui::{
     layout::Rect,
     style::Color,
-    symbols,
     widgets::canvas::{
         Canvas, Circle, Context as CanvasContext, Line, Points, Rectangle,
     },
@@ -26,23 +25,6 @@ impl FromValue for BoundsV {
     fn from_value(v: Value) -> Result<Self> {
         let [(_, max), (_, min)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
         Ok(Self([min, max]))
-    }
-}
-
-#[derive(Clone)]
-struct MarkerV(symbols::Marker);
-
-impl FromValue for MarkerV {
-    fn from_value(v: Value) -> Result<Self> {
-        let m = match &*v.cast_to::<ArcStr>()? {
-            "Dot" => symbols::Marker::Dot,
-            "Block" => symbols::Marker::Block,
-            "Bar" => symbols::Marker::Bar,
-            "Braille" => symbols::Marker::Braille,
-            "HalfBlock" => symbols::Marker::HalfBlock,
-            s => bail!("invalid marker {s}"),
-        };
-        Ok(Self(m))
     }
 }
 

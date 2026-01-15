@@ -1,8 +1,17 @@
 let line_gauge = |
   #filled_style: &[Style, null] = &null,
+  #filled_symbol: &[string, null] = &null,
   #label: &[Line, null] = &null,
-  #line_set: &[LineSet, null] = &null,
   #style: &[Style, null] = &null,
   #unfilled_style: &[Style, null] = &null,
+  #unfilled_symbol: &[string, null] = &null,
   ratio: &f64
-| -> Tui `LineGauge({ filled_style, label, line_set, ratio, style, unfilled_style })
+| -> Tui `LineGauge({
+    filled_style,
+    filled_symbol,
+    label,
+    ratio,
+    style,
+    unfilled_style,
+    unfilled_symbol
+})

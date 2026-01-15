@@ -93,6 +93,7 @@ type Flex = [
   `End,
   `Center,
   `SpaceBetween,
+  `SpaceEvenly,
   `SpaceAround
 ];
 
@@ -116,7 +117,10 @@ type Marker = [
   `Block,
   `Bar,
   `Braille,
-  `HalfBlock
+  `HalfBlock,
+  `Quadrant,
+  `Sextant,
+  `Octant
 ];
 
 type Size = { width: i64, height: i64 };

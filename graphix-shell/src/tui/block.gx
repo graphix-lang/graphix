@@ -2,6 +2,7 @@ let block = |
   #border: &[Array<Border>, `All, `None, null] = &null,
   #border_type: &[BorderType, null] = &null,
   #border_style: &[Style, null] = &null,
+  #merge_borders: &[MergeStrategy, null] = &null,
   #padding: &[Padding, null] = &null,
   #style: &[Style, null] = &null,
   #title: &[Line, null] = &null,
