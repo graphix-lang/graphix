@@ -2,9 +2,12 @@ use tui;
 use tui::block;
 use tui::line_gauge;
 
-let clock = time::timer(duration:0.5s, true);
-let power = 0.0;
-power <- min(1.0, (clock ~ power) + 0.01);
+let power = {
+    let clock = time::timer(duration:0.5s, true);
+    let n = 0.0;
+    n <- min(1.0, clock ~ n + 0.01);
+    n
+};
 
 let color = select power {
   x if x < 0.10 => `Red,
