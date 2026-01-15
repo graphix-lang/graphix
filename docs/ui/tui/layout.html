@@ -177,30 +177,34 @@
                     <main>
                         <h1 id="the-layout-widget"><a class="header" href="#the-layout-widget">The Layout Widget</a></h1>
 <p>The <code>layout</code> widget arranges child widgets in horizontal or vertical layouts with flexible sizing constraints. It's the primary tool for organizing complex TUI interfaces and supports focus management for interactive applications.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code>mod layout: sig {
-    type Direction = [`Horizontal, `Vertical];
-    type Flex = [`Start, `Center, `End, `SpaceAround, `SpaceBetween];
-    type Constraint = [
-        `Percentage(i64),
-        `Length(i64),
-        `Min(i64),
-        `Max(i64),
-        `Ratio(i64, i64),
-        `Fill(i64)
-    ];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type Spacing = [
+  `Space(i64),
+  `Overlap(i64)
+];
 
-    /// Creates a layout that arranges child widgets
-    val layout: fn(
-        ?#direction: &amp;Direction,
-        ?#focused: &amp;i64,
-        ?#flex: &amp;Flex,
-        &amp;Array&lt;Child&gt;
-    ) -&gt; Widget;
+type Child = {
+  child: Tui,
+  constraint: Constraint,
+  size: &amp;[Size, null]
+};
 
-    /// Creates a child widget with sizing constraints
-    val child: fn(?#constraint: Constraint, Widget) -&gt; Child;
-}
+val child: fn(
+  ?#size: &amp;[Size, null],
+  #constraint: Constraint,
+  Tui
+) -&gt; Child;
+
+val layout: fn(
+  ?#direction: &amp;[Direction, null],
+  ?#flex: &amp;[Flex, null],
+  ?#focused: &amp;[i64, null],
+  ?#horizontal_margin: &amp;[i64, null],
+  ?#margin: &amp;[i64, null],
+  ?#spacing: &amp;[Spacing, null],
+  ?#vertical_margin: &amp;[i64, null],
+  &amp;Array&lt;Child&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

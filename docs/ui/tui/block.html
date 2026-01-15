@@ -177,21 +177,50 @@
                     <main>
                         <h1 id="the-block-widget"><a class="header" href="#the-block-widget">The Block Widget</a></h1>
 <p>The <code>block</code> widget is a container that wraps other widgets with optional borders, titles, and styling. It's one of the most commonly used widgets for creating structured layouts and visually separating different sections of your TUI.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code>mod block: sig {
-    type Borders = [`All, `None, `Top, `Bottom, `Left, `Right];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type Border = [
+  `Top,
+  `Right,
+  `Bottom,
+  `Left
+];
 
-    /// Creates a block widget that wraps content with borders and styling
-    val block: fn(
-        ?#border: &amp;Borders,
-        ?#border_style: &amp;Style,
-        ?#title: &amp;Line,
-        ?#title_bottom: &amp;Line,
-        ?#style: &amp;Style,
-        ?#size: &amp;Size,
-        &amp;Widget
-    ) -&gt; Widget;
-}
+type BorderType = [
+  `Plain,
+  `Rounded,
+  `Double,
+  `Thick,
+  `QuadrantInside,
+  `QuadrantOutside
+];
+
+type Padding = {
+  bottom: i64,
+  left: i64,
+  right: i64,
+  top: i64
+};
+
+type Position = [
+  `Top,
+  `Bottom
+];
+
+val block: fn(
+  ?#border: &amp;[Array&lt;Border&gt;, `All, `None, null],
+  ?#border_type: &amp;[BorderType, null],
+  ?#border_style: &amp;[Style, null],
+  ?#padding: &amp;[Padding, null],
+  ?#style: &amp;[Style, null],
+  ?#title: &amp;[Line, null],
+  ?#title_top: &amp;[Line, null],
+  ?#title_bottom: &amp;[Line, null],
+  ?#title_style: &amp;[Style, null],
+  ?#title_position: &amp;[Position, null],
+  ?#title_alignment: &amp;[Alignment, null],
+  ?#size: &amp;[Size, null],
+  &amp;Tui
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

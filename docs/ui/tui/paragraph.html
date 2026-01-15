@@ -177,18 +177,14 @@
                     <main>
                         <h1 id="the-paragraph-widget"><a class="header" href="#the-paragraph-widget">The Paragraph Widget</a></h1>
 <p>The <code>paragraph</code> widget displays multi-line text with automatic word wrapping and scrolling support. It's ideal for displaying long text content, logs, or any content that needs to flow across multiple lines.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code class="language-graphix">mod paragraph: sig {
-    type ScrollPosition = {x: i64, y: i64};
-
-    /// Creates a paragraph widget with text content
-    val paragraph: fn(
-        ?#scroll: &amp;ScrollPosition,
-        ?#alignment: &amp;Alignment,
-        ?#wrap: &amp;bool,
-        &amp;[string, Text]
-    ) -&gt; Widget;
-}
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">val paragraph: fn(
+  ?#style: &amp;Style,
+  ?#alignment: &amp;[Alignment, null],
+  ?#scroll: &amp;{x: i64, y: i64},
+  ?#trim: &amp;bool,
+  &amp;[Array&lt;Line&gt;, string]
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

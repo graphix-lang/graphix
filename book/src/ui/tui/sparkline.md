@@ -2,23 +2,32 @@
 
 The `sparkline` widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.
 
-## APIs
+## Interface
 
-```
-mod sparkline: sig {
-    type Direction = [`LeftToRight, `RightToLeft];
+```graphix
+type RenderDirection = [
+  `LeftToRight,
+  `RightToLeft
+];
 
-    /// Creates a sparkline widget from data values
-    val sparkline: fn(
-        ?#max: &i64,
-        ?#style: &Style,
-        ?#direction: &Direction,
-        &Array<[SparklineBar, f64]>
-    ) -> Widget;
+type SparklineBar = {
+  style: [Style, null],
+  value: [f64, null]
+};
 
-    /// Creates a sparkline bar with custom styling
-    val sparkline_bar: fn(?#style: Style, f64) -> SparklineBar;
-}
+val sparkline_bar: fn(
+  ?#style: [Style, null],
+  [f64, null]
+) -> SparklineBar;
+
+val sparkline: fn(
+  ?#absent_value_style: &[Style, null],
+  ?#absent_value_symbol: &[string, null],
+  ?#direction: &[RenderDirection, null],
+  ?#max: &[i64, null],
+  ?#style: &[Style, null],
+  &Array<[SparklineBar, f64, null]>
+) -> Tui;
 ```
 
 ## Parameters

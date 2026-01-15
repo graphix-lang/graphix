@@ -177,29 +177,45 @@
                     <main>
                         <h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
 <p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code class="language-graphix">mod barchart: sig {
-    /// Creates a bar chart from bar groups
-    val bar_chart: fn(
-        ?#max: &amp;i64,
-        ?#bar_width: &amp;i64,
-        ?#bar_gap: &amp;i64,
-        ?#group_gap: &amp;i64,
-        ?#style: &amp;Style,
-        &amp;Array&lt;BarGroup&gt;
-    ) -&gt; Widget;
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type Bar = {
+  label: &amp;[Line, null],
+  style: &amp;[Style, null],
+  text_value: &amp;[string, null],
+  value: &amp;i64,
+  value_style: &amp;[Style, null]
+};
 
-    /// Creates a group of bars
-    val bar_group: fn(?#label: Line, Array&lt;Bar&gt;) -&gt; BarGroup;
+val bar: fn(
+  ?#label: &amp;[Line, null],
+  ?#style: &amp;[Style, null],
+  ?#text_value: &amp;[string, null],
+  ?#value_style: &amp;[Style, null],
+  &amp;i64
+) -&gt; Bar;
 
-    /// Creates an individual bar
-    val bar: fn(
-        ?#style: &amp;Style,
-        ?#label: &amp;Line,
-        ?#text_value: &amp;Line,
-        &amp;i64
-    ) -&gt; Bar;
-}
+type BarGroup = {
+  bars: Array&lt;Bar&gt;,
+  label: [Line, null]
+};
+
+val bar_group: fn(
+  ?#label: [Line, null],
+  Array&lt;Bar&gt;
+) -&gt; BarGroup;
+
+val bar_chart: fn(
+  ?#bar_gap: &amp;[i64, null],
+  ?#bar_style: &amp;[Style, null],
+  ?#bar_width: &amp;[i64, null],
+  ?#direction: &amp;[Direction, null],
+  ?#group_gap: &amp;[i64, null],
+  ?#label_style: &amp;[Style, null],
+  ?#max: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  ?#value_style: &amp;[Style, null],
+  &amp;Array&lt;BarGroup&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <h3 id="bar_chart"><a class="header" href="#bar_chart">bar_chart</a></h3>

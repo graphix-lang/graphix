@@ -177,16 +177,31 @@
                     <main>
                         <h1 id="the-scrollbar-widget"><a class="header" href="#the-scrollbar-widget">The Scrollbar Widget</a></h1>
 <p>The <code>scrollbar</code> widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code class="language-graphix">mod scrollbar: sig {
-    /// Wraps a widget with a scrollbar indicator
-    val scrollbar: fn(
-        #position: &amp;i64,
-        ?#content_length: &amp;i64,
-        ?#size: &amp;Size,
-        &amp;Widget
-    ) -&gt; Widget;
-}
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type ScrollbarOrientation = [
+  `VerticalRight,
+  `VerticalLeft,
+  `HorizontalBottom,
+  `HorizontalTop
+];
+
+val scrollbar: fn(
+  ?#begin_style: &amp;[Style, null],
+  ?#begin_symbol: &amp;[string, null],
+  ?#content_length: &amp;[i64, null],
+  ?#end_style: &amp;[Style, null],
+  ?#end_symbol: &amp;[string, null],
+  ?#orientation: &amp;[ScrollbarOrientation, null],
+  ?#position: &amp;[i64, null],
+  ?#size: &amp;[Size, null],
+  ?#style: &amp;[Style, null],
+  ?#thumb_style: &amp;[Style, null],
+  ?#thumb_symbol: &amp;[string, null],
+  ?#track_style: &amp;[Style, null],
+  ?#track_symbol: &amp;[string, null],
+  ?#viewport_length: &amp;[i64, null],
+  &amp;Tui
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

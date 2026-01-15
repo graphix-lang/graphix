@@ -177,17 +177,14 @@
                     <main>
                         <h1 id="the-gauge-widget"><a class="header" href="#the-gauge-widget">The Gauge Widget</a></h1>
 <p>The <code>gauge</code> widget displays a single value as a filled progress indicator, perfect for showing percentages, completion status, or resource usage. It provides a clear visual representation of how full or complete something is.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code class="language-graphix">mod gauge: sig {
-    /// Creates a gauge widget showing progress from 0.0 to 1.0
-    val gauge: fn(
-        ?#gauge_style: &amp;Style,
-        ?#label: &amp;Line,
-        ?#use_unicode: &amp;bool,
-        ?#style: &amp;Style,
-        &amp;f64
-    ) -&gt; Widget;
-}
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">val gauge: fn(
+  ?#gauge_style: &amp;[Style, null],
+  ?#label: &amp;[Span, null],
+  ?#style: &amp;[Style, null],
+  ?#use_unicode: &amp;[bool, null],
+  &amp;f64
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

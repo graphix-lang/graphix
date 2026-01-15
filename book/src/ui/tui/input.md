@@ -284,3 +284,8 @@ tui::input_handler::input_handler(
   &widgets
 )
 ```
+
+## See Also
+
+- [style](style.md) - Styling text and widgets
+- [layout](layout.md) - Arranging widgets with focus support

@@ -2,21 +2,28 @@
 
 The `browser` widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.
 
-## APIs
+## Interface
 
-```
-mod browser: sig {
-    type MoveCursor = [`Left(i64), `Right(i64), `Up(i64), `Down(i64)];
+```graphix
+type MoveCursor = [
+    `Left(i64),
+    `Right(i64),
+    `Up(i64),
+    `Down(i64)
+];
 
-    /// Creates a browser widget for navigating netidx hierarchies
-    val browser: fn(
-        ?#cursor: MoveCursor,
-        ?#selected_row: &string,
-        #selected_path: &string,
-        ?#size: &Size,
-        string
-    ) -> Widget;
-}
+val browser: fn(
+    ?#selected_style: Style,
+    ?#header_style: Style,
+    ?#style: Style,
+    ?#cursor: MoveCursor,
+    ?#selected_row: &string,
+    ?#selected_path: &string,
+    ?#flex: Flex,
+    ?#rate: duration,
+    #size: Size,
+    string
+) -> Tui throws Error<ErrChain<`ArithError(string)>>;
 ```
 
 ## Parameters

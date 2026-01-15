@@ -177,21 +177,30 @@
                     <main>
                         <h1 id="the-sparkline-widget"><a class="header" href="#the-sparkline-widget">The Sparkline Widget</a></h1>
 <p>The <code>sparkline</code> widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code>mod sparkline: sig {
-    type Direction = [`LeftToRight, `RightToLeft];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type RenderDirection = [
+  `LeftToRight,
+  `RightToLeft
+];
 
-    /// Creates a sparkline widget from data values
-    val sparkline: fn(
-        ?#max: &amp;i64,
-        ?#style: &amp;Style,
-        ?#direction: &amp;Direction,
-        &amp;Array&lt;[SparklineBar, f64]&gt;
-    ) -&gt; Widget;
+type SparklineBar = {
+  style: [Style, null],
+  value: [f64, null]
+};
 
-    /// Creates a sparkline bar with custom styling
-    val sparkline_bar: fn(?#style: Style, f64) -&gt; SparklineBar;
-}
+val sparkline_bar: fn(
+  ?#style: [Style, null],
+  [f64, null]
+) -&gt; SparklineBar;
+
+val sparkline: fn(
+  ?#absent_value_style: &amp;[Style, null],
+  ?#absent_value_symbol: &amp;[string, null],
+  ?#direction: &amp;[RenderDirection, null],
+  ?#max: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  &amp;Array&lt;[SparklineBar, f64, null]&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <h3 id="sparkline"><a class="header" href="#sparkline">sparkline</a></h3>

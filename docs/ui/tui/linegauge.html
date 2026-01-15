@@ -177,20 +177,22 @@
                     <main>
                         <h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It's more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code>mod linegauge: sig {
-    type LineSet = [`Thin, `Thick, `Double];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type LineSet = [
+  `Normal,
+  `Rounded,
+  `Double,
+  `Thick
+];
 
-    /// Creates a line gauge widget showing progress from 0.0 to 1.0
-    val line_gauge: fn(
-        ?#filled_style: &amp;Style,
-        ?#unfilled_style: &amp;Style,
-        ?#line_set: &amp;LineSet,
-        ?#label: &amp;Line,
-        ?#style: &amp;Style,
-        &amp;f64
-    ) -&gt; Widget;
-}
+val line_gauge: fn(
+  ?#filled_style: &amp;[Style, null],
+  ?#label: &amp;[Line, null],
+  ?#line_set: &amp;[LineSet, null],
+  ?#style: &amp;[Style, null],
+  ?#unfilled_style: &amp;[Style, null],
+  &amp;f64
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

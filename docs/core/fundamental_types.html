@@ -213,25 +213,22 @@ Caused by:
     1: at: line: 1, column: 3, in: (f64:1. + i64:1)
     2: type mismatch '_1046: i64 does not contain [i64, f64]
 </code></pre>
-<p>Division by zero is raised as an error to the nearest error handler (more on
-that later) and will be printed to stderr by the shell if it is never handled.
-Overflow and underflow are handled by wrapping,</p>
+<p>Division by zero raises an error to the nearest error handler (see <a href="error.html">Error Handling</a>). If unhandled, it will be printed to stderr by the shell.</p>
 <pre><code class="language-graphix">〉0 / 0
-
-thread 'tokio-runtime-worker' panicked at &lt;rust runtime&gt;:
-attempt to divide by zero
 -: i64
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 unhandled error: error:"in expr at line: 1, column: 1 attempt to divide by zero"
-〉u32:0 - u32:1
+</code></pre>
+<p>The result type of the division is still <code>i64</code>, but the actual value is an error. You can handle division by zero using the <code>?</code> or <code>`</code> operators:</p>
+<pre><code class="language-graphix">〉(0 / 0)?
+-: Result&lt;i64, Error&lt;`ArithError(string)&gt;&gt;
+error:["ArithError", "in expr at line: 1, column: 2 attempt to divide by zero"]
+</code></pre>
+<p>If division by zero occurs and is not handled, the expression will not update until the divisor changes to a non-zero value. This can cause issues if your program depends on continuous updates from that expression.</p>
+<p>Overflow and underflow are handled by wrapping:</p>
+<pre><code class="language-graphix">〉u32:0 - u32:1
 -: u32
 4294967295
 </code></pre>
-<p>The thread panic message is an artifact of how the overflow error is handled at
-runtime, it is safe to continue using the shell and runtime if such an error
-occurs. However the particular arith operation that caused the error will not
-update, which may cause problems depending on what your program is doing with
-it.</p>
 <h4 id="v32-z32-v64-z64"><a class="header" href="#v32-z32-v64-z64">v32, z32, v64, z64</a></h4>
 <p>These number types are the same as the normal types except when they
 are sent over the wire via netidx (or written to a file) they use

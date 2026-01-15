@@ -177,29 +177,50 @@
                     <main>
                         <h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>The <code>table</code> widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It's ideal for data grids, process monitors, file listings, and any tabular data display.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code>mod table: sig {
-    type HighlightSpacing = [`Always, `WhenSelected, `Never];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type Cell = {
+  content: Line,
+  style: [Style, null]
+};
 
-    /// Creates a table widget from an array of row references
-    val table: fn(
-        ?#header: &amp;Row,
-        ?#selected: &amp;i64,
-        ?#row_highlight_style: &amp;Style,
-        ?#highlight_symbol: &amp;string,
-        ?#highlight_spacing: &amp;HighlightSpacing,
-        ?#widths: &amp;Array&lt;Constraint&gt;,
-        ?#column_spacing: &amp;i64,
-        ?#style: &amp;Style,
-        &amp;Array&lt;&amp;Row&gt;
-    ) -&gt; Widget;
+val cell: fn(
+  ?#style: [Style, null],
+  Line
+) -&gt; Cell;
 
-    /// Creates a table row from cells
-    val row: fn(?#style: Style, Array&lt;Cell&gt;) -&gt; Row;
+type Row = {
+  bottom_margin: [i64, null],
+  cells: Array&lt;Cell&gt;,
+  height: [i64, null],
+  style: [Style, null],
+  top_margin: [i64, null]
+};
 
-    /// Creates a table cell from a line
-    val cell: fn(?#style: Style, Line) -&gt; Cell;
-}
+val row: fn(
+  ?#bottom_margin: [i64, null],
+  ?#height: [i64, null],
+  ?#style: [Style, null],
+  ?#top_margin: [i64, null],
+  Array&lt;Cell&gt;
+) -&gt; Row;
+
+val table: fn(
+  ?#cell_highlight_style: &amp;[Style, null],
+  ?#column_highlight_style: &amp;[Style, null],
+  ?#column_spacing: &amp;[i64, null],
+  ?#flex: &amp;[Flex, null],
+  ?#footer: &amp;[Row, null],
+  ?#header: &amp;[Row, null],
+  ?#highlight_spacing: &amp;[HighlightSpacing, null],
+  ?#highlight_symbol: &amp;[string, null],
+  ?#row_highlight_style: &amp;[Style, null],
+  ?#selected: &amp;[i64, null],
+  ?#selected_cell: &amp;[{x: i64, y: i64}, null],
+  ?#selected_column: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  ?#widths: &amp;[Array&lt;Constraint&gt;, null],
+  &amp;Array&lt;&amp;Row&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

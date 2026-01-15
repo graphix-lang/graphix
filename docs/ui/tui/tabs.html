@@ -177,17 +177,17 @@
                     <main>
                         <h1 id="the-tabs-widget"><a class="header" href="#the-tabs-widget">The Tabs Widget</a></h1>
 <p>The <code>tabs</code> widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that's shown when the tab is selected.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code class="language-graphix">mod tabs: sig {
-    /// Creates a tabbed interface from an array of (title, content) tuples
-    val tabs: fn(
-        ?#selected: &amp;i64,
-        ?#highlight_style: &amp;Style,
-        ?#style: &amp;Style,
-        ?#divider: &amp;[string, Span],
-        &amp;Array&lt;(Line, Widget)&gt;
-    ) -&gt; Widget;
-}
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">val tabs: fn(
+  ?#divider: &amp;[Span, null],
+  ?#highlight_style: &amp;[Style, null],
+  ?#padding_left: &amp;[Line, null],
+  ?#padding_right: &amp;[Line, null],
+  ?#selected: &amp;[i64, null],
+  ?#size: &amp;[Size, null],
+  ?#style: &amp;[Style, null],
+  &amp;Array&lt;(Line, Tui)&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

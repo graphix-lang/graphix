@@ -520,25 +520,22 @@ Caused by:
     1: at: line: 1, column: 3, in: (f64:1. + i64:1)
     2: type mismatch '_1046: i64 does not contain [i64, f64]
 </code></pre>
-<p>Division by zero is raised as an error to the nearest error handler (more on
-that later) and will be printed to stderr by the shell if it is never handled.
-Overflow and underflow are handled by wrapping,</p>
+<p>Division by zero raises an error to the nearest error handler (see <a href="core/error.html">Error Handling</a>). If unhandled, it will be printed to stderr by the shell.</p>
 <pre><code class="language-graphix">〉0 / 0
-
-thread 'tokio-runtime-worker' panicked at &lt;rust runtime&gt;:
-attempt to divide by zero
 -: i64
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 unhandled error: error:"in expr at line: 1, column: 1 attempt to divide by zero"
-〉u32:0 - u32:1
+</code></pre>
+<p>The result type of the division is still <code>i64</code>, but the actual value is an error. You can handle division by zero using the <code>?</code> or <code>`</code> operators:</p>
+<pre><code class="language-graphix">〉(0 / 0)?
+-: Result&lt;i64, Error&lt;`ArithError(string)&gt;&gt;
+error:["ArithError", "in expr at line: 1, column: 2 attempt to divide by zero"]
+</code></pre>
+<p>If division by zero occurs and is not handled, the expression will not update until the divisor changes to a non-zero value. This can cause issues if your program depends on continuous updates from that expression.</p>
+<p>Overflow and underflow are handled by wrapping:</p>
+<pre><code class="language-graphix">〉u32:0 - u32:1
 -: u32
 4294967295
 </code></pre>
-<p>The thread panic message is an artifact of how the overflow error is handled at
-runtime, it is safe to continue using the shell and runtime if such an error
-occurs. However the particular arith operation that caused the error will not
-update, which may cause problems depending on what your program is doing with
-it.</p>
 <h4 id="v32-z32-v64-z64"><a class="header" href="#v32-z32-v64-z64">v32, z32, v64, z64</a></h4>
 <p>These number types are the same as the normal types except when they
 are sent over the wire via netidx (or written to a file) they use
@@ -3599,6 +3596,246 @@ val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
 /// return a shuffled copy of a
 val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="fs---filesystem-operations"><a class="header" href="#fs---filesystem-operations">fs - Filesystem Operations</a></h1>
+<p>The <code>fs</code> module provides functions for reading, writing, and watching files and directories.</p>
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">/// The type of file system events you are interested in.
+/// The short names, e.g. `Access mean ANY kind of access event.
+/// The longer names e.g. `AccessOpen mean a more specific subset
+/// of the short named class event. There are sometimes multiple
+/// levels of this. For example `Modify expresses interest in
+/// any modification, `ModifyRename expresses interest in any
+/// kind of rename operation, and `ModifyRenameTo expresses interest
+/// only on rename to.
+///
+/// `Established is a special event that happens when the watch is
+/// successfully established
+type Interest = [
+    `Established,
+    `Any,
+    `Access,
+    `AccessOpen,
+    `AccessClose,
+    `AccessRead,
+    `AccessOther,
+    `Create,
+    `CreateFile,
+    `CreateFolder,
+    `CreateOther,
+    `Modify,
+    `ModifyData,
+    `ModifyDataSize,
+    `ModifyDataContent,
+    `ModifyDataOther,
+    `ModifyMetadata,
+    `ModifyMetadataAccessTime,
+    `ModifyMetadataWriteTime,
+    `ModifyMetadataPermissions,
+    `ModifyMetadataOwnership,
+    `ModifyMetadataExtended,
+    `ModifyMetadataOther,
+    `ModifyRename,
+    `ModifyRenameTo,
+    `ModifyRenameFrom,
+    `ModifyRenameBoth,
+    `ModifyRenameOther,
+    `ModifyOther,
+    `Delete,
+    `DeleteFile,
+    `DeleteFolder,
+    `DeleteOther,
+    `Other
+];
+
+type WatchEvent = {
+    paths: Array&lt;string&gt;,
+    event: Interest
+};
+
+type FileType = [
+    `Dir,
+    `File,
+    `Symlink,
+    `SymlinkDir,
+    `BlockDev,
+    `CharDev,
+    `Fifo,
+    `Socket,
+    null
+];
+
+/// Filesystem metadata. Not all kind fields are possible on all platforms.
+/// permissions will only be set on unix platforms, windows will only
+/// expose the ReadOnly flag.
+type Metadata = {
+    accessed: [datetime, null],
+    created: [datetime, null],
+    modified: [datetime, null],
+    kind: FileType,
+    len: u64,
+    permissions: [u32, `ReadOnly(bool)]
+};
+
+/// a directory entry
+type DirEntry = {
+    path: string,
+    file_name: string,
+    depth: i64,
+    kind: FileType
+};
+
+/// Set global parameters for all watches.
+///
+/// poll_interval: How often to poll a batch, set this to 0 to disable polling. default 1 second.
+/// poll_batch_size: How many files to poll per batch, must be positive, default 100
+val set_global_watch_parameters: fn(
+    ?#poll_interval:[duration, null],
+    ?#poll_batch_size:[i64, null]
+) -&gt; Result&lt;null, `WatchError(string)&gt;;
+
+/// Watch the specified path for events matching #interest. Return the canonical
+/// path of the filesystem object involved in the event, or an error if the
+/// watch could not be established. watch updates when,
+/// - an event occurs that matches interest
+/// - an error occurs when trying to establish the watch
+///
+/// If you wish to know when the watch is established, you must express interest
+/// in the `Established event (which is in the default set). If you do so, you will
+/// also get a new established event if you change the interest or the path.
+///
+/// If path is a directory the watch will report events about immediate children.
+/// If the watch could not be established establishement will be retried every
+/// time path updates
+///
+/// Filesystem watches are a limited operating system resource, like file
+/// descriptors, or handles.
+val watch: fn(?#interest: Array&lt;Interest&gt;, string) -&gt; Result&lt;string, `WatchError(string)&gt;;
+
+/// Watch the specified path for events matching #interest. Return the full event
+/// describing what happened, or an error if the watch could not be established.
+/// watch_full updates when
+/// - an event occurs that matches interest
+/// - an error occurs when trying to establish the watch
+///
+/// If you wish to know when the watch is established, you must express interest
+/// in the `Established event (which is in the default set). If you do so, you will
+/// also get a new established event if you change the interest or the path.
+///
+/// If path is a directory the watch will report events about immediate children.
+/// If the watch could not be established establishement will be retried every
+/// time path updates
+///
+/// Filesystem watches are a limited operating system resource, like file
+/// descriptors, or handles.
+val watch_full: fn(?#interest: Array&lt;Interest&gt;, string) -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
+
+/// Read the specified file into memory as a utf8 string and return it, or an
+/// error if,
+/// - path is not a file
+/// - path is not valid utf8
+/// - an OS specific error occurs while trying to read path
+///
+/// The file will be read again each time path updates, even if path did not change.
+/// Reads are queued and executed in the order they are initiated. For example, if we
+/// read_all on path0 and path1, the read of path0 will complete before the read of path1
+/// begins. Results are always returned in the same order the reads were queued.
+val read_all: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// Read the specified file into memory as a bytes and return it, or an
+/// error if,
+/// - path is not a file
+/// - an OS specific error occurs while trying to read path
+///
+/// The file will be read again each time path updates, even if path did not change.
+/// Reads are queued and executed in the order they are initiated. For example, if we
+/// read_all_bin on path0 and path1, the read of path0 will complete before the read of
+/// path1 begins. Results are always returned in the same order the reads were queued.
+val read_all_bin: fn(string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+
+/// Write data to path. If path does not exist it will be created. If path exists it
+/// will be truncated and it's contents will be replaced with data.
+///
+/// A write will occur whenever either path or data updates, even if they did not change.
+/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
+/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
+/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
+/// were queued.
+val write_all: fn(#path: string, string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Write data to path. If path does not exist it will be created. If path exists it
+/// will be truncated and it's contents will be replaced with data.
+///
+/// A write will occur whenever either path or data updates, even if they did not change.
+/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
+/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
+/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
+/// were queued.
+val write_all_bin: fn(#path: string, bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Every time trigger updates, create and return a randomly generated
+/// temporary directory, and remove any previous temporary directories.
+/// return an error if the temporary directory can't be created.
+///
+/// if `in` is specified, the temporary directory will be created as a child of `in`
+///
+/// if `name` is specified, the temporary directory will have either a prefix of name
+/// or a suffix of name.
+val tempdir: fn(
+    ?#in:[null, string],
+    ?#name:[null, `Prefix(string), `Suffix(string)],
+    Any
+) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// join parts to path using the OS specific path separator
+val join_path: fn(string, @args: [string, Array&lt;string&gt;]) -&gt; string;
+
+/// if path is a file then return path
+/// otherwise return an IOError. Check again every time path updates.
+val is_file: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// if path is a directory then return path, otherwise return an IOError.
+/// check again every time path updates.
+val is_dir: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// Return the metadata for a filesystem object, or an error. Check again every
+/// time an argument updates.
+val metadata: fn(?#follow_symlinks: bool, string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+
+/// readdir reads a directory and returns an array of directory entries.
+/// By default it will read only immediate children, however it can be
+/// configured to search at greater depth.
+///
+/// depth appears in several places, The root path is depth 0, immediate children
+/// are depth 1, and so on.
+///
+/// - min_depth: controls the minimum search depth. default 1.
+/// - max_depth: controls the maximum search depth. default 1.
+/// - contents_first: directory contents will be arranged
+///   before the directory itself. default false.
+/// - follow_symlinks: if true, follow symlinks when traversing, default false.
+/// - follow_root_symlink: if the root path is a symlink follow it. default true.
+/// - same_filesystem: don't traverse across filesystem boundaries. default false.
+val readdir: fn(
+    ?#max_depth: i64,
+    ?#min_depth: i64,
+    ?#contents_first: bool,
+    ?#follow_symlinks: bool,
+    ?#follow_root_symlink: bool,
+    ?#same_filesystem: bool,
+    string
+) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
+
+/// create a directory. If all is true (default false) create all intermediate
+/// directories as well.
+val create_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// remove a directory. If all is true (default false) then recursively remove
+/// the contents as well. If all is false fail if the directory is not empty.
+val remove_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// remove a file
+val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="building-uis-with-graphix"><a class="header" href="#building-uis-with-graphix">Building UIs With Graphix</a></h1>
 <p>Graphix excels at building user interfaces thanks to its reactive dataflow nature. Changes in data automatically propagate through the UI graph, updating only the components that need to change. This makes building complex, interactive applications surprisingly straightforward.</p>
 <h2 id="why-graphix-for-uis"><a class="header" href="#why-graphix-for-uis">Why Graphix for UIs?</a></h2>
@@ -3898,29 +4135,45 @@ tui::gauge::gauge(
 <p>See individual widget documentation for specific style parameters they accept.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
 <p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code class="language-graphix">mod barchart: sig {
-    /// Creates a bar chart from bar groups
-    val bar_chart: fn(
-        ?#max: &amp;i64,
-        ?#bar_width: &amp;i64,
-        ?#bar_gap: &amp;i64,
-        ?#group_gap: &amp;i64,
-        ?#style: &amp;Style,
-        &amp;Array&lt;BarGroup&gt;
-    ) -&gt; Widget;
+<h2 id="interface-1"><a class="header" href="#interface-1">Interface</a></h2>
+<pre><code class="language-graphix">type Bar = {
+  label: &amp;[Line, null],
+  style: &amp;[Style, null],
+  text_value: &amp;[string, null],
+  value: &amp;i64,
+  value_style: &amp;[Style, null]
+};
 
-    /// Creates a group of bars
-    val bar_group: fn(?#label: Line, Array&lt;Bar&gt;) -&gt; BarGroup;
+val bar: fn(
+  ?#label: &amp;[Line, null],
+  ?#style: &amp;[Style, null],
+  ?#text_value: &amp;[string, null],
+  ?#value_style: &amp;[Style, null],
+  &amp;i64
+) -&gt; Bar;
 
-    /// Creates an individual bar
-    val bar: fn(
-        ?#style: &amp;Style,
-        ?#label: &amp;Line,
-        ?#text_value: &amp;Line,
-        &amp;i64
-    ) -&gt; Bar;
-}
+type BarGroup = {
+  bars: Array&lt;Bar&gt;,
+  label: [Line, null]
+};
+
+val bar_group: fn(
+  ?#label: [Line, null],
+  Array&lt;Bar&gt;
+) -&gt; BarGroup;
+
+val bar_chart: fn(
+  ?#bar_gap: &amp;[i64, null],
+  ?#bar_style: &amp;[Style, null],
+  ?#bar_width: &amp;[i64, null],
+  ?#direction: &amp;[Direction, null],
+  ?#group_gap: &amp;[i64, null],
+  ?#label_style: &amp;[Style, null],
+  ?#max: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  ?#value_style: &amp;[Style, null],
+  &amp;Array&lt;BarGroup&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <h3 id="bar_chart"><a class="header" href="#bar_chart">bar_chart</a></h3>
@@ -4016,21 +4269,50 @@ bar_chart(&amp;[bar_group(bars)])
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-block-widget"><a class="header" href="#the-block-widget">The Block Widget</a></h1>
 <p>The <code>block</code> widget is a container that wraps other widgets with optional borders, titles, and styling. It's one of the most commonly used widgets for creating structured layouts and visually separating different sections of your TUI.</p>
-<h2 id="api"><a class="header" href="#api">API</a></h2>
-<pre><code>mod block: sig {
-    type Borders = [`All, `None, `Top, `Bottom, `Left, `Right];
+<h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
+<pre><code class="language-graphix">type Border = [
+  `Top,
+  `Right,
+  `Bottom,
+  `Left
+];
 
-    /// Creates a block widget that wraps content with borders and styling
-    val block: fn(
-        ?#border: &amp;Borders,
-        ?#border_style: &amp;Style,
-        ?#title: &amp;Line,
-        ?#title_bottom: &amp;Line,
-        ?#style: &amp;Style,
-        ?#size: &amp;Size,
-        &amp;Widget
-    ) -&gt; Widget;
-}
+type BorderType = [
+  `Plain,
+  `Rounded,
+  `Double,
+  `Thick,
+  `QuadrantInside,
+  `QuadrantOutside
+];
+
+type Padding = {
+  bottom: i64,
+  left: i64,
+  right: i64,
+  top: i64
+};
+
+type Position = [
+  `Top,
+  `Bottom
+];
+
+val block: fn(
+  ?#border: &amp;[Array&lt;Border&gt;, `All, `None, null],
+  ?#border_type: &amp;[BorderType, null],
+  ?#border_style: &amp;[Style, null],
+  ?#padding: &amp;[Padding, null],
+  ?#style: &amp;[Style, null],
+  ?#title: &amp;[Line, null],
+  ?#title_top: &amp;[Line, null],
+  ?#title_bottom: &amp;[Line, null],
+  ?#title_style: &amp;[Style, null],
+  ?#title_position: &amp;[Position, null],
+  ?#title_alignment: &amp;[Alignment, null],
+  ?#size: &amp;[Size, null],
+  &amp;Tui
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-1"><a class="header" href="#parameters-1">Parameters</a></h2>
 <ul>
@@ -4105,19 +4387,26 @@ block(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-browser-widget"><a class="header" href="#the-browser-widget">The Browser Widget</a></h1>
 <p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.</p>
-<h2 id="apis-1"><a class="header" href="#apis-1">APIs</a></h2>
-<pre><code>mod browser: sig {
-    type MoveCursor = [`Left(i64), `Right(i64), `Up(i64), `Down(i64)];
+<h2 id="interface-3"><a class="header" href="#interface-3">Interface</a></h2>
+<pre><code class="language-graphix">type MoveCursor = [
+    `Left(i64),
+    `Right(i64),
+    `Up(i64),
+    `Down(i64)
+];
 
-    /// Creates a browser widget for navigating netidx hierarchies
-    val browser: fn(
-        ?#cursor: MoveCursor,
-        ?#selected_row: &amp;string,
-        #selected_path: &amp;string,
-        ?#size: &amp;Size,
-        string
-    ) -&gt; Widget;
-}
+val browser: fn(
+    ?#selected_style: Style,
+    ?#header_style: Style,
+    ?#style: Style,
+    ?#cursor: MoveCursor,
+    ?#selected_row: &amp;string,
+    ?#selected_path: &amp;string,
+    ?#flex: Flex,
+    ?#rate: duration,
+    #size: Size,
+    string
+) -&gt; Tui throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
 </code></pre>
 <h2 id="parameters-2"><a class="header" href="#parameters-2">Parameters</a></h2>
 <ul>
@@ -4185,23 +4474,30 @@ input_handler(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-calendar-widget"><a class="header" href="#the-calendar-widget">The Calendar Widget</a></h1>
 <p>The <code>calendar</code> widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It's perfect for date pickers, event schedulers, and time-based visualizations.</p>
-<h2 id="apis-2"><a class="header" href="#apis-2">APIs</a></h2>
-<pre><code class="language-graphix">mod calendar: sig {
-    /// Creates a calendar widget displaying a month
-    val calendar: fn(
-        ?#show_month: &amp;Style,
-        ?#show_weekday: &amp;Style,
-        ?#show_surrounding: &amp;Style,
-        ?#events: &amp;Array&lt;CalendarEvent&gt;,
-        &amp;Date
-    ) -&gt; Widget;
+<h2 id="interface-4"><a class="header" href="#interface-4">Interface</a></h2>
+<pre><code class="language-graphix">type Date = {
+  year: i64,
+  month: i64,
+  day: i64
+};
 
-    /// Creates an event marker for a specific date
-    val calendar_event: fn(Style, Date) -&gt; CalendarEvent;
+val date: fn(i64, i64, i64) -&gt; Date;
 
-    /// Creates a date object
-    val date: fn(i64, i64, i64) -&gt; Date;  // (year, month, day)
-}
+type CalendarEvent = {
+  date: Date,
+  style: Style
+};
+
+val calendar_event: fn(Style, Date) -&gt; CalendarEvent;
+
+val calendar: fn(
+  ?#default_style: &amp;[Style, null],
+  ?#show_month: &amp;[Style, null],
+  ?#show_surrounding: &amp;[Style, null],
+  ?#show_weekday: &amp;[Style, null],
+  ?#events: &amp;[Array&lt;CalendarEvent&gt;, null],
+  &amp;Date
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-3"><a class="header" href="#parameters-3">Parameters</a></h2>
 <h3 id="calendar"><a class="header" href="#calendar">calendar</a></h3>
@@ -4284,26 +4580,56 @@ calendar(#events: &amp;events, &amp;date(2024, 5, 1))
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-canvas-widget"><a class="header" href="#the-canvas-widget">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.</p>
-<h2 id="apis-3"><a class="header" href="#apis-3">APIs</a></h2>
-<pre><code>mod canvas: sig {
-    type Bounds = {min: f64, max: f64};
-    type Shape = [
-        `Line({color: Color, x1: f64, y1: f64, x2: f64, y2: f64}),
-        `Circle({color: Color, x: f64, y: f64, radius: f64}),
-        `Rectangle({color: Color, x: f64, y: f64, width: f64, height: f64}),
-        `Points({color: Color, coords: Array&lt;(f64, f64)&gt;}),
-        `Label({line: Line, x: f64, y: f64})
-    ];
+<h2 id="interface-5"><a class="header" href="#interface-5">Interface</a></h2>
+<pre><code class="language-graphix">type CanvasLine = {
+  color: Color,
+  x1: f64,
+  x2: f64,
+  y1: f64,
+  y2: f64
+};
 
-    /// Creates a canvas widget for custom graphics
-    val canvas: fn(
-        ?#background_color: &amp;Color,
-        ?#marker: &amp;Marker,
-        #x_bounds: &amp;Bounds,
-        #y_bounds: &amp;Bounds,
-        &amp;Array&lt;&amp;Shape&gt;
-    ) -&gt; Widget;
-}
+type CanvasCircle = {
+  color: Color,
+  radius: f64,
+  x: f64,
+  y: f64
+};
+
+type CanvasRectangle = {
+  color: Color,
+  height: f64,
+  width: f64,
+  x: f64,
+  y: f64
+};
+
+type CanvasPoints = {
+  color: Color,
+  coords: Array&lt;(f64, f64)&gt;
+};
+
+type CanvasLabel = {
+  line: Line,
+  x: f64,
+  y: f64
+};
+
+type CanvasShape = [
+  `Line(CanvasLine),
+  `Circle(CanvasCircle),
+  `Rectangle(CanvasRectangle),
+  `Points(CanvasPoints),
+  `Label(CanvasLabel)
+];
+
+val canvas: fn(
+  ?#background_color: &amp;[Color, null],
+  ?#marker: &amp;[Marker, null],
+  #x_bounds: &amp;{ max: f64, min: f64 },
+  #y_bounds: &amp;{ max: f64, min: f64 },
+  &amp;Array&lt;&amp;CanvasShape&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-4"><a class="header" href="#parameters-4">Parameters</a></h2>
 <ul>
@@ -4424,36 +4750,64 @@ canvas(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-chart-widget"><a class="header" href="#the-chart-widget">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders line charts with multiple datasets, custom axes, labels, and styling. It's ideal for visualizing time series data, trends, sensor readings, and any numeric data relationships.</p>
-<h2 id="apis-4"><a class="header" href="#apis-4">APIs</a></h2>
-<pre><code>mod chart: sig {
-    type GraphType = [`Line, `Scatter];
-    type Marker = [`Dot, `Braille, `Block];
+<h2 id="interface-6"><a class="header" href="#interface-6">Interface</a></h2>
+<pre><code class="language-graphix">type GraphType = [
+  `Scatter,
+  `Line,
+  `Bar
+];
 
-    /// Creates a chart widget with datasets and axes
-    val chart: fn(
-        ?#style: &amp;Style,
-        #x_axis: &amp;Axis,
-        #y_axis: &amp;Axis,
-        &amp;Array&lt;Dataset&gt;
-    ) -&gt; Widget;
+type LegendPosition = [
+  `Top,
+  `TopRight,
+  `TopLeft,
+  `Left,
+  `Right,
+  `Bottom,
+  `BottomRight,
+  `BottomLeft
+];
 
-    /// Creates an axis configuration
-    val axis: fn(
-        ?#title: Line,
-        ?#labels: Array&lt;Line&gt;,
-        ?#style: Style,
-        {min: f64, max: f64}
-    ) -&gt; Axis;
+type Axis = {
+  bounds: {min: f64, max: f64},
+  labels: [Array&lt;Line&gt;, null],
+  labels_alignment: [Alignment, null],
+  style: [Style, null],
+  title: [Line, null]
+};
 
-    /// Creates a dataset to display on the chart
-    val dataset: fn(
-        ?#style: &amp;Style,
-        ?#graph_type: &amp;GraphType,
-        ?#marker: &amp;Marker,
-        ?#name: &amp;Line,
-        &amp;Array&lt;(f64, f64)&gt;
-    ) -&gt; Dataset;
-}
+val axis: fn(
+  ?#labels: [Array&lt;Line&gt;, null],
+  ?#labels_alignment: [Alignment, null],
+  ?#style: [Style, null],
+  ?#title: [Line, null],
+  {min: f64, max: f64}
+) -&gt; Axis;
+
+type Dataset = {
+  data: &amp;Array&lt;(f64, f64)&gt;,
+  graph_type: &amp;[GraphType, null],
+  marker: &amp;[Marker, null],
+  name: &amp;[Line, null],
+  style: &amp;[Style, null]
+};
+
+val dataset: fn(
+  ?#marker: &amp;[Marker, null],
+  ?#graph_type: &amp;[GraphType, null],
+  ?#name: &amp;[Line, null],
+  ?#style: &amp;[Style, null],
+  &amp;Array&lt;(f64, f64)&gt;
+) -&gt; Dataset;
+
+val chart: fn(
+  ?#hidden_legend_constraints: &amp;[LegendConstraints, null],
+  ?#legend_position: &amp;[LegendPosition, null],
+  ?#style: &amp;[Style, null],
+  ?#x_axis: &amp;[Axis, null],
+  ?#y_axis: &amp;[Axis, null],
+  &amp;Array&lt;Dataset&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-5"><a class="header" href="#parameters-5">Parameters</a></h2>
 <h3 id="chart"><a class="header" href="#chart">chart</a></h3>
@@ -4587,40 +4941,14 @@ chart(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-text-widget"><a class="header" href="#the-text-widget">The Text Widget</a></h1>
 <p>The <code>text</code> widget renders styled text in the terminal. It's a fundamental building block for displaying formatted content with colors, modifiers, and multiple lines. Text is built from <code>Line</code> objects, which are in turn composed of <code>Span</code> objects.</p>
-<h2 id="apis-5"><a class="header" href="#apis-5">APIs</a></h2>
-<pre><code>mod text: sig {
-    type Alignment = [`Left, `Center, `Right];
-    type Modifier = [
-        `Bold,
-        `Italic,
-        `Underlined,
-        `SlowBlink,
-        `RapidBlink,
-        `Reversed,
-        `Hidden,
-        `CrossedOut
-    ];
-    type Color = [
-        `Red, `Green, `Yellow, `Blue, `Magenta, `Cyan, `Gray, `DarkGray,
-        `LightRed, `LightGreen, `LightYellow, `LightBlue, `LightMagenta, `LightCyan,
-        `White, `Black,
-        `Indexed(i64),
-        `Rgb({r: i64, g: i64, b: i64})
-    ];
-
-    /// Creates styled text from a string or array of lines
-    val text: fn(&amp;[string, Array&lt;Line&gt;]) -&gt; Widget;
-
-    /// Creates a line of text from a string or array of spans
-    val line: fn(?#style: Style, ?#alignment: Alignment, [string, Array&lt;Span&gt;]) -&gt; Line;
-
-    /// Creates a styled text span
-    val span: fn(?#style: Style, string) -&gt; Span;
-
-    /// Creates a text style
-    val style: fn(?#fg: Color, ?#bg: Color, ?#add_modifier: Modifier) -&gt; Style;
-}
+<h2 id="interface-7"><a class="header" href="#interface-7">Interface</a></h2>
+<pre><code class="language-graphix">val text: fn(
+  ?#style: &amp;Style,
+  ?#alignment: &amp;[Alignment, null],
+  &amp;[Array&lt;Line&gt;, string]
+) -&gt; Tui;
 </code></pre>
+<p>The <code>text</code> widget uses types from the <a href="ui/tui/style.html">style</a> module including <code>Style</code>, <code>Line</code>, <code>Span</code>, <code>Color</code>, <code>Modifier</code>, and <code>Alignment</code>.</p>
 <h2 id="text-hierarchy"><a class="header" href="#text-hierarchy">Text Hierarchy</a></h2>
 <ul>
 <li><strong>Span</strong>: A single segment of text with a single style</li>
@@ -4711,18 +5039,14 @@ text(&amp;[
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-paragraph-widget"><a class="header" href="#the-paragraph-widget">The Paragraph Widget</a></h1>
 <p>The <code>paragraph</code> widget displays multi-line text with automatic word wrapping and scrolling support. It's ideal for displaying long text content, logs, or any content that needs to flow across multiple lines.</p>
-<h2 id="api-1"><a class="header" href="#api-1">API</a></h2>
-<pre><code class="language-graphix">mod paragraph: sig {
-    type ScrollPosition = {x: i64, y: i64};
-
-    /// Creates a paragraph widget with text content
-    val paragraph: fn(
-        ?#scroll: &amp;ScrollPosition,
-        ?#alignment: &amp;Alignment,
-        ?#wrap: &amp;bool,
-        &amp;[string, Text]
-    ) -&gt; Widget;
-}
+<h2 id="interface-8"><a class="header" href="#interface-8">Interface</a></h2>
+<pre><code class="language-graphix">val paragraph: fn(
+  ?#style: &amp;Style,
+  ?#alignment: &amp;[Alignment, null],
+  ?#scroll: &amp;{x: i64, y: i64},
+  ?#trim: &amp;bool,
+  &amp;[Array&lt;Line&gt;, string]
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-6"><a class="header" href="#parameters-6">Parameters</a></h2>
 <ul>
@@ -4824,17 +5148,14 @@ paragraph(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-gauge-widget"><a class="header" href="#the-gauge-widget">The Gauge Widget</a></h1>
 <p>The <code>gauge</code> widget displays a single value as a filled progress indicator, perfect for showing percentages, completion status, or resource usage. It provides a clear visual representation of how full or complete something is.</p>
-<h2 id="api-2"><a class="header" href="#api-2">API</a></h2>
-<pre><code class="language-graphix">mod gauge: sig {
-    /// Creates a gauge widget showing progress from 0.0 to 1.0
-    val gauge: fn(
-        ?#gauge_style: &amp;Style,
-        ?#label: &amp;Line,
-        ?#use_unicode: &amp;bool,
-        ?#style: &amp;Style,
-        &amp;f64
-    ) -&gt; Widget;
-}
+<h2 id="interface-9"><a class="header" href="#interface-9">Interface</a></h2>
+<pre><code class="language-graphix">val gauge: fn(
+  ?#gauge_style: &amp;[Style, null],
+  ?#label: &amp;[Span, null],
+  ?#style: &amp;[Style, null],
+  ?#use_unicode: &amp;[bool, null],
+  &amp;f64
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-7"><a class="header" href="#parameters-7">Parameters</a></h2>
 <ul>
@@ -4915,20 +5236,22 @@ gauge(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It's more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
-<h2 id="api-3"><a class="header" href="#api-3">API</a></h2>
-<pre><code>mod linegauge: sig {
-    type LineSet = [`Thin, `Thick, `Double];
+<h2 id="interface-10"><a class="header" href="#interface-10">Interface</a></h2>
+<pre><code class="language-graphix">type LineSet = [
+  `Normal,
+  `Rounded,
+  `Double,
+  `Thick
+];
 
-    /// Creates a line gauge widget showing progress from 0.0 to 1.0
-    val line_gauge: fn(
-        ?#filled_style: &amp;Style,
-        ?#unfilled_style: &amp;Style,
-        ?#line_set: &amp;LineSet,
-        ?#label: &amp;Line,
-        ?#style: &amp;Style,
-        &amp;f64
-    ) -&gt; Widget;
-}
+val line_gauge: fn(
+  ?#filled_style: &amp;[Style, null],
+  ?#label: &amp;[Line, null],
+  ?#line_set: &amp;[LineSet, null],
+  ?#style: &amp;[Style, null],
+  ?#unfilled_style: &amp;[Style, null],
+  &amp;f64
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-8"><a class="header" href="#parameters-8">Parameters</a></h2>
 <ul>
@@ -5271,32 +5594,41 @@ tui::input_handler::input_handler(
   &amp;widgets
 )
 </code></pre>
+<h2 id="see-also-11"><a class="header" href="#see-also-11">See Also</a></h2>
+<ul>
+<li><a href="ui/tui/style.html">style</a> - Styling text and widgets</li>
+<li><a href="ui/tui/layout.html">layout</a> - Arranging widgets with focus support</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-layout-widget"><a class="header" href="#the-layout-widget">The Layout Widget</a></h1>
 <p>The <code>layout</code> widget arranges child widgets in horizontal or vertical layouts with flexible sizing constraints. It's the primary tool for organizing complex TUI interfaces and supports focus management for interactive applications.</p>
-<h2 id="apis-6"><a class="header" href="#apis-6">APIs</a></h2>
-<pre><code>mod layout: sig {
-    type Direction = [`Horizontal, `Vertical];
-    type Flex = [`Start, `Center, `End, `SpaceAround, `SpaceBetween];
-    type Constraint = [
-        `Percentage(i64),
-        `Length(i64),
-        `Min(i64),
-        `Max(i64),
-        `Ratio(i64, i64),
-        `Fill(i64)
-    ];
+<h2 id="interface-11"><a class="header" href="#interface-11">Interface</a></h2>
+<pre><code class="language-graphix">type Spacing = [
+  `Space(i64),
+  `Overlap(i64)
+];
 
-    /// Creates a layout that arranges child widgets
-    val layout: fn(
-        ?#direction: &amp;Direction,
-        ?#focused: &amp;i64,
-        ?#flex: &amp;Flex,
-        &amp;Array&lt;Child&gt;
-    ) -&gt; Widget;
+type Child = {
+  child: Tui,
+  constraint: Constraint,
+  size: &amp;[Size, null]
+};
 
-    /// Creates a child widget with sizing constraints
-    val child: fn(?#constraint: Constraint, Widget) -&gt; Child;
-}
+val child: fn(
+  ?#size: &amp;[Size, null],
+  #constraint: Constraint,
+  Tui
+) -&gt; Child;
+
+val layout: fn(
+  ?#direction: &amp;[Direction, null],
+  ?#flex: &amp;[Flex, null],
+  ?#focused: &amp;[i64, null],
+  ?#horizontal_margin: &amp;[i64, null],
+  ?#margin: &amp;[i64, null],
+  ?#spacing: &amp;[Spacing, null],
+  ?#vertical_margin: &amp;[i64, null],
+  &amp;Array&lt;Child&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-9"><a class="header" href="#parameters-9">Parameters</a></h2>
 <ul>
@@ -5424,26 +5756,24 @@ layout(
 )
 </code></pre>
 <p><img src="ui/tui/./media/layout_header_footer.png" alt="Layout With Header and Footer" /></p>
-<h2 id="see-also-11"><a class="header" href="#see-also-11">See Also</a></h2>
+<h2 id="see-also-12"><a class="header" href="#see-also-12">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/block.html">block</a> - Common child widget for layouts</li>
 <li><a href="ui/tui/../overview.html#input-handling">input_handler</a> - For handling focus changes</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-list-widget"><a class="header" href="#the-list-widget">The List Widget</a></h1>
 <p>The <code>list</code> widget displays a scrollable, selectable list of items with keyboard navigation support. It's perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.</p>
-<h2 id="api-4"><a class="header" href="#api-4">API</a></h2>
-<pre><code class="language-graphix">mod list: sig {
-    /// Creates a list widget from an array of lines
-    val list: fn(
-        ?#selected: &amp;i64,
-        ?#scroll: &amp;i64,
-        ?#highlight_style: &amp;Style,
-        ?#highlight_symbol: &amp;string,
-        ?#repeat_highlight_symbol: &amp;bool,
-        ?#style: &amp;Style,
-        &amp;Array&lt;Line&gt;
-    ) -&gt; Widget;
-}
+<h2 id="interface-12"><a class="header" href="#interface-12">Interface</a></h2>
+<pre><code class="language-graphix">val list: fn(
+  ?#highlight_spacing: &amp;[HighlightSpacing, null],
+  ?#highlight_style: &amp;[Style, null],
+  ?#highlight_symbol: &amp;[string, null],
+  ?#repeat_highlight_symbol: &amp;[bool, null],
+  ?#scroll: &amp;[i64, null],
+  ?#selected: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  &amp;Array&lt;Line&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-10"><a class="header" href="#parameters-10">Parameters</a></h2>
 <ul>
@@ -5551,7 +5881,7 @@ let items = [
 list(#selected: &amp;0, &amp;items)
 </code></pre>
 <p><img src="ui/tui/./media/list_styled.png" alt="Styled List" /></p>
-<h2 id="see-also-12"><a class="header" href="#see-also-12">See Also</a></h2>
+<h2 id="see-also-13"><a class="header" href="#see-also-13">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/table.html">table</a> - For multi-column structured data</li>
 <li><a href="ui/tui/scroll.html">scrollbar</a> - For adding scrollbars</li>
@@ -5560,16 +5890,31 @@ list(#selected: &amp;0, &amp;items)
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-scrollbar-widget"><a class="header" href="#the-scrollbar-widget">The Scrollbar Widget</a></h1>
 <p>The <code>scrollbar</code> widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.</p>
-<h2 id="api-5"><a class="header" href="#api-5">API</a></h2>
-<pre><code class="language-graphix">mod scrollbar: sig {
-    /// Wraps a widget with a scrollbar indicator
-    val scrollbar: fn(
-        #position: &amp;i64,
-        ?#content_length: &amp;i64,
-        ?#size: &amp;Size,
-        &amp;Widget
-    ) -&gt; Widget;
-}
+<h2 id="interface-13"><a class="header" href="#interface-13">Interface</a></h2>
+<pre><code class="language-graphix">type ScrollbarOrientation = [
+  `VerticalRight,
+  `VerticalLeft,
+  `HorizontalBottom,
+  `HorizontalTop
+];
+
+val scrollbar: fn(
+  ?#begin_style: &amp;[Style, null],
+  ?#begin_symbol: &amp;[string, null],
+  ?#content_length: &amp;[i64, null],
+  ?#end_style: &amp;[Style, null],
+  ?#end_symbol: &amp;[string, null],
+  ?#orientation: &amp;[ScrollbarOrientation, null],
+  ?#position: &amp;[i64, null],
+  ?#size: &amp;[Size, null],
+  ?#style: &amp;[Style, null],
+  ?#thumb_style: &amp;[Style, null],
+  ?#thumb_symbol: &amp;[string, null],
+  ?#track_style: &amp;[Style, null],
+  ?#track_symbol: &amp;[string, null],
+  ?#viewport_length: &amp;[i64, null],
+  &amp;Tui
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-11"><a class="header" href="#parameters-11">Parameters</a></h2>
 <ul>
@@ -5684,7 +6029,7 @@ scrollbar(
 )
 </code></pre>
 <p><img src="ui/tui/./media/scroll_list.png" alt="Scrollable List" /></p>
-<h2 id="see-also-13"><a class="header" href="#see-also-13">See Also</a></h2>
+<h2 id="see-also-14"><a class="header" href="#see-also-14">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/paragraph.html">paragraph</a> - For scrollable text content</li>
 <li><a href="ui/tui/list.html">list</a> - For scrollable lists</li>
@@ -5693,21 +6038,30 @@ scrollbar(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-sparkline-widget"><a class="header" href="#the-sparkline-widget">The Sparkline Widget</a></h1>
 <p>The <code>sparkline</code> widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.</p>
-<h2 id="apis-7"><a class="header" href="#apis-7">APIs</a></h2>
-<pre><code>mod sparkline: sig {
-    type Direction = [`LeftToRight, `RightToLeft];
+<h2 id="interface-14"><a class="header" href="#interface-14">Interface</a></h2>
+<pre><code class="language-graphix">type RenderDirection = [
+  `LeftToRight,
+  `RightToLeft
+];
 
-    /// Creates a sparkline widget from data values
-    val sparkline: fn(
-        ?#max: &amp;i64,
-        ?#style: &amp;Style,
-        ?#direction: &amp;Direction,
-        &amp;Array&lt;[SparklineBar, f64]&gt;
-    ) -&gt; Widget;
+type SparklineBar = {
+  style: [Style, null],
+  value: [f64, null]
+};
 
-    /// Creates a sparkline bar with custom styling
-    val sparkline_bar: fn(?#style: Style, f64) -&gt; SparklineBar;
-}
+val sparkline_bar: fn(
+  ?#style: [Style, null],
+  [f64, null]
+) -&gt; SparklineBar;
+
+val sparkline: fn(
+  ?#absent_value_style: &amp;[Style, null],
+  ?#absent_value_symbol: &amp;[string, null],
+  ?#direction: &amp;[RenderDirection, null],
+  ?#max: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  &amp;Array&lt;[SparklineBar, f64, null]&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-12"><a class="header" href="#parameters-12">Parameters</a></h2>
 <h3 id="sparkline"><a class="header" href="#sparkline">sparkline</a></h3>
@@ -5821,7 +6175,7 @@ netidx publisher
 <li>Compact data visualization in lists or tables</li>
 <li>Rate of change visualization</li>
 </ul>
-<h2 id="see-also-14"><a class="header" href="#see-also-14">See Also</a></h2>
+<h2 id="see-also-15"><a class="header" href="#see-also-15">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/chart.html">chart</a> - For detailed charts with axes</li>
 <li><a href="ui/tui/gauge.html">gauge</a> - For single current value display</li>
@@ -5829,29 +6183,50 @@ netidx publisher
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>The <code>table</code> widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It's ideal for data grids, process monitors, file listings, and any tabular data display.</p>
-<h2 id="apis-8"><a class="header" href="#apis-8">APIs</a></h2>
-<pre><code>mod table: sig {
-    type HighlightSpacing = [`Always, `WhenSelected, `Never];
+<h2 id="interface-15"><a class="header" href="#interface-15">Interface</a></h2>
+<pre><code class="language-graphix">type Cell = {
+  content: Line,
+  style: [Style, null]
+};
 
-    /// Creates a table widget from an array of row references
-    val table: fn(
-        ?#header: &amp;Row,
-        ?#selected: &amp;i64,
-        ?#row_highlight_style: &amp;Style,
-        ?#highlight_symbol: &amp;string,
-        ?#highlight_spacing: &amp;HighlightSpacing,
-        ?#widths: &amp;Array&lt;Constraint&gt;,
-        ?#column_spacing: &amp;i64,
-        ?#style: &amp;Style,
-        &amp;Array&lt;&amp;Row&gt;
-    ) -&gt; Widget;
+val cell: fn(
+  ?#style: [Style, null],
+  Line
+) -&gt; Cell;
 
-    /// Creates a table row from cells
-    val row: fn(?#style: Style, Array&lt;Cell&gt;) -&gt; Row;
+type Row = {
+  bottom_margin: [i64, null],
+  cells: Array&lt;Cell&gt;,
+  height: [i64, null],
+  style: [Style, null],
+  top_margin: [i64, null]
+};
 
-    /// Creates a table cell from a line
-    val cell: fn(?#style: Style, Line) -&gt; Cell;
-}
+val row: fn(
+  ?#bottom_margin: [i64, null],
+  ?#height: [i64, null],
+  ?#style: [Style, null],
+  ?#top_margin: [i64, null],
+  Array&lt;Cell&gt;
+) -&gt; Row;
+
+val table: fn(
+  ?#cell_highlight_style: &amp;[Style, null],
+  ?#column_highlight_style: &amp;[Style, null],
+  ?#column_spacing: &amp;[i64, null],
+  ?#flex: &amp;[Flex, null],
+  ?#footer: &amp;[Row, null],
+  ?#header: &amp;[Row, null],
+  ?#highlight_spacing: &amp;[HighlightSpacing, null],
+  ?#highlight_symbol: &amp;[string, null],
+  ?#row_highlight_style: &amp;[Style, null],
+  ?#selected: &amp;[i64, null],
+  ?#selected_cell: &amp;[{x: i64, y: i64}, null],
+  ?#selected_column: &amp;[i64, null],
+  ?#style: &amp;[Style, null],
+  ?#widths: &amp;[Array&lt;Constraint&gt;, null],
+  &amp;Array&lt;&amp;Row&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-13"><a class="header" href="#parameters-13">Parameters</a></h2>
 <ul>
@@ -6038,7 +6413,7 @@ let header = row([cell(line("PID")), cell(line("Name")), cell(line("CPU"))]);
 table(#header: &amp;header, &amp;rows)
 </code></pre>
 <p><img src="ui/tui/./media/table_realtime.gif" alt="Realtime Table" /></p>
-<h2 id="see-also-15"><a class="header" href="#see-also-15">See Also</a></h2>
+<h2 id="see-also-16"><a class="header" href="#see-also-16">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/list.html">list</a> - For simpler single-column selection</li>
 <li><a href="ui/tui/scroll.html">scrollbar</a> - For adding scrollbars</li>
@@ -6046,17 +6421,17 @@ table(#header: &amp;header, &amp;rows)
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-tabs-widget"><a class="header" href="#the-tabs-widget">The Tabs Widget</a></h1>
 <p>The <code>tabs</code> widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that's shown when the tab is selected.</p>
-<h2 id="api-6"><a class="header" href="#api-6">API</a></h2>
-<pre><code class="language-graphix">mod tabs: sig {
-    /// Creates a tabbed interface from an array of (title, content) tuples
-    val tabs: fn(
-        ?#selected: &amp;i64,
-        ?#highlight_style: &amp;Style,
-        ?#style: &amp;Style,
-        ?#divider: &amp;[string, Span],
-        &amp;Array&lt;(Line, Widget)&gt;
-    ) -&gt; Widget;
-}
+<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
+<pre><code class="language-graphix">val tabs: fn(
+  ?#divider: &amp;[Span, null],
+  ?#highlight_style: &amp;[Style, null],
+  ?#padding_left: &amp;[Line, null],
+  ?#padding_right: &amp;[Line, null],
+  ?#selected: &amp;[i64, null],
+  ?#size: &amp;[Size, null],
+  ?#style: &amp;[Style, null],
+  &amp;Array&lt;(Line, Tui)&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-14"><a class="header" href="#parameters-14">Parameters</a></h2>
 <ul>
@@ -6197,7 +6572,7 @@ tabs(&amp;[
 <li><code>Tab</code> - Cycle forward through tabs</li>
 <li>Number keys - Jump directly to tab</li>
 </ul>
-<h2 id="see-also-16"><a class="header" href="#see-also-16">See Also</a></h2>
+<h2 id="see-also-17"><a class="header" href="#see-also-17">See Also</a></h2>
 <ul>
 <li><a href="ui/tui/block.html">block</a> - For containing tabs with borders</li>
 <li><a href="ui/tui/list.html">list</a> - Common content for tabs</li>

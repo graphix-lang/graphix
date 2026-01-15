@@ -42,6 +42,7 @@
   - [re](./stdlib/re.md)
   - [time](./stdlib/time.md)
   - [rand](./stdlib/rand.md)
+  - [fs](./stdlib/fs.md)
 - [Building UIs With Graphix](./ui/overview.md)
   - [TUIs](./ui/tui/overview.md)
     - [style](./ui/tui/style.md)

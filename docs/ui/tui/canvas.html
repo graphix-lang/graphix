@@ -177,26 +177,56 @@
                     <main>
                         <h1 id="the-canvas-widget"><a class="header" href="#the-canvas-widget">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code>mod canvas: sig {
-    type Bounds = {min: f64, max: f64};
-    type Shape = [
-        `Line({color: Color, x1: f64, y1: f64, x2: f64, y2: f64}),
-        `Circle({color: Color, x: f64, y: f64, radius: f64}),
-        `Rectangle({color: Color, x: f64, y: f64, width: f64, height: f64}),
-        `Points({color: Color, coords: Array&lt;(f64, f64)&gt;}),
-        `Label({line: Line, x: f64, y: f64})
-    ];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type CanvasLine = {
+  color: Color,
+  x1: f64,
+  x2: f64,
+  y1: f64,
+  y2: f64
+};
 
-    /// Creates a canvas widget for custom graphics
-    val canvas: fn(
-        ?#background_color: &amp;Color,
-        ?#marker: &amp;Marker,
-        #x_bounds: &amp;Bounds,
-        #y_bounds: &amp;Bounds,
-        &amp;Array&lt;&amp;Shape&gt;
-    ) -&gt; Widget;
-}
+type CanvasCircle = {
+  color: Color,
+  radius: f64,
+  x: f64,
+  y: f64
+};
+
+type CanvasRectangle = {
+  color: Color,
+  height: f64,
+  width: f64,
+  x: f64,
+  y: f64
+};
+
+type CanvasPoints = {
+  color: Color,
+  coords: Array&lt;(f64, f64)&gt;
+};
+
+type CanvasLabel = {
+  line: Line,
+  x: f64,
+  y: f64
+};
+
+type CanvasShape = [
+  `Line(CanvasLine),
+  `Circle(CanvasCircle),
+  `Rectangle(CanvasRectangle),
+  `Points(CanvasPoints),
+  `Label(CanvasLabel)
+];
+
+val canvas: fn(
+  ?#background_color: &amp;[Color, null],
+  ?#marker: &amp;[Marker, null],
+  #x_bounds: &amp;{ max: f64, min: f64 },
+  #y_bounds: &amp;{ max: f64, min: f64 },
+  &amp;Array&lt;&amp;CanvasShape&gt;
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>

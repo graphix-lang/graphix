@@ -177,40 +177,14 @@
                     <main>
                         <h1 id="the-text-widget"><a class="header" href="#the-text-widget">The Text Widget</a></h1>
 <p>The <code>text</code> widget renders styled text in the terminal. It's a fundamental building block for displaying formatted content with colors, modifiers, and multiple lines. Text is built from <code>Line</code> objects, which are in turn composed of <code>Span</code> objects.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code>mod text: sig {
-    type Alignment = [`Left, `Center, `Right];
-    type Modifier = [
-        `Bold,
-        `Italic,
-        `Underlined,
-        `SlowBlink,
-        `RapidBlink,
-        `Reversed,
-        `Hidden,
-        `CrossedOut
-    ];
-    type Color = [
-        `Red, `Green, `Yellow, `Blue, `Magenta, `Cyan, `Gray, `DarkGray,
-        `LightRed, `LightGreen, `LightYellow, `LightBlue, `LightMagenta, `LightCyan,
-        `White, `Black,
-        `Indexed(i64),
-        `Rgb({r: i64, g: i64, b: i64})
-    ];
-
-    /// Creates styled text from a string or array of lines
-    val text: fn(&amp;[string, Array&lt;Line&gt;]) -&gt; Widget;
-
-    /// Creates a line of text from a string or array of spans
-    val line: fn(?#style: Style, ?#alignment: Alignment, [string, Array&lt;Span&gt;]) -&gt; Line;
-
-    /// Creates a styled text span
-    val span: fn(?#style: Style, string) -&gt; Span;
-
-    /// Creates a text style
-    val style: fn(?#fg: Color, ?#bg: Color, ?#add_modifier: Modifier) -&gt; Style;
-}
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">val text: fn(
+  ?#style: &amp;Style,
+  ?#alignment: &amp;[Alignment, null],
+  &amp;[Array&lt;Line&gt;, string]
+) -&gt; Tui;
 </code></pre>
+<p>The <code>text</code> widget uses types from the <a href="style.html">style</a> module including <code>Style</code>, <code>Line</code>, <code>Span</code>, <code>Color</code>, <code>Modifier</code>, and <code>Alignment</code>.</p>
 <h2 id="text-hierarchy"><a class="header" href="#text-hierarchy">Text Hierarchy</a></h2>
 <ul>
 <li><strong>Span</strong>: A single segment of text with a single style</li>

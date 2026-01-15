@@ -2,19 +2,19 @@
 
 The `tabs` widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that's shown when the tab is selected.
 
-## API
+## Interface
 
 ```graphix
-mod tabs: sig {
-    /// Creates a tabbed interface from an array of (title, content) tuples
-    val tabs: fn(
-        ?#selected: &i64,
-        ?#highlight_style: &Style,
-        ?#style: &Style,
-        ?#divider: &[string, Span],
-        &Array<(Line, Widget)>
-    ) -> Widget;
-}
+val tabs: fn(
+  ?#divider: &[Span, null],
+  ?#highlight_style: &[Style, null],
+  ?#padding_left: &[Line, null],
+  ?#padding_right: &[Line, null],
+  ?#selected: &[i64, null],
+  ?#size: &[Size, null],
+  ?#style: &[Style, null],
+  &Array<(Line, Tui)>
+) -> Tui;
 ```
 
 ## Parameters

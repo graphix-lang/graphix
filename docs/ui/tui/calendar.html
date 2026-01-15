@@ -177,23 +177,30 @@
                     <main>
                         <h1 id="the-calendar-widget"><a class="header" href="#the-calendar-widget">The Calendar Widget</a></h1>
 <p>The <code>calendar</code> widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It's perfect for date pickers, event schedulers, and time-based visualizations.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code class="language-graphix">mod calendar: sig {
-    /// Creates a calendar widget displaying a month
-    val calendar: fn(
-        ?#show_month: &amp;Style,
-        ?#show_weekday: &amp;Style,
-        ?#show_surrounding: &amp;Style,
-        ?#events: &amp;Array&lt;CalendarEvent&gt;,
-        &amp;Date
-    ) -&gt; Widget;
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type Date = {
+  year: i64,
+  month: i64,
+  day: i64
+};
 
-    /// Creates an event marker for a specific date
-    val calendar_event: fn(Style, Date) -&gt; CalendarEvent;
+val date: fn(i64, i64, i64) -&gt; Date;
 
-    /// Creates a date object
-    val date: fn(i64, i64, i64) -&gt; Date;  // (year, month, day)
-}
+type CalendarEvent = {
+  date: Date,
+  style: Style
+};
+
+val calendar_event: fn(Style, Date) -&gt; CalendarEvent;
+
+val calendar: fn(
+  ?#default_style: &amp;[Style, null],
+  ?#show_month: &amp;[Style, null],
+  ?#show_surrounding: &amp;[Style, null],
+  ?#show_weekday: &amp;[Style, null],
+  ?#events: &amp;[Array&lt;CalendarEvent&gt;, null],
+  &amp;Date
+) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <h3 id="calendar"><a class="header" href="#calendar">calendar</a></h3>

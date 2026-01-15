@@ -177,19 +177,26 @@
                     <main>
                         <h1 id="the-browser-widget"><a class="header" href="#the-browser-widget">The Browser Widget</a></h1>
 <p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.</p>
-<h2 id="apis"><a class="header" href="#apis">APIs</a></h2>
-<pre><code>mod browser: sig {
-    type MoveCursor = [`Left(i64), `Right(i64), `Up(i64), `Down(i64)];
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type MoveCursor = [
+    `Left(i64),
+    `Right(i64),
+    `Up(i64),
+    `Down(i64)
+];
 
-    /// Creates a browser widget for navigating netidx hierarchies
-    val browser: fn(
-        ?#cursor: MoveCursor,
-        ?#selected_row: &amp;string,
-        #selected_path: &amp;string,
-        ?#size: &amp;Size,
-        string
-    ) -&gt; Widget;
-}
+val browser: fn(
+    ?#selected_style: Style,
+    ?#header_style: Style,
+    ?#style: Style,
+    ?#cursor: MoveCursor,
+    ?#selected_row: &amp;string,
+    ?#selected_path: &amp;string,
+    ?#flex: Flex,
+    ?#rate: duration,
+    #size: Size,
+    string
+) -&gt; Tui throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
