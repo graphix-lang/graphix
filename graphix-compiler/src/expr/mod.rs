@@ -74,7 +74,7 @@ pub struct Arg {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct Doc(Option<ArcStr>);
+pub struct Doc(pub Option<ArcStr>);
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct TypeDefExpr {

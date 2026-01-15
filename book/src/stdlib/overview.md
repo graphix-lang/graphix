@@ -2,7 +2,6 @@
 
 The Graphix standard library is split into several modules with different
 functions. The `core` module is always imported with an implicit use statement.
-The modules are documented in the sig format used by dynamic module signatures.
 
 - `core` fundamental functions and types
 - `array` functions for manipulating arrays
@@ -12,5 +11,6 @@ The modules are documented in the sig format used by dynamic module signatures.
 - `rand` random number generator
 - `time` timers and time functions
 - `net` netidx functions
+- `fs` file manipulation
 
 The standard library is a work in progress.

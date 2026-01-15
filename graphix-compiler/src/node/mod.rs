@@ -273,7 +273,7 @@ impl TypeDef {
     ) -> Result<Node<R, E>> {
         let typ = typ.scope_refs(&scope.lexical);
         ctx.env
-            .deftype(&scope.lexical, name, params.clone(), typ)
+            .deftype(&scope.lexical, name, params.clone(), typ, None)
             .with_context(|| format!("in typedef at {}", spec.pos))?;
         let name = name.clone();
         Ok(Box::new(Self { spec, scope: scope.lexical.clone(), name }))

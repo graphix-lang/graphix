@@ -3,8 +3,8 @@ use crate::{
     env::Env,
     errf,
     expr::{
-        parser, BindSig, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefExpr,
+        parser, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig,
+        SigKind, Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
     typ::Type,
@@ -40,12 +40,27 @@ fn bind_sig<R: Rt, E: UserEvent>(
             SigKind::Bind(BindSig { name, typ }) => {
                 let typ = typ.scope_refs(&scope.lexical);
                 typ.alias_tvars(&mut LPooled::take());
-                env.bind_variable(&scope.lexical, name, typ);
+                let bind = env.bind_variable(&scope.lexical, name, typ);
+                if let Doc(Some(s)) = &si.doc {
+                    bind.doc = Some(s.clone());
+                }
             }
             SigKind::TypeDef(td) => {
                 let typ = td.typ.scope_refs(&scope.lexical);
-                env.deftype(&scope.lexical, &td.name, td.params.clone(), typ.clone())?;
-                mod_env.deftype(&scope.lexical, &td.name, td.params.clone(), typ)?
+                env.deftype(
+                    &scope.lexical,
+                    &td.name,
+                    td.params.clone(),
+                    typ.clone(),
+                    si.doc.0.clone(),
+                )?;
+                mod_env.deftype(
+                    &scope.lexical,
+                    &td.name,
+                    td.params.clone(),
+                    typ,
+                    si.doc.0.clone(),
+                )?
             }
         }
     }
