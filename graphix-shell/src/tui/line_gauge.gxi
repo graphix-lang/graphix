@@ -4,7 +4,7 @@ type LineGauge = {
   label: &[Line, null],
   ratio: &f64,
   style: &[Style, null],
-  unfilled_style: &[Style, null]
+  unfilled_style: &[Style, null],
   unfilled_symbol: &[string, null],
 };
 

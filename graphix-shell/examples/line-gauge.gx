@@ -17,7 +17,6 @@ block(
   #title:&line("Power"),
   &line_gauge(
     #filled_style:&style(#fg: color),
-    #line_set:&`Thick,
     &power
   )
 )

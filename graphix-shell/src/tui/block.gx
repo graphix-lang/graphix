@@ -17,6 +17,7 @@ let block = |
   border,
   border_type,
   border_style,
+  merge_borders,
   padding,
   size,
   style,
