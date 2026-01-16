@@ -1,6 +1,6 @@
 [package]
 name = "graphix-stdlib"
-version = "0.2.3"
+version = "0.3.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -28,7 +28,7 @@ escaping = { workspace = true }
 extended-notify = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.2.0", path = "../graphix-compiler" }
+graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
 poolshark = { workspace = true }
 immutable-chunkmap = { workspace = true }
 indexmap = { workspace = true }
