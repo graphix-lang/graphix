@@ -2,10 +2,9 @@ use crate::{
     env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     typ::{TVal, TVar, Type},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
-    CAST_ERR,
+    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent, CAST_ERR,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use compiler::compile;
 use enumflags2::BitFlags;
@@ -18,11 +17,11 @@ pub(crate) mod bind;
 pub(crate) mod callsite;
 pub(crate) mod compiler;
 pub(crate) mod data;
-pub(crate) mod dynamic;
 pub(crate) mod error;
 pub mod genn;
 pub(crate) mod lambda;
 pub(crate) mod map;
+pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
 pub(crate) mod select;
@@ -127,6 +126,55 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 }
 
 #[derive(Debug)]
+pub(crate) struct ExplicitParens<R: Rt, E: UserEvent> {
+    spec: Expr,
+    n: Node<R, E>,
+}
+
+impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+    ) -> Result<Node<R, E>> {
+        let n = compile(ctx, flags, spec.clone(), scope, top_id)?;
+        Ok(Box::new(ExplicitParens { spec, n }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+        self.n.update(ctx, event)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.sleep(ctx);
+    }
+
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck(ctx)
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.n.typ()
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
+}
+
+#[derive(Debug)]
 struct Cached<R: Rt, E: UserEvent> {
     cached: Option<Value>,
     node: Node<R, E>,
@@ -159,7 +207,7 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
 #[derive(Debug)]
 pub(crate) struct Use {
     spec: Expr,
-    scope: ModPath,
+    scope: Scope,
     name: ModPath,
 }
 
@@ -170,18 +218,10 @@ impl Use {
         scope: &Scope,
         name: &ModPath,
     ) -> Result<Node<R, E>> {
-        match ctx.env.canonical_modpath(&scope.lexical, name) {
-            None => bail!("at {} no such module {name}", spec.pos),
-            Some(_) => {
-                let used = ctx.env.used.get_or_default_cow(scope.lexical.clone());
-                Arc::make_mut(used).push(name.clone());
-                Ok(Box::new(Self {
-                    spec,
-                    scope: scope.lexical.clone(),
-                    name: name.clone(),
-                }))
-            }
-        }
+        ctx.env
+            .use_in_scope(scope, name)
+            .map_err(|e| anyhow!("at {} {e:?}", spec.pos))?;
+        Ok(Box::new(Self { spec, scope: scope.clone(), name: name.clone() }))
     }
 }
 
@@ -205,12 +245,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(used) = ctx.env.used.get_mut_cow(&self.scope) {
-            Arc::make_mut(used).retain(|n| n != &self.name);
-            if used.is_empty() {
-                ctx.env.used.remove_cow(&self.scope);
-            }
-        }
+        ctx.env.stop_use_in_scope(&self.scope, &self.name);
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -238,7 +273,7 @@ impl TypeDef {
     ) -> Result<Node<R, E>> {
         let typ = typ.scope_refs(&scope.lexical);
         ctx.env
-            .deftype(&scope.lexical, name, params.clone(), typ)
+            .deftype(&scope.lexical, name, params.clone(), typ, None)
             .with_context(|| format!("in typedef at {}", spec.pos))?;
         let name = name.clone();
         Ok(Box::new(Self { spec, scope: scope.lexical.clone(), name }))
@@ -707,9 +742,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
-        let typ =
-            Type::Set(Arc::from_iter(n.iter().map(|n| n.typ().clone()))).normalize();
-        Ok(Box::new(Self { spec, typ, n }))
+        Ok(Box::new(Self { spec, typ: Type::empty_tvar(), n }))
     }
 }
 
@@ -745,12 +778,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck(ctx))?
         }
-        let rtyp = Type::Primitive(BitFlags::empty());
+        let rtyp = Type::Bottom;
         let rtyp = wrap!(
             self,
-            self.n.iter().fold(Ok(rtyp), |rtype, n| n.typ().union(&ctx.env, &rtype?))
+            self.n.iter().fold(Ok(rtyp), |rtype, n| rtype?.union(&ctx.env, n.typ()))
         )?;
-        Ok(self.typ.check_contains(&ctx.env, &rtyp)?)
+        let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
+        self.typ.check_contains(&ctx.env, &rtyp)?;
+        Ok(())
     }
 }
 

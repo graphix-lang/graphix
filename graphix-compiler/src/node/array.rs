@@ -327,7 +327,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
                 .iter()
                 .fold(Ok(rtype), |rtype, n| n.node.typ().union(&ctx.env, &rtype?))
         )?;
-        let rtype = Type::Array(Arc::new(rtype));
+        let rtype = match rtype {
+            Type::Bottom => Type::Array(Arc::new(Type::empty_tvar())),
+            t => Type::Array(Arc::new(t)),
+        };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
 }

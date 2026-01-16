@@ -330,7 +330,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 }
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<Map<R, E>>()?;
     ctx.register_builtin::<Filter<R, E>>()?;
     ctx.register_builtin::<FilterMap<R, E>>()?;
@@ -341,5 +341,5 @@ pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<A
     ctx.register_builtin::<Remove>()?;
     ctx.register_builtin::<Iter>()?;
     ctx.register_builtin::<IterQ>()?;
-    Ok(literal!(include_str!("map.gx")))
+    Ok((literal!(include_str!("map.gx")), literal!(include_str!("map.gxi"))))
 }

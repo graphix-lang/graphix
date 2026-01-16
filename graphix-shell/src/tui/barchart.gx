@@ -1,11 +1,3 @@
-type Bar = {
-  label: &[Line, null],
-  style: &[Style, null],
-  text_value: &[string, null],
-  value: &i64,
-  value_style: &[Style, null]
-};
-
 let bar = |
   #label: &[Line, null] = &null,
   #style: &[Style, null] = &null,
@@ -20,28 +12,10 @@ let bar = |
   value
 };
 
-type BarGroup = {
-  bars: Array<Bar>,
-  label: [Line, null]
-};
-
 let bar_group = |
   #label: [Line, null] = null,
   bars: Array<Bar>
 | -> BarGroup { label, bars };
-
-type BarChart = {
-  bar_gap: &[i64, null],
-  bar_style: &[Style, null],
-  bar_width: &[i64, null],
-  data: &Array<BarGroup>,
-  direction: &[Direction, null],
-  group_gap: &[i64, null],
-  label_style: &[Style, null],
-  max: &[i64, null],
-  style: &[Style, null],
-  value_style: &[Style, null]
-};
 
 let bar_chart = |
   #bar_gap: &[i64, null] = &null,

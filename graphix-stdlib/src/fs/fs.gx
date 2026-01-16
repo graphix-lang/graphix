@@ -1,225 +1,19 @@
-// The type of file system events you are interested in.
-// The short names, e.g. `Access mean ANY kind of access event.
-// The longer names e.g. `AccessOpen mean a more specific subset
-// of the short named class event. There are sometimes multiple
-// levels of this. For example `Modify expresses interest in
-// any modification, `ModifyRename expresses interest in any
-// kind of rename operation, and `ModifyRenameTo expresses interest
-// only on rename to.
-//
-// `Established is a special event that happens when the watch is
-// successfully established
-type Interest = [
-    `Established,
-    `Any,
-    `Access,
-    `AccessOpen,
-    `AccessClose,
-    `AccessRead,
-    `AccessOther,
-    `Create,
-    `CreateFile,
-    `CreateFolder,
-    `CreateOther,
-    `Modify,
-    `ModifyData,
-    `ModifyDataSize,
-    `ModifyDataContent,
-    `ModifyDataOther,
-    `ModifyMetadata,
-    `ModifyMetadataAccessTime,
-    `ModifyMetadataWriteTime,
-    `ModifyMetadataPermissions,
-    `ModifyMetadataOwnership,
-    `ModifyMetadataExtended,
-    `ModifyMetadataOther,
-    `ModifyRename,
-    `ModifyRenameTo,
-    `ModifyRenameFrom,
-    `ModifyRenameBoth,
-    `ModifyRenameOther,
-    `ModifyOther,
-    `Delete,
-    `DeleteFile,
-    `DeleteFolder,
-    `DeleteOther,
-    `Other
-];
-
-type WatchEvent = {
-    paths: Array<string>,
-    event: Interest
-};
-
-/// - poll_interval: how often to poll a batch of watched files. (default 1 second)
-/// the minimum allowed poll interval is 100ms.
-///
-/// - poll_batch_size: how many watched files are in each poll batch (default 100)
-/// if poll_batch_size is set to 0 then polling will be DISABLED globally. If you
-/// disable polling some of the stranger corner cases, such as your parent directory
-/// being renamed, will not be handled.
-///
-/// inotify, fsevents, etc have many problems, and so even though we use them
-/// we must also poll to ensure correct semantics. You can consider the worst
-/// case time you will find out about file creation, deletion, rename to be,
-/// (N / poll_batch_size) * poll_interval. Where N is the number of files you
-/// are watching globally.
 let set_global_watch_parameters = |
     #poll_interval = null,
     #poll_batch_size = null
 | 'fs_set_global_watch_parameters;
-
-/// Watch the specified path for events matching #interest. Return the canonical
-/// path of the filesystem object involved in the event, or an error if the
-/// watch could not be established. watch updates when,
-/// - an event occurs that matches interest
-/// - an error occurs when trying to establish the watch
-///
-/// If you wish to know when the watch is established, you must express interest
-/// in the `Established event (which is in the default set). If you do so, you will
-/// also get a new established event if you change the interest or the path.
-///
-/// If path is a directory the watch will report events about immediate children.
-/// If the watch could not be established establishement will be retried every
-/// time path updates
-///
-/// Filesystem watches are a limited operating system resource, like file
-/// descriptors, or handles.
-pub let watch = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch;
-
-/// Watch the specified path for events matching #interest. Return the full event
-/// describing what happened, or an error if the watch could not be established.
-/// watch_full updates when
-/// - an event occurs that matches interest
-/// - an error occurs when trying to establish the watch
-///
-/// If you wish to know when the watch is established, you must express interest
-/// in the `Established event (which is in the default set). If you do so, you will
-/// also get a new established event if you change the interest or the path.
-///
-/// If path is a directory the watch will report events about immediate children.
-/// If the watch could not be established establishement will be retried every
-/// time path updates
-///
-/// Filesystem watches are a limited operating system resource, like file
-/// descriptors, or handles.
-pub let watch_full = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch_full;
-
-/// Read the specified file into memory as a utf8 string and return it, or an
-/// error if,
-/// - path is not a file
-/// - path is not valid utf8
-/// - an OS specific error occurs while trying to read path
-///
-/// The file will be read again each time path updates, even if path did not change.
-/// Reads are queued and executed in the order they are initiated. For example, if we
-/// read_all on path0 and path1, the read of path0 will complete before the read of path1
-/// begins. Results are always returned in the same order the reads were queued.
-pub let read_all = |path| 'fs_read_all;
-
-/// Read the specified file into memory as a bytes and return it, or an
-/// error if,
-/// - path is not a file
-/// - an OS specific error occurs while trying to read path
-///
-/// The file will be read again each time path updates, even if path did not change.
-/// Reads are queued and executed in the order they are initiated. For example, if we
-/// read_all_bin on path0 and path1, the read of path0 will complete before the read of
-/// path1 begins. Results are always returned in the same order the reads were queued.
-pub let read_all_bin = |path| 'fs_read_all_bin;
-
-/// Write data to path. If path does not exist it will be created. If path exists it
-/// will be truncated and it's contents will be replaced with data.
-///
-/// A write will occur whenever either path or data updates, even if they did not change.
-/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
-/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
-/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
-/// were queued.
-pub let write_all = |#path, data| 'fs_write_all;
-
-/// Write data to path. If path does not exist it will be created. If path exists it
-/// will be truncated and it's contents will be replaced with data.
-///
-/// A write will occur whenever either path or data updates, even if they did not change.
-/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
-/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
-/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
-/// were queued.
-pub let write_all_bin = |#path, data| 'fs_write_all_bin;
-
-/// Every time trigger updates, create and return a randomly generated
-/// temporary directory, and remove any previous temporary directories.
-/// return an error if the temporary directory can't be created.
-///
-/// if `in` is specified, the temporary directory will be created as a child of `in`
-///
-/// if `name` is specified, the temporary directory will have either a prefix of name
-/// or a suffix of name.
-pub let tempdir = |#in = null, #name = null, trigger| 'fs_tempdir;
-
-/// join parts to path using the OS specific path separator
-pub let join_path = |path, @args| 'fs_join_path;
-
-/// if path is a file then return path
-/// otherwise return an IOError. Check again every time path updates.
-pub let is_file = |path| 'fs_is_file;
-
-/// if path is a directory then return path, otherwise return an IOError.
-/// check again every time path updates.
-pub let is_dir = |path| 'fs_is_dir;
-
-type FileType = [
-    `Dir,
-    `File,
-    `Symlink,
-    `SymlinkDir,
-    `BlockDev,
-    `CharDev,
-    `Fifo,
-    `Socket,
-    null
-];
-
-// Filesystem metadata. Not all kind fields are possible on all platforms.
-// permissions will only be set on unix platforms, windows will only
-// expose the ReadOnly flag.
-type Metadata = {
-    accessed: [datetime, null],
-    created: [datetime, null],
-    modified: [datetime, null],
-    kind: FileType,
-    len: u64,
-    permissions: [u32, `ReadOnly(bool)]
-};
-
-/// Return the metadata for a filesystem object, or an error. Check again every
-/// time an argument updates.
-pub let metadata = |#follow_symlinks = true, path| 'fs_metadata;
-
-// a directory entry
-type DirEntry = {
-    path: string,
-    file_name: string,
-    depth: i64,
-    kind: FileType
-};
-
-/// readdir reads a directory and returns an array of directory entries.
-/// By default it will read only immediate children, however it can be
-/// configured to search at greater depth.
-///
-/// depth appears in several places, The root path is depth 0, immediate children
-/// are depth 1, and so on.
-///
-/// - min_depth: controls the minimum search depth. default 1.
-/// - max_depth: controls the maximum search depth. default 1.
-/// - contents_first: directory contents will be arranged
-///   before the directory itself. default false.
-/// - follow_symlinks: if true, follow symlinks when traversing, default false.
-/// - follow_root_symlink: if the root path is a symlink follow it. default true.
-/// - same_filesystem: don't traverse across filesystem boundaries. default false.
-pub let readdir = |
+let watch = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch;
+let watch_full = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch_full;
+let read_all = |path| 'fs_read_all;
+let read_all_bin = |path| 'fs_read_all_bin;
+let write_all = |#path, data| 'fs_write_all;
+let write_all_bin = |#path, data| 'fs_write_all_bin;
+let tempdir = |#in = null, #name = null, trigger| 'fs_tempdir;
+let join_path = |path, @args| 'fs_join_path;
+let is_file = |path| 'fs_is_file;
+let is_dir = |path| 'fs_is_dir;
+let metadata = |#follow_symlinks = true, path| 'fs_metadata;
+let readdir = |
     #max_depth = 1,
     #min_depth = 1,
     #contents_first = false,
@@ -228,14 +22,6 @@ pub let readdir = |
     #same_filesystem = false,
     path
 | 'fs_readdir;
-
-/// create a directory. If all is true (default false) create all intermediate
-/// directories as well.
-pub let create_dir = |#all = false, path| 'fs_create_dir;
-
-/// remove a directory. If all is true (default false) then recursively remove
-/// the contents as well. If all is false fail if the directory is not empty.
-pub let remove_dir = |#all = false, path| 'fs_remove_dir;
-
-/// remove a file
-pub let remove_file = |path| 'fs_remove_file
+let create_dir = |#all = false, path| 'fs_create_dir;
+let remove_dir = |#all = false, path| 'fs_remove_dir;
+let remove_file = |path| 'fs_remove_file

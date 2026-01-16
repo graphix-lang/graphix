@@ -1,66 +1,35 @@
-# Project Structure
+# Repository Guidelines
 
-## Docs
+## Project Structure & Module Organization
+- `graphix-compiler/`: compiler (parser, type checker, graph generation).
+- `graphix-rt/`: runtime for executing dataflow graphs.
+- `graphix-stdlib/`: standard library (Rust + Graphix sources).
+- `graphix-shell/`: REPL, CLI, and TUI widget library.
+- `book/`: mdbook source for the language documentation.
+- `docs/`: generated HTML documentation (build output).
+- `book/src/examples/`: runnable `.gx` examples used in the book.
 
-- book
+## Build, Test, and Development Commands
+- `cargo build --release`: build the full Rust workspace.
+- `cargo test`: run all Rust tests across crates.
+- `cargo run --bin graphix -- path/to/file.gx`: run a Graphix program from the workspace without installing.
+- `cd book && mdbook build -d ../docs`: rebuild the HTML documentation into `docs/`.
 
-The mdbook describing the language
+## Coding Style & Naming Conventions
+- Rust code is formatted with `rustfmt` (`rustfmt.toml` in repo). Run `cargo fmt` before submitting.
+- Use Rust conventions: `snake_case` for modules/functions, `CamelCase` for types/traits, `SCREAMING_SNAKE_CASE` for constants.
+- Graphix source files use the `.gx` extension; keep examples small and focused for documentation.
 
-- docs
+## Testing Guidelines
+- Use Rust’s built-in test framework (`#[test]`) inside crate modules or `tests/` for integration tests.
+- Prefer adding tests alongside the crate you change (compiler/runtime/stdlib/shell).
+- No explicit coverage target is documented; add regression tests for bug fixes.
 
-The compiled html book
+## Commit & Pull Request Guidelines
+- Recent commit messages are short, lowercase, and imperative (e.g., `fix many parser problems`).
+- PRs should include a concise summary, testing notes (commands run), and links to related issues.
+- If you update docs or examples, rebuild the book and include that in the PR notes.
 
-## Crates
-
-- graphix-compiler
-
-The compiler for the graphix language
-
-- graphix-stdlib
-
-The graphix standard library implementation, both the rust and graphix parts
-
-- graphix-rt
-
-The graphix runtime
-
-- graphix-shell
-
-The graphix REPL, along with the terminal (and future graphical) gui library
-implementations
-
-# Code Review
-
-When asked to do code review please use the following process. When you wish to
-say something about a particular part of the code add a comment in the form
-
-// CR <your-name> for <cr-adressee>: text of your comment
-
-For example if you are claude, and you wish to tell eestokes that particular use
-of unsafe is ok you might write
-
-// CR claude for estokes: This use of unsafe does not seem safe because ...
-
-I will then read your comment, and if I think I have addressed the problem I
-will change it to an XCR. For example,
-
-// XCR claude for estokes: This use of unsafe does not seem safe because ...
-
-I might also add additional explanation to the comment prefixed by my name, for example
-
-// XCR claude for estokes: This use of unsafe does not seem safe because ...
-// estokes: I think it's actually safe because ...
-
-When you write a CR. The first thing you should do is read the CR again and make
-sure you really agree with what you said. Sometimes our first pass at something
-turns out to be wrong on further reflection.
-
-When I ask you to review your XCRs please read the XCR my comments, and the
-code, and decide if my code change or my explanation really addresses the issue
-you had. If it does, then delete the XCR. If it doesn't then turn the XCR back
-into a CR and add additional comments explaining what you think is still
-incorrect.
-
-In general we keep the code quality in this library very high, even if it means
-hard work. We don't take shortcuts, and we think through all the implications of
-our changes very carefully. Please apply this philosophy to code review.
+## Documentation & Generated Assets
+- Treat `docs/` as build output; edit sources in `book/` and regenerate with `mdbook`.
+- When updating the language or standard library, check for related book updates.

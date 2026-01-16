@@ -2,25 +2,32 @@
 
 The `calendar` widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It's perfect for date pickers, event schedulers, and time-based visualizations.
 
-## APIs
+## Interface
 
 ```graphix
-mod calendar: sig {
-    /// Creates a calendar widget displaying a month
-    val calendar: fn(
-        ?#show_month: &Style,
-        ?#show_weekday: &Style,
-        ?#show_surrounding: &Style,
-        ?#events: &Array<CalendarEvent>,
-        &Date
-    ) -> Widget;
+type Date = {
+  year: i64,
+  month: i64,
+  day: i64
+};
 
-    /// Creates an event marker for a specific date
-    val calendar_event: fn(Style, Date) -> CalendarEvent;
+val date: fn(i64, i64, i64) -> Date;
 
-    /// Creates a date object
-    val date: fn(i64, i64, i64) -> Date;  // (year, month, day)
-}
+type CalendarEvent = {
+  date: Date,
+  style: Style
+};
+
+val calendar_event: fn(Style, Date) -> CalendarEvent;
+
+val calendar: fn(
+  ?#default_style: &[Style, null],
+  ?#show_month: &[Style, null],
+  ?#show_surrounding: &[Style, null],
+  ?#show_weekday: &[Style, null],
+  ?#events: &[Array<CalendarEvent>, null],
+  &Date
+) -> Tui;
 ```
 
 ## Parameters

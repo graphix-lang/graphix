@@ -2,38 +2,66 @@
 
 The `chart` widget renders line charts with multiple datasets, custom axes, labels, and styling. It's ideal for visualizing time series data, trends, sensor readings, and any numeric data relationships.
 
-## APIs
+## Interface
 
-```
-mod chart: sig {
-    type GraphType = [`Line, `Scatter];
-    type Marker = [`Dot, `Braille, `Block];
+```graphix
+type GraphType = [
+  `Scatter,
+  `Line,
+  `Bar
+];
 
-    /// Creates a chart widget with datasets and axes
-    val chart: fn(
-        ?#style: &Style,
-        #x_axis: &Axis,
-        #y_axis: &Axis,
-        &Array<Dataset>
-    ) -> Widget;
+type LegendPosition = [
+  `Top,
+  `TopRight,
+  `TopLeft,
+  `Left,
+  `Right,
+  `Bottom,
+  `BottomRight,
+  `BottomLeft
+];
 
-    /// Creates an axis configuration
-    val axis: fn(
-        ?#title: Line,
-        ?#labels: Array<Line>,
-        ?#style: Style,
-        {min: f64, max: f64}
-    ) -> Axis;
+type Axis = {
+  bounds: {min: f64, max: f64},
+  labels: [Array<Line>, null],
+  labels_alignment: [Alignment, null],
+  style: [Style, null],
+  title: [Line, null]
+};
 
-    /// Creates a dataset to display on the chart
-    val dataset: fn(
-        ?#style: &Style,
-        ?#graph_type: &GraphType,
-        ?#marker: &Marker,
-        ?#name: &Line,
-        &Array<(f64, f64)>
-    ) -> Dataset;
-}
+val axis: fn(
+  ?#labels: [Array<Line>, null],
+  ?#labels_alignment: [Alignment, null],
+  ?#style: [Style, null],
+  ?#title: [Line, null],
+  {min: f64, max: f64}
+) -> Axis;
+
+type Dataset = {
+  data: &Array<(f64, f64)>,
+  graph_type: &[GraphType, null],
+  marker: &[Marker, null],
+  name: &[Line, null],
+  style: &[Style, null]
+};
+
+val dataset: fn(
+  ?#marker: &[Marker, null],
+  ?#graph_type: &[GraphType, null],
+  ?#name: &[Line, null],
+  ?#style: &[Style, null],
+  &Array<(f64, f64)>
+) -> Dataset;
+
+val chart: fn(
+  ?#hidden_legend_constraints: &[LegendConstraints, null],
+  ?#legend_position: &[LegendPosition, null],
+  ?#style: &[Style, null],
+  ?#x_axis: &[Axis, null],
+  ?#y_axis: &[Axis, null],
+  &Array<Dataset>
+) -> Tui;
 ```
 
 ## Parameters

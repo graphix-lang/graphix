@@ -2,31 +2,52 @@
 
 The `table` widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It's ideal for data grids, process monitors, file listings, and any tabular data display.
 
-## APIs
+## Interface
 
-```
-mod table: sig {
-    type HighlightSpacing = [`Always, `WhenSelected, `Never];
+```graphix
+type Cell = {
+  content: Line,
+  style: [Style, null]
+};
 
-    /// Creates a table widget from an array of row references
-    val table: fn(
-        ?#header: &Row,
-        ?#selected: &i64,
-        ?#row_highlight_style: &Style,
-        ?#highlight_symbol: &string,
-        ?#highlight_spacing: &HighlightSpacing,
-        ?#widths: &Array<Constraint>,
-        ?#column_spacing: &i64,
-        ?#style: &Style,
-        &Array<&Row>
-    ) -> Widget;
+val cell: fn(
+  ?#style: [Style, null],
+  Line
+) -> Cell;
 
-    /// Creates a table row from cells
-    val row: fn(?#style: Style, Array<Cell>) -> Row;
+type Row = {
+  bottom_margin: [i64, null],
+  cells: Array<Cell>,
+  height: [i64, null],
+  style: [Style, null],
+  top_margin: [i64, null]
+};
 
-    /// Creates a table cell from a line
-    val cell: fn(?#style: Style, Line) -> Cell;
-}
+val row: fn(
+  ?#bottom_margin: [i64, null],
+  ?#height: [i64, null],
+  ?#style: [Style, null],
+  ?#top_margin: [i64, null],
+  Array<Cell>
+) -> Row;
+
+val table: fn(
+  ?#cell_highlight_style: &[Style, null],
+  ?#column_highlight_style: &[Style, null],
+  ?#column_spacing: &[i64, null],
+  ?#flex: &[Flex, null],
+  ?#footer: &[Row, null],
+  ?#header: &[Row, null],
+  ?#highlight_spacing: &[HighlightSpacing, null],
+  ?#highlight_symbol: &[string, null],
+  ?#row_highlight_style: &[Style, null],
+  ?#selected: &[i64, null],
+  ?#selected_cell: &[{x: i64, y: i64}, null],
+  ?#selected_column: &[i64, null],
+  ?#style: &[Style, null],
+  ?#widths: &[Array<Constraint>, null],
+  &Array<&Row>
+) -> Tui;
 ```
 
 ## Parameters

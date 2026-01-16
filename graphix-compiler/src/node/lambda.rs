@@ -194,7 +194,7 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
-        l: &expr::Lambda,
+        l: &expr::LambdaExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let mut s: LPooled<Vec<&ArcStr>> = LPooled::take();
@@ -208,10 +208,6 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
             bail!("arguments must have unique names");
         }
         let id = LambdaId::new();
-        let scope = scope.append(&format_compact!("fn{}", id.0));
-        let _scope = scope.clone();
-        let env = ctx.env.clone();
-        let _env = ctx.env.clone();
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
@@ -246,6 +242,12 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
             })
             .collect::<Result<LPooled<Vec<_>>>>()?;
         let constraints = Arc::new(RwLock::new(constraints));
+        let original_scope = scope.clone();
+        let _original_scope = scope.clone();
+        let scope = scope.append(&format_compact!("fn{}", id.0));
+        let _scope = scope.clone();
+        let env = ctx.env.clone();
+        let _env = ctx.env.clone();
         let typ = match &l.body {
             Either::Left(_) => {
                 let args = Arc::from_iter(argspec.iter().map(|a| FnArgType {
@@ -263,8 +265,16 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                     None => None,
                 };
                 let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
+                let explicit_throws = throws.is_some();
                 let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
-                Arc::new(FnType { constraints, args, vargs, rtype, throws })
+                Arc::new(FnType {
+                    constraints,
+                    args,
+                    vargs,
+                    rtype,
+                    throws,
+                    explicit_throws,
+                })
             }
             Either::Right(builtin) => match ctx.builtins.get(builtin.as_str()) {
                 None => bail!("unknown builtin function {builtin}"),
@@ -272,7 +282,7 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                     if !ctx.builtins_allowed {
                         bail!("defining builtins is not allowed in this context")
                     }
-                    Arc::new(styp.clone().scope_refs(&_scope.lexical))
+                    Arc::new(styp.clone().scope_refs(&_original_scope.lexical))
                 }
             },
         };
@@ -327,8 +337,14 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                 },
             })
         });
-        let def =
-            SArc::new(LambdaDef { id, typ: typ.clone(), env, argspec, init, scope });
+        let def = SArc::new(LambdaDef {
+            id,
+            typ: typ.clone(),
+            env,
+            argspec,
+            init,
+            scope: original_scope,
+        });
         ctx.env.lambdas.insert_cow(id, SArc::downgrade(&def));
         Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
     }
@@ -399,7 +415,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
             let inferred_throws = ctx.env.by_id[&faux_id]
                 .typ
                 .with_deref(|t| t.cloned())
-                .unwrap_or(Type::Bottom);
+                .unwrap_or(Type::Bottom)
+                .scope_refs(&self.def.scope.lexical)
+                .normalize();
             wrap!(self, ftyp.throws.check_contains(&ctx.env, &inferred_throws))?;
             ftyp.constrain_known();
             Ok(())

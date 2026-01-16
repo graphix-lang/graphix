@@ -33,9 +33,9 @@ count <- timer ~ (count + 1)
 
 You're telling Graphix: "When `timer` updates, increment `count` for the next cycle." Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. It's also the only looping construct in Graphix—there's no `for` or `while`, just connect and select working together.
 
-## Select: Pattern Matching with Power
+## Select: Powerful Pattern Matching
 
-The `select` expression is Graphix's answer to `switch`, `match`, and `if/else`—but much more powerful. It lets you match on types, destructure complex data, and ensure at compile time that you've handled every case.
+The `select` expression is Graphix's answer to `switch`, `match`, and `if/else`. It lets you match on types, destructure complex data, and ensure at compile time that you've handled every case.
 
 **[Select](./select.md)** shows you how to:
 - Match on union types and ensure you handle all variants

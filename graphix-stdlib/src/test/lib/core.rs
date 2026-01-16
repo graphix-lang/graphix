@@ -4,11 +4,11 @@ use netidx::subscriber::Value;
 
 const IS_ERR: &str = r#"
 {
-  let errors = never();
+  let errors: Error<Any> = never();
   try
     let a = [42, 43, 44];
     let y = a[0]? + a[3]?
-  catch(e: Any) => errors <- e;
+  catch(e) => errors <- e;
   is_err(errors)
 }
 "#;

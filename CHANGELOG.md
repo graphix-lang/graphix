@@ -1,3 +1,8 @@
+# 0.3.0
+
+- Implement interfaces (see the book for details)
+- Upgrade to ratatui 0.30
+
 # 0.2.2
 
 - fix windows build

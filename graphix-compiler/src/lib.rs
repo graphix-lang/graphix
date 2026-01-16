@@ -209,7 +209,7 @@ pub enum PrintFlag {
 }
 
 thread_local! {
-    static PRINT_FLAGS: Cell<BitFlags<PrintFlag>> = Cell::new(PrintFlag::ReplacePrims | PrintFlag::NoSource);
+    static PRINT_FLAGS: Cell<BitFlags<PrintFlag>> = Cell::new(PrintFlag::ReplacePrims.into());
 }
 
 /// global pool of channel watch batches
@@ -357,6 +357,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
                 rtype: Type::Bottom,
                 throws: Type::Bottom,
                 vargs: None,
+                explicit_throws: false,
             })
         });
         Arc::clone(&*EMPTY)
@@ -725,10 +726,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
     }
 
-    /// Restore the lexical environment to the snapshot `env` for the
-    /// duration of `f` restoring it to it's original value
-    /// afterwords. `by_id` and `lambdas` defined by the closure will
-    /// be retained.
+    /// Restore the lexical environment to the snapshot `env` for the duration
+    /// of `f` restoring it to it's original value afterwords. `by_id` and
+    /// `lambdas` defined by the closure will be retained.
     pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(
         &mut self,
         env: Env<R, E>,
@@ -737,6 +737,24 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let snap = self.env.restore_lexical_env(env);
         let orig = mem::replace(&mut self.env, snap);
         let r = f(self);
+        self.env = self.env.restore_lexical_env(orig);
+        r
+    }
+
+    /// Restore the lexical environment to the snapshot `env` for the duration
+    /// of `f` restoring it to it's original value afterwords. `by_id` and
+    /// `lambdas` defined by the closure will be retained. `env` will be mutated
+    /// instead of requiring a clone, this allows maintaining continuity in two
+    /// different envs across multiple invocations
+    pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
+        &mut self,
+        env: &mut Env<R, E>,
+        f: F,
+    ) -> T {
+        let snap = self.env.restore_lexical_env_mut(env);
+        let orig = mem::replace(&mut self.env, snap);
+        let r = f(self);
+        *env = self.env.clone();
         self.env = self.env.restore_lexical_env(orig);
         r
     }

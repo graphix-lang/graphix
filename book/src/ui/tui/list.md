@@ -2,21 +2,19 @@
 
 The `list` widget displays a scrollable, selectable list of items with keyboard navigation support. It's perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.
 
-## API
+## Interface
 
 ```graphix
-mod list: sig {
-    /// Creates a list widget from an array of lines
-    val list: fn(
-        ?#selected: &i64,
-        ?#scroll: &i64,
-        ?#highlight_style: &Style,
-        ?#highlight_symbol: &string,
-        ?#repeat_highlight_symbol: &bool,
-        ?#style: &Style,
-        &Array<Line>
-    ) -> Widget;
-}
+val list: fn(
+  ?#highlight_spacing: &[HighlightSpacing, null],
+  ?#highlight_style: &[Style, null],
+  ?#highlight_symbol: &[string, null],
+  ?#repeat_highlight_symbol: &[bool, null],
+  ?#scroll: &[i64, null],
+  ?#selected: &[i64, null],
+  ?#style: &[Style, null],
+  &Array<Line>
+) -> Tui;
 ```
 
 ## Parameters

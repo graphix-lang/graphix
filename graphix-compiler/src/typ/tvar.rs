@@ -36,7 +36,8 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
         Type::Struct(ts) => ts.iter().any(|(_, t)| would_cycle_inner(addr, t)),
         Type::Set(s) => s.iter().any(|t| would_cycle_inner(addr, t)),
         Type::Fn(f) => {
-            let FnType { args, vargs, rtype, constraints, throws } = &**f;
+            let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } =
+                &**f;
             args.iter().any(|t| would_cycle_inner(addr, &t.typ))
                 || match vargs {
                     None => false,
@@ -47,7 +48,7 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
                     Arc::as_ptr(&a.0.read().typ).addr() == addr
                         || would_cycle_inner(addr, &a.1)
                 })
-                || would_cycle_inner(addr, throws)
+                || would_cycle_inner(addr, &throws)
         }
     }
 }
@@ -219,5 +220,9 @@ impl TVar {
 
     pub(super) fn addr(&self) -> usize {
         Arc::as_ptr(&self.0).addr()
+    }
+
+    pub(super) fn inner_addr(&self) -> usize {
+        Arc::as_ptr(&self.read().typ).addr()
     }
 }

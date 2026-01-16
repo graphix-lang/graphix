@@ -3,20 +3,25 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-    dynamic::DynamicModule,
     error::{Qop, TryCatch},
     lambda::Lambda,
+    module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Not, Or, Sub},
     select::Select,
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
     TypeDef, Use,
 };
 use crate::{
-    expr::{self, Expr, ExprId, ExprKind, ModuleKind},
+    expr::{
+        self, ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
+        StructWithExpr,
+    },
     node::{
         error::OrNever,
         map::{Map, MapRef},
+        ExplicitParens, Nop,
     },
+    typ::Type,
     CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use anyhow::{bail, Context, Result};
@@ -31,6 +36,10 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     match &spec.kind {
+        ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
+        ExprKind::ExplicitParens(s) => {
+            ExplicitParens::compile(ctx, flags, (**s).clone(), scope, top_id)
+        }
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
             let scope = scope.append(&format_compact!("do{}", spec.id.inner()));
@@ -61,16 +70,19 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::Variant { tag, args } => {
             Variant::compile(ctx, flags, spec.clone(), scope, top_id, tag, args)
         }
-        ExprKind::Struct { args } => {
+        ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        ExprKind::Module { name, export: _, value } => {
+        ExprKind::Module { name, value } => {
             let scope = scope.append(&name);
+            if ctx.env.modules.contains(&scope.lexical) {
+                bail!("duplicate module definition {}", scope.lexical)
+            }
             match value {
-                ModuleKind::Unresolved => {
+                ModuleKind::Unresolved { .. } => {
                     bail!("external modules are not allowed in this context")
                 }
-                ModuleKind::Resolved(exprs) => {
+                ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
                     let res = Block::compile(
                         ctx,
                         flags,
@@ -84,21 +96,18 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     ctx.env.modules.insert_cow(scope.lexical.clone());
                     Ok(res)
                 }
-                ModuleKind::Inline(exprs) => {
-                    let res = Block::compile(
+                ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
+                    Module::compile_static(
                         ctx,
                         flags,
                         spec.clone(),
                         &scope,
+                        sig.clone(),
+                        exprs.clone(),
                         top_id,
-                        true,
-                        exprs,
                     )
-                    .with_context(|| spec.ori.clone())?;
-                    ctx.env.modules.insert_cow(scope.lexical.clone());
-                    Ok(res)
                 }
-                ModuleKind::Dynamic { sandbox, sig, source } => DynamicModule::compile(
+                ModuleKind::Dynamic { sandbox, sig, source } => Module::compile_dynamic(
                     ctx,
                     flags,
                     spec.clone(),
@@ -123,7 +132,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::Any { args } => {
             Any::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        ExprKind::Apply { args, function: f } => {
+        ExprKind::Apply(ApplyExpr { args, function: f }) => {
             CallSite::compile(ctx, flags, spec.clone(), scope, top_id, args, f)
         }
         ExprKind::Bind(b) => Bind::compile(ctx, flags, spec.clone(), scope, top_id, b),
@@ -143,16 +152,16 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::StructRef { source, field } => {
             StructRef::compile(ctx, flags, spec.clone(), scope, top_id, source, field)
         }
-        ExprKind::StructWith { source, replace } => {
+        ExprKind::StructWith(StructWithExpr { source, replace }) => {
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
-        ExprKind::Select { arg, arms } => {
+        ExprKind::Select(SelectExpr { arg, arms }) => {
             Select::compile(ctx, flags, spec.clone(), scope, top_id, arg, arms)
         }
         ExprKind::TypeCast { expr, typ } => {
             TypeCast::compile(ctx, flags, spec.clone(), scope, top_id, expr, typ)
         }
-        ExprKind::TypeDef(expr::TypeDef { name, params, typ }) => {
+        ExprKind::TypeDef(expr::TypeDefExpr { name, params, typ }) => {
             TypeDef::compile(ctx, spec.clone(), scope, name, params, typ)
         }
         ExprKind::Map { args } => {

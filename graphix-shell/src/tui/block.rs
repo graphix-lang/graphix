@@ -1,6 +1,6 @@
 use super::{
-    compile, into_borrowed_line, AlignmentV, EmptyW, LineV, PositionV, SizeV, StyleV,
-    TuiW, TuiWidget,
+    compile, into_borrowed_line, AlignmentV, EmptyW, LineV, SizeV, StyleV,
+    TitlePositionV, TuiW, TuiWidget,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -11,11 +11,29 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
     layout::Rect,
+    symbols::merge::MergeStrategy,
     widgets::{Block, BorderType, Borders, Padding},
     Frame,
 };
 use smallvec::SmallVec;
 use tokio::try_join;
+
+#[derive(Clone, Copy)]
+struct MergeStrategyV(MergeStrategy);
+
+impl FromValue for MergeStrategyV {
+    fn from_value(v: Value) -> Result<Self> {
+        match v {
+            Value::String(s) => match &*s {
+                "Replace" => Ok(Self(MergeStrategy::Replace)),
+                "Exact" => Ok(Self(MergeStrategy::Exact)),
+                "Fuzzy" => Ok(Self(MergeStrategy::Fuzzy)),
+                s => bail!("invalid merge strategy {s}"),
+            },
+            v => bail!("invalid merge strategy {v}"),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct BordersV(Borders);
@@ -78,6 +96,7 @@ pub(super) struct BlockW<X: GXExt> {
     border: TRef<X, Option<BordersV>>,
     border_style: TRef<X, Option<StyleV>>,
     border_type: TRef<X, Option<BorderTypeV>>,
+    merge_borders: TRef<X, Option<MergeStrategyV>>,
     child_ref: Ref<X>,
     child: TuiW,
     padding: TRef<X, Option<PaddingV>>,
@@ -85,7 +104,7 @@ pub(super) struct BlockW<X: GXExt> {
     title: TRef<X, Option<LineV>>,
     title_alignment: TRef<X, Option<AlignmentV>>,
     title_bottom: TRef<X, Option<LineV>>,
-    title_position: TRef<X, Option<PositionV>>,
+    title_position: TRef<X, Option<TitlePositionV>>,
     title_style: TRef<X, Option<StyleV>>,
     title_top: TRef<X, Option<LineV>>,
     size_ref: Ref<X>,
@@ -94,13 +113,14 @@ pub(super) struct BlockW<X: GXExt> {
 
 impl<X: GXExt> BlockW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, border), (_, border_style), (_, border_type), (_, child), (_, padding), (_, size), (_, style), (_, title), (_, title_alignment), (_, title_bottom), (_, title_position), (_, title_style), (_, title_top)] =
-            v.cast_to::<[(ArcStr, u64); 13]>().context("block flds")?;
+        let [(_, border), (_, border_style), (_, border_type), (_, child), (_, merge_borders), (_, padding), (_, size), (_, style), (_, title), (_, title_alignment), (_, title_bottom), (_, title_position), (_, title_style), (_, title_top)] =
+            v.cast_to::<[(ArcStr, u64); 14]>().context("block flds")?;
         let (
             border,
             border_style,
             border_type,
             mut child_ref,
+            merge_borders,
             padding,
             size_ref,
             style,
@@ -115,6 +135,7 @@ impl<X: GXExt> BlockW<X> {
             gx.compile_ref(border_style),
             gx.compile_ref(border_type),
             gx.compile_ref(child),
+            gx.compile_ref(merge_borders),
             gx.compile_ref(padding),
             gx.compile_ref(size),
             gx.compile_ref(style),
@@ -131,6 +152,8 @@ impl<X: GXExt> BlockW<X> {
             .context("block tref border_style")?;
         let border_type = TRef::<X, Option<BorderTypeV>>::new(border_type)
             .context("block tref border_type")?;
+        let merge_borders = TRef::<X, Option<MergeStrategyV>>::new(merge_borders)
+            .context("block tref merge borders")?;
         let padding =
             TRef::<X, Option<PaddingV>>::new(padding).context("block tref padding")?;
         let style = TRef::<X, Option<StyleV>>::new(style).context("block tref style")?;
@@ -139,7 +162,7 @@ impl<X: GXExt> BlockW<X> {
             .context("block tref title_alignment")?;
         let title_bottom = TRef::<X, Option<LineV>>::new(title_bottom)
             .context("block tref title_bottom")?;
-        let title_position = TRef::<X, Option<PositionV>>::new(title_position)
+        let title_position = TRef::<X, Option<TitlePositionV>>::new(title_position)
             .context("block tref title_position")?;
         let title_style = TRef::<X, Option<StyleV>>::new(title_style)
             .context("block tref title_style")?;
@@ -154,6 +177,7 @@ impl<X: GXExt> BlockW<X> {
             border,
             border_style,
             border_type,
+            merge_borders,
             padding,
             size_ref,
             style,
@@ -183,6 +207,7 @@ impl<X: GXExt> TuiWidget for BlockW<X> {
             border,
             border_style,
             border_type,
+            merge_borders,
             child_ref,
             child,
             padding,
@@ -199,6 +224,7 @@ impl<X: GXExt> TuiWidget for BlockW<X> {
         border.update(id, &v).context("block border update")?;
         border_style.update(id, &v).context("block border_style update")?;
         border_type.update(id, &v).context("block border_type update")?;
+        merge_borders.update(id, &v).context("block merge_borders update")?;
         padding.update(id, &v).context("block padding update")?;
         style.update(id, &v).context("block style update")?;
         title.update(id, &v).context("block title update")?;
@@ -221,6 +247,7 @@ impl<X: GXExt> TuiWidget for BlockW<X> {
             border,
             border_style,
             border_type,
+            merge_borders,
             child_ref: _,
             child,
             padding,
@@ -243,6 +270,9 @@ impl<X: GXExt> TuiWidget for BlockW<X> {
         }
         if let Some(Some(t)) = border_type.t {
             block = block.border_type(t.0);
+        }
+        if let Some(Some(t)) = merge_borders.t {
+            block = block.merge_borders(t.0);
         }
         if let Some(Some(p)) = padding.t {
             block = block.padding(p.0);

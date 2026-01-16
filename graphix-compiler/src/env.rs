@@ -9,7 +9,8 @@ use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
-use std::{cell::RefCell, fmt, iter, ops::Bound, sync::Weak};
+use poolshark::local::LPooled;
+use std::{fmt, iter, mem, ops::Bound, sync::Weak};
 use triomphe::Arc;
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
@@ -59,6 +60,7 @@ impl Clone for Bind {
 pub struct TypeDef {
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
+    pub doc: Option<ArcStr>,
 }
 
 #[derive(Debug)]
@@ -124,6 +126,19 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
             used: other.used,
             modules: other.modules,
             typedefs: other.typedefs,
+            by_id: self.by_id.clone(),
+            lambdas: self.lambdas.clone(),
+            catch: self.catch.clone(),
+            byref_chain: self.byref_chain.clone(),
+        }
+    }
+
+    pub(super) fn restore_lexical_env_mut(&self, other: &mut Self) -> Self {
+        Self {
+            binds: mem::take(&mut other.binds),
+            used: mem::take(&mut other.used),
+            modules: mem::take(&mut other.modules),
+            typedefs: mem::take(&mut other.typedefs),
             by_id: self.by_id.clone(),
             lambdas: self.lambdas.clone(),
             catch: self.catch.clone(),
@@ -344,51 +359,38 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
         name: &str,
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
+        doc: Option<ArcStr>,
     ) -> Result<()> {
         let defs = self.typedefs.get_or_default_cow(scope.clone());
         if defs.get(name).is_some() {
             bail!("{name} is already defined in scope {scope}")
         } else {
-            thread_local! {
-                static KNOWN: RefCell<FxHashMap<ArcStr, TVar>> = RefCell::new(FxHashMap::default());
-                static DECLARED: RefCell<FxHashSet<ArcStr>> = RefCell::new(FxHashSet::default());
+            let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
+            let mut declared: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+            for (tv, tc) in params.iter() {
+                Type::TVar(tv.clone()).alias_tvars(&mut known);
+                if let Some(tc) = tc {
+                    tc.alias_tvars(&mut known);
+                }
             }
-            KNOWN.with_borrow_mut(|known| {
-                known.clear();
-                for (tv, tc) in params.iter() {
-                    Type::TVar(tv.clone()).alias_tvars(known);
-                    if let Some(tc) = tc {
-                        tc.alias_tvars(known);
-                    }
+            typ.alias_tvars(&mut known);
+            for (tv, _) in params.iter() {
+                if !declared.insert(tv.name.clone()) {
+                    bail!("duplicate type variable {tv} in definition of {name}");
                 }
-                typ.alias_tvars(known);
-            });
-            DECLARED.with_borrow_mut(|declared| {
-                declared.clear();
-                for (tv, _) in params.iter() {
-                    if !declared.insert(tv.name.clone()) {
-                        bail!("duplicate type variable {tv} in definition of {name}");
-                    }
+            }
+            typ.check_tvars_declared(&mut declared)?;
+            for (_, t) in params.iter() {
+                if let Some(t) = t {
+                    t.check_tvars_declared(&mut declared)?;
                 }
-                typ.check_tvars_declared(declared)?;
-                for (_, t) in params.iter() {
-                    if let Some(t) = t {
-                        t.check_tvars_declared(declared)?;
-                    }
+            }
+            for dec in declared.iter() {
+                if !known.contains_key(dec) {
+                    bail!("unused type parameter {dec} in definition of {name}")
                 }
-                Ok::<_, anyhow::Error>(())
-            })?;
-            KNOWN.with_borrow(|known| {
-                DECLARED.with_borrow(|declared| {
-                    for dec in declared {
-                        if !known.contains_key(dec) {
-                            bail!("unused type parameter {dec} in definition of {name}")
-                        }
-                    }
-                    Ok(())
-                })
-            })?;
-            defs.insert_cow(name.into(), TypeDef { params, typ });
+            }
+            defs.insert_cow(name.into(), TypeDef { params, typ, doc });
             Ok(())
         }
     }
@@ -437,6 +439,25 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
                 if binds.len() == 0 {
                     self.binds.remove_cow(&b.scope);
                 }
+            }
+        }
+    }
+
+    pub fn use_in_scope(&mut self, scope: &Scope, name: &ModPath) -> Result<()> {
+        match self.canonical_modpath(&scope.lexical, name) {
+            None => bail!("use {name}: no such module {name}"),
+            Some(_) => {
+                let used = self.used.get_or_default_cow(scope.lexical.clone());
+                Ok(Arc::make_mut(used).push(name.clone()))
+            }
+        }
+    }
+
+    pub fn stop_use_in_scope(&mut self, scope: &Scope, name: &ModPath) {
+        if let Some(used) = self.used.get_mut_cow(&scope.lexical) {
+            Arc::make_mut(used).retain(|n| n != name);
+            if used.is_empty() {
+                self.used.remove_cow(&scope.lexical);
             }
         }
     }

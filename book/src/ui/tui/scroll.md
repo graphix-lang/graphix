@@ -2,18 +2,33 @@
 
 The `scrollbar` widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.
 
-## API
+## Interface
 
 ```graphix
-mod scrollbar: sig {
-    /// Wraps a widget with a scrollbar indicator
-    val scrollbar: fn(
-        #position: &i64,
-        ?#content_length: &i64,
-        ?#size: &Size,
-        &Widget
-    ) -> Widget;
-}
+type ScrollbarOrientation = [
+  `VerticalRight,
+  `VerticalLeft,
+  `HorizontalBottom,
+  `HorizontalTop
+];
+
+val scrollbar: fn(
+  ?#begin_style: &[Style, null],
+  ?#begin_symbol: &[string, null],
+  ?#content_length: &[i64, null],
+  ?#end_style: &[Style, null],
+  ?#end_symbol: &[string, null],
+  ?#orientation: &[ScrollbarOrientation, null],
+  ?#position: &[i64, null],
+  ?#size: &[Size, null],
+  ?#style: &[Style, null],
+  ?#thumb_style: &[Style, null],
+  ?#thumb_symbol: &[string, null],
+  ?#track_style: &[Style, null],
+  ?#track_symbol: &[string, null],
+  ?#viewport_length: &[i64, null],
+  &Tui
+) -> Tui;
 ```
 
 ## Parameters

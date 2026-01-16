@@ -71,6 +71,7 @@ impl<X: GXExt> Completer for BComplete<X> {
                                 style: None,
                                 extra: None,
                                 append_whitespace: false,
+                                match_indices: None,
                             })
                         }
                         for (value, id) in self.0.lookup_matching(&ModPath::root(), &part)
@@ -108,6 +109,7 @@ impl<X: GXExt> Completer for BComplete<X> {
                                 style: None,
                                 extra: Some(vec!["hello world!".into()]),
                                 append_whitespace: false,
+                                match_indices: None,
                             })
                         }
                     }
@@ -129,6 +131,7 @@ impl<X: GXExt> Completer for BComplete<X> {
                                                 style: None,
                                                 extra: None,
                                                 append_whitespace: false,
+                                                match_indices: None,
                                             })
                                         }
                                     }

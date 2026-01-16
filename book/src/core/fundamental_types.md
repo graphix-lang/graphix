@@ -45,28 +45,31 @@ Caused by:
     2: type mismatch '_1046: i64 does not contain [i64, f64]
 ```
 
-Division by zero is raised as an error to the nearest error handler (more on
-that later) and will be printed to stderr by the shell if it is never handled.
-Overflow and underflow are handled by wrapping,
+Division by zero raises an error to the nearest error handler (see [Error Handling](error.md)). If unhandled, it will be printed to stderr by the shell.
 
 ```graphix
 〉0 / 0
-
-thread 'tokio-runtime-worker' panicked at <rust runtime>:
-attempt to divide by zero
 -: i64
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 unhandled error: error:"in expr at line: 1, column: 1 attempt to divide by zero"
+```
+
+The result type of the division is still `i64`, but the actual value is an error. You can handle division by zero using the `?` or `` ` `` operators:
+
+```graphix
+〉(0 / 0)?
+-: Result<i64, Error<`ArithError(string)>>
+error:["ArithError", "in expr at line: 1, column: 2 attempt to divide by zero"]
+```
+
+If division by zero occurs and is not handled, the expression will not update until the divisor changes to a non-zero value. This can cause issues if your program depends on continuous updates from that expression.
+
+Overflow and underflow are handled by wrapping:
+
+```graphix
 〉u32:0 - u32:1
 -: u32
 4294967295
 ```
-
-The thread panic message is an artifact of how the overflow error is handled at
-runtime, it is safe to continue using the shell and runtime if such an error
-occurs. However the particular arith operation that caused the error will not
-update, which may cause problems depending on what your program is doing with
-it.
 
 #### v32, z32, v64, z64
 

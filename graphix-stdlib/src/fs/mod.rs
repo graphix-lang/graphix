@@ -156,7 +156,7 @@ impl EvalCached for JoinPathEv {
 
 type JoinPath = CachedArgs<JoinPathEv>;
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<GxTempDir>()?;
     ctx.register_builtin::<JoinPath>()?;
     ctx.register_builtin::<metadata::IsFile>()?;
@@ -173,5 +173,5 @@ pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<A
     ctx.register_builtin::<dir::ReadDir>()?;
     ctx.register_builtin::<dir::CreateDir>()?;
     ctx.register_builtin::<dir::RemoveDir>()?;
-    Ok(literal!(include_str!("fs.gx")))
+    Ok((literal!(include_str!("fs.gx")), literal!(include_str!("fs.gxi"))))
 }

@@ -2,28 +2,58 @@
 
 The `canvas` widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.
 
-## APIs
+## Interface
 
-```
-mod canvas: sig {
-    type Bounds = {min: f64, max: f64};
-    type Shape = [
-        `Line({color: Color, x1: f64, y1: f64, x2: f64, y2: f64}),
-        `Circle({color: Color, x: f64, y: f64, radius: f64}),
-        `Rectangle({color: Color, x: f64, y: f64, width: f64, height: f64}),
-        `Points({color: Color, coords: Array<(f64, f64)>}),
-        `Label({line: Line, x: f64, y: f64})
-    ];
+```graphix
+type CanvasLine = {
+  color: Color,
+  x1: f64,
+  x2: f64,
+  y1: f64,
+  y2: f64
+};
 
-    /// Creates a canvas widget for custom graphics
-    val canvas: fn(
-        ?#background_color: &Color,
-        ?#marker: &Marker,
-        #x_bounds: &Bounds,
-        #y_bounds: &Bounds,
-        &Array<&Shape>
-    ) -> Widget;
-}
+type CanvasCircle = {
+  color: Color,
+  radius: f64,
+  x: f64,
+  y: f64
+};
+
+type CanvasRectangle = {
+  color: Color,
+  height: f64,
+  width: f64,
+  x: f64,
+  y: f64
+};
+
+type CanvasPoints = {
+  color: Color,
+  coords: Array<(f64, f64)>
+};
+
+type CanvasLabel = {
+  line: Line,
+  x: f64,
+  y: f64
+};
+
+type CanvasShape = [
+  `Line(CanvasLine),
+  `Circle(CanvasCircle),
+  `Rectangle(CanvasRectangle),
+  `Points(CanvasPoints),
+  `Label(CanvasLabel)
+];
+
+val canvas: fn(
+  ?#background_color: &[Color, null],
+  ?#marker: &[Marker, null],
+  #x_bounds: &{ max: f64, min: f64 },
+  #y_bounds: &{ max: f64, min: f64 },
+  &Array<&CanvasShape>
+) -> Tui;
 ```
 
 ## Parameters

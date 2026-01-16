@@ -1,7 +1,6 @@
 [book]
 authors = ["Eric Stokes"]
 language = "en"
-multilingual = false
 src = "src"
 title = "The Graphix Programming Language"
 

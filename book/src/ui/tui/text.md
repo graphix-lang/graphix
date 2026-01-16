@@ -2,42 +2,17 @@
 
 The `text` widget renders styled text in the terminal. It's a fundamental building block for displaying formatted content with colors, modifiers, and multiple lines. Text is built from `Line` objects, which are in turn composed of `Span` objects.
 
-## APIs
+## Interface
 
+```graphix
+val text: fn(
+  ?#style: &Style,
+  ?#alignment: &[Alignment, null],
+  &[Array<Line>, string]
+) -> Tui;
 ```
-mod text: sig {
-    type Alignment = [`Left, `Center, `Right];
-    type Modifier = [
-        `Bold,
-        `Italic,
-        `Underlined,
-        `SlowBlink,
-        `RapidBlink,
-        `Reversed,
-        `Hidden,
-        `CrossedOut
-    ];
-    type Color = [
-        `Red, `Green, `Yellow, `Blue, `Magenta, `Cyan, `Gray, `DarkGray,
-        `LightRed, `LightGreen, `LightYellow, `LightBlue, `LightMagenta, `LightCyan,
-        `White, `Black,
-        `Indexed(i64),
-        `Rgb({r: i64, g: i64, b: i64})
-    ];
 
-    /// Creates styled text from a string or array of lines
-    val text: fn(&[string, Array<Line>]) -> Widget;
-
-    /// Creates a line of text from a string or array of spans
-    val line: fn(?#style: Style, ?#alignment: Alignment, [string, Array<Span>]) -> Line;
-
-    /// Creates a styled text span
-    val span: fn(?#style: Style, string) -> Span;
-
-    /// Creates a text style
-    val style: fn(?#fg: Color, ?#bg: Color, ?#add_modifier: Modifier) -> Style;
-}
-```
+The `text` widget uses types from the [style](style.md) module including `Style`, `Line`, `Span`, `Color`, `Modifier`, and `Alignment`.
 
 ## Text Hierarchy
 

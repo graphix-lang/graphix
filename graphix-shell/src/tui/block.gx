@@ -1,51 +1,8 @@
-type Border = [
-  `Top,
-  `Right,
-  `Bottom,
-  `Left
-];
-
-type BorderType = [
-  `Plain,
-  `Rounded,
-  `Double,
-  `Thick,
-  `QuadrantInside,
-  `QuadrantOutside
-];
-
-type Padding = {
-  bottom: i64,
-  left: i64,
-  right: i64,
-  top: i64
-};
-
-type Position = [
-  `Top,
-  `Bottom
-];
-
-type Block = {
-  border: &[Array<Border>, `All, `None, null],
-  border_style: &[Style, null],
-  border_type: &[BorderType, null],
-  child: &Tui,
-  padding: &[Padding, null],
-  size: &[Size, null],
-  style: &[Style, null],
-  title: &[Line, null],
-  title_alignment: &[Alignment, null],
-  title_bottom: &[Line, null],
-  title_position: &[Position, null],
-  title_style: &[Style, null],
-  title_top: &[Line, null]
-};
-
 let block = |
   #border: &[Array<Border>, `All, `None, null] = &null,
   #border_type: &[BorderType, null] = &null,
   #border_style: &[Style, null] = &null,
+  #merge_borders: &[MergeStrategy, null] = &null,
   #padding: &[Padding, null] = &null,
   #style: &[Style, null] = &null,
   #title: &[Line, null] = &null,
@@ -60,6 +17,7 @@ let block = |
   border,
   border_type,
   border_style,
+  merge_borders,
   padding,
   size,
   style,

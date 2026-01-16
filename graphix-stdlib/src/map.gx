@@ -1,38 +1,10 @@
-/// return a new map where each element is the output of f applied to
-/// the corresponding key value pair in the current map
-pub let map = |m, f| 'map_map;
-
-/// return a new map containing only the key-value pairs where f applied to
-/// (key, value) returns true
-pub let filter = |m, f| 'map_filter;
-
-/// filter_map returns a new map containing the outputs of f
-/// that were not null
-pub let filter_map = |m, f| 'map_filter_map;
-
-/// return the result of f applied to the init and every k, v pair of m in
-/// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
-pub let fold = |m, init, f| 'map_fold;
-
-/// return the length of the map
-pub let len = |m| 'map_len;
-
-/// get the value associated with the key k in the map m, or null if not present
-pub let get = |m, k| 'map_get;
-
-/// insert a new value into the map
-pub let insert = |m, k, v| 'map_insert;
-
-/// remove the value associated with the specified key from the map
-pub let remove = |m, k| 'map_remove;
-
-/// iter produces an update for every key-value pair in the map m.
-/// updates are produced in the order they appear in m.
-pub let iter = |m| 'map_iter;
-
-/// iterq produces an update for each value in m, but only when clock updates. If
-/// clock does not update but m does, then iterq will store each m in an internal
-/// fifo queue. If clock updates but m does not, iterq will record the number of
-/// times it was triggered, and will update immediatly that many times when m
-/// updates.
-pub let iterq = |#clock, m| 'map_iterq
+let map = |m, f| 'map_map;
+let filter = |m, f| 'map_filter;
+let filter_map = |m, f| 'map_filter_map;
+let fold = |m, init, f| 'map_fold;
+let len = |m| 'map_len;
+let get = |m, k| 'map_get;
+let insert = |m, k, v| 'map_insert;
+let remove = |m, k| 'map_remove;
+let iter = |m| 'map_iter;
+let iterq = |#clock, m| 'map_iterq

@@ -2,22 +2,24 @@
 
 The `line_gauge` widget displays a horizontal progress indicator using line-drawing characters. It's more compact than `gauge` and ideal for dashboards where vertical space is limited.
 
-## API
+## Interface
 
-```
-mod linegauge: sig {
-    type LineSet = [`Thin, `Thick, `Double];
+```graphix
+type LineSet = [
+  `Normal,
+  `Rounded,
+  `Double,
+  `Thick
+];
 
-    /// Creates a line gauge widget showing progress from 0.0 to 1.0
-    val line_gauge: fn(
-        ?#filled_style: &Style,
-        ?#unfilled_style: &Style,
-        ?#line_set: &LineSet,
-        ?#label: &Line,
-        ?#style: &Style,
-        &f64
-    ) -> Widget;
-}
+val line_gauge: fn(
+  ?#filled_style: &[Style, null],
+  ?#label: &[Line, null],
+  ?#line_set: &[LineSet, null],
+  ?#style: &[Style, null],
+  ?#unfilled_style: &[Style, null],
+  &f64
+) -> Tui;
 ```
 
 ## Parameters

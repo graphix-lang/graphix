@@ -913,7 +913,7 @@ struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "never";
-    deftype!("core", "fn(@args: Any) -> _");
+    deftype!("core", "fn(@args: Any) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Never)))
@@ -1167,7 +1167,9 @@ macro_rules! printfn {
 printfn!(Print, "print", print, eprint);
 printfn!(Println, "println", println, eprintln);
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<ArcStr> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<Queue>()?;
     ctx.register_builtin::<Hold>()?;
     ctx.register_builtin::<All>()?;
@@ -1195,5 +1197,5 @@ pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<A
     ctx.register_builtin::<Print>()?;
     ctx.register_builtin::<Println>()?;
     ctx.register_builtin::<Throttle>()?;
-    Ok(literal!(include_str!("core.gx")))
+    Ok((literal!(include_str!("core.gx")), literal!(include_str!("core.gxi"))))
 }

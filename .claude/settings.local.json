@@ -25,7 +25,10 @@
       "Bash(node -c:*)",
       "Bash(test:*)",
       "Bash(cat:*)",
-      "Bash(cargo clean:*)"
+      "Bash(cargo clean:*)",
+      "mcp__acp__Bash",
+      "mcp__acp__Write",
+      "mcp__acp__Edit"
     ],
     "deny": [],
     "ask": []

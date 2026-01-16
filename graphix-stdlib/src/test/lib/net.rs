@@ -84,7 +84,7 @@ const NET_LIST_TABLE: &str = r#"
   net::publish("/local/t/1/foo", 42);
   net::publish("/local/t/1/bar", 42);
   let t = dbg(net::list_table("/local/t"))?;
-  let cols = array::map(t.columns, |(n, _): (string, _)| n);
+  let cols = array::map(t.columns, |(n, _)| n);
   (array::sort(cols) == ["bar", "foo"])
   && (array::sort(t.rows) == ["/local/t/0", "/local/t/1"])
 }
@@ -129,4 +129,3 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
         _ => false,
     }
 });
-

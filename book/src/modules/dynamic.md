@@ -23,8 +23,8 @@ net::publish(path, source)$;
 let status = mod foo dynamic {
     sandbox whitelist [core];
     sig {
-        val add: fn(i64) -> i64;
-        val sub: fn(i64) -> i64;
+        val add: fn(i64) -> i64 throws Error<ErrChain<`ArithError(string)>>;
+        val sub: fn(i64) -> i64 throws Error<ErrChain<`ArithError(string)>>;
         val cfg: Array<i64>
     };
     source cast<string>(net::subscribe(path)$)$

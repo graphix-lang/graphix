@@ -1,11 +1,3 @@
-type Gauge = {
-  gauge_style: &[Style, null],
-  label: &[Span, null],
-  ratio: &f64,
-  style: &[Style, null],
-  use_unicode: &[bool, null]
-};
-
 let gauge = |
   #gauge_style: &[Style, null] = &null,
   #label: &[Span, null] = &null,
