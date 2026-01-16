@@ -49,6 +49,6 @@ triomphe = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
-graphix-rt = { version = "0.2.0", path = "../graphix-rt" }
+graphix-rt = { version = "0.3.0", path = "../graphix-rt" }
 proptest = "1"
 env_logger = "0.11"
