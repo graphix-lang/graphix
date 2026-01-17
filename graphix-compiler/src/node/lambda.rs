@@ -1,21 +1,81 @@
 use super::{compiler::compile, Nop};
 use crate::{
-    env::{Bind, LambdaDef},
-    expr::{self, Arg, Expr, ExprId},
+    env::{Bind, Env},
+    expr::{self, Arg, ErrorContext, Expr, ExprId},
     node::pattern::StructPatternNode,
     typ::{FnArgType, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
     Update, UserEvent,
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx::{subscriber::Value, utils::Either};
+use netidx::{pack::Pack, subscriber::Value, utils::Either};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
-use std::sync::Arc as SArc;
+use std::{fmt, hash::Hash, sync::Arc as SArc};
 use triomphe::Arc;
+
+pub struct LambdaDef<R: Rt, E: UserEvent> {
+    pub id: LambdaId,
+    pub env: Env,
+    pub scope: Scope,
+    pub argspec: Arc<[Arg]>,
+    pub typ: Arc<FnType>,
+    pub init: InitFn<R, E>,
+}
+
+impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LambdaDef({:?})", self.id)
+    }
+}
+
+impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
+
+impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.id.cmp(&other.id))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Ord for LambdaDef<R, E> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl<R: Rt, E: UserEvent> Hash for LambdaDef<R, E> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state)
+    }
+}
+
+impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
+    fn encoded_len(&self) -> usize {
+        0
+    }
+
+    fn encode(
+        &self,
+        _buf: &mut impl bytes::BufMut,
+    ) -> std::result::Result<(), netidx::pack::PackError> {
+        Err(netidx::pack::PackError::Application(0))
+    }
+
+    fn decode(
+        _buf: &mut impl bytes::Buf,
+    ) -> std::result::Result<Self, netidx::pack::PackError> {
+        Err(netidx::pack::PackError::Application(0))
+    }
+}
 
 #[derive(Debug)]
 struct GXLambda<R: Rt, E: UserEvent> {
@@ -180,16 +240,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Lambda<R: Rt, E: UserEvent> {
+pub(crate) struct Lambda {
     top_id: ExprId,
     spec: Expr,
-    def: SArc<LambdaDef<R, E>>,
+    def: Value,
     flags: BitFlags<CFlag>,
     typ: Type,
 }
 
-impl<R: Rt, E: UserEvent> Lambda<R, E> {
-    pub(crate) fn compile(
+impl Lambda {
+    pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
@@ -337,7 +397,7 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
                 },
             })
         });
-        let def = SArc::new(LambdaDef {
+        let def = ctx.lambdawrap.wrap(LambdaDef {
             id,
             typ: typ.clone(),
             env,
@@ -345,18 +405,17 @@ impl<R: Rt, E: UserEvent> Lambda<R, E> {
             init,
             scope: original_scope,
         });
-        ctx.env.lambdas.insert_cow(id, SArc::downgrade(&def));
         Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
+impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     fn update(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<Value> {
-        event.init.then(|| Value::U64(self.def.id.0))
+        event.init.then(|| self.def.clone())
     }
 
     fn spec(&self) -> &Expr {
@@ -365,9 +424,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.env.lambdas.remove_cow(&self.def.id);
-    }
+    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
@@ -376,14 +433,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
     }
 
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        let mut faux_args: LPooled<Vec<Node<R, E>>> = self
+        let def = self
             .def
+            .downcast_ref::<LambdaDef<R, E>>()
+            .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
+        let mut faux_args: LPooled<Vec<Node<R, E>>> = def
             .argspec
             .iter()
-            .zip(self.def.typ.args.iter())
+            .zip(def.typ.args.iter())
             .map(|(a, at)| match &a.labeled {
-                Some(Some(e)) => ctx.with_restored(self.def.env.clone(), |ctx| {
-                    compile(ctx, self.flags, e.clone(), &self.def.scope, self.top_id)
+                Some(Some(e)) => ctx.with_restored(def.env.clone(), |ctx| {
+                    compile(ctx, self.flags, e.clone(), &def.scope, self.top_id)
                 }),
                 Some(None) | None => {
                     let n: Node<R, E> = Box::new(Nop { typ: at.typ.clone() });
@@ -399,16 +459,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
                 export: false,
                 id: faux_id,
                 name: "faux".into(),
-                scope: self.def.scope.lexical.clone(),
+                scope: def.scope.lexical.clone(),
                 typ: Type::empty_tvar(),
             },
         );
-        let prev_catch =
-            ctx.env.catch.insert_cow(self.def.scope.dynamic.clone(), faux_id);
-        let res = wrap!(
-            self,
-            (self.def.init)(&self.def.scope, ctx, &mut faux_args, ExprId::new(), true)
-        );
+        let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);
+        let res = (def.init)(&def.scope, ctx, &mut faux_args, ExprId::new(), true)
+            .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             f.delete(ctx);
@@ -416,16 +473,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda<R, E> {
                 .typ
                 .with_deref(|t| t.cloned())
                 .unwrap_or(Type::Bottom)
-                .scope_refs(&self.def.scope.lexical)
+                .scope_refs(&def.scope.lexical)
                 .normalize();
-            wrap!(self, ftyp.throws.check_contains(&ctx.env, &inferred_throws))?;
+            ftyp.throws
+                .check_contains(&ctx.env, &inferred_throws)
+                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))?;
             ftyp.constrain_known();
             Ok(())
         });
         ctx.env.by_id.remove_cow(&faux_id);
         match prev_catch {
-            Some(id) => ctx.env.catch.insert_cow(self.def.scope.dynamic.clone(), id),
-            None => ctx.env.catch.remove_cow(&self.def.scope.dynamic),
+            Some(id) => ctx.env.catch.insert_cow(def.scope.dynamic.clone(), id),
+            None => ctx.env.catch.remove_cow(&def.scope.dynamic),
         };
         self.typ.unbind_tvars();
         res

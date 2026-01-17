@@ -3,6 +3,7 @@ use arcstr::{literal, ArcStr};
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
+    env::Env,
     expr::{CouldNotResolve, ExprId, ModPath, ModuleResolver, Source},
     format_with_flags,
     typ::{TVal, Type},
@@ -27,8 +28,6 @@ mod completion;
 mod input;
 mod tui;
 
-type Env<X> = graphix_compiler::env::Env<GXRt<X>, <X as GXExt>::UserEvent>;
-
 const TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {
     scope: ModPath::root(),
     name: ModPath::from(["tui", "Tui"]),
@@ -43,7 +42,7 @@ enum Output<X: GXExt> {
 }
 
 impl<X: GXExt> Output<X> {
-    fn from_expr(gx: &GXHandle<X>, env: &Env<X>, e: CompExp<X>) -> Self {
+    fn from_expr(gx: &GXHandle<X>, env: &Env, e: CompExp<X>) -> Self {
         if let Some(typ) = e.typ.with_deref(|t| t.cloned())
             && typ != Type::Bottom
             && typ != Type::Any
@@ -63,7 +62,7 @@ impl<X: GXExt> Output<X> {
         *self = Self::None
     }
 
-    async fn process_update(&mut self, env: &Env<X>, id: ExprId, v: Value) {
+    async fn process_update(&mut self, env: &Env, id: ExprId, v: Value) {
         match self {
             Self::None | Output::EmptyScript => (),
             Self::Tui(tui) => tui.update(id, v).await,
@@ -210,11 +209,12 @@ pub struct Shell<X: GXExt> {
 impl<X: GXExt> Shell<X> {
     async fn init(
         &mut self,
-        sub: mpsc::Sender<GPooled<Vec<GXEvent<X>>>>,
+        sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> Result<GXHandle<X>> {
         let publisher = self.publisher.clone();
         let subscriber = self.subscriber.clone();
-        let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber));
+        let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
+            .context("creating graphix context")?;
         let (root, mods) = graphix_stdlib::register(&mut ctx, self.stdlib_modules)
             .context("register stdlib modules")?;
         let usermods = self
@@ -258,10 +258,10 @@ impl<X: GXExt> Shell<X> {
     async fn load_env(
         &mut self,
         gx: &GXHandle<X>,
-        newenv: &mut Option<Env<X>>,
+        newenv: &mut Option<Env>,
         output: &mut Output<X>,
         exprs: &mut Vec<CompExp<X>>,
-    ) -> Result<Env<X>> {
+    ) -> Result<Env> {
         let env;
         match &self.mode {
             Mode::Check(source) => {

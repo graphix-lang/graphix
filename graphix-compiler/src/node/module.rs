@@ -20,12 +20,7 @@ use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
 
-fn bind_sig<R: Rt, E: UserEvent>(
-    env: &mut Env<R, E>,
-    mod_env: &mut Env<R, E>,
-    scope: &Scope,
-    sig: &Sig,
-) -> Result<()> {
+fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
         match &si.kind {
@@ -69,12 +64,7 @@ fn bind_sig<R: Rt, E: UserEvent>(
 
 // copy the exported signature of all the exported inner modules in this sig to
 // the global env
-fn export_sig<R: Rt, E: UserEvent>(
-    env: &mut Env<R, E>,
-    inner_env: &Env<R, E>,
-    scope: &Scope,
-    sig: &Sig,
-) {
+fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
             use std::fmt::Write;
@@ -175,7 +165,7 @@ pub(super) struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
     source: Node<R, E>,
-    env: Env<R, E>,
+    env: Env,
     sig: Sig,
     scope: Scope,
     proxy: FxHashMap<BindId, BindId>,

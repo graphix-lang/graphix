@@ -19,7 +19,7 @@ pub(crate) mod compiler;
 pub(crate) mod data;
 pub(crate) mod error;
 pub mod genn;
-pub(crate) mod lambda;
+pub mod lambda;
 pub(crate) mod map;
 pub(crate) mod module;
 pub(crate) mod op;

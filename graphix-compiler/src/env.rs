@@ -1,7 +1,7 @@
 use crate::{
-    expr::{Arg, ModPath, Sandbox},
-    typ::{FnType, TVar, Type},
-    BindId, InitFn, LambdaId, Rt, Scope, UserEvent,
+    expr::{ModPath, Sandbox},
+    typ::{TVar, Type},
+    BindId, Scope,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
@@ -10,23 +10,8 @@ use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
 use poolshark::local::LPooled;
-use std::{fmt, iter, mem, ops::Bound, sync::Weak};
+use std::{fmt, iter, mem, ops::Bound};
 use triomphe::Arc;
-
-pub struct LambdaDef<R: Rt, E: UserEvent> {
-    pub id: LambdaId,
-    pub env: Env<R, E>,
-    pub scope: Scope,
-    pub argspec: Arc<[Arg]>,
-    pub typ: Arc<FnType>,
-    pub init: InitFn<R, E>,
-}
-
-impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "LambdaDef({:?})", self.id)
-    }
-}
 
 pub struct Bind {
     pub id: BindId,
@@ -63,10 +48,9 @@ pub struct TypeDef {
     pub doc: Option<ArcStr>,
 }
 
-#[derive(Debug)]
-pub struct Env<R: Rt, E: UserEvent> {
+#[derive(Clone, Debug, Default)]
+pub struct Env {
     pub by_id: Map<BindId, Bind>,
-    pub lambdas: Map<LambdaId, Weak<LambdaDef<R, E>>>,
     pub byref_chain: Map<BindId, BindId>,
     pub binds: Map<ModPath, Map<CompactString, BindId>>,
     pub used: Map<ModPath, Arc<Vec<ModPath>>>,
@@ -75,45 +59,15 @@ pub struct Env<R: Rt, E: UserEvent> {
     pub catch: Map<ModPath, BindId>,
 }
 
-impl<R: Rt, E: UserEvent> Clone for Env<R, E> {
-    fn clone(&self) -> Self {
-        Self {
-            by_id: self.by_id.clone(),
-            binds: self.binds.clone(),
-            byref_chain: self.byref_chain.clone(),
-            used: self.used.clone(),
-            modules: self.modules.clone(),
-            typedefs: self.typedefs.clone(),
-            lambdas: self.lambdas.clone(),
-            catch: self.catch.clone(),
-        }
-    }
-}
-
-impl<R: Rt, E: UserEvent> Env<R, E> {
-    pub(super) fn new() -> Self {
-        Self {
-            by_id: Map::new(),
-            binds: Map::new(),
-            byref_chain: Map::new(),
-            used: Map::new(),
-            modules: Set::new(),
-            typedefs: Map::new(),
-            lambdas: Map::new(),
-            catch: Map::new(),
-        }
-    }
-
+impl Env {
     pub(super) fn clear(&mut self) {
-        let Self { by_id, binds, byref_chain, used, modules, typedefs, lambdas, catch } =
-            self;
+        let Self { by_id, binds, byref_chain, used, modules, typedefs, catch } = self;
         *by_id = Map::new();
         *binds = Map::new();
         *byref_chain = Map::new();
         *used = Map::new();
         *modules = Set::new();
         *typedefs = Map::new();
-        *lambdas = Map::new();
         *catch = Map::new();
     }
 
@@ -127,7 +81,6 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
             modules: other.modules,
             typedefs: other.typedefs,
             by_id: self.by_id.clone(),
-            lambdas: self.lambdas.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
         }
@@ -140,7 +93,6 @@ impl<R: Rt, E: UserEvent> Env<R, E> {
             modules: mem::take(&mut other.modules),
             typedefs: mem::take(&mut other.typedefs),
             by_id: self.by_id.clone(),
-            lambdas: self.lambdas.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
         }

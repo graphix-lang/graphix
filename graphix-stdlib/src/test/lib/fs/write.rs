@@ -65,7 +65,7 @@ macro_rules! write_test {
     ) => {
         #[tokio::test(flavor = "current_thread")]
         async fn $test_name() -> Result<()> {
-            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent<_>>>>(10);
+            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
             let ctx = init(tx).await?;
             let $temp_dir = tempfile::tempdir()?;
 

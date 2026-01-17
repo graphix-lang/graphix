@@ -1,5 +1,5 @@
 use super::{PrintFlag, Type};
-use crate::{env::Env, typ::format_with_flags, Rt, UserEvent};
+use crate::{env::Env, typ::format_with_flags};
 use fxhash::FxHashSet;
 use netidx::publisher::Value;
 use netidx_value::NakedValue;
@@ -7,13 +7,13 @@ use poolshark::local::LPooled;
 use std::fmt;
 
 /// A value with it's type, used for formatting
-pub struct TVal<'a, R: Rt, E: UserEvent> {
-    pub env: &'a Env<R, E>,
+pub struct TVal<'a> {
+    pub env: &'a Env,
     pub typ: &'a Type,
     pub v: &'a Value,
 }
 
-impl<'a, R: Rt, E: UserEvent> TVal<'a, R, E> {
+impl<'a> TVal<'a> {
     fn fmt_int(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -125,7 +125,7 @@ impl<'a, R: Rt, E: UserEvent> TVal<'a, R, E> {
     }
 }
 
-impl<'a, R: Rt, E: UserEvent> fmt::Display for TVal<'a, R, E> {
+impl<'a> fmt::Display for TVal<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt_int(f, &mut LPooled::take())
     }

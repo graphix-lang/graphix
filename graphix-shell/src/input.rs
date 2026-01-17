@@ -8,15 +8,15 @@ use reedline::{
 };
 use tokio::{sync::oneshot, task};
 
-pub(super) struct InputReader<X: GXExt> {
-    go: Option<oneshot::Sender<Option<Env<X>>>>,
-    recv: mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env<X>>>, Result<Signal>)>,
+pub(super) struct InputReader {
+    go: Option<oneshot::Sender<Option<Env>>>,
+    recv: mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env>>, Result<Signal>)>,
 }
 
-impl<X: GXExt> InputReader<X> {
+impl InputReader {
     pub(super) fn run(
-        mut c_rx: oneshot::Receiver<Option<Env<X>>>,
-    ) -> mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env<X>>>, Result<Signal>)> {
+        mut c_rx: oneshot::Receiver<Option<Env>>,
+    ) -> mpsc::UnboundedReceiver<(oneshot::Sender<Option<Env>>, Result<Signal>)> {
         let (tx, rx) = mpsc::unbounded();
         task::spawn(async move {
             let mut keybinds = default_emacs_keybindings();
@@ -64,10 +64,10 @@ impl<X: GXExt> InputReader<X> {
         Self { go: Some(tx_go), recv }
     }
 
-    pub(super) async fn read_line(
+    pub(super) async fn read_line<X: GXExt>(
         &mut self,
         output: &mut Output<X>,
-        env: &mut Option<Env<X>>,
+        env: &mut Option<Env>,
     ) -> Result<Signal> {
         match output {
             Output::Tui(tui) => Ok(tui.wait_signal().await),

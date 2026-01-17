@@ -678,7 +678,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    pub(super) fn is_match(&self, env: &Env<R, E>, v: &Value) -> bool {
+    pub(super) fn is_match(&self, env: &Env, v: &Value) -> bool {
         (!self.explicit_type_predicate || self.type_predicate.is_a(env, v))
             && self.structure_predicate.is_match(v)
             && match &self.guard {

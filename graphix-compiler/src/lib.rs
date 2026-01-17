@@ -13,6 +13,7 @@ pub mod typ;
 use crate::{
     env::Env,
     expr::{ExprId, ModPath},
+    node::lambda::LambdaDef,
     typ::{FnType, Type},
 };
 use anyhow::{bail, Result};
@@ -28,6 +29,7 @@ use netidx::{
     subscriber::{self, Dval, SubId, UpdatesFlags, Value},
 };
 use netidx_protocols::rpc::server::{ArgSpec, RpcCall};
+use netidx_value::{abstract_type::AbstractWrapper, Abstract};
 use node::compiler;
 use parking_lot::RwLock;
 use poolshark::{
@@ -52,6 +54,7 @@ use std::{
 };
 use tokio::{task, time::Instant};
 use triomphe::Arc;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
@@ -658,13 +661,19 @@ impl LibState {
 }
 
 pub struct ExecCtx<R: Rt, E: UserEvent> {
+    // used to wrap lambdas into an abstract netidx value type
+    lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
+    // all registered built-in functions
     builtins: FxHashMap<&'static str, (FnType, BuiltInInitFn<R, E>)>,
+    // whether calling built-in functions is allowed in this context, used for
+    // sandboxing
     builtins_allowed: bool,
+    // hash consed variant tags
     tags: FxHashSet<ArcStr>,
     /// context global library state for built-in functions
     pub libstate: LibState,
     /// the language environment, typdefs, binds, lambdas, etc
-    pub env: Env<R, E>,
+    pub env: Env,
     /// the last value of every bound variable
     pub cached: FxHashMap<BindId, Value>,
     /// the runtime
@@ -685,16 +694,17 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// correctly the semantics of the language can be wrong.
     ///
     /// Most likely you want to use the `rt` module instead.
-    pub fn new(user: R) -> Self {
-        Self {
-            env: Env::new(),
+    pub fn new(user: R) -> Result<Self> {
+        Ok(Self {
+            lambdawrap: Abstract::register(Uuid::new_v4())?,
+            env: Env::default(),
             builtins: FxHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
             tags: FxHashSet::default(),
             cached: HashMap::default(),
             rt: user,
-        }
+        })
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
@@ -729,11 +739,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// Restore the lexical environment to the snapshot `env` for the duration
     /// of `f` restoring it to it's original value afterwords. `by_id` and
     /// `lambdas` defined by the closure will be retained.
-    pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(
-        &mut self,
-        env: Env<R, E>,
-        f: F,
-    ) -> T {
+    pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(&mut self, env: Env, f: F) -> T {
         let snap = self.env.restore_lexical_env(env);
         let orig = mem::replace(&mut self.env, snap);
         let r = f(self);
@@ -748,7 +754,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// different envs across multiple invocations
     pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
         &mut self,
-        env: &mut Env<R, E>,
+        env: &mut Env,
         f: F,
     ) -> T {
         let snap = self.env.restore_lexical_env_mut(env);

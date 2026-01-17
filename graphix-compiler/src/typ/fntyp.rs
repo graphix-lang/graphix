@@ -6,7 +6,6 @@ use crate::{
         ModPath,
     },
     typ::{ContainsFlags, TVar, Type},
-    Rt, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -301,11 +300,7 @@ impl FnType {
         throws.collect_tvars(known);
     }
 
-    pub fn contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        t: &Self,
-    ) -> Result<bool> {
+    pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
             env,
@@ -314,10 +309,10 @@ impl FnType {
         )
     }
 
-    pub(super) fn contains_int<R: Rt, E: UserEvent>(
+    pub(super) fn contains_int(
         &self,
         flags: BitFlags<ContainsFlags>,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashMap<(usize, usize), bool>,
         t: &Self,
     ) -> Result<bool> {
@@ -398,11 +393,7 @@ impl FnType {
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
     }
 
-    pub fn check_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        other: &Self,
-    ) -> Result<()> {
+    pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {
         if !self.contains(env, other)? {
             bail!("Fn type mismatch {self} does not contain {other}")
         }
@@ -411,11 +402,7 @@ impl FnType {
 
     /// Return true if function signatures are contained. This is contains,
     /// but does not allow labeled argument subtyping.
-    pub fn sig_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        other: &Self,
-    ) -> Result<bool> {
+    pub fn sig_contains(&self, env: &Env, other: &Self) -> Result<bool> {
         let Self {
             args: args0,
             vargs: vargs0,
@@ -462,28 +449,20 @@ impl FnType {
             && tr0.contains(env, tr1)?)
     }
 
-    pub fn check_sig_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        other: &Self,
-    ) -> Result<()> {
+    pub fn check_sig_contains(&self, env: &Env, other: &Self) -> Result<()> {
         if !self.sig_contains(env, other)? {
             bail!("Fn signature {self} does not contain {other}")
         }
         Ok(())
     }
 
-    pub fn sig_matches<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        impl_fn: &Self,
-    ) -> Result<()> {
+    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<()> {
         self.sig_matches_int(env, impl_fn, &mut LPooled::take(), &mut LPooled::take())
     }
 
-    pub(super) fn sig_matches_int<R: Rt, E: UserEvent>(
+    pub(super) fn sig_matches_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         impl_fn: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
         hist: &mut FxHashSet<(usize, usize)>,

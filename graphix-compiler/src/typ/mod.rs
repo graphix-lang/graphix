@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay},
         ModPath,
     },
-    format_with_flags, PrintFlag, Rt, UserEvent, CAST_ERR_TAG, PRINT_FLAGS,
+    format_with_flags, PrintFlag, CAST_ERR_TAG, PRINT_FLAGS,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
@@ -110,10 +110,7 @@ impl Type {
         }
     }
 
-    pub fn lookup_ref<'a, R: Rt, E: UserEvent>(
-        &'a self,
-        env: &'a Env<R, E>,
-    ) -> Result<&'a Type> {
+    pub fn lookup_ref<'a>(&'a self, env: &'a Env) -> Result<&'a Type> {
         match self {
             Self::Ref { scope, name, params } => {
                 let def = env
@@ -145,11 +142,7 @@ impl Type {
         }
     }
 
-    pub fn check_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        t: &Self,
-    ) -> Result<()> {
+    pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
         if self.contains(env, t)? {
             Ok(())
         } else {
@@ -159,10 +152,10 @@ impl Type {
         }
     }
 
-    fn contains_int<R: Rt, E: UserEvent>(
+    fn contains_int(
         &self,
         flags: BitFlags<ContainsFlags>,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashMap<(usize, usize), bool>,
         t: &Self,
     ) -> Result<bool> {
@@ -457,11 +450,7 @@ impl Type {
         }
     }
 
-    pub fn contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        t: &Self,
-    ) -> Result<bool> {
+    pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
             env,
@@ -470,18 +459,18 @@ impl Type {
         )
     }
 
-    pub fn contains_with_flags<R: Rt, E: UserEvent>(
+    pub fn contains_with_flags(
         &self,
         flags: BitFlags<ContainsFlags>,
-        env: &Env<R, E>,
+        env: &Env,
         t: &Self,
     ) -> Result<bool> {
         self.contains_int(flags, env, &mut LPooled::take(), t)
     }
 
-    fn could_match_int<R: Rt, E: UserEvent>(
+    fn could_match_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashMap<(usize, usize), bool>,
         t: &Self,
     ) -> Result<bool> {
@@ -606,25 +595,17 @@ impl Type {
         }
     }
 
-    pub fn could_match<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        t: &Self,
-    ) -> Result<bool> {
+    pub fn could_match(&self, env: &Env, t: &Self) -> Result<bool> {
         self.could_match_int(env, &mut LPooled::take(), t)
     }
 
-    pub fn sig_matches<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        impl_type: &Self,
-    ) -> Result<()> {
+    pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
         self.sig_matches_int(env, impl_type, &mut LPooled::take(), &mut LPooled::take())
     }
 
-    pub(crate) fn sig_matches_int<R: Rt, E: UserEvent>(
+    pub(crate) fn sig_matches_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         impl_type: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
         hist: &mut FxHashSet<(usize, usize)>,
@@ -744,9 +725,9 @@ impl Type {
         }
     }
 
-    fn union_int<R: Rt, E: UserEvent>(
+    fn union_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashMap<(usize, usize), Type>,
         t: &Self,
     ) -> Result<Self> {
@@ -936,13 +917,13 @@ impl Type {
         }
     }
 
-    pub fn union<R: Rt, E: UserEvent>(&self, env: &Env<R, E>, t: &Self) -> Result<Self> {
+    pub fn union(&self, env: &Env, t: &Self) -> Result<Self> {
         Ok(self.union_int(env, &mut LPooled::take(), t)?.normalize())
     }
 
-    fn diff_int<R: Rt, E: UserEvent>(
+    fn diff_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashMap<(usize, usize), Type>,
         t: &Self,
     ) -> Result<Self> {
@@ -1144,7 +1125,7 @@ impl Type {
         }
     }
 
-    pub fn diff<R: Rt, E: UserEvent>(&self, env: &Env<R, E>, t: &Self) -> Result<Self> {
+    pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
         Ok(self.diff_int(env, &mut LPooled::take(), t)?.normalize())
     }
 
@@ -1436,11 +1417,7 @@ impl Type {
         }
     }
 
-    fn strip_error_int<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        hist: &mut FxHashSet<usize>,
-    ) -> Option<Type> {
+    fn strip_error_int(&self, env: &Env, hist: &mut FxHashSet<usize>) -> Option<Type> {
         match self {
             Type::Error(t) => match t.strip_error_int(env, hist) {
                 Some(t) => Some(t),
@@ -1488,7 +1465,7 @@ impl Type {
 
     /// remove the outer error type and return the inner payload, fail if self
     /// isn't an error or contains non error types
-    pub fn strip_error<R: Rt, E: UserEvent>(&self, env: &Env<R, E>) -> Option<Self> {
+    pub fn strip_error(&self, env: &Env) -> Option<Self> {
         self.strip_error_int(env, &mut LPooled::take())
     }
 
@@ -1518,11 +1495,7 @@ impl Type {
         }
     }
 
-    fn check_cast_int<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        hist: &mut FxHashSet<usize>,
-    ) -> Result<()> {
+    fn check_cast_int(&self, env: &Env, hist: &mut FxHashSet<usize>) -> Result<()> {
         match self {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
@@ -1563,13 +1536,13 @@ impl Type {
         }
     }
 
-    pub fn check_cast<R: Rt, E: UserEvent>(&self, env: &Env<R, E>) -> Result<()> {
+    pub fn check_cast(&self, env: &Env) -> Result<()> {
         self.check_cast_int(env, &mut LPooled::take())
     }
 
-    fn cast_value_int<R: Rt, E: UserEvent>(
+    fn cast_value_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashSet<(usize, usize)>,
         v: Value,
     ) -> Result<Value> {
@@ -1751,16 +1724,16 @@ impl Type {
         }
     }
 
-    pub fn cast_value<R: Rt, E: UserEvent>(&self, env: &Env<R, E>, v: Value) -> Value {
+    pub fn cast_value(&self, env: &Env, v: Value) -> Value {
         match self.cast_value_int(env, &mut LPooled::take(), v) {
             Ok(v) => v,
             Err(e) => errf!(CAST_ERR_TAG, "{e:?}"),
         }
     }
 
-    fn is_a_int<R: Rt, E: UserEvent>(
+    fn is_a_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashSet<(usize, usize)>,
         v: &Value,
     ) -> bool {
@@ -1850,7 +1823,7 @@ impl Type {
     }
 
     /// return true if v is structurally compatible with the type
-    pub fn is_a<R: Rt, E: UserEvent>(&self, env: &Env<R, E>, v: &Value) -> bool {
+    pub fn is_a(&self, env: &Env, v: &Value) -> bool {
         self.is_a_int(env, &mut LPooled::take(), v)
     }
 

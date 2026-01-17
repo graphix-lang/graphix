@@ -23,13 +23,13 @@ impl TestCtx {
     }
 }
 
-pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>) -> Result<TestCtx> {
+pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
     let _ = env_logger::try_init();
     let env = netidx::InternalOnly::new().await?;
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(
         env.publisher().clone(),
         env.subscriber().clone(),
-    ));
+    ))?;
     let (root, mods) = crate::register(&mut ctx, BitFlags::all())?;
     Ok(TestCtx {
         internal_only: env,
@@ -147,7 +147,7 @@ macro_rules! run_with_tempdir {
     ) => {
         #[tokio::test(flavor = "current_thread")]
         async fn $test_name() -> Result<()> {
-            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent<_>>>>(10);
+            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
             let ctx = init(tx).await?;
             let $temp_dir = tempfile::tempdir()?;
 
