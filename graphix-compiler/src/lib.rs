@@ -31,7 +31,7 @@ use netidx::{
 use netidx_protocols::rpc::server::{ArgSpec, RpcCall};
 use netidx_value::{abstract_type::AbstractWrapper, Abstract};
 use node::compiler;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
@@ -695,8 +695,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     ///
     /// Most likely you want to use the `rt` module instead.
     pub fn new(user: R) -> Result<Self> {
+        static UUIDS: LazyLock<Mutex<FxHashMap<TypeId, Uuid>>> =
+            LazyLock::new(|| Mutex::new(FxHashMap::default()));
+        let id = *UUIDS.lock().entry(TypeId::of::<Self>()).or_insert_with(Uuid::new_v4);
         Ok(Self {
-            lambdawrap: Abstract::register(Uuid::new_v4())?,
+            lambdawrap: Abstract::register(id)?,
             env: Env::default(),
             builtins: FxHashMap::default(),
             builtins_allowed: true,
