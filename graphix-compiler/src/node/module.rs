@@ -7,7 +7,7 @@ use crate::{
         SigKind, Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
-    typ::{AbstractId, Type},
+    typ::{AbstractId, TVar, Type},
     wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
@@ -130,6 +130,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 params: sig_td.params.clone(),
                 typ: sig_td.typ.clone(),
             };
+            let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
             match &sig_td.typ {
                 Type::Abstract { id, params } => {
                     if let Type::Abstract { .. } = &td.typ {
@@ -156,24 +157,10 @@ fn check_sig<R: Rt, E: UserEvent>(
                             Some(_) => (),
                         }
                     }
-                    let mut known = LPooled::take();
-                    for (tv, tc) in sig_td.params.iter().chain(td.params.iter()) {
-                        let tv = Type::TVar(tv.clone());
-                        tv.unfreeze_tvars();
-                        tv.alias_tvars(&mut known);
-                        if let Some(tc) = tc {
-                            tc.unfreeze_tvars();
-                            tc.alias_tvars(&mut known);
-                        }
-                    }
                     for t in params.iter() {
                         t.unfreeze_tvars();
                         t.alias_tvars(&mut known);
                     }
-                    sig_td.typ.unfreeze_tvars();
-                    td.typ.unfreeze_tvars();
-                    sig_td.typ.alias_tvars(&mut known);
-                    td.typ.alias_tvars(&mut known);
                     abstract_types.insert(*id, td.typ.clone());
                 }
                 _ if td != &sig_td => {
@@ -186,11 +173,31 @@ fn check_sig<R: Rt, E: UserEvent>(
                 }
                 _ => (),
             }
+            // glue the sig types and the impl types together
+            for (tv, tc) in sig_td.params.iter().chain(td.params.iter()) {
+                let tv = Type::TVar(tv.clone());
+                tv.unfreeze_tvars();
+                tv.alias_tvars(&mut known);
+                if let Some(tc) = tc {
+                    tc.unfreeze_tvars();
+                    tc.alias_tvars(&mut known);
+                }
+            }
+            sig_td.typ.unfreeze_tvars();
+            td.typ.unfreeze_tvars();
+            sig_td.typ.alias_tvars(&mut known);
+            td.typ.alias_tvars(&mut known);
         }
     }
     for si in sig.items.iter() {
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
+            SigKind::TypeDef(TypeDefExpr {
+                typ: Type::Abstract { id, params: _ },
+                ..
+            }) if !abstract_types.contains_key(id) => {
+                bail!("abstract signature types must have a concrete definition in the implementation")
+            }
             SigKind::Module(_)
             | SigKind::Use(_)
             | SigKind::TypeDef(TypeDefExpr { .. }) => false,
