@@ -159,7 +159,7 @@ impl Type {
         &self,
         env: &Env,
         impl_type: &Self,
-        adts: &mut FxHashMap<AbstractId, Type>,
+        adts: &FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         self.sig_matches_int(
             env,
@@ -176,7 +176,7 @@ impl Type {
         impl_type: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
         hist: &mut FxHashSet<(usize, usize)>,
-        adts: &mut FxHashMap<AbstractId, Type>,
+        adts: &FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
             return Ok(());
@@ -257,10 +257,7 @@ impl Type {
                 bail!("abstract types must have a concrete definition in the implementation")
             }
             (Self::Abstract { id, params: _ }, t0) => match adts.get(id) {
-                None => {
-                    adts.insert(*id, t0.clone());
-                    Ok(())
-                }
+                None => bail!("undefined abstract type"),
                 Some(t1) => {
                     if t0 != t1 {
                         format_with_flags(PrintFlag::DerefTVars, || {

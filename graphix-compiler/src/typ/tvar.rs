@@ -234,6 +234,51 @@ impl TVar {
 }
 
 impl Type {
+    pub fn unfreeze_tvars(&self) {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            Type::Ref { params, .. } => {
+                for t in params.iter() {
+                    t.unfreeze_tvars();
+                }
+            }
+            Type::Error(t) => t.unfreeze_tvars(),
+            Type::Array(t) => t.unfreeze_tvars(),
+            Type::Map { key, value } => {
+                key.unfreeze_tvars();
+                value.unfreeze_tvars();
+            }
+            Type::ByRef(t) => t.unfreeze_tvars(),
+            Type::Tuple(ts) => {
+                for t in ts.iter() {
+                    t.unfreeze_tvars()
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, t) in ts.iter() {
+                    t.unfreeze_tvars()
+                }
+            }
+            Type::Variant(_, ts) => {
+                for t in ts.iter() {
+                    t.unfreeze_tvars()
+                }
+            }
+            Type::TVar(tv) => tv.write().frozen = false,
+            Type::Fn(ft) => ft.unfreeze_tvars(),
+            Type::Set(s) => {
+                for typ in s.iter() {
+                    typ.unfreeze_tvars()
+                }
+            }
+            Type::Abstract { id: _, params } => {
+                for typ in params.iter() {
+                    typ.unfreeze_tvars()
+                }
+            }
+        }
+    }
+
     /// alias type variables with the same name to each other
     pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
         match self {
@@ -268,7 +313,6 @@ impl Type {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
                     let v = e.get();
-                    v.freeze();
                     tv.alias(v);
                 }
                 Entry::Vacant(e) => {

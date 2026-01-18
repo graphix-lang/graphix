@@ -616,6 +616,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         match &type_predicate {
             Type::Fn(_) => bail!("can't match on Fn type"),
             Type::Bottom
+            | Type::Abstract { .. }
             | Type::Any
             | Type::Primitive(_)
             | Type::Set(_)

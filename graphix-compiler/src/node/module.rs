@@ -7,12 +7,12 @@ use crate::{
         SigKind, Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
-    typ::Type,
+    typ::{AbstractId, Type},
     wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
-use compact_str::CompactString;
+use compact_str::{format_compact, CompactString};
 use enumflags2::BitFlags;
 use fxhash::{FxHashMap, FxHashSet};
 use netidx_value::{Typ, Value};
@@ -55,7 +55,7 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                     td.params.clone(),
                     typ,
                     si.doc.0.clone(),
-                )?
+                )?;
             }
         }
     }
@@ -98,6 +98,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     let mut has_bind: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+    let mut abstract_types: LPooled<FxHashMap<AbstractId, Type>> = LPooled::take();
     for n in nodes {
         if let Some(binds) = ctx.env.binds.get(&scope.lexical)
             && let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
@@ -108,7 +109,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            proxy_bind.typ.sig_matches(&ctx.env, bind.typ()).with_context(|| {
+            proxy_bind.typ.sig_matches(&ctx.env, bind.typ(), &abstract_types).with_context(|| {
                 format!(
                     "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
                     proxy_bind.typ,
@@ -129,13 +130,61 @@ fn check_sig<R: Rt, E: UserEvent>(
                 params: sig_td.params.clone(),
                 typ: sig_td.typ.clone(),
             };
-            if td != &sig_td {
-                bail!(
-                    "signature mismatch in {}, expected {}, found {}",
-                    td.name,
-                    sig_td,
-                    td
-                )
+            match &sig_td.typ {
+                Type::Abstract { id, params } => {
+                    if let Type::Abstract { .. } = &td.typ {
+                        bail!("abstract types must have a concrete definition")
+                    }
+                    for (tv0, con0) in td.params.iter() {
+                        match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
+                            Some((_, con1)) if con0 != con1 => {
+                                let con0 = match con0 {
+                                    None => "missing",
+                                    Some(t) => &format_compact!("{t}"),
+                                };
+                                let con1 = match con1 {
+                                    None => "missing",
+                                    Some(t) => &format_compact!("{t}"),
+                                };
+                                bail!("signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}", td.name, tv0.name)
+                            }
+                            None => bail!(
+                                "signature mismatch in {}, missing parameter {}",
+                                sig_td.name,
+                                tv0.name
+                            ),
+                            Some(_) => (),
+                        }
+                    }
+                    let mut known = LPooled::take();
+                    for (tv, tc) in sig_td.params.iter().chain(td.params.iter()) {
+                        let tv = Type::TVar(tv.clone());
+                        tv.unfreeze_tvars();
+                        tv.alias_tvars(&mut known);
+                        if let Some(tc) = tc {
+                            tc.unfreeze_tvars();
+                            tc.alias_tvars(&mut known);
+                        }
+                    }
+                    for t in params.iter() {
+                        t.unfreeze_tvars();
+                        t.alias_tvars(&mut known);
+                    }
+                    sig_td.typ.unfreeze_tvars();
+                    td.typ.unfreeze_tvars();
+                    sig_td.typ.alias_tvars(&mut known);
+                    td.typ.alias_tvars(&mut known);
+                    abstract_types.insert(*id, td.typ.clone());
+                }
+                _ if td != &sig_td => {
+                    bail!(
+                        "signature mismatch in {}, expected {}, found {}",
+                        td.name,
+                        sig_td,
+                        td
+                    )
+                }
+                _ => (),
             }
         }
     }

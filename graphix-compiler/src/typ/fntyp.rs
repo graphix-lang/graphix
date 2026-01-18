@@ -284,6 +284,22 @@ impl FnType {
         throws.alias_tvars(known);
     }
 
+    pub fn unfreeze_tvars(&self) {
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
+        for arg in args.iter() {
+            arg.typ.unfreeze_tvars()
+        }
+        if let Some(vargs) = vargs {
+            vargs.unfreeze_tvars()
+        }
+        rtype.unfreeze_tvars();
+        for (tv, tc) in constraints.read().iter() {
+            Type::TVar(tv.clone()).unfreeze_tvars();
+            tc.unfreeze_tvars();
+        }
+        throws.unfreeze_tvars();
+    }
+
     pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
         let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for arg in args.iter() {
@@ -477,7 +493,7 @@ impl FnType {
         impl_fn: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
         hist: &mut FxHashSet<(usize, usize)>,
-        adts: &mut FxHashMap<AbstractId, Type>,
+        adts: &FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
