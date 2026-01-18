@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay},
         ModPath,
     },
-    typ::{ContainsFlags, TVar, Type},
+    typ::{contains::ContainsFlags, AbstractId, TVar, Type},
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -456,8 +456,19 @@ impl FnType {
         Ok(())
     }
 
-    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<()> {
-        self.sig_matches_int(env, impl_fn, &mut LPooled::take(), &mut LPooled::take())
+    pub fn sig_matches(
+        &self,
+        env: &Env,
+        impl_fn: &Self,
+        adts: &mut FxHashMap<AbstractId, Type>,
+    ) -> Result<()> {
+        self.sig_matches_int(
+            env,
+            impl_fn,
+            &mut LPooled::take(),
+            &mut LPooled::take(),
+            adts,
+        )
     }
 
     pub(super) fn sig_matches_int(
@@ -466,6 +477,7 @@ impl FnType {
         impl_fn: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
         hist: &mut FxHashSet<(usize, usize)>,
+        adts: &mut FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
@@ -502,14 +514,14 @@ impl FnType {
             }
             sig_arg
                 .typ
-                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
+                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist, adts)
                 .with_context(|| format!("in argument {i}"))?;
         }
         match (sig_vargs, impl_vargs) {
             (None, None) => (),
             (Some(sig_va), Some(impl_va)) => {
                 sig_va
-                    .sig_matches_int(env, impl_va, tvar_map, hist)
+                    .sig_matches_int(env, impl_va, tvar_map, hist, adts)
                     .context("in variadic argument")?;
             }
             (None, Some(_)) => {
@@ -520,10 +532,10 @@ impl FnType {
             }
         }
         sig_rtype
-            .sig_matches_int(env, impl_rtype, tvar_map, hist)
+            .sig_matches_int(env, impl_rtype, tvar_map, hist, adts)
             .context("in return type")?;
         sig_throws
-            .sig_matches_int(env, impl_throws, tvar_map, hist)
+            .sig_matches_int(env, impl_throws, tvar_map, hist, adts)
             .context("in throws clause")?;
         let sig_cons = sig_constraints.read();
         let impl_cons = impl_constraints.read();
@@ -539,7 +551,7 @@ impl FnType {
             match tvar_map.get(&impl_tv.inner_addr()).cloned() {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {
-                    sig_type.sig_matches_int(env, impl_tc, tvar_map, hist).with_context(|| {
+                    sig_type.sig_matches_int(env, impl_tc, tvar_map, hist, adts).with_context(|| {
                         format!(
                             "signature has concrete type {sig_type}, implementation constraint is {impl_tc}"
                         )

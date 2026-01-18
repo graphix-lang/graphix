@@ -28,6 +28,7 @@ impl<'a> TVal<'a> {
         match (&self.typ, &self.v) {
             (
                 Type::Primitive(_)
+                | Type::Abstract { .. }
                 | Type::Bottom
                 | Type::Any
                 | Type::Fn(_)

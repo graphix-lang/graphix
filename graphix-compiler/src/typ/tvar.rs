@@ -2,11 +2,14 @@ use crate::{
     expr::ModPath,
     typ::{FnType, PrintFlag, Type, PRINT_FLAGS},
 };
+use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use compact_str::format_compact;
+use fxhash::{FxHashMap, FxHashSet};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
     cmp::{Eq, PartialEq},
+    collections::hash_map::Entry,
     fmt::{self, Debug},
     hash::Hash,
     ops::Deref,
@@ -24,6 +27,9 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
                     None => false,
                     Some(t) => would_cycle_inner(addr, t),
                 }
+        }
+        Type::Abstract { id: _, params } => {
+            params.iter().any(|t| would_cycle_inner(addr, t))
         }
         Type::Error(t) => would_cycle_inner(addr, t),
         Type::Array(a) => would_cycle_inner(addr, &**a),
@@ -224,5 +230,331 @@ impl TVar {
 
     pub(super) fn inner_addr(&self) -> usize {
         Arc::as_ptr(&self.read().typ).addr()
+    }
+}
+
+impl Type {
+    /// alias type variables with the same name to each other
+    pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            Type::Ref { params, .. } => {
+                for t in params.iter() {
+                    t.alias_tvars(known);
+                }
+            }
+            Type::Error(t) => t.alias_tvars(known),
+            Type::Array(t) => t.alias_tvars(known),
+            Type::Map { key, value } => {
+                key.alias_tvars(known);
+                value.alias_tvars(known);
+            }
+            Type::ByRef(t) => t.alias_tvars(known),
+            Type::Tuple(ts) => {
+                for t in ts.iter() {
+                    t.alias_tvars(known)
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, t) in ts.iter() {
+                    t.alias_tvars(known)
+                }
+            }
+            Type::Variant(_, ts) => {
+                for t in ts.iter() {
+                    t.alias_tvars(known)
+                }
+            }
+            Type::TVar(tv) => match known.entry(tv.name.clone()) {
+                Entry::Occupied(e) => {
+                    let v = e.get();
+                    v.freeze();
+                    tv.alias(v);
+                }
+                Entry::Vacant(e) => {
+                    e.insert(tv.clone());
+                    ()
+                }
+            },
+            Type::Fn(ft) => ft.alias_tvars(known),
+            Type::Set(s) => {
+                for typ in s.iter() {
+                    typ.alias_tvars(known)
+                }
+            }
+            Type::Abstract { id: _, params } => {
+                for typ in params.iter() {
+                    typ.alias_tvars(known)
+                }
+            }
+        }
+    }
+
+    pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            Type::Ref { params, .. } => {
+                for t in params.iter() {
+                    t.collect_tvars(known);
+                }
+            }
+            Type::Error(t) => t.collect_tvars(known),
+            Type::Array(t) => t.collect_tvars(known),
+            Type::Map { key, value } => {
+                key.collect_tvars(known);
+                value.collect_tvars(known);
+            }
+            Type::ByRef(t) => t.collect_tvars(known),
+            Type::Tuple(ts) => {
+                for t in ts.iter() {
+                    t.collect_tvars(known)
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, t) in ts.iter() {
+                    t.collect_tvars(known)
+                }
+            }
+            Type::Variant(_, ts) => {
+                for t in ts.iter() {
+                    t.collect_tvars(known)
+                }
+            }
+            Type::TVar(tv) => match known.entry(tv.name.clone()) {
+                Entry::Occupied(_) => (),
+                Entry::Vacant(e) => {
+                    e.insert(tv.clone());
+                    ()
+                }
+            },
+            Type::Fn(ft) => ft.collect_tvars(known),
+            Type::Set(s) => {
+                for typ in s.iter() {
+                    typ.collect_tvars(known)
+                }
+            }
+            Type::Abstract { id: _, params } => {
+                for typ in params.iter() {
+                    typ.collect_tvars(known)
+                }
+            }
+        }
+    }
+
+    pub fn check_tvars_declared(&self, declared: &FxHashSet<ArcStr>) -> Result<()> {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => Ok(()),
+            Type::Ref { params, .. } => {
+                params.iter().try_for_each(|t| t.check_tvars_declared(declared))
+            }
+            Type::Error(t) => t.check_tvars_declared(declared),
+            Type::Array(t) => t.check_tvars_declared(declared),
+            Type::Map { key, value } => {
+                key.check_tvars_declared(declared)?;
+                value.check_tvars_declared(declared)
+            }
+            Type::ByRef(t) => t.check_tvars_declared(declared),
+            Type::Tuple(ts) => {
+                ts.iter().try_for_each(|t| t.check_tvars_declared(declared))
+            }
+            Type::Struct(ts) => {
+                ts.iter().try_for_each(|(_, t)| t.check_tvars_declared(declared))
+            }
+            Type::Variant(_, ts) => {
+                ts.iter().try_for_each(|t| t.check_tvars_declared(declared))
+            }
+            Type::TVar(tv) => {
+                if !declared.contains(&tv.name) {
+                    bail!("undeclared type variable '{}'", tv.name)
+                } else {
+                    Ok(())
+                }
+            }
+            Type::Set(s) => s.iter().try_for_each(|t| t.check_tvars_declared(declared)),
+            Type::Abstract { id: _, params } => {
+                params.iter().try_for_each(|t| t.check_tvars_declared(declared))
+            }
+            Type::Fn(_) => Ok(()),
+        }
+    }
+
+    pub fn has_unbound(&self) -> bool {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => false,
+            Type::Ref { .. } => false,
+            Type::Error(e) => e.has_unbound(),
+            Type::Array(t0) => t0.has_unbound(),
+            Type::Map { key, value } => key.has_unbound() || value.has_unbound(),
+            Type::ByRef(t0) => t0.has_unbound(),
+            Type::Tuple(ts) => ts.iter().any(|t| t.has_unbound()),
+            Type::Struct(ts) => ts.iter().any(|(_, t)| t.has_unbound()),
+            Type::Variant(_, ts) => ts.iter().any(|t| t.has_unbound()),
+            Type::TVar(tv) => tv.read().typ.read().is_some(),
+            Type::Set(s) => s.iter().any(|t| t.has_unbound()),
+            Type::Abstract { id: _, params } => params.iter().any(|t| t.has_unbound()),
+            Type::Fn(ft) => ft.has_unbound(),
+        }
+    }
+
+    /// bind all unbound type variables to the specified type
+    pub fn bind_as(&self, t: &Self) {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            Type::Ref { .. } => (),
+            Type::Error(t0) => t0.bind_as(t),
+            Type::Array(t0) => t0.bind_as(t),
+            Type::Map { key, value } => {
+                key.bind_as(t);
+                value.bind_as(t);
+            }
+            Type::ByRef(t0) => t0.bind_as(t),
+            Type::Tuple(ts) => {
+                for elt in ts.iter() {
+                    elt.bind_as(t)
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, elt) in ts.iter() {
+                    elt.bind_as(t)
+                }
+            }
+            Type::Variant(_, ts) => {
+                for elt in ts.iter() {
+                    elt.bind_as(t)
+                }
+            }
+            Type::TVar(tv) => {
+                let tv = tv.read();
+                let mut tv = tv.typ.write();
+                if tv.is_none() {
+                    *tv = Some(t.clone());
+                }
+            }
+            Type::Set(s) => {
+                for elt in s.iter() {
+                    elt.bind_as(t)
+                }
+            }
+            Type::Fn(ft) => ft.bind_as(t),
+            Type::Abstract { id: _, params } => {
+                for typ in params.iter() {
+                    typ.bind_as(t)
+                }
+            }
+        }
+    }
+
+    /// return a copy of self with all type variables unbound and
+    /// unaliased. self will not be modified
+    pub fn reset_tvars(&self) -> Type {
+        match self {
+            Type::Bottom => Type::Bottom,
+            Type::Any => Type::Any,
+            Type::Primitive(p) => Type::Primitive(*p),
+            Type::Ref { scope, name, params } => Type::Ref {
+                scope: scope.clone(),
+                name: name.clone(),
+                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars())),
+            },
+            Type::Error(t0) => Type::Error(Arc::new(t0.reset_tvars())),
+            Type::Array(t0) => Type::Array(Arc::new(t0.reset_tvars())),
+            Type::Map { key, value } => {
+                let key = Arc::new(key.reset_tvars());
+                let value = Arc::new(value.reset_tvars());
+                Type::Map { key, value }
+            }
+            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.reset_tvars())),
+            Type::Tuple(ts) => {
+                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.reset_tvars())))
+            }
+            Type::Struct(ts) => Type::Struct(Arc::from_iter(
+                ts.iter().map(|(n, t)| (n.clone(), t.reset_tvars())),
+            )),
+            Type::Variant(tag, ts) => Type::Variant(
+                tag.clone(),
+                Arc::from_iter(ts.iter().map(|t| t.reset_tvars())),
+            ),
+            Type::TVar(tv) => Type::TVar(TVar::empty_named(tv.name.clone())),
+            Type::Set(s) => Type::Set(Arc::from_iter(s.iter().map(|t| t.reset_tvars()))),
+            Type::Fn(fntyp) => Type::Fn(Arc::new(fntyp.reset_tvars())),
+            Type::Abstract { id, params } => Type::Abstract {
+                id: *id,
+                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars())),
+            },
+        }
+    }
+
+    /// return a copy of self with every TVar named in known replaced
+    /// with the corresponding type
+    pub fn replace_tvars(&self, known: &FxHashMap<ArcStr, Self>) -> Type {
+        match self {
+            Type::TVar(tv) => match known.get(&tv.name) {
+                Some(t) => t.clone(),
+                None => Type::TVar(tv.clone()),
+            },
+            Type::Bottom => Type::Bottom,
+            Type::Any => Type::Any,
+            Type::Primitive(p) => Type::Primitive(*p),
+            Type::Ref { scope, name, params } => Type::Ref {
+                scope: scope.clone(),
+                name: name.clone(),
+                params: Arc::from_iter(params.iter().map(|t| t.replace_tvars(known))),
+            },
+            Type::Error(t0) => Type::Error(Arc::new(t0.replace_tvars(known))),
+            Type::Array(t0) => Type::Array(Arc::new(t0.replace_tvars(known))),
+            Type::Map { key, value } => {
+                let key = Arc::new(key.replace_tvars(known));
+                let value = Arc::new(value.replace_tvars(known));
+                Type::Map { key, value }
+            }
+            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.replace_tvars(known))),
+            Type::Tuple(ts) => {
+                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.replace_tvars(known))))
+            }
+            Type::Struct(ts) => Type::Struct(Arc::from_iter(
+                ts.iter().map(|(n, t)| (n.clone(), t.replace_tvars(known))),
+            )),
+            Type::Variant(tag, ts) => Type::Variant(
+                tag.clone(),
+                Arc::from_iter(ts.iter().map(|t| t.replace_tvars(known))),
+            ),
+            Type::Set(s) => {
+                Type::Set(Arc::from_iter(s.iter().map(|t| t.replace_tvars(known))))
+            }
+            Type::Fn(fntyp) => Type::Fn(Arc::new(fntyp.replace_tvars(known))),
+            Type::Abstract { id, params } => Type::Abstract {
+                id: *id,
+                params: Arc::from_iter(params.iter().map(|t| t.replace_tvars(known))),
+            },
+        }
+    }
+
+    /// Unbind any bound tvars, but do not unalias them.
+    pub(crate) fn unbind_tvars(&self) {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Ref { .. } => (),
+            Type::Error(t0) => t0.unbind_tvars(),
+            Type::Array(t0) => t0.unbind_tvars(),
+            Type::Map { key, value } => {
+                key.unbind_tvars();
+                value.unbind_tvars();
+            }
+            Type::ByRef(t0) => t0.unbind_tvars(),
+            Type::Tuple(ts)
+            | Type::Variant(_, ts)
+            | Type::Set(ts)
+            | Type::Abstract { id: _, params: ts } => {
+                for t in ts.iter() {
+                    t.unbind_tvars()
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, t) in ts.iter() {
+                    t.unbind_tvars()
+                }
+            }
+            Type::TVar(tv) => tv.unbind(),
+            Type::Fn(fntyp) => fntyp.unbind_tvars(),
+        }
     }
 }
