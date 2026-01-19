@@ -313,6 +313,7 @@ impl Type {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
                     let v = e.get();
+                    v.freeze();
                     tv.alias(v);
                 }
                 Entry::Vacant(e) => {
