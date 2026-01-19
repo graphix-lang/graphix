@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
-    typ::{FnArgType, FnType, TVar, Type},
+    typ::{AbstractId, FnArgType, FnType, TVar, Type},
 };
 use arcstr::ArcStr;
 use combine::{
@@ -333,7 +333,7 @@ where
                 token('>'),
             ),
         ))),
-        sptoken('=').with(typ()),
+        spaces().with(optional(token('=').with(typ()))),
     )
         .map(|(pos, name, params, typ)| {
             let params = params
@@ -341,6 +341,15 @@ where
                     Arc::from_iter(ps.drain(..))
                 })
                 .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from(Vec::new()));
+            let typ = match typ {
+                Some(typ) => typ,
+                None => {
+                    let params = Arc::from_iter(
+                        params.iter().map(|(tv, _)| Type::TVar(tv.clone())),
+                    );
+                    Type::Abstract { id: AbstractId::new(), params }
+                }
+            };
             ExprKind::TypeDef(TypeDefExpr { name, params, typ }).to_expr(pos)
         })
 }
