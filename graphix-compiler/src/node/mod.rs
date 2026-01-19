@@ -389,7 +389,12 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        self.children.iter_mut().fold(None, |_, n| n.update(ctx, event))
+        let res = self.children.iter_mut().fold(None, |_, n| n.update(ctx, event));
+        if self.module {
+            None
+        } else {
+            res
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

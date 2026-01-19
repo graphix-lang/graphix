@@ -7,7 +7,7 @@ use crate::{
         SigKind, Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
-    typ::{AbstractId, TVar, Type},
+    typ::{AbstractId, Type},
     wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
@@ -100,8 +100,8 @@ fn check_sig<R: Rt, E: UserEvent>(
     let mut has_bind: LPooled<FxHashSet<ArcStr>> = LPooled::take();
     let mut abstract_types: LPooled<FxHashMap<AbstractId, Type>> = LPooled::take();
     for n in nodes {
-        if let Some(binds) = ctx.env.binds.get(&scope.lexical)
-            && let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
+        if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
+            && let Some(binds) = ctx.env.binds.get(&scope.lexical)
             && let Expr { kind: ExprKind::Bind(bexp), .. } = bind.spec()
             && let StructurePattern::Bind(name) = &bexp.pattern
             && let Some(id) = bind.single_id()
@@ -130,9 +130,8 @@ fn check_sig<R: Rt, E: UserEvent>(
                 params: sig_td.params.clone(),
                 typ: sig_td.typ.clone(),
             };
-            let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
             match &sig_td.typ {
-                Type::Abstract { id, params } => {
+                Type::Abstract { id, params: _ } => {
                     if let Type::Abstract { .. } = &td.typ {
                         bail!("abstract types must have a concrete definition")
                     }
@@ -157,10 +156,6 @@ fn check_sig<R: Rt, E: UserEvent>(
                             Some(_) => (),
                         }
                     }
-                    for t in params.iter() {
-                        t.unfreeze_tvars();
-                        t.alias_tvars(&mut known);
-                    }
                     abstract_types.insert(*id, td.typ.clone());
                 }
                 _ if td != &sig_td => {
@@ -173,20 +168,6 @@ fn check_sig<R: Rt, E: UserEvent>(
                 }
                 _ => (),
             }
-            // glue the sig types and the impl types together
-            for (tv, tc) in sig_td.params.iter().chain(td.params.iter()) {
-                let tv = Type::TVar(tv.clone());
-                tv.unfreeze_tvars();
-                tv.alias_tvars(&mut known);
-                if let Some(tc) = tc {
-                    tc.unfreeze_tvars();
-                    tc.alias_tvars(&mut known);
-                }
-            }
-            sig_td.typ.unfreeze_tvars();
-            td.typ.unfreeze_tvars();
-            sig_td.typ.alias_tvars(&mut known);
-            td.typ.alias_tvars(&mut known);
         }
     }
     for si in sig.items.iter() {
@@ -221,12 +202,17 @@ pub(super) struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
     source: Node<R, E>,
+    // we need to be able to check the module sig at run time, so we must keep
+    // both the environment we compile in as well as the inner private module
+    // environment (env). We must keep the outer sig environment because the
+    // dynamic module may itself not be exported from it's parent module, and in
+    // that case it's bound signature would be lost at run time.
+    dynamic_sig_env: Option<Env>,
     env: Env,
     sig: Sig,
     scope: Scope,
     proxy: FxHashMap<BindId, BindId>,
     nodes: Box<[Node<R, E>]>,
-    is_static: bool,
     top_id: ExprId,
 }
 
@@ -251,10 +237,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             env,
             sig,
             source,
+            dynamic_sig_env: Some(ctx.env.clone()),
             scope: scope.clone(),
             proxy: FxHashMap::default(),
             nodes: Box::new([]),
-            is_static: false,
             top_id,
         }))
     }
@@ -278,10 +264,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             env,
             sig,
             source,
+            dynamic_sig_env: None,
             scope: scope.clone(),
             proxy: FxHashMap::default(),
             nodes: Box::new([]),
-            is_static: true,
             top_id,
         };
         t.compile_inner(ctx, &exprs)
@@ -296,7 +282,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
-        ctx.builtins_allowed = self.is_static;
+        ctx.builtins_allowed = self.dynamic_sig_env.is_none();
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
             let mut nodes = exprs
                 .iter()
@@ -309,7 +295,26 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         });
         ctx.builtins_allowed = true;
         let nodes = nodes?;
-        check_sig(ctx, self.top_id, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
+        match &mut self.dynamic_sig_env {
+            None => check_sig(
+                ctx,
+                self.top_id,
+                &mut self.proxy,
+                &self.scope,
+                &self.sig,
+                &nodes,
+            )?,
+            Some(env) => ctx.with_restored_mut(env, |ctx| {
+                check_sig(
+                    ctx,
+                    self.top_id,
+                    &mut self.proxy,
+                    &self.scope,
+                    &self.sig,
+                    &nodes,
+                )
+            })?,
+        }
         self.nodes = Box::from(nodes);
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
@@ -320,7 +325,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             ctx.rt.unref_var(id, self.top_id);
             ctx.rt.unref_var(proxy_id, self.top_id);
         }
-        ctx.with_restored(self.env.clone(), |ctx| {
+        ctx.with_restored_mut(&mut self.env, |ctx| {
             for mut n in mem::take(&mut self.nodes) {
                 n.delete(ctx)
             }
@@ -335,7 +340,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         event: &mut Event<E>,
     ) -> Option<netidx_value::Value> {
         let mut compiled = false;
-        if !self.is_static
+        if self.dynamic_sig_env.is_some()
             && let Some(v) = self.source.update(ctx, event)
         {
             self.clear_compiled(ctx);
@@ -360,7 +365,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 ctx.cached.insert(*inner_id, v);
             }
         }
-        let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
+        self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.remove(inner_id) {
@@ -368,16 +373,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 ctx.cached.insert(*proxy_id, v);
             }
         }
-        if self.is_static {
-            res
-        } else {
-            compiled.then(|| Value::Null)
-        }
+        compiled.then(|| Value::Null)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.is_static {
-            ctx.with_restored(self.env.clone(), |ctx| {
+        if self.dynamic_sig_env.is_none() {
+            ctx.with_restored_mut(&mut self.env, |ctx| {
                 for n in &mut self.nodes {
                     n.delete(ctx);
                 }
@@ -396,8 +397,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.is_static {
-            ctx.with_restored(self.env.clone(), |ctx| {
+        if self.dynamic_sig_env.is_none() {
+            ctx.with_restored_mut(&mut self.env, |ctx| {
                 for n in &mut self.nodes {
                     n.sleep(ctx);
                 }
@@ -413,7 +414,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        if self.is_static {
+        if self.dynamic_sig_env.is_none() {
             self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
         } else {
             &TYP

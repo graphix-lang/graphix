@@ -1,6 +1,6 @@
 use anyhow::Result;
 use enumflags2::BitFlags;
-use graphix_compiler::ExecCtx;
+use graphix_compiler::{expr::ModuleResolver, ExecCtx};
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use poolshark::global::GPooled;
 use tokio::sync::mpsc;
@@ -23,7 +23,10 @@ impl TestCtx {
     }
 }
 
-pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
+pub async fn init_with_resolvers(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    mut resolvers: Vec<ModuleResolver>,
+) -> Result<TestCtx> {
     let _ = env_logger::try_init();
     let env = netidx::InternalOnly::new().await?;
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(
@@ -31,26 +34,49 @@ pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
         env.subscriber().clone(),
     ))?;
     let (root, mods) = crate::register(&mut ctx, BitFlags::all())?;
+    resolvers.insert(0, mods);
     Ok(TestCtx {
         internal_only: env,
         rt: GXConfig::builder(ctx, sub)
             .root(root)
-            .resolvers(vec![mods])
+            .resolvers(resolvers)
             .build()?
             .start()
             .await?,
     })
 }
 
+pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
+    init_with_resolvers(sub, vec![]).await
+}
+
 #[macro_export]
 macro_rules! run {
     ($name:ident, $code:expr, $pred:expr) => {
+        run!($name, "", $code, $pred);
+    };
+    ($name:ident, $interface:expr, $code:expr, $pred:expr) => {
         #[tokio::test(flavor = "current_thread")]
         async fn $name() -> ::anyhow::Result<()> {
             let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-            let ctx = $crate::test::init(tx).await?;
+            let resolver = graphix_compiler::expr::ModuleResolver::VFS(
+                fxhash::FxHashMap::from_iter(
+                    [
+                        (
+                            netidx::path::Path::from("/test.gx"),
+                            arcstr::ArcStr::from($code),
+                        ),
+                        (
+                            netidx::path::Path::from("/test.gxi"),
+                            arcstr::ArcStr::from($interface),
+                        ),
+                    ]
+                    .into_iter(),
+                ),
+            );
+            let ctx = $crate::test::init_with_resolvers(tx, vec![resolver]).await?;
             let bs = &ctx.rt;
-            match bs.compile(arcstr::ArcStr::from($code)).await {
+            match bs.compile(arcstr::literal!("mod test")).await {
                 Err(e) => assert!($pred(dbg!(Err(e)))),
                 Ok(e) => {
                     dbg!("compilation succeeded");
