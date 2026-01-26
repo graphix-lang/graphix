@@ -75,8 +75,8 @@ pub const RESERVED: LazyLock<FxHashSet<&str>> = LazyLock::new(|| {
         "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
         "if", "i8", "u8", "i16", "u16", "u32", "v32", "i32", "z32", "u64", "v64", "i64",
         "z64", "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
-        "bytes", "result", "null", "_", "?", "fn", "Array", "Map", "any", "Any", "use",
-        "rec", "catch", "try",
+        "bytes", "null", "_", "?", "fn", "Array", "Map", "any", "Any", "use", "rec",
+        "catch", "try",
     ])
 });
 

@@ -62,13 +62,17 @@ module, they are required to be defined in order, sandbox, sig, and source,
     [super::secret::module];` everything except super secret module would be
     accessible
 - a `sig` statement is the type signature of the module. This is a special
-  syntax for writing module type signatures. There are three possible statements,
+  syntax for writing module type signatures. There are four possible statements,
   - a val statement defines a value and it's type, `val add: fn(i64) -> i64` is
     an example of a val statement, it need not be a function it can be any type
   - a type statement defines a type in the loaded module, e.g. `type T = { foo:
     string, bar: string }` val statements that come after a type statement may
     use the defined type. The type statement is identical to the normal type
     statement in Graphix (so it can be polymorphic, recursive, etc).
+  - an abstract type statement declares a type without defining it, e.g. `type T;`
+    The loaded module must provide a concrete definition, but that definition is
+    hidden from the loading code. This provides encapsulation - see the
+    [Abstract Types](./interfaces.md#abstract-types) section for details.
   - a mod statement defines a sub module of the dynamically loaded module. A sub
     module must have a sig. `mod m: sig { ... }` defines a sub module.
 - a `source` statement defines where the source code for the dynamic module will

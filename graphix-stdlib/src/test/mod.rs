@@ -53,30 +53,19 @@ pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
 #[macro_export]
 macro_rules! run {
     ($name:ident, $code:expr, $pred:expr) => {
-        run!($name, "", $code, $pred);
+        run!($name, $pred, "/test.gx" => format!("let result = {}", $code));
     };
-    ($name:ident, $interface:expr, $code:expr, $pred:expr) => {
+    ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
         #[tokio::test(flavor = "current_thread")]
         async fn $name() -> ::anyhow::Result<()> {
             let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-            let resolver = graphix_compiler::expr::ModuleResolver::VFS(
-                fxhash::FxHashMap::from_iter(
-                    [
-                        (
-                            netidx::path::Path::from("/test.gx"),
-                            arcstr::ArcStr::from($code),
-                        ),
-                        (
-                            netidx::path::Path::from("/test.gxi"),
-                            arcstr::ArcStr::from($interface),
-                        ),
-                    ]
-                    .into_iter(),
-                ),
-            );
+            let tbl = fxhash::FxHashMap::from_iter([
+                $((netidx::path::Path::from($path), arcstr::ArcStr::from($code))),+
+            ]);
+            let resolver = graphix_compiler::expr::ModuleResolver::VFS(tbl);
             let ctx = $crate::test::init_with_resolvers(tx, vec![resolver]).await?;
             let bs = &ctx.rt;
-            match bs.compile(arcstr::literal!("mod test")).await {
+            match bs.compile(arcstr::literal!("{ mod test; test::result }")).await {
                 Err(e) => assert!($pred(dbg!(Err(e)))),
                 Ok(e) => {
                     dbg!("compilation succeeded");

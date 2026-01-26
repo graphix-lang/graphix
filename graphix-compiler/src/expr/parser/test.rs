@@ -1270,8 +1270,8 @@ fn tupleref() {
 }
 
 #[allow(unused)]
-fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
-    crate::expr::parser::arith()
+fn parse_prop0(s: &str) -> anyhow::Result<Type> {
+    crate::expr::parser::typ()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -1281,6 +1281,6 @@ fn parse_prop0(s: &str) -> anyhow::Result<Expr> {
 
 #[test]
 fn prop0() {
-    let s = "{ selected with y: selected.y + 1 }";
+    let s = "type T = Array<Box<i64>>";
     dbg!(parse_one(s).unwrap());
 }

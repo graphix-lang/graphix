@@ -42,6 +42,7 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
             }
             SigKind::TypeDef(td) => {
                 let typ = td.typ.scope_refs(&scope.lexical);
+                // Always bind to env (for external callers to see)
                 env.deftype(
                     &scope.lexical,
                     &td.name,
@@ -49,13 +50,18 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                     typ.clone(),
                     si.doc.0.clone(),
                 )?;
-                mod_env.deftype(
-                    &scope.lexical,
-                    &td.name,
-                    td.params.clone(),
-                    typ,
-                    si.doc.0.clone(),
-                )?;
+                // Only bind concrete types to mod_env. Abstract types are not
+                // bound to mod_env so the implementation can provide the
+                // concrete definition via its own type statement.
+                if !matches!(typ, Type::Abstract { .. }) {
+                    mod_env.deftype(
+                        &scope.lexical,
+                        &td.name,
+                        td.params.clone(),
+                        typ,
+                        si.doc.0.clone(),
+                    )?;
+                }
             }
         }
     }

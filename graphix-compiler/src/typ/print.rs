@@ -9,7 +9,7 @@ use std::fmt::{self, Write};
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Abstract { .. } => Ok(()),
+            Self::Abstract { id, params: _ } => write!(f, "<abstract#{}>", id.0),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref { scope: _, name, params } => {
@@ -129,7 +129,7 @@ impl fmt::Display for Type {
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         match self {
-            Self::Abstract { .. } => Ok(()),
+            Self::Abstract { .. } => writeln!(buf, "{self}"),
             Self::Bottom => writeln!(buf, "_"),
             Self::Any => writeln!(buf, "Any"),
             Self::Ref { scope: _, name, params } => {
