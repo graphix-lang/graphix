@@ -7,12 +7,12 @@ use crate::{
         SigKind, Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
-    typ::Type,
+    typ::{AbstractId, Type},
     wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
-use compact_str::CompactString;
+use compact_str::{format_compact, CompactString};
 use enumflags2::BitFlags;
 use fxhash::{FxHashMap, FxHashSet};
 use netidx_value::{Typ, Value};
@@ -20,12 +20,7 @@ use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
 
-fn bind_sig<R: Rt, E: UserEvent>(
-    env: &mut Env<R, E>,
-    mod_env: &mut Env<R, E>,
-    scope: &Scope,
-    sig: &Sig,
-) -> Result<()> {
+fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
         match &si.kind {
@@ -47,6 +42,7 @@ fn bind_sig<R: Rt, E: UserEvent>(
             }
             SigKind::TypeDef(td) => {
                 let typ = td.typ.scope_refs(&scope.lexical);
+                // Always bind to env (for external callers to see)
                 env.deftype(
                     &scope.lexical,
                     &td.name,
@@ -54,13 +50,18 @@ fn bind_sig<R: Rt, E: UserEvent>(
                     typ.clone(),
                     si.doc.0.clone(),
                 )?;
-                mod_env.deftype(
-                    &scope.lexical,
-                    &td.name,
-                    td.params.clone(),
-                    typ,
-                    si.doc.0.clone(),
-                )?
+                // Only bind concrete types to mod_env. Abstract types are not
+                // bound to mod_env so the implementation can provide the
+                // concrete definition via its own type statement.
+                if !matches!(typ, Type::Abstract { .. }) {
+                    mod_env.deftype(
+                        &scope.lexical,
+                        &td.name,
+                        td.params.clone(),
+                        typ,
+                        si.doc.0.clone(),
+                    )?;
+                }
             }
         }
     }
@@ -69,12 +70,7 @@ fn bind_sig<R: Rt, E: UserEvent>(
 
 // copy the exported signature of all the exported inner modules in this sig to
 // the global env
-fn export_sig<R: Rt, E: UserEvent>(
-    env: &mut Env<R, E>,
-    inner_env: &Env<R, E>,
-    scope: &Scope,
-    sig: &Sig,
-) {
+fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
             use std::fmt::Write;
@@ -108,9 +104,10 @@ fn check_sig<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     let mut has_bind: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+    let mut abstract_types: LPooled<FxHashMap<AbstractId, Type>> = LPooled::take();
     for n in nodes {
-        if let Some(binds) = ctx.env.binds.get(&scope.lexical)
-            && let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
+        if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
+            && let Some(binds) = ctx.env.binds.get(&scope.lexical)
             && let Expr { kind: ExprKind::Bind(bexp), .. } = bind.spec()
             && let StructurePattern::Bind(name) = &bexp.pattern
             && let Some(id) = bind.single_id()
@@ -118,7 +115,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            proxy_bind.typ.sig_matches(&ctx.env, bind.typ()).with_context(|| {
+            proxy_bind.typ.sig_matches(&ctx.env, bind.typ(), &abstract_types).with_context(|| {
                 format!(
                     "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
                     proxy_bind.typ,
@@ -139,19 +136,55 @@ fn check_sig<R: Rt, E: UserEvent>(
                 params: sig_td.params.clone(),
                 typ: sig_td.typ.clone(),
             };
-            if td != &sig_td {
-                bail!(
-                    "signature mismatch in {}, expected {}, found {}",
-                    td.name,
-                    sig_td,
-                    td
-                )
+            match &sig_td.typ {
+                Type::Abstract { id, params: _ } => {
+                    if let Type::Abstract { .. } = &td.typ {
+                        bail!("abstract types must have a concrete definition")
+                    }
+                    for (tv0, con0) in td.params.iter() {
+                        match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
+                            Some((_, con1)) if con0 != con1 => {
+                                let con0 = match con0 {
+                                    None => "missing",
+                                    Some(t) => &format_compact!("{t}"),
+                                };
+                                let con1 = match con1 {
+                                    None => "missing",
+                                    Some(t) => &format_compact!("{t}"),
+                                };
+                                bail!("signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}", td.name, tv0.name)
+                            }
+                            None => bail!(
+                                "signature mismatch in {}, missing parameter {}",
+                                sig_td.name,
+                                tv0.name
+                            ),
+                            Some(_) => (),
+                        }
+                    }
+                    abstract_types.insert(*id, td.typ.clone());
+                }
+                _ if td != &sig_td => {
+                    bail!(
+                        "signature mismatch in {}, expected {}, found {}",
+                        td.name,
+                        sig_td,
+                        td
+                    )
+                }
+                _ => (),
             }
         }
     }
     for si in sig.items.iter() {
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
+            SigKind::TypeDef(TypeDefExpr {
+                typ: Type::Abstract { id, params: _ },
+                ..
+            }) if !abstract_types.contains_key(id) => {
+                bail!("abstract signature types must have a concrete definition in the implementation")
+            }
             SigKind::Module(_)
             | SigKind::Use(_)
             | SigKind::TypeDef(TypeDefExpr { .. }) => false,
@@ -175,12 +208,17 @@ pub(super) struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
     source: Node<R, E>,
-    env: Env<R, E>,
+    // we need to be able to check the module sig at run time, so we must keep
+    // both the environment we compile in as well as the inner private module
+    // environment (env). We must keep the outer sig environment because the
+    // dynamic module may itself not be exported from it's parent module, and in
+    // that case it's bound signature would be lost at run time.
+    dynamic_sig_env: Option<Env>,
+    env: Env,
     sig: Sig,
     scope: Scope,
     proxy: FxHashMap<BindId, BindId>,
     nodes: Box<[Node<R, E>]>,
-    is_static: bool,
     top_id: ExprId,
 }
 
@@ -205,10 +243,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             env,
             sig,
             source,
+            dynamic_sig_env: Some(ctx.env.clone()),
             scope: scope.clone(),
             proxy: FxHashMap::default(),
             nodes: Box::new([]),
-            is_static: false,
             top_id,
         }))
     }
@@ -232,10 +270,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             env,
             sig,
             source,
+            dynamic_sig_env: None,
             scope: scope.clone(),
             proxy: FxHashMap::default(),
             nodes: Box::new([]),
-            is_static: true,
             top_id,
         };
         t.compile_inner(ctx, &exprs)
@@ -250,7 +288,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
-        ctx.builtins_allowed = self.is_static;
+        ctx.builtins_allowed = self.dynamic_sig_env.is_none();
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
             let mut nodes = exprs
                 .iter()
@@ -263,7 +301,26 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         });
         ctx.builtins_allowed = true;
         let nodes = nodes?;
-        check_sig(ctx, self.top_id, &mut self.proxy, &self.scope, &self.sig, &nodes)?;
+        match &mut self.dynamic_sig_env {
+            None => check_sig(
+                ctx,
+                self.top_id,
+                &mut self.proxy,
+                &self.scope,
+                &self.sig,
+                &nodes,
+            )?,
+            Some(env) => ctx.with_restored_mut(env, |ctx| {
+                check_sig(
+                    ctx,
+                    self.top_id,
+                    &mut self.proxy,
+                    &self.scope,
+                    &self.sig,
+                    &nodes,
+                )
+            })?,
+        }
         self.nodes = Box::from(nodes);
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
@@ -274,7 +331,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             ctx.rt.unref_var(id, self.top_id);
             ctx.rt.unref_var(proxy_id, self.top_id);
         }
-        ctx.with_restored(self.env.clone(), |ctx| {
+        ctx.with_restored_mut(&mut self.env, |ctx| {
             for mut n in mem::take(&mut self.nodes) {
                 n.delete(ctx)
             }
@@ -289,7 +346,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         event: &mut Event<E>,
     ) -> Option<netidx_value::Value> {
         let mut compiled = false;
-        if !self.is_static
+        if self.dynamic_sig_env.is_some()
             && let Some(v) = self.source.update(ctx, event)
         {
             self.clear_compiled(ctx);
@@ -314,7 +371,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 ctx.cached.insert(*inner_id, v);
             }
         }
-        let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
+        self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.remove(inner_id) {
@@ -322,16 +379,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 ctx.cached.insert(*proxy_id, v);
             }
         }
-        if self.is_static {
-            res
-        } else {
-            compiled.then(|| Value::Null)
-        }
+        compiled.then(|| Value::Null)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.is_static {
-            ctx.with_restored(self.env.clone(), |ctx| {
+        if self.dynamic_sig_env.is_none() {
+            ctx.with_restored_mut(&mut self.env, |ctx| {
                 for n in &mut self.nodes {
                     n.delete(ctx);
                 }
@@ -350,8 +403,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.is_static {
-            ctx.with_restored(self.env.clone(), |ctx| {
+        if self.dynamic_sig_env.is_none() {
+            ctx.with_restored_mut(&mut self.env, |ctx| {
                 for n in &mut self.nodes {
                     n.sleep(ctx);
                 }
@@ -367,7 +420,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        if self.is_static {
+        if self.dynamic_sig_env.is_none() {
             self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
         } else {
             &TYP

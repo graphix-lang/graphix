@@ -50,6 +50,7 @@ Export type definitions that users of the module can reference:
 type Color = [`Red, `Green, `Blue];
 type Point = { x: f64, y: f64 };
 type Result<'a, 'e> = ['a, Error<'e>];
+type Abstract;
 ```
 
 Types can be polymorphic and recursive, just like in regular Graphix code.
@@ -247,9 +248,147 @@ modules loaded at runtime, use the inline `sig { ... }` syntax described in the
 [Dynamic Modules](./dynamic.md) chapter. The signature syntax in dynamic modules
 uses the same declaration forms (`val`, `type`, `mod`) as interface files.
 
+## Abstract Types
+
+Abstract types allow you to hide the concrete representation of a type from users of
+your module. This is a powerful encapsulation mechanism that lets you change the
+internal representation without affecting code that uses your module.
+
+### Declaring Abstract Types
+
+In an interface file, declare an abstract type by omitting the `= definition` part:
+
+```graphix
+type Handle;
+type Container<'a>;
+type NumericBox<'a: Number>;
+```
+
+The implementation file must provide a concrete definition for each abstract type:
+
+```graphix
+type Handle = { id: i64, name: string };
+type Container<'a> = Array<'a>;
+type NumericBox<'a: Number> = { value: 'a };
+```
+
+### How Abstract Types Work
+
+When code outside the module references an abstract type, it sees only the type name,
+not the underlying representation. This means:
+
+- Users cannot construct values of the abstract type directly
+- Users cannot pattern match on the internal structure
+- Users must use functions exported by the module to create and manipulate values
+
+This provides true encapsulation - the implementation can change the concrete type
+without breaking any code that uses the module, as long as the exported functions
+still work.
+
+### Example: Encapsulated Counter
+
+**counter.gxi**:
+```graphix
+/// An opaque counter type
+type Counter;
+
+/// Create a new counter starting at the given value
+val make: fn(i64) -> Counter;
+
+/// Get the current value
+val get: fn(Counter) -> i64;
+
+/// Increment the counter
+val increment: fn(&Counter) -> null throws Error<ErrChain<`ArithError(string)>>;
+```
+
+**counter.gx**:
+```graphix
+// Implementation detail: counter is just an i64
+// We could change this to a struct later without breaking users
+type Counter = i64;
+
+let make = |x: i64| -> Counter x;
+let get = |c: Counter| -> i64 c;
+let increment = |c: &Counter| -> null { *c <- once(*c) + 1; null }
+```
+
+**main.gx**:
+```graphix
+mod counter;
+
+let c = counter::make(0);
+counter::increment(&c);
+let value = counter::get(c)  // 1
+```
+
+### Parameterized Abstract Types
+
+Abstract types can have type parameters, allowing generic containers:
+
+```graphix
+// interface
+type Box<'a>;
+val wrap: fn<'a>('a) -> Box<'a>;
+val unwrap: fn<'a>(Box<'a>) -> 'a;
+```
+
+```graphix
+// implementation
+type Box<'a> = { value: 'a };
+let wrap = |x: 'a| -> Box<'a> { value: x };
+let unwrap = |b: Box<'a>| -> 'a b.value
+```
+
+### Constrained Type Parameters
+
+Type parameters on abstract types can have constraints. The interface and
+implementation must have matching constraints:
+
+```graphix
+// interface - constraint required
+type NumericWrapper<'a: Number>;
+val wrap: fn('a) -> NumericWrapper<'a>;
+val double: fn(NumericWrapper<'a>) -> 'a throws Error<ErrChain<`ArithError(string)>>;
+```
+
+```graphix
+// implementation - same constraint required
+type NumericWrapper<'a: Number> = 'a;
+let wrap = |x: 'a| -> NumericWrapper<'a> x;
+let double = |w: NumericWrapper<'a>| -> 'a w + w
+```
+
+### Abstract Types in Compound Types
+
+Abstract types can be used within other type definitions in the interface:
+
+```graphix
+type Element;
+type List = [`Cons(Element, List), `Nil];
+type Pair = (Element, Element);
+type Container = { items: Array<Element> };
+```
+
+This allows you to export complex data structures while keeping the element type
+opaque.
+
+### Abstract Types vs Type Aliases
+
+Don't confuse abstract types with type aliases:
+
+| Declaration | Meaning |
+|-------------|---------|
+| `type T;` | Abstract type - concrete definition hidden |
+| `type T = i64;` | Type alias - `T` is publicly known to be `i64` |
+
+Use abstract types when you want encapsulation. Use type aliases when you want
+to give a convenient name to a type that users can still see and use directly.
+
 ## Best Practices
 
 1. **Document in interfaces**: Put documentation comments in the `.gxi` file since that's what users see
 2. **Minimal interfaces**: Only export what users need; keep implementation details private
 3. **Stable interfaces**: Think carefully before changing an interface, as it may break dependent code
 4. **Type aliases**: Export type aliases in the interface to give users convenient names for complex types
+5. **Use abstract types for encapsulation**: When you want to hide implementation details and reserve the right to change them, use abstract types instead of exposing concrete types

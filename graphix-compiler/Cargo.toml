@@ -43,6 +43,7 @@ serde = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"

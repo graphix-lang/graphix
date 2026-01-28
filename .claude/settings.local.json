@@ -28,7 +28,12 @@
       "Bash(cargo clean:*)",
       "mcp__acp__Bash",
       "mcp__acp__Write",
-      "mcp__acp__Edit"
+      "mcp__acp__Edit",
+      "Bash(git -C /home/eric/proj/graphix log --oneline --all)",
+      "Bash(git -C /home/eric/proj/graphix show d00697b --stat)",
+      "Bash(git -C /home/eric/proj/graphix show 47e2731 --stat)",
+      "Bash(git -C /home/eric/proj/graphix show 732cb0c --stat)",
+      "Bash(git -C /home/eric/proj/graphix log --oneline --all -20)"
     ],
     "deny": [],
     "ask": []

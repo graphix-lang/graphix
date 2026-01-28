@@ -5,8 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay},
         ModPath,
     },
-    typ::{ContainsFlags, TVar, Type},
-    Rt, UserEvent,
+    typ::{contains::ContainsFlags, AbstractId, TVar, Type},
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -285,6 +284,22 @@ impl FnType {
         throws.alias_tvars(known);
     }
 
+    pub fn unfreeze_tvars(&self) {
+        let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
+        for arg in args.iter() {
+            arg.typ.unfreeze_tvars()
+        }
+        if let Some(vargs) = vargs {
+            vargs.unfreeze_tvars()
+        }
+        rtype.unfreeze_tvars();
+        for (tv, tc) in constraints.read().iter() {
+            Type::TVar(tv.clone()).unfreeze_tvars();
+            tc.unfreeze_tvars();
+        }
+        throws.unfreeze_tvars();
+    }
+
     pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
         let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for arg in args.iter() {
@@ -301,11 +316,7 @@ impl FnType {
         throws.collect_tvars(known);
     }
 
-    pub fn contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        t: &Self,
-    ) -> Result<bool> {
+    pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
             env,
@@ -314,10 +325,10 @@ impl FnType {
         )
     }
 
-    pub(super) fn contains_int<R: Rt, E: UserEvent>(
+    pub(super) fn contains_int(
         &self,
         flags: BitFlags<ContainsFlags>,
-        env: &Env<R, E>,
+        env: &Env,
         hist: &mut FxHashMap<(usize, usize), bool>,
         t: &Self,
     ) -> Result<bool> {
@@ -398,11 +409,7 @@ impl FnType {
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
     }
 
-    pub fn check_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        other: &Self,
-    ) -> Result<()> {
+    pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {
         if !self.contains(env, other)? {
             bail!("Fn type mismatch {self} does not contain {other}")
         }
@@ -411,11 +418,7 @@ impl FnType {
 
     /// Return true if function signatures are contained. This is contains,
     /// but does not allow labeled argument subtyping.
-    pub fn sig_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        other: &Self,
-    ) -> Result<bool> {
+    pub fn sig_contains(&self, env: &Env, other: &Self) -> Result<bool> {
         let Self {
             args: args0,
             vargs: vargs0,
@@ -462,31 +465,35 @@ impl FnType {
             && tr0.contains(env, tr1)?)
     }
 
-    pub fn check_sig_contains<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-        other: &Self,
-    ) -> Result<()> {
+    pub fn check_sig_contains(&self, env: &Env, other: &Self) -> Result<()> {
         if !self.sig_contains(env, other)? {
             bail!("Fn signature {self} does not contain {other}")
         }
         Ok(())
     }
 
-    pub fn sig_matches<R: Rt, E: UserEvent>(
+    pub fn sig_matches(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         impl_fn: &Self,
+        adts: &mut FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
-        self.sig_matches_int(env, impl_fn, &mut LPooled::take(), &mut LPooled::take())
+        self.sig_matches_int(
+            env,
+            impl_fn,
+            &mut LPooled::take(),
+            &mut LPooled::take(),
+            adts,
+        )
     }
 
-    pub(super) fn sig_matches_int<R: Rt, E: UserEvent>(
+    pub(super) fn sig_matches_int(
         &self,
-        env: &Env<R, E>,
+        env: &Env,
         impl_fn: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
         hist: &mut FxHashSet<(usize, usize)>,
+        adts: &FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
@@ -523,14 +530,14 @@ impl FnType {
             }
             sig_arg
                 .typ
-                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
+                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist, adts)
                 .with_context(|| format!("in argument {i}"))?;
         }
         match (sig_vargs, impl_vargs) {
             (None, None) => (),
             (Some(sig_va), Some(impl_va)) => {
                 sig_va
-                    .sig_matches_int(env, impl_va, tvar_map, hist)
+                    .sig_matches_int(env, impl_va, tvar_map, hist, adts)
                     .context("in variadic argument")?;
             }
             (None, Some(_)) => {
@@ -541,10 +548,10 @@ impl FnType {
             }
         }
         sig_rtype
-            .sig_matches_int(env, impl_rtype, tvar_map, hist)
+            .sig_matches_int(env, impl_rtype, tvar_map, hist, adts)
             .context("in return type")?;
         sig_throws
-            .sig_matches_int(env, impl_throws, tvar_map, hist)
+            .sig_matches_int(env, impl_throws, tvar_map, hist, adts)
             .context("in throws clause")?;
         let sig_cons = sig_constraints.read();
         let impl_cons = impl_constraints.read();
@@ -560,7 +567,7 @@ impl FnType {
             match tvar_map.get(&impl_tv.inner_addr()).cloned() {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {
-                    sig_type.sig_matches_int(env, impl_tc, tvar_map, hist).with_context(|| {
+                    sig_type.sig_matches_int(env, impl_tc, tvar_map, hist, adts).with_context(|| {
                         format!(
                             "signature has concrete type {sig_type}, implementation constraint is {impl_tc}"
                         )

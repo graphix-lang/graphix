@@ -6,9 +6,9 @@ use fxhash::{FxBuildHasher, FxHashMap};
 use graphix_compiler::{
     compile,
     expr::{self, Expr, ExprId, ExprKind, ModuleResolver, Origin, Source},
-    node::genn,
+    node::{genn, lambda::LambdaDef},
     typ::Type,
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, LambdaId, Node, Refs, Scope,
+    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope,
 };
 use indexmap::IndexMap;
 use log::{debug, error, info};
@@ -26,7 +26,6 @@ use smallvec::{smallvec, SmallVec};
 use std::{
     collections::{hash_map::Entry, HashMap, VecDeque},
     future, mem, result,
-    sync::Weak,
     time::Duration,
 };
 use tokio::{
@@ -103,11 +102,11 @@ pub(super) struct GX<X: GXExt> {
     event: Event<X::UserEvent>,
     nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, FxBuildHasher>,
     callables: FxHashMap<CallableId, CallableInt>,
-    sub: tmpsc::Sender<GPooled<Vec<GXEvent<X>>>>,
+    sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Arc<[ModuleResolver]>,
     publish_timeout: Option<Duration>,
     last_rpc_gc: Instant,
-    batch_pool: Pool<Vec<GXEvent<X>>>,
+    batch_pool: Pool<Vec<GXEvent>>,
     flags: BitFlags<CFlag>,
     commit_tasks: JoinSet<()>,
 }
@@ -163,7 +162,7 @@ impl<X: GXExt> GX<X> {
         rpcs: &mut Vec<(BindId, RpcCall)>,
         to_rt: &mut UnboundedReceiver<ToGX<X>>,
         input: &mut Vec<ToGX<X>>,
-        mut batch: GPooled<Vec<GXEvent<X>>>,
+        mut batch: GPooled<Vec<GXEvent>>,
     ) {
         macro_rules! push_event {
             ($id:expr, $v:expr, $event:ident, $refed:ident, $overflow:ident) => {
@@ -281,7 +280,7 @@ impl<X: GXExt> GX<X> {
         &mut self,
         tasks: &mut Vec<(BindId, Value)>,
         input: &mut Vec<ToGX<X>>,
-        batch: &mut GPooled<Vec<GXEvent<X>>>,
+        batch: &mut GPooled<Vec<GXEvent>>,
     ) {
         for m in input.drain(..) {
             match m {
@@ -492,13 +491,10 @@ impl<X: GXExt> GX<X> {
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
 
-    fn compile_callable(&mut self, id: Value, rt: GXHandle<X>) -> Result<Callable<X>> {
-        let id = match id {
-            Value::U64(id) => LambdaId::from(id),
-            v => bail!("invalid lambda id {v}"),
-        };
-        let lb = self.ctx.env.lambdas.get(&id).and_then(Weak::upgrade);
-        let lb = lb.ok_or_else(|| anyhow!("unknown lambda {id:?}"))?;
+    fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {
+        let lb = v
+            .downcast_ref::<LambdaDef<GXRt<X>, X::UserEvent>>()
+            .ok_or_else(|| anyhow!("invalid lambda {v}"))?;
         let args = lb.typ.args.iter();
         let args = args
             .map(|a| {
@@ -514,7 +510,7 @@ impl<X: GXExt> GX<X> {
         let argn = argn
             .map(|(arg, id)| genn::reference(&mut self.ctx, *id, arg.typ.clone(), eid))
             .collect::<Vec<_>>();
-        let fnode = genn::constant(Value::U64(id.inner()));
+        let fnode = genn::constant(v.clone());
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
         self.event.init = true;
         n.update(&mut self.ctx, &mut self.event);

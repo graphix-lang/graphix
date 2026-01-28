@@ -1,11 +1,11 @@
 use super::{compiler::compile, error::ECHAIN, Nop};
 use crate::{
     deref_typ,
-    env::LambdaDef,
     expr::{Expr, ExprId},
+    node::lambda::LambdaDef,
     typ::{FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent,
+    wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
@@ -14,7 +14,7 @@ use fxhash::{FxHashMap, FxHashSet};
 use netidx::subscriber::Value;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
-use std::{collections::hash_map::Entry, mem, sync::Arc};
+use std::{collections::hash_map::Entry, mem};
 use triomphe::Arc as TArc;
 
 fn compile_apply_args<R: Rt, E: UserEvent>(
@@ -70,7 +70,7 @@ pub(crate) struct CallSite<R: Rt, E: UserEvent> {
     pub(super) fnode: Node<R, E>,
     pub(super) named_args: FxHashMap<ArcStr, (Option<Node<R, E>>, bool)>,
     pub(super) args: Vec<Node<R, E>>,
-    pub(super) function: Option<(LambdaId, Box<dyn Apply<R, E>>)>,
+    pub(super) function: Option<(Value, Box<dyn Apply<R, E>>)>,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
@@ -109,7 +109,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx: &mut ExecCtx<R, E>,
         scope: Scope,
         flags: BitFlags<CFlag>,
-        f: Arc<LambdaDef<R, E>>,
+        fv: Value,
+        f: &LambdaDef<R, E>,
         event: &mut Event<E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
@@ -205,7 +206,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             keep
         });
         let rf = (f.init)(&scope, ctx, &mut self.args, self.top_id, false)?;
-        self.function = Some((f.id, rf));
+        self.function = Some((fv, rf));
         Ok(())
     }
 }
@@ -215,20 +216,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         let bound = match (&self.function, self.fnode.update(ctx, event)) {
             (_, None) => false,
-            (Some((cid, _)), Some(Value::U64(id))) if cid.0 == id => false,
-            (_, Some(Value::U64(id))) => match ctx.env.lambdas.get(&LambdaId(id)) {
-                None => panic!("no such function {id:?}"),
-                Some(lb) => match lb.upgrade() {
-                    None => panic!("function {id:?} is no longer callable"),
-                    Some(lb) => {
-                        let scope = self.scope.clone();
-                        self.bind(ctx, scope, self.flags, lb, event, &mut set)
-                            .expect("failed to bind to lambda");
-                        true
-                    }
-                },
+            (Some((fv, _)), Some(v)) if fv == &v => false,
+            (_, Some(v)) => match v.downcast_ref::<LambdaDef<R, E>>() {
+                None => panic!("value {v:?} is not a function"),
+                Some(lb) => {
+                    let scope = self.scope.clone();
+                    self.bind(ctx, scope, self.flags, v.clone(), lb, event, &mut set)
+                        .expect("failed to bind to lambda");
+                    true
+                }
             },
-            (_, Some(v)) => panic!("invalid function {v}"),
         };
         match &mut self.function {
             None => None,

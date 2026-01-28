@@ -133,7 +133,7 @@ impl<X: GXExt> Drop for CompExp<X> {
 #[derive(Debug)]
 pub struct CompRes<X: GXExt> {
     pub exprs: SmallVec<[CompExp<X>; 1]>,
-    pub env: Env<GXRt<X>, X::UserEvent>,
+    pub env: Env,
 }
 
 pub struct Ref<X: GXExt> {
@@ -248,7 +248,7 @@ atomic_id!(CallableId);
 pub struct Callable<X: GXExt> {
     rt: GXHandle<X>,
     id: CallableId,
-    env: Env<GXRt<X>, X::UserEvent>,
+    env: Env,
     pub typ: FnType,
     pub expr: ExprId,
 }
@@ -392,7 +392,7 @@ impl<X: GXExt> NamedCallable<X> {
 
 enum ToGX<X: GXExt> {
     GetEnv {
-        res: oneshot::Sender<Env<GXRt<X>, X::UserEvent>>,
+        res: oneshot::Sender<Env>,
     },
     Delete {
         id: ExprId,
@@ -435,9 +435,9 @@ enum ToGX<X: GXExt> {
 }
 
 #[derive(Debug, Clone)]
-pub enum GXEvent<X: GXExt> {
+pub enum GXEvent {
     Updated(ExprId, Value),
-    Env(Env<GXRt<X>, X::UserEvent>),
+    Env(Env),
 }
 
 struct GXHandleInner<X: GXExt> {
@@ -476,7 +476,7 @@ impl<X: GXExt> GXHandle<X> {
     }
 
     /// Get a copy of the current graphix environment
-    pub async fn get_env(&self) -> Result<Env<GXRt<X>, X::UserEvent>> {
+    pub async fn get_env(&self) -> Result<Env> {
         self.exec(|res| ToGX::GetEnv { res }).await
     }
 
@@ -533,7 +533,7 @@ impl<X: GXExt> GXHandle<X> {
     /// also return `Some` when one of your function calls returns.
     pub async fn compile_callable_by_name(
         &self,
-        env: &Env<GXRt<X>, X::UserEvent>,
+        env: &Env,
         scope: &Scope,
         name: &ModPath,
     ) -> Result<NamedCallable<X>> {
@@ -568,7 +568,7 @@ impl<X: GXExt> GXHandle<X> {
     /// Return an error if the name does not exist in the environment
     pub async fn compile_ref_by_name(
         &self,
-        env: &Env<GXRt<X>, X::UserEvent>,
+        env: &Env,
         scope: &Scope,
         name: &ModPath,
     ) -> Result<Ref<X>> {
@@ -610,7 +610,7 @@ pub struct GXConfig<X: GXExt> {
     #[builder(default)]
     resolvers: Vec<ModuleResolver>,
     /// The channel that will receive events from the runtime
-    sub: tmpsc::Sender<GPooled<Vec<GXEvent<X>>>>,
+    sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     /// The set of compiler flags. Default empty.
     #[builder(default)]
     flags: BitFlags<CFlag>,
@@ -620,7 +620,7 @@ impl<X: GXExt> GXConfig<X> {
     /// Create a new config
     pub fn builder(
         ctx: ExecCtx<GXRt<X>, X::UserEvent>,
-        sub: tmpsc::Sender<GPooled<Vec<GXEvent<X>>>>,
+        sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> GXConfigBuilder<X> {
         GXConfigBuilder::default().ctx(ctx).sub(sub)
     }

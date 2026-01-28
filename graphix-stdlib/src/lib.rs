@@ -715,9 +715,9 @@ pub enum Module {
 /// async fn start_runtime(
 ///     publisher: Publisher,
 ///     subscriber: Subscriber,
-///     sub: mpsc::Sender<GPooled<Vec<GXEvent<NoExt>>>>
+///     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>
 /// ) -> Result<GXHandle<NoExt>> {
-///     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber));
+///     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))?;
 ///     let (root, mods) = graphix_stdlib::register(&mut ctx, BitFlags::all())?;
 ///     GXConfigBuilder::default()
 ///        .ctx(ctx)

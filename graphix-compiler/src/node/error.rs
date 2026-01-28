@@ -28,11 +28,7 @@ fn typ_echain(param: Type) -> Type {
     }
 }
 
-pub(super) fn wrap_error<R: Rt, E: UserEvent>(
-    env: &Env<R, E>,
-    spec: &Expr,
-    e: Value,
-) -> Value {
+pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     static ERRCHAIN: LazyLock<Type> = LazyLock::new(|| typ_echain(Type::empty_tvar()));
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();

@@ -186,15 +186,23 @@ impl TypeDefExpr {
 impl fmt::Display for TypeDefExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_name_and_params(f)?;
-        write!(f, " = {}", self.typ)
+        match &self.typ {
+            Type::Abstract { .. } => Ok(()),
+            typ => write!(f, " = {typ}"),
+        }
     }
 }
 
 impl PrettyDisplay for TypeDefExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         self.write_name_and_params(buf)?;
-        writeln!(buf, " =")?;
-        buf.with_indent(2, |buf| self.typ.fmt_pretty(buf))
+        match &self.typ {
+            Type::Abstract { .. } => Ok(()),
+            typ => {
+                writeln!(buf, " =")?;
+                buf.with_indent(2, |buf| typ.fmt_pretty(buf))
+            }
+        }
     }
 }
 

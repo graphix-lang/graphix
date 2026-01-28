@@ -60,7 +60,7 @@ macro_rules! watch_test {
     ) => {
         #[tokio::test(flavor = "current_thread")]
         async fn $test_name() -> Result<()> {
-            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent<_>>>>(10);
+            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
             let ctx = init(tx).await?;
             let temp_dir = tempfile::tempdir()?;
 
@@ -367,7 +367,7 @@ watch_test! {
 // Test multiple watches on related paths
 #[tokio::test(flavor = "current_thread")]
 async fn test_watch_multiple_related_paths() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent<_>>>>(10);
+    let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
     let ctx = init(tx).await?;
     let temp_dir = tempfile::tempdir()?;
 

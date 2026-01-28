@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-879e9e27.js";
+            window.path_to_searchindex_js = "searchindex-63497353.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-59a84a16.js"></script>
@@ -228,7 +228,7 @@ features are,</p>
 <li>expression oriented</li>
 <li>strongly statically typed</li>
 <li>type inference</li>
-<li>structural type discipline</li>
+<li>structural type discipline with nomial abstract types</li>
 <li>parametric polymorphism</li>
 <li>algebraic data types</li>
 <li>pattern matching</li>
@@ -2549,6 +2549,7 @@ val config: Array&lt;i64&gt;;
 <pre><code class="language-graphix">type Color = [`Red, `Green, `Blue];
 type Point = { x: f64, y: f64 };
 type Result&lt;'a, 'e&gt; = ['a, Error&lt;'e&gt;];
+type Abstract;
 </code></pre>
 <p>Types can be polymorphic and recursive, just like in regular Graphix code.</p>
 <h3 id="module-declarations-mod"><a class="header" href="#module-declarations-mod">Module Declarations (mod)</a></h3>
@@ -2705,12 +2706,118 @@ is the same as for files: if your module implementation is at
 modules loaded at runtime, use the inline <code>sig { ... }</code> syntax described in the
 <a href="#dynamic-modules">Dynamic Modules</a> chapter. The signature syntax in dynamic modules
 uses the same declaration forms (<code>val</code>, <code>type</code>, <code>mod</code>) as interface files.</p>
+<h2 id="abstract-types"><a class="header" href="#abstract-types">Abstract Types</a></h2>
+<p>Abstract types allow you to hide the concrete representation of a type from users of
+your module. This is a powerful encapsulation mechanism that lets you change the
+internal representation without affecting code that uses your module.</p>
+<h3 id="declaring-abstract-types"><a class="header" href="#declaring-abstract-types">Declaring Abstract Types</a></h3>
+<p>In an interface file, declare an abstract type by omitting the <code>= definition</code> part:</p>
+<pre><code class="language-graphix">type Handle;
+type Container&lt;'a&gt;;
+type NumericBox&lt;'a: Number&gt;;
+</code></pre>
+<p>The implementation file must provide a concrete definition for each abstract type:</p>
+<pre><code class="language-graphix">type Handle = { id: i64, name: string };
+type Container&lt;'a&gt; = Array&lt;'a&gt;;
+type NumericBox&lt;'a: Number&gt; = { value: 'a };
+</code></pre>
+<h3 id="how-abstract-types-work"><a class="header" href="#how-abstract-types-work">How Abstract Types Work</a></h3>
+<p>When code outside the module references an abstract type, it sees only the type name,
+not the underlying representation. This means:</p>
+<ul>
+<li>Users cannot construct values of the abstract type directly</li>
+<li>Users cannot pattern match on the internal structure</li>
+<li>Users must use functions exported by the module to create and manipulate values</li>
+</ul>
+<p>This provides true encapsulation - the implementation can change the concrete type
+without breaking any code that uses the module, as long as the exported functions
+still work.</p>
+<h3 id="example-encapsulated-counter"><a class="header" href="#example-encapsulated-counter">Example: Encapsulated Counter</a></h3>
+<p><strong>counter.gxi</strong>:</p>
+<pre><code class="language-graphix">/// An opaque counter type
+type Counter;
+
+/// Create a new counter starting at the given value
+val make: fn(i64) -&gt; Counter;
+
+/// Get the current value
+val get: fn(Counter) -&gt; i64;
+
+/// Increment the counter
+val increment: fn(&amp;Counter) -&gt; null throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+</code></pre>
+<p><strong>counter.gx</strong>:</p>
+<pre><code class="language-graphix">// Implementation detail: counter is just an i64
+// We could change this to a struct later without breaking users
+type Counter = i64;
+
+let make = |x: i64| -&gt; Counter x;
+let get = |c: Counter| -&gt; i64 c;
+let increment = |c: &amp;Counter| -&gt; null { *c &lt;- once(*c) + 1; null }
+</code></pre>
+<p><strong>main.gx</strong>:</p>
+<pre><code class="language-graphix">mod counter;
+
+let c = counter::make(0);
+counter::increment(&amp;c);
+let value = counter::get(c)  // 1
+</code></pre>
+<h3 id="parameterized-abstract-types"><a class="header" href="#parameterized-abstract-types">Parameterized Abstract Types</a></h3>
+<p>Abstract types can have type parameters, allowing generic containers:</p>
+<pre><code class="language-graphix">// interface
+type Box&lt;'a&gt;;
+val wrap: fn&lt;'a&gt;('a) -&gt; Box&lt;'a&gt;;
+val unwrap: fn&lt;'a&gt;(Box&lt;'a&gt;) -&gt; 'a;
+</code></pre>
+<pre><code class="language-graphix">// implementation
+type Box&lt;'a&gt; = { value: 'a };
+let wrap = |x: 'a| -&gt; Box&lt;'a&gt; { value: x };
+let unwrap = |b: Box&lt;'a&gt;| -&gt; 'a b.value
+</code></pre>
+<h3 id="constrained-type-parameters"><a class="header" href="#constrained-type-parameters">Constrained Type Parameters</a></h3>
+<p>Type parameters on abstract types can have constraints. The interface and
+implementation must have matching constraints:</p>
+<pre><code class="language-graphix">// interface - constraint required
+type NumericWrapper&lt;'a: Number&gt;;
+val wrap: fn('a) -&gt; NumericWrapper&lt;'a&gt;;
+val double: fn(NumericWrapper&lt;'a&gt;) -&gt; 'a throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+</code></pre>
+<pre><code class="language-graphix">// implementation - same constraint required
+type NumericWrapper&lt;'a: Number&gt; = 'a;
+let wrap = |x: 'a| -&gt; NumericWrapper&lt;'a&gt; x;
+let double = |w: NumericWrapper&lt;'a&gt;| -&gt; 'a w + w
+</code></pre>
+<h3 id="abstract-types-in-compound-types"><a class="header" href="#abstract-types-in-compound-types">Abstract Types in Compound Types</a></h3>
+<p>Abstract types can be used within other type definitions in the interface:</p>
+<pre><code class="language-graphix">type Element;
+type List = [`Cons(Element, List), `Nil];
+type Pair = (Element, Element);
+type Container = { items: Array&lt;Element&gt; };
+</code></pre>
+<p>This allows you to export complex data structures while keeping the element type
+opaque.</p>
+<h3 id="abstract-types-vs-type-aliases"><a class="header" href="#abstract-types-vs-type-aliases">Abstract Types vs Type Aliases</a></h3>
+<p>Don’t confuse abstract types with type aliases:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Declaration</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>type T;</code></td><td>Abstract type - concrete definition hidden</td></tr>
+<tr><td><code>type T = i64;</code></td><td>Type alias - <code>T</code> is publicly known to be <code>i64</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Use abstract types when you want encapsulation. Use type aliases when you want
+to give a convenient name to a type that users can still see and use directly.</p>
 <h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
 <ol>
 <li><strong>Document in interfaces</strong>: Put documentation comments in the <code>.gxi</code> file since that’s what users see</li>
 <li><strong>Minimal interfaces</strong>: Only export what users need; keep implementation details private</li>
 <li><strong>Stable interfaces</strong>: Think carefully before changing an interface, as it may break dependent code</li>
 <li><strong>Type aliases</strong>: Export type aliases in the interface to give users convenient names for complex types</li>
+<li><strong>Use abstract types for encapsulation</strong>: When you want to hide implementation details and reserve the right to change them, use abstract types instead of exposing concrete types</li>
 </ol>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="dynamic-modules"><a class="header" href="#dynamic-modules">Dynamic Modules</a></h1>
@@ -2771,13 +2878,17 @@ accessible</li>
 </ul>
 </li>
 <li>a <code>sig</code> statement is the type signature of the module. This is a special
-syntax for writing module type signatures. There are three possible statements,
+syntax for writing module type signatures. There are four possible statements,
 <ul>
 <li>a val statement defines a value and it’s type, <code>val add: fn(i64) -&gt; i64</code> is
 an example of a val statement, it need not be a function it can be any type</li>
 <li>a type statement defines a type in the loaded module, e.g. <code>type T = { foo: string, bar: string }</code> val statements that come after a type statement may
 use the defined type. The type statement is identical to the normal type
 statement in Graphix (so it can be polymorphic, recursive, etc).</li>
+<li>an abstract type statement declares a type without defining it, e.g. <code>type T;</code>
+The loaded module must provide a concrete definition, but that definition is
+hidden from the loading code. This provides encapsulation - see the
+<a href="#abstract-types">Abstract Types</a> section for details.</li>
 <li>a mod statement defines a sub module of the dynamically loaded module. A sub
 module must have a sig. <code>mod m: sig { ... }</code> defines a sub module.</li>
 </ul>

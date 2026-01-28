@@ -1,14 +1,11 @@
-use std::fmt;
-
+use super::Expr;
+use crate::{env::Env, typ::Type};
 use anyhow::Result;
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
 use smallvec::{smallvec, SmallVec};
+use std::fmt;
 use triomphe::Arc;
-
-use crate::{env::Env, typ::Type, Rt, UserEvent};
-
-use super::Expr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StructurePattern {
@@ -130,10 +127,7 @@ impl StructurePattern {
         names.len() == len
     }
 
-    pub fn infer_type_predicate<R: Rt, E: UserEvent>(
-        &self,
-        env: &Env<R, E>,
-    ) -> Result<Type> {
+    pub fn infer_type_predicate(&self, env: &Env) -> Result<Type> {
         match self {
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
