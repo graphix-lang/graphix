@@ -329,8 +329,8 @@ Abstract types can have type parameters, allowing generic containers:
 ```graphix
 // interface
 type Box<'a>;
-val wrap: fn<'a>('a) -> Box<'a>;
-val unwrap: fn<'a>(Box<'a>) -> 'a;
+val wrap: fn('a) -> Box<'a>;
+val unwrap: fn(Box<'a>) -> 'a;
 ```
 
 ```graphix
