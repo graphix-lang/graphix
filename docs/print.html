@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ed0b5925.js";
+            window.path_to_searchindex_js = "searchindex-1fe31446.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-59a84a16.js"></script>
@@ -2766,8 +2766,8 @@ let value = counter::get(c)  // 1
 <p>Abstract types can have type parameters, allowing generic containers:</p>
 <pre><code class="language-graphix">// interface
 type Box&lt;'a&gt;;
-val wrap: fn&lt;'a&gt;('a) -&gt; Box&lt;'a&gt;;
-val unwrap: fn&lt;'a&gt;(Box&lt;'a&gt;) -&gt; 'a;
+val wrap: fn('a) -&gt; Box&lt;'a&gt;;
+val unwrap: fn(Box&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation
 type Box&lt;'a&gt; = { value: 'a };
