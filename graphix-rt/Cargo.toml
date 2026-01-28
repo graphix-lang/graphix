@@ -1,6 +1,6 @@
 [package]
 name = "graphix-rt"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
