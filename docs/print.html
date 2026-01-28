@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-63497353.js";
+            window.path_to_searchindex_js = "searchindex-5583f9fc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-59a84a16.js"></script>
@@ -2743,8 +2743,8 @@ val make: fn(i64) -&gt; Counter;
 /// Get the current value
 val get: fn(Counter) -&gt; i64;
 
-/// Increment the counter
-val increment: fn(&amp;Counter) -&gt; null throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
+/// Increment the counter every time trig updates
+val increment: fn(#trig: Any, &amp;Counter) -&gt; null throws Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;;
 </code></pre>
 <p><strong>counter.gx</strong>:</p>
 <pre><code class="language-graphix">// Implementation detail: counter is just an i64
@@ -2753,7 +2753,7 @@ type Counter = i64;
 
 let make = |x: i64| -&gt; Counter x;
 let get = |c: Counter| -&gt; i64 c;
-let increment = |c: &amp;Counter| -&gt; null { *c &lt;- once(*c) + 1; null }
+let increment = |#trig: Any, c: &amp;Counter| -&gt; null { *c &lt;- trig ~ *c + 1; null }
 </code></pre>
 <p><strong>main.gx</strong>:</p>
 <pre><code class="language-graphix">mod counter;

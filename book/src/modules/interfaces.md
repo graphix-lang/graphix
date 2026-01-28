@@ -298,8 +298,8 @@ val make: fn(i64) -> Counter;
 /// Get the current value
 val get: fn(Counter) -> i64;
 
-/// Increment the counter
-val increment: fn(&Counter) -> null throws Error<ErrChain<`ArithError(string)>>;
+/// Increment the counter every time trig updates
+val increment: fn(#trig: Any, &Counter) -> null throws Error<ErrChain<`ArithError(string)>>;
 ```
 
 **counter.gx**:
@@ -310,7 +310,7 @@ type Counter = i64;
 
 let make = |x: i64| -> Counter x;
 let get = |c: Counter| -> i64 c;
-let increment = |c: &Counter| -> null { *c <- once(*c) + 1; null }
+let increment = |#trig: Any, c: &Counter| -> null { *c <- trig ~ *c + 1; null }
 ```
 
 **main.gx**:
