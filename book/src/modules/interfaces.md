@@ -318,7 +318,7 @@ let increment = |#trig: Any, c: &Counter| -> null { *c <- trig ~ *c + 1; null }
 mod counter;
 
 let c = counter::make(0);
-counter::increment(&c);
+counter::increment(#trig:null, &c);
 let value = counter::get(c)  // 1
 ```
 

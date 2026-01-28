@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5583f9fc.js";
+            window.path_to_searchindex_js = "../searchindex-ed0b5925.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-59a84a16.js"></script>
@@ -423,7 +423,7 @@ let increment = |#trig: Any, c: &amp;Counter| -&gt; null { *c &lt;- trig ~ *c + 
 <pre><code class="language-graphix">mod counter;
 
 let c = counter::make(0);
-counter::increment(&amp;c);
+counter::increment(#trig:null, &amp;c);
 let value = counter::get(c)  // 1
 </code></pre>
 <h3 id="parameterized-abstract-types"><a class="header" href="#parameterized-abstract-types">Parameterized Abstract Types</a></h3>
