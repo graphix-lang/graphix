@@ -69,7 +69,7 @@ features are,
 - expression oriented
 - strongly statically typed
 - type inference
-- structural type discipline
+- structural type discipline with nomial abstract types
 - parametric polymorphism
 - algebraic data types
 - pattern matching

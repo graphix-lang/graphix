@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-879e9e27.js";
+            window.path_to_searchindex_js = "../searchindex-63497353.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-59a84a16.js"></script>
@@ -232,13 +232,17 @@ accessible</li>
 </ul>
 </li>
 <li>a <code>sig</code> statement is the type signature of the module. This is a special
-syntax for writing module type signatures. There are three possible statements,
+syntax for writing module type signatures. There are four possible statements,
 <ul>
 <li>a val statement defines a value and it’s type, <code>val add: fn(i64) -&gt; i64</code> is
 an example of a val statement, it need not be a function it can be any type</li>
 <li>a type statement defines a type in the loaded module, e.g. <code>type T = { foo: string, bar: string }</code> val statements that come after a type statement may
 use the defined type. The type statement is identical to the normal type
 statement in Graphix (so it can be polymorphic, recursive, etc).</li>
+<li>an abstract type statement declares a type without defining it, e.g. <code>type T;</code>
+The loaded module must provide a concrete definition, but that definition is
+hidden from the loading code. This provides encapsulation - see the
+<a href="./interfaces.html#abstract-types">Abstract Types</a> section for details.</li>
 <li>a mod statement defines a sub module of the dynamically loaded module. A sub
 module must have a sig. <code>mod m: sig { ... }</code> defines a sub module.</li>
 </ul>

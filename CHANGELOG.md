@@ -1,3 +1,7 @@
+# 0.3.1
+
+- Add abstract types to interfaces
+
 # 0.3.0
 
 - Implement interfaces (see the book for details)
