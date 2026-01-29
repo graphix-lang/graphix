@@ -1,0 +1,20 @@
+[package]
+name = "graphix-package"
+version = "0.3.1"
+authors = ["Eric Stokes <eestokes@pm.me>"]
+edition = "2024"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, package types"
+documentation = "https://docs.rs/graphix-package"
+readme = "../README.md"
+license = "MIT"
+categories = ["network-programming", "compilers", "gui"]
+
+[dependencies]
+graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
+graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
+anyhow = { workspace = true }
+netidx-value = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
