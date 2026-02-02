@@ -15,6 +15,7 @@ arcstr = { version = "1", features = ["serde"] }
 async-trait = { version = "0.1" }
 bitflags = "2"
 bytes = { version = "1", features = ["serde"] }
+cargo_toml = "0.22.3"
 chrono = { version = "^0.4.24", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 combine = "4"
@@ -29,6 +30,7 @@ fish-printf = "0.2.1"
 flexi_logger = "0.31"
 futures = "0.3"
 fxhash = "0.2"
+handlebars = "6"
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
 indexmap = "2"
 log = "0.4"
@@ -74,4 +76,11 @@ walkdir = "2.5"
 
 [workspace]
 resolver = "2"
-members = ["graphix-shell", "graphix-compiler", "graphix-rt", "graphix-stdlib", "graphix-package"]
+members = [
+    "graphix-shell",
+    "graphix-compiler",
+    "graphix-rt",
+    "graphix-stdlib",
+    "graphix-package",
+    "graphix-derive"
+]

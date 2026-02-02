@@ -7,7 +7,7 @@ use graphix_compiler::{
 };
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_value::Value;
-use std::any::Any;
+use std::{any::Any, path::Path};
 use tokio::sync::oneshot;
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
@@ -34,8 +34,8 @@ pub trait Package<X: GXExt>: Any {
     /// register builtins and return a resolver containing Graphix
     /// code contained in the package.
     ///
-    /// The returned resolver should be a VFS resolver, and it's root
-    /// path should be the name of the package. If this isn't the case
+    /// The returned resolver must be a VFS resolver, and it's root
+    /// path must be the name of the package. If this isn't the case
     /// then the package will be rejected by the shell, and a warning
     /// will be printed to the user.
     fn register(&mut self, ctx: ExecCtx<GXRt<X>, X::UserEvent>)
@@ -73,4 +73,18 @@ pub trait Package<X: GXExt>: Any {
     ) -> Result<Box<dyn CustomDisplay<X>>> {
         unreachable!()
     }
+}
+
+/// Create a new graphix package
+///
+/// The package will be created in a new directory named
+/// `graphix-package-{name}` inside the directory `base`. If base is not a
+/// directory the function will fail.
+pub async fn create_package(base: &Path, name: &str) -> Result<()> {
+    static CARGO_TOML: &str = include_str!("../skel/Cargo.toml");
+    static LIB_RS: &str = include_str!("../skel/lib.rs");
+    static MOD_GX: &str = include_str!("../skel/mod.gx");
+    static MOD_GXI: &str = include_str!("../skel/mod.gxi");
+    static README_MD: &str = include_str!("../skel/README.md");
+    todo!()
 }

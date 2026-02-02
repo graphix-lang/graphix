@@ -18,3 +18,4 @@ anyhow = { workspace = true }
 netidx-value = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+handlebars = { workspace = true }
