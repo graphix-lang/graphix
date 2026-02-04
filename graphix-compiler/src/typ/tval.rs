@@ -31,12 +31,13 @@ impl<'a> TVal<'a> {
                 | Type::Abstract { .. }
                 | Type::Bottom
                 | Type::Any
-                | Type::Fn(_)
                 | Type::Error(_),
                 v,
             ) => {
                 write!(f, "{}", NakedValue(v))
             }
+            (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
+            (Type::Fn(_), v) => write!(f, "{}", NakedValue(v)),
             (Type::Ref { .. }, v) => match self.typ.lookup_ref(&self.env) {
                 Err(e) => write!(f, "error, {e:?}"),
                 Ok(typ) => {

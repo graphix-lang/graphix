@@ -28,7 +28,7 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "LambdaDef({:?})", self.id)
+        write!(f, "lambda#{}", self.id.inner())
     }
 }
 
