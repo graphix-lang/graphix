@@ -1,4 +1,4 @@
-use crate::{env::Env, errf, typ::Type, CAST_ERR_TAG};
+use crate::{env::Env, errf, typ::Type, AbstractTypeRegistry, CAST_ERR_TAG};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use fxhash::FxHashSet;
@@ -333,7 +333,7 @@ impl Type {
                 Some(t) => t.is_a_int(env, hist, v),
             },
             Type::Fn(_) => match v {
-                Value::U64(_) => true,
+                Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => true,
                 _ => false,
             },
             Type::Bottom => true,

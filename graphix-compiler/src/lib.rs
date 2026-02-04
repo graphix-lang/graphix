@@ -421,7 +421,7 @@ impl Abortable for task::AbortHandle {
     }
 }
 
-pub trait Rt: Debug + 'static {
+pub trait Rt: Debug + Any {
     type AbortHandle: Abortable;
 
     fn clear(&mut self);
@@ -660,6 +660,55 @@ impl LibState {
     }
 }
 
+/// A registry of abstract type UUIDs used by graphix and graphix libraries,
+/// along with a string tag describing what the type is. We must do this because
+/// you can't register different type ids with the same uuid in netidx's
+/// abstract type system, and because abstract types often need to be
+/// parameterized by the Rt and UserEvent they will have different a different
+/// type id for each monomorphization, and thus they must have a different uuid.
+///
+/// The tag is necessary because non parameterized functions often end up with
+/// an abstract netidx type and want to know generally what it is, for example
+/// printing functions.
+#[derive(Default)]
+pub struct AbstractTypeRegistry {
+    by_tid: FxHashMap<TypeId, Uuid>,
+    by_uuid: FxHashMap<Uuid, &'static str>,
+}
+
+impl AbstractTypeRegistry {
+    fn with<V, F: FnMut(&mut AbstractTypeRegistry) -> V>(mut f: F) -> V {
+        static REG: LazyLock<Mutex<AbstractTypeRegistry>> =
+            LazyLock::new(|| Mutex::new(AbstractTypeRegistry::default()));
+        let mut g = REG.lock();
+        f(&mut *g)
+    }
+
+    /// Get the UUID of abstract type T
+    pub(crate) fn uuid<T: Any>(tag: &'static str) -> Uuid {
+        Self::with(|rg| {
+            *rg.by_tid.entry(TypeId::of::<T>()).or_insert_with(|| {
+                let id = Uuid::new_v4();
+                rg.by_uuid.insert(id, tag);
+                id
+            })
+        })
+    }
+
+    /// return the tag of this abstract type, or None if it isn't registered
+    pub fn tag(a: &Abstract) -> Option<&'static str> {
+        Self::with(|rg| rg.by_uuid.get(&a.id()).map(|r| *r))
+    }
+
+    /// return true if the abstract type has tag
+    pub fn is_a(a: &Abstract, tag: &str) -> bool {
+        match Self::tag(a) {
+            Some(t) => t == tag,
+            None => false,
+        }
+    }
+}
+
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
@@ -695,9 +744,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     ///
     /// Most likely you want to use the `rt` module instead.
     pub fn new(user: R) -> Result<Self> {
-        static UUIDS: LazyLock<Mutex<FxHashMap<TypeId, Uuid>>> =
-            LazyLock::new(|| Mutex::new(FxHashMap::default()));
-        let id = *UUIDS.lock().entry(TypeId::of::<Self>()).or_insert_with(Uuid::new_v4);
+        let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         Ok(Self {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
