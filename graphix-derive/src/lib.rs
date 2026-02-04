@@ -139,5 +139,25 @@ pub fn defbuiltin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// register this packages' graphix dependencies as defined in Cargo.toml
 #[proc_macro]
 pub fn register_deps(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let _ = &*PROJECT_TYPE; // force check project invariants
+    let deps = CARGO_MANIFEST
+        .dependencies
+        .keys()
+        .filter_map(|name| {
+            if name.starts_with("graphix-package-")
+                || name.starts_with("graphix_package_")
+            {
+                Some(name.replace("-", "_"))
+            } else {
+                None
+            }
+        })
+        .map(|name| {
+            quote! {}
+        });
     todo!()
 }
+
+/*
+#[proc_macro_derive(BuiltIn, attributes(builtin))]
+*/

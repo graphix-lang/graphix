@@ -3,10 +3,8 @@ use graphix_compiler::{expr::ModuleResolver, ExecCtx};
 use graphix_package::Package;
 use graphix_rt::{GXExt, GXRt};
 
-#[derive(Package)]
 pub struct T;
 
-#[graphix_package]
 impl<X: GXExt> Package<X> for T {
     type CustomDisplay = ();
 
