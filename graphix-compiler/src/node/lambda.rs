@@ -342,7 +342,7 @@ impl Lambda {
                     if !ctx.builtins_allowed {
                         bail!("defining builtins is not allowed in this context")
                     }
-                    Arc::new(styp.clone().scope_refs(&_original_scope.lexical))
+                    Arc::new(styp.scope_refs(&_original_scope.lexical))
                 }
             },
         };
@@ -382,7 +382,6 @@ impl Lambda {
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
                     Some((_, init)) => {
-                        let init = SArc::clone(init);
                         init(ctx, &_typ, &_scope, args, tid).and_then(|apply| {
                             let mut f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ: _typ.clone(), apply });

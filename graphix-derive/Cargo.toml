@@ -12,3 +12,4 @@ quote = "1"
 proc-macro2 = "1"
 cargo_toml = { workspace = true }
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
+const_format = { workspace = true }

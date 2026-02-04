@@ -158,6 +158,113 @@ pub fn register_deps(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
     todo!()
 }
 
-/*
+fn parse_attr<R, F: FnMut(Ident, token_stream::IntoIter) -> R>(
+    att: &Attribute,
+    mut f: F,
+) -> Option<R> {
+    match att.style {
+        AttrStyle::Inner(_) => None,
+        AttrStyle::Outer => match att.path().segments.iter().next() {
+            None => None,
+            Some(seg) => match seg.ident.to_string().as_str() {
+                "builtin" => {
+                    let tokens = att.meta.require_list().unwrap().tokens.clone();
+                    let mut iter = tokens.into_iter();
+                    match iter.next() {
+                        Some(TokenTree::Ident(i)) => Some(f(i, iter)),
+                        None | Some(_) => None,
+                    }
+                }
+                _ => None,
+            },
+        },
+    }
+}
+
+struct BuiltInArgs {
+    typ: TokenTree,
+    name: TokenTree,
+}
+
+impl From<&[Attribute]> for BuiltInArgs {
+    fn from(attrs: &[Attribute]) -> Self {
+        macro_rules! expect_equal {
+            ($iter:expr) => {
+                match $iter.next() {
+                    Some(TokenTree::Punct(p)) if p.as_char() == '=' => (),
+                    _ => panic!("invalid attribute syntax, expected key = value"),
+                }
+            };
+        }
+        let mut typ: Option<TokenTree> = None;
+        let mut name: Option<TokenTree> = None;
+        for a in attrs {
+            parse_attr(a, |ident, mut iter| match ident.to_string().as_str() {
+                "name" => {
+                    if name.is_some() {
+                        panic!("name attribute specified multiple times")
+                    }
+                    expect_equal!(iter);
+                    let token =
+                        iter.next().expect("invalid name attribute, expected argument");
+                    match token {
+                        TokenTree::Literal(_) | TokenTree::Ident(_) => {
+                            name = Some(token);
+                        }
+                        _ => panic!("invalid argument to name attribute"),
+                    }
+                }
+                "type" => {
+                    if typ.is_some() {
+                        panic!("type attribute specified more than once")
+                    }
+                    expect_equal!(iter);
+                    let token =
+                        iter.next().expect("invalid type attribute, expected argument");
+                    match token {
+                        TokenTree::Literal(_) | TokenTree::Ident(_) => {
+                            typ = Some(token);
+                        }
+                        _ => panic!("invalid argument to type attribute"),
+                    }
+                }
+                _ => {}
+            });
+        }
+        if name.is_none() {
+            panic!("missing required attribute builtin(name = ?)")
+        }
+        if typ.is_none() {
+            panic!("missing required attribute builtin(type = ?)")
+        }
+        Self { name: name.unwrap(), typ: typ.unwrap() }
+    }
+}
+
 #[proc_macro_derive(BuiltIn, attributes(builtin))]
-*/
+pub fn derive_builtin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let args = BuiltInArgs::from(&*input.attrs);
+    match &*PROJECT_TYPE {
+        ProjectType::Package => (),
+        ProjectType::Standalone => panic!("you must define builtins in a package"),
+    }
+    let package_name = *PACKAGE_NAME;
+    // check invariants at compile time
+    let _ = graphix_compiler::expr::parser::parse_fn_type(&args.typ)
+        .expect("invalid graphix type");
+    // CR estokes: fix generics on BuiltInInitFn
+    quote! {
+        impl #impl_generics ::graphix_compiler::BuiltIn for #name #ty_generics #where_clause {
+            const NAME: &str = ::const_format::concatcp!(#package_name, "_", #args.name);
+            const TYP: ::std::sync::LazyLock<graphix_compiler::typ::FnType> =
+                ::std::sync::LazyLock::new(|| {
+                    ::graphix_compiler::expr::parser::parse_fn_type(#args.typ)
+                        .expect("failed to parse fn type {s}")
+                });
+            const INIT: ::graphix_compiler::BuiltInInitFn<R, E> = Self::init;
+        }
+    }
+    .into()
+}

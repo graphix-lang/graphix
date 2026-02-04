@@ -296,19 +296,6 @@ impl Refs {
 
 pub type Node<R, E> = Box<dyn Update<R, E>>;
 
-pub type BuiltInInitFn<R, E> = sync::Arc<
-    dyn for<'a, 'b, 'c> Fn(
-            &'a mut ExecCtx<R, E>,
-            &'a FnType,
-            &'b Scope,
-            &'c [Node<R, E>],
-            ExprId,
-        ) -> Result<Box<dyn Apply<R, E>>>
-        + Send
-        + Sync
-        + 'static,
->;
-
 pub type InitFn<R, E> = sync::Arc<
     dyn for<'a, 'b, 'c> Fn(
             &'a Scope,
@@ -404,11 +391,21 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
 }
 
+pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
+    &'a mut ExecCtx<R, E>,
+    &'a FnType,
+    &'b Scope,
+    &'c [Node<R, E>],
+    ExprId,
+) -> Result<Box<dyn Apply<R, E>>>;
+
+/// Trait implemented by graphix built-in functions implemented in rust. This
+/// trait isn't meant to be implemented manually, use derive(BuiltIn) from the
+/// graphix-derive crate
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
     const TYP: LazyLock<FnType>;
-
-    fn init(ctx: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E>;
+    const INIT: BuiltInInitFn<R, E>;
 }
 
 pub trait Abortable {
@@ -758,10 +755,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
-        let f = T::init(self);
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert((T::TYP.clone(), f));
+                e.insert((T::TYP.clone(), T::INIT));
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
