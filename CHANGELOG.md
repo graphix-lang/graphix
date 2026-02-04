@@ -1,3 +1,9 @@
+# 0.3.2
+
+- Fix confusing printing of lambdas
+- Fix suprious error message when printing lambdas
+- Clean up abstract type registration
+
 # 0.3.1
 
 - Add abstract types to interfaces
