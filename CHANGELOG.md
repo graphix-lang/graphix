@@ -1,3 +1,7 @@
+# 0.3.3
+
+- Fix the operator precedence of ~
+
 # 0.3.2
 
 - Fix confusing printing of lambdas
