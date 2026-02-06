@@ -1,13 +1,15 @@
 use super::{bind::Ref, callsite::CallSite, Constant, Nop, NOP};
 use crate::{
-    expr::{ExprId, ModPath},
+    expr::{ExprId, ModPath, Origin},
     typ::{FnType, Type},
     BindId, ExecCtx, Node, Rt, Scope, UserEvent,
 };
+use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use netidx::publisher::{Typ, Value};
 use poolshark::local::LPooled;
 use std::collections::HashMap;
+use triomphe::Arc;
 
 /// generate a no op with the specific type
 pub fn nop<R: Rt, E: UserEvent>(typ: Type) -> Node<R, E> {
@@ -22,7 +24,17 @@ pub fn bind<R: Rt, E: UserEvent>(
     typ: Type,
     top_id: ExprId,
 ) -> (BindId, Node<R, E>) {
-    let id = ctx.env.bind_variable(scope, name, typ.clone()).id;
+    // Generated binds don't have source position info
+    let id = ctx
+        .env
+        .bind_variable(
+            scope,
+            name,
+            typ.clone(),
+            SourcePosition::default(),
+            Arc::new(Origin::default()),
+        )
+        .id;
     ctx.rt.ref_var(id, top_id);
     (id, Box::new(Ref { spec: NOP.clone(), typ, id, top_id }))
 }

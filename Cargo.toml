@@ -72,4 +72,4 @@ walkdir = "2.5"
 
 [workspace]
 resolver = "2"
-members = ["graphix-shell", "graphix-compiler", "graphix-rt", "graphix-stdlib"]
+members = ["graphix-shell", "graphix-compiler", "graphix-rt", "graphix-stdlib", "graphix-lsp"]

@@ -42,8 +42,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 Some(typ) => typ.scope_refs(&scope.lexical),
                 None => Type::empty_tvar(),
             };
-            let pattern = StructPatternNode::compile(ctx, &typ, pattern, scope)
-                .with_context(|| format!("at {}", spec.pos))?;
+            let pattern =
+                StructPatternNode::compile(ctx, &typ, pattern, scope, spec.pos, spec.ori.clone())
+                    .with_context(|| format!("at {}", spec.pos))?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
             if !typ.contains(&ctx.env, ntyp)? {
@@ -70,8 +71,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     typ
                 }
             };
-            let pattern = StructPatternNode::compile(ctx, &typ, pattern, scope)
-                .with_context(|| format!("at {}", spec.pos))?;
+            let pattern =
+                StructPatternNode::compile(ctx, &typ, pattern, scope, spec.pos, spec.ori.clone())
+                    .with_context(|| format!("at {}", spec.pos))?;
             (node, pattern, typ)
         };
         if pattern.is_refutable() {

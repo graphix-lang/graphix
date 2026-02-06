@@ -1,0 +1,159 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Graphix",
+    "scopeName": "source.graphix",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#keywords" },
+        { "include": "#operators" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#constants" },
+        { "include": "#types" },
+        { "include": "#variables" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.documentation.graphix",
+                    "match": "///.*$"
+                },
+                {
+                    "name": "comment.line.double-slash.graphix",
+                    "match": "//.*$"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.graphix",
+                    "match": "\\b(select|if|try|catch)\\b"
+                },
+                {
+                    "name": "keyword.other.graphix",
+                    "match": "\\b(let|rec|mod|use|type|fn|cast|any|with|where)\\b"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.assignment.graphix",
+                    "match": "<-|=>"
+                },
+                {
+                    "name": "keyword.operator.comparison.graphix",
+                    "match": "==|!=|<=|>=|<|>"
+                },
+                {
+                    "name": "keyword.operator.logical.graphix",
+                    "match": "&&|\\|\\||!"
+                },
+                {
+                    "name": "keyword.operator.arithmetic.graphix",
+                    "match": "\\+|-|\\*|/|%"
+                },
+                {
+                    "name": "keyword.operator.other.graphix",
+                    "match": "~|\\?|\\$|&|::|->|\\."
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.graphix",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.graphix",
+                            "match": "\\\\."
+                        },
+                        {
+                            "name": "meta.embedded.graphix",
+                            "begin": "\\[",
+                            "end": "\\]",
+                            "patterns": [{ "include": "$self" }]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.single.raw.graphix",
+                    "begin": "r'",
+                    "end": "'"
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.hex.graphix",
+                    "match": "\\b0x[0-9a-fA-F]+\\b"
+                },
+                {
+                    "name": "constant.numeric.binary.graphix",
+                    "match": "\\b0b[01]+\\b"
+                },
+                {
+                    "name": "constant.numeric.octal.graphix",
+                    "match": "\\b0o[0-7]+\\b"
+                },
+                {
+                    "name": "constant.numeric.float.graphix",
+                    "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+                },
+                {
+                    "name": "constant.numeric.integer.graphix",
+                    "match": "\\b[0-9]+\\b"
+                }
+            ]
+        },
+        "constants": {
+            "patterns": [
+                {
+                    "name": "constant.language.boolean.graphix",
+                    "match": "\\b(true|false)\\b"
+                },
+                {
+                    "name": "constant.language.null.graphix",
+                    "match": "\\b(null|ok)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "support.type.primitive.graphix",
+                    "match": "\\b(bool|string|bytes|i8|u8|i16|u16|i32|u32|v32|z32|i64|u64|v64|z64|f32|f64|decimal|datetime|duration|Any)\\b"
+                },
+                {
+                    "name": "support.type.generic.graphix",
+                    "match": "\\b(Array|Map)\\b"
+                },
+                {
+                    "name": "entity.name.type.graphix",
+                    "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+                },
+                {
+                    "name": "entity.name.type.parameter.graphix",
+                    "match": "'[a-z][a-zA-Z0-9_]*"
+                }
+            ]
+        },
+        "variables": {
+            "patterns": [
+                {
+                    "name": "variable.parameter.labeled.graphix",
+                    "match": "#[a-z][a-zA-Z0-9_]*"
+                },
+                {
+                    "name": "entity.name.tag.variant.graphix",
+                    "match": "`[A-Z][a-zA-Z0-9_]*"
+                }
+            ]
+        }
+    }
+}
