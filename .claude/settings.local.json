@@ -91,7 +91,10 @@
       "Bash(tree-sitter:*)",
       "Bash(node:*)",
       "Bash(git add:*)",
-      "Bash(git rebase:*)"
+      "Bash(git rebase:*)",
+      "Bash(git show:*)",
+      "Bash(git rm:*)",
+      "Bash(GIT_EDITOR=true git rebase --continue)"
     ],
     "deny": [],
     "ask": []

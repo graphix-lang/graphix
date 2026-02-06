@@ -3,7 +3,7 @@
 -- Installation:
 -- 1. Copy this file to your Neovim config (e.g., ~/.config/nvim/lua/graphix.lua)
 -- 2. Add `require('graphix').setup()` to your init.lua
--- 3. Install graphix-lsp: `cargo install --path path/to/graphix-claude/ide/graphix-lsp`
+-- 3. Install graphix: `cargo install --path path/to/graphix-claude/graphix-shell`
 -- 4. Optionally install tree-sitter grammar for syntax highlighting
 
 local M = {}
@@ -26,7 +26,7 @@ function M.setup_lsp()
     if not configs.graphix then
         configs.graphix = {
             default_config = {
-                cmd = { 'graphix-lsp' },
+                cmd = { 'graphix', 'lsp' },
                 filetypes = { 'graphix' },
                 root_dir = function(fname)
                     return lspconfig.util.find_git_ancestor(fname)

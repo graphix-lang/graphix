@@ -3,18 +3,19 @@
 This directory contains IDE support tools for the Graphix programming language:
 
 - **tree-sitter-graphix/** - Tree-sitter grammar for syntax highlighting
-- **graphix-lsp/** - Language Server Protocol server
 - **editors/** - Editor-specific configurations
+
+The LSP server is built into the main `graphix` binary and launched via `graphix lsp`.
 
 ## Quick Start
 
-### 1. Build the LSP Server
+### 1. Build Graphix
 
 ```bash
-cargo build --release -p graphix-lsp
+cargo build --release -p graphix-shell
 
 # Or install it
-cargo install --path ide/graphix-lsp
+cargo install --path graphix-shell
 ```
 
 ### 2. Set Up Your Editor
@@ -23,7 +24,7 @@ cargo install --path ide/graphix-lsp
 
 1. Copy `editors/vscode/` to your extensions directory
 2. Run `npm install` and `npm run compile` in the extension directory
-3. The extension will use `graphix-lsp` from your PATH
+3. The extension will use `graphix lsp` from your PATH
 
 #### Neovim
 
@@ -32,14 +33,14 @@ cargo install --path ide/graphix-lsp
    ```lua
    -- Requires nvim-lspconfig
    local lspconfig = require('lspconfig')
-   lspconfig.util.default_config = vim.tbl_extend(
-     'force',
-     lspconfig.util.default_config,
-     {
-       cmd = { 'graphix-lsp' },
+   local configs = require('lspconfig.configs')
+   configs.graphix = {
+     default_config = {
+       cmd = { 'graphix', 'lsp' },
        filetypes = { 'graphix' },
      }
-   )
+   }
+   lspconfig.graphix.setup({})
    ```
 
 #### Emacs
@@ -50,7 +51,7 @@ cargo install --path ide/graphix-lsp
    (require 'graphix-mode)
 
    ;; For Eglot:
-   (add-to-list 'eglot-server-programs '(graphix-mode . ("graphix-lsp")))
+   (add-to-list 'eglot-server-programs '(graphix-mode . ("graphix" "lsp")))
    ```
 
 #### Zed
@@ -66,11 +67,13 @@ Provides syntax highlighting for:
 - Keywords (`let`, `mod`, `use`, `type`, `fn`, `select`, etc.)
 - Operators
 - Strings (including interpolation and raw strings)
-- Numbers (integers, floats, hex, binary, octal)
+- Numbers (integers, floats, hex, binary, octal, durations)
 - Types (primitive and user-defined)
 - Variants and labeled parameters
 
 ### LSP Server
+
+The LSP server runs as a subcommand of the `graphix` binary (`graphix lsp`).
 
 Currently supports:
 - **Diagnostics**: Parse error reporting
@@ -101,22 +104,11 @@ ide/
 │       ├── locals.scm      # Scope tracking
 │       └── indents.scm     # Auto-indentation
 │
-├── graphix-lsp/            # Language server
-│   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs
-│       ├── server.rs       # LSP protocol handling
-│       ├── state.rs        # Document state management
-│       ├── convert.rs      # Type conversions
-│       └── handlers/       # LSP request handlers
-│           ├── diagnostics.rs
-│           ├── completion.rs
-│           ├── hover.rs
-│           └── definition.rs
-│
 └── editors/
     ├── vscode/             # VS Code extension
     ├── nvim/               # Neovim configuration
     ├── emacs/              # Emacs major mode
     └── zed/                # Zed configuration
 ```
+
+The LSP server source lives in `graphix-shell/src/lsp/`.

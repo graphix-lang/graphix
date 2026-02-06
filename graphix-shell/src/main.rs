@@ -112,6 +112,8 @@ enum Command {
         #[command(subcommand)]
         action: PackageAction,
     },
+    /// Start the Language Server Protocol server (communicates via stdio)
+    Lsp,
 }
 
 #[derive(Parser)]
@@ -363,8 +365,10 @@ fn tokio_main(
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
     let p = Params::parse();
-    if let Some(Command::Package { action }) = p.command {
-        return handle_package(action);
+    match p.command {
+        Some(Command::Package { action }) => return handle_package(action),
+        Some(Command::Lsp) => return graphix_shell::lsp::run(),
+        None => ()
     }
     let cfg = match &p.config {
         None => Config::load_default_or_local_only(),

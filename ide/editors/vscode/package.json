@@ -41,8 +41,8 @@
             "properties": {
                 "graphix.server.path": {
                     "type": "string",
-                    "default": "graphix-lsp",
-                    "description": "Path to the Graphix language server executable"
+                    "default": "graphix",
+                    "description": "Path to the Graphix binary (LSP is launched via 'graphix lsp')"
                 }
             }
         }

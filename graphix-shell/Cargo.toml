@@ -55,6 +55,8 @@ graphix-package-tui = { version = "0.6.0", path = "../stdlib/graphix-package-tui
 graphix-package-gui = { version = "0.6.0", path = "../stdlib/graphix-package-gui", optional = true }
 graphix-rt = { version = "0.6.0", path = "../graphix-rt" }
 log = { workspace = true }
+lsp-server = { workspace = true }
+lsp-types = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
 poolshark = { workspace = true }

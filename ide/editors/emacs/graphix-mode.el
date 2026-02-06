@@ -17,11 +17,11 @@
 ;;    (require 'graphix-mode)
 ;;
 ;; For LSP support with Eglot:
-;;    (add-to-list 'eglot-server-programs '(graphix-mode . ("graphix-lsp")))
+;;    (add-to-list 'eglot-server-programs '(graphix-mode . ("graphix" "lsp")))
 ;;
 ;; For LSP support with lsp-mode:
 ;;    (lsp-register-client
-;;     (make-lsp-client :new-connection (lsp-stdio-connection '("graphix-lsp"))
+;;     (make-lsp-client :new-connection (lsp-stdio-connection '("graphix" "lsp"))
 ;;                      :major-modes '(graphix-mode)
 ;;                      :server-id 'graphix-lsp))
 

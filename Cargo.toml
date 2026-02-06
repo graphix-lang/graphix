@@ -43,6 +43,8 @@ handlebars = "6"
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
 indexmap = "2"
 log = "0.4"
+lsp-server = "0.7"
+lsp-types = "0.97"
 netidx-core = { version = "0.31.0", path = "../netidx/netidx-core" }
 netidx-protocols = { version = "0.31.0", path = "../netidx/netidx-protocols" }
 netidx-value = { version = "0.31.6", path = "../netidx/netidx-value" }
@@ -103,7 +105,6 @@ members = [
     "graphix-rt",
     "graphix-derive",
     "graphix-package",
-    "graphix-lsp",
     "stdlib/graphix-package-core",
     "stdlib/graphix-package-array",
     "stdlib/graphix-package-fs",

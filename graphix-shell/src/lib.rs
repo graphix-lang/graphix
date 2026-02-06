@@ -29,6 +29,7 @@ use tokio::{select, sync::mpsc};
 mod completion;
 mod deps;
 mod input;
+pub mod lsp;
 
 enum Output<X: GXExt> {
     None,

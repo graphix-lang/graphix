@@ -9,11 +9,11 @@ let client: LanguageClient;
 
 export function activate(context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('graphix');
-    const serverPath = config.get<string>('server.path', 'graphix-lsp');
+    const serverPath = config.get<string>('server.path', 'graphix');
 
     const serverOptions: ServerOptions = {
-        run: { command: serverPath },
-        debug: { command: serverPath },
+        run: { command: serverPath, args: ['lsp'] },
+        debug: { command: serverPath, args: ['lsp'] },
     };
 
     const clientOptions: LanguageClientOptions = {
