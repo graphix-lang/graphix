@@ -1,0 +1,362 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Using Graphix as Embedded Scripting - The Graphix Programming Language</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Graphix Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="embedded-scripting-systems"><a class="header" href="#embedded-scripting-systems">Embedded Scripting Systems</a></h1>
+<p>You can use Graphix as an embedded scripting engine in your application. For
+this application we leave the shell behind and move to the
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt"><code>graphix-rt</code></a> crate. This is a
+lower level crate that gives you a lot more control over the compiler and run
+time.</p>
+<h2 id="tokio"><a class="header" href="#tokio">Tokio</a></h2>
+<p><code>graphix-rt</code> uses tokio internally, it will run the compiler and run loop in
+it's own tokio task. You Interface with this task via a
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html"><code>GXHandle</code></a>.
+As a result, all operations on Graphix objects are async, and the compiler/run
+loop will run in parallel with your application.</p>
+<h2 id="setting-it-up"><a class="header" href="#setting-it-up">Setting it up</a></h2>
+<p>The shell itself is actually the best example of using the <code>graphix-rt</code> crate.
+As we get further into internals, the details can change more often, but in
+general getting a Graphix runtime going involves the following,</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// set up an execution context using the generic runtime with no customization
+let mut ctx = ExecCtx::new(GXRt::&lt;NoExt&gt;::new(publisher, subscriber));
+// ... use the context to register all your built-ins, etc
+
+// set up a channel to receive events from the RT
+let (tx, rx) = mpsc::channel(100);
+// build the config and start the runtime
+let handle = GXConfig::builder(ctx, tx)
+    // set up a root module. Note if you want the standard library you must load
+    // it as part of the root module. Otherwise you will get the bare compiler.
+    .root(literal!("root.gx"))
+    .build()?
+    .start().await?
+<span class="boring">}</span></code></pre></pre>
+<p>Once that all succeeds you have a running compiler/run loop, and a handle that
+can interact with it. You are expected to read the <code>rx</code> portion of the mpsc
+channel. If you do not, the run loop will block waiting for you to read once the
+mpsc channel fills up.</p>
+<h2 id="compiling-code-getting-results"><a class="header" href="#compiling-code-getting-results">Compiling Code, Getting Results</a></h2>
+<p>Once setup is complete, lets compile some code and get some results! To compile
+code we call
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.compile"><code>compile</code></a>
+on the handle. This results in one or more toplevel expressions and a copy of
+the environment (or a compile error).</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let cres = handle.compile(literal!("2 + 2")).await?;
+
+// in this case we know there is just one top level expression
+let e = cres.exprs[0];
+
+// the actual result will come to us on the channel. If the expression kept
+// producing results, we'd keep seeing updates for it's id on the channel.
+// This is a batch of GXEvents
+let mut batch = rx.recv().await.ok_or_else(|| anyhow!("the runtime is dead"))?;
+let mut env = handle.get_env().await?;
+for ev in batch.drain(..) {
+    match ev {
+        GXEvent::Updated(id, v) if id == e.id =&gt; println!("2 + 2 = {v}"),
+        GXEvent::Env(e) =&gt; env = e
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="refs-and-trefs-depending-on-graphix-variables"><a class="header" href="#refs-and-trefs-depending-on-graphix-variables">Refs and TRefs, Depending on Graphix Variables</a></h2>
+<p>If you want to be notified when a variable in Graphix updates you can register a
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.Ref.html"><code>Ref</code></a>, or a
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.TRef.html"><code>TRef</code></a> if you
+have a corresponding rust type that implements
+<a href="https://docs.rs/netidx-value/latest/netidx_value/trait.FromValue.html"><code>FromValue</code></a>.
+There are two ways to get a ref, by id and by name. By id is probably the most
+common, because
+<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.BindId.html"><code>BindId</code></a>
+will appear in any data structure that has a value passed by ref (e.g. &amp;v),
+which should be common for large structures that don't change often.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// assume we got id from a data structure and it's type is &amp;i64
+let mut r = handle.compile_ref(id)
+
+// if the variable r is bound to has a value right now it will be in last
+if let Some(v) = &amp;r.last {
+    println!("current value: {v}")
+}
+
+// now we will get an update whenever the variable updates
+let mut batch = rx.recv().await.ok_or_else(|| anyhow!("the runtime is dead"))?;
+for ev in batch.drain(..) {
+    match ev {
+        GXEvent::Updated(id, v) =&gt; {
+            if let Some(v) = r.update(id, &amp;v) {
+                println!("current value {v}")
+            }
+        },
+        GXEvent::Env(_) =&gt; ()
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>You can also set refs, which is exactly the same thing as the connect operator
+<code>&lt;-</code>, and does what you expect it should do.</p>
+<h3 id="ref-by-name"><a class="header" href="#ref-by-name">Ref By Name</a></h3>
+<p>We can also reference a variable by name,</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut r = handle.compile_ref_by_name(&amp;env, &amp;Scope::root(), &amp;ModPath::from(["foo"])).await?;
+
+// the rest of the code is exactly the same
+<span class="boring">}</span></code></pre></pre>
+<h2 id="calling-graphix-functions"><a class="header" href="#calling-graphix-functions">Calling Graphix Functions</a></h2>
+<p>Now lets register a call site, call a Graphix function, and get it's result. We
+do this by calling
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.compile_callable_by_name"><code>compile_callable_by_name</code></a>
+on the handle.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut f = handle.compile_callable_by_name(&amp;env, &amp;Scope::root(), &amp;ModPath::from(["sum"])).await?;
+f.call(ValArray::from_iter_exact([Value::from(1), Value::from(2), Value::from(3)])).await?;
+
+// now we must update f to drive both late binding, and get our return value
+// we need a loop this time because there will be multiple updates
+loop {
+    let mut batch = rx.recv().ok_or_else(|| anyhow!("the runtime is dead"))?;
+    for ev in batch.drain(..) {
+        match ev {
+            GXEvent::Updated(id, v) =&gt; {
+                if let Some(v) = f.update(&amp;v).await {
+                    println!("sum returned {v}")
+                }
+            }
+            GXEvent::Env(e) =&gt; env = e,
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="calling-functions-by-lambdaid"><a class="header" href="#calling-functions-by-lambdaid">Calling Functions by LambdaId</a></h3>
+<p>The above case applies when we only know the name of the function we want to
+call, which is less common than you might imagine. If the function was passed in
+to us, for example we evaluated an expression that returned a function, then
+it's actually easier to deal with because we don't have to handle late binding.
+In this case we can call
+<a href="%5B%60compile_callable_by_name%60%5D(https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.compile_callable)"><code>compile_callable</code></a>
+on the handle.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// id is the LambdaId of the function as a Value. Lets assume it's sum
+let f = handle.compile_callable(id).await?;
+f.call(ValArray::from_iter_exact([Value::from(1), Value::from(41)])).await?;
+
+// now wait for the value
+let mut batch = rx.recv().ok_or_else(|| anyhow!("the runtime is dead"))?;
+for ev in batch.drain(..) {
+    match ev {
+        GXEvent::Updated(id, v) =&gt; {
+            if let Some(v) = f.update(&amp;v) {
+                println!("sum returned {v}")
+            }
+        }
+        GxEvent::Env(e) =&gt; env = e,
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../embedding/shell.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../embedding/shell.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../theme/graphix-highlight.js"></script>
+
+
+    </div>
+    </body>
+</html>

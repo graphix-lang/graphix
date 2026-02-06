@@ -1,0 +1,293 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Connect - The Graphix Programming Language</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Graphix Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="connect"><a class="header" href="#connect">Connect</a></h1>
+<p>Connect, written <code>x &lt;- expr</code> is where things get interesting in Graphix. The
+sharp eyed may have noticed that up until now there was no way to introduce a
+cycle in the graph. Connect is the only graph operator in Graphix, it allows you
+to connect one part of the graph to another by name, causing the output of the
+right side to flow to the name on the left side. Consider,</p>
+<pre><code class="language-graphix">let x = "off"
+x &lt;- time::timer(duration:1.0s, false) ~ "on"
+print(x)
+</code></pre>
+<p>This program will first print <code>off</code>, and after 1 second it will print <code>on</code>. Note
+the <code>~</code> operator means, when the expression on the left updates return the
+current value of the expression on the right (called the sample operator). The
+graph we created looks like,</p>
+<pre><code>const("off") ────────────────&gt; "x" ──────&gt; print
+                                 ▲
+                                 │
+                                 │
+           time::timer ──&gt; sample
+                            ▲
+                            │
+                            │
+                      const("on")
+</code></pre>
+<p>We can also build an infinite loop with connect. This won't crash the program,
+and it won't stop other parts of the program from being evaluated,</p>
+<pre><code class="language-graphix">let x = 0;
+x &lt;- x + 1;
+print(x)
+</code></pre>
+<p>This program will print all the i64s from 0 to MAX and then will wrap around. It
+will print numbers forever. You might notice, and you might wonder, why does it
+start from zero, shouldn't it start from 1? After all we increment x BEFORE the
+print right? Well, no, not actually, it will start at 0, for the same reason
+this infinite loop won't lock up the program or cause other expressions not to
+be evaluated. Graphix programs are evaluated in cycles, a batch of updates from
+the network, timers, and other IO is processed into a set of all events that
+happened "now", then the parts of the program that care about those particular
+events are evaluated, and then the main loop goes back to waiting for events.</p>
+<p>What connect does is it schedules an update to <code>x</code> for the next cycle, the
+current cycle proceeds as normal to it's conclusion as if the connect didn't
+happen yet, because it didn't. In the above case the event loop would never
+wait, because there is always work to do adding 1 to <code>x</code>, however it will still
+check for other events every cycle.</p>
+<p>When combined with other operations, specifically select, connect becomes a
+powerful general looping construct, and is the only way to write a loop in
+Graphix. A quick example,</p>
+<pre><code class="language-graphix">let count = {
+  let x = 0;
+  select x {
+    n if n &lt; 10 =&gt; x &lt;- x + 1,
+    _ =&gt; never() // never() never updates
+  };
+  x
+};
+count
+</code></pre>
+<p>This program creates a bind <code>count</code> that will update with the values 0 to 10. If
+you put it in a file <code>test.gx</code> and execute it using <code>graphix test.gx</code> it will
+print 0 to 10 and then wait.</p>
+<pre><code>$ graphix test.gx
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+</code></pre>
+<h3 id="is-connect-mutation"><a class="header" href="#is-connect-mutation">Is Connect Mutation?</a></h3>
+<p>Connect causes let bound names to update, so it's kind of mutation. Kind of. A
+better way to think about it is that every let bound value is a pipe with
+multiple producers and multiple consumers. Connect adds a new producer to the
+pipe. The values being produced are immutable, an array <code>[1, 2, 3]</code> will always
+and forever be <code>[1, 2, 3]</code>, but a new array <code>[1, 2, 3, 4]</code> might be pushed into
+the same pipe <code>[1, 2, 3]</code> came from, and that might make it appear that the
+array changed. The difference is, if you captured the original <code>[1, 2, 3]</code> and
+put it somewhere, a new <code>[1, 2, 3, 4]</code> arriving on the pipe can't change the
+original array.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../core/let_binds.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../core/block.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../core/let_binds.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../core/block.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../theme/graphix-highlight.js"></script>
+
+
+    </div>
+    </body>
+</html>
