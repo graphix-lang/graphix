@@ -47,7 +47,6 @@ struct GxTempDirEv {
 impl EvalCachedAsync for GxTempDirEv {
     const NAME: &str = "fs_tempdir";
     deftype!(
-        "fs",
         r#"fn(?#in:[null, string],
               ?#name:[null, `Prefix(string), `Suffix(string)],
               Any)
@@ -122,7 +121,7 @@ struct JoinPathEv;
 
 impl EvalCached for JoinPathEv {
     const NAME: &str = "fs_join_path";
-    deftype!("fs", "fn(string, @args: [string, Array<string>]) -> string");
+    deftype!("fn(string, @args: [string, Array<string>]) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -156,7 +155,9 @@ impl EvalCached for JoinPathEv {
 
 type JoinPath = CachedArgs<JoinPathEv>;
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<GxTempDir>()?;
     ctx.register_builtin::<JoinPath>()?;
     ctx.register_builtin::<metadata::IsFile>()?;

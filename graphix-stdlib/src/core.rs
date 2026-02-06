@@ -19,10 +19,16 @@ struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const NAME: &str = "is_err";
-    deftype!("core", "fn(Any) -> bool");
+    deftype!("fn(Any) -> bool");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(IsErr)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(IsErr))
     }
 }
 
@@ -47,10 +53,16 @@ struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "filter_err";
-    deftype!("core", "fn(Result<'a, 'b>) -> Error<'b>");
+    deftype!("fn(Result<'a, 'b>) -> Error<'b>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(FilterErr)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(FilterErr))
     }
 }
 
@@ -75,10 +87,16 @@ struct ToError;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const NAME: &str = "error";
-    deftype!("core", "fn('a) -> Error<'a>");
+    deftype!("fn('a) -> Error<'a>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(ToError)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(ToError))
     }
 }
 
@@ -102,10 +120,16 @@ struct Once {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "once";
-    deftype!("core", "fn('a) -> 'a");
+    deftype!("fn('a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Once { val: false })))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Once { val: false }))
     }
 }
 
@@ -141,10 +165,16 @@ struct Take {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "take";
-    deftype!("core", "fn(#n:Any, 'a) -> 'a");
+    deftype!("fn(#n:Any, 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Take { n: None })))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Take { n: None }))
     }
 }
 
@@ -185,7 +215,7 @@ struct Skip {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "skip";
-    deftype!("core", "fn(#n:Any, 'a) -> 'a");
+    deftype!("fn(#n:Any, 'a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Skip { n: None })))
@@ -227,7 +257,7 @@ struct AllEv;
 
 impl EvalCached for AllEv {
     const NAME: &str = "all";
-    deftype!("core", "fn(@args: Any) -> Any");
+    deftype!("fn(@args: Any) -> Any");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
@@ -261,7 +291,7 @@ struct SumEv;
 
 impl EvalCached for SumEv {
     const NAME: &str = "sum";
-    deftype!("core", "fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
+    deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -286,7 +316,7 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl EvalCached for ProductEv {
     const NAME: &str = "product";
-    deftype!("core", "fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
+    deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -311,7 +341,7 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl EvalCached for DivideEv {
     const NAME: &str = "divide";
-    deftype!("core", "fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
+    deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -328,7 +358,7 @@ struct MinEv;
 
 impl EvalCached for MinEv {
     const NAME: &str = "min";
-    deftype!("core", "fn('a, @args:'a) -> 'a");
+    deftype!("fn('a, @args:'a) -> 'a");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -354,7 +384,7 @@ struct MaxEv;
 
 impl EvalCached for MaxEv {
     const NAME: &str = "max";
-    deftype!("core", "fn('a, @args: 'a) -> 'a");
+    deftype!("fn('a, @args: 'a) -> 'a");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -380,7 +410,7 @@ struct AndEv;
 
 impl EvalCached for AndEv {
     const NAME: &str = "and";
-    deftype!("core", "fn(@args: bool) -> bool");
+    deftype!("fn(@args: bool) -> bool");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
@@ -404,7 +434,7 @@ struct OrEv;
 
 impl EvalCached for OrEv {
     const NAME: &str = "or";
-    deftype!("core", "fn(@args: bool) -> bool");
+    deftype!("fn(@args: bool) -> bool");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
@@ -436,7 +466,7 @@ struct Filter<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "filter";
-    deftype!("core", "fn('a, fn('a) -> bool throws 'e) -> 'a throws 'e");
+    deftype!("fn('a, fn('a) -> bool throws 'e) -> 'a throws 'e");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|ctx, typ, scope, from, top_id| match from {
@@ -555,7 +585,7 @@ struct Queue {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "queue";
-    deftype!("core", "fn(#clock:Any, 'a) -> 'a");
+    deftype!("fn(#clock:Any, 'a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|ctx, _, _, from, top_id| match from {
@@ -610,7 +640,7 @@ struct Hold {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "hold";
-    deftype!("core", "fn(#clock:Any, 'a) -> 'a");
+    deftype!("fn(#clock:Any, 'a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, _| match from {
@@ -660,7 +690,7 @@ struct Seq {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "seq";
-    deftype!("core", "fn(i64, i64) -> Result<i64, `SeqError(string)>");
+    deftype!("fn(i64, i64) -> Result<i64, `SeqError(string)>");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|ctx, _, _, from, top_id| {
@@ -717,7 +747,7 @@ struct Throttle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "throttle";
-    deftype!("core", "fn(?#rate:duration, 'a) -> 'a");
+    deftype!("fn(?#rate:duration, 'a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, top_id| {
@@ -809,7 +839,7 @@ struct Count {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "count";
-    deftype!("core", "fn(Any) -> i64");
+    deftype!("fn(Any) -> i64");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Count { count: 0 })))
@@ -842,7 +872,6 @@ struct MeanEv;
 impl EvalCached for MeanEv {
     const NAME: &str = "mean";
     deftype!(
-        "core",
         "fn([Number, Array<Number>], @args: [Number, Array<Number>]) -> Result<f64, `MeanError(string)>"
     );
 
@@ -879,7 +908,7 @@ struct Uniq(Option<Value>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "uniq";
-    deftype!("core", "fn('a) -> 'a");
+    deftype!("fn('a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Uniq(None))))
@@ -913,7 +942,7 @@ struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "never";
-    deftype!("core", "fn(@args: Any) -> 'a");
+    deftype!("fn(@args: Any) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Never)))
@@ -984,7 +1013,7 @@ struct Dbg {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "dbg";
-    deftype!("core", "fn(?#dest:[`Stdout, `Stderr, Log], 'a) -> 'a");
+    deftype!("fn(?#dest:[`Stdout, `Stderr, Log], 'a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, _| {
@@ -1060,7 +1089,7 @@ struct Log {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "log";
-    deftype!("core", "fn(?#dest:Log, 'a) -> _");
+    deftype!("fn(?#dest:Log, 'a) -> _");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, scope, _, _| {
@@ -1111,7 +1140,7 @@ macro_rules! printfn {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const NAME: &str = $name;
-            deftype!("core", "fn(?#dest:Log, 'a) -> _");
+            deftype!("fn(?#dest:Log, 'a) -> _");
 
             fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
                 Arc::new(|_, _, _, _, _| {

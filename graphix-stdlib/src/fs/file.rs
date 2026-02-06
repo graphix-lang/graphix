@@ -10,7 +10,7 @@ pub(super) struct ReadAllOp;
 
 impl EvalCachedAsync for ReadAllOp {
     const NAME: &str = "fs_read_all";
-    deftype!("fs", "fn(string) -> Result<string, `IOError(string)>");
+    deftype!("fn(string) -> Result<string, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -34,7 +34,7 @@ pub(super) struct ReadAllBinOp;
 
 impl EvalCachedAsync for ReadAllBinOp {
     const NAME: &str = "fs_read_all_bin";
-    deftype!("fs", "fn(string) -> Result<bytes, `IOError(string)>");
+    deftype!("fn(string) -> Result<bytes, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -58,7 +58,7 @@ pub(super) struct WriteAllOp;
 
 impl EvalCachedAsync for WriteAllOp {
     const NAME: &str = "fs_write_all";
-    deftype!("fs", "fn(#path:string, string) -> Result<null, `IOError(string)>");
+    deftype!("fn(#path:string, string) -> Result<null, `IOError(string)>");
     type Args = (ArcStr, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -82,7 +82,7 @@ pub(super) struct WriteAllBinOp;
 
 impl EvalCachedAsync for WriteAllBinOp {
     const NAME: &str = "fs_write_all_bin";
-    deftype!("fs", "fn(#path:string, bytes) -> Result<null, `IOError(string)>");
+    deftype!("fn(#path:string, bytes) -> Result<null, `IOError(string)>");
     type Args = (ArcStr, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -106,7 +106,7 @@ pub(super) struct RemoveFileOp;
 
 impl EvalCachedAsync for RemoveFileOp {
     const NAME: &str = "fs_remove_file";
-    deftype!("fs", "fn(string) -> Result<null, `IOError(string)>");
+    deftype!("fn(string) -> Result<null, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

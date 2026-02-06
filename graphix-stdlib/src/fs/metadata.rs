@@ -11,7 +11,7 @@ pub(super) struct IsFileEv;
 
 impl EvalCachedAsync for IsFileEv {
     const NAME: &str = "fs_is_file";
-    deftype!("fs", "fn(string) -> Result<string, `IOError(string)>");
+    deftype!("fn(string) -> Result<string, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -36,7 +36,7 @@ pub(super) struct IsDirEv;
 
 impl EvalCachedAsync for IsDirEv {
     const NAME: &str = "fs_is_dir";
-    deftype!("fs", "fn(string) -> Result<string, `IOError(string)>");
+    deftype!("fn(string) -> Result<string, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -101,7 +101,6 @@ pub(super) struct MetadataEv;
 impl EvalCachedAsync for MetadataEv {
     const NAME: &str = "fs_metadata";
     deftype!(
-        "fs",
         "fn(?#follow_symlinks:bool, string) -> Result<Metadata, `IOError(string)>"
     );
     type Args = (bool, ArcStr);

@@ -40,7 +40,7 @@ struct Write {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     const NAME: &str = "write";
-    deftype!("net", "fn(string, Any) -> Result<_, `WriteError(string)>");
+    deftype!("fn(string, Any) -> Result<_, `WriteError(string)>");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, top_id| {
@@ -151,7 +151,7 @@ struct Subscribe {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const NAME: &str = "subscribe";
-    deftype!("net", "fn(string) -> Result<Primitive, `SubscribeError(string)>");
+    deftype!("fn(string) -> Result<Primitive, `SubscribeError(string)>");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, top_id| {
@@ -232,10 +232,7 @@ struct RpcCall {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     const NAME: &str = "call";
-    deftype!(
-        "net",
-        "fn(string, Array<(string, Any)>) -> Result<Primitive, `RpcError(string)>"
-    );
+    deftype!("fn(string, Array<(string, Any)>) -> Result<Primitive, `RpcError(string)>");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|ctx, _, _, from, top_id| {
@@ -313,7 +310,7 @@ macro_rules! list {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin;
-            deftype!("net", $typ);
+            deftype!($typ);
 
             fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
                 Arc::new(|ctx, _, _, from, top_id| {
@@ -407,7 +404,6 @@ struct Publish<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     const NAME: &str = "publish";
     deftype!(
-        "net",
         "fn(?#on_write:fn(Any) -> _ throws 'e, string, Any) -> Result<_, `PublishError(string)> throws 'e"
     );
 
@@ -547,7 +543,6 @@ struct PublishRpc<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     const NAME: &str = "publish_rpc";
     deftype!(
-        "net",
         r#"fn(
             #path:string,
             #doc:string,

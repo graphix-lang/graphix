@@ -38,14 +38,11 @@ mod time;
 
 #[macro_export]
 macro_rules! deftype {
-    ($scope:literal, $s:literal) => {
+    ($s:literal) => {
         const TYP: ::std::sync::LazyLock<graphix_compiler::typ::FnType> =
             ::std::sync::LazyLock::new(|| {
-                let scope =
-                    graphix_compiler::expr::ModPath(::netidx::path::Path::from($scope));
                 graphix_compiler::expr::parser::parse_fn_type($s)
                     .expect("failed to parse fn type {s}")
-                    .scope_refs(&scope)
             });
     };
 }

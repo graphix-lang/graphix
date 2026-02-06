@@ -1,24 +1,16 @@
-use arcstr::ArcStr;
 use cargo_toml::Manifest;
-use fxhash::FxHashSet;
-use graphix_compiler::expr::ModPath;
-use parking_lot::Mutex;
-use poolshark::local::LPooled;
-use proc_macro2::{token_stream, Delimiter, Span, TokenStream, TokenTree};
-use quote::{format_ident, quote, ToTokens};
+use proc_macro2::TokenStream;
+use quote::quote;
 use std::{
     env,
-    fs::{self, FileType},
     path::{Component, PathBuf},
-    str::FromStr,
-    sync::{atomic::AtomicU64, LazyLock},
+    sync::LazyLock,
 };
 use syn::{
-    parse_macro_input, parse_quote,
+    parse_macro_input,
     punctuated::{Pair, Punctuated},
     token::{self, Comma},
-    AttrStyle, Attribute, Data, DeriveInput, ExprClosure, Field, Fields, GenericParam,
-    Ident, Index, LitStr, Pat, PathSegment, Result, Token, TypeParamBound,
+    Ident, Pat, Result, Token,
 };
 
 static PROJECT_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
@@ -40,185 +32,6 @@ static PACKAGE_NAME: LazyLock<String> =
         Some(name) => name.into(),
         None => CRATE_NAME.clone(),
     });
-
-/*
-fn parse_attr<R, F: FnMut(Ident, token_stream::IntoIter) -> R>(
-    att: &Attribute,
-    mut f: F,
-) -> Option<R> {
-    match att.style {
-        AttrStyle::Inner(_) => None,
-        AttrStyle::Outer => match att.path().segments.iter().next() {
-            None => None,
-            Some(seg) => match seg.ident.to_string().as_str() {
-                "builtin" => {
-                    let tokens = att.meta.require_list().unwrap().tokens.clone();
-                    let mut iter = tokens.into_iter();
-                    match iter.next() {
-                        Some(TokenTree::Ident(i)) => Some(f(i, iter)),
-                        None | Some(_) => None,
-                    }
-                }
-                _ => None,
-            },
-        },
-    }
-}
-
-struct BuiltInArgs {
-    typ: TokenTree,
-    name: TokenTree,
-}
-
-impl From<&[Attribute]> for BuiltInArgs {
-    fn from(attrs: &[Attribute]) -> Self {
-        macro_rules! expect_equal {
-            ($iter:expr) => {
-                match $iter.next() {
-                    Some(TokenTree::Punct(p)) if p.as_char() == '=' => (),
-                    _ => panic!("invalid attribute syntax, expected key = value"),
-                }
-            };
-        }
-        let mut typ: Option<TokenTree> = None;
-        let mut name: Option<TokenTree> = None;
-        for a in attrs {
-            parse_attr(a, |ident, mut iter| match ident.to_string().as_str() {
-                "name" => {
-                    if name.is_some() {
-                        panic!("name attribute specified multiple times")
-                    }
-                    expect_equal!(iter);
-                    let token =
-                        iter.next().expect("invalid name attribute, expected argument");
-                    match token {
-                        TokenTree::Literal(_) | TokenTree::Ident(_) => {
-                            name = Some(token);
-                        }
-                        _ => panic!("invalid argument to name attribute"),
-                    }
-                }
-                "type" => {
-                    if typ.is_some() {
-                        panic!("type attribute specified more than once")
-                    }
-                    expect_equal!(iter);
-                    let token =
-                        iter.next().expect("invalid type attribute, expected argument");
-                    match token {
-                        TokenTree::Literal(_) | TokenTree::Ident(_) => {
-                            typ = Some(token);
-                        }
-                        _ => panic!("invalid argument to type attribute"),
-                    }
-                }
-                _ => {}
-            });
-        }
-        if name.is_none() {
-            panic!("missing required attribute builtin(name = ?)")
-        }
-        if typ.is_none() {
-            panic!("missing required attribute builtin(type = ?)")
-        }
-        Self { name: name.unwrap(), typ: typ.unwrap() }
-    }
-}
-
-/// if the type already has generic parameters constrained to the traits we need
-/// for BuiltIn, then extract those names, otherwise None
-fn extract_trait_param_names(
-    params: &Punctuated<GenericParam, Comma>,
-) -> (Option<Ident>, Option<Ident>) {
-    let mut r_name: Option<Ident> = None;
-    let mut e_name: Option<Ident> = None;
-    for g in params {
-        match g {
-            GenericParam::Type(t) if t.bounds.len() == 1 => match t.bounds.first() {
-                Some(TypeParamBound::Trait(tb)) => match tb.path.segments.last() {
-                    Some(seg) if seg.ident == Ident::new("Rt", seg.ident.span()) => {
-                        r_name = Some(t.ident.clone())
-                    }
-                    Some(seg)
-                        if seg.ident == Ident::new("UserEvent", seg.ident.span()) =>
-                    {
-                        e_name = Some(t.ident.clone())
-                    }
-                    None | Some(_) => (),
-                },
-                None | Some(_) => (),
-            },
-            _ => (),
-        }
-    }
-    (r_name, e_name)
-}
-
-fn unique_ident() -> Ident {
-    use std::sync::atomic::Ordering;
-    static N: AtomicU64 = AtomicU64::new(0);
-    Ident::new(&format!("TY__{}", N.fetch_add(1, Ordering::Relaxed)), Span::call_site())
-}
-
-static TO_REGISTER: LazyLock<Mutex<FxHashSet<String>>> =
-    LazyLock::new(|| Mutex::new(FxHashSet::default()));
-
-#[proc_macro_derive(BuiltIn, attributes(builtin))]
-pub fn derive_builtin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let mut for_impl = input.generics.clone();
-    let (impl_generics, ty_generics, where_clause, r_name, e_name) = {
-        let (mut r_name, mut e_name) = extract_trait_param_names(&input.generics.params);
-        if r_name == None {
-            let rn = unique_ident();
-            for_impl.params.push(parse_quote!(#rn: ::graphix_compiler::Rt));
-            r_name = Some(rn);
-        }
-        if e_name == None {
-            let en = unique_ident();
-            for_impl.params.push(parse_quote!(#en: ::graphix_compiler::UserEvent));
-            e_name = Some(en);
-        }
-        let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-        let (impl_generics, _, _) = for_impl.split_for_impl();
-        (impl_generics, ty_generics, where_clause, r_name.unwrap(), e_name.unwrap())
-    };
-    let args = BuiltInArgs::from(&*input.attrs);
-    match &*PROJECT_TYPE {
-        ProjectType::Package => (),
-        ProjectType::Standalone => panic!("you must define builtins in a package"),
-    }
-    let package_name = &*PACKAGE_NAME;
-    // check invariants at compile time, if possible
-    match &args.typ {
-        TokenTree::Literal(l) => {
-            graphix_compiler::expr::parser::parse_fn_type(&l.to_string())
-                .expect("invalid graphix type");
-        }
-        _ => (),
-    }
-    let fn_name = args.name;
-    let fn_typ = args.typ;
-    let ty_name = input.ident;
-    if !TO_REGISTER.lock().insert(ty_name.to_string()) {
-        panic!(
-            "builtin names must be unique in a package {ty_name} is used more than once"
-        )
-    }
-    quote! {
-        impl #impl_generics ::graphix_compiler::BuiltIn<#r_name, #e_name> for #ty_name #ty_generics #where_clause {
-            const NAME: &str = ::const_format::concatcp!(#package_name, "_", #fn_name);
-            const TYP: ::std::sync::LazyLock<graphix_compiler::typ::FnType> =
-                ::std::sync::LazyLock::new(|| {
-                    ::graphix_compiler::expr::parser::parse_fn_type(#fn_typ)
-                        .expect("failed to parse fn type {s}")
-                });
-            const INIT: ::graphix_compiler::BuiltInInitFn<R, E> = Self::init;
-        }
-    }
-    .into()
-}
-*/
 
 /* example
 defpackage! {
@@ -282,7 +95,7 @@ fn check_invariants() {
     if !CARGO_MANIFEST.lib.is_some() {
         panic!("graphix package crates must have a lib target")
     }
-    let md = fs::metadata(&*GRAPHIX_SRC)
+    let md = std::fs::metadata(&*GRAPHIX_SRC)
         .expect("graphix projects must have a graphix-src directory");
     if !md.is_dir() {
         panic!("graphix projects must have a graphix-src directory")
@@ -400,6 +213,7 @@ fn init_custom(is_custom: &Option<syn::ExprClosure>) -> TokenStream {
 
 #[proc_macro]
 pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    check_invariants();
     let input = parse_macro_input!(input as DefPackage);
     let register_builtins = register_builtins(&input.builtins);
     let is_custom = is_custom(&input.is_custom);

@@ -192,15 +192,20 @@ pub(super) struct SetGlobals;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for SetGlobals {
     const NAME: &str = "fs_set_global_watch_parameters";
     deftype!(
-        "fs",
         r#"fn(
             ?#poll_interval:[duration, null],
             ?#poll_batch_size:[i64, null]
         ) -> Result<null, `WatchError(string)>"#
     );
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(SetGlobals)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _fntyp: &'a graphix_compiler::typ::FnType,
+        _scope: &'b graphix_compiler::Scope,
+        _args: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(SetGlobals))
     }
 }
 
@@ -278,7 +283,7 @@ macro_rules! watch {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type_name {
             const NAME: &str = $builtin_name;
-            deftype!("fs", $graphix_type);
+            deftype!($graphix_type);
 
             fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
                 Arc::new(|ctx, _, _, _, top_id| {

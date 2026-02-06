@@ -18,7 +18,7 @@ struct AfterIdle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     const NAME: &str = "after_idle";
-    deftype!("time", "fn([duration, Number], 'a) -> 'a");
+    deftype!("fn([duration, Number], 'a) -> 'a");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, from, eid| {
@@ -133,7 +133,6 @@ struct Timer {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     const NAME: &str = "timer";
     deftype!(
-        "time",
         "fn([duration, Number], [bool, Number]) -> Result<datetime, `TimerError(string)>"
     );
 
@@ -248,7 +247,7 @@ struct Now;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     const NAME: &str = "time_now";
-    deftype!("time", "fn(Any) -> datetime");
+    deftype!("fn(Any) -> datetime");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|_, _, _, _, _| Ok(Box::new(Self)))
@@ -275,6 +274,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
 
 pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<AfterIdle>()?;
+    ,
+
     ctx.register_builtin::<Timer>()?;
     ctx.register_builtin::<Now>()?;
     Ok((literal!(include_str!("time.gx")), literal!(include_str!("time.gxi"))))

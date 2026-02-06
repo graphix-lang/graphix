@@ -405,7 +405,14 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
     const TYP: LazyLock<FnType>;
-    const INIT: BuiltInInitFn<R, E>;
+
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>>;
 }
 
 pub trait Abortable {
@@ -757,7 +764,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert((T::TYP.clone(), T::INIT));
+                e.insert((T::TYP.clone(), T::init));
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }

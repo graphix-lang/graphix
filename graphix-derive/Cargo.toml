@@ -12,9 +12,4 @@ quote = { workspace = true }
 proc-macro2 = { workspace = true }
 cargo_toml = { workspace = true }
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
-fxhash = { workspace = true }
-parking_lot = { workspace = true }
-netidx-core = { workspace = true }
-poolshark = { workspace = true }
-arcstr = { workspace = true }
 walkdir = { workspace = true }

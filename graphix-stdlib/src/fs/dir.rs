@@ -48,7 +48,6 @@ pub(super) struct ReadDirEv;
 impl EvalCachedAsync for ReadDirEv {
     const NAME: &str = "fs_readdir";
     deftype!(
-        "fs",
         r#"fn(
             ?#max_depth:i64,
             ?#min_depth:i64,
@@ -124,7 +123,7 @@ pub(super) struct CreateDirOp;
 
 impl EvalCachedAsync for CreateDirOp {
     const NAME: &str = "fs_create_dir";
-    deftype!("fs", "fn(?#all:bool, string) -> Result<null, `IOError(string)>");
+    deftype!("fn(?#all:bool, string) -> Result<null, `IOError(string)>");
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -153,7 +152,7 @@ pub(super) struct RemoveDirOp;
 
 impl EvalCachedAsync for RemoveDirOp {
     const NAME: &str = "fs_remove_dir";
-    deftype!("fs", "fn(?#all:bool, string) -> Result<null, `IOError(string)>");
+    deftype!("fn(?#all:bool, string) -> Result<null, `IOError(string)>");
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

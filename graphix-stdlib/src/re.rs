@@ -26,7 +26,7 @@ struct IsMatchEv {
 
 impl EvalCached for IsMatchEv {
     const NAME: &str = "re_is_match";
-    deftype!("re", "fn(#pat:string, string) -> Result<bool, `ReError(string)>");
+    deftype!("fn(#pat:string, string) -> Result<bool, `ReError(string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -52,7 +52,7 @@ struct FindEv {
 
 impl EvalCached for FindEv {
     const NAME: &str = "re_find";
-    deftype!("re", "fn(#pat:string, string) -> Result<Array<string>, `ReError(string)>");
+    deftype!("fn(#pat:string, string) -> Result<Array<string>, `ReError(string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -81,7 +81,7 @@ struct CapturesEv {
 
 impl EvalCached for CapturesEv {
     const NAME: &str = "re_captures";
-    deftype!("re", "fn(#pat:string, string) -> Result<Array<Array<Option<string>>>, `ReError(string)>");
+    deftype!("fn(#pat:string, string) -> Result<Array<Array<Option<string>>>, `ReError(string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -114,7 +114,7 @@ struct SplitEv {
 
 impl EvalCached for SplitEv {
     const NAME: &str = "re_split";
-    deftype!("re", "fn(#pat:string, string) -> Result<Array<string>, `ReError(string)>");
+    deftype!("fn(#pat:string, string) -> Result<Array<string>, `ReError(string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -143,7 +143,6 @@ struct SplitNEv {
 impl EvalCached for SplitNEv {
     const NAME: &str = "re_splitn";
     deftype!(
-        "re",
         "fn(#pat:string, #limit:i64, string) -> Result<Array<string>, `ReError(string)>"
     );
 
@@ -174,6 +173,8 @@ type SplitN = CachedArgs<SplitNEv>;
 
 pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<IsMatch>()?;
+    ,
+
     ctx.register_builtin::<Find>()?;
     ctx.register_builtin::<Captures>()?;
     ctx.register_builtin::<Split>()?;

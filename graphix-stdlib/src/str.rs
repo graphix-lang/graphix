@@ -15,7 +15,7 @@ struct StartsWithEv;
 
 impl EvalCached for StartsWithEv {
     const NAME: &str = "starts_with";
-    deftype!("str", "fn(#pfx:string, string) -> bool");
+    deftype!("fn(#pfx:string, string) -> bool");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -38,7 +38,7 @@ struct EndsWithEv;
 
 impl EvalCached for EndsWithEv {
     const NAME: &str = "ends_with";
-    deftype!("str", "fn(#sfx:string, string) -> bool");
+    deftype!("fn(#sfx:string, string) -> bool");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -61,7 +61,7 @@ struct ContainsEv;
 
 impl EvalCached for ContainsEv {
     const NAME: &str = "contains";
-    deftype!("str", "fn(#part:string, string) -> bool");
+    deftype!("fn(#part:string, string) -> bool");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -84,7 +84,7 @@ struct StripPrefixEv;
 
 impl EvalCached for StripPrefixEv {
     const NAME: &str = "strip_prefix";
-    deftype!("str", "fn(#pfx:string, string) -> Option<string>");
+    deftype!("fn(#pfx:string, string) -> Option<string>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -104,7 +104,7 @@ struct StripSuffixEv;
 
 impl EvalCached for StripSuffixEv {
     const NAME: &str = "strip_suffix";
-    deftype!("str", "fn(#sfx:string, string) -> Option<string>");
+    deftype!("fn(#sfx:string, string) -> Option<string>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -124,7 +124,7 @@ struct TrimEv;
 
 impl EvalCached for TrimEv {
     const NAME: &str = "trim";
-    deftype!("str", "fn(string) -> string");
+    deftype!("fn(string) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -141,7 +141,7 @@ struct TrimStartEv;
 
 impl EvalCached for TrimStartEv {
     const NAME: &str = "trim_start";
-    deftype!("str", "fn(string) -> string");
+    deftype!("fn(string) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -158,7 +158,7 @@ struct TrimEndEv;
 
 impl EvalCached for TrimEndEv {
     const NAME: &str = "trim_end";
-    deftype!("str", "fn(string) -> string");
+    deftype!("fn(string) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -175,7 +175,7 @@ struct ReplaceEv;
 
 impl EvalCached for ReplaceEv {
     const NAME: &str = "replace";
-    deftype!("str", "fn(#pat:string, #rep:string, string) -> string");
+    deftype!("fn(#pat:string, #rep:string, string) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
@@ -196,7 +196,7 @@ struct DirnameEv;
 
 impl EvalCached for DirnameEv {
     const NAME: &str = "dirname";
-    deftype!("str", "fn(string) -> Option<string>");
+    deftype!("fn(string) -> Option<string>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -217,7 +217,7 @@ struct BasenameEv;
 
 impl EvalCached for BasenameEv {
     const NAME: &str = "basename";
-    deftype!("str", "fn(string) -> Option<string>");
+    deftype!("fn(string) -> Option<string>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -237,7 +237,7 @@ struct StringJoinEv;
 
 impl EvalCached for StringJoinEv {
     const NAME: &str = "string_join";
-    deftype!("str", "fn(#sep:string, @args: [string, Array<string>]) -> string");
+    deftype!("fn(#sep:string, @args: [string, Array<string>]) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         thread_local! {
@@ -299,7 +299,7 @@ struct StringConcatEv;
 
 impl EvalCached for StringConcatEv {
     const NAME: &str = "string_concat";
-    deftype!("str", "fn(@args: [string, Array<string>]) -> string");
+    deftype!("fn(@args: [string, Array<string>]) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         thread_local! {
@@ -377,7 +377,6 @@ macro_rules! escape_fn {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
             deftype!(
-                "str",
                 "fn(?#esc:Escape, string) -> Result<string, `StringError(string)>"
             );
 
@@ -435,7 +434,7 @@ macro_rules! string_split {
 
         impl EvalCached for $name {
             const NAME: &str = $builtin;
-            deftype!("str", "fn(#pat:string, string) -> Array<string>");
+            deftype!("fn(#pat:string, string) -> Array<string>");
 
             fn eval(&mut self, from: &CachedVals) -> Option<Value> {
                 // this is a fairly common case, so we check it before doing any real work
@@ -471,7 +470,7 @@ macro_rules! string_splitn {
 
         impl EvalCached for $name {
             const NAME: &str = $builtin;
-            deftype!("str", "fn(#pat:string, #n:i64, string) -> Result<Array<string>, `StringSplitError(string)>");
+            deftype!("fn(#pat:string, #n:i64, string) -> Result<Array<string>, `StringSplitError(string)>");
 
             fn eval(&mut self, from: &CachedVals) -> Option<Value> {
                 static TAG: ArcStr = literal!("StringSplitError");
@@ -511,7 +510,7 @@ struct StringSplitEscapedEv;
 
 impl EvalCached for StringSplitEscapedEv {
     const NAME: &str = "string_split_escaped";
-    deftype!("str", "fn(#esc:string, #sep:string, string) -> Result<Array<string>, `SplitEscError(string)>");
+    deftype!("fn(#esc:string, #sep:string, string) -> Result<Array<string>, `SplitEscError(string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("SplitEscError");
@@ -546,7 +545,6 @@ struct StringSplitNEscapedEv;
 impl EvalCached for StringSplitNEscapedEv {
     const NAME: &str = "string_splitn_escaped";
     deftype!(
-        "str",
         "fn(#n:i64, #esc:string, #sep:string, string) -> Result<Array<string>, `SplitNEscError(string)>"
     );
 
@@ -587,7 +585,7 @@ struct StringSplitOnceEv;
 
 impl EvalCached for StringSplitOnceEv {
     const NAME: &str = "string_split_once";
-    deftype!("str", "fn(#pat:string, string) -> Option<(string, string)>");
+    deftype!("fn(#pat:string, string) -> Option<(string, string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         // this is a fairly common case, so we check it before doing any real work
@@ -620,7 +618,7 @@ struct StringRSplitOnceEv;
 
 impl EvalCached for StringRSplitOnceEv {
     const NAME: &str = "string_rsplit_once";
-    deftype!("str", "fn(#pat:string, string) -> Option<(string, string)>");
+    deftype!("fn(#pat:string, string) -> Option<(string, string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         // this is a fairly common case, so we check it before doing any real work
@@ -653,7 +651,7 @@ struct StringToLowerEv;
 
 impl EvalCached for StringToLowerEv {
     const NAME: &str = "string_to_lower";
-    deftype!("str", "fn(string) -> string");
+    deftype!("fn(string) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -670,7 +668,7 @@ struct StringToUpperEv;
 
 impl EvalCached for StringToUpperEv {
     const NAME: &str = "string_to_upper";
-    deftype!("str", "fn(string) -> string");
+    deftype!("fn(string) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -690,7 +688,7 @@ struct SprintfEv {
 
 impl EvalCached for SprintfEv {
     const NAME: &str = "string_sprintf";
-    deftype!("str", "fn(string, @args: Any) -> string");
+    deftype!("fn(string, @args: Any) -> string");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -720,7 +718,7 @@ struct LenEv;
 
 impl EvalCached for LenEv {
     const NAME: &str = "string_len";
-    deftype!("str", "fn(string) -> i64");
+    deftype!("fn(string) -> i64");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -738,7 +736,6 @@ struct SubEv(String);
 impl EvalCached for SubEv {
     const NAME: &str = "string_sub";
     deftype!(
-        "str",
         "fn(#start:i64, #len:i64, string) -> Result<string, `SubError(string)>"
     );
 
@@ -769,7 +766,7 @@ struct ParseEv;
 
 impl EvalCached for ParseEv {
     const NAME: &str = "string_parse";
-    deftype!("str", "fn(string) -> Result<PrimNoErr, Any>");
+    deftype!("fn(string) -> Result<PrimNoErr, Any>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {

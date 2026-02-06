@@ -57,7 +57,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
 
     const NAME: &str = "map_map";
     deftype!(
-        "core::map",
         "fn(Map<'a, 'b>, fn(('a, 'b)) -> ('c, 'd) throws 'e) -> Map<'c, 'd> throws 'e"
     );
 
@@ -79,10 +78,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
     type Collection = CMap<Value, Value, 32>;
 
     const NAME: &str = "map_filter";
-    deftype!(
-        "core::map",
-        "fn(Map<'a, 'b>, fn(('a, 'b)) -> bool throws 'e) -> Map<'a, 'b> throws 'e"
-    );
+    deftype!("fn(Map<'a, 'b>, fn(('a, 'b)) -> bool throws 'e) -> Map<'a, 'b> throws 'e");
 
     fn finish(
         &mut self,
@@ -108,7 +104,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
 
     const NAME: &str = "map_filter_map";
     deftype!(
-        "core::map",
         "fn(Map<'a, 'b>, fn(('a, 'b)) -> Option<('c, 'd)> throws 'e) -> Map<'c, 'd> throws 'e"
     );
 
@@ -135,10 +130,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     type Collection = CMap<Value, Value, 32>;
 
     const NAME: &str = "map_fold";
-    deftype!(
-        "core::map",
-        "fn(Map<'a, 'b>, 'c, fn('c, ('a, 'b)) -> 'c throws 'e) -> 'c throws 'e"
-    );
+    deftype!("fn(Map<'a, 'b>, 'c, fn('c, ('a, 'b)) -> 'c throws 'e) -> 'c throws 'e");
 }
 
 type Fold<R, E> = FoldQ<R, E, FoldImpl>;
@@ -148,7 +140,7 @@ struct LenEv;
 
 impl EvalCached for LenEv {
     const NAME: &str = "map_len";
-    deftype!("core::map", "fn(Map<'a, 'b>) -> i64");
+    deftype!("fn(Map<'a, 'b>) -> i64");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -165,7 +157,7 @@ struct GetEv;
 
 impl EvalCached for GetEv {
     const NAME: &str = "map_get";
-    deftype!("core::map", "fn(Map<'a, 'b>, 'a) -> Option<'b>");
+    deftype!("fn(Map<'a, 'b>, 'a) -> Option<'b>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -184,7 +176,7 @@ struct InsertEv;
 
 impl EvalCached for InsertEv {
     const NAME: &str = "map_insert";
-    deftype!("core::map", "fn(Map<'a, 'b>, 'a, 'b) -> Map<'a, 'b>");
+    deftype!("fn(Map<'a, 'b>, 'a, 'b) -> Map<'a, 'b>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
@@ -203,7 +195,7 @@ struct RemoveEv;
 
 impl EvalCached for RemoveEv {
     const NAME: &str = "map_remove";
-    deftype!("core::map", "fn(Map<'a, 'b>, 'a) -> Map<'a, 'b>");
+    deftype!("fn(Map<'a, 'b>, 'a) -> Map<'a, 'b>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -223,7 +215,7 @@ pub(super) struct Iter {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "map_iter";
-    deftype!("core::map", "fn(Map<'a, 'b>) -> ('a, 'b)");
+    deftype!("fn(Map<'a, 'b>) -> ('a, 'b)");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|ctx, _, _, _, top_id| {
@@ -273,7 +265,7 @@ pub(super) struct IterQ {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "map_iterq";
-    deftype!("core::map", "fn(#clock:Any, Map<'a, 'b>) -> ('a, 'b)");
+    deftype!("fn(#clock:Any, Map<'a, 'b>) -> ('a, 'b)");
 
     fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
         Arc::new(|ctx, _, _, _, top_id| {
@@ -330,7 +322,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 }
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<Map<R, E>>()?;
     ctx.register_builtin::<Filter<R, E>>()?;
     ctx.register_builtin::<FilterMap<R, E>>()?;
