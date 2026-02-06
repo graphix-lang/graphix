@@ -6,12 +6,11 @@ use graphix_compiler::{
     expr::{Expr, ExprId},
     node::genn,
     typ::{TVal, Type},
-    Apply, BindId, BuiltIn, BuiltInInitFn, Event, ExecCtx, Node, Refs, Rt, Scope,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, UserEvent,
 };
 use netidx::subscriber::Value;
 use netidx_value::FromValue;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 use tokio::time::Instant;
 
 #[derive(Debug)]
@@ -217,8 +216,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "skip";
     deftype!("fn(#n:Any, 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Skip { n: None })))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Skip { n: None }))
     }
 }
 
@@ -468,8 +473,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "filter";
     deftype!("fn('a, fn('a) -> bool throws 'e) -> 'a throws 'e");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, typ, scope, from, top_id| match from {
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a graphix_compiler::typ::FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _] => {
                 let (x, xn) =
                     genn::bind(ctx, &scope.lexical, "x", typ.args[0].typ.clone(), top_id);
@@ -486,7 +497,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                 Ok(Box::new(Self { ready: true, queue, pred, fid, x, out, top_id }))
             }
             _ => bail!("expected two arguments"),
-        })
+        }
     }
 }
 
@@ -587,15 +598,21 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "queue";
     deftype!("fn(#clock:Any, 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, _, _, from, top_id| match from {
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _] => {
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
                 Ok(Box::new(Self { triggered: 0, queue: VecDeque::new(), id, top_id }))
             }
             _ => bail!("expected two arguments"),
-        })
+        }
     }
 }
 
@@ -642,11 +659,17 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "hold";
     deftype!("fn(#clock:Any, 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, _| match from {
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _] => Ok(Box::new(Self { triggered: 0, current: None })),
             _ => bail!("expected two arguments"),
-        })
+        }
     }
 }
 
@@ -692,13 +715,17 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "seq";
     deftype!("fn(i64, i64) -> Result<i64, `SeqError(string)>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, _, _, from, top_id| {
-            let id = BindId::new();
-            ctx.rt.ref_var(id, top_id);
-            let args = CachedVals::new(from);
-            Ok(Box::new(Self { id, top_id, args }))
-        })
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
+        let args = CachedVals::new(from);
+        Ok(Box::new(Self { id, top_id, args }))
     }
 }
 
@@ -749,17 +776,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "throttle";
     deftype!("fn(?#rate:duration, 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, top_id| {
-            let args = CachedVals::new(from);
-            Ok(Box::new(Self {
-                wait: Duration::ZERO,
-                last: None,
-                tid: None,
-                top_id,
-                args,
-            }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let args = CachedVals::new(from);
+        Ok(Box::new(Self { wait: Duration::ZERO, last: None, tid: None, top_id, args }))
     }
 }
 
@@ -841,8 +866,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "count";
     deftype!("fn(Any) -> i64");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Count { count: 0 })))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Count { count: 0 }))
     }
 }
 
@@ -910,8 +941,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "uniq";
     deftype!("fn('a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Uniq(None))))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Uniq(None)))
     }
 }
 
@@ -944,8 +981,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "never";
     deftype!("fn(@args: Any) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Never)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Never))
     }
 }
 
@@ -1015,14 +1058,18 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "dbg";
     deftype!("fn(?#dest:[`Stdout, `Stderr, Log], 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, _| {
-            Ok(Box::new(Dbg {
-                spec: from[1].spec().clone(),
-                dest: LogDest::Stderr,
-                typ: Type::Bottom,
-            }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Dbg {
+            spec: from[1].spec().clone(),
+            dest: LogDest::Stderr,
+            typ: Type::Bottom,
+        }))
     }
 }
 
@@ -1091,10 +1138,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "log";
     deftype!("fn(?#dest:Log, 'a) -> _");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, scope, _, _| {
-            Ok(Box::new(Self { scope: scope.clone(), dest: LogDest::Stdout }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self { scope: scope.clone(), dest: LogDest::Stdout }))
     }
 }
 
@@ -1142,10 +1193,14 @@ macro_rules! printfn {
             const NAME: &str = $name;
             deftype!("fn(?#dest:Log, 'a) -> _");
 
-            fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-                Arc::new(|_, _, _, _, _| {
-                    Ok(Box::new(Self { dest: LogDest::Stdout, buf: String::new() }))
-                })
+            fn init<'a, 'b, 'c>(
+                _ctx: &'a mut ExecCtx<R, E>,
+                _typ: &'a graphix_compiler::typ::FnType,
+                _scope: &'b Scope,
+                _from: &'c [Node<R, E>],
+                _top_id: ExprId,
+            ) -> Result<Box<dyn Apply<R, E>>> {
+                Ok(Box::new(Self { dest: LogDest::Stdout, buf: String::new() }))
             }
         }
 

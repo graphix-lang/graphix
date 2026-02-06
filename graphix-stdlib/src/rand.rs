@@ -2,13 +2,12 @@ use crate::{deftype, CachedVals};
 use anyhow::Result;
 use arcstr::{literal, ArcStr};
 use graphix_compiler::{
-    Apply, BuiltIn, BuiltInInitFn, Event, ExecCtx, Node, Rt, UserEvent,
+    expr::ExprId, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use rand::{rng, seq::SliceRandom, Rng};
 use smallvec::{smallvec, SmallVec};
-use std::sync::Arc;
 
 #[derive(Debug)]
 struct Rand {
@@ -19,8 +18,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
     const NAME: &str = "rand";
     deftype!("fn<'a: [Int, Float]>(?#start:'a, ?#end:'a, #clock:Any) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, _| Ok(Box::new(Rand { args: CachedVals::new(from) })))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Rand { args: CachedVals::new(from) }))
     }
 }
 
@@ -68,8 +73,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     const NAME: &str = "rand_pick";
     deftype!("fn(Array<'a>) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Pick)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Pick))
     }
 }
 
@@ -98,8 +109,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     const NAME: &str = "rand_shuffle";
     deftype!("fn(Array<'a>) -> Array<'a>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Shuffle(smallvec![]))))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Shuffle(smallvec![])))
     }
 }
 

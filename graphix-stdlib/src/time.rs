@@ -3,11 +3,10 @@ use anyhow::{bail, Result};
 use arcstr::{literal, ArcStr};
 use chrono::Utc;
 use graphix_compiler::{
-    err, expr::ExprId, Apply, BindId, BuiltIn, BuiltInInitFn, Event, ExecCtx, Node, Rt,
-    UserEvent,
+    err, expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx::{publisher::FromValue, subscriber::Value};
-use std::{ops::SubAssign, sync::Arc, time::Duration};
+use std::{ops::SubAssign, time::Duration};
 
 #[derive(Debug)]
 struct AfterIdle {
@@ -20,10 +19,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     const NAME: &str = "after_idle";
     deftype!("fn([duration, Number], 'a) -> 'a");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, eid| {
-            Ok(Box::new(AfterIdle { args: CachedVals::new(from), id: None, eid }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(AfterIdle { args: CachedVals::new(from), id: None, eid: top_id }))
     }
 }
 
@@ -136,16 +139,20 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
         "fn([duration, Number], [bool, Number]) -> Result<datetime, `TimerError(string)>"
     );
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, eid| {
-            Ok(Box::new(Self {
-                args: CachedVals::new(from),
-                timeout: None,
-                repeat: Repeat::No,
-                id: None,
-                eid,
-            }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self {
+            args: CachedVals::new(from),
+            timeout: None,
+            repeat: Repeat::No,
+            id: None,
+            eid: top_id,
+        }))
     }
 }
 
@@ -249,8 +256,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     const NAME: &str = "time_now";
     deftype!("fn(Any) -> datetime");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Self)))
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self))
     }
 }
 
@@ -272,10 +285,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<AfterIdle>()?;
-    ,
-
     ctx.register_builtin::<Timer>()?;
     ctx.register_builtin::<Now>()?;
     Ok((literal!(include_str!("time.gx")), literal!(include_str!("time.gxi"))))

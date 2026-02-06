@@ -3,12 +3,12 @@ use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use escaping::Escape;
 use graphix_compiler::{
-    err, errf, Apply, BuiltIn, BuiltInInitFn, Event, ExecCtx, Node, Rt, UserEvent,
+    err, errf, expr::ExprId, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
-use std::{cell::RefCell, sync::Arc};
+use std::cell::RefCell;
 
 #[derive(Debug, Default)]
 struct StartsWithEv;
@@ -376,14 +376,16 @@ macro_rules! escape_fn {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
-            deftype!(
-                "fn(?#esc:Escape, string) -> Result<string, `StringError(string)>"
-            );
+            deftype!("fn(?#esc:Escape, string) -> Result<string, `StringError(string)>");
 
-            fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-                Arc::new(|_, _, _, from, _| {
-                    Ok(Box::new(Self { escape: None, args: CachedVals::new(from) }))
-                })
+            fn init<'a, 'b, 'c>(
+                _ctx: &'a mut ExecCtx<R, E>,
+                _typ: &'a graphix_compiler::typ::FnType,
+                _scope: &'b Scope,
+                from: &'c [Node<R, E>],
+                _top_id: ExprId,
+            ) -> Result<Box<dyn Apply<R, E>>> {
+                Ok(Box::new(Self { escape: None, args: CachedVals::new(from) }))
             }
         }
 
@@ -735,9 +737,7 @@ struct SubEv(String);
 
 impl EvalCached for SubEv {
     const NAME: &str = "string_sub";
-    deftype!(
-        "fn(#start:i64, #len:i64, string) -> Result<string, `SubError(string)>"
-    );
+    deftype!("fn(#start:i64, #len:i64, string) -> Result<string, `SubError(string)>");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {

@@ -9,8 +9,8 @@ use extended_notify::{
 use futures::{channel::mpsc, SinkExt, TryFutureExt};
 use fxhash::FxHashMap;
 use graphix_compiler::{
-    errf, expr::ExprId, Apply, BindId, BuiltIn, BuiltInInitFn, CustomBuiltinType, Event,
-    ExecCtx, LibState, Node, Rt, UserEvent, CBATCH_POOL,
+    errf, expr::ExprId, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx,
+    LibState, Node, Rt, Scope, UserEvent, CBATCH_POOL,
 };
 use netidx_value::{FromValue, ValArray, Value};
 use parking_lot::Mutex;
@@ -285,18 +285,22 @@ macro_rules! watch {
             const NAME: &str = $builtin_name;
             deftype!($graphix_type);
 
-            fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-                Arc::new(|ctx, _, _, _, top_id| {
-                    let id = BindId::new();
-                    ctx.rt.ref_var(id, top_id);
-                    Ok(Box::new($type_name {
-                        id,
-                        top_id,
-                        interest: None,
-                        path: None,
-                        watch: None,
-                    }))
-                })
+            fn init<'a, 'b, 'c>(
+                ctx: &'a mut ExecCtx<R, E>,
+                _typ: &'a graphix_compiler::typ::FnType,
+                _scope: &'b Scope,
+                _from: &'c [Node<R, E>],
+                top_id: ExprId,
+            ) -> Result<Box<dyn Apply<R, E>>> {
+                let id = BindId::new();
+                ctx.rt.ref_var(id, top_id);
+                Ok(Box::new($type_name {
+                    id,
+                    top_id,
+                    interest: None,
+                    path: None,
+                    watch: None,
+                }))
             }
         }
 

@@ -7,14 +7,14 @@ use arcstr::{literal, ArcStr};
 use graphix_compiler::{
     expr::ExprId,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, BuiltInInitFn, Event, ExecCtx, Node, Rt, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::collections::VecDeque;
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
 use triomphe::Arc as TArc;
 
 impl MapCollection for CMap<Value, Value, 32> {
@@ -217,12 +217,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "map_iter";
     deftype!("fn(Map<'a, 'b>) -> ('a, 'b)");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, _, _, _, top_id| {
-            let id = BindId::new();
-            ctx.rt.ref_var(id, top_id);
-            Ok(Box::new(Self { id, top_id }))
-        })
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Self { id, top_id }))
     }
 }
 
@@ -267,12 +271,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "map_iterq";
     deftype!("fn(#clock:Any, Map<'a, 'b>) -> ('a, 'b)");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, _, _, _, top_id| {
-            let id = BindId::new();
-            ctx.rt.ref_var(id, top_id);
-            Ok(Box::new(IterQ { triggered: 0, queue: VecDeque::new(), id, top_id }))
-        })
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(IterQ { triggered: 0, queue: VecDeque::new(), id, top_id }))
     }
 }
 

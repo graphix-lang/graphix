@@ -171,10 +171,10 @@ impl EvalCached for SplitNEv {
 
 type SplitN = CachedArgs<SplitNEv>;
 
-pub(super) fn register<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> Result<(ArcStr, ArcStr)> {
+pub(super) fn register<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<(ArcStr, ArcStr)> {
     ctx.register_builtin::<IsMatch>()?;
-    ,
-
     ctx.register_builtin::<Find>()?;
     ctx.register_builtin::<Captures>()?;
     ctx.register_builtin::<Split>()?;

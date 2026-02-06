@@ -7,8 +7,7 @@ use graphix_compiler::{
     expr::{ExprId, ModuleResolver},
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, BuiltInInitFn, Event, ExecCtx, LambdaId, Node, Refs, Rt,
-    Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
 use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
@@ -20,7 +19,7 @@ use std::{
     fmt::Debug,
     iter,
     marker::PhantomData,
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
 };
 use triomphe::Arc as TArc;
 
@@ -147,11 +146,15 @@ impl<R: Rt, E: UserEvent, T: EvalCached> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
     const TYP: LazyLock<FnType> = T::TYP;
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, _| {
-            let t = CachedArgs::<T> { cached: CachedVals::new(from), t: T::default() };
-            Ok(Box::new(t))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let t = CachedArgs::<T> { cached: CachedVals::new(from), t: T::default() };
+        Ok(Box::new(t))
     }
 }
 
@@ -197,20 +200,24 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     const NAME: &str = T::NAME;
     const TYP: LazyLock<FnType> = T::TYP;
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, _, _, from, top_id| {
-            let id = BindId::new();
-            ctx.rt.ref_var(id, top_id);
-            let t = CachedArgsAsync::<T> {
-                id,
-                top_id,
-                cached: CachedVals::new(from),
-                queued: VecDeque::new(),
-                running: false,
-                t: T::default(),
-            };
-            Ok(Box::new(t))
-        })
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
+        let t = CachedArgsAsync::<T> {
+            id,
+            top_id,
+            cached: CachedVals::new(from),
+            queued: VecDeque::new(),
+            running: false,
+            t: T::default(),
+        };
+        Ok(Box::new(t))
     }
 }
 
@@ -316,8 +323,14 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     const NAME: &str = T::NAME;
     const TYP: LazyLock<FnType> = T::TYP;
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_ctx, typ, scope, from, top_id| match from {
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a graphix_compiler::typ::FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _] => Ok(Box::new(Self {
                 scope: scope.append(&format_compact!("fn{}", LambdaId::new().inner())),
                 predid: BindId::new(),
@@ -332,7 +345,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
                 t: T::default(),
             })),
             _ => bail!("expected two arguments"),
-        })
+        }
     }
 }
 
@@ -489,8 +502,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     const NAME: &str = T::NAME;
     const TYP: LazyLock<FnType> = T::TYP;
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_ctx, typ, scope, from, top_id| match from {
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a graphix_compiler::typ::FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _, _] => Ok(Box::new(Self {
                 top_id,
                 scope: scope.clone(),
@@ -510,7 +529,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                 t: PhantomData,
             })),
             _ => bail!("expected three arguments"),
-        })
+        }
     }
 }
 

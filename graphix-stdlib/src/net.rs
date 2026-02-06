@@ -3,8 +3,8 @@ use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
 use graphix_compiler::{
-    err, errf, expr::ExprId, node::genn, typ::Type, Apply, BindId, BuiltIn,
-    BuiltInInitFn, Event, ExecCtx, LambdaId, Node, Rt, UserEvent,
+    err, errf, expr::ExprId, node::genn, typ::Type, Apply, BindId, BuiltIn, Event,
+    ExecCtx, LambdaId, Node, Rt, Scope, UserEvent,
 };
 use netidx::{
     path::Path,
@@ -15,7 +15,7 @@ use netidx_core::utils::Either;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use netidx_value::ValArray;
 use smallvec::{smallvec, SmallVec};
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
 use triomphe::Arc as TArc;
 
 fn as_path(v: Value) -> Option<Path> {
@@ -42,14 +42,18 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     const NAME: &str = "write";
     deftype!("fn(string, Any) -> Result<_, `WriteError(string)>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, top_id| {
-            Ok(Box::new(Write {
-                args: CachedVals::new(from),
-                dv: Either::Right(vec![]),
-                top_id,
-            }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Write {
+            args: CachedVals::new(from),
+            dv: Either::Right(vec![]),
+            top_id,
+        }))
     }
 }
 
@@ -153,10 +157,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const NAME: &str = "subscribe";
     deftype!("fn(string) -> Result<Primitive, `SubscribeError(string)>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|_, _, _, from, top_id| {
-            Ok(Box::new(Subscribe { args: CachedVals::new(from), cur: None, top_id }))
-        })
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Subscribe { args: CachedVals::new(from), cur: None, top_id }))
     }
 }
 
@@ -234,12 +242,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     const NAME: &str = "call";
     deftype!("fn(string, Array<(string, Any)>) -> Result<Primitive, `RpcError(string)>");
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, _, _, from, top_id| {
-            let id = BindId::new();
-            ctx.rt.ref_var(id, top_id);
-            Ok(Box::new(RpcCall { args: CachedVals::new(from), top_id, id }))
-        })
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(RpcCall { args: CachedVals::new(from), top_id, id }))
     }
 }
 
@@ -312,17 +324,21 @@ macro_rules! list {
             const NAME: &str = $builtin;
             deftype!($typ);
 
-            fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-                Arc::new(|ctx, _, _, from, top_id| {
-                    let id = BindId::new();
-                    ctx.rt.ref_var(id, top_id);
-                    Ok(Box::new($name {
-                        args: CachedVals::new(from),
-                        current: None,
-                        id,
-                        top_id,
-                    }))
-                })
+            fn init<'a, 'b, 'c>(
+                ctx: &'a mut ExecCtx<R, E>,
+                _typ: &'a graphix_compiler::typ::FnType,
+                _scope: &'b Scope,
+                from: &'c [Node<R, E>],
+                top_id: ExprId,
+            ) -> Result<Box<dyn Apply<R, E>>> {
+                let id = BindId::new();
+                ctx.rt.ref_var(id, top_id);
+                Ok(Box::new($name {
+                    args: CachedVals::new(from),
+                    current: None,
+                    top_id,
+                    id,
+                }))
             }
         }
 
@@ -407,8 +423,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
         "fn(?#on_write:fn(Any) -> _ throws 'e, string, Any) -> Result<_, `PublishError(string)> throws 'e"
     );
 
-    fn init(_: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, typ, scope, from, top_id| match from {
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a graphix_compiler::typ::FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _, _] => {
                 let scope =
                     scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
@@ -430,7 +452,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 }))
             }
             _ => bail!("expected three arguments"),
-        })
+        }
     }
 }
 
@@ -551,8 +573,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         ) -> Result<_, `PublishRpcError(string)> throws 'e"#
     );
 
-    fn init(_ctx: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E> {
-        Arc::new(|ctx, typ, scope, from, top_id| match from {
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a graphix_compiler::typ::FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        match from {
             [_, _, _, _] => {
                 let scope =
                     scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
@@ -585,8 +613,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
                     current: None,
                 }))
             }
-            _ => bail!("expected two arguments"),
-        })
+            _ => bail!("expected four arguments"),
+        }
     }
 }
 
