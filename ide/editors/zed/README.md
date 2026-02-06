@@ -6,9 +6,9 @@ This directory contains configuration for Graphix language support in Zed editor
 
 1. Copy the `languages/graphix` directory to your Zed extensions directory
 
-2. Install the Graphix LSP server:
+2. Install the Graphix binary:
    ```bash
-   cargo install --path path/to/graphix-claude/ide/graphix-lsp
+   cargo install --path path/to/graphix-claude/graphix-shell
    ```
 
 3. Add to your Zed settings.json:
@@ -17,7 +17,8 @@ This directory contains configuration for Graphix language support in Zed editor
      "lsp": {
        "graphix-lsp": {
          "binary": {
-           "path": "graphix-lsp"
+           "path": "graphix",
+           "arguments": ["lsp"]
          }
        }
      },

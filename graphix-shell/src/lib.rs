@@ -26,6 +26,7 @@ use tui::Tui;
 
 mod completion;
 mod input;
+pub mod lsp;
 mod tui;
 
 const TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {

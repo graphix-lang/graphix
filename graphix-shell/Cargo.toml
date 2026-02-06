@@ -48,6 +48,8 @@ graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
 graphix-rt = { version = "0.3.0", path = "../graphix-rt" }
 graphix-stdlib = { version = "0.3.0", path = "../graphix-stdlib" }
 log = { workspace = true }
+lsp-server = { workspace = true }
+lsp-types = { workspace = true }
 netidx = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }

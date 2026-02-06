@@ -32,6 +32,8 @@ fxhash = "0.2"
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
 indexmap = "2"
 log = "0.4"
+lsp-server = "0.7"
+lsp-types = "0.97"
 netidx-core = { path = "../netidx/netidx-core", version = "0.31.0" }
 netidx-protocols = { path = "../netidx/netidx-protocols", version = "0.31.0" }
 netidx-value = { path = "../netidx/netidx-value", version = "0.31.3" }
@@ -72,4 +74,4 @@ walkdir = "2.5"
 
 [workspace]
 resolver = "2"
-members = ["graphix-shell", "graphix-compiler", "graphix-rt", "graphix-stdlib", "graphix-lsp"]
+members = ["graphix-shell", "graphix-compiler", "graphix-rt", "graphix-stdlib"]

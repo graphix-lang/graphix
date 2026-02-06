@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use enumflags2::BitFlags;
 use flexi_logger::{FileSpec, Logger};
 use graphix_compiler::{
@@ -69,9 +69,17 @@ impl RawFlag {
     }
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Start the Language Server Protocol server (communicates via stdio)
+    Lsp,
+}
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Params {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// enable logging and put the log in the specified directory. You
     /// should also set the RUST_LOG enviornment variable. e.g. RUST_LOG=debug
     #[arg(long)]
@@ -245,6 +253,9 @@ async fn tokio_main(p: Params, cfg: Result<Config>) -> Result<()> {
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
     let p = Params::parse();
+    if let Some(Command::Lsp) = &p.command {
+        return graphix_shell::lsp::run();
+    }
     let cfg = match &p.config {
         None => Config::load_default_or_local_only(),
         Some(p) => Config::load(p),
