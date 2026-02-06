@@ -1,0 +1,63 @@
+{
+    "name": "graphix",
+    "displayName": "Graphix",
+    "description": "Language support for Graphix programming language",
+    "version": "0.1.0",
+    "publisher": "graphix",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "activationEvents": [
+        "onLanguage:graphix"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "languages": [
+            {
+                "id": "graphix",
+                "aliases": [
+                    "Graphix",
+                    "graphix"
+                ],
+                "extensions": [
+                    ".gx"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "graphix",
+                "scopeName": "source.graphix",
+                "path": "./syntaxes/graphix.tmLanguage.json"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "Graphix",
+            "properties": {
+                "graphix.server.path": {
+                    "type": "string",
+                    "default": "graphix-lsp",
+                    "description": "Path to the Graphix language server executable"
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    },
+    "devDependencies": {
+        "@types/node": "^20.9.0",
+        "@types/vscode": "^1.85.0",
+        "typescript": "^5.3.2"
+    }
+}

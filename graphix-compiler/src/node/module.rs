@@ -12,6 +12,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
+use combine::stream::position::SourcePosition;
 use compact_str::{format_compact, CompactString};
 use enumflags2::BitFlags;
 use fxhash::{FxHashMap, FxHashSet};
@@ -35,7 +36,14 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
             SigKind::Bind(BindSig { name, typ }) => {
                 let typ = typ.scope_refs(&scope.lexical);
                 typ.alias_tvars(&mut LPooled::take());
-                let bind = env.bind_variable(&scope.lexical, name, typ);
+                // Signature bindings don't have source position info
+                let bind = env.bind_variable(
+                    &scope.lexical,
+                    name,
+                    typ,
+                    SourcePosition::default(),
+                    Arc::new(Origin::default()),
+                );
                 if let Doc(Some(s)) = &si.doc {
                     bind.doc = Some(s.clone());
                 }

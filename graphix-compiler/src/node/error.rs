@@ -83,7 +83,10 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
             }
             _ => unreachable!(),
         }
-        let id = ctx.env.bind_variable(&catch_scope.lexical, &tc.bind, typ).id;
+        let id = ctx
+            .env
+            .bind_variable(&catch_scope.lexical, &tc.bind, typ, spec.pos, spec.ori.clone())
+            .id;
         let handler = compile(ctx, flags, (*tc.handler).clone(), &catch_scope, top_id)?;
         ctx.env.catch.insert_cow(inner_scope.dynamic.clone(), id);
         let nodes = tc

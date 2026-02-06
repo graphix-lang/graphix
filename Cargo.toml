@@ -103,6 +103,7 @@ members = [
     "graphix-rt",
     "graphix-derive",
     "graphix-package",
+    "graphix-lsp",
     "stdlib/graphix-package-core",
     "stdlib/graphix-package-array",
     "stdlib/graphix-package-fs",
