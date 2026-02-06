@@ -1,10 +1,8 @@
 use anyhow::Result;
+use arcstr::ArcStr;
 use async_trait::async_trait;
-use graphix_compiler::{
-    env::Env,
-    expr::{ExprId, ModuleResolver},
-    ExecCtx,
-};
+use fxhash::FxHashMap;
+use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_value::Value;
 use std::{any::Any, path::Path};
@@ -30,7 +28,7 @@ pub trait CustomDisplay<X: GXExt>: Any {
 }
 
 /// Trait implemented by Graphix packages
-pub trait Package<X: GXExt>: Any {
+pub trait Package<X: GXExt> {
     /// register builtins and return a resolver containing Graphix
     /// code contained in the package.
     ///
@@ -38,20 +36,14 @@ pub trait Package<X: GXExt>: Any {
     /// path must be the name of the package. If this isn't the case
     /// then the package will be rejected by the shell, and a warning
     /// will be printed to the user.
-    fn register(&mut self, ctx: ExecCtx<GXRt<X>, X::UserEvent>)
-        -> Result<ModuleResolver>;
+    fn register(
+        ctx: ExecCtx<GXRt<X>, X::UserEvent>,
+        modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
+    ) -> Result<()>;
 
     /// Return true if the `CompExp` matches the custom display type
     /// of this package.
-    ///
-    /// By default this method always returns false,
-    /// indicating that the package has no custom display mode. If you
-    /// choose to implement this method then you must also implement
-    /// `init_custom`.
-    #[allow(unused)]
-    fn is_custom(&mut self, gx: &GXHandle<X>, env: &Env, e: &CompExp<X>) -> bool {
-        false
-    }
+    fn is_custom(gx: &GXHandle<X>, env: &Env, e: &CompExp<X>) -> bool;
 
     /// Build and return a `CustomDisplay` instance which will be used
     /// to display the `CompExp` `e`.
@@ -60,19 +52,12 @@ pub trait Package<X: GXExt>: Any {
     /// user closed the last gui window), then the stop channel should
     /// be triggered, and the shell will call `CustomDisplay::clear`
     /// before dropping the `CustomDisplay`.
-    ///
-    /// By default this method will panic. If you implement this
-    /// method, you must also implement `is_custom`
-    #[allow(unused)]
     fn init_custom(
-        &mut self,
         gx: &GXHandle<X>,
         env: &Env,
         stop: oneshot::Sender<()>,
         e: &CompExp<X>,
-    ) -> Result<Box<dyn CustomDisplay<X>>> {
-        unreachable!()
-    }
+    ) -> Result<Box<dyn CustomDisplay<X>>>;
 }
 
 /// Create a new graphix package

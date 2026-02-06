@@ -15,7 +15,10 @@ categories = ["network-programming", "compilers", "gui"]
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
 graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
 anyhow = { workspace = true }
+netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 handlebars = { workspace = true }
+arcstr = { workspace = true }
+fxhash = { workspace = true }

@@ -7,9 +7,14 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-syn = "2"
-quote = "1"
-proc-macro2 = "1"
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
 cargo_toml = { workspace = true }
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
-const_format = { workspace = true }
+fxhash = { workspace = true }
+parking_lot = { workspace = true }
+netidx-core = { workspace = true }
+poolshark = { workspace = true }
+arcstr = { workspace = true }
+walkdir = { workspace = true }
