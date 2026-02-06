@@ -1593,3 +1593,97 @@ proptest! {
         assert!(check(&s, &e))
     }
 }
+
+mod tree_sitter_compat {
+    use super::*;
+
+    fn find_tree_error(node: tree_sitter::Node, source: &str) -> Option<String> {
+        if node.is_error() {
+            return Some(format!(
+                "ERROR at {}:{}: {:?}",
+                node.start_position().row,
+                node.start_position().column,
+                &source[node.byte_range()]
+            ));
+        }
+        if node.is_missing() {
+            return Some(format!(
+                "MISSING {} at {}:{}",
+                node.kind(),
+                node.start_position().row,
+                node.start_position().column
+            ));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(err) = find_tree_error(child, source) {
+                return Some(err);
+            }
+        }
+        None
+    }
+
+    fn assert_ts_parses(source: &str) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_graphix::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        if let Some(err) = find_tree_error(tree.root_node(), source) {
+            panic!(
+                "tree-sitter: {err}\n\nSource:\n{source}\n\nTree:\n{}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn ts_expr0(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_expr1(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_expr2(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_expr3(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp0(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp1(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp2(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp3(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+    }
+}

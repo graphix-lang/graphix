@@ -49,3 +49,5 @@ uuid = { workspace = true }
 proptest = "1"
 env_logger = "0.11"
 rust_decimal = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-graphix = { workspace = true }

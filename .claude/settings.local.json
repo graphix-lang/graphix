@@ -36,7 +36,10 @@
       "Bash(git -C /home/eric/proj/graphix log --oneline --all -20)",
       "Bash(npm install)",
       "Bash(tree-sitter:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:rfdonnelly.github.io)"
     ],
     "deny": [],
     "ask": []
