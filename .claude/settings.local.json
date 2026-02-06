@@ -94,7 +94,8 @@
       "Bash(git rebase:*)",
       "Bash(git show:*)",
       "Bash(git rm:*)",
-      "Bash(GIT_EDITOR=true git rebase --continue)"
+      "Bash(GIT_EDITOR=true git rebase --continue)",
+      "WebFetch(domain:rfdonnelly.github.io)"
     ],
     "deny": [],
     "ask": []

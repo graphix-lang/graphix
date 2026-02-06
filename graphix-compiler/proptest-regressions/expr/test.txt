@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e11391597494dd2220e9d535769eb2c84f1dcc0e996283b740407c163e0c9399 # shrinks to s = Expr { id: ExprId(3518), ori: Origin { parent: None, source: Unspecified, text: "" }, pos: SourcePosition { line: 1, column: 1 }, kind: And { lhs: Expr { id: ExprId(3514), ori: Origin { parent: None, source: Unspecified, text: "" }, pos: SourcePosition { line: 1, column: 1 }, kind: Constant(U64(1512481157920)) }, rhs: Expr { id: ExprId(3517), ori: Origin { parent: None, source: Unspecified, text: "" }, pos: SourcePosition { line: 1, column: 1 }, kind: ArraySlice { source: Expr { id: ExprId(3515), ori: Origin { parent: None, source: Unspecified, text: "" }, pos: SourcePosition { line: 1, column: 1 }, kind: Constant(Error(U64(8650137346819271985))) }, start: Some(Expr { id: ExprId(3516), ori: Origin { parent: None, source: Unspecified, text: "" }, pos: SourcePosition { line: 1, column: 1 }, kind: Constant(Error(DateTime(+156599-08-14T05:27:16.933253395Z))) }), end: None } } } }
