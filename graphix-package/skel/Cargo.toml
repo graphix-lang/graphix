@@ -1,7 +1,7 @@
 [package]
 name = "graphix-package-{{name}}"
 version = "0.1.0"
-authors = ["{{user}} <{{user}}@dompain.net>"]
+authors = ["you <you@dompain.net>"]
 edition = "2024"
 homepage = "https://your-homepage.net"
 repository = "https://github.com/{{user}}/graphix-package-{{name}}"

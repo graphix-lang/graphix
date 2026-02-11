@@ -92,9 +92,18 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     hb.register_template_string("mod.gx", MOD_GX)?;
     hb.register_template_string("mod.gxi", MOD_GXI)?;
     hb.register_template_string("README.md", README_MD)?;
+    let name = name.strip_prefix("graphix-package-").unwrap();
     let params = json!({
         "version": env!("CARGO_PKG_VERSION"),
-
+        "name": name,
+        "deps": []
     });
-    todo!()
+    fs::write(full_path.join("Cargo.toml"), hb.render("Cargo.toml", &params)?).await?;
+    fs::write(full_path.join("README.md"), hb.render("README.md", &params)?).await?;
+    let src = full_path.join("src");
+    fs::write(src.join("lib.rs"), hb.render("lib.rs", &params)?).await?;
+    let graphix_src = src.join("graphix");
+    fs::write(&graphix_src.join("mod.gx"), hb.render("mod.gx", &params)?).await?;
+    fs::write(&graphix_src.join("mod.gxi"), hb.render("mod.gxi", &params)?).await?;
+    Ok(())
 }
