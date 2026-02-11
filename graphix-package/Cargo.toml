@@ -12,6 +12,7 @@ license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
 
 [dependencies]
+dirs = { workspace = true }
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
 graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
 anyhow = { workspace = true }
@@ -23,3 +24,4 @@ handlebars = { workspace = true }
 arcstr = { workspace = true }
 fxhash = { workspace = true }
 serde_json = { workspace = true }
+which = { workspace = true }

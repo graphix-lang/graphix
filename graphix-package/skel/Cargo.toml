@@ -30,6 +30,3 @@ tokio = { version = "1", features = [
     "io-std",
 ] }
 async-trait = "0.1"
-{{#each deps}}
-  {{this.name}} = "{{this.version}}"
-{{/each}}
