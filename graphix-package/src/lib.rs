@@ -1,14 +1,24 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
+use crates_io_api::AsyncClient;
 use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use handlebars::Handlebars;
 use netidx_value::Value;
 use serde_json::json;
-use std::{any::Any, path::Path};
-use tokio::{fs, sync::oneshot};
+use std::{
+    any::Any,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
+use tokio::{
+    fs,
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    sync::oneshot,
+};
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
@@ -62,6 +72,8 @@ pub trait Package<X: GXExt> {
     ) -> Result<Box<dyn CustomDisplay<X>>>;
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Create a new graphix package
 ///
 /// The package will be created in a new directory named
@@ -94,7 +106,7 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     hb.register_template_string("README.md", README_MD)?;
     let name = name.strip_prefix("graphix-package-").unwrap();
     let params = json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": VERSION,
         "name": name,
         "deps": []
     });
@@ -106,4 +118,58 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     fs::write(&graphix_src.join("mod.gx"), hb.render("mod.gx", &params)?).await?;
     fs::write(&graphix_src.join("mod.gxi"), hb.render("mod.gxi", &params)?).await?;
     Ok(())
+}
+
+async fn extract_local_source(
+    cargo: &Path,
+    version: String,
+    graphix_build_dir: PathBuf,
+    graphix_dir: PathBuf,
+) -> Result<PathBuf> {
+    todo!()
+}
+
+async fn maybe_extract_local_source(cargo: &Path) -> Result<PathBuf> {
+    let graphix = which::which("graphix").context("can't find the graphix command")?;
+    let version = {
+        let mut c =
+            Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
+        BufReader::new(c.stdout.take().unwrap())
+            .lines()
+            .next_line()
+            .await?
+            .ok_or_else(|| anyhow!("graphix did not return a version"))?
+    };
+    let graphix_build_dir = dirs::data_local_dir()
+        .ok_or_else(|| anyhow!("can't find your data dir"))?
+        .join("graphix")
+        .join("build");
+    let graphix_dir = graphix_build_dir.join(format!("graphix-shell-{version}"));
+    match fs::metadata(&graphix_build_dir).await {
+        Err(_) => fs::create_dir_all(&graphix_build_dir).await?,
+        Ok(md) if !md.is_dir() => bail!("{graphix_build_dir:?} isn't a directory"),
+        Ok(_) => (),
+    }
+    match fs::metadata(&graphix_dir).await {
+        Err(_) => {
+            extract_local_source(cargo, version, graphix_build_dir, graphix_dir).await
+        }
+        Ok(md) if !md.is_dir() => bail!("{graphix_dir:?} isn't a directory"),
+        Ok(_) => Ok(graphix_dir),
+    }
+}
+
+/// The Graphix package manager
+pub struct GraphixPM {
+    cratesio: AsyncClient,
+    cargo: PathBuf,
+    local_src: PathBuf,
+}
+
+impl GraphixPM {
+    async fn new() -> Result<Self> {
+        let cargo = which::which("cargo").context("can't find the cargo command")?;
+
+        todo!()
+    }
 }

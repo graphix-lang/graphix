@@ -21,7 +21,10 @@ pub(crate) struct Cdc<X: GXExt> {
     pub custom: Box<dyn CustomDisplay<X>>
 }
 
-pub(crate) fn maybe_init_custom<X: GXExt>(gx: &GXHandle<X>, env: &Env, e: &CompExp<X>) -> Option<Result<Cdc<X>>> {
+pub(crate) fn maybe_init_custom<X: GXExt>(
+    gx: &GXHandle<X>,
+    env: &Env, e: &CompExp<X>
+) -> Option<Result<Cdc<X>>> {
     {{#each deps}}
         if {{this}}::P::is_custom(gx, env, e) {
             let (tx, rx) = oneshot::channel();
