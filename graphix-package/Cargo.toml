@@ -22,3 +22,4 @@ async-trait = { workspace = true }
 handlebars = { workspace = true }
 arcstr = { workspace = true }
 fxhash = { workspace = true }
+serde_json = { workspace = true }

@@ -1,12 +1,14 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
+use handlebars::Handlebars;
 use netidx_value::Value;
+use serde_json::json;
 use std::{any::Any, path::Path};
-use tokio::sync::oneshot;
+use tokio::{fs, sync::oneshot};
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
@@ -71,5 +73,28 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     static MOD_GX: &str = include_str!("../skel/mod.gx");
     static MOD_GXI: &str = include_str!("../skel/mod.gxi");
     static README_MD: &str = include_str!("../skel/README.md");
+    if !fs::metadata(base).await?.is_dir() {
+        bail!("base path {base:?} does not exist, or is not a directory")
+    }
+    if name.contains(|c: char| c != '-' && !c.is_ascii_alphanumeric())
+        || !name.starts_with("graphix-package-")
+    {
+        bail!("invalid package name, name must match graphix-package-[-a-z]+")
+    }
+    let full_path = base.join(name);
+    if fs::metadata(&full_path).await.is_ok() {
+        bail!("package {name} already exists")
+    }
+    fs::create_dir_all(&full_path.join("src").join("graphix")).await?;
+    let mut hb = Handlebars::new();
+    hb.register_template_string("Cargo.toml", CARGO_TOML)?;
+    hb.register_template_string("lib.rs", LIB_RS)?;
+    hb.register_template_string("mod.gx", MOD_GX)?;
+    hb.register_template_string("mod.gxi", MOD_GXI)?;
+    hb.register_template_string("README.md", README_MD)?;
+    let params = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+
+    });
     todo!()
 }

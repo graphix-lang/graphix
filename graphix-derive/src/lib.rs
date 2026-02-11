@@ -152,7 +152,7 @@ fn graphix_files() -> Vec<TokenStream> {
 fn register_builtins(builtins: &[syn::Path]) -> Vec<TokenStream> {
     let package_name = &*PACKAGE_NAME;
     builtins.iter().map(|p| quote! {
-        if #p::NAME.contains(|c| c != '_' && !c.is_ascii_alphanumeric()) {
+        if #p::NAME.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
             bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", #p::NAME)
         }
         if !#p::NAME.starts_with(#package_name) {
