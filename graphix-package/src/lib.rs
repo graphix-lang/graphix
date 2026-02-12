@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
+use compact_str::{format_compact, CompactString};
 use crates_io_api::AsyncClient;
 use flate2::bufread::MultiGzDecoder;
 use fxhash::FxHashMap;
@@ -76,7 +77,26 @@ pub trait Package<X: GXExt> {
     ) -> Result<Box<dyn CustomDisplay<X>>>;
 }
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+// package skeleton, our version, and deps template
+struct Skel {
+    version: &'static str,
+    cargo_toml: &'static str,
+    deps_rs: &'static str,
+    lib_rs: &'static str,
+    mod_gx: &'static str,
+    mod_gxi: &'static str,
+    readme_md: &'static str,
+}
+
+static SKEL: Skel = Skel {
+    version: env!("CARGO_PKG_VERSION"),
+    cargo_toml: include_str!("../skel/Cargo.toml"),
+    deps_rs: include_str!("../skel/deps.rs"),
+    lib_rs: include_str!("../skel/lib.rs"),
+    mod_gx: include_str!("../skel/mod.gx"),
+    mod_gxi: include_str!("../skel/mod.gxi"),
+    readme_md: include_str!("../skel/README.md"),
+};
 
 /// Create a new graphix package
 ///
@@ -84,11 +104,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `graphix-package-{name}` inside the directory `base`. If base is not a
 /// directory the function will fail.
 pub async fn create_package(base: &Path, name: &str) -> Result<()> {
-    static CARGO_TOML: &str = include_str!("../skel/Cargo.toml");
-    static LIB_RS: &str = include_str!("../skel/lib.rs");
-    static MOD_GX: &str = include_str!("../skel/mod.gx");
-    static MOD_GXI: &str = include_str!("../skel/mod.gxi");
-    static README_MD: &str = include_str!("../skel/README.md");
     if !fs::metadata(base).await?.is_dir() {
         bail!("base path {base:?} does not exist, or is not a directory")
     }
@@ -103,14 +118,14 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     }
     fs::create_dir_all(&full_path.join("src").join("graphix")).await?;
     let mut hb = Handlebars::new();
-    hb.register_template_string("Cargo.toml", CARGO_TOML)?;
-    hb.register_template_string("lib.rs", LIB_RS)?;
-    hb.register_template_string("mod.gx", MOD_GX)?;
-    hb.register_template_string("mod.gxi", MOD_GXI)?;
-    hb.register_template_string("README.md", README_MD)?;
+    hb.register_template_string("Cargo.toml", SKEL.cargo_toml)?;
+    hb.register_template_string("lib.rs", SKEL.lib_rs)?;
+    hb.register_template_string("mod.gx", SKEL.mod_gx)?;
+    hb.register_template_string("mod.gxi", SKEL.mod_gxi)?;
+    hb.register_template_string("README.md", SKEL.readme_md)?;
     let name = name.strip_prefix("graphix-package-").unwrap();
     let params = json!({
-        "version": VERSION,
+        "version": SKEL.version,
         "name": name,
         "deps": []
     });
@@ -248,6 +263,32 @@ async fn download_source(crates_io: &AsyncClient) -> Result<PathBuf> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PackageId {
+    name: CompactString,
+    version: Option<CompactString>,
+}
+
+impl PackageId {
+    pub fn new(name: &str, version: Option<&str>) -> Self {
+        let name = if name.starts_with("graphix-package-") {
+            CompactString::from(name)
+        } else {
+            format_compact!("graphix-package-{name}")
+        };
+        let version = version.map(CompactString::from);
+        Self { name, version }
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.strip_prefix("graphix-package-").unwrap()
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_ref().map(|s| s.as_str())
+    }
+}
+
 /// The Graphix package manager
 pub struct GraphixPM {
     cratesio: AsyncClient,
@@ -257,7 +298,7 @@ pub struct GraphixPM {
 
 impl GraphixPM {
     /// Create a new package manager
-    async fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let cargo = which::which("cargo").context("can't find the cargo command")?;
         let cratesio = AsyncClient::new(
             "Graphix Package Manager <eestokes@pm.me>",
@@ -271,5 +312,19 @@ impl GraphixPM {
             },
         };
         Ok(Self { cratesio, cargo, local_src })
+    }
+
+    /// Build a new graphix runtime with additional packages included
+    ///
+    /// Packages already built in will be ignored, packages with different
+    /// versions be updated to the newly specified version.
+    ///
+    /// If there are any changes the graphix runtime will be rebuilt and
+    /// reinstalled. You must restart graphix shell instances in order to use
+    /// the new packages. The previous runtime will be saved as
+    /// graphix-previous-{date}. Runtimes older than a week will be cleaned up
+    /// by the shell on launch.
+    pub async fn add_packages(&self, packages: &[PackageId]) -> Result<()> {
+        todo!()
     }
 }

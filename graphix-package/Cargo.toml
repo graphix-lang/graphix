@@ -31,3 +31,4 @@ walkdir = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 reqwest = { workspace = true }
+compact_str = { workspace = true }
