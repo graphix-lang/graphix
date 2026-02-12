@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crates_io_api::AsyncClient;
+use flate2::bufread::MultiGzDecoder;
 use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
@@ -12,13 +13,16 @@ use std::{
     any::Any,
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
 use tokio::{
     fs,
     io::{AsyncBufReadExt, BufReader},
     process::Command,
     sync::oneshot,
+    task,
 };
+use walkdir::WalkDir;
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
@@ -120,21 +124,12 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn extract_local_source(
-    cargo: &Path,
-    version: String,
-    graphix_build_dir: PathBuf,
-    graphix_dir: PathBuf,
-) -> Result<PathBuf> {
-    todo!()
-}
-
-async fn maybe_extract_local_source(cargo: &Path) -> Result<PathBuf> {
+// fetch our source from the local cargo cache (preferred method)
+async fn extract_local_source(cargo: &Path) -> Result<PathBuf> {
     let graphix = which::which("graphix").context("can't find the graphix command")?;
     let version = {
-        let mut c =
-            Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
-        BufReader::new(c.stdout.take().unwrap())
+        let c = Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
+        BufReader::new(c.stdout.unwrap())
             .lines()
             .next_line()
             .await?
@@ -151,11 +146,105 @@ async fn maybe_extract_local_source(cargo: &Path) -> Result<PathBuf> {
         Ok(_) => (),
     }
     match fs::metadata(&graphix_dir).await {
-        Err(_) => {
-            extract_local_source(cargo, version, graphix_build_dir, graphix_dir).await
-        }
         Ok(md) if !md.is_dir() => bail!("{graphix_dir:?} isn't a directory"),
         Ok(_) => Ok(graphix_dir),
+        Err(_) => {
+            let package = format!("graphix-shell-{version}");
+            let cargo_root =
+                cargo.parent().ok_or_else(|| anyhow!("can't find cargo root"))?;
+            let cargo_src = cargo_root.join("registry").join("src");
+            match fs::metadata(&cargo_src).await {
+                Ok(md) if md.is_dir() => (),
+                Err(_) | Ok(_) => bail!("can't find cargo cache"),
+            };
+            let r = task::spawn_blocking({
+                let graphix_dir = graphix_dir.clone();
+                move || -> Result<()> {
+                    let src_path = WalkDir::new(&cargo_src)
+                        .max_depth(2)
+                        .into_iter()
+                        .find_map(|e| {
+                            let e = e.ok()?;
+                            if e.file_type().is_dir() && e.path().ends_with(&package) {
+                                return Some(e.into_path());
+                            }
+                            None
+                        })
+                        .ok_or_else(|| {
+                            anyhow!("graphix-shell-{version} in {cargo_src:?}")
+                        })?;
+                    cp_r::CopyOptions::new().copy_tree(&src_path, graphix_dir)?;
+                    Ok(())
+                }
+            })
+            .await?;
+            match r {
+                Ok(()) => Ok(graphix_dir),
+                Err(e) => {
+                    // clean up partial copy, if necessary
+                    fs::remove_dir_all(&graphix_dir).await?;
+                    Err(e)
+                }
+            }
+        }
+    }
+}
+
+// download our src from crates.io (backup method)
+async fn download_source(crates_io: &AsyncClient) -> Result<PathBuf> {
+    let graphix = which::which("graphix").context("can't find the graphix command")?;
+    let version = {
+        let c = Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
+        BufReader::new(c.stdout.unwrap())
+            .lines()
+            .next_line()
+            .await?
+            .ok_or_else(|| anyhow!("graphix did not return a version"))?
+    };
+    let package = format!("graphix-shell-{version}");
+    let graphix_build_dir = dirs::data_local_dir()
+        .ok_or_else(|| anyhow!("can't find your data dir"))?
+        .join("graphix")
+        .join("build");
+    let graphix_dir = graphix_build_dir.join(&package);
+    match fs::metadata(&graphix_build_dir).await {
+        Err(_) => fs::create_dir_all(&graphix_build_dir).await?,
+        Ok(md) if !md.is_dir() => bail!("{graphix_build_dir:?} isn't a directory"),
+        Ok(_) => (),
+    }
+    match fs::metadata(&graphix_dir).await {
+        Ok(md) if !md.is_dir() => bail!("{graphix_dir:?} isn't a directory"),
+        Ok(_) => Ok(graphix_dir),
+        Err(_) => {
+            let cr = crates_io.get_crate("graphix-shell").await?;
+            let cr_version =
+                cr.versions.into_iter().find(|v| v.num == version).ok_or_else(|| {
+                    anyhow!("can't find version {version} on crates.io")
+                })?;
+            let crate_data_tar_gz =
+                reqwest::get(&cr_version.dl_path).await?.bytes().await?;
+            let r = task::spawn_blocking({
+                let graphix_dir = graphix_dir.clone();
+                move || -> Result<()> {
+                    use std::io::Read;
+                    let mut crate_data_tar = vec![];
+                    MultiGzDecoder::new(&crate_data_tar_gz[..])
+                        .read_to_end(&mut crate_data_tar)?;
+                    std::fs::create_dir_all(&graphix_dir)?;
+                    tar::Archive::new(&mut &crate_data_tar[..]).unpack(&graphix_dir)?;
+                    Ok(())
+                }
+            })
+            .await?;
+            match r {
+                Ok(()) => Ok(graphix_dir),
+                Err(e) => {
+                    // clean up the failed unpack, if necessary
+                    fs::remove_dir_all(&graphix_dir).await?;
+                    Err(e)
+                }
+            }
+        }
     }
 }
 
@@ -167,9 +256,20 @@ pub struct GraphixPM {
 }
 
 impl GraphixPM {
+    /// Create a new package manager
     async fn new() -> Result<Self> {
         let cargo = which::which("cargo").context("can't find the cargo command")?;
-
-        todo!()
+        let cratesio = AsyncClient::new(
+            "Graphix Package Manager <eestokes@pm.me>",
+            Duration::from_secs(1),
+        )?;
+        let local_src = match extract_local_source(&cargo).await {
+            Ok(p) => p,
+            Err(local) => match download_source(&cratesio).await {
+                Ok(p) => p,
+                Err(dl) => bail!("could not find our source local: {local}, dl: {dl}"),
+            },
+        };
+        Ok(Self { cratesio, cargo, local_src })
     }
 }
