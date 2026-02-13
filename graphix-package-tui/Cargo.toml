@@ -1,0 +1,37 @@
+[package]
+name = "graphix-package-tui"
+version = "0.3.1"
+authors = ["Eric Stokes <letaris@gmail.com>"]
+edition = "2024"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, TUI package"
+documentation = "https://docs.rs/graphix-package-tui"
+readme = "../README.md"
+license = "MIT"
+categories = ["network-programming", "compilers", "gui"]
+
+[features]
+default = []
+krb5_iov = ["netidx/krb5_iov"]
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+async-trait = { workspace = true }
+crossterm = { workspace = true }
+fxhash = { workspace = true }
+futures = { workspace = true }
+graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
+graphix-derive = { version = "0.1.0", path = "../graphix-derive" }
+graphix-package = { version = "0.3.1", path = "../graphix-package" }
+graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
+log = { workspace = true }
+netidx = { workspace = true }
+netidx-core = { workspace = true }
+ratatui = { workspace = true }
+reedline = { workspace = true }
+smallvec = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+triomphe = { workspace = true }

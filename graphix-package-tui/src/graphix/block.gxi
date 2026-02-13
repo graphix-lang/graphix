@@ -1,0 +1,67 @@
+type Border = [
+  `Top,
+  `Right,
+  `Bottom,
+  `Left
+];
+
+type BorderType = [
+  `Plain,
+  `Rounded,
+  `Double,
+  `Thick,
+  `QuadrantInside,
+  `QuadrantOutside
+];
+
+type Padding = {
+  bottom: i64,
+  left: i64,
+  right: i64,
+  top: i64
+};
+
+type Position = [
+  `Top,
+  `Bottom
+];
+
+type MergeStrategy = [
+    `Replace,
+    `Exact,
+    `Fuzzy
+];
+
+type Block = {
+  border: &[Array<Border>, `All, `None, null],
+  border_style: &[Style, null],
+  border_type: &[BorderType, null],
+  child: &Tui,
+  merge_borders: &[MergeStrategy, null],
+  padding: &[Padding, null],
+  size: &[Size, null],
+  style: &[Style, null],
+  title: &[Line, null],
+  title_alignment: &[Alignment, null],
+  title_bottom: &[Line, null],
+  title_position: &[Position, null],
+  title_style: &[Style, null],
+  title_top: &[Line, null]
+};
+
+val block: fn(
+  ?#border: &[Array<Border>, `All, `None, null],
+  ?#border_type: &[BorderType, null],
+  ?#border_style: &[Style, null],
+  ?#merge_borders: &[MergeStrategy, null],
+  ?#padding: &[Padding, null],
+  ?#style: &[Style, null],
+  ?#title: &[Line, null],
+  ?#title_top: &[Line, null],
+  ?#title_bottom: &[Line, null],
+  ?#title_style: &[Style, null],
+  ?#title_position: &[Position, null],
+  ?#title_alignment: &[Alignment, null],
+  ?#size: &[Size, null],
+  &Tui
+) -> Tui;

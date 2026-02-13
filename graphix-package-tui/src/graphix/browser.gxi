@@ -1,0 +1,21 @@
+use tui::table;
+
+type MoveCursor = [
+    `Left(i64),
+    `Right(i64),
+    `Up(i64),
+    `Down(i64)
+];
+
+val browser: fn(
+    ?#selected_style: Style,
+    ?#header_style: Style,
+    ?#style: Style,
+    ?#cursor: MoveCursor,
+    ?#selected_row: &string,
+    ?#selected_path: &string,
+    ?#flex: Flex,
+    ?#rate: duration,
+    #size: Size,
+    string
+) -> Tui throws Error<ErrChain<`ArithError(string)>>;

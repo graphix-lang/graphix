@@ -1,0 +1,19 @@
+let list = |
+  #highlight_spacing: &[HighlightSpacing, null] = &null,
+  #highlight_style: &[Style, null] = &null,
+  #highlight_symbol: &[string, null] = &null,
+  #repeat_highlight_symbol: &[bool, null] = &null,
+  #scroll: &[i64, null] = &null,
+  #selected: &[i64, null] = &null,
+  #style: &[Style, null] = &null,
+  items: &Array<Line>
+| -> Tui `List({
+  highlight_spacing,
+  highlight_style,
+  highlight_symbol,
+  items,
+  repeat_highlight_symbol,
+  scroll,
+  selected,
+  style
+})

@@ -1,0 +1,20 @@
+let sparkline_bar = |
+  #style: [Style, null] = null,
+  value: [f64, null]
+| -> SparklineBar { style, value };
+
+let sparkline = |
+  #absent_value_style: &[Style, null] = &null,
+  #absent_value_symbol: &[string, null] = &null,
+  #direction: &[RenderDirection, null] = &null,
+  #max: &[i64, null] = &null,
+  #style: &[Style, null] = &null,
+  data: &Array<[SparklineBar, f64, null]>
+| -> Tui `Sparkline({
+  absent_value_symbol,
+  absent_value_style,
+  data,
+  direction,
+  max,
+  style
+})

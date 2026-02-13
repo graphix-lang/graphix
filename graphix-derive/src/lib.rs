@@ -194,29 +194,33 @@ fn register_builtins(builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
 }
 
 fn check_args(name: &str, mut req: Vec<&'static str>, args: &Punctuated<Pat, Comma>) {
+    fn check_arg(name: &str, req: &mut Vec<&'static str>, pat: &Pat) {
+        if req.is_empty() {
+            panic!("{name} unexpected argument")
+        }
+        match pat {
+            Pat::Ident(i) => {
+                if &i.ident.to_string() == &req[0] {
+                    req.remove(0);
+                } else {
+                    panic!("{name} expected arguments {req:?}")
+                }
+            }
+            _ => panic!("{name} expected arguments {req:?}"),
+        }
+    }
     for arg in args.pairs() {
         match arg {
-            Pair::End(_) => {
-                if !req.is_empty() {
-                    panic!("{name} missing required arguments {req:?}")
-                }
+            Pair::End(i) => {
+                check_arg(name, &mut req, i);
             }
             Pair::Punctuated(i, _) => {
-                if req.is_empty() {
-                    panic!("{name} unexpected argument")
-                }
-                match i {
-                    Pat::Ident(i) => {
-                        if &i.ident.to_string() == &req[0] {
-                            req.remove(0);
-                        } else {
-                            panic!("{name} expected arguments {req:?}")
-                        }
-                    }
-                    _ => panic!("{name} expected arguments {req:?}"),
-                }
+                check_arg(name, &mut req, i);
             }
         }
+    }
+    if !req.is_empty() {
+        panic!("{name} missing required arguments {req:?}")
     }
 }
 
@@ -278,7 +282,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 gx: &::graphix_rt::GXHandle<X>,
                 env: &::graphix_compiler::env::Env,
                 stop: ::tokio::sync::oneshot::Sender<()>,
-                e: &::graphix_rt::CompExp<X>,
+                e: ::graphix_rt::CompExp<X>,
             ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
                 #init_custom
             }

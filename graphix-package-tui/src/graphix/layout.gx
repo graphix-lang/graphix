@@ -1,0 +1,29 @@
+let child = |
+  #size: &[Size, null] = &null,
+  #constraint: Constraint,
+  child: Tui
+| -> Child {
+  child,
+  constraint,
+  size
+};
+
+let layout = |
+  #direction: &[Direction, null] = &null,
+  #flex: &[Flex, null] = &null,
+  #focused: &[i64, null] = &null,
+  #horizontal_margin: &[i64, null] = &null,
+  #margin: &[i64, null] = &null,
+  #spacing: &[Spacing, null] = &null,
+  #vertical_margin: &[i64, null] = &null,
+  children: &Array<Child>
+| -> Tui `Layout({
+  direction,
+  flex,
+  focused,
+  horizontal_margin,
+  margin,
+  spacing,
+  vertical_margin,
+  children
+})

@@ -101,5 +101,6 @@ members = [
     "graphix-package-re",
     "graphix-package-str",
     "graphix-package-time",
+    "graphix-package-tui",
     "graphix-derive"
 ]

@@ -73,7 +73,7 @@ pub trait Package<X: GXExt> {
         gx: &GXHandle<X>,
         env: &Env,
         stop: oneshot::Sender<()>,
-        e: &CompExp<X>,
+        e: CompExp<X>,
     ) -> Result<Box<dyn CustomDisplay<X>>>;
 }
 
