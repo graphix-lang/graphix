@@ -31,4 +31,7 @@ walkdir = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 reqwest = { workspace = true }
+chrono = { workspace = true }
 compact_str = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }

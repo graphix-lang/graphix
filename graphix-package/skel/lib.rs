@@ -4,7 +4,7 @@ use graphix_compiler::{
 };
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
-use netidx::publisher::Value;
+use netidx_value::Value;
 use std::boxed::Box;
 
 #[derive(Debug)]
@@ -63,11 +63,11 @@ impl EvalCached for ExampleCachedEv {
     }
 }
 
-type ExampleCachedBuiltin = CachedArgs<ExampleCachedEv>;
+type ExampleCached = CachedArgs<ExampleCachedEv>;
 
 defpackage! {
     builtins => [
         ExampleBuiltin,
-        ExampleCachedBuiltin,
+        ExampleCached,
     ]
 }

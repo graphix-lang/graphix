@@ -1,7 +1,7 @@
 [package]
 name = "graphix-package-{{name}}"
 version = "0.1.0"
-authors = ["you <you@dompain.net>"]
+authors = ["you <you@domain.net>"]
 edition = "2024"
 homepage = "https://your-homepage.net"
 repository = "https://github.com/{{user}}/graphix-package-{{name}}"
@@ -13,10 +13,16 @@ categories = []
 
 [dependencies]
 graphix-package = "{{version}}"
+graphix-package-core = "{{version}}"
 graphix-compiler = "{{version}}"
+graphix-derive = "{{version}}"
 graphix-rt = "{{version}}"
 anyhow = "1"
-netidx-value = "0.31.3"
+arcstr = "1"
+compact_str = "0.8"
+fxhash = "0.2"
+netidx-core = "0.31"
+netidx-value = "0.31"
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "net",
@@ -29,4 +35,5 @@ tokio = { version = "1", features = [
     "signal",
     "io-std",
 ] }
+triomphe = "0.1"
 async-trait = "0.1"
