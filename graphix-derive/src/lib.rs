@@ -256,7 +256,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let graphix_files = graphix_files();
 
     quote! {
-        struct P;
+        pub struct P;
 
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(

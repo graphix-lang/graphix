@@ -1,63 +1,53 @@
 use anyhow::{bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
+use fxhash::FxHashMap;
 use graphix_compiler::{
     env::Env,
-    expr::{CouldNotResolve, ExprId, ModPath, ModuleResolver, Source},
+    expr::{CouldNotResolve, ExprId, ModuleResolver, Source},
     format_with_flags,
-    typ::{TVal, Type},
+    typ::TVal,
     CFlag, ExecCtx, PrintFlag,
 };
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
-use graphix_stdlib::Module;
 use input::InputReader;
 use netidx::{
-    path::Path,
     publisher::{Publisher, Value},
     subscriber::Subscriber,
 };
 use poolshark::global::GPooled;
 use reedline::Signal;
-use std::{collections::HashMap, process::exit, sync::LazyLock, time::Duration};
+use std::{marker::PhantomData, process::exit, time::Duration};
 use tokio::{select, sync::mpsc};
-use triomphe::Arc;
-use tui::Tui;
 
 mod completion;
+mod deps;
 mod input;
-mod tui;
-
-const TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {
-    scope: ModPath::root(),
-    name: ModPath::from(["tui", "Tui"]),
-    params: Arc::from_iter([]),
-});
 
 enum Output<X: GXExt> {
     None,
     EmptyScript,
-    Tui(Tui<X>),
+    Custom(deps::Cdc<X>),
     Text(CompExp<X>),
 }
 
 impl<X: GXExt> Output<X> {
     fn from_expr(gx: &GXHandle<X>, env: &Env, e: CompExp<X>) -> Self {
-        if let Some(typ) = e.typ.with_deref(|t| t.cloned())
-            && typ != Type::Bottom
-            && typ != Type::Any
-            && TUITYP.contains(env, &typ).unwrap()
-        {
-            Self::Tui(Tui::start(gx, env.clone(), e))
-        } else {
-            Self::Text(e)
+        match deps::maybe_init_custom(gx, env, e) {
+            Err(e) => {
+                eprintln!("error initializing custom display: {e:?}");
+                Self::None
+            }
+            Ok(deps::CustomResult::Custom(cdc)) => Self::Custom(cdc),
+            Ok(deps::CustomResult::NotCustom(e)) => Self::Text(e),
         }
     }
 
     async fn clear(&mut self) {
         match self {
             Self::None | Self::Text(_) | Self::EmptyScript => (),
-            Self::Tui(tui) => tui.stop().await,
+            Self::Custom(cdc) => cdc.custom.clear().await,
         }
         *self = Self::None
     }
@@ -65,7 +55,7 @@ impl<X: GXExt> Output<X> {
     async fn process_update(&mut self, env: &Env, id: ExprId, v: Value) {
         match self {
             Self::None | Output::EmptyScript => (),
-            Self::Tui(tui) => tui.update(id, v).await,
+            Self::Custom(cdc) => cdc.custom.process_update(env, id, v).await,
             Self::Text(e) => {
                 if e.id == id {
                     println!("{}", TVal { env: &env, typ: &e.typ, v: &v })
@@ -73,53 +63,6 @@ impl<X: GXExt> Output<X> {
             }
         }
     }
-}
-
-fn tui_mods() -> ModuleResolver {
-    ModuleResolver::VFS(HashMap::from_iter([
-        (Path::from("/tui.gx"), literal!(include_str!("tui/mod.gx"))),
-        (Path::from("/tui.gxi"), literal!(include_str!("tui/mod.gxi"))),
-        (
-            Path::from("/tui/input_handler.gx"),
-            literal!(include_str!("tui/input_handler.gx")),
-        ),
-        (
-            Path::from("/tui/input_handler.gxi"),
-            literal!(include_str!("tui/input_handler.gxi")),
-        ),
-        (Path::from("/tui/text.gx"), literal!(include_str!("tui/text.gx"))),
-        (Path::from("/tui/text.gxi"), literal!(include_str!("tui/text.gxi"))),
-        (Path::from("/tui/paragraph.gx"), literal!(include_str!("tui/paragraph.gx"))),
-        (Path::from("/tui/paragraph.gxi"), literal!(include_str!("tui/paragraph.gxi"))),
-        (Path::from("/tui/block.gx"), literal!(include_str!("tui/block.gx"))),
-        (Path::from("/tui/block.gxi"), literal!(include_str!("tui/block.gxi"))),
-        (Path::from("/tui/scrollbar.gx"), literal!(include_str!("tui/scrollbar.gx"))),
-        (Path::from("/tui/scrollbar.gxi"), literal!(include_str!("tui/scrollbar.gxi"))),
-        (Path::from("/tui/layout.gx"), literal!(include_str!("tui/layout.gx"))),
-        (Path::from("/tui/layout.gxi"), literal!(include_str!("tui/layout.gxi"))),
-        (Path::from("/tui/tabs.gx"), literal!(include_str!("tui/tabs.gx"))),
-        (Path::from("/tui/tabs.gxi"), literal!(include_str!("tui/tabs.gxi"))),
-        (Path::from("/tui/barchart.gx"), literal!(include_str!("tui/barchart.gx"))),
-        (Path::from("/tui/barchart.gxi"), literal!(include_str!("tui/barchart.gxi"))),
-        (Path::from("/tui/chart.gx"), literal!(include_str!("tui/chart.gx"))),
-        (Path::from("/tui/chart.gxi"), literal!(include_str!("tui/chart.gxi"))),
-        (Path::from("/tui/sparkline.gx"), literal!(include_str!("tui/sparkline.gx"))),
-        (Path::from("/tui/sparkline.gxi"), literal!(include_str!("tui/sparkline.gxi"))),
-        (Path::from("/tui/line_gauge.gx"), literal!(include_str!("tui/line_gauge.gx"))),
-        (Path::from("/tui/line_gauge.gxi"), literal!(include_str!("tui/line_gauge.gxi"))),
-        (Path::from("/tui/gauge.gx"), literal!(include_str!("tui/gauge.gx"))),
-        (Path::from("/tui/gauge.gxi"), literal!(include_str!("tui/gauge.gxi"))),
-        (Path::from("/tui/list.gx"), literal!(include_str!("tui/list.gx"))),
-        (Path::from("/tui/list.gxi"), literal!(include_str!("tui/list.gxi"))),
-        (Path::from("/tui/table.gx"), literal!(include_str!("tui/table.gx"))),
-        (Path::from("/tui/table.gxi"), literal!(include_str!("tui/table.gxi"))),
-        (Path::from("/tui/calendar.gx"), literal!(include_str!("tui/calendar.gx"))),
-        (Path::from("/tui/calendar.gxi"), literal!(include_str!("tui/calendar.gxi"))),
-        (Path::from("/tui/canvas.gx"), literal!(include_str!("tui/canvas.gx"))),
-        (Path::from("/tui/canvas.gxi"), literal!(include_str!("tui/canvas.gxi"))),
-        (Path::from("/tui/browser.gx"), literal!(include_str!("tui/browser.gx"))),
-        (Path::from("/tui/browser.gxi"), literal!(include_str!("tui/browser.gxi"))),
-    ]))
 }
 
 #[derive(Debug, Clone)]
@@ -162,9 +105,6 @@ pub struct Shell<X: GXExt> {
     /// define module resolvers to append to the default list
     #[builder(default)]
     module_resolvers: Vec<ModuleResolver>,
-    /// enable or disable features of the standard library
-    #[builder(default = "BitFlags::all()")]
-    stdlib_modules: BitFlags<Module>,
     /// set the shell's mode
     #[builder(default = "Mode::Repl")]
     mode: Mode,
@@ -176,26 +116,6 @@ pub struct Shell<X: GXExt> {
     /// you can use netidx::InternalOnly to create an internal netidx
     /// environment
     subscriber: Subscriber,
-    /// Provide a closure to register any built-ins you wish to use.
-    ///
-    /// Your closure should register the builtins with the context and return a
-    /// string specifiying any modules you need to load in order to use them.
-    /// For example if you wish to implement a module called m containing
-    /// builtins foo and bar, then you would first implement foo and bar in rust
-    /// and register them with the context. You would add a VFS module resolver
-    /// to the set of resolvers containing prototypes that reference your rust
-    /// builtins. e.g.
-    ///
-    /// ``` ignore
-    /// pub let foo = |x, y| 'foo_builtin;
-    /// pub let bar = |x| 'bar_builtin
-    /// ```
-    ///
-    /// Your VFS resolver would map "/m" -> the above stubs. Your register
-    /// function would then return "mod m\n" to force loading the module at
-    /// startup. Then your user only needs to `use m`
-    #[builder(setter(strip_option), default)]
-    register: Option<Arc<dyn Fn(&mut ExecCtx<GXRt<X>, X::UserEvent>) -> Result<ArcStr>>>,
     /// Enable compiler flags, these will be ORed with the default set of flags
     /// for the mode.
     #[builder(default)]
@@ -204,6 +124,8 @@ pub struct Shell<X: GXExt> {
     /// (default_flags | enable_flags) - disable_flags
     #[builder(default)]
     disable_flags: BitFlags<CFlag>,
+    #[builder(setter(skip), default)]
+    _phantom: PhantomData<X>,
 }
 
 impl<X: GXExt> Shell<X> {
@@ -215,25 +137,16 @@ impl<X: GXExt> Shell<X> {
         let subscriber = self.subscriber.clone();
         let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
             .context("creating graphix context")?;
-        let (root, mods) = graphix_stdlib::register(&mut ctx, self.stdlib_modules)
-            .context("register stdlib modules")?;
-        let usermods = self
-            .register
-            .as_mut()
-            .map(|f| f(&mut ctx))
-            .transpose()
-            .context("register user modules")?;
-        let root = match usermods {
-            Some(m) => ArcStr::from(format!("{root};\nmod tui;\n{m}")),
-            None => ArcStr::from(format!("{root};\nmod tui")),
-        };
+        let mut vfs_modules = FxHashMap::default();
+        let root = deps::register::<X>(&mut ctx, &mut vfs_modules)
+            .context("register package modules")?;
         let mut flags = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
             Mode::Repl => BitFlags::empty(),
         };
         flags.insert(self.enable_flags);
         flags.remove(self.disable_flags);
-        let mut mods = vec![mods, tui_mods()];
+        let mut mods = vec![ModuleResolver::VFS(vfs_modules)];
         for res in self.module_resolvers.drain(..) {
             mods.push(res);
         }
