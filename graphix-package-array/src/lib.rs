@@ -1,19 +1,15 @@
 use anyhow::{bail, Result};
-use arcstr::ArcStr;
 use compact_str::format_compact;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
 use graphix_package_core::{
-    deftype, CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapCollection, MapFn,
-    MapQ, Slot,
+    deftype, CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
 };
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
+use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value, utils::Either};
 use netidx_value::ValArray;
 use smallvec::{smallvec, SmallVec};
@@ -711,6 +707,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.triggered = 0;
     }
 }
+
+#[cfg(test)]
+mod test;
 
 graphix_derive::defpackage! {
     builtins => [

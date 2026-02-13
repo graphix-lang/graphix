@@ -1,13 +1,10 @@
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use escaping::Escape;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     err, errf, expr::ExprId, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
 use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
@@ -778,6 +775,9 @@ impl EvalCached for ParseEv {
 }
 
 type Parse = CachedArgs<ParseEv>;
+
+#[cfg(test)]
+mod test;
 
 graphix_derive::defpackage! {
     builtins => [

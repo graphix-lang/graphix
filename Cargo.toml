@@ -29,6 +29,7 @@ const_format = "0.2"
 crates_io_api = "0.12"
 derive_builder = "0.20"
 dirs = "6"
+env_logger = "0.11"
 enumflags2 = "0.7"
 escaping = "0.2.2"
 extended-notify = "0.1.0"
@@ -90,7 +91,6 @@ members = [
     "graphix-shell",
     "graphix-compiler",
     "graphix-rt",
-    "graphix-stdlib",
     "graphix-package",
     "graphix-package-core",
     "graphix-package-array",

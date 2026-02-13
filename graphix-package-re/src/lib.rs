@@ -1,10 +1,7 @@
 use anyhow::Result;
 use arcstr::{literal, ArcStr};
-use fxhash::FxHashMap;
-use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
-use graphix_package::{CustomDisplay, Package};
+use graphix_compiler::errf;
 use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use regex::Regex;
@@ -173,6 +170,9 @@ impl EvalCached for SplitNEv {
 }
 
 type SplitN = CachedArgs<SplitNEv>;
+
+#[cfg(test)]
+mod test;
 
 graphix_derive::defpackage! {
     builtins => [

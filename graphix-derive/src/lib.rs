@@ -287,6 +287,17 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 #init_custom
             }
         }
+
+        /// Register this package's builtins for test contexts (NoExt).
+        pub fn register_test(
+            ctx: &mut ::graphix_compiler::ExecCtx<
+                ::graphix_rt::GXRt<::graphix_rt::NoExt>,
+                <::graphix_rt::NoExt as ::graphix_rt::GXExt>::UserEvent,
+            >,
+            modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
+        ) -> ::anyhow::Result<()> {
+            <P as ::graphix_package::Package<::graphix_rt::NoExt>>::register(ctx, modules)
+        }
     }
     .into()
 }

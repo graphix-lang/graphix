@@ -1,12 +1,8 @@
 use anyhow::Result;
-use arcstr::ArcStr;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     expr::ExprId, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
 use graphix_package_core::{deftype, CachedVals};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use rand::{rng, seq::SliceRandom, Rng};

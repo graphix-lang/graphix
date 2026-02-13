@@ -1,14 +1,12 @@
 use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     err, errf, expr::ExprId, node::genn, typ::Type, Apply, BindId, BuiltIn, Event,
     ExecCtx, LambdaId, Node, Rt, Scope, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
 use graphix_package_core::{arity1, arity2, deftype, CachedVals};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
+use graphix_rt::GXRt;
 use netidx::{
     path::Path,
     publisher::Val,
@@ -749,6 +747,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.f.sleep(ctx);
     }
 }
+
+#[cfg(test)]
+mod test;
 
 graphix_derive::defpackage! {
     builtins => [

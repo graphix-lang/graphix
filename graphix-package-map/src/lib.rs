@@ -1,24 +1,17 @@
-use anyhow::{bail, Result};
-use arcstr::ArcStr;
-use fxhash::FxHashMap;
+use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId,
-    typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
 use graphix_package_core::{
-    deftype, CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapCollection, MapFn,
-    MapQ, Slot,
+    deftype, CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
 };
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
+use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use triomphe::Arc as TArc;
 
 #[derive(Debug, Default)]
 struct MapImpl;
@@ -300,6 +293,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.triggered = 0;
     }
 }
+
+#[cfg(test)]
+mod test;
 
 graphix_derive::defpackage! {
     builtins => [

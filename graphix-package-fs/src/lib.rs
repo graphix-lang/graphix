@@ -1,8 +1,7 @@
-use fxhash::FxHashMap;
-use graphix_package::{CustomDisplay, Package};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
-
 mod fs;
+
+#[cfg(test)]
+mod test;
 
 graphix_derive::defpackage! {
     builtins => [

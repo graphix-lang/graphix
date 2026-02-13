@@ -1,13 +1,10 @@
 use anyhow::{bail, Result};
 use arcstr::{literal, ArcStr};
 use chrono::Utc;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     err, expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
 use graphix_package_core::{arity2, deftype, CachedVals};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx::{publisher::FromValue, subscriber::Value};
 use std::{ops::SubAssign, time::Duration};
 

@@ -1,17 +1,14 @@
 use anyhow::{bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
-use fxhash::FxHashMap;
 use graphix_compiler::{
-    env::Env,
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
     typ::{FnType, TVal, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
-use graphix_package::{CustomDisplay, Package};
-use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
+use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_core::utils::Either;
@@ -26,7 +23,7 @@ use std::{
     sync::LazyLock,
     time::Duration,
 };
-use tokio::{sync::oneshot, time::Instant};
+use tokio::time::Instant;
 use triomphe::Arc as TArc;
 
 // ── Shared macros ──────────────────────────────────────────────────
@@ -61,6 +58,14 @@ macro_rules! arity2 {
         }
     };
 }
+
+// ── Testing infrastructure ─────────────────────────────────────────
+
+#[cfg(feature = "testing")]
+pub mod testing;
+
+#[cfg(test)]
+mod test;
 
 // ── Shared traits and structs ──────────────────────────────────────
 
