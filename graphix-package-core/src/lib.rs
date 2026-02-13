@@ -12,9 +12,10 @@ use graphix_compiler::{
 };
 use graphix_package::{CustomDisplay, Package};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
+use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_core::utils::Either;
-use netidx_value::FromValue;
+use netidx_value::{FromValue, ValArray};
 use poolshark::local::LPooled;
 use std::{
     any::Any,
@@ -273,6 +274,66 @@ pub trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
 
     /// return the element type given the function type
     fn etyp(ft: &FnType) -> Result<Type>;
+}
+
+impl MapCollection for ValArray {
+    fn iter_values(&self) -> impl Iterator<Item = Value> {
+        (**self).iter().cloned()
+    }
+
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    fn select(v: Value) -> Option<Self> {
+        match v {
+            Value::Array(a) => Some(a.clone()),
+            _ => None,
+        }
+    }
+
+    fn project(self) -> Value {
+        Value::Array(self)
+    }
+
+    fn etyp(ft: &FnType) -> Result<Type> {
+        match &ft.args[0].typ {
+            Type::Array(et) => Ok((**et).clone()),
+            _ => bail!("expected array"),
+        }
+    }
+}
+
+impl MapCollection for CMap<Value, Value, 32> {
+    fn iter_values(&self) -> impl Iterator<Item = Value> {
+        self.into_iter().map(|(k, v)| {
+            Value::Array(ValArray::from_iter_exact([k.clone(), v.clone()].into_iter()))
+        })
+    }
+
+    fn len(&self) -> usize {
+        CMap::len(self)
+    }
+
+    fn select(v: Value) -> Option<Self> {
+        match v {
+            Value::Map(m) => Some(m.clone()),
+            _ => None,
+        }
+    }
+
+    fn project(self) -> Value {
+        Value::Map(self)
+    }
+
+    fn etyp(ft: &FnType) -> Result<Type> {
+        match &ft.args[0].typ {
+            Type::Map { key, value } => {
+                Ok(Type::Tuple(TArc::from_iter([(**key).clone(), (**value).clone()])))
+            }
+            _ => bail!("expected Map, got {:?}", ft.args[0].typ),
+        }
+    }
 }
 
 pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {

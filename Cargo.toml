@@ -93,5 +93,13 @@ members = [
     "graphix-stdlib",
     "graphix-package",
     "graphix-package-core",
+    "graphix-package-array",
+    "graphix-package-fs",
+    "graphix-package-map",
+    "graphix-package-net",
+    "graphix-package-rand",
+    "graphix-package-re",
+    "graphix-package-str",
+    "graphix-package-time",
     "graphix-derive"
 ]

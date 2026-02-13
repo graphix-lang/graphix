@@ -117,29 +117,29 @@ macro_rules! tdbg {
 #[macro_export]
 macro_rules! err {
     ($tag:expr, $err:literal) => {{
-        let e: Value = ($tag.clone(), arcstr::literal!($err)).into();
-        Value::Error(triomphe::Arc::new(e))
+        let e: Value = ($tag.clone(), ::arcstr::literal!($err)).into();
+        Value::Error(::triomphe::Arc::new(e))
     }};
 }
 
 #[macro_export]
 macro_rules! errf {
     ($tag:expr, $fmt:expr, $($args:expr),*) => {{
-        let msg: ArcStr = compact_str::format_compact!($fmt, $($args),*).as_str().into();
+        let msg: ArcStr = ::compact_str::format_compact!($fmt, $($args),*).as_str().into();
         let e: Value = ($tag.clone(), msg).into();
-        Value::Error(triomphe::Arc::new(e))
+        Value::Error(::triomphe::Arc::new(e))
     }};
     ($tag:expr, $fmt:expr) => {{
-        let msg: ArcStr = compact_str::format_compact!($fmt).as_str().into();
+        let msg: ArcStr = ::compact_str::format_compact!($fmt).as_str().into();
         let e: Value = ($tag.clone(), msg).into();
-        Value::Error(triomphe::Arc::new(e))
+        Value::Error(::triomphe::Arc::new(e))
     }};
 }
 
 #[macro_export]
 macro_rules! defetyp {
     ($name:ident, $tag_name:ident, $tag:literal, $typ:expr) => {
-        static $tag_name: ArcStr = arcstr::literal!($tag);
+        static $tag_name: ArcStr = ::arcstr::literal!($tag);
         static $name: ::std::sync::LazyLock<$crate::typ::Type> =
             ::std::sync::LazyLock::new(|| {
                 let scope = $crate::expr::ModPath::root();

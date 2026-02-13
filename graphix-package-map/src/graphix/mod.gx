@@ -1,0 +1,10 @@
+let map = |m, f| 'map_map;
+let filter = |m, f| 'map_filter;
+let filter_map = |m, f| 'map_filter_map;
+let fold = |m, init, f| 'map_fold;
+let len = |m| 'map_len;
+let get = |m, k| 'map_get;
+let insert = |m, k, v| 'map_insert;
+let remove = |m, k| 'map_remove;
+let iter = |m| 'map_iter;
+let iterq = |#clock, m| 'map_iterq

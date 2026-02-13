@@ -166,7 +166,7 @@ fn graphix_files() -> Vec<TokenStream> {
         res.push(quote! {
             let path = ::netidx_core::path::Path::from(#vfs_path);
             if modules.contains_key(&path) {
-                bail!("duplicate graphix module {path}")
+                ::anyhow::bail!("duplicate graphix module {path}")
             }
             modules.insert(path, ::arcstr::literal!(include_str!(#compiler_path)))
         })
@@ -180,12 +180,12 @@ fn register_builtins(builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
         let reg_type = &entry.reg_type;
         quote! {
             {
-                let name: &str = <#reg_type as ::graphix_compiler::BuiltIn<GXRt<X>, X::UserEvent>>::NAME;
+                let name: &str = <#reg_type as ::graphix_compiler::BuiltIn<::graphix_rt::GXRt<X>, X::UserEvent>>::NAME;
                 if name.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
-                    bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
+                    ::anyhow::bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
                 }
                 if !name.starts_with(#package_name) {
-                    bail!("invalid builtin {} name must start with package name {}", name, #package_name)
+                    ::anyhow::bail!("invalid builtin {} name must start with package name {}", name, #package_name)
                 }
                 ctx.register_builtin::<#reg_type>()?
             }
@@ -256,26 +256,30 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
-                ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
-                modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
-            ) -> Result<()> {
+                ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
+                modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
+            ) -> ::anyhow::Result<()> {
                 #(#register_builtins;)*
                 #(#graphix_files;)*
                 Ok(())
             }
 
             #[allow(unused)]
-            fn is_custom(gx: &GXHandle<X>, env: &Env, e: &CompExp<X>) -> bool {
+            fn is_custom(
+                gx: &::graphix_rt::GXHandle<X>,
+                env: &::graphix_compiler::env::Env,
+                e: &::graphix_rt::CompExp<X>,
+            ) -> bool {
                 #is_custom
             }
 
             #[allow(unused)]
             fn init_custom(
-                gx: &GXHandle<X>,
-                env: &Env,
-                stop: oneshot::Sender<()>,
-                e: &CompExp<X>,
-            ) -> Result<Box<dyn CustomDisplay<X>>> {
+                gx: &::graphix_rt::GXHandle<X>,
+                env: &::graphix_compiler::env::Env,
+                stop: ::tokio::sync::oneshot::Sender<()>,
+                e: &::graphix_rt::CompExp<X>,
+            ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
                 #init_custom
             }
         }

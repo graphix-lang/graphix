@@ -1,0 +1,3 @@
+let rand = |#start = 0.0, #end = 1.0, #clock| 'rand;
+let pick = |a| 'rand_pick;
+let shuffle = |a| 'rand_shuffle

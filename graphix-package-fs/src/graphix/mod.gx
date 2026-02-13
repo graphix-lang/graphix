@@ -1,0 +1,27 @@
+let set_global_watch_parameters = |
+    #poll_interval = null,
+    #poll_batch_size = null
+| 'fs_set_global_watch_parameters;
+let watch = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch;
+let watch_full = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch_full;
+let read_all = |path| 'fs_read_all;
+let read_all_bin = |path| 'fs_read_all_bin;
+let write_all = |#path, data| 'fs_write_all;
+let write_all_bin = |#path, data| 'fs_write_all_bin;
+let tempdir = |#in = null, #name = null, trigger| 'fs_tempdir;
+let join_path = |path, @args| 'fs_join_path;
+let is_file = |path| 'fs_is_file;
+let is_dir = |path| 'fs_is_dir;
+let metadata = |#follow_symlinks = true, path| 'fs_metadata;
+let readdir = |
+    #max_depth = 1,
+    #min_depth = 1,
+    #contents_first = false,
+    #follow_symlinks = false,
+    #follow_root_symlink = true,
+    #same_filesystem = false,
+    path
+| 'fs_readdir;
+let create_dir = |#all = false, path| 'fs_create_dir;
+let remove_dir = |#all = false, path| 'fs_remove_dir;
+let remove_file = |path| 'fs_remove_file

@@ -1,0 +1,5 @@
+let is_match = |#pat, s| 're_is_match;
+let find = |#pat, s| 're_find;
+let captures = |#pat, s| 're_captures;
+let split = |#pat, s| 're_split;
+let splitn = |#pat, #limit, s| 're_splitn
