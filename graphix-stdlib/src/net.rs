@@ -39,7 +39,7 @@ struct Write {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
-    const NAME: &str = "write";
+    const NAME: &str = "net_write";
     deftype!("fn(string, Any) -> Result<_, `WriteError(string)>");
 
     fn init<'a, 'b, 'c>(
@@ -154,7 +154,7 @@ struct Subscribe {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
-    const NAME: &str = "subscribe";
+    const NAME: &str = "net_subscribe";
     deftype!("fn(string) -> Result<Primitive, `SubscribeError(string)>");
 
     fn init<'a, 'b, 'c>(
@@ -239,7 +239,7 @@ struct RpcCall {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
-    const NAME: &str = "call";
+    const NAME: &str = "net_call";
     deftype!("fn(string, Array<(string, Any)>) -> Result<Primitive, `RpcError(string)>");
 
     fn init<'a, 'b, 'c>(
@@ -395,14 +395,14 @@ macro_rules! list {
 
 list!(
     List,
-    "list",
+    "net_list",
     list,
     "fn(?#update:Any, string) -> Result<Array<string>, `ListError(string)>"
 );
 
 list!(
     ListTable,
-    "list_table",
+    "net_list_table",
     list_table,
     "fn(?#update:Any, string) -> Result<Table, `ListError(string)>"
 );
@@ -418,7 +418,7 @@ struct Publish<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
-    const NAME: &str = "publish";
+    const NAME: &str = "net_publish";
     deftype!(
         "fn(?#on_write:fn(Any) -> _ throws 'e, string, Any) -> Result<_, `PublishError(string)> throws 'e"
     );
@@ -563,7 +563,7 @@ struct PublishRpc<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
-    const NAME: &str = "publish_rpc";
+    const NAME: &str = "net_publish_rpc";
     deftype!(
         r#"fn(
             #path:string,

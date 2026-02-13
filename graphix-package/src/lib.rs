@@ -54,7 +54,7 @@ pub trait Package<X: GXExt> {
     /// then the package will be rejected by the shell, and a warning
     /// will be printed to the user.
     fn register(
-        ctx: ExecCtx<GXRt<X>, X::UserEvent>,
+        ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
         modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
     ) -> Result<()>;
 
@@ -293,7 +293,6 @@ impl PackageId {
 pub struct GraphixPM {
     cratesio: AsyncClient,
     cargo: PathBuf,
-    local_src: PathBuf,
 }
 
 impl GraphixPM {
@@ -304,14 +303,20 @@ impl GraphixPM {
             "Graphix Package Manager <eestokes@pm.me>",
             Duration::from_secs(1),
         )?;
-        let local_src = match extract_local_source(&cargo).await {
-            Ok(p) => p,
-            Err(local) => match download_source(&cratesio).await {
-                Ok(p) => p,
+        Ok(Self { cratesio, cargo })
+    }
+
+    /// Unpack a fresh copy of the graphix-shell source. Tries the
+    /// local cargo registry cache first, falls back to downloading
+    /// from crates.io.
+    async fn unpack_source(&self) -> Result<PathBuf> {
+        match extract_local_source(&self.cargo).await {
+            Ok(p) => Ok(p),
+            Err(local) => match download_source(&self.cratesio).await {
+                Ok(p) => Ok(p),
                 Err(dl) => bail!("could not find our source local: {local}, dl: {dl}"),
             },
-        };
-        Ok(Self { cratesio, cargo, local_src })
+        }
     }
 
     /// Build a new graphix runtime with additional packages included
@@ -325,6 +330,23 @@ impl GraphixPM {
     /// graphix-previous-{date}. Runtimes older than a week will be cleaned up
     /// by the shell on launch.
     pub async fn add_packages(&self, packages: &[PackageId]) -> Result<()> {
+        todo!()
+    }
+
+    /// Remove packages from the graphix runtime
+    ///
+    /// The core package cannot be removed.
+    pub async fn remove_packages(&self, packages: &[PackageId]) -> Result<()> {
+        todo!()
+    }
+
+    /// Search crates.io for graphix packages
+    pub async fn search(&self, query: &str) -> Result<()> {
+        todo!()
+    }
+
+    /// List installed packages
+    pub async fn list(&self) -> Result<()> {
         todo!()
     }
 }

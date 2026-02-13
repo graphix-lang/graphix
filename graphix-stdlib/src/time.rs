@@ -16,7 +16,7 @@ struct AfterIdle {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
-    const NAME: &str = "after_idle";
+    const NAME: &str = "time_after_idle";
     deftype!("fn([duration, Number], 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
@@ -134,7 +134,7 @@ struct Timer {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
-    const NAME: &str = "timer";
+    const NAME: &str = "time_timer";
     deftype!(
         "fn([duration, Number], [bool, Number]) -> Result<datetime, `TimerError(string)>"
     );

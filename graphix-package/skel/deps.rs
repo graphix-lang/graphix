@@ -2,34 +2,41 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_compiler::{ExecCtx, Rt, UserEvent};
-use graphix_rt::{GXHandle, CompExp, GXExt};
+use fxhash::FxHashMap;
+use graphix_compiler::{env::Env, ExecCtx};
+use graphix_package::{CustomDisplay, Package};
+use graphix_rt::{GXHandle, CompExp, GXExt, GXRt};
 use netidx_core::path::Path;
 use tokio::sync::oneshot;
 
-pub(crate) fn register<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
+pub(crate) fn register<X: GXExt>(
+    ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
     modules: &mut FxHashMap<Path, ArcStr>,
-) -> Result<()> {
+) -> Result<ArcStr> {
     {{#each deps}}
-      {{this}}::P::register(ctx, modules)?;
+    {{this}}::P::register(ctx, modules)?;
     {{/each}}
+    Ok(ArcStr::from("{{root_expr}}"))
 }
 
 pub(crate) struct Cdc<X: GXExt> {
-    pub stop: oneshot::Sender<()>,
-    pub custom: Box<dyn CustomDisplay<X>>
+    pub stop: oneshot::Receiver<()>,
+    pub custom: Box<dyn CustomDisplay<X>>,
 }
 
 pub(crate) fn maybe_init_custom<X: GXExt>(
     gx: &GXHandle<X>,
-    env: &Env, e: &CompExp<X>
+    env: &Env,
+    e: &CompExp<X>,
 ) -> Option<Result<Cdc<X>>> {
     {{#each deps}}
-        if {{this}}::P::is_custom(gx, env, e) {
-            let (tx, rx) = oneshot::channel();
-            return Some({{this}}::P::init_custom(gx, env, stop, e))
-        }
+    if {{this}}::P::is_custom(gx, env, e) {
+        let (tx, rx) = oneshot::channel();
+        return Some(
+            {{this}}::P::init_custom(gx, env, tx, e)
+                .map(|custom| Cdc { stop: rx, custom })
+        );
+    }
     {{/each}}
     None
 }

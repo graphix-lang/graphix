@@ -111,7 +111,7 @@ fn graphix_files() -> Vec<TokenStream> {
             continue;
         }
         let ext = entry.path().extension().and_then(|e| e.to_str());
-        if ext != Some("gx") || ext != Some("gxi") {
+        if ext != Some("gx") && ext != Some("gxi") {
             continue;
         }
         let path = match entry.path().strip_prefix(&*GRAPHIX_SRC) {
@@ -225,7 +225,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
-                ctx: ExecCtx<GXRt<X>, X::UserEvent>,
+                ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
                 modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
             ) -> Result<()> {
                 #(#register_builtins);*

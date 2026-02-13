@@ -1,12 +1,10 @@
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, expr::ModuleResolver, typ::fntype::FnType, BuiltIn, ExecCtx, Node, Rt,
-    Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_derive::defpackage;
-use graphix_package::Package;
-use graphix_rt::{GXExt, GXRt};
-use graphix_stdlib::EvalCached;
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use netidx::publisher::Value;
 use std::boxed::Box;
 
 #[derive(Debug)]
@@ -46,7 +44,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
 #[derive(Debug, Default)]
 struct ExampleCachedEv;
 
-impl EvalCached for OrEv {
+impl EvalCached for ExampleCachedEv {
     const NAME: &str = "{{name}}_example_cached";
     deftype!("fn(@args: bool) -> bool");
 
@@ -70,6 +68,6 @@ type ExampleCachedBuiltin = CachedArgs<ExampleCachedEv>;
 defpackage! {
     builtins => [
         ExampleBuiltin,
-        ExampleCachedBuiltin
+        ExampleCachedBuiltin,
     ]
 }

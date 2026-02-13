@@ -1,3 +1,3 @@
-let after_idle = |timeout, v| 'after_idle;
-let timer = |timeout, repeat| 'timer;
+let after_idle = |timeout, v| 'time_after_idle;
+let timer = |timeout, repeat| 'time_timer;
 let now = |trigger| 'time_now
