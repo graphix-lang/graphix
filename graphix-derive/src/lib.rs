@@ -21,7 +21,8 @@ static GRAPHIX_SRC: LazyLock<PathBuf> =
     LazyLock::new(|| PROJECT_ROOT.join("src").join("graphix"));
 
 static CARGO_MANIFEST: LazyLock<Manifest> = LazyLock::new(|| {
-    Manifest::from_path(&*PROJECT_ROOT).expect("failed to load cargo manifest")
+    Manifest::from_path(PROJECT_ROOT.join("Cargo.toml"))
+        .expect("failed to load cargo manifest")
 });
 
 static CRATE_NAME: LazyLock<String> =
@@ -36,9 +37,9 @@ static PACKAGE_NAME: LazyLock<String> =
 /* example
 defpackage! {
     builtins => [
-        Foo
+        Foo,
         submod::Bar,
-        Baz<R, E>
+        Baz as Baz<R, E>,
     ],
     is_custom => |gx, env, e| {
         todo!()
@@ -48,8 +49,32 @@ defpackage! {
     }
 }
 */
+
+/// A builtin entry: either a simple path (used for both NAME access and
+/// registration), or `Path as Type` where Path is used for `::NAME` access
+/// and Type is used for `register_builtin::<Type>()`.
+struct BuiltinEntry {
+    name_path: syn::Path,
+    reg_type: syn::Type,
+}
+
+impl syn::parse::Parse for BuiltinEntry {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        let name_path: syn::Path = input.parse()?;
+        if input.peek(Token![as]) {
+            let _as: Token![as] = input.parse()?;
+            let reg_type: syn::Type = input.parse()?;
+            Ok(BuiltinEntry { name_path, reg_type })
+        } else {
+            let reg_type =
+                syn::Type::Path(syn::TypePath { qself: None, path: name_path.clone() });
+            Ok(BuiltinEntry { name_path, reg_type })
+        }
+    }
+}
+
 struct DefPackage {
-    builtins: Vec<syn::Path>,
+    builtins: Vec<BuiltinEntry>,
     is_custom: Option<syn::ExprClosure>,
     init_custom: Option<syn::ExprClosure>,
 }
@@ -66,7 +91,7 @@ impl syn::parse::Parse for DefPackage {
                 let content;
                 let _bracket: token::Bracket = syn::bracketed!(content in input);
                 builtins = content
-                    .parse_terminated(syn::Path::parse, Token![,])?
+                    .parse_terminated(BuiltinEntry::parse, Token![,])?
                     .into_pairs()
                     .filter_map(|p| match p {
                         Pair::Punctuated(v, _) => Some(v),
@@ -140,7 +165,7 @@ fn graphix_files() -> Vec<TokenStream> {
         let compiler_path = compiler_path.to_string_lossy().into_owned();
         res.push(quote! {
             let path = ::netidx_core::path::Path::from(#vfs_path);
-            if modules.contains_key(path) {
+            if modules.contains_key(&path) {
                 bail!("duplicate graphix module {path}")
             }
             modules.insert(path, ::arcstr::literal!(include_str!(#compiler_path)))
@@ -149,16 +174,22 @@ fn graphix_files() -> Vec<TokenStream> {
     res
 }
 
-fn register_builtins(builtins: &[syn::Path]) -> Vec<TokenStream> {
+fn register_builtins(builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
     let package_name = &*PACKAGE_NAME;
-    builtins.iter().map(|p| quote! {
-        if #p::NAME.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
-            bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", #p::NAME)
+    builtins.iter().map(|entry| {
+        let reg_type = &entry.reg_type;
+        quote! {
+            {
+                let name: &str = <#reg_type as ::graphix_compiler::BuiltIn<GXRt<X>, X::UserEvent>>::NAME;
+                if name.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
+                    bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
+                }
+                if !name.starts_with(#package_name) {
+                    bail!("invalid builtin {} name must start with package name {}", name, #package_name)
+                }
+                ctx.register_builtin::<#reg_type>()?
+            }
         }
-        if !#p::NAME.starts_with(#package_name) {
-            bail!("invalid builtin {} name must start with package name {}", #p::NAME, #package_name)
-        }
-        ctx.register_builtin::<#p>()?
     }).collect()
 }
 
@@ -228,8 +259,8 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
                 modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
             ) -> Result<()> {
-                #(#register_builtins);*
-                #(#graphix_files);*
+                #(#register_builtins;)*
+                #(#graphix_files;)*
                 Ok(())
             }
 

@@ -1,0 +1,33 @@
+[package]
+name = "graphix-package-core"
+version = "0.3.1"
+authors = ["Eric Stokes <letaris@gmail.com>"]
+edition = "2024"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, core package with shared builtin-authoring traits"
+documentation = "https://docs.rs/graphix-package-core"
+readme = "../README.md"
+license = "MIT"
+categories = ["network-programming", "compilers", "gui"]
+
+[features]
+default = []
+krb5_iov = ["netidx/krb5_iov"]
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+compact_str = { workspace = true }
+fxhash = { workspace = true }
+graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
+graphix-derive = { version = "0.1.0", path = "../graphix-derive" }
+graphix-package = { version = "0.3.1", path = "../graphix-package" }
+graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
+netidx-core = { workspace = true }
+netidx-value = { workspace = true }
+netidx = { workspace = true }
+poolshark = { workspace = true }
+tokio = { workspace = true }
+triomphe = { workspace = true }
+log = { workspace = true }

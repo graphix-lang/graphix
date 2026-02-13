@@ -92,5 +92,6 @@ members = [
     "graphix-rt",
     "graphix-stdlib",
     "graphix-package",
+    "graphix-package-core",
     "graphix-derive"
 ]
