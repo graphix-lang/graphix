@@ -37,7 +37,6 @@ use ratatui::{
     widgets::TitlePosition,
     Frame,
 };
-use reedline::Signal;
 use scrollbar::ScrollbarW;
 use smallvec::SmallVec;
 use sparkline::SparklineW;
@@ -396,31 +395,29 @@ enum ToTui {
     Stop(oneshot::Sender<()>),
 }
 
-enum FromTui {
-    CtrlC,
-}
-
-#[derive(Debug)]
 struct Tui<X: GXExt> {
     to: mpsc::Sender<ToTui>,
-    from: mpsc::UnboundedReceiver<FromTui>,
     ph: PhantomData<X>,
 }
 
 impl<X: GXExt> Tui<X> {
-    fn start(gx: &GXHandle<X>, env: Env, root: CompExp<X>) -> Self {
+    fn start(
+        gx: &GXHandle<X>,
+        env: Env,
+        root: CompExp<X>,
+        stop: oneshot::Sender<()>,
+    ) -> Self {
         let gx = gx.clone();
         let (to_tx, to_rx) = mpsc::channel(3);
-        let (from_tx, from_rx) = mpsc::unbounded();
         task::spawn(async move {
-            if let Err(e) = run(gx, env, root, to_rx, from_tx).await {
+            if let Err(e) = run(gx, env, root, to_rx, Some(stop)).await {
                 error!("tui::run returned {e:?}")
             }
         });
-        Self { to: to_tx, from: from_rx, ph: PhantomData }
+        Self { to: to_tx, ph: PhantomData }
     }
 
-    async fn stop(&mut self) {
+    async fn clear(&mut self) {
         let (tx, rx) = oneshot::channel();
         let _ = self.to.send(ToTui::Stop(tx)).await;
         let _ = rx.await;
@@ -429,13 +426,6 @@ impl<X: GXExt> Tui<X> {
     async fn update(&mut self, id: ExprId, v: Value) {
         if let Err(_) = self.to.send(ToTui::Update(id, v)).await {
             error!("could not send update because tui task died")
-        }
-    }
-
-    async fn wait_signal(&mut self) -> Signal {
-        match self.from.next().await {
-            None => Signal::CtrlC,
-            Some(FromTui::CtrlC) => Signal::CtrlC,
         }
     }
 }
@@ -486,7 +476,7 @@ async fn run<X: GXExt>(
     env: Env,
     root_exp: CompExp<X>,
     mut to_rx: mpsc::Receiver<ToTui>,
-    from_tx: mpsc::UnboundedSender<FromTui>,
+    mut stop: Option<oneshot::Sender<()>>,
 ) -> Result<()> {
     let mut terminal = ratatui::init();
     let size = get_id(&env, &["tui", "size"].into())?;
@@ -527,9 +517,8 @@ async fn run<X: GXExt>(
             },
             e = events.select_next_some() => match e {
                 Ok(e) if is_ctrl_c(&e) => {
-                    if let Err(_) = from_tx.unbounded_send(FromTui::CtrlC) {
-                        error!("main application has died, quitting qui");
-                        break oneshot::channel().0
+                    if let Some(tx) = stop.take() {
+                        let _ = tx.send(());
                     }
                 }
                 Ok(e) => {
@@ -569,7 +558,7 @@ static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {
     async fn clear(&mut self) {
-        self.stop().await;
+        self.clear().await;
     }
 
     async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
@@ -590,6 +579,6 @@ graphix_derive::defpackage! {
         }
     },
     init_custom => |gx, env, stop, e| {
-        Ok(Box::new(Tui::<X>::start(gx, env.clone(), e)))
+        Ok(Box::new(Tui::<X>::start(gx, env.clone(), e, stop)))
     },
 }

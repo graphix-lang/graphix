@@ -31,7 +31,6 @@ log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
 ratatui = { workspace = true }
-reedline = { workspace = true }
 smallvec = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
