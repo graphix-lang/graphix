@@ -76,6 +76,12 @@ enum PackageAction {
     Add {
         /// Package names to add (with optional @version suffix)
         packages: Vec<String>,
+        /// Skip crates.io validation (for packages from alternative registries or local sources)
+        #[arg(long)]
+        skip_crates_io_check: bool,
+        /// Use a local path dependency instead of a crates.io version
+        #[arg(long)]
+        path: Option<PathBuf>,
     },
     /// Remove packages from the graphix runtime
     Remove {
@@ -89,6 +95,8 @@ enum PackageAction {
     },
     /// List installed packages
     List,
+    /// Rebuild graphix from the current packages.toml
+    Rebuild,
     /// Create a new graphix package
     Create {
         /// Package name (will be prefixed with graphix-package- if needed)
@@ -220,10 +228,20 @@ fn parse_package_arg(s: &str) -> PackageId {
 #[tokio::main]
 async fn handle_package(action: PackageAction) -> Result<()> {
     match action {
-        PackageAction::Add { packages } => {
+        PackageAction::Add { packages, skip_crates_io_check, path } => {
             let pm = GraphixPM::new().await?;
-            let ids: Vec<_> = packages.iter().map(|s| parse_package_arg(s)).collect();
-            pm.add_packages(&ids).await
+            let ids: Vec<_> = if let Some(ref path) = path {
+                packages
+                    .iter()
+                    .map(|s| {
+                        let name = s.split('@').next().unwrap();
+                        PackageId::with_path(name, path.clone())
+                    })
+                    .collect()
+            } else {
+                packages.iter().map(|s| parse_package_arg(s)).collect()
+            };
+            pm.add_packages(&ids, skip_crates_io_check).await
         }
         PackageAction::Remove { packages } => {
             let pm = GraphixPM::new().await?;
@@ -237,6 +255,10 @@ async fn handle_package(action: PackageAction) -> Result<()> {
         PackageAction::List => {
             let pm = GraphixPM::new().await?;
             pm.list().await
+        }
+        PackageAction::Rebuild => {
+            let pm = GraphixPM::new().await?;
+            pm.do_rebuild().await
         }
         PackageAction::Create { name, dir } => {
             let full_name = if name.starts_with("graphix-package-") {

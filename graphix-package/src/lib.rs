@@ -151,9 +151,6 @@ fn packages_toml_path() -> Result<PathBuf> {
     Ok(graphix_data_dir()?.join("packages.toml"))
 }
 
-// XCR estokes for Claude: Shouldn't * be replaced with
-// env!("CARGO_PKG_VERSION"), we don't want cargo updating to the latest stdlib
-// packages out of step with the compiler (see my other CR about *)
 /// The default set of packages shipped with graphix
 const DEFAULT_PACKAGES: &[(&str, &str)] = &[
     ("core", SKEL.version),
@@ -168,8 +165,24 @@ const DEFAULT_PACKAGES: &[(&str, &str)] = &[
     ("tui", SKEL.version),
 ];
 
+/// A package entry in packages.toml — either a version string or a path.
+#[derive(Debug, Clone)]
+pub enum PackageEntry {
+    Version(String),
+    Path(PathBuf),
+}
+
+impl std::fmt::Display for PackageEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Version(v) => write!(f, "{v}"),
+            Self::Path(p) => write!(f, "path:{}", p.display()),
+        }
+    }
+}
+
 /// Read the packages.toml file, creating it with defaults if it doesn't exist.
-async fn read_packages() -> Result<BTreeMap<String, String>> {
+async fn read_packages() -> Result<BTreeMap<String, PackageEntry>> {
     let path = packages_toml_path()?;
     match fs::read_to_string(&path).await {
         Ok(contents) => {
@@ -181,17 +194,25 @@ async fn read_packages() -> Result<BTreeMap<String, String>> {
                 .ok_or_else(|| anyhow!("packages.toml missing [packages] table"))?;
             let mut packages = BTreeMap::new();
             for (k, v) in tbl {
-                let version = v
-                    .as_str()
-                    .ok_or_else(|| anyhow!("package {k} version must be a string"))?;
-                packages.insert(k.clone(), version.to_string());
+                let entry = match v {
+                    toml::Value::String(s) => PackageEntry::Version(s.clone()),
+                    toml::Value::Table(t) => {
+                        if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
+                            PackageEntry::Path(PathBuf::from(p))
+                        } else {
+                            bail!("package {k}: table entry must have a 'path' key")
+                        }
+                    }
+                    _ => bail!("package {k}: expected a version string or table"),
+                };
+                packages.insert(k.clone(), entry);
             }
             Ok(packages)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let packages: BTreeMap<String, String> = DEFAULT_PACKAGES
+            let packages: BTreeMap<String, PackageEntry> = DEFAULT_PACKAGES
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .map(|(k, v)| (k.to_string(), PackageEntry::Version(v.to_string())))
                 .collect();
             write_packages(&packages).await?;
             Ok(packages)
@@ -201,15 +222,27 @@ async fn read_packages() -> Result<BTreeMap<String, String>> {
 }
 
 /// Write the packages.toml file
-async fn write_packages(packages: &BTreeMap<String, String>) -> Result<()> {
+async fn write_packages(packages: &BTreeMap<String, PackageEntry>) -> Result<()> {
     let path = packages_toml_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
     let mut doc = toml::value::Table::new();
     let mut tbl = toml::value::Table::new();
-    for (k, v) in packages {
-        tbl.insert(k.clone(), toml::Value::String(v.clone()));
+    for (k, entry) in packages {
+        match entry {
+            PackageEntry::Version(v) => {
+                tbl.insert(k.clone(), toml::Value::String(v.clone()));
+            }
+            PackageEntry::Path(p) => {
+                let mut t = toml::value::Table::new();
+                t.insert(
+                    "path".to_string(),
+                    toml::Value::String(p.to_string_lossy().into_owned()),
+                );
+                tbl.insert(k.clone(), toml::Value::Table(t));
+            }
+        }
     }
     doc.insert("packages".to_string(), toml::Value::Table(tbl));
     fs::write(&path, toml::to_string_pretty(&doc)?).await?;
@@ -328,6 +361,7 @@ async fn download_source(crates_io: &AsyncClient) -> Result<PathBuf> {
 pub struct PackageId {
     name: CompactString,
     version: Option<CompactString>,
+    path: Option<PathBuf>,
 }
 
 impl PackageId {
@@ -338,7 +372,16 @@ impl PackageId {
             CompactString::from(name)
         };
         let version = version.map(CompactString::from);
-        Self { name, version }
+        Self { name, version, path: None }
+    }
+
+    pub fn with_path(name: &str, path: PathBuf) -> Self {
+        let name = if name.starts_with("graphix-package-") {
+            CompactString::from(name.strip_prefix("graphix-package-").unwrap())
+        } else {
+            CompactString::from(name)
+        };
+        Self { name, version: None, path: Some(path) }
     }
 
     /// Short name without graphix-package- prefix
@@ -354,6 +397,10 @@ impl PackageId {
     pub fn version(&self) -> Option<&str> {
         self.version.as_ref().map(|s| s.as_str())
     }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
 }
 
 /// The Graphix package manager
@@ -362,9 +409,6 @@ pub struct GraphixPM {
     cargo: PathBuf,
 }
 
-// XCR estokes for Claude: I think we need a lock file in the graphix dir (where
-// the package file and the source code lives) to prevent concurrent shells from
-// stepping on each other. Unlikely in most cases I know, but still worth doing.
 impl GraphixPM {
     /// Create a new package manager
     pub async fn new() -> Result<Self> {
@@ -407,10 +451,12 @@ impl GraphixPM {
     }
 
     /// Generate deps.rs from the package list
-    fn generate_deps_rs(&self, packages: &BTreeMap<String, String>) -> Result<String> {
+    fn generate_deps_rs(
+        &self,
+        packages: &BTreeMap<String, PackageEntry>,
+    ) -> Result<String> {
         let mut hb = Handlebars::new();
         hb.register_template_string("deps.rs", SKEL.deps_rs)?;
-        // Build the deps list with crate names and the root expression
         let deps: Vec<serde_json::Value> = packages
             .keys()
             .map(|name| {
@@ -419,7 +465,6 @@ impl GraphixPM {
                 })
             })
             .collect();
-        // root expression: mod core;\nuse core;\nmod array;\n...
         let mut root_parts = vec![];
         for name in packages.keys() {
             if name == "core" {
@@ -440,7 +485,7 @@ impl GraphixPM {
     fn update_cargo_toml(
         &self,
         cargo_toml_content: &str,
-        packages: &BTreeMap<String, String>,
+        packages: &BTreeMap<String, PackageEntry>,
     ) -> Result<String> {
         use toml_edit::DocumentMut;
         let mut doc: DocumentMut =
@@ -448,7 +493,6 @@ impl GraphixPM {
         let deps = doc["dependencies"]
             .as_table_mut()
             .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
-        // Remove existing graphix-package-* deps
         let to_remove: Vec<String> = deps
             .iter()
             .filter_map(|(k, _)| {
@@ -462,13 +506,21 @@ impl GraphixPM {
         for k in to_remove {
             deps.remove(&k);
         }
-        // XCR estokes for Claude: I don't think * should make it to this level
-        // of abstraction. When we add a package, we should either use the
-        // version the user specified or look up the latest version from
-        // crates.io and use that in the BTreeMap passed into this function
-        for (name, version) in packages {
+        for (name, entry) in packages {
             let crate_name = format!("graphix-package-{name}");
-            deps[&crate_name] = toml_edit::value(version);
+            match entry {
+                PackageEntry::Version(version) => {
+                    deps[&crate_name] = toml_edit::value(version);
+                }
+                PackageEntry::Path(path) => {
+                    let mut tbl = toml_edit::InlineTable::new();
+                    tbl.insert(
+                        "path",
+                        toml_edit::Value::from(path.to_string_lossy().as_ref()),
+                    );
+                    deps[&crate_name] = toml_edit::Item::Value(tbl.into());
+                }
+            }
         }
         Ok(doc.to_string())
     }
@@ -509,9 +561,6 @@ impl GraphixPM {
         }
         // Build and install
         println!("Building graphix with updated packages (this may take a while)...");
-        // XCR estokes for Claude: Does cargo install automatically do a release
-        // build? If not we should definitely do a release build here.
-        // Yes — cargo install uses release profile by default.
         let status = Command::new(&self.cargo)
             .arg("install")
             .arg("--path")
@@ -552,32 +601,68 @@ impl GraphixPM {
         }
     }
 
-    // XCR estokes for Claude: This should check crates.io to make sure the
-    // requested packages exist, and if the version isn't specified we should
-    // fill in the version with the latest crates.io version here
+    /// Read the version from a package crate's Cargo.toml at the given path
+    async fn read_package_version(path: &Path) -> Result<String> {
+        let cargo_toml_path = path.join("Cargo.toml");
+        let contents = fs::read_to_string(&cargo_toml_path)
+            .await
+            .with_context(|| format!("reading {}", cargo_toml_path.display()))?;
+        let doc: toml::Value =
+            toml::from_str(&contents).context("parsing package Cargo.toml")?;
+        doc.get("package")
+            .and_then(|p| p.get("version"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("no version found in {}", cargo_toml_path.display()))
+    }
+
     /// Add packages and rebuild
-    pub async fn add_packages(&self, packages: &[PackageId]) -> Result<()> {
+    pub async fn add_packages(
+        &self,
+        packages: &[PackageId],
+        skip_crates_io_check: bool,
+    ) -> Result<()> {
         let mut lock = Self::lock_file()?;
         let _guard = lock.write().context("waiting for package lock")?;
         let mut installed = read_packages().await?;
         let mut changed = false;
         for pkg in packages {
-            let crate_name = pkg.crate_name();
-            // verify the crate exists, and resolve latest version if unspecified
-            let cr = self.cratesio.get_crate(&crate_name).await.with_context(|| {
-                format!("package {crate_name} not found on crates.io")
-            })?;
-            let version = match pkg.version() {
-                Some(v) => v.to_string(),
-                None => cr.crate_data.max_version.clone(),
+            let entry = if let Some(path) = pkg.path() {
+                let path = path
+                    .canonicalize()
+                    .with_context(|| format!("resolving path {}", path.display()))?;
+                let version = Self::read_package_version(&path).await?;
+                println!(
+                    "Adding {} @ path {} (version {version})",
+                    pkg.name(),
+                    path.display()
+                );
+                PackageEntry::Path(path)
+            } else if skip_crates_io_check {
+                match pkg.version() {
+                    Some(v) => {
+                        println!("Adding {}@{v}", pkg.name());
+                        PackageEntry::Version(v.to_string())
+                    }
+                    None => bail!(
+                        "version is required for {} when using --skip-crates-io-check",
+                        pkg.name()
+                    ),
+                }
+            } else {
+                let crate_name = pkg.crate_name();
+                let cr =
+                    self.cratesio.get_crate(&crate_name).await.with_context(|| {
+                        format!("package {crate_name} not found on crates.io")
+                    })?;
+                let version = match pkg.version() {
+                    Some(v) => v.to_string(),
+                    None => cr.crate_data.max_version.clone(),
+                };
+                println!("Adding {}@{version}", pkg.name());
+                PackageEntry::Version(version)
             };
-            let existing = installed.get(pkg.name());
-            if existing.map(|v| v.as_str()) == Some(version.as_str()) {
-                println!("{} is already installed with version {version}", pkg.name());
-                continue;
-            }
-            println!("Adding {}@{version}", pkg.name());
-            installed.insert(pkg.name().to_string(), version);
+            installed.insert(pkg.name().to_string(), entry);
             changed = true;
         }
         if changed {
@@ -633,6 +718,13 @@ impl GraphixPM {
             }
         }
         Ok(())
+    }
+
+    /// Rebuild the graphix binary from the current packages.toml
+    pub async fn do_rebuild(&self) -> Result<()> {
+        let mut lock = Self::lock_file()?;
+        let _guard = lock.write().context("waiting for package lock")?;
+        self.rebuild().await
     }
 
     /// List installed packages

@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
     err, expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
