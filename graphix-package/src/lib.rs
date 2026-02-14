@@ -151,6 +151,9 @@ fn packages_toml_path() -> Result<PathBuf> {
     Ok(graphix_data_dir()?.join("packages.toml"))
 }
 
+// CR estokes for Claude: Shouldn't * be replaced with
+// env!("CARGO_PKG_VERSION"), we don't want cargo updating to the latest stdlib
+// packages out of step with the compiler (see my other CR about *)
 /// The default set of packages shipped with graphix
 const DEFAULT_PACKAGES: &[(&str, &str)] = &[
     ("core", "*"),
@@ -359,6 +362,9 @@ pub struct GraphixPM {
     cargo: PathBuf,
 }
 
+// CR estokes for Claude: I think we need a lock file in the graphix dir (where
+// the package file and the source code lives) to prevent concurrent shells from
+// stepping on each other. Unlikely in most cases I know, but still worth doing.
 impl GraphixPM {
     /// Create a new package manager
     pub async fn new() -> Result<Self> {
@@ -439,6 +445,10 @@ impl GraphixPM {
         for k in to_remove {
             deps.remove(&k);
         }
+        // CR estokes for Claude: I don't think * should make it to this level
+        // of abstraction. When we add a package, we should either use the
+        // version the user specified or look up the latest version from
+        // crates.io and use that in the BTreeMap passed into this function
         let version = SKEL.version;
         // Add package dependencies
         for (name, pkg_version) in packages {
@@ -489,6 +499,8 @@ impl GraphixPM {
         }
         // Build and install
         println!("Building graphix with updated packages (this may take a while)...");
+        // CR estokes for Claude: Does cargo install automatically do a release
+        // build? If not we should definitely do a release build here.
         let status = Command::new(&self.cargo)
             .arg("install")
             .arg("--path")
@@ -529,6 +541,9 @@ impl GraphixPM {
         }
     }
 
+    // CR estokes for Claude: This should check crates.io to make sure the
+    // requested packages exist, and if the version isn't specified we should
+    // fill in the version with the latest crates.io version here
     /// Add packages and rebuild
     pub async fn add_packages(&self, packages: &[PackageId]) -> Result<()> {
         let mut installed = read_packages().await?;

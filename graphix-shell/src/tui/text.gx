@@ -1,5 +1,0 @@
-let text = |
-  #style: &Style = &style(),
-  #alignment: &[Alignment, null] = &null,
-  lines: &[Array<Line>, string]
-| -> Tui `Text({ style, alignment, lines })
