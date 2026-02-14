@@ -43,10 +43,10 @@ handlebars = "6"
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
 indexmap = "2"
 log = "0.4"
-netidx-core = { path = "../netidx/netidx-core", version = "0.31.0" }
-netidx-protocols = { path = "../netidx/netidx-protocols", version = "0.31.0" }
-netidx-value = { path = "../netidx/netidx-value", version = "0.31.3" }
-netidx = { path = "../netidx/netidx", version = "0.31.0", default-features = false }
+netidx-core = { version = "0.31.0" }
+netidx-protocols = { version = "0.31.0" }
+netidx-value = { version = "0.31.3" }
+netidx = { version = "0.31.0", default-features = false }
 parking_lot = "0.12.1"
 poolshark = { version = "0.2.6" }
 rand = "0.9"
@@ -79,7 +79,6 @@ tokio = { version = "1", features = [
     "signal",
     "io-std",
 ] }
-toml = { version = "0.9" }
 toml_edit = { version = "0.22" }
 triomphe = { version = "0.1" }
 uuid = "1"

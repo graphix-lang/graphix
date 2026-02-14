@@ -34,5 +34,5 @@ flate2 = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
 compact_str = { workspace = true }
-toml = { workspace = true }
+indexmap = { workspace = true }
 toml_edit = { workspace = true }
