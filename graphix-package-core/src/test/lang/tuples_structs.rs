@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for tuples and structs
 
 use crate::run;

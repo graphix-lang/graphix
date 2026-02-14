@@ -83,7 +83,7 @@ macro_rules! run {
             ]);
             let resolver = ::graphix_compiler::expr::ModuleResolver::VFS(tbl);
             let ctx = $crate::testing::init_with_resolvers(
-                tx, &REGISTER, ROOT, vec![resolver],
+                tx, &crate::TEST_REGISTER, crate::TEST_ROOT, vec![resolver],
             ).await?;
             let bs = &ctx.rt;
             match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
@@ -169,7 +169,7 @@ macro_rules! run_with_tempdir {
             let (tx, mut rx) = ::tokio::sync::mpsc::channel::<
                 ::poolshark::global::GPooled<Vec<::graphix_rt::GXEvent>>
             >(10);
-            let ctx = $crate::testing::init(tx, &REGISTER, ROOT).await?;
+            let ctx = $crate::testing::init(tx, &crate::TEST_REGISTER, crate::TEST_ROOT).await?;
             let $temp_dir = ::tempfile::tempdir()?;
 
             let test_file = { $setup };

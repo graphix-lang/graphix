@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Basic language feature tests: bindings, arithmetic, scoping
 
 use crate::run;

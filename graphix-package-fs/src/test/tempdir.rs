@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;

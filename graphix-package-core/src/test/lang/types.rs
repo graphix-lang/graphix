@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for type system features: type checking, annotations, type variables
 
 use crate::run;

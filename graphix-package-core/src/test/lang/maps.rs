@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for map literals and operations
 
 use crate::run;

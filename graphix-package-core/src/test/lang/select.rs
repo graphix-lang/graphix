@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for select/match expressions
 
 use crate::run;

@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for arrays: indexing, matching, operations
 
 use crate::run;

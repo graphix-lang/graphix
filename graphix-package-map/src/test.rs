@@ -1,6 +1,6 @@
-use crate::test::{REGISTER, ROOT};
 use anyhow::Result;
 use arcstr::literal;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const MAP_LEN: &str = r#"
@@ -10,7 +10,7 @@ const MAP_LEN: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_len, MAP_LEN, |v: Result<&Value>| match v {
+run!(map_len, MAP_LEN, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 });
@@ -22,14 +22,10 @@ const MAP_GET_PRESENT: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(
-    map_get_present,
-    MAP_GET_PRESENT,
-    |v: Result<&Value>| match v {
-        Ok(Value::I64(2)) => true,
-        _ => false,
-    }
-);
+run!(map_get_present, MAP_GET_PRESENT, |v: Result<&Value>| match v {
+    Ok(Value::I64(2)) => true,
+    _ => false,
+});
 
 const MAP_GET_ABSENT: &str = r#"
 {
@@ -38,7 +34,7 @@ const MAP_GET_ABSENT: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_get_absent, MAP_GET_ABSENT, |v: Result<&Value>| match v {
+run!(map_get_absent, MAP_GET_ABSENT, |v: Result<&Value>| match v {
     Ok(Value::Null) => true,
     _ => false,
 });
@@ -50,7 +46,7 @@ const MAP_MAP: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_map, MAP_MAP, |v: Result<&Value>| match v {
+run!(map_map, MAP_MAP, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
             && m[&Value::String(literal!("a"))] == Value::I64(2)
@@ -66,7 +62,7 @@ const MAP_FILTER: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_filter, MAP_FILTER, |v: Result<&Value>| match v {
+run!(map_filter, MAP_FILTER, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
             && m[&Value::String(literal!("c"))] == Value::I64(3)
@@ -81,7 +77,7 @@ const MAP_FILTER_MAP: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_filter_map, MAP_FILTER_MAP, |v: Result<&Value>| match v {
+run!(map_filter_map, MAP_FILTER_MAP, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
             && m[&Value::String(literal!("c"))] == Value::I64(30)
@@ -96,7 +92,7 @@ const MAP_FOLD: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_fold, MAP_FOLD, |v: Result<&Value>| match v {
+run!(map_fold, MAP_FOLD, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
 });
@@ -109,7 +105,7 @@ const MAP_ITER: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_iter, MAP_ITER, |v: Result<&Value>| match v {
+run!(map_iter, MAP_ITER, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2)] => true,
         _ => false,
@@ -130,7 +126,7 @@ const MAP_ITERQ: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_iterq, MAP_ITERQ, |v: Result<&Value>| match v {
+run!(map_iterq, MAP_ITERQ, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] =>
             true,
@@ -148,7 +144,7 @@ const MAP_INSERT: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_insert, MAP_INSERT, |v: Result<&Value>| match v {
+run!(map_insert, MAP_INSERT, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 });
@@ -162,7 +158,7 @@ const MAP_REMOVE: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(map_remove, MAP_REMOVE, |v: Result<&Value>| match v {
+run!(map_remove, MAP_REMOVE, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 });

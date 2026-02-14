@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 use graphix_package_core::run_with_tempdir;
 use tokio::fs;
 

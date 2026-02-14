@@ -1,4 +1,4 @@
-use crate::test::{escape_path, init, REGISTER, ROOT};
+use crate::test::{escape_path, init};
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::run;

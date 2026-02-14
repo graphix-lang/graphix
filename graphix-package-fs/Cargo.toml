@@ -41,7 +41,6 @@ triomphe = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
-graphix-package-core = { version = "0.3.1", path = "../graphix-package-core", features = ["testing"] }
 env_logger = { workspace = true }
 tokio = { workspace = true }
 arcstr = { workspace = true }

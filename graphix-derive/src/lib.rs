@@ -125,6 +125,101 @@ fn check_invariants() {
     if !md.is_dir() {
         panic!("graphix projects must have a graphix-src directory")
     }
+    // every package must depend on graphix-package-core (except core itself)
+    let is_core = *PACKAGE_NAME == "core";
+    if !is_core && !CARGO_MANIFEST.dependencies.contains_key("graphix-package-core") {
+        panic!("graphix packages must depend on graphix-package-core")
+    }
+}
+
+/// Collect graphix-package-* dependency names from both [dependencies] and
+/// [dev-dependencies], preserving the order written in Cargo.toml.
+/// Core always comes first. The user is responsible for listing their
+/// graphix-package-* deps in the correct module compilation order.
+fn package_deps() -> Vec<String> {
+    let cargo_toml_path = PROJECT_ROOT.join("Cargo.toml");
+    let content =
+        std::fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+    let doc: toml_edit::DocumentMut =
+        content.parse().expect("failed to parse Cargo.toml");
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    // core always first
+    seen.insert("core".to_string());
+    result.push("core".to_string());
+    // collect from [dependencies] in document order
+    if let Some(deps) = doc.get("dependencies").and_then(|v| v.as_table()) {
+        for (key, _) in deps.iter() {
+            if let Some(name) = key.strip_prefix("graphix-package-") {
+                if seen.insert(name.to_string()) {
+                    result.push(name.to_string());
+                }
+            }
+        }
+    }
+    // collect from [dev-dependencies] in document order
+    if let Some(deps) = doc.get("dev-dependencies").and_then(|v| v.as_table()) {
+        for (key, _) in deps.iter() {
+            if let Some(name) = key.strip_prefix("graphix-package-") {
+                if seen.insert(name.to_string()) {
+                    result.push(name.to_string());
+                }
+            }
+        }
+    }
+    // include ourselves if not already present
+    if seen.insert(PACKAGE_NAME.clone()) {
+        result.push(PACKAGE_NAME.clone());
+    }
+    result
+}
+
+/// Generate the TEST_REGISTER array and TEST_ROOT constant from Cargo.toml deps.
+fn test_harness() -> TokenStream {
+    let deps = package_deps();
+    // Build register fn references for each dep
+    let register_fns: Vec<TokenStream> = deps.iter().map(|name| {
+        if *name == *PACKAGE_NAME {
+            // this is our own crate
+            quote! {
+                <crate::P as ::graphix_package::Package<::graphix_rt::NoExt>>::register
+            }
+        } else {
+            let crate_ident = syn::Ident::new(
+                &format!("graphix_package_{}", name.replace('-', "_")),
+                proc_macro2::Span::call_site(),
+            );
+            quote! {
+                <#crate_ident::P as ::graphix_package::Package<::graphix_rt::NoExt>>::register
+            }
+        }
+    }).collect();
+    // Build ROOT string: "mod core;\nuse core;\nmod array;\nmod str;\n..."
+    let mut root_parts = Vec::new();
+    for name in &deps {
+        if name == "core" {
+            root_parts.push("mod core;\nuse core".to_string());
+        } else {
+            root_parts.push(format!("mod {name}"));
+        }
+    }
+    let root_str = root_parts.join(";\n");
+    let register_fn_ty = if *PACKAGE_NAME == "core" {
+        quote! { crate::testing::RegisterFn }
+    } else {
+        quote! { ::graphix_package_core::testing::RegisterFn }
+    };
+    quote! {
+        /// Register functions for all package dependencies (for testing).
+        #[cfg(test)]
+        pub(crate) const TEST_REGISTER: &[#register_fn_ty] = &[
+            #(#register_fns),*
+        ];
+
+        /// Root module expression including all package dependencies (for testing).
+        #[cfg(test)]
+        pub(crate) const TEST_ROOT: ::arcstr::ArcStr = ::arcstr::literal!(#root_str);
+    }
 }
 
 // walk the graphix files in src/graphix and build the vfs for this package
@@ -254,6 +349,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let is_custom = is_custom(&input.is_custom);
     let init_custom = init_custom(&input.init_custom);
     let graphix_files = graphix_files();
+    let test_harness = test_harness();
 
     quote! {
         pub struct P;
@@ -288,16 +384,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
         }
 
-        /// Register this package's builtins for test contexts (NoExt).
-        pub fn register_test(
-            ctx: &mut ::graphix_compiler::ExecCtx<
-                ::graphix_rt::GXRt<::graphix_rt::NoExt>,
-                <::graphix_rt::NoExt as ::graphix_rt::GXExt>::UserEvent,
-            >,
-            modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
-        ) -> ::anyhow::Result<()> {
-            <P as ::graphix_package::Package<::graphix_rt::NoExt>>::register(ctx, modules)
-        }
+        #test_harness
     }
     .into()
 }

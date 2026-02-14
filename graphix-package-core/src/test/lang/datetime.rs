@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for datetime arithmetic
 
 use crate::run;

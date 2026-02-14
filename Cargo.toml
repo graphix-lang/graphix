@@ -37,6 +37,7 @@ fish-printf = "0.2.1"
 flate2 = "1"
 flexi_logger = "0.31"
 futures = "0.3"
+fd-lock = "4"
 fxhash = "0.2"
 handlebars = "6"
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }

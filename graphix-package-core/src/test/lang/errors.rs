@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for try/catch and error handling
 
 use crate::run;

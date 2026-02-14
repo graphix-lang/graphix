@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 use anyhow::Result;
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;

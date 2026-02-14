@@ -1,5 +1,5 @@
-use crate::test::{REGISTER, ROOT};
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const NET_PUB_SUB: &str = r#"
@@ -9,7 +9,7 @@ const NET_PUB_SUB: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
+run!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(42)) => true,
         _ => false,
@@ -27,7 +27,7 @@ const NET_WRITE0: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
+run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(42), Value::I64(43)] => true,
@@ -48,7 +48,7 @@ const NET_WRITE1: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
+run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
     match v {
         Ok(_) => false,
         Err(_) => true,
@@ -63,7 +63,7 @@ const NET_LIST: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(net_list, NET_LIST, |v: Result<&Value>| {
+run!(net_list, NET_LIST, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => {
@@ -90,7 +90,7 @@ const NET_LIST_TABLE: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
+run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Bool(true)) => true,
         _ => false,
@@ -123,7 +123,7 @@ const NET_RPC0: &str = r#"
 }
 "#;
 
-graphix_package_core::run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
+run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(42)) => true,
         _ => false,

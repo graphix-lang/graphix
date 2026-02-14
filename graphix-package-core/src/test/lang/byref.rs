@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for by-reference operations
 
 use crate::run;

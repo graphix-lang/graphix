@@ -61,7 +61,6 @@ macro_rules! arity2 {
 
 // ── Testing infrastructure ─────────────────────────────────────────
 
-#[cfg(feature = "testing")]
 pub mod testing;
 
 #[cfg(test)]

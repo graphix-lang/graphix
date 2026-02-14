@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for abstract types and interface files (.gxi)
 //
 // Abstract types are types declared in an interface without a concrete definition.

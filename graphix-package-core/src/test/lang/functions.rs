@@ -1,4 +1,3 @@
-use crate::test::{REGISTER, ROOT};
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
 use crate::run;

@@ -1,5 +1,4 @@
 use crate::run;
-use crate::test::{REGISTER, ROOT};
 use anyhow::Result;
 use netidx::subscriber::Value;
 

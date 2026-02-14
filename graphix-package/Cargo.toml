@@ -15,6 +15,7 @@ categories = ["network-programming", "compilers", "gui"]
 crates_io_api = { workspace = true }
 cp_r = { workspace = true }
 dirs = { workspace = true }
+fd-lock = { workspace = true }
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
 graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
 anyhow = { workspace = true }
