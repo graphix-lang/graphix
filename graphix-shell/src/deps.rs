@@ -30,8 +30,8 @@ pub(crate) fn register<X: GXExt>(
          mod str;\n\
          mod map;\n\
          mod fs;\n\
-         mod net;\n\
          mod time;\n\
+         mod net;\n\
          mod re;\n\
          mod rand;\n\
          mod tui",
