@@ -22,11 +22,11 @@ async-trait = { workspace = true }
 crossterm = { workspace = true }
 fxhash = { workspace = true }
 futures = { workspace = true }
-graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
-graphix-derive = { version = "0.1.0", path = "../graphix-derive" }
-graphix-package = { version = "0.3.1", path = "../graphix-package" }
+graphix-compiler = { version = "0.3.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.1.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.3.1", path = "../../graphix-package" }
 graphix-package-core = { version = "0.3.1", path = "../graphix-package-core" }
-graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
+graphix-rt = { version = "0.3.1", path = "../../graphix-rt" }
 log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }

@@ -40,16 +40,16 @@ futures = { workspace = true }
 fxhash = { workspace = true }
 graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
 graphix-package = { version = "0.3.0", path = "../graphix-package" }
-graphix-package-array = { version = "0.3.0", path = "../graphix-package-array" }
-graphix-package-core = { version = "0.3.0", path = "../graphix-package-core" }
-graphix-package-fs = { version = "0.3.0", path = "../graphix-package-fs" }
-graphix-package-map = { version = "0.3.0", path = "../graphix-package-map" }
-graphix-package-net = { version = "0.3.0", path = "../graphix-package-net" }
-graphix-package-rand = { version = "0.3.0", path = "../graphix-package-rand" }
-graphix-package-re = { version = "0.3.0", path = "../graphix-package-re" }
-graphix-package-str = { version = "0.3.0", path = "../graphix-package-str" }
-graphix-package-time = { version = "0.3.0", path = "../graphix-package-time" }
-graphix-package-tui = { version = "0.3.0", path = "../graphix-package-tui" }
+graphix-package-array = { version = "0.3.0", path = "../stdlib/graphix-package-array" }
+graphix-package-core = { version = "0.3.0", path = "../stdlib/graphix-package-core" }
+graphix-package-fs = { version = "0.3.0", path = "../stdlib/graphix-package-fs" }
+graphix-package-map = { version = "0.3.0", path = "../stdlib/graphix-package-map" }
+graphix-package-net = { version = "0.3.0", path = "../stdlib/graphix-package-net" }
+graphix-package-rand = { version = "0.3.0", path = "../stdlib/graphix-package-rand" }
+graphix-package-re = { version = "0.3.0", path = "../stdlib/graphix-package-re" }
+graphix-package-str = { version = "0.3.0", path = "../stdlib/graphix-package-str" }
+graphix-package-time = { version = "0.3.0", path = "../stdlib/graphix-package-time" }
+graphix-package-tui = { version = "0.3.0", path = "../stdlib/graphix-package-tui" }
 graphix-rt = { version = "0.3.0", path = "../graphix-rt" }
 log = { workspace = true }
 netidx = { workspace = true }

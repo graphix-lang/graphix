@@ -54,7 +54,6 @@ defpackage! {
 /// registration), or `Path as Type` where Path is used for `::NAME` access
 /// and Type is used for `register_builtin::<Type>()`.
 struct BuiltinEntry {
-    name_path: syn::Path,
     reg_type: syn::Type,
 }
 
@@ -64,11 +63,11 @@ impl syn::parse::Parse for BuiltinEntry {
         if input.peek(Token![as]) {
             let _as: Token![as] = input.parse()?;
             let reg_type: syn::Type = input.parse()?;
-            Ok(BuiltinEntry { name_path, reg_type })
+            Ok(BuiltinEntry { reg_type })
         } else {
             let reg_type =
                 syn::Type::Path(syn::TypePath { qself: None, path: name_path.clone() });
-            Ok(BuiltinEntry { name_path, reg_type })
+            Ok(BuiltinEntry { reg_type })
         }
     }
 }

@@ -1,12 +1,12 @@
 [package]
-name = "graphix-package-re"
+name = "graphix-package-str"
 version = "0.3.1"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
 repository = "https://github.com/graphix-lang/graphix"
-description = "A dataflow language for UIs and network programming, regex package"
-documentation = "https://docs.rs/graphix-package-re"
+description = "A dataflow language for UIs and network programming, string package"
+documentation = "https://docs.rs/graphix-package-str"
 readme = "../README.md"
 license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
@@ -19,20 +19,22 @@ krb5_iov = ["netidx/krb5_iov"]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
+escaping = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
-graphix-derive = { version = "0.1.0", path = "../graphix-derive" }
-graphix-package = { version = "0.3.1", path = "../graphix-package" }
+graphix-compiler = { version = "0.3.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.1.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.3.1", path = "../../graphix-package" }
 graphix-package-core = { version = "0.3.1", path = "../graphix-package-core" }
-graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
+graphix-rt = { version = "0.3.1", path = "../../graphix-rt" }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
-regex = { workspace = true }
+smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
+graphix-package-array = { version = "0.3.1", path = "../graphix-package-array" }
 env_logger = { workspace = true }
 tokio = { workspace = true }
 arcstr = { workspace = true }

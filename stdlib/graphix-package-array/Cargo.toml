@@ -1,12 +1,12 @@
 [package]
-name = "graphix-package-fs"
+name = "graphix-package-array"
 version = "0.3.1"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
 repository = "https://github.com/graphix-lang/graphix"
-description = "A dataflow language for UIs and network programming, filesystem package"
-documentation = "https://docs.rs/graphix-package-fs"
+description = "A dataflow language for UIs and network programming, array package"
+documentation = "https://docs.rs/graphix-package-array"
 readme = "../README.md"
 license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
@@ -18,30 +18,22 @@ krb5_iov = ["netidx/krb5_iov"]
 [dependencies]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
-bytes = { workspace = true }
-chrono = { workspace = true }
 compact_str = { workspace = true }
-enumflags2 = { workspace = true }
-extended-notify = { workspace = true }
-futures = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
-graphix-derive = { version = "0.1.0", path = "../graphix-derive" }
-graphix-package = { version = "0.3.1", path = "../graphix-package" }
+graphix-compiler = { version = "0.3.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.1.0", path = "../../graphix-derive" }
+graphix-rt = { version = "0.3.1", path = "../../graphix-rt" }
+graphix-package = { version = "0.3.1", path = "../../graphix-package" }
 graphix-package-core = { version = "0.3.1", path = "../graphix-package-core" }
-graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
-parking_lot = { workspace = true }
-poolshark = { workspace = true }
-tempfile = { workspace = true }
+smallvec = { workspace = true }
 tokio = { workspace = true }
-triomphe = { workspace = true }
-walkdir = { workspace = true }
 
 [dev-dependencies]
+graphix-package-str = { version = "0.3.1", path = "../graphix-package-str" }
 env_logger = { workspace = true }
 tokio = { workspace = true }
 arcstr = { workspace = true }
-tempfile = { workspace = true }
+poolshark = { workspace = true }
