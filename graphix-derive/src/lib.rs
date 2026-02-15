@@ -173,13 +173,11 @@ fn package_deps() -> Vec<String> {
     result
 }
 
-/// Generate the TEST_REGISTER array and TEST_ROOT constant from Cargo.toml deps.
+/// Generate the TEST_REGISTER array from Cargo.toml deps.
 fn test_harness() -> TokenStream {
     let deps = package_deps();
-    // Build register fn references for each dep
     let register_fns: Vec<TokenStream> = deps.iter().map(|name| {
         if *name == *PACKAGE_NAME {
-            // this is our own crate
             quote! {
                 <crate::P as ::graphix_package::Package<::graphix_rt::NoExt>>::register
             }
@@ -193,16 +191,6 @@ fn test_harness() -> TokenStream {
             }
         }
     }).collect();
-    // Build ROOT string: "mod core;\nuse core;\nmod array;\nmod str;\n..."
-    let mut root_parts = Vec::new();
-    for name in &deps {
-        if name == "core" {
-            root_parts.push("mod core;\nuse core".to_string());
-        } else {
-            root_parts.push(format!("mod {name}"));
-        }
-    }
-    let root_str = root_parts.join(";\n");
     let register_fn_ty = if *PACKAGE_NAME == "core" {
         quote! { crate::testing::RegisterFn }
     } else {
@@ -214,10 +202,6 @@ fn test_harness() -> TokenStream {
         pub(crate) const TEST_REGISTER: &[#register_fn_ty] = &[
             #(#register_fns),*
         ];
-
-        /// Root module expression including all package dependencies (for testing).
-        #[cfg(test)]
-        pub(crate) const TEST_ROOT: ::arcstr::ArcStr = ::arcstr::literal!(#root_str);
     }
 }
 
@@ -349,6 +333,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let init_custom = init_custom(&input.init_custom);
     let graphix_files = graphix_files();
     let test_harness = test_harness();
+    let package_name = &*PACKAGE_NAME;
 
     quote! {
         pub struct P;
@@ -357,9 +342,11 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             fn register(
                 ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
                 modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
+                root_mods: &mut ::graphix_package::IndexSet<::arcstr::ArcStr>,
             ) -> ::anyhow::Result<()> {
                 #(#register_builtins;)*
                 #(#graphix_files;)*
+                root_mods.insert(::arcstr::literal!(#package_name));
                 Ok(())
             }
 

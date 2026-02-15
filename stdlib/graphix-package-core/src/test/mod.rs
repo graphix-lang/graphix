@@ -8,5 +8,5 @@ mod lang;
 mod lib;
 
 pub async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
-    testing::init(sub, crate::TEST_REGISTER, crate::TEST_ROOT).await
+    testing::init(sub, crate::TEST_REGISTER).await
 }

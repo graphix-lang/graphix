@@ -9,11 +9,12 @@ use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use handlebars::Handlebars;
-use indexmap::IndexMap;
+pub use indexmap::IndexSet;
 use netidx_value::Value;
 use serde_json::json;
 use std::{
     any::Any,
+    collections::BTreeMap,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -51,13 +52,13 @@ pub trait Package<X: GXExt> {
     /// register builtins and return a resolver containing Graphix
     /// code contained in the package.
     ///
-    /// The returned resolver must be a VFS resolver, and it's root
-    /// path must be the name of the package. If this isn't the case
-    /// then the package will be rejected by the shell, and a warning
-    /// will be printed to the user.
+    /// Graphix modules must be registered by path in the modules table
+    /// and the package must be registered by name in the root_mods set.
+    /// Normally this is handled by the defpackage macro.
     fn register(
         ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
         modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
+        root_mods: &mut IndexSet<ArcStr>,
     ) -> Result<()>;
 
     /// Return true if the `CompExp` matches the custom display type
@@ -182,41 +183,35 @@ impl std::fmt::Display for PackageEntry {
 }
 
 /// Read the packages.toml file, creating it with defaults if it doesn't exist.
-async fn read_packages() -> Result<IndexMap<String, PackageEntry>> {
+async fn read_packages() -> Result<BTreeMap<String, PackageEntry>> {
     let path = packages_toml_path()?;
     match fs::read_to_string(&path).await {
         Ok(contents) => {
-            use toml_edit::DocumentMut;
-            let doc: DocumentMut = contents.parse().context("parsing packages.toml")?;
+            let doc: toml::Value =
+                toml::from_str(&contents).context("parsing packages.toml")?;
             let tbl = doc
                 .get("packages")
                 .and_then(|v| v.as_table())
                 .ok_or_else(|| anyhow!("packages.toml missing [packages] table"))?;
-            let mut packages = IndexMap::new();
+            let mut packages = BTreeMap::new();
             for (k, v) in tbl {
-                let entry = if let Some(s) = v.as_str() {
-                    PackageEntry::Version(s.to_string())
-                } else if let Some(t) = v.as_inline_table() {
-                    if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
-                        PackageEntry::Path(PathBuf::from(p))
-                    } else {
-                        bail!("package {k}: table entry must have a 'path' key")
+                let entry = match v {
+                    toml::Value::String(s) => PackageEntry::Version(s.clone()),
+                    toml::Value::Table(t) => {
+                        if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
+                            PackageEntry::Path(PathBuf::from(p))
+                        } else {
+                            bail!("package {k}: table entry must have a 'path' key")
+                        }
                     }
-                } else if let Some(t) = v.as_table() {
-                    if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
-                        PackageEntry::Path(PathBuf::from(p))
-                    } else {
-                        bail!("package {k}: table entry must have a 'path' key")
-                    }
-                } else {
-                    bail!("package {k}: expected a version string or table")
+                    _ => bail!("package {k}: expected a version string or table"),
                 };
-                packages.insert(k.to_string(), entry);
+                packages.insert(k.clone(), entry);
             }
             Ok(packages)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let packages: IndexMap<String, PackageEntry> = DEFAULT_PACKAGES
+            let packages: BTreeMap<String, PackageEntry> = DEFAULT_PACKAGES
                 .iter()
                 .map(|(k, v)| (k.to_string(), PackageEntry::Version(v.to_string())))
                 .collect();
@@ -228,28 +223,30 @@ async fn read_packages() -> Result<IndexMap<String, PackageEntry>> {
 }
 
 /// Write the packages.toml file
-async fn write_packages(packages: &IndexMap<String, PackageEntry>) -> Result<()> {
-    use toml_edit::DocumentMut;
+async fn write_packages(packages: &BTreeMap<String, PackageEntry>) -> Result<()> {
     let path = packages_toml_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let mut doc = DocumentMut::new();
-    let mut tbl = toml_edit::Table::new();
+    let mut doc = toml::value::Table::new();
+    let mut tbl = toml::value::Table::new();
     for (k, entry) in packages {
         match entry {
             PackageEntry::Version(v) => {
-                tbl[k] = toml_edit::value(v);
+                tbl.insert(k.clone(), toml::Value::String(v.clone()));
             }
             PackageEntry::Path(p) => {
-                let mut t = toml_edit::InlineTable::new();
-                t.insert("path", toml_edit::Value::from(p.to_string_lossy().as_ref()));
-                tbl[k] = toml_edit::Item::Value(t.into());
+                let mut t = toml::value::Table::new();
+                t.insert(
+                    "path".to_string(),
+                    toml::Value::String(p.to_string_lossy().into_owned()),
+                );
+                tbl.insert(k.clone(), toml::Value::Table(t));
             }
         }
     }
-    doc["packages"] = toml_edit::Item::Table(tbl);
-    fs::write(&path, doc.to_string()).await?;
+    doc.insert("packages".to_string(), toml::Value::Table(tbl));
+    fs::write(&path, toml::to_string_pretty(&doc)?).await?;
     Ok(())
 }
 
@@ -461,7 +458,7 @@ impl GraphixPM {
     /// Generate deps.rs from the package list
     fn generate_deps_rs(
         &self,
-        packages: &IndexMap<String, PackageEntry>,
+        packages: &BTreeMap<String, PackageEntry>,
     ) -> Result<String> {
         let mut hb = Handlebars::new();
         hb.register_template_string("deps.rs", SKEL.deps_rs)?;
@@ -473,19 +470,7 @@ impl GraphixPM {
                 })
             })
             .collect();
-        let mut root_parts = vec![];
-        for name in packages.keys() {
-            if name == "core" {
-                root_parts.push("mod core;\\nuse core".to_string());
-            } else {
-                root_parts.push(format!("mod {name}"));
-            }
-        }
-        let root_expr = root_parts.join(";\\n");
-        let params = json!({
-            "deps": deps,
-            "root_expr": root_expr,
-        });
+        let params = json!({ "deps": deps });
         Ok(hb.render("deps.rs", &params)?)
     }
 
@@ -493,7 +478,7 @@ impl GraphixPM {
     fn update_cargo_toml(
         &self,
         cargo_toml_content: &str,
-        packages: &IndexMap<String, PackageEntry>,
+        packages: &BTreeMap<String, PackageEntry>,
     ) -> Result<String> {
         use toml_edit::DocumentMut;
         let mut doc: DocumentMut =
@@ -534,7 +519,7 @@ impl GraphixPM {
     }
 
     /// Rebuild the graphix binary with the given package set
-    async fn rebuild(&self, packages: &IndexMap<String, PackageEntry>) -> Result<()> {
+    async fn rebuild(&self, packages: &BTreeMap<String, PackageEntry>) -> Result<()> {
         println!("Unpacking graphix-shell source...");
         // Delete existing build dir to get a fresh source
         let build_dir = graphix_data_dir()?.join("build");
@@ -610,12 +595,12 @@ impl GraphixPM {
 
     /// Read the version from a package crate's Cargo.toml at the given path
     async fn read_package_version(path: &Path) -> Result<String> {
-        use toml_edit::DocumentMut;
         let cargo_toml_path = path.join("Cargo.toml");
         let contents = fs::read_to_string(&cargo_toml_path)
             .await
             .with_context(|| format!("reading {}", cargo_toml_path.display()))?;
-        let doc: DocumentMut = contents.parse().context("parsing package Cargo.toml")?;
+        let doc: toml::Value =
+            toml::from_str(&contents).context("parsing package Cargo.toml")?;
         doc.get("package")
             .and_then(|p| p.get("version"))
             .and_then(|v| v.as_str())
@@ -692,7 +677,7 @@ impl GraphixPM {
                 eprintln!("Cannot remove the core package");
                 continue;
             }
-            if installed.shift_remove(pkg.name()).is_some() {
+            if installed.remove(pkg.name()).is_some() {
                 println!("Removing {}", pkg.name());
                 changed = true;
             } else {

@@ -19,12 +19,12 @@ impl TestCtx {
 pub type RegisterFn = fn(
     &mut graphix_compiler::ExecCtx<GXRt<NoExt>, <NoExt as graphix_rt::GXExt>::UserEvent>,
     &mut fxhash::FxHashMap<netidx_core::path::Path, arcstr::ArcStr>,
+    &mut graphix_package::IndexSet<arcstr::ArcStr>,
 ) -> Result<()>;
 
 pub async fn init_with_resolvers(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[RegisterFn],
-    root: arcstr::ArcStr,
     mut resolvers: Vec<ModuleResolver>,
 ) -> Result<TestCtx> {
     let _ = env_logger::try_init();
@@ -34,9 +34,19 @@ pub async fn init_with_resolvers(
         env.subscriber().clone(),
     ))?;
     let mut modules = fxhash::FxHashMap::default();
+    let mut root_mods = graphix_package::IndexSet::new();
     for f in register {
-        f(&mut ctx, &mut modules)?;
+        f(&mut ctx, &mut modules, &mut root_mods)?;
     }
+    let mut parts = Vec::new();
+    for name in &root_mods {
+        if name == "core" {
+            parts.push(format!("mod core;\nuse core"));
+        } else {
+            parts.push(format!("mod {name}"));
+        }
+    }
+    let root = arcstr::ArcStr::from(parts.join(";\n"));
     resolvers.insert(0, ModuleResolver::VFS(modules));
     Ok(TestCtx {
         internal_only: env,
@@ -52,9 +62,8 @@ pub async fn init_with_resolvers(
 pub async fn init(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[RegisterFn],
-    root: arcstr::ArcStr,
 ) -> Result<TestCtx> {
-    init_with_resolvers(sub, register, root, vec![]).await
+    init_with_resolvers(sub, register, vec![]).await
 }
 
 pub use graphix_compiler::expr::parser::GRAPHIX_ESC;
@@ -83,7 +92,7 @@ macro_rules! run {
             ]);
             let resolver = ::graphix_compiler::expr::ModuleResolver::VFS(tbl);
             let ctx = $crate::testing::init_with_resolvers(
-                tx, &crate::TEST_REGISTER, crate::TEST_ROOT, vec![resolver],
+                tx, &crate::TEST_REGISTER, vec![resolver],
             ).await?;
             let bs = &ctx.rt;
             match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
@@ -169,7 +178,7 @@ macro_rules! run_with_tempdir {
             let (tx, mut rx) = ::tokio::sync::mpsc::channel::<
                 ::poolshark::global::GPooled<Vec<::graphix_rt::GXEvent>>
             >(10);
-            let ctx = $crate::testing::init(tx, &crate::TEST_REGISTER, crate::TEST_ROOT).await?;
+            let ctx = $crate::testing::init(tx, &crate::TEST_REGISTER).await?;
             let $temp_dir = ::tempfile::tempdir()?;
 
             let test_file = { $setup };

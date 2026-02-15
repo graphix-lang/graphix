@@ -24,6 +24,7 @@ graphix-compiler = { version = "0.3.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.1.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.3.1", path = "../../graphix-package" }
 graphix-package-core = { version = "0.3.1", path = "../graphix-package-core" }
+graphix-package-time = { version = "0.3.1", path = "../graphix-package-time" }
 graphix-rt = { version = "0.3.1", path = "../../graphix-rt" }
 netidx-core = { workspace = true }
 netidx-protocols = { workspace = true }

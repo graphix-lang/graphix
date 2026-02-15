@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, ExecCtx};
-use graphix_package::{CustomDisplay, Package};
+use graphix_package::{CustomDisplay, IndexSet, Package};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_core::path::Path;
 use tokio::sync::oneshot;
@@ -13,10 +13,19 @@ pub(crate) fn register<X: GXExt>(
     ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
     modules: &mut FxHashMap<Path, ArcStr>,
 ) -> Result<ArcStr> {
+    let mut root_mods = IndexSet::new();
     {{#each deps}}
-    {{this.crate_name}}::P::register(ctx, modules)?;
+    {{this.crate_name}}::P::register(ctx, modules, &mut root_mods)?;
     {{/each}}
-    Ok(ArcStr::from("{{root_expr}}"))
+    let mut parts = Vec::new();
+    for name in &root_mods {
+        if name == "core" {
+            parts.push(format!("mod core;\nuse core"));
+        } else {
+            parts.push(format!("mod {name}"));
+        }
+    }
+    Ok(ArcStr::from(parts.join(";\n")))
 }
 
 pub(crate) struct Cdc<X: GXExt> {

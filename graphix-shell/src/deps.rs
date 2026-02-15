@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, ExecCtx};
-use graphix_package::{CustomDisplay, Package};
+use graphix_package::{CustomDisplay, IndexSet, Package};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_core::path::Path;
 use tokio::sync::oneshot;
@@ -13,29 +13,26 @@ pub(crate) fn register<X: GXExt>(
     ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
     modules: &mut FxHashMap<Path, ArcStr>,
 ) -> Result<ArcStr> {
-    graphix_package_core::P::register(ctx, modules)?;
-    graphix_package_array::P::register(ctx, modules)?;
-    graphix_package_str::P::register(ctx, modules)?;
-    graphix_package_map::P::register(ctx, modules)?;
-    graphix_package_fs::P::register(ctx, modules)?;
-    graphix_package_net::P::register(ctx, modules)?;
-    graphix_package_time::P::register(ctx, modules)?;
-    graphix_package_re::P::register(ctx, modules)?;
-    graphix_package_rand::P::register(ctx, modules)?;
-    graphix_package_tui::P::register(ctx, modules)?;
-    Ok(ArcStr::from(
-        "mod core;\n\
-         use core;\n\
-         mod array;\n\
-         mod str;\n\
-         mod map;\n\
-         mod fs;\n\
-         mod time;\n\
-         mod net;\n\
-         mod re;\n\
-         mod rand;\n\
-         mod tui",
-    ))
+    let mut root_mods = IndexSet::new();
+    graphix_package_core::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_array::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_str::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_map::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_fs::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_net::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_time::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_re::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_rand::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_tui::P::register(ctx, modules, &mut root_mods)?;
+    let mut parts = Vec::new();
+    for name in &root_mods {
+        if name == "core" {
+            parts.push(format!("mod core;\nuse core"));
+        } else {
+            parts.push(format!("mod {name}"));
+        }
+    }
+    Ok(ArcStr::from(parts.join(";\n")))
 }
 
 pub(crate) struct Cdc<X: GXExt> {
