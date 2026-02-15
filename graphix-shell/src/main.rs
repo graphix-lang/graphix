@@ -105,6 +105,8 @@ enum PackageAction {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
+    /// Update graphix to the latest version
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -267,6 +269,10 @@ async fn handle_package(action: PackageAction) -> Result<()> {
                 format!("graphix-package-{name}")
             };
             graphix_package::create_package(&dir, &full_name).await
+        }
+        PackageAction::Update => {
+            let pm = GraphixPM::new().await?;
+            pm.update().await
         }
     }
 }

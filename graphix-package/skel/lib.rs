@@ -3,7 +3,7 @@ use graphix_compiler::{
     expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_derive::defpackage;
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 use std::boxed::Box;
 

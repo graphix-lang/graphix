@@ -28,6 +28,8 @@ use tokio::{
 };
 use walkdir::WalkDir;
 
+graphix_derive::skel_dep_versions!();
+
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
 pub trait CustomDisplay<X: GXExt>: Any {
@@ -127,11 +129,13 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     hb.register_template_string("mod.gxi", SKEL.mod_gxi)?;
     hb.register_template_string("README.md", SKEL.readme_md)?;
     let name = name.strip_prefix("graphix-package-").unwrap();
-    let params = json!({
-        "version": SKEL.version,
-        "name": name,
-        "deps": []
-    });
+    let mut params = match skel_dep_versions() {
+        serde_json::Value::Object(m) => m,
+        _ => unreachable!(),
+    };
+    params.insert("name".into(), json!(name));
+    params.insert("deps".into(), json!([]));
+    let params = serde_json::Value::Object(params);
     fs::write(full_path.join("Cargo.toml"), hb.render("Cargo.toml", &params)?).await?;
     fs::write(full_path.join("README.md"), hb.render("README.md", &params)?).await?;
     let src = full_path.join("src");
@@ -165,6 +169,10 @@ const DEFAULT_PACKAGES: &[(&str, &str)] = &[
     ("rand", SKEL.version),
     ("tui", SKEL.version),
 ];
+
+fn is_stdlib_package(name: &str) -> bool {
+    DEFAULT_PACKAGES.iter().any(|(n, _)| *n == name)
+}
 
 /// A package entry in packages.toml — either a version string or a path.
 #[derive(Debug, Clone)]
@@ -264,8 +272,7 @@ async fn graphix_version() -> Result<String> {
 }
 
 // fetch our source from the local cargo cache (preferred method)
-async fn extract_local_source(cargo: &Path) -> Result<PathBuf> {
-    let version = graphix_version().await?;
+async fn extract_local_source(cargo: &Path, version: &str) -> Result<PathBuf> {
     let graphix_build_dir = graphix_data_dir()?.join("build");
     let graphix_dir = graphix_build_dir.join(format!("graphix-shell-{version}"));
     match fs::metadata(&graphix_build_dir).await {
@@ -318,8 +325,7 @@ async fn extract_local_source(cargo: &Path) -> Result<PathBuf> {
 }
 
 // download our src from crates.io (backup method)
-async fn download_source(crates_io: &AsyncClient) -> Result<PathBuf> {
-    let version = graphix_version().await?;
+async fn download_source(crates_io: &AsyncClient, version: &str) -> Result<PathBuf> {
     let package = format!("graphix-shell-{version}");
     let graphix_build_dir = graphix_data_dir()?.join("build");
     let graphix_dir = graphix_build_dir.join(&package);
@@ -445,10 +451,10 @@ impl GraphixPM {
     /// Unpack a fresh copy of the graphix-shell source. Tries the
     /// local cargo registry cache first, falls back to downloading
     /// from crates.io.
-    async fn unpack_source(&self) -> Result<PathBuf> {
-        match extract_local_source(&self.cargo).await {
+    async fn unpack_source(&self, version: &str) -> Result<PathBuf> {
+        match extract_local_source(&self.cargo, version).await {
             Ok(p) => Ok(p),
-            Err(local) => match download_source(&self.cratesio).await {
+            Err(local) => match download_source(&self.cratesio, version).await {
                 Ok(p) => Ok(p),
                 Err(dl) => bail!("could not find our source local: {local}, dl: {dl}"),
             },
@@ -519,14 +525,18 @@ impl GraphixPM {
     }
 
     /// Rebuild the graphix binary with the given package set
-    async fn rebuild(&self, packages: &BTreeMap<String, PackageEntry>) -> Result<()> {
+    async fn rebuild(
+        &self,
+        packages: &BTreeMap<String, PackageEntry>,
+        version: &str,
+    ) -> Result<()> {
         println!("Unpacking graphix-shell source...");
         // Delete existing build dir to get a fresh source
         let build_dir = graphix_data_dir()?.join("build");
         if fs::metadata(&build_dir).await.is_ok() {
             fs::remove_dir_all(&build_dir).await?;
         }
-        let source_dir = self.unpack_source().await?;
+        let source_dir = self.unpack_source(version).await?;
         // Generate deps.rs
         println!("Generating deps.rs...");
         let deps_rs = self.generate_deps_rs(&packages)?;
@@ -658,7 +668,8 @@ impl GraphixPM {
             changed = true;
         }
         if changed {
-            self.rebuild(&installed).await?;
+            let version = graphix_version().await?;
+            self.rebuild(&installed, &version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -685,7 +696,8 @@ impl GraphixPM {
             }
         }
         if changed {
-            self.rebuild(&installed).await?;
+            let version = graphix_version().await?;
+            self.rebuild(&installed, &version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -717,7 +729,8 @@ impl GraphixPM {
         let mut lock = Self::lock_file()?;
         let _guard = lock.write().context("waiting for package lock")?;
         let packages = read_packages().await?;
-        self.rebuild(&packages).await
+        let version = graphix_version().await?;
+        self.rebuild(&packages, &version).await
     }
 
     /// List installed packages
@@ -730,6 +743,43 @@ impl GraphixPM {
                 println!("{name}: {version}");
             }
         }
+        Ok(())
+    }
+
+    /// Query crates.io for the latest version of a crate
+    async fn latest_version(&self, crate_name: &str) -> Result<String> {
+        let cr = self
+            .cratesio
+            .get_crate(crate_name)
+            .await
+            .with_context(|| format!("querying crates.io for {crate_name}"))?;
+        Ok(cr.crate_data.max_version)
+    }
+
+    /// Update graphix to the latest version and rebuild with current packages
+    pub async fn update(&self) -> Result<()> {
+        let mut lock = Self::lock_file()?;
+        let _guard = lock.write().context("waiting for package lock")?;
+        let current = graphix_version().await?;
+        let latest_shell = self.latest_version("graphix-shell").await?;
+        if current == latest_shell {
+            println!("graphix is already up to date (version {current})");
+            return Ok(());
+        }
+        println!("Updating graphix from {current} to {latest_shell}...");
+        let mut packages = read_packages().await?;
+        for (name, entry) in packages.iter_mut() {
+            if is_stdlib_package(name) {
+                if let PackageEntry::Version(_) = entry {
+                    let crate_name = format!("graphix-package-{name}");
+                    let latest = self.latest_version(&crate_name).await?;
+                    println!("  {name}: {entry} -> {latest}");
+                    *entry = PackageEntry::Version(latest);
+                }
+            }
+        }
+        self.rebuild(&packages, &latest_shell).await?;
+        write_packages(&packages).await?;
         Ok(())
     }
 }

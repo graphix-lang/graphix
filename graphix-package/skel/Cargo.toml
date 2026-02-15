@@ -12,18 +12,17 @@ license = "MIT"
 categories = []
 
 [dependencies]
-graphix-package = "{{version}}"
-graphix-package-core = "{{version}}"
-graphix-compiler = "{{version}}"
-graphix-derive = "{{version}}"
-graphix-rt = "{{version}}"
-anyhow = "1"
-arcstr = "1"
-compact_str = "0.8"
-fxhash = "0.2"
-netidx-core = "0.31"
-netidx-value = "0.31"
-tokio = { version = "1", features = [
+graphix-package = "{{graphix_package_version}}"
+graphix-package-core = "{{graphix_package_core_version}}"
+graphix-compiler = "{{graphix_compiler_version}}"
+graphix-derive = "{{graphix_derive_version}}"
+graphix-rt = "{{graphix_rt_version}}"
+anyhow = "{{anyhow_version}}"
+arcstr = "{{arcstr_version}}"
+fxhash = "{{fxhash_version}}"
+netidx-core = "{{netidx_core_version}}"
+netidx-value = "{{netidx_value_version}}"
+tokio = { version = "{{tokio_version}}", features = [
     "rt-multi-thread",
     "net",
     "time",
@@ -35,5 +34,5 @@ tokio = { version = "1", features = [
     "signal",
     "io-std",
 ] }
-triomphe = "0.1"
-async-trait = "0.1"
+triomphe = "{{triomphe_version}}"
+async-trait = "{{async_trait_version}}"

@@ -1,9 +1,10 @@
 use cargo_toml::Manifest;
+use fxhash::FxHashMap;
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::{
     env,
-    path::{Component, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::LazyLock,
 };
 use syn::{
@@ -12,7 +13,6 @@ use syn::{
     token::{self, Comma},
     Ident, Pat, Result, Token,
 };
-
 static PROJECT_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir").into()
 });
@@ -131,14 +131,44 @@ fn check_invariants() {
     }
 }
 
+/// Collect graphix-package-* dependency names from a Cargo.toml section,
+/// preserving document order.
+fn collect_package_deps(
+    doc: &toml_edit::DocumentMut,
+    section: &str,
+    seen: &mut std::collections::HashSet<String>,
+    result: &mut Vec<String>,
+) {
+    if let Some(deps) = doc.get(section).and_then(|v| v.as_table()) {
+        for (key, _) in deps.iter() {
+            if let Some(name) = key.strip_prefix("graphix-package-") {
+                if seen.insert(name.to_string()) {
+                    result.push(name.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Collect graphix-package-* deps from [dependencies] only (used for
+/// register() calls that must compile without dev-dependencies).
+fn runtime_deps() -> Vec<String> {
+    let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
+        .expect("failed to read Cargo.toml");
+    let doc: toml_edit::DocumentMut =
+        content.parse().expect("failed to parse Cargo.toml");
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    collect_package_deps(&doc, "dependencies", &mut seen, &mut result);
+    result
+}
+
 /// Collect graphix-package-* dependency names from both [dependencies] and
 /// [dev-dependencies], preserving the order written in Cargo.toml.
-/// Core always comes first. The user is responsible for listing their
-/// graphix-package-* deps in the correct module compilation order.
+/// Core always comes first. Used for TEST_REGISTER.
 fn package_deps() -> Vec<String> {
-    let cargo_toml_path = PROJECT_ROOT.join("Cargo.toml");
-    let content =
-        std::fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+    let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
+        .expect("failed to read Cargo.toml");
     let doc: toml_edit::DocumentMut =
         content.parse().expect("failed to parse Cargo.toml");
     let mut seen = std::collections::HashSet::new();
@@ -146,26 +176,8 @@ fn package_deps() -> Vec<String> {
     // core always first
     seen.insert("core".to_string());
     result.push("core".to_string());
-    // collect from [dependencies] in document order
-    if let Some(deps) = doc.get("dependencies").and_then(|v| v.as_table()) {
-        for (key, _) in deps.iter() {
-            if let Some(name) = key.strip_prefix("graphix-package-") {
-                if seen.insert(name.to_string()) {
-                    result.push(name.to_string());
-                }
-            }
-        }
-    }
-    // collect from [dev-dependencies] in document order
-    if let Some(deps) = doc.get("dev-dependencies").and_then(|v| v.as_table()) {
-        for (key, _) in deps.iter() {
-            if let Some(name) = key.strip_prefix("graphix-package-") {
-                if seen.insert(name.to_string()) {
-                    result.push(name.to_string());
-                }
-            }
-        }
-    }
+    collect_package_deps(&doc, "dependencies", &mut seen, &mut result);
+    collect_package_deps(&doc, "dev-dependencies", &mut seen, &mut result);
     // include ourselves if not already present
     if seen.insert(PACKAGE_NAME.clone()) {
         result.push(PACKAGE_NAME.clone());
@@ -335,6 +347,20 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let test_harness = test_harness();
     let package_name = &*PACKAGE_NAME;
 
+    let dep_registers: Vec<TokenStream> = runtime_deps()
+        .iter()
+        .filter(|name| **name != *PACKAGE_NAME)
+        .map(|name| {
+            let crate_ident = syn::Ident::new(
+                &format!("graphix_package_{}", name.replace('-', "_")),
+                proc_macro2::Span::call_site(),
+            );
+            quote! {
+                <#crate_ident::P as ::graphix_package::Package<X>>::register(ctx, modules, root_mods)?;
+            }
+        })
+        .collect();
+
     quote! {
         pub struct P;
 
@@ -344,6 +370,10 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
                 root_mods: &mut ::graphix_package::IndexSet<::arcstr::ArcStr>,
             ) -> ::anyhow::Result<()> {
+                if root_mods.contains(#package_name) {
+                    return Ok(());
+                }
+                #(#dep_registers)*
                 #(#register_builtins;)*
                 #(#graphix_files;)*
                 root_mods.insert(::arcstr::literal!(#package_name));
@@ -371,6 +401,124 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
 
         #test_harness
+    }
+    .into()
+}
+
+struct TomlCache {
+    docs: FxHashMap<PathBuf, toml_edit::DocumentMut>,
+}
+
+impl TomlCache {
+    fn new() -> Self {
+        Self { docs: FxHashMap::default() }
+    }
+
+    fn get(&mut self, path: &Path) -> &toml_edit::DocumentMut {
+        self.docs.entry(path.to_path_buf()).or_insert_with(|| {
+            let content = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            content
+                .parse()
+                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
+        })
+    }
+}
+
+/// Resolve the version of a skel dependency.
+///
+/// For graphix-* crates, reads `[package].version` from the crate's own
+/// Cargo.toml. For third-party crates, reads the version requirement from
+/// `[workspace.dependencies]` in the workspace root Cargo.toml.
+fn resolve_skel_dep_version(
+    cache: &mut TomlCache,
+    workspace: &Path,
+    name: &str,
+) -> String {
+    if name.starts_with("graphix-") {
+        let crate_dir = if name.starts_with("graphix-package") {
+            if name == "graphix-package" {
+                workspace.join(name)
+            } else {
+                workspace.join("stdlib").join(name)
+            }
+        } else {
+            workspace.join(name)
+        };
+        let cargo_toml = crate_dir.join("Cargo.toml");
+        let doc = cache.get(&cargo_toml);
+        doc.get("package")
+            .and_then(|p| p.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("no [package].version in {}", cargo_toml.display()))
+            .to_string()
+    } else {
+        let ws_toml = workspace.join("Cargo.toml");
+        let doc = cache.get(&ws_toml);
+        let ws_deps = doc
+            .get("workspace")
+            .and_then(|w| w.get("dependencies"))
+            .and_then(|d| d.as_table())
+            .unwrap_or_else(|| {
+                panic!("no [workspace.dependencies] in {}", ws_toml.display())
+            });
+        let dep = ws_deps.get(name).unwrap_or_else(|| {
+            panic!("dep {name} not found in [workspace.dependencies]")
+        });
+        if let Some(s) = dep.as_str() {
+            s.to_string()
+        } else if let Some(t) = dep.as_inline_table() {
+            t.get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("dep {name} has no version in workspace deps"))
+                .to_string()
+        } else if let Some(t) = dep.as_table() {
+            t.get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("dep {name} has no version in workspace deps"))
+                .to_string()
+        } else {
+            panic!("unexpected dep format for {name} in workspace deps")
+        }
+    }
+}
+
+/// Generate a function returning serde_json::Value with the version of every
+/// dependency listed in skel/Cargo.toml. Versions are resolved from the
+/// workspace at compile time.
+///
+/// Invoke from graphix-package/src/lib.rs:
+/// ```ignore
+/// graphix_derive::skel_dep_versions!();
+/// // generates: fn skel_dep_versions() -> serde_json::Value { ... }
+/// ```
+#[proc_macro]
+pub fn skel_dep_versions(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let workspace = PROJECT_ROOT.parent().expect("PROJECT_ROOT has no parent");
+    let skel_toml = PROJECT_ROOT.join("skel").join("Cargo.toml");
+    let mut cache = TomlCache::new();
+    let dep_names: Vec<String> = cache
+        .get(&skel_toml)
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .unwrap_or_else(|| panic!("no [dependencies] in {}", skel_toml.display()))
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
+    for name in &dep_names {
+        let version = resolve_skel_dep_version(&mut cache, workspace, name);
+        let key = format!("{}_version", name.replace('-', "_"));
+        keys.push(key);
+        values.push(version);
+    }
+    quote! {
+        fn skel_dep_versions() -> ::serde_json::Value {
+            ::serde_json::json!({
+                #( #keys: #values ),*
+            })
+        }
     }
     .into()
 }

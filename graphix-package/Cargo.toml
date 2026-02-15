@@ -17,6 +17,7 @@ cp_r = { workspace = true }
 dirs = { workspace = true }
 fd-lock = { workspace = true }
 graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
+graphix-derive = { version = "0.3.1", path = "../graphix-derive" }
 graphix-rt = { version = "0.3.1", path = "../graphix-rt" }
 anyhow = { workspace = true }
 netidx-core = { workspace = true }
