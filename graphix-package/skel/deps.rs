@@ -25,7 +25,18 @@ pub(crate) fn register<X: GXExt>(
             parts.push(format!("mod {name}"));
         }
     }
-    Ok(ArcStr::from(parts.join(";\n")))
+    let mut main_program = None;
+    {{#each deps}}
+    if let Some(m) = <{{this.crate_name}}::P as Package<X>>::main_program() {
+        main_program = Some(m);
+    }
+    {{/each}}
+    let mut root = parts.join(";\n");
+    if let Some(main) = main_program {
+        root.push_str(";\n");
+        root.push_str(main);
+    }
+    Ok(ArcStr::from(root))
 }
 
 pub(crate) struct Cdc<X: GXExt> {

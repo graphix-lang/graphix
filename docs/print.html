@@ -6765,9 +6765,9 @@ the latest compatible version within each package's semver range.</p>
 <p>To update graphix itself (and the standard library) to the latest version:</p>
 <pre><code>graphix package update
 </code></pre>
-<p>This queries crates.io for the latest <code>graphix-shell</code> version, updates all
-standard library package versions in <code>packages.toml</code> to match, and triggers a
-full rebuild. Your third-party packages are left untouched.</p>
+<p>This queries crates.io for the latest <code>graphix-shell</code> version and the latest
+version of each standard library package, updates <code>packages.toml</code> accordingly,
+and triggers a full rebuild. Your third-party packages are left untouched.</p>
 <p>If you're already on the latest version, the command prints a message and
 exits without rebuilding.</p>
 <p>To update a third-party package to a new <strong>major</strong> version, edit the version
@@ -7021,6 +7021,17 @@ mod test {
 <span class="boring">}</span></code></pre></pre>
 <p>The <code>run!</code> macro sets up a full Graphix runtime with your package registered,
 compiles the expression, and checks the result against your predicate.</p>
+<h2 id="building-standalone-binaries"><a class="header" href="#building-standalone-binaries">Building Standalone Binaries</a></h2>
+<p>If you want to build a self-contained graphix binary with your package baked in
+(for deployment, distribution, or use as a custom application), run from your
+package directory:</p>
+<pre><code>cd graphix-package-mylib
+graphix package build-standalone
+</code></pre>
+<p>This builds a release-optimized <code>graphix</code> binary in the current directory that
+includes the stdlib packages plus your local package. The resulting binary is
+fully standalone — it doesn't require <code>graphix package add</code> or any runtime
+package management.</p>
 <h2 id="publishing"><a class="header" href="#publishing">Publishing</a></h2>
 <p>Packages are published to crates.io like any other Rust crate:</p>
 <pre><code>cd graphix-package-mylib

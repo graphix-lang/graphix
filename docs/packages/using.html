@@ -215,9 +215,9 @@ the latest compatible version within each package's semver range.</p>
 <p>To update graphix itself (and the standard library) to the latest version:</p>
 <pre><code>graphix package update
 </code></pre>
-<p>This queries crates.io for the latest <code>graphix-shell</code> version, updates all
-standard library package versions in <code>packages.toml</code> to match, and triggers a
-full rebuild. Your third-party packages are left untouched.</p>
+<p>This queries crates.io for the latest <code>graphix-shell</code> version and the latest
+version of each standard library package, updates <code>packages.toml</code> accordingly,
+and triggers a full rebuild. Your third-party packages are left untouched.</p>
 <p>If you're already on the latest version, the command prints a message and
 exits without rebuilding.</p>
 <p>To update a third-party package to a new <strong>major</strong> version, edit the version

@@ -80,6 +80,10 @@ pub trait Package<X: GXExt> {
         stop: oneshot::Sender<()>,
         e: CompExp<X>,
     ) -> Result<Box<dyn CustomDisplay<X>>>;
+
+    /// Return the main program source if this package has one and the
+    /// `standalone` feature is enabled.
+    fn main_program() -> Option<&'static str>;
 }
 
 // package skeleton, our version, and deps template
@@ -743,6 +747,74 @@ impl GraphixPM {
                 println!("{name}: {version}");
             }
         }
+        Ok(())
+    }
+
+    /// Build a standalone graphix binary from a local package directory.
+    ///
+    /// The binary is placed in `package_dir/graphix`. Only the local
+    /// package is included directly — cargo resolves its transitive
+    /// dependencies (including stdlib packages) normally.
+    pub async fn build_standalone(&self, package_dir: &Path) -> Result<()> {
+        let package_dir = package_dir
+            .canonicalize()
+            .with_context(|| format!("resolving {}", package_dir.display()))?;
+        // Read the package name from Cargo.toml
+        let cargo_toml_path = package_dir.join("Cargo.toml");
+        let contents = fs::read_to_string(&cargo_toml_path)
+            .await
+            .with_context(|| format!("reading {}", cargo_toml_path.display()))?;
+        let doc: toml::Value =
+            toml::from_str(&contents).context("parsing package Cargo.toml")?;
+        let crate_name = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("no package name in {}", cargo_toml_path.display()))?;
+        let short_name = crate_name
+            .strip_prefix("graphix-package-")
+            .ok_or_else(|| {
+                anyhow!("package name must start with graphix-package-, got {crate_name}")
+            })?;
+        let mut packages = BTreeMap::new();
+        packages.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
+        let mut lock = Self::lock_file()?;
+        let _guard = lock.write().context("waiting for package lock")?;
+        println!("Unpacking graphix-shell source...");
+        let build_dir = graphix_data_dir()?.join("build");
+        if fs::metadata(&build_dir).await.is_ok() {
+            fs::remove_dir_all(&build_dir).await?;
+        }
+        let source_dir = self.unpack_source(SKEL.version).await?;
+        println!("Generating deps.rs...");
+        let deps_rs = self.generate_deps_rs(&packages)?;
+        fs::write(source_dir.join("src").join("deps.rs"), &deps_rs).await?;
+        println!("Updating Cargo.toml...");
+        let shell_cargo_toml_path = source_dir.join("Cargo.toml");
+        let shell_cargo_toml = fs::read_to_string(&shell_cargo_toml_path).await?;
+        let updated = self.update_cargo_toml(&shell_cargo_toml, &packages)?;
+        fs::write(&shell_cargo_toml_path, &updated).await?;
+        println!("Building standalone binary (this may take a while)...");
+        let status = Command::new(&self.cargo)
+            .arg("build")
+            .arg("--release")
+            .arg("--features")
+            .arg(format!("{crate_name}/standalone"))
+            .current_dir(&source_dir)
+            .status()
+            .await
+            .context("running cargo build")?;
+        if !status.success() {
+            bail!("cargo build --release failed with status {status}")
+        }
+        let bin_name = format!("{short_name}{}", std::env::consts::EXE_SUFFIX);
+        let built = source_dir.join("target").join("release")
+            .join(format!("graphix{}", std::env::consts::EXE_SUFFIX));
+        let dest = package_dir.join(&bin_name);
+        fs::copy(&built, &dest).await.with_context(|| {
+            format!("copying {} to {}", built.display(), dest.display())
+        })?;
+        println!("Done! Binary written to {}", dest.display());
         Ok(())
     }
 

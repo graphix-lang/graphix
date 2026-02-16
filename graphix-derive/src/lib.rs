@@ -92,10 +92,7 @@ impl syn::parse::Parse for DefPackage {
                 builtins = content
                     .parse_terminated(BuiltinEntry::parse, Token![,])?
                     .into_pairs()
-                    .filter_map(|p| match p {
-                        Pair::Punctuated(v, _) => Some(v),
-                        Pair::End(_) => None,
-                    })
+                    .map(|p| p.into_value())
                     .collect();
             } else if key == "is_custom" {
                 is_custom = Some(input.parse::<syn::ExprClosure>()?);
@@ -230,6 +227,7 @@ fn graphix_files() -> Vec<TokenStream> {
             continue;
         }
         let path = match entry.path().strip_prefix(&*GRAPHIX_SRC) {
+            Ok(p) if p == Path::new("main.gx") => continue,
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -262,6 +260,25 @@ fn graphix_files() -> Vec<TokenStream> {
         })
     }
     res
+}
+
+fn main_program_impl() -> TokenStream {
+    let main_gx = GRAPHIX_SRC.join("main.gx");
+    if main_gx.exists() {
+        quote! {
+            fn main_program() -> Option<&'static str> {
+                if cfg!(feature = "standalone") {
+                    Some(include_str!("graphix/main.gx"))
+                } else {
+                    None
+                }
+            }
+        }
+    } else {
+        quote! {
+            fn main_program() -> Option<&'static str> { None }
+        }
+    }
 }
 
 fn register_builtins(builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
@@ -344,6 +361,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let is_custom = is_custom(&input.is_custom);
     let init_custom = init_custom(&input.init_custom);
     let graphix_files = graphix_files();
+    let main_program = main_program_impl();
     let test_harness = test_harness();
     let package_name = &*PACKAGE_NAME;
 
@@ -398,6 +416,8 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
                 #init_custom
             }
+
+            #main_program
         }
 
         #test_harness

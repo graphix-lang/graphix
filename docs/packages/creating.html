@@ -375,6 +375,17 @@ mod test {
 <span class="boring">}</span></code></pre></pre>
 <p>The <code>run!</code> macro sets up a full Graphix runtime with your package registered,
 compiles the expression, and checks the result against your predicate.</p>
+<h2 id="building-standalone-binaries"><a class="header" href="#building-standalone-binaries">Building Standalone Binaries</a></h2>
+<p>If you want to build a self-contained graphix binary with your package baked in
+(for deployment, distribution, or use as a custom application), run from your
+package directory:</p>
+<pre><code>cd graphix-package-mylib
+graphix package build-standalone
+</code></pre>
+<p>This builds a release-optimized <code>graphix</code> binary in the current directory that
+includes the stdlib packages plus your local package. The resulting binary is
+fully standalone — it doesn't require <code>graphix package add</code> or any runtime
+package management.</p>
 <h2 id="publishing"><a class="header" href="#publishing">Publishing</a></h2>
 <p>Packages are published to crates.io like any other Rust crate:</p>
 <pre><code>cd graphix-package-mylib

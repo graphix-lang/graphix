@@ -36,3 +36,6 @@ tokio = { version = "{{tokio_version}}", features = [
 ] }
 triomphe = "{{triomphe_version}}"
 async-trait = "{{async_trait_version}}"
+
+[features]
+standalone = []

@@ -107,6 +107,8 @@ enum PackageAction {
     },
     /// Update graphix to the latest version
     Update,
+    /// Build a standalone graphix binary from the package in the current directory
+    BuildStandalone,
 }
 
 #[derive(Subcommand)]
@@ -273,6 +275,11 @@ async fn handle_package(action: PackageAction) -> Result<()> {
         PackageAction::Update => {
             let pm = GraphixPM::new().await?;
             pm.update().await
+        }
+        PackageAction::BuildStandalone => {
+            let pm = GraphixPM::new().await?;
+            let cwd = std::env::current_dir().context("getting current directory")?;
+            pm.build_standalone(&cwd).await
         }
     }
 }

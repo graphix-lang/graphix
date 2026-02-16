@@ -264,6 +264,51 @@ mod test {
 The `run!` macro sets up a full Graphix runtime with your package registered,
 compiles the expression, and checks the result against your predicate.
 
+## Building Standalone Binaries
+
+If you want to build a self-contained graphix binary with your package baked in
+(for deployment, distribution, or use as a custom application), you can create a
+`main.gx` program and build it into a standalone binary.
+
+### Adding a Main Program
+
+Create `src/graphix/main.gx` in your package with the program to run at startup:
+
+```graphix
+let msg = "Hello from my standalone app!";
+core::print(msg)
+```
+
+During normal library use (e.g. when loaded via `graphix package add`), `main.gx`
+is excluded from the virtual filesystem and has no effect. It only activates when
+building a standalone binary.
+
+### Building
+
+From your package directory:
+
+```
+cd graphix-package-mylib
+graphix package build-standalone
+```
+
+This builds a release-optimized `graphix` binary in the current directory that
+includes your local package. The build enables the `standalone` cargo feature on
+your package, which causes the contents of `main.gx` to be appended to the root
+module as the entry point program.
+
+Scaffolded packages already include `[features] standalone = []` in their
+`Cargo.toml`. If you created your package before this feature existed, add it
+manually:
+
+```toml
+[features]
+standalone = []
+```
+
+The resulting binary is fully standalone — it doesn't require `graphix package
+add` or any runtime package management.
+
 ## Publishing
 
 Packages are published to crates.io like any other Rust crate:
