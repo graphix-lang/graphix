@@ -138,8 +138,13 @@ impl<X: GXExt> Shell<X> {
         let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
             .context("creating graphix context")?;
         let mut vfs_modules = FxHashMap::default();
-        let root = deps::register::<X>(&mut ctx, &mut vfs_modules)
+        let result = deps::register::<X>(&mut ctx, &mut vfs_modules)
             .context("register package modules")?;
+        if let Some(main) = result.main_program {
+            if matches!(self.mode, Mode::Repl) {
+                self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
+            }
+        }
         let mut flags = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
             Mode::Repl => BitFlags::empty(),
@@ -159,7 +164,7 @@ impl<X: GXExt> Shell<X> {
             gx = gx.resolve_timeout(s);
         }
         Ok(gx
-            .root(root)
+            .root(result.root)
             .resolvers(mods)
             .build()
             .context("building rt config")?

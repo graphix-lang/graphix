@@ -9,10 +9,15 @@ use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_core::path::Path;
 use tokio::sync::oneshot;
 
+pub(crate) struct RegisterResult {
+    pub root: ArcStr,
+    pub main_program: Option<&'static str>,
+}
+
 pub(crate) fn register<X: GXExt>(
     ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
     modules: &mut FxHashMap<Path, ArcStr>,
-) -> Result<ArcStr> {
+) -> Result<RegisterResult> {
     let mut root_mods = IndexSet::new();
     {{#each deps}}
     {{this.crate_name}}::P::register(ctx, modules, &mut root_mods)?;
@@ -31,12 +36,10 @@ pub(crate) fn register<X: GXExt>(
         main_program = Some(m);
     }
     {{/each}}
-    let mut root = parts.join(";\n");
-    if let Some(main) = main_program {
-        root.push_str(";\n");
-        root.push_str(main);
-    }
-    Ok(ArcStr::from(root))
+    Ok(RegisterResult {
+        root: ArcStr::from(parts.join(";\n")),
+        main_program,
+    })
 }
 
 pub(crate) struct Cdc<X: GXExt> {

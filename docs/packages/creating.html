@@ -377,15 +377,32 @@ mod test {
 compiles the expression, and checks the result against your predicate.</p>
 <h2 id="building-standalone-binaries"><a class="header" href="#building-standalone-binaries">Building Standalone Binaries</a></h2>
 <p>If you want to build a self-contained graphix binary with your package baked in
-(for deployment, distribution, or use as a custom application), run from your
-package directory:</p>
+(for deployment, distribution, or use as a custom application), you can create a
+<code>main.gx</code> program and build it into a standalone binary.</p>
+<h3 id="adding-a-main-program"><a class="header" href="#adding-a-main-program">Adding a Main Program</a></h3>
+<p>Create <code>src/graphix/main.gx</code> in your package with the program to run at startup:</p>
+<pre><code class="language-graphix">let msg = "Hello from my standalone app!";
+core::print(msg)
+</code></pre>
+<p>During normal library use (e.g. when loaded via <code>graphix package add</code>), <code>main.gx</code>
+is excluded from the virtual filesystem and has no effect. It only activates when
+building a standalone binary.</p>
+<h3 id="building"><a class="header" href="#building">Building</a></h3>
+<p>From your package directory:</p>
 <pre><code>cd graphix-package-mylib
 graphix package build-standalone
 </code></pre>
 <p>This builds a release-optimized <code>graphix</code> binary in the current directory that
-includes the stdlib packages plus your local package. The resulting binary is
-fully standalone — it doesn't require <code>graphix package add</code> or any runtime
-package management.</p>
+includes your local package. The build enables the <code>standalone</code> cargo feature on
+your package, which causes the contents of <code>main.gx</code> to be appended to the root
+module as the entry point program.</p>
+<p>Scaffolded packages already include <code>[features] standalone = []</code> in their
+<code>Cargo.toml</code>. If you created your package before this feature existed, add it
+manually:</p>
+<pre><code class="language-toml">[features]
+standalone = []
+</code></pre>
+<p>The resulting binary is fully standalone — it doesn't require <code>graphix package add</code> or any runtime package management.</p>
 <h2 id="publishing"><a class="header" href="#publishing">Publishing</a></h2>
 <p>Packages are published to crates.io like any other Rust crate:</p>
 <pre><code>cd graphix-package-mylib

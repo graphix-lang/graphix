@@ -28,7 +28,8 @@ use tokio::{
 };
 use walkdir::WalkDir;
 
-graphix_derive::skel_dep_versions!();
+#[cfg(test)]
+mod test;
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
@@ -133,13 +134,7 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     hb.register_template_string("mod.gxi", SKEL.mod_gxi)?;
     hb.register_template_string("README.md", SKEL.readme_md)?;
     let name = name.strip_prefix("graphix-package-").unwrap();
-    let mut params = match skel_dep_versions() {
-        serde_json::Value::Object(m) => m,
-        _ => unreachable!(),
-    };
-    params.insert("name".into(), json!(name));
-    params.insert("deps".into(), json!([]));
-    let params = serde_json::Value::Object(params);
+    let params = json!({"name": name, "deps": []});
     fs::write(full_path.join("Cargo.toml"), hb.render("Cargo.toml", &params)?).await?;
     fs::write(full_path.join("README.md"), hb.render("README.md", &params)?).await?;
     let src = full_path.join("src");
@@ -755,7 +750,11 @@ impl GraphixPM {
     /// The binary is placed in `package_dir/graphix`. Only the local
     /// package is included directly — cargo resolves its transitive
     /// dependencies (including stdlib packages) normally.
-    pub async fn build_standalone(&self, package_dir: &Path) -> Result<()> {
+    pub async fn build_standalone(
+        &self,
+        package_dir: &Path,
+        source_override: Option<&Path>,
+    ) -> Result<()> {
         let package_dir = package_dir
             .canonicalize()
             .with_context(|| format!("resolving {}", package_dir.display()))?;
@@ -771,21 +770,28 @@ impl GraphixPM {
             .and_then(|p| p.get("name"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("no package name in {}", cargo_toml_path.display()))?;
-        let short_name = crate_name
-            .strip_prefix("graphix-package-")
-            .ok_or_else(|| {
+        let short_name =
+            crate_name.strip_prefix("graphix-package-").ok_or_else(|| {
                 anyhow!("package name must start with graphix-package-, got {crate_name}")
             })?;
         let mut packages = BTreeMap::new();
         packages.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
-        let mut lock = Self::lock_file()?;
-        let _guard = lock.write().context("waiting for package lock")?;
-        println!("Unpacking graphix-shell source...");
-        let build_dir = graphix_data_dir()?.join("build");
-        if fs::metadata(&build_dir).await.is_ok() {
-            fs::remove_dir_all(&build_dir).await?;
-        }
-        let source_dir = self.unpack_source(SKEL.version).await?;
+        let mut lock_storage =
+            if source_override.is_none() { Some(Self::lock_file()?) } else { None };
+        let _guard = lock_storage
+            .as_mut()
+            .map(|l| l.write().context("waiting for package lock"))
+            .transpose()?;
+        let source_dir = if let Some(dir) = source_override {
+            dir.to_path_buf()
+        } else {
+            println!("Unpacking graphix-shell source...");
+            let build_dir = graphix_data_dir()?.join("build");
+            if fs::metadata(&build_dir).await.is_ok() {
+                fs::remove_dir_all(&build_dir).await?;
+            }
+            self.unpack_source(&graphix_version().await?).await?
+        };
         println!("Generating deps.rs...");
         let deps_rs = self.generate_deps_rs(&packages)?;
         fs::write(source_dir.join("src").join("deps.rs"), &deps_rs).await?;
@@ -808,7 +814,9 @@ impl GraphixPM {
             bail!("cargo build --release failed with status {status}")
         }
         let bin_name = format!("{short_name}{}", std::env::consts::EXE_SUFFIX);
-        let built = source_dir.join("target").join("release")
+        let built = source_dir
+            .join("target")
+            .join("release")
             .join(format!("graphix{}", std::env::consts::EXE_SUFFIX));
         let dest = package_dir.join(&bin_name);
         fs::copy(&built, &dest).await.with_context(|| {

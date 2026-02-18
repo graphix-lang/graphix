@@ -279,7 +279,7 @@ async fn handle_package(action: PackageAction) -> Result<()> {
         PackageAction::BuildStandalone => {
             let pm = GraphixPM::new().await?;
             let cwd = std::env::current_dir().context("getting current directory")?;
-            pm.build_standalone(&cwd).await
+            pm.build_standalone(&cwd, None).await
         }
     }
 }

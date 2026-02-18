@@ -1,5 +1,5 @@
 /// a pure graphix value
-val var: i64
+val var: i64;
 
 /// a graphix function implemented in rust
 val example: fn(Any) -> bool;
