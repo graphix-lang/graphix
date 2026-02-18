@@ -60,41 +60,15 @@ The special form function body `'core_min` references a built-in Rust function.
 
 See [Writing Built in Functions](./builtins.md) for the full API details.
 
-## Building Stand Alone Graphix Applications
+## Custom Embedded Applications
 
-You can build single binary stand alone Graphix applications using the
-`graphix-shell` crate. All your Graphix source code and packages are compiled
-together with the compiler and runtime into a single binary.
+For most standalone binaries, the simplest approach is `graphix package
+build-standalone` — see [Standalone Binaries](../packages/standalone.md).
 
-```rust
-use anyhow::Result;
-use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
-use graphix_compiler::expr::Source;
-use netidx::{
-    publisher::{DesiredAuth, PublisherBuilder},
-    subscriber::Subscriber,
-};
-
-pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -> Result<()> {
-    let publisher = PublisherBuilder::new(cfg.clone())
-        .desired_auth(auth.clone())
-        .build()
-        .await?;
-    let subscriber = Subscriber::new(cfg, auth)?;
-    ShellBuilder::<NoExt>::default()
-        .mode(Mode::Script(Source::from("main.gx")))
-        .publisher(publisher)
-        .subscriber(subscriber)
-        .no_init(true)
-        .build()?
-        .run()
-        .await
-}
-```
-
-All installed packages are automatically registered. See [Stand Alone Graphix
-Applications](./shell.md) for details.
+If you need more control (custom module resolvers, embedded REPLs, compiler
+flags, or integration with your own Rust application), you can use the
+`graphix-shell` crate directly to build a custom application. See [Custom
+Embedded Applications](./shell.md) for details.
 
 ## Embedding Graphix in Your Application
 

@@ -1,8 +1,14 @@
-# Stand Alone Graphix Applications
+# Custom Embedded Applications
+
+For most standalone binaries, `graphix package build-standalone` is the simplest
+approach — see [Standalone Binaries](../packages/standalone.md). This section
+covers the more advanced case where you need full control: custom module
+resolvers, embedded REPLs, compiler flags, or integration with your own Rust
+application.
 
 Using the
 [graphix-shell](https://docs.rs/graphix-shell/latest/graphix_shell) crate you
-can build a stand alone Graphix application. All installed packages are
+can build a custom Graphix application. All installed packages are
 automatically registered, so your application gets the full standard library and
 any additional packages out of the box.
 

@@ -60,7 +60,7 @@ The `defpackage!` macro generates:
 Graphix source files in `src/graphix/` are automatically included in the
 package. These files provide the Graphix-level API for your package. The
 directory structure maps to the module hierarchy: `src/graphix/foo.gx` becomes
-the module `mylib::foo`.
+the module `mylib::foo` (note you still need `mod foo` in mod.gx).
 
 The top-level module file is `src/graphix/mod.gx`. This is where you typically
 bind your builtins to Graphix names and re-export them:
@@ -212,22 +212,85 @@ defpackage! {
 
 ## Custom Displays
 
-Packages can provide custom display implementations (like the TUI package). Use
-the `is_custom` and `init_custom` closures in `defpackage!`:
+Packages can provide custom display implementations. Custom displays allow you
+to do something special with a value returned to the shell by a script or in the
+REPL. For example the TUI package uses a custom display to take control of the
+terminal and render a terminal UI from the returned value.
+
+### The `CustomDisplay` Trait
+
+A custom display implements `CustomDisplay<X>`:
 
 ```rust
+#[async_trait]
+pub trait CustomDisplay<X: GXExt>: Any {
+    /// Called when the shell wants to return to normal display mode,
+    /// or when the custom display signals stop. Free any resources here.
+    async fn clear(&mut self);
+
+    /// Called on every update from the Graphix runtime.
+    /// This includes all updates, not just ones related to the custom
+    /// display. The future returned must resolve promptly or the shell
+    /// will hang.
+    async fn process_update(&mut self, env: &Env, id: ExprId, v: Value);
+}
+```
+
+### Registering a Custom Display
+
+To hook a custom display into the shell, provide `is_custom` and `init_custom`
+closures in `defpackage!`:
+
+- **`is_custom`** receives each compiled expression and returns `true` if your
+  package should handle its display. The shell calls this to decide whether to
+  use the default display or delegate to your package.
+- **`init_custom`** constructs your `CustomDisplay`. It receives a `stop`
+  channel — send on it when the display wants to exit (e.g. the user closed a
+  window), and the shell will call `clear()` before dropping the display.
+
+Here is a minimal example that prints every update to stderr:
+
+```rust
+use async_trait::async_trait;
+use graphix_compiler::{env::Env, expr::ExprId};
+use graphix_package::CustomDisplay;
+use graphix_rt::GXExt;
+use netidx_value::Value;
+
+struct DebugDisplay;
+
+#[async_trait]
+impl<X: GXExt> CustomDisplay<X> for DebugDisplay {
+    async fn clear(&mut self) {
+        eprintln!("[debug display] cleared");
+    }
+
+    async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
+        eprintln!("[debug display] {id:?} = {v}");
+    }
+}
+
 defpackage! {
     builtins => [...],
-    is_custom => |gx, env, e| {
-        // return true if this expression should use your custom display
-        false
+    is_custom => |_gx, _env, e| {
+        // claim all expressions whose result type is an array
+        e.typ.with_deref(|t| {
+            matches!(t, Some(graphix_compiler::typ::Type::Array(_)))
+        })
     },
-    init_custom => |gx, env, stop, e| {
-        // initialize and return a Box<dyn CustomDisplay<X>>
-        unreachable!()
+    init_custom => |_gx, _env, _stop, _e| {
+        Ok(Box::new(DebugDisplay))
     }
 }
 ```
+
+The `e` parameter is a `CompExp` which has a `typ` field (the inferred result
+type) and an `id` field (the expression ID). Typically `is_custom` checks
+whether the result type matches something your display knows how to render, as
+the TUI package does with its widget types. The custom display is responsible
+for keeping the CompExp alive (if that is necessary), if it is dropped the
+expression will be removed from the runtime (just like any other dropped
+CompExp).
 
 ## Dependencies Between Packages
 
@@ -263,51 +326,6 @@ mod test {
 
 The `run!` macro sets up a full Graphix runtime with your package registered,
 compiles the expression, and checks the result against your predicate.
-
-## Building Standalone Binaries
-
-If you want to build a self-contained graphix binary with your package baked in
-(for deployment, distribution, or use as a custom application), you can create a
-`main.gx` program and build it into a standalone binary.
-
-### Adding a Main Program
-
-Create `src/graphix/main.gx` in your package with the program to run at startup:
-
-```graphix
-let msg = "Hello from my standalone app!";
-core::print(msg)
-```
-
-During normal library use (e.g. when loaded via `graphix package add`), `main.gx`
-is excluded from the virtual filesystem and has no effect. It only activates when
-building a standalone binary.
-
-### Building
-
-From your package directory:
-
-```
-cd graphix-package-mylib
-graphix package build-standalone
-```
-
-This builds a release-optimized `graphix` binary in the current directory that
-includes your local package. The build enables the `standalone` cargo feature on
-your package, which causes the contents of `main.gx` to be appended to the root
-module as the entry point program.
-
-Scaffolded packages already include `[features] standalone = []` in their
-`Cargo.toml`. If you created your package before this feature existed, add it
-manually:
-
-```toml
-[features]
-standalone = []
-```
-
-The resulting binary is fully standalone — it doesn't require `graphix package
-add` or any runtime package management.
 
 ## Publishing
 

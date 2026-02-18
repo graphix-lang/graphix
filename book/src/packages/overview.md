@@ -35,3 +35,4 @@ that power the standard library are available for third-party packages.
 
 - [Using Packages](./using.md) covers installing, removing, and managing packages
 - [Creating Packages](./creating.md) covers building your own packages
+- [Standalone Binaries](./standalone.md) covers building self-contained binaries from packages

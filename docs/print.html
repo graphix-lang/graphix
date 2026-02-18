@@ -6704,6 +6704,7 @@ that power the standard library are available for third-party packages.</p>
 <ul>
 <li><a href="packages/./using.html">Using Packages</a> covers installing, removing, and managing packages</li>
 <li><a href="packages/./creating.html">Creating Packages</a> covers building your own packages</li>
+<li><a href="packages/./standalone.html">Standalone Binaries</a> covers building self-contained binaries from packages</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="using-packages"><a class="header" href="#using-packages">Using Packages</a></h1>
 <p>The <code>graphix package</code> command manages your installed packages. All package
@@ -6848,7 +6849,7 @@ defpackage! {
 <p>Graphix source files in <code>src/graphix/</code> are automatically included in the
 package. These files provide the Graphix-level API for your package. The
 directory structure maps to the module hierarchy: <code>src/graphix/foo.gx</code> becomes
-the module <code>mylib::foo</code>.</p>
+the module <code>mylib::foo</code> (note you still need <code>mod foo</code> in mod.gx).</p>
 <p>The top-level module file is <code>src/graphix/mod.gx</code>. This is where you typically
 bind your builtins to Graphix names and re-export them:</p>
 <pre><code class="language-graphix">let my_builtin = |arg| 'mylib_my_builtin;
@@ -6978,22 +6979,80 @@ the <code>as</code> syntax in the builtins list:</p>
 }
 <span class="boring">}</span></code></pre></pre>
 <h2 id="custom-displays"><a class="header" href="#custom-displays">Custom Displays</a></h2>
-<p>Packages can provide custom display implementations (like the TUI package). Use
-the <code>is_custom</code> and <code>init_custom</code> closures in <code>defpackage!</code>:</p>
+<p>Packages can provide custom display implementations. Custom displays allow you
+to do something special with a value returned to the shell by a script or in the
+REPL. For example the TUI package uses a custom display to take control of the
+terminal and render a terminal UI from the returned value.</p>
+<h3 id="the-customdisplay-trait"><a class="header" href="#the-customdisplay-trait">The <code>CustomDisplay</code> Trait</a></h3>
+<p>A custom display implements <code>CustomDisplay&lt;X&gt;</code>:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>defpackage! {
+</span>#[async_trait]
+pub trait CustomDisplay&lt;X: GXExt&gt;: Any {
+    /// Called when the shell wants to return to normal display mode,
+    /// or when the custom display signals stop. Free any resources here.
+    async fn clear(&amp;mut self);
+
+    /// Called on every update from the Graphix runtime.
+    /// This includes all updates, not just ones related to the custom
+    /// display. The future returned must resolve promptly or the shell
+    /// will hang.
+    async fn process_update(&amp;mut self, env: &amp;Env, id: ExprId, v: Value);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="registering-a-custom-display"><a class="header" href="#registering-a-custom-display">Registering a Custom Display</a></h3>
+<p>To hook a custom display into the shell, provide <code>is_custom</code> and <code>init_custom</code>
+closures in <code>defpackage!</code>:</p>
+<ul>
+<li><strong><code>is_custom</code></strong> receives each compiled expression and returns <code>true</code> if your
+package should handle its display. The shell calls this to decide whether to
+use the default display or delegate to your package.</li>
+<li><strong><code>init_custom</code></strong> constructs your <code>CustomDisplay</code>. It receives a <code>stop</code>
+channel — send on it when the display wants to exit (e.g. the user closed a
+window), and the shell will call <code>clear()</code> before dropping the display.</li>
+</ul>
+<p>Here is a minimal example that prints every update to stderr:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use async_trait::async_trait;
+use graphix_compiler::{env::Env, expr::ExprId};
+use graphix_package::CustomDisplay;
+use graphix_rt::GXExt;
+use netidx_value::Value;
+
+struct DebugDisplay;
+
+#[async_trait]
+impl&lt;X: GXExt&gt; CustomDisplay&lt;X&gt; for DebugDisplay {
+    async fn clear(&amp;mut self) {
+        eprintln!("[debug display] cleared");
+    }
+
+    async fn process_update(&amp;mut self, _env: &amp;Env, id: ExprId, v: Value) {
+        eprintln!("[debug display] {id:?} = {v}");
+    }
+}
+
+defpackage! {
     builtins =&gt; [...],
-    is_custom =&gt; |gx, env, e| {
-        // return true if this expression should use your custom display
-        false
+    is_custom =&gt; |_gx, _env, e| {
+        // claim all expressions whose result type is an array
+        e.typ.with_deref(|t| {
+            matches!(t, Some(graphix_compiler::typ::Type::Array(_)))
+        })
     },
-    init_custom =&gt; |gx, env, stop, e| {
-        // initialize and return a Box&lt;dyn CustomDisplay&lt;X&gt;&gt;
-        unreachable!()
+    init_custom =&gt; |_gx, _env, _stop, _e| {
+        Ok(Box::new(DebugDisplay))
     }
 }
 <span class="boring">}</span></code></pre></pre>
+<p>The <code>e</code> parameter is a <code>CompExp</code> which has a <code>typ</code> field (the inferred result
+type) and an <code>id</code> field (the expression ID). Typically <code>is_custom</code> checks
+whether the result type matches something your display knows how to render, as
+the TUI package does with its widget types. The custom display is responsible
+for keeping the CompExp alive (if that is necessary), if it is dropped the
+expression will be removed from the runtime (just like any other dropped
+CompExp).</p>
 <h2 id="dependencies-between-packages"><a class="header" href="#dependencies-between-packages">Dependencies Between Packages</a></h2>
 <p>Packages can depend on other packages via Cargo. Add the dependency to your
 <code>Cargo.toml</code>:</p>
@@ -7021,40 +7080,45 @@ mod test {
 <span class="boring">}</span></code></pre></pre>
 <p>The <code>run!</code> macro sets up a full Graphix runtime with your package registered,
 compiles the expression, and checks the result against your predicate.</p>
-<h2 id="building-standalone-binaries"><a class="header" href="#building-standalone-binaries">Building Standalone Binaries</a></h2>
-<p>If you want to build a self-contained graphix binary with your package baked in
-(for deployment, distribution, or use as a custom application), you can create a
-<code>main.gx</code> program and build it into a standalone binary.</p>
-<h3 id="adding-a-main-program"><a class="header" href="#adding-a-main-program">Adding a Main Program</a></h3>
-<p>Create <code>src/graphix/main.gx</code> in your package with the program to run at startup:</p>
-<pre><code class="language-graphix">let msg = "Hello from my standalone app!";
-core::print(msg)
-</code></pre>
-<p>During normal library use (e.g. when loaded via <code>graphix package add</code>), <code>main.gx</code>
-is excluded from the virtual filesystem and has no effect. It only activates when
-building a standalone binary.</p>
-<h3 id="building"><a class="header" href="#building">Building</a></h3>
-<p>From your package directory:</p>
-<pre><code>cd graphix-package-mylib
-graphix package build-standalone
-</code></pre>
-<p>This builds a release-optimized <code>graphix</code> binary in the current directory that
-includes your local package. The build enables the <code>standalone</code> cargo feature on
-your package, which causes the contents of <code>main.gx</code> to be appended to the root
-module as the entry point program.</p>
-<p>Scaffolded packages already include <code>[features] standalone = []</code> in their
-<code>Cargo.toml</code>. If you created your package before this feature existed, add it
-manually:</p>
-<pre><code class="language-toml">[features]
-standalone = []
-</code></pre>
-<p>The resulting binary is fully standalone — it doesn't require <code>graphix package add</code> or any runtime package management.</p>
 <h2 id="publishing"><a class="header" href="#publishing">Publishing</a></h2>
 <p>Packages are published to crates.io like any other Rust crate:</p>
 <pre><code>cd graphix-package-mylib
 cargo publish
 </code></pre>
 <p>Once published, anyone can install it with <code>graphix package add mylib</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="standalone-binaries"><a class="header" href="#standalone-binaries">Standalone Binaries</a></h1>
+<p>If you want to build a self-contained graphix binary with your package
+and all it's dependencies baked in (for deployment, distribution, or
+use as a custom application), you can create a <code>main.gx</code> program in
+your packages' src/graphix directory, which will enable the package to
+be built as a standalone binary.</p>
+<h2 id="adding-a-main-program"><a class="header" href="#adding-a-main-program">Adding a Main Program</a></h2>
+<p>Create <code>src/graphix/main.gx</code> in your package with the program to run at startup:</p>
+<pre><code class="language-graphix">"Hello from my standalone app!"
+</code></pre>
+<p>During normal library use (e.g. when loaded via <code>graphix package add</code>), <code>main.gx</code> is excluded from the virtual filesystem and has no
+effect. It only activates the package is building as standalone
+binary. This is very similar to Python's</p>
+<pre><code class="language-Python">if __name__ == '__main__':
+</code></pre>
+<p>mechanism, except it is ... somewhat less ugly to look at.</p>
+<h2 id="building"><a class="header" href="#building">Building</a></h2>
+<p>From your package directory:</p>
+<pre><code>cd graphix-package-mylib
+graphix package build-standalone
+</code></pre>
+<p>This builds a release-optimized <code>graphix</code> binary in the current
+directory that includes your local package and all it's
+dependencies. The build enables the <code>standalone</code> cargo feature on your
+package, which causes the contents of <code>main.gx</code> to be appended to the
+root module as the entry point program.</p>
+<p>Scaffolded packages already include <code>[features] standalone = []</code> in their
+<code>Cargo.toml</code>. If you created your package before this feature existed, add it
+manually:</p>
+<pre><code class="language-toml">[features]
+standalone = []
+</code></pre>
+<p>The resulting binary is fully standalone — it doesn't require <code>graphix package add</code> or any runtime .gx files in order to run.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="embedding-and-extending-graphix"><a class="header" href="#embedding-and-extending-graphix">Embedding and Extending Graphix</a></h1>
 <p>There are multiple ways you can embed Graphix in your application and
 extend it with Rust code.</p>
@@ -7104,39 +7168,12 @@ and bind it in your Graphix module:</p>
 </code></pre>
 <p>The special form function body <code>'core_min</code> references a built-in Rust function.</p>
 <p>See <a href="embedding/./builtins.html">Writing Built in Functions</a> for the full API details.</p>
-<h2 id="building-stand-alone-graphix-applications"><a class="header" href="#building-stand-alone-graphix-applications">Building Stand Alone Graphix Applications</a></h2>
-<p>You can build single binary stand alone Graphix applications using the
-<code>graphix-shell</code> crate. All your Graphix source code and packages are compiled
-together with the compiler and runtime into a single binary.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use anyhow::Result;
-use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
-use graphix_compiler::expr::Source;
-use netidx::{
-    publisher::{DesiredAuth, PublisherBuilder},
-    subscriber::Subscriber,
-};
-
-pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt;()&gt; {
-    let publisher = PublisherBuilder::new(cfg.clone())
-        .desired_auth(auth.clone())
-        .build()
-        .await?;
-    let subscriber = Subscriber::new(cfg, auth)?;
-    ShellBuilder::&lt;NoExt&gt;::default()
-        .mode(Mode::Script(Source::from("main.gx")))
-        .publisher(publisher)
-        .subscriber(subscriber)
-        .no_init(true)
-        .build()?
-        .run()
-        .await
-}
-<span class="boring">}</span></code></pre></pre>
-<p>All installed packages are automatically registered. See <a href="embedding/./shell.html">Stand Alone Graphix
-Applications</a> for details.</p>
+<h2 id="custom-embedded-applications"><a class="header" href="#custom-embedded-applications">Custom Embedded Applications</a></h2>
+<p>For most standalone binaries, the simplest approach is <code>graphix package build-standalone</code> — see <a href="embedding/../packages/standalone.html">Standalone Binaries</a>.</p>
+<p>If you need more control (custom module resolvers, embedded REPLs, compiler
+flags, or integration with your own Rust application), you can use the
+<code>graphix-shell</code> crate directly to build a custom application. See <a href="embedding/./shell.html">Custom
+Embedded Applications</a> for details.</p>
 <h2 id="embedding-graphix-in-your-application"><a class="header" href="#embedding-graphix-in-your-application">Embedding Graphix in Your Application</a></h2>
 <p>Using the <code>graphix-rt</code> crate you can embed the Graphix compiler and runtime in
 your application. Then you can:</p>
@@ -7497,10 +7534,15 @@ we could do this with <code>Drop</code>, but that would require holding a
 reference to the <code>ExecCtx</code> at every <code>Node</code>. I'd really rather not pay
 to wrap every access to the context in a mutex, so we're doing it the
 hard way (for now).</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="stand-alone-graphix-applications"><a class="header" href="#stand-alone-graphix-applications">Stand Alone Graphix Applications</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="custom-embedded-applications-1"><a class="header" href="#custom-embedded-applications-1">Custom Embedded Applications</a></h1>
+<p>For most standalone binaries, <code>graphix package build-standalone</code> is the simplest
+approach — see <a href="embedding/../packages/standalone.html">Standalone Binaries</a>. This section
+covers the more advanced case where you need full control: custom module
+resolvers, embedded REPLs, compiler flags, or integration with your own Rust
+application.</p>
 <p>Using the
 <a href="https://docs.rs/graphix-shell/latest/graphix_shell">graphix-shell</a> crate you
-can build a stand alone Graphix application. All installed packages are
+can build a custom Graphix application. All installed packages are
 automatically registered, so your application gets the full standard library and
 any additional packages out of the box.</p>
 <h2 id="basic-application"><a class="header" href="#basic-application">Basic Application</a></h2>
