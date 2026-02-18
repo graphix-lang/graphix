@@ -5,7 +5,7 @@ use graphix_compiler::{
 use graphix_package_core::{deftype, CachedVals};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
-use rand::{rng, seq::SliceRandom, Rng};
+use rand::{rng, seq::SliceRandom, RngExt};
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Debug)]
