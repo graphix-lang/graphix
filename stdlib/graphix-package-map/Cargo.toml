@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-map"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -19,11 +19,11 @@ krb5_iov = ["netidx/krb5_iov"]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.3.0", path = "../../graphix-compiler" }
-graphix-derive = { version = "0.3.1", path = "../../graphix-derive" }
-graphix-package = { version = "0.3.1", path = "../../graphix-package" }
-graphix-package-core = { version = "0.3.1", path = "../graphix-package-core" }
-graphix-rt = { version = "0.3.1", path = "../../graphix-rt" }
+graphix-compiler = { version = "0.4.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.4.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.4.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.4.0", path = "../graphix-package-core" }
+graphix-rt = { version = "0.4.0", path = "../../graphix-rt" }
 immutable-chunkmap = { workspace = true }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
