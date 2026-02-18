@@ -1,7 +1,12 @@
+
 # 0.4.0
 
 - Add packages
 - Refactor the standard library as multiple packages
+
+# 0.3.3
+
+- Fix the operator precedence of ~
 
 # 0.3.2
 
