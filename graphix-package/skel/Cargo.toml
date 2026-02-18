@@ -12,11 +12,11 @@ license = "MIT"
 categories = []
 
 [dependencies]
-graphix-package = "0.3.1"
-graphix-package-core = "0.3.1"
-graphix-compiler = "0.3.2"
-graphix-derive = "0.3.1"
-graphix-rt = "0.3.1"
+graphix-package = "0.4.0"
+graphix-package-core = "0.4.0"
+graphix-compiler = "0.4.0"
+graphix-derive = "0.4.0"
+graphix-rt = "0.4.0"
 anyhow = "1"
 arcstr = "1"
 fxhash = "0.2"

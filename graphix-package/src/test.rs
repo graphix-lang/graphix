@@ -56,7 +56,9 @@ fn skel_cargo_toml_versions_match_workspace() {
         let actual = item_version(name, item);
         let expected = expected_version(ws, name, &ws_doc);
         if actual != expected {
-            mismatches.push(format!("  {name}: skel has {actual:?}, workspace has {expected:?}"));
+            mismatches.push(format!(
+                "  {name}: skel has {actual:?}, workspace has {expected:?}"
+            ));
         }
     }
     assert!(
@@ -72,7 +74,8 @@ fn stdlib_package_versions_match_graphix_package() {
     let mut mismatches = vec![];
     for &(name, _) in super::DEFAULT_PACKAGES {
         let crate_name = format!("graphix-package-{name}");
-        let version = crate_version(&ws.join("stdlib").join(&crate_name).join("Cargo.toml"));
+        let version =
+            crate_version(&ws.join("stdlib").join(&crate_name).join("Cargo.toml"));
         if version != super::SKEL.version {
             mismatches.push(format!(
                 "  {crate_name}: {version:?}, graphix-package: {:?}",
@@ -115,9 +118,7 @@ async fn created_package_compiles() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     vendor(ws);
     let tmp = tempfile::tempdir().unwrap();
-    super::create_package(tmp.path(), "graphix-package-testpkg")
-        .await
-        .unwrap();
+    super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
     let pkg_dir = tmp.path().join("graphix-package-testpkg");
     write_vendor_config(&pkg_dir, ws);
     let status = tokio::process::Command::new("cargo")
@@ -136,9 +137,7 @@ async fn build_standalone_produces_working_binary() {
     vendor(ws);
     // Create package with main.gx
     let tmp = tempfile::tempdir().unwrap();
-    super::create_package(tmp.path(), "graphix-package-testpkg")
-        .await
-        .unwrap();
+    super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
     let pkg_dir = tmp.path().join("graphix-package-testpkg");
     let gx_dir = pkg_dir.join("src").join("graphix");
     tokio::fs::write(gx_dir.join("main.gx"), "println(\"GRAPHIX_STANDALONE_OK\")\n")

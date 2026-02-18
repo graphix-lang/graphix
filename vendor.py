@@ -165,16 +165,14 @@ def main():
     # Step 3: write .cargo/config.toml
     cargo_dir = ROOT / ".cargo"
     cargo_dir.mkdir(exist_ok=True)
-    with open(cargo_dir / "config.toml", "w") as f:
-        f.write("""\
+    print("""\
 [source.crates-io]
 replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "vendor"
 """)
-
-    print("Done. vendor/ and .cargo/config.toml are ready.")
+    print("Done. vendor is ready, add the above to .cargo/config.toml to enable")
 
 
 if __name__ == "__main__":
