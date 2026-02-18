@@ -141,6 +141,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
     }
 }
 
+#[cfg(test)]
+mod test;
+
 graphix_derive::defpackage! {
     builtins => [
         Rand,
