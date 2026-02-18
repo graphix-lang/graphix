@@ -1,0 +1,9 @@
+/// a pure graphix value
+val var: i64;
+
+/// a graphix function implemented in rust
+val example: fn(Any) -> bool;
+
+/// a graphix function implemented in rust using the
+/// simplified API
+val example_cached: fn(@args: bool) -> bool;

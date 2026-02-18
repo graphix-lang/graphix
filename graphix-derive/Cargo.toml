@@ -1,0 +1,16 @@
+[package]
+name = "graphix-derive"
+version = "0.3.1"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+cargo_toml = { workspace = true }
+graphix-compiler = { version = "0.3.1", path = "../graphix-compiler" }
+toml_edit = { workspace = true }
+walkdir = { workspace = true }

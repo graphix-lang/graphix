@@ -117,29 +117,29 @@ macro_rules! tdbg {
 #[macro_export]
 macro_rules! err {
     ($tag:expr, $err:literal) => {{
-        let e: Value = ($tag.clone(), arcstr::literal!($err)).into();
-        Value::Error(triomphe::Arc::new(e))
+        let e: Value = ($tag.clone(), ::arcstr::literal!($err)).into();
+        Value::Error(::triomphe::Arc::new(e))
     }};
 }
 
 #[macro_export]
 macro_rules! errf {
     ($tag:expr, $fmt:expr, $($args:expr),*) => {{
-        let msg: ArcStr = compact_str::format_compact!($fmt, $($args),*).as_str().into();
+        let msg: ArcStr = ::compact_str::format_compact!($fmt, $($args),*).as_str().into();
         let e: Value = ($tag.clone(), msg).into();
-        Value::Error(triomphe::Arc::new(e))
+        Value::Error(::triomphe::Arc::new(e))
     }};
     ($tag:expr, $fmt:expr) => {{
-        let msg: ArcStr = compact_str::format_compact!($fmt).as_str().into();
+        let msg: ArcStr = ::compact_str::format_compact!($fmt).as_str().into();
         let e: Value = ($tag.clone(), msg).into();
-        Value::Error(triomphe::Arc::new(e))
+        Value::Error(::triomphe::Arc::new(e))
     }};
 }
 
 #[macro_export]
 macro_rules! defetyp {
     ($name:ident, $tag_name:ident, $tag:literal, $typ:expr) => {
-        static $tag_name: ArcStr = arcstr::literal!($tag);
+        static $tag_name: ArcStr = ::arcstr::literal!($tag);
         static $name: ::std::sync::LazyLock<$crate::typ::Type> =
             ::std::sync::LazyLock::new(|| {
                 let scope = $crate::expr::ModPath::root();
@@ -296,19 +296,6 @@ impl Refs {
 
 pub type Node<R, E> = Box<dyn Update<R, E>>;
 
-pub type BuiltInInitFn<R, E> = sync::Arc<
-    dyn for<'a, 'b, 'c> Fn(
-            &'a mut ExecCtx<R, E>,
-            &'a FnType,
-            &'b Scope,
-            &'c [Node<R, E>],
-            ExprId,
-        ) -> Result<Box<dyn Apply<R, E>>>
-        + Send
-        + Sync
-        + 'static,
->;
-
 pub type InitFn<R, E> = sync::Arc<
     dyn for<'a, 'b, 'c> Fn(
             &'a Scope,
@@ -404,11 +391,28 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
 }
 
+pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
+    &'a mut ExecCtx<R, E>,
+    &'a FnType,
+    &'b Scope,
+    &'c [Node<R, E>],
+    ExprId,
+) -> Result<Box<dyn Apply<R, E>>>;
+
+/// Trait implemented by graphix built-in functions implemented in rust. This
+/// trait isn't meant to be implemented manually, use derive(BuiltIn) from the
+/// graphix-derive crate
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
     const TYP: LazyLock<FnType>;
 
-    fn init(ctx: &mut ExecCtx<R, E>) -> BuiltInInitFn<R, E>;
+    fn init<'a, 'b, 'c>(
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a FnType,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>>;
 }
 
 pub trait Abortable {
@@ -758,10 +762,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
-        let f = T::init(self);
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert((T::TYP.clone(), f));
+                e.insert((T::TYP.clone(), T::init));
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }

@@ -33,7 +33,9 @@
       "Bash(git -C /home/eric/proj/graphix show d00697b --stat)",
       "Bash(git -C /home/eric/proj/graphix show 47e2731 --stat)",
       "Bash(git -C /home/eric/proj/graphix show 732cb0c --stat)",
-      "Bash(git -C /home/eric/proj/graphix log --oneline --all -20)"
+      "Bash(git -C /home/eric/proj/graphix log --oneline --all -20)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

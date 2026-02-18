@@ -1,12 +1,13 @@
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use enumflags2::BitFlags;
 use flexi_logger::{FileSpec, Logger};
 use graphix_compiler::{
     expr::{ModuleResolver, Source},
     CFlag,
 };
+use graphix_package::{GraphixPM, PackageId};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use log::info;
@@ -69,9 +70,61 @@ impl RawFlag {
     }
 }
 
+#[derive(Subcommand)]
+enum PackageAction {
+    /// Add packages to the graphix runtime
+    Add {
+        /// Package names to add (with optional @version suffix)
+        packages: Vec<String>,
+        /// Skip crates.io validation (for packages from alternative registries or local sources)
+        #[arg(long)]
+        skip_crates_io_check: bool,
+        /// Use a local path dependency instead of a crates.io version
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Remove packages from the graphix runtime
+    Remove {
+        /// Package names to remove
+        packages: Vec<String>,
+    },
+    /// Search crates.io for graphix packages
+    Search {
+        /// Search query
+        query: String,
+    },
+    /// List installed packages
+    List,
+    /// Rebuild graphix from the current packages.toml
+    Rebuild,
+    /// Create a new graphix package
+    Create {
+        /// Package name (will be prefixed with graphix-package- if needed)
+        name: String,
+        /// Directory to create the package in
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Update graphix to the latest version
+    Update,
+    /// Build a standalone graphix binary from the package in the current directory
+    BuildStandalone,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Manage graphix packages
+    Package {
+        #[command(subcommand)]
+        action: PackageAction,
+    },
+}
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Params {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// enable logging and put the log in the specified directory. You
     /// should also set the RUST_LOG enviornment variable. e.g. RUST_LOG=debug
     #[arg(long)]
@@ -169,6 +222,68 @@ impl Params {
     }
 }
 
+fn parse_package_arg(s: &str) -> PackageId {
+    match s.split_once('@') {
+        Some((name, version)) => PackageId::new(name, Some(version)),
+        None => PackageId::new(s, None),
+    }
+}
+
+#[tokio::main]
+async fn handle_package(action: PackageAction) -> Result<()> {
+    match action {
+        PackageAction::Add { packages, skip_crates_io_check, path } => {
+            let pm = GraphixPM::new().await?;
+            let ids: Vec<_> = if let Some(ref path) = path {
+                packages
+                    .iter()
+                    .map(|s| {
+                        let name = s.split('@').next().unwrap();
+                        PackageId::with_path(name, path.clone())
+                    })
+                    .collect()
+            } else {
+                packages.iter().map(|s| parse_package_arg(s)).collect()
+            };
+            pm.add_packages(&ids, skip_crates_io_check).await
+        }
+        PackageAction::Remove { packages } => {
+            let pm = GraphixPM::new().await?;
+            let ids: Vec<_> = packages.iter().map(|s| PackageId::new(s, None)).collect();
+            pm.remove_packages(&ids).await
+        }
+        PackageAction::Search { query } => {
+            let pm = GraphixPM::new().await?;
+            pm.search(&query).await
+        }
+        PackageAction::List => {
+            let pm = GraphixPM::new().await?;
+            pm.list().await
+        }
+        PackageAction::Rebuild => {
+            let pm = GraphixPM::new().await?;
+            pm.do_rebuild().await
+        }
+        PackageAction::Create { name, dir } => {
+            let full_name = if name.starts_with("graphix-package-") {
+                name
+            } else {
+                format!("graphix-package-{name}")
+            };
+            graphix_package::create_package(&dir, &full_name).await
+        }
+        PackageAction::Update => {
+            let pm = GraphixPM::new().await?;
+            pm.update().await
+        }
+        PackageAction::BuildStandalone => {
+            let pm = GraphixPM::new().await?;
+            let cwd = std::env::current_dir().context("getting current directory")?;
+            pm.build_standalone(&cwd, None).await
+        }
+    }
+}
+
 #[tokio::main]
 async fn tokio_main(p: Params, cfg: Result<Config>) -> Result<()> {
     if let Some(dir) = &p.log_dir {
@@ -245,6 +360,9 @@ async fn tokio_main(p: Params, cfg: Result<Config>) -> Result<()> {
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
     let p = Params::parse();
+    if let Some(Command::Package { action }) = p.command {
+        return handle_package(action);
+    }
     let cfg = match &p.config {
         None => Config::load_default_or_local_only(),
         Some(p) => Config::load(p),

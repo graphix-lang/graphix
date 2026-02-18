@@ -1,0 +1,3 @@
+let var = 42;
+let example = |arg| '{{name}}_example;
+let example_cached = |@args| '{{name}}_example_cached;

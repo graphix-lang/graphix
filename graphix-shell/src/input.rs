@@ -70,7 +70,10 @@ impl InputReader {
         env: &mut Option<Env>,
     ) -> Result<Signal> {
         match output {
-            Output::Tui(tui) => Ok(tui.wait_signal().await),
+            Output::Custom(cdc) => {
+                let _ = (&mut cdc.stop).await;
+                Ok(Signal::CtrlC)
+            }
             Output::EmptyScript | Output::Text(_) => {
                 tokio::signal::ctrl_c().await?;
                 Ok(Signal::CtrlC)

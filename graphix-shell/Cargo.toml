@@ -26,37 +26,34 @@ default = []
 krb5_iov = [
     "graphix-compiler/krb5_iov",
     "graphix-rt/krb5_iov",
-    "graphix-stdlib/krb5_iov",
     "netidx/krb5_iov",
 ]
 
 [dependencies]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
-async-trait = { workspace = true }
-bytes = { workspace = true }
-chrono = { workspace = true }
 clap = { workspace = true }
-combine = { workspace = true }
-crossterm = { workspace = true }
 derive_builder = { workspace = true }
 enumflags2 = { workspace = true }
 flexi_logger = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
 graphix-compiler = { version = "0.3.0", path = "../graphix-compiler" }
+graphix-package = { version = "0.3.0", path = "../graphix-package" }
+graphix-package-array = { version = "0.3.0", path = "../stdlib/graphix-package-array" }
+graphix-package-core = { version = "0.3.0", path = "../stdlib/graphix-package-core" }
+graphix-package-fs = { version = "0.3.0", path = "../stdlib/graphix-package-fs" }
+graphix-package-map = { version = "0.3.0", path = "../stdlib/graphix-package-map" }
+graphix-package-rand = { version = "0.3.0", path = "../stdlib/graphix-package-rand" }
+graphix-package-re = { version = "0.3.0", path = "../stdlib/graphix-package-re" }
+graphix-package-str = { version = "0.3.0", path = "../stdlib/graphix-package-str" }
+graphix-package-time = { version = "0.3.0", path = "../stdlib/graphix-package-time" }
+graphix-package-net = { version = "0.3.0", path = "../stdlib/graphix-package-net" }
+graphix-package-tui = { version = "0.3.0", path = "../stdlib/graphix-package-tui" }
 graphix-rt = { version = "0.3.0", path = "../graphix-rt" }
-graphix-stdlib = { version = "0.3.0", path = "../graphix-stdlib" }
 log = { workspace = true }
 netidx = { workspace = true }
-parking_lot = { workspace = true }
+netidx-core = { workspace = true }
 poolshark = { workspace = true }
-ratatui = { workspace = true }
 reedline = { workspace = true }
-serde = { workspace = true }
-serde_derive = { workspace = true }
-serde_json = { workspace = true }
-smallvec = { workspace = true }
-time = { workspace = true }
 tokio = { workspace = true }
-triomphe = { workspace = true }

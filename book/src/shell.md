@@ -64,6 +64,22 @@ This is useful for:
 - Quick validation during development
 
 
+## Package Management
+
+The shell includes a built-in package manager for extending Graphix with
+additional functionality. Use `graphix package` to search for, install, and
+manage packages:
+
+```bash
+graphix package search http       # search for packages
+graphix package add mypackage     # install a package
+graphix package remove mypackage  # remove a package
+graphix package list              # list installed packages
+```
+
+Adding or removing a package rebuilds the `graphix` binary with the new set of
+packages compiled in. See [Packages](./packages/overview.md) for full details.
+
 ## Understanding Output
 
 One of the most important concepts to understand about the shell is its output behavior. Not all expressions produce output, and expressions that do produce output can update multiple times.
