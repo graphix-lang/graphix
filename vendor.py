@@ -166,13 +166,15 @@ def main():
     cargo_dir = ROOT / ".cargo"
     cargo_dir.mkdir(exist_ok=True)
     print("""\
+
+# add to .config/cargo.toml to enable
 [source.crates-io]
 replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "vendor"
 """)
-    print("Done. vendor is ready, add the above to .cargo/config.toml to enable")
+    print("Done. vendor is ready")
 
 
 if __name__ == "__main__":
