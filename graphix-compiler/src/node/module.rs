@@ -190,7 +190,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             | SigKind::TypeDef(TypeDefExpr { .. }) => false,
         };
         if missing {
-            bail!("missing required sig item {si}")
+            bail!("sig item {si} is missing an implementation")
         }
     }
     Ok(())
