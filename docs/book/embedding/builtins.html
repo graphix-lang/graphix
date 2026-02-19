@@ -174,7 +174,7 @@ See the rustdoc for details. These two traits give you more control
 than the <code>CachedArgs</code> method we covered in the overview. Lets look at
 the simplest possible example.</p>
 <h2 id="understanding-the-once-function"><a class="header" href="#understanding-the-once-function">Understanding The Once Function</a></h2>
-<p>The <code>once</code> function evaluates it's arugment every cycle and passes
+<p>The <code>once</code> function evaluates its argument every cycle and passes
 through one and only one update. The <code>update</code> method is the most
 important method of <code>Apply</code>, it is called every cycle and returns
 something only when the node being updated has "updated". The meaning
@@ -198,7 +198,7 @@ events is,</p>
 <ul>
 <li>let clock = time::timer(1, true), update called on toplevel node (Bind)
 <ul>
-<li>time::timer(1, true), bind calls update on it's rhs</li>
+<li>time::timer(1, true), bind calls update on its rhs</li>
 <li>time::timer checks events to see if it should update, returns Some(DateTime(..))</li>
 <li>bind sets the id of clock in events to Value::DateTime(..)</li>
 <li>Rt checks for nodes that depend on <code>clock</code> schedules println(..)</li>
@@ -206,10 +206,10 @@ events is,</p>
 </li>
 <li>println(once(clock)), update called on toplevel node (CallSite)
 <ul>
-<li>once(clock), println calls update on it's argument, once(clock)</li>
+<li>once(clock), println calls update on its argument, once(clock)</li>
 <li>once::update calls update on clock</li>
 <li>ref clock checks events to see if it updated, returns Some(Value::DateTime(..))</li>
-<li>once::update checks if it's the first time it's argument has updated, it is</li>
+<li>once::update checks if it's the first time its argument has updated, it is</li>
 <li>once::update returns Some(Value::DateTime(..))</li>
 <li>println prints the datetime</li>
 </ul>
@@ -270,14 +270,14 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
     }
 }
 <span class="boring">}</span></code></pre></pre>
-<p>The BuiltIn trait is for construction, it declares the built in's
-name, and it's type (which we get to write out in syntax due to the
-deftype macro). It's init method is called every time the built in
-needs to be registered with a new context, and returns a closure that
-allocates the initial state of the function given a bunch of
-information about the context it's called in. In this case we don't
-care about any of that information, but it will be useful later.</p>
-<p>The most important method of <code>Apply</code> is update. <code>sleep</code> is expected to
+<p>The <code>BuiltIn</code> trait is for construction. It declares the built-in's
+name and its type (which we get to write out in Graphix syntax via the
+<code>deftype!</code> macro). The <code>init</code> method is called when the built-in is
+instantiated at a call site. It receives the execution context, the
+concrete function type, the lexical scope, the argument nodes, and the
+top-level expression id. In this case we don't care about any of that
+information, but it will be useful later.</p>
+<p>The most important method of <code>Apply</code> is <code>update</code>. <code>sleep</code> is expected to
 reset all the internal state and unregister anything registered with
 the context.</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
@@ -435,7 +435,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
 <span class="boring">}</span></code></pre></pre>
 <p>This implements <code>array::group</code>, which given an argument, stores that
 argument's updates internally, and creates an array out of them when
-the predicate returns true. It's type is</p>
+the predicate returns true. Its type is</p>
 <p><code>fn('a, fn(i64, 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
 <p>For example,</p>
 <pre><code class="language-graphix">let n = seq(0, 100);
@@ -461,8 +461,8 @@ things with this hook however.</p>
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html"><code>Event</code></a>
 struct contains two tables indexed by it. The most important is
 <code>variables</code>. Every bound variable has a <code>BindId</code>. If a variable has
-updated this cycle, then it's updated value will be in the <code>variables</code>
-table indexed by it's <code>BindId</code>. In order to call this predicate
+updated this cycle, then its updated value will be in the <code>variables</code>
+table indexed by its <code>BindId</code>. In order to call this predicate
 function we actually create three different variables and store their
 <code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>. <code>genn::reference</code> returns a reference
 <code>Node</code> and the <code>BindId</code> of the variable it is referencing. Since those
@@ -470,7 +470,7 @@ ref nodes become the arguments to the predicate call site we create,
 <code>xid</code> and <code>nid</code> allow us to control the arguments passed into the
 function. We just have to set <code>xid</code> and <code>nid</code> in <code>Event::variables</code>
 before we update the predicate in order to <code>call</code> the function. This
-may cause it to update immediatly, or, it may depend on something else
+may cause it to update immediately, or, it may depend on something else
 that needs to update before it will update. Either way, once we've set
 <code>xid</code> and <code>nid</code> once and called update on the predicate we've done our
 duty (it may never update, and that's ok). That just leaves <code>pid</code>,
@@ -493,24 +493,16 @@ variable they depend on is. Which means we need to cache globally the
 current value of every variable. So if you're setting variables, 90%
 chance you need to update cached.</p>
 <p>And this also explains another function that you have to implement
-when you're generating nodes, which is refs. Turns out we need to know
-all the variables a node depends on, so we can, you know, set them
-when it's being woken up from sleep, or stood up at a call site for
-the first time.</p>
-<p>That just leaves <code>delete</code>. Turns out the structure of the graph
-changes at run time, and we need to keep everything straight. It would
-be nice if we could do this with <code>Drop</code>, but that would require
-holding a reference to the <code>ExecCtx</code> we are in at every <code>Node</code>. I'd
-really rather not pay to wrap every access to the context in a mutex,
-so we're doing it the hard way (for now).</p>
-<h2 id="dynamic-linking-and-non-rust-builtins"><a class="header" href="#dynamic-linking-and-non-rust-builtins">Dynamic Linking and Non Rust Builtins</a></h2>
-<p>At the moment there is no dynamic linking of rust built-ins, nor is there
-explicit support for writing built-ins in a language other than rust. However
-both of those goals are on the roadmap.</p>
-<p>Essentially the plan is to export a minimal C abi interface for adding built-ins
-to Graphix, and then any language that can target that abi can be used directly
-to write Graphix built-ins, and we can dynamically load built-ins from shared
-libraries.</p>
+when you're generating nodes, which is <code>refs</code>. Turns out we need to know
+all the variables a node depends on, so we can set them when it's
+being woken up from sleep, or stood up at a call site for the first
+time.</p>
+<p>That just leaves <code>delete</code>. The structure of the graph changes at
+runtime, and we need to keep everything straight. It would be nice if
+we could do this with <code>Drop</code>, but that would require holding a
+reference to the <code>ExecCtx</code> at every <code>Node</code>. I'd really rather not pay
+to wrap every access to the context in a mutex, so we're doing it the
+hard way (for now).</p>
 
                     </main>
 

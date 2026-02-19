@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Stand Alone Graphix Applications - The Graphix Programming Language</title>
+        <title>Custom Embedded Applications - The Graphix Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -155,91 +155,104 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="stand-alone-graphix-applications"><a class="header" href="#stand-alone-graphix-applications">Stand Alone Graphix Applications</a></h1>
-<p>As we saw in the overview, using the
+                        <h1 id="custom-embedded-applications"><a class="header" href="#custom-embedded-applications">Custom Embedded Applications</a></h1>
+<p>For most standalone binaries, <code>graphix package build-standalone</code> is the simplest
+approach — see <a href="../packages/standalone.html">Standalone Binaries</a>. This section
+covers the more advanced case where you need full control: custom module
+resolvers, embedded REPLs, compiler flags, or integration with your own Rust
+application.</p>
+<p>Using the
 <a href="https://docs.rs/graphix-shell/latest/graphix_shell">graphix-shell</a> crate you
-can build a stand alone Graphix application using rust. With those basics out of
-the way, in this section we'll see,</p>
-<ul>
-<li>linking multiple Graphix files into a module tree</li>
-<li>integrating rust built-ins</li>
-<li>building a custom repl with rust built-ins added</li>
-</ul>
-<h2 id="module-trees-vfs-resolver"><a class="header" href="#module-trees-vfs-resolver">Module Trees, VFS resolver</a></h2>
-<p>In order to split a stand alone Graphix application up into mutiple files and
-modules and link it all into a single rust binary you can use a kind of module
-resolver called the <code>VFS</code>. This is pretty much exactly what it sounds like. Here
-is an example from the TUI library that is built into the shell by default.</p>
+can build a custom Graphix application. All installed packages are
+automatically registered, so your application gets the full standard library and
+any additional packages out of the box.</p>
+<h2 id="basic-application"><a class="header" href="#basic-application">Basic Application</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>fn tui_mods() -&gt; ModuleResolver {
-    ModuleResolver::VFS(HashMap::from_iter([
-        (Path::from("/tui"), literal!(include_str!("tui/mod.gx"))),
-        (Path::from("/tui/input_handler"), literal!(include_str!("tui/input_handler.gx"))),
-        (Path::from("/tui/text"), literal!(include_str!("tui/text.gx"))),
-        (Path::from("/tui/paragraph"), literal!(include_str!("tui/paragraph.gx"))),
-        (Path::from("/tui/block"), literal!(include_str!("tui/block.gx"))),
-        (Path::from("/tui/scrollbar"), literal!(include_str!("tui/scrollbar.gx"))),
-        (Path::from("/tui/layout"), literal!(include_str!("tui/layout.gx"))),
-        (Path::from("/tui/tabs"), literal!(include_str!("tui/tabs.gx"))),
-        (Path::from("/tui/barchart"), literal!(include_str!("tui/barchart.gx"))),
-        (Path::from("/tui/chart"), literal!(include_str!("tui/chart.gx"))),
-        (Path::from("/tui/sparkline"), literal!(include_str!("tui/sparkline.gx"))),
-        (Path::from("/tui/line_gauge"), literal!(include_str!("tui/line_gauge.gx"))),
-        (Path::from("/tui/gauge"), literal!(include_str!("tui/gauge.gx"))),
-        (Path::from("/tui/list"), literal!(include_str!("tui/list.gx"))),
-        (Path::from("/tui/table"), literal!(include_str!("tui/table.gx"))),
-        (Path::from("/tui/calendar"), literal!(include_str!("tui/calendar.gx"))),
-        (Path::from("/tui/canvas"), literal!(include_str!("tui/canvas.gx"))),
-        (Path::from("/tui/browser"), literal!(include_str!("tui/browser.gx"))),
-    ]))
+</span>use anyhow::Result;
+use graphix_compiler::expr::Source;
+use graphix_rt::NoExt;
+use graphix_shell::{Mode, ShellBuilder};
+use netidx::{
+    publisher::{DesiredAuth, PublisherBuilder},
+    subscriber::Subscriber,
+};
+
+pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt;()&gt; {
+    let publisher = PublisherBuilder::new(cfg.clone())
+        .desired_auth(auth.clone())
+        .build()
+        .await?;
+    let subscriber = Subscriber::new(cfg, auth)?;
+    ShellBuilder::&lt;NoExt&gt;::default()
+        .mode(Mode::Script(Source::from("main.gx")))
+        .publisher(publisher)
+        .subscriber(subscriber)
+        .no_init(true)
+        .build()?
+        .run()
+        .await
 }
 <span class="boring">}</span></code></pre></pre>
-<p>And then when you build the shell, you can specify this
-<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/expr/enum.ModuleResolver.html"><code>ModuleResolver</code></a>,
-and your toplevel program can simply <code>use</code> these modules as if they were files
-on disk.</p>
+<h2 id="module-resolvers"><a class="header" href="#module-resolvers">Module Resolvers</a></h2>
+<p>If you want to bundle additional Graphix source files into your binary (beyond
+what packages provide), you can add module resolvers. A VFS resolver maps
+virtual paths to source code:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>ShellBuilder::&lt;NoExt&gt;::default()
-    .module_resolvers(vec![tui_mods()])
-    .mode(Mode::Static(literal!(include_str!("main.gx"))))
-    .publisher(publisher)
-    .subscriber(subscriber)
-    .no_init(true)
-    .build()?
-    .run()
-    .await
-<span class="boring">}</span></code></pre></pre>
-<p>You can have as many module resolvers as you like, when loading modules they are
-checked in order, so earlier ones shadow later ones.</p>
-<h2 id="custom-builtins"><a class="header" href="#custom-builtins">Custom Builtins</a></h2>
-<p>To use custom builtins with the shell you must provide a register function</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>fn register(ctx: &amp;mut ExecCtx&lt;NoExt&gt;) -&gt; Result&lt;ArcStr&gt; {
-    BuiltIn0::register(ctx)?;
-    BuiltIn1::register(ctx)?;
-    Ok(literal!("builtins.gx"))
+</span>use arcstr::literal;
+use graphix_compiler::expr::ModuleResolver;
+use fxhash::FxHashMap;
+use netidx_core::path::Path;
+
+fn my_modules() -&gt; ModuleResolver {
+    ModuleResolver::VFS(FxHashMap::from_iter([
+        (Path::from("/myapp"), literal!(include_str!("myapp/mod.gx"))),
+        (Path::from("/myapp/util"), literal!(include_str!("myapp/util.gx"))),
+    ]))
 }
 
 ShellBuilder::&lt;NoExt&gt;::default()
-    .register(Arc::new(|ctx| register(ctx)))
-    .module_resolvers(vec![tui_mods()])
-    .mode(Mode::Static(literal!(include_str!("main.gx"))))
+    .module_resolvers(vec![my_modules()])
+    .mode(Mode::Script(Source::from("main.gx")))
     .publisher(publisher)
     .subscriber(subscriber)
-    .no_init(true)
     .build()?
     .run()
     .await
 <span class="boring">}</span></code></pre></pre>
-<p>See <a href="./builtins.html">Implementing Builtins</a> for details on actually implementing
-builtins.</p>
+<p>You can have as many module resolvers as you like. When loading modules they are
+checked in order, so earlier ones shadow later ones.</p>
+<p>Note that for most cases, creating a <a href="../packages/creating.html">package</a> is
+preferable to manually constructing VFS resolvers. Packages handle module
+registration automatically through the <code>defpackage!</code> macro.</p>
 <h2 id="custom-repl"><a class="header" href="#custom-repl">Custom REPL</a></h2>
-<p>You can build a REPL with custom additional Graphix code, or custom builtins,
-when you build your shell, just change the mode to <code>Mode::Repl</code>. Then you'll get
-a custom REPL with your desired builtins and pre loaded modules already present.</p>
+<p>You can build a REPL with pre-loaded modules by setting the mode to
+<code>Mode::Repl</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>ShellBuilder::&lt;NoExt&gt;::default()
+    .module_resolvers(vec![my_modules()])
+    .mode(Mode::Repl)
+    .publisher(publisher)
+    .subscriber(subscriber)
+    .build()?
+    .run()
+    .await
+<span class="boring">}</span></code></pre></pre>
+<p>This gives you a REPL with the standard library, all installed packages, and
+your additional modules available.</p>
+<h2 id="compiler-flags"><a class="header" href="#compiler-flags">Compiler Flags</a></h2>
+<p>You can enable or disable compiler flags:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graphix_compiler::CFlag;
+
+ShellBuilder::&lt;NoExt&gt;::default()
+    .enable_flags(CFlag::WarnUnused | CFlag::WarnUnhandled)
+    .mode(Mode::Repl)
+    // ...
+<span class="boring">}</span></code></pre></pre>
 
                     </main>
 

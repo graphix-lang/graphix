@@ -157,39 +157,36 @@
                     <main>
                         <h1 id="embedding-and-extending-graphix"><a class="header" href="#embedding-and-extending-graphix">Embedding and Extending Graphix</a></h1>
 <p>There are multiple ways you can embed Graphix in your application and
-extend it with rust code.</p>
-<h2 id="writing-built-in-functions-in-rust"><a class="header" href="#writing-built-in-functions-in-rust">Writing built-in functions in rust</a></h2>
-<p>You can implement Graphix functions in rust. Most of the standard
-library is actually written in rust (to improve startup time), and you
-can easily add more built-ins using rust code for computationally
-heavy tasks, or IO.</p>
-<p>There are two different ways to write built-ins, for a simple pure
-function you can use a the <code>CachedArgs</code> interface which takes care of
-most of the details for you. You only need to implement one method to
-evaluate changes to your arguments. For example min finds the minimum
-value of all it's arguments,</p>
+extend it with Rust code.</p>
+<h2 id="packages"><a class="header" href="#packages">Packages</a></h2>
+<p>The recommended way to extend Graphix is by creating a
+<a href="../packages/overview.html">package</a>. Packages let you bundle Rust built-in
+functions and Graphix modules into a crate that can be installed with <code>graphix package add</code>. The standard library itself is built as a set of packages using the
+same tools available to third-party developers.</p>
+<p>See <a href="../packages/overview.html">Packages</a> for details.</p>
+<h2 id="writing-built-in-functions-in-rust"><a class="header" href="#writing-built-in-functions-in-rust">Writing Built-in Functions in Rust</a></h2>
+<p>For a simple pure function you can use the <code>CachedArgs</code> interface which takes
+care of most of the details for you. You only need to implement one method to
+evaluate changes to your arguments. For example, a function that finds the
+minimum value of all its arguments:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_stdlib::{deftype, CachedArgs, EvalCached};
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
-use netidx::subscriber::Value;
+</span>use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
+use netidx_value::Value;
 
 #[derive(Debug, Default)]
 struct MinEv;
 
 impl EvalCached for MinEv {
-    const NAME: &amp;str = "min";
-    deftype!("core", "fn('a, @args:'a) -&gt; 'a");
+    const NAME: &amp;str = "core_min";
+    deftype!("fn('a, @args: 'a) -&gt; 'a");
 
     fn eval(&amp;mut self, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
                 (None, None) | (Some(_), None) =&gt; return None,
-                (None, Some(v)) =&gt; {
-                    res = Some(v);
-                }
+                (None, Some(v)) =&gt; res = Some(v),
                 (Some(v0), Some(v)) =&gt; {
                     res = if v &lt; v0 { Some(v) } else { Some(v0) };
                 }
@@ -201,78 +198,36 @@ impl EvalCached for MinEv {
 
 type Min = CachedArgs&lt;MinEv&gt;;
 <span class="boring">}</span></code></pre></pre>
-<p>Then you must register this built-in with the exec context,</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>ctx.register_builtin::&lt;Min&gt;()?
-<span class="boring">}</span></code></pre></pre>
-<p>And then you can call it from Graphix,</p>
-<pre><code class="language-graphix">let min = |@args| 'min
+<p>Then register this built-in by listing it in your package's <code>defpackage!</code> macro,
+and bind it in your Graphix module:</p>
+<pre><code class="language-graphix">let min = |@args| 'core_min
 </code></pre>
-<p>The special form function body <code>'min</code> references a built-in rust
-function.</p>
-<p>See <a href="./builtins.html">Writing Built in Functions</a> for details.</p>
-<h2 id="building-stand-alone-graphix-applications"><a class="header" href="#building-stand-alone-graphix-applications">Building Stand Alone Graphix Applications</a></h2>
-<p>You can build single binary stand alone Graphix applications using the
-<code>graphix-shell</code> crate. All your Graphix source code, and built-ins are
-compiled together with the compiler and runtime into a single binary
-that you can then deploy and run. When combined with writing built-ins
-in rust this becomes a powerful mixed language toolset.</p>
-<p>For example here is the netidx browser from <code>netidx-tools</code>:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use crate::publisher;
-use anyhow::{Context, Result};
-use arcstr::literal;
-use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
-use netidx::{
-    config::Config,
-    publisher::{DesiredAuth, PublisherBuilder},
-    subscriber::Subscriber,
-};
-
-pub async fn run(
-    cfg: Config,
-    auth: DesiredAuth,
-    params: publisher::Params,
-) -&gt; Result&lt;()&gt; {
-    let publisher = PublisherBuilder::new(cfg.clone())
-        .desired_auth(auth.clone())
-        .bind_cfg(params.bind)
-        .build()
-        .await
-        .context("creating publisher")?;
-    let subscriber = Subscriber::new(cfg, auth).context("create subscriber")?;
-    ShellBuilder::&lt;NoExt&gt;::default()
-        .mode(Mode::Static(literal!(include_str!("browser.gx"))))
-        .publisher(publisher)
-        .subscriber(subscriber)
-        .no_init(true)
-        .build()?
-        .run()
-        .await
-}
-<span class="boring">}</span></code></pre></pre>
-<p>See <a href="./shell.html">Stand Alone Graphix Applications</a> for details</p>
+<p>The special form function body <code>'core_min</code> references a built-in Rust function.</p>
+<p>See <a href="./builtins.html">Writing Built in Functions</a> for the full API details.</p>
+<h2 id="custom-embedded-applications"><a class="header" href="#custom-embedded-applications">Custom Embedded Applications</a></h2>
+<p>For most standalone binaries, the simplest approach is <code>graphix package build-standalone</code> — see <a href="../packages/standalone.html">Standalone Binaries</a>.</p>
+<p>If you need more control (custom module resolvers, embedded REPLs, compiler
+flags, or integration with your own Rust application), you can use the
+<code>graphix-shell</code> crate directly to build a custom application. See <a href="./shell.html">Custom
+Embedded Applications</a> for details.</p>
 <h2 id="embedding-graphix-in-your-application"><a class="header" href="#embedding-graphix-in-your-application">Embedding Graphix in Your Application</a></h2>
-<p>Using the <code>graphix-rt</code> crate you can embed the Graphix compiler and
-runtime in your application. Then you can,</p>
+<p>Using the <code>graphix-rt</code> crate you can embed the Graphix compiler and runtime in
+your application. Then you can:</p>
 <ul>
 <li>compile and run Graphix code</li>
 <li>receive events from Graphix expressions</li>
 <li>inject events into Graphix pipelines</li>
 <li>call Graphix functions</li>
 </ul>
-<p>The runtime uses tokio and runs in a background task so it integrates
-well into a normal async workflow.</p>
-<p>See <a href="./rt.html">Using Graphix as Embedded Scripting</a> for details</p>
+<p>The runtime uses tokio and runs in a background task so it integrates well into
+a normal async workflow.</p>
+<p>See <a href="./rt.html">Using Graphix as Embedded Scripting</a> for details.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../ui/tui/tabs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../packages/standalone.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -286,7 +241,7 @@ well into a normal async workflow.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../ui/tui/tabs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../packages/standalone.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
