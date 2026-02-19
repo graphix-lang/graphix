@@ -42,7 +42,8 @@
       "Bash(python3:*)",
       "Bash(xargs git rm -f --)",
       "Bash(git -C /home/eric/proj/graphix add docs/book/)",
-      "Bash(git -C /home/eric/proj/graphix add .claude/settings.local.json)"
+      "Bash(git -C /home/eric/proj/graphix add .claude/settings.local.json)",
+      "Bash(git -C:*)"
     ],
     "deny": [],
     "ask": []
