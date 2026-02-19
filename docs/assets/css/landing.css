@@ -174,8 +174,15 @@ body {
 .hero-subtitle {
     font-size: 1.25rem;
     color: var(--text-secondary);
-    margin-bottom: 2rem;
+    margin-bottom: 1rem;
     line-height: 1.6;
+}
+
+.hero-body {
+    font-size: 1rem;
+    color: var(--text-tertiary);
+    margin-bottom: 2rem;
+    line-height: 1.7;
 }
 
 .hero-cta {
