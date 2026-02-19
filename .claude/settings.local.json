@@ -36,7 +36,9 @@
       "Bash(git -C /home/eric/proj/graphix log --oneline --all -20)",
       "WebFetch(domain:docs.rs)",
       "Bash(ls:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(cargo package:*)",
+      "Bash(git -C:*)"
     ],
     "deny": [],
     "ask": []

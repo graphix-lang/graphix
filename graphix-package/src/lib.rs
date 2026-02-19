@@ -100,7 +100,7 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     version: env!("CARGO_PKG_VERSION"),
-    cargo_toml: include_str!("skel/Cargo.toml"),
+    cargo_toml: include_str!("skel/Cargo.toml.hbs"),
     deps_rs: include_str!("skel/deps.rs"),
     lib_rs: include_str!("skel/lib.rs"),
     mod_gx: include_str!("skel/mod.gx"),
