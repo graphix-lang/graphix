@@ -15,7 +15,10 @@ module.exports = grammar({
     $.line_comment,
   ],
 
-  externals: $ => [],
+  externals: $ => [
+    $._string_content,
+    $._error_sentinel,  // never used in grammar; valid only during error recovery
+  ],
 
   inline: $ => [
     $._expression_inner,
@@ -40,6 +43,7 @@ module.exports = grammar({
     [$._expression, $.apply],
     [$._expression, $.array_ref, $.array_slice],
     [$._type, $.type_path],
+    [$.union_type, $.array_pattern],
     [$.array_pattern, $.slice_prefix_pattern],
     [$.primitive_type, $.null],
     [$.connect],
@@ -47,12 +51,26 @@ module.exports = grammar({
     [$.lambda, $.apply],
     [$.lambda, $.array_ref, $.array_slice],
     [$.variant_type],
+    [$.wildcard_type, $.structure_pattern],
+
     [$.struct_type, $.struct_pattern],
     [$.variant_type, $.variant_pattern],
     [$.variant_type_args, $.variant_pattern],
-    [$.type_ascription, $._primary_expression],
     [$.lambda, $._primary_expression],
+    [$._expression, $.or_never],
+    [$.lambda, $.or_never],
+    [$._expression, $.qop],
+    [$.lambda, $.qop],
     [$.type_path, $.pattern_bind],
+    [$.pattern_bind, $.type_ascription],
+    [$._typed_value, $.module_path],
+    [$._typed_value, $._primary_expression],
+    [$._typed_value, $.type_ascription],
+    [$._typed_value, $._arithmetic_expression],
+    [$.type_ascription, $._primary_expression],
+    [$.string, $.value_string],
+    [$.value_string, $.interpolation],
+    [$.module],
   ],
 
   word: $ => $.identifier,
@@ -78,6 +96,11 @@ module.exports = grammar({
     ),
 
     _expression_inner: $ => choice(
+      $.module,
+      $.use,
+      $.type_def,
+      $.let_binding,
+      $.connect,
       $.lambda,
       $.try_catch,
       $._arithmetic_expression,
@@ -93,11 +116,31 @@ module.exports = grammar({
     doc_comment: $ => token(seq('///', /.*/)),
 
     // Module and use
-    module: $ => seq(
-      'mod',
-      field('name', $.identifier),
-      optional($.signature),
-      field('body', $.module_body),
+    module: $ => choice(
+      // Bodyless module declaration: mod name
+      seq('mod', field('name', $.identifier)),
+      // Static module: mod name { ... }
+      seq(
+        'mod',
+        field('name', $.identifier),
+        optional($.signature),
+        field('body', $.module_body),
+      ),
+      // Dynamic module: mod name dynamic { sandbox ...; sig { ... }; source expr }
+      seq(
+        'mod',
+        field('name', $.identifier),
+        'dynamic',
+        '{',
+        field('sandbox', $.sandbox),
+        ';',
+        field('sig', $.sig_block),
+        ';',
+        'source',
+        field('source', $._expression),
+        optional(';'),
+        '}',
+      ),
     ),
 
     module_body: $ => seq(
@@ -105,6 +148,23 @@ module.exports = grammar({
       optional(seq(
         $._expression,
         repeat(seq(';', optional($._expression))),
+      )),
+      '}',
+    ),
+
+    sandbox: $ => choice(
+      seq('sandbox', 'unrestricted'),
+      seq('sandbox', 'blacklist', '[', commaSep1($.module_path), ']'),
+      seq('sandbox', 'whitelist', '[', commaSep1($.module_path), ']'),
+    ),
+
+    sig_block: $ => seq(
+      'sig',
+      '{',
+      optional(seq(
+        $.sig_item,
+        repeat(seq(';', $.sig_item)),
+        optional(';'),
       )),
       '}',
     ),
@@ -134,6 +194,7 @@ module.exports = grammar({
 
     sig_bind: $ => seq(
       optional($.doc_comment),
+      'val',
       field('name', $.identifier),
       ':',
       field('type', $._type),
@@ -146,6 +207,7 @@ module.exports = grammar({
     ),
 
     sig_use: $ => seq(
+      optional($.doc_comment),
       'use',
       field('path', $.module_path),
     ),
@@ -180,6 +242,7 @@ module.exports = grammar({
       $.primitive_type,
       $.type_identifier,
       $.type_variable,
+      $.wildcard_type,
       $.array_type,
       $.map_type,
       $.tuple_type,
@@ -193,6 +256,8 @@ module.exports = grammar({
       $.error_type,
       $.parenthesized_type,
     ),
+
+    wildcard_type: $ => '_',
 
     parenthesized_type: $ => seq('(', $._type, ')'),
 
@@ -227,10 +292,11 @@ module.exports = grammar({
     variant_type_args: $ => seq('(', commaSep($._type), ')'),
 
     // Union type: [Type1, Type2, ...] or [`A, `B, `C]
-    union_type: $ => seq('[', commaSep1($._type), ']'),
+    union_type: $ => seq('[', commaSep($._type), ']'),
 
     function_type: $ => prec.left(seq(
       'fn',
+      optional(seq('<', commaSep1($.constraint), '>')),
       '(',
       optional($.fn_type_args),
       ')',
@@ -239,12 +305,19 @@ module.exports = grammar({
       optional($.constraints_clause),
     )),
 
-    fn_type_args: $ => commaSep1($.fn_type_arg),
+    fn_type_args: $ => seq(
+      commaSep1($.fn_type_arg),
+      optional(seq(',', $.fn_type_varg)),
+    ),
 
     fn_type_arg: $ => seq(
-      optional($.labeled_param),
+      optional($.fn_type_label),
       $._type,
     ),
+
+    fn_type_label: $ => seq(optional('?'), '#', $.identifier, ':'),
+
+    fn_type_varg: $ => seq('@', $.identifier, ':', $._type),
 
     labeled_param: $ => seq('#', $.identifier),
 
@@ -288,8 +361,9 @@ module.exports = grammar({
     // Patterns
     structure_pattern: $ => choice(
       '_',
+      $.type_ascription,
       $.literal,
-      $.string,
+      $.value_string,
       $.pattern_bind,
       $.tuple_pattern,
       $.array_pattern,
@@ -358,23 +432,25 @@ module.exports = grammar({
     ),
 
     // Match pattern (for select)
+    // Format: [Type as] structure_pattern [if guard]
     pattern: $ => seq(
-      optional(seq($._type, ':')),
+      optional(seq($._type, 'as')),
       $.structure_pattern,
-      optional(seq('as', $.structure_pattern)),  // as pattern for aliasing
       optional(seq('if', $._expression)),
     ),
 
-    // Lambda
+    // Lambda: constraints|params| -> rtype throws body
     lambda: $ => seq(
+      optional($.lambda_constraints),
       '|',
       optional($.lambda_params),
       '|',
       optional(seq('->', $._type)),
       optional($.throws_clause),
-      optional($.constraints_clause),
       $._expression_inner,
     ),
+
+    lambda_constraints: $ => commaSep1($.constraint),
 
     lambda_params: $ => commaSep1($.lambda_param),
 
@@ -393,9 +469,10 @@ module.exports = grammar({
       ),
     ),
 
-    variadic_param: $ => seq('@', $.identifier),
+    variadic_param: $ => seq('@', $.identifier, optional(seq(':', $._type))),
 
     labeled_param_with_default: $ => prec.left(seq(
+      optional('?'),
       '#',
       $.identifier,
       optional(seq(':', $._type)),
@@ -436,12 +513,39 @@ module.exports = grammar({
       $.do_block,
     ),
 
-    // Type ascription: Type:literal (e.g., duration:0.5s)
-    // Note: type comes FIRST, then colon, then value
+    // Type ascription: Type:literal (e.g., i8:0, duration:0.5s, bytes:AQID==)
+    // Note: type comes FIRST, then colon, then value.
+    // Allows both identifier (for non-keyword types like 'error') and
+    // primitive_type (for keyword types like 'i8', 'f32', 'datetime').
     type_ascription: $ => seq(
-      $.identifier,  // type name (lowercase like 'duration')
+      choice($.identifier, $.primitive_type),
       ':',
-      choice($.literal, $.string, $.raw_string),
+      choice($._typed_value, $.string, $.value_string, $.raw_string),
+    ),
+
+    // Non-string values that can appear after the colon in type ascription.
+    // Strings are handled separately in type_ascription to share nodes with
+    // expression contexts, enabling GLR to resolve struct/map ambiguity.
+    _typed_value: $ => choice(
+      // Nested type ascription (e.g., error:i8:0)
+      $.type_ascription,
+      // Trailing-dot float (e.g., 0.)
+      seq($.literal, token.immediate('.')),
+      // Number followed by alpha chars (e.g., base64 bytes starting with digit)
+      seq($.literal, token.immediate(/[A-Za-z_=+/][A-Za-z0-9_=+/]*/)),
+      $.literal,
+      // Bare values like base64 bytes (e.g. AQID==)
+      $.bare_value,
+      // Fallback for values that look like identifiers
+      $.identifier,
+    ),
+
+    // Bare values for type ascription that can't be parsed as other tokens.
+    // E.g., base64-encoded bytes like AQID==, or values starting with = or +
+    bare_value: $ => choice(
+      /[A-Z][A-Za-z0-9_=+/]*/,     // Starts with uppercase (base64, etc.)
+      /[=+/][A-Za-z0-9_=+/]*/,     // Starts with = + / (base64 padding, etc.)
+      /[A-Za-z0-9_][A-Za-z0-9_]*[=+/][A-Za-z0-9_=+/]*/,  // Contains non-identifier chars
     ),
 
     binary_expression: $ => choice(
@@ -544,6 +648,10 @@ module.exports = grammar({
     // Primary expressions
     _primary_expression: $ => choice(
       $.literal,
+      // Trailing-dot float (e.g., 50.) — token.immediate ensures the dot must be
+      // adjacent, and longest-match ensures '..' (2 chars) beats '.' (1 char),
+      // so this never consumes a dot from the '..' range operator.
+      seq($.literal, token.immediate('.')),
       $.reference,
       $.builtin_ref,
       $.string,
@@ -576,8 +684,8 @@ module.exports = grammar({
       /\d+(\.\d*)?[smhd]/,
       // Scientific notation
       /[+-]?\d+(\.\d+)?[eE][+-]?\d+/,
-      // Floats (with optional trailing digits after decimal)
-      /[+-]?\d+\.\d*/,
+      // Floats (require at least one digit after decimal to avoid consuming '..' operator)
+      /[+-]?\d+\.\d+/,
       // Hexadecimal
       /0x[0-9a-fA-F]+/,
       // Binary
@@ -593,17 +701,33 @@ module.exports = grammar({
     null: $ => choice('null', 'ok'),
 
     // Strings (including interpolated strings)
+    // Interpolating string: [expr] is interpolation.
+    // The external scanner produces string_content tokens that stop at '[', '"', '\'.
     string: $ => seq(
       '"',
       repeat(choice(
         $.escape_sequence,
-        $.string_content,
+        alias($._string_content, $.string_content),
         $.interpolation,
       )),
       '"',
     ),
 
-    string_content: $ => token.immediate(prec(1, /[^\"\\\[\]]+/)),
+    // Non-interpolating string for value contexts (e.g., error:"[", bytes:"...").
+    // Uses the SAME external content token as string (so the lexer produces one
+    // token that both GLR branches can accept). The difference: value_string
+    // also accepts literal '[' as a parser token, while string treats '[' as
+    // interpolation start. This lets the parser handle the distinction.
+    value_string: $ => prec.dynamic(-1, seq(
+      '"',
+      repeat(choice(
+        $.escape_sequence,
+        alias($._string_content, $.value_string_content),
+        '[',
+        ']',
+      )),
+      '"',
+    )),
 
     escape_sequence: $ => token.immediate(seq(
       '\\',
@@ -660,10 +784,12 @@ module.exports = grammar({
       '}',
     ),
 
-    struct_field: $ => seq(
+    // prec.dynamic(1) ensures GLR prefers struct_field over type_ascription
+    // when both could match (e.g., {a: "hello"} is a struct, not map with type_ascription)
+    struct_field: $ => prec.dynamic(10, seq(
       field('name', $.identifier),
       optional(seq(':', field('value', $._expression))),
-    ),
+    )),
 
     // Map
     map: $ => seq(
@@ -714,11 +840,16 @@ module.exports = grammar({
       ']',
     ),
 
+    // Note: '...' (three dots) is accepted as a range operator because the
+    // Graphix printer emits trailing-dot floats like f32:0. which, when followed
+    // by the .. range operator, produces three consecutive dots (f32:0...).
+    // Tree-sitter's context-free tokenizer would greedily match '..' first,
+    // leaving the trailing dot as an error. Accepting '...' avoids this.
     array_slice: $ => seq(
       $._primary_expression,
       '[',
       optional($._expression),
-      '..',
+      choice('..', '...'),
       optional($._expression),
       ']',
     ),
@@ -732,12 +863,12 @@ module.exports = grammar({
 
     // Qop and or_never - postfix operators
     qop: $ => prec.left(seq(
-      choice($._primary_expression, $.apply, $.cast),
+      choice($._primary_expression, $._arithmetic_expression),
       '?',
     )),
 
     or_never: $ => prec.left(seq(
-      choice($._primary_expression, $.apply, $.cast),
+      choice($._primary_expression, $._arithmetic_expression),
       '$',
     )),
 
