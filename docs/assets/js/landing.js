@@ -18,33 +18,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Lazy load images in showcase section
-    const showcaseItems = document.querySelectorAll('.showcase-item img');
-
-    const imageObserver = new IntersectionObserver((entries, observer) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                const img = entry.target;
-                const src = img.getAttribute('data-src');
-
-                if (src) {
-                    img.src = src;
-                    img.removeAttribute('data-src');
-
-                    img.addEventListener('load', () => {
-                        img.classList.add('loaded');
-                    });
-                }
-
-                observer.unobserve(img);
-            }
-        });
-    }, {
-        rootMargin: '50px'
-    });
-
-    showcaseItems.forEach(img => {
-        imageObserver.observe(img);
+    // Mark showcase images as loaded for CSS transitions
+    document.querySelectorAll('.showcase-item img').forEach(img => {
+        if (img.complete) {
+            img.classList.add('loaded');
+        } else {
+            img.addEventListener('load', () => img.classList.add('loaded'));
+        }
     });
 
     // Scroll animation for sections
