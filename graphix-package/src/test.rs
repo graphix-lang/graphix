@@ -1,5 +1,14 @@
 use std::path::Path;
+use std::sync::{Mutex, Once};
 use std::time::Duration;
+
+// vendor.py must only run once — concurrent runs would clobber each other.
+static VENDOR_ONCE: Once = Once::new();
+
+// Serialize tests that spawn cargo builds. They're expensive in CPU,
+// memory, and disk, and concurrent cargo invocations sharing a target
+// dir will fight over the lock file.
+static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
 /// Extract the version string from a TOML dependency item.
 /// Handles both `dep = "version"` and `dep = { version = "...", ... }`.
@@ -92,12 +101,18 @@ fn stdlib_package_versions_match_graphix_package() {
 }
 
 fn vendor(ws: &Path) {
-    let status = std::process::Command::new("python3")
-        .arg(ws.join("vendor.py"))
-        .current_dir(ws)
-        .status()
-        .expect("vendor.py");
-    assert!(status.success(), "vendor.py failed");
+    VENDOR_ONCE.call_once(|| {
+        let status = std::process::Command::new("python3")
+            .arg(ws.join("vendor.py"))
+            .current_dir(ws)
+            .status()
+            .expect("vendor.py");
+        assert!(status.success(), "vendor.py failed");
+        // vendor.py writes .cargo/config.toml into the workspace root,
+        // but tests write their own per-package configs. Remove it so
+        // we don't leave the workspace pointing at vendored sources.
+        let _ = std::fs::remove_file(ws.join(".cargo/config.toml"));
+    });
 }
 
 fn write_vendor_config(dir: &Path, ws: &Path) {
@@ -117,6 +132,7 @@ fn write_vendor_config(dir: &Path, ws: &Path) {
 async fn created_package_compiles() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     vendor(ws);
+    let _lock = BUILD_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
     let pkg_dir = tmp.path().join("graphix-package-testpkg");
@@ -135,6 +151,7 @@ async fn build_standalone_produces_working_binary() {
     use tokio::io::AsyncBufReadExt;
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     vendor(ws);
+    let _lock = BUILD_LOCK.lock().unwrap();
     // Create package with main.gx
     let tmp = tempfile::tempdir().unwrap();
     super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
