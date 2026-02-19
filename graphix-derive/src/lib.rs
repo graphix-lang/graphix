@@ -1,3 +1,7 @@
+#![doc(
+    html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
+    html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
+)]
 use cargo_toml::Manifest;
 use proc_macro2::TokenStream;
 use quote::quote;

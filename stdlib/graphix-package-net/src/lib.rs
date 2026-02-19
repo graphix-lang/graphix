@@ -1,3 +1,7 @@
+#![doc(
+    html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
+    html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
+)]
 use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;

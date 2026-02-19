@@ -1,3 +1,7 @@
+#![doc(
+    html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
+    html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
+)]
 use anyhow::Result;
 use graphix_compiler::{
     expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
