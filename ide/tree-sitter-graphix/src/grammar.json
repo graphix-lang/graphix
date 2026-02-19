@@ -3196,10 +3196,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "type_ascription"
-        },
-        {
-          "type": "SYMBOL",
           "name": "do_block"
         }
       ]
@@ -3262,58 +3258,26 @@
               "name": "literal"
             },
             {
-              "type": "IMMEDIATE_TOKEN",
-              "content": {
-                "type": "STRING",
-                "value": "."
-              }
-            }
-          ]
-        },
-        {
-          "type": "SEQ",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "literal"
-            },
-            {
-              "type": "IMMEDIATE_TOKEN",
-              "content": {
-                "type": "PATTERN",
-                "value": "[A-Za-z_=+/][A-Za-z0-9_=+/]*"
-              }
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "_value_extension"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
             }
           ]
         },
         {
           "type": "SYMBOL",
-          "name": "literal"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "bare_value"
+          "name": "_bare_value"
         },
         {
           "type": "SYMBOL",
           "name": "identifier"
-        }
-      ]
-    },
-    "bare_value": {
-      "type": "CHOICE",
-      "members": [
-        {
-          "type": "PATTERN",
-          "value": "[A-Z][A-Za-z0-9_=+/]*"
-        },
-        {
-          "type": "PATTERN",
-          "value": "[=+/][A-Za-z0-9_=+/]*"
-        },
-        {
-          "type": "PATTERN",
-          "value": "[A-Za-z0-9_][A-Za-z0-9_]*[=+/][A-Za-z0-9_=+/]*"
         }
       ]
     },
@@ -4088,6 +4052,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "type_ascription"
+        },
+        {
+          "type": "SYMBOL",
           "name": "array"
         },
         {
@@ -4164,37 +4132,41 @@
     "number": {
       "type": "TOKEN",
       "content": {
-        "type": "CHOICE",
-        "members": [
-          {
-            "type": "PATTERN",
-            "value": "\\d+(\\.\\d*)?[smhd]"
-          },
-          {
-            "type": "PATTERN",
-            "value": "[+-]?\\d+(\\.\\d+)?[eE][+-]?\\d+"
-          },
-          {
-            "type": "PATTERN",
-            "value": "[+-]?\\d+\\.\\d+"
-          },
-          {
-            "type": "PATTERN",
-            "value": "0x[0-9a-fA-F]+"
-          },
-          {
-            "type": "PATTERN",
-            "value": "0b[01]+"
-          },
-          {
-            "type": "PATTERN",
-            "value": "0o[0-7]+"
-          },
-          {
-            "type": "PATTERN",
-            "value": "[+-]?\\d+"
-          }
-        ]
+        "type": "PREC",
+        "value": 1,
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "PATTERN",
+              "value": "\\d+(\\.\\d*)?[smhd]"
+            },
+            {
+              "type": "PATTERN",
+              "value": "[+-]?\\d+(\\.\\d+)?[eE][+-]?\\d+"
+            },
+            {
+              "type": "PATTERN",
+              "value": "[+-]?\\d+\\.\\d+"
+            },
+            {
+              "type": "PATTERN",
+              "value": "0x[0-9a-fA-F]+"
+            },
+            {
+              "type": "PATTERN",
+              "value": "0b[01]+"
+            },
+            {
+              "type": "PATTERN",
+              "value": "0o[0-7]+"
+            },
+            {
+              "type": "PATTERN",
+              "value": "[+-]?\\d+"
+            }
+          ]
+        }
       }
     },
     "boolean": {
@@ -4405,6 +4377,18 @@
     "module_path": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "/"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "SYMBOL",
           "name": "identifier"
@@ -5170,10 +5154,6 @@
       "type_ascription"
     ],
     [
-      "_typed_value",
-      "_arithmetic_expression"
-    ],
-    [
       "type_ascription",
       "_primary_expression"
     ],
@@ -5229,6 +5209,14 @@
     {
       "type": "SYMBOL",
       "name": "_string_content"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_value_extension"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_bare_value"
     },
     {
       "type": "SYMBOL",

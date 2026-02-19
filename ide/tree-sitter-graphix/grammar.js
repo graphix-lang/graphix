@@ -17,7 +17,9 @@ module.exports = grammar({
 
   externals: $ => [
     $._string_content,
-    $._error_sentinel,  // never used in grammar; valid only during error recovery
+    $._value_extension,  // greedy value chars after a literal in type ascription
+    $._bare_value,       // bare values like base64 (external to beat line_comment on //)
+    $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
   inline: $ => [
@@ -66,7 +68,6 @@ module.exports = grammar({
     [$._typed_value, $.module_path],
     [$._typed_value, $._primary_expression],
     [$._typed_value, $.type_ascription],
-    [$._typed_value, $._arithmetic_expression],
     [$.type_ascription, $._primary_expression],
     [$.string, $.value_string],
     [$.value_string, $.interpolation],
@@ -509,7 +510,6 @@ module.exports = grammar({
       $.select,
       $.any,
       $.cast,
-      $.type_ascription,
       $.do_block,
     ),
 
@@ -529,24 +529,20 @@ module.exports = grammar({
     _typed_value: $ => choice(
       // Nested type ascription (e.g., error:i8:0)
       $.type_ascription,
-      // Trailing-dot float (e.g., 0.)
-      seq($.literal, token.immediate('.')),
-      // Number followed by alpha chars (e.g., base64 bytes starting with digit)
-      seq($.literal, token.immediate(/[A-Za-z_=+/][A-Za-z0-9_=+/]*/)),
-      $.literal,
-      // Bare values like base64 bytes (e.g. AQID==)
-      $.bare_value,
+      // Literal followed by optional external scanner that greedily consumes
+      // adjacent value characters (letters, digits, +, /, =, ., -). The scanner
+      // returns false when there's nothing to consume, which lets the parser
+      // skip the optional. Because external tokens are tried BEFORE internal
+      // tokens, the scanner effectively resolves the shift-reduce conflict
+      // at runtime: match -> shift, no match -> reduce.
+      seq($.literal, optional($._value_extension)),
+      // Bare values like base64 bytes (e.g. AQID==, //8A==)
+      // External token so it's tried before line_comment can match //
+      $._bare_value,
       // Fallback for values that look like identifiers
       $.identifier,
     ),
 
-    // Bare values for type ascription that can't be parsed as other tokens.
-    // E.g., base64-encoded bytes like AQID==, or values starting with = or +
-    bare_value: $ => choice(
-      /[A-Z][A-Za-z0-9_=+/]*/,     // Starts with uppercase (base64, etc.)
-      /[=+/][A-Za-z0-9_=+/]*/,     // Starts with = + / (base64 padding, etc.)
-      /[A-Za-z0-9_][A-Za-z0-9_]*[=+/][A-Za-z0-9_=+/]*/,  // Contains non-identifier chars
-    ),
 
     binary_expression: $ => choice(
       prec.left('or', seq($._expression, '||', $._expression)),
@@ -656,6 +652,7 @@ module.exports = grammar({
       $.builtin_ref,
       $.string,
       $.raw_string,
+      $.type_ascription,
       $.array,
       $.tuple,
       $.struct,
@@ -679,7 +676,7 @@ module.exports = grammar({
       $.null,
     ),
 
-    number: $ => token(choice(
+    number: $ => token(prec(1, choice(
       // Duration literals (must come before floats/integers to match correctly)
       /\d+(\.\d*)?[smhd]/,
       // Scientific notation
@@ -694,7 +691,7 @@ module.exports = grammar({
       /0o[0-7]+/,
       // Integers (last to avoid matching prefixes of above)
       /[+-]?\d+/,
-    )),
+    ))),
 
     boolean: $ => choice('true', 'false'),
 
@@ -759,6 +756,7 @@ module.exports = grammar({
     builtin_ref: $ => seq("'", $.identifier),
 
     module_path: $ => seq(
+      optional('/'),
       $.identifier,
       repeat(seq('::', $.identifier)),
     ),
