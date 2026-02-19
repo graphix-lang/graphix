@@ -10,7 +10,6 @@ repository = "https://github.com/graphix-lang/graphix"
 documentation = "https://docs.rs/graphix-derive"
 readme = "../README.md"
 categories = ["network-programming", "compilers", "gui"]
-edition = "2024"
 
 [lib]
 proc-macro = true
