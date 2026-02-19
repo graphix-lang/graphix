@@ -7,7 +7,7 @@ homepage = "https://graphix-lang.github.io/graphix"
 repository = "https://github.com/graphix-lang/graphix"
 description = "A dataflow language for UIs and network programming, array package"
 documentation = "https://docs.rs/graphix-package-array"
-readme = "../README.md"
+readme = "../../README.md"
 license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
 

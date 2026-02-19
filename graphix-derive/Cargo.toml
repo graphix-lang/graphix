@@ -1,6 +1,15 @@
 [package]
 name = "graphix-derive"
 version = "0.4.0"
+authors = ["Eric Stokes <eestokes@pm.me>"]
+edition = "2024"
+license = "MIT"
+description = "A dataflow language for UIs derive macros for package management"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+documentation = "https://docs.rs/graphix-derive"
+readme = "../README.md"
+categories = ["network-programming", "compilers", "gui"]
 edition = "2024"
 
 [lib]
