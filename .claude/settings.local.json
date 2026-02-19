@@ -39,7 +39,10 @@
       "WebSearch",
       "Bash(tree:*)",
       "Bash(curl:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(xargs git rm -f --)",
+      "Bash(git -C /home/eric/proj/graphix add docs/book/)",
+      "Bash(git -C /home/eric/proj/graphix add .claude/settings.local.json)"
     ],
     "deny": [],
     "ask": []

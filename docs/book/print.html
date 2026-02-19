@@ -2889,6 +2889,17 @@ mode.</p>
 <li>Integrating with editors and build tools</li>
 <li>Quick validation during development</li>
 </ul>
+<h2 id="package-management"><a class="header" href="#package-management">Package Management</a></h2>
+<p>The shell includes a built-in package manager for extending Graphix with
+additional functionality. Use <code>graphix package</code> to search for, install, and
+manage packages:</p>
+<pre><code class="language-bash">graphix package search http       # search for packages
+graphix package add mypackage     # install a package
+graphix package remove mypackage  # remove a package
+graphix package list              # list installed packages
+</code></pre>
+<p>Adding or removing a package rebuilds the <code>graphix</code> binary with the new set of
+packages compiled in. See <a href="./packages/overview.html">Packages</a> for full details.</p>
 <h2 id="understanding-output"><a class="header" href="#understanding-output">Understanding Output</a></h2>
 <p>One of the most important concepts to understand about the shell is its output behavior. Not all expressions produce output, and expressions that do produce output can update multiple times.</p>
 <h3 id="output-vs-non-output-expressions"><a class="header" href="#output-vs-non-output-expressions">Output vs Non-Output Expressions</a></h3>
@@ -6678,26 +6689,331 @@ evaluate changes to your arguments. For example min finds the minimum
 value of all it's arguments,</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_stdlib::{deftype, CachedArgs, EvalCached};
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
-use netidx::subscriber::Value;
+</span>use graphix_derive::defpackage;
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+
+// ... builtin implementations ...
+
+defpackage! {
+    builtins =&gt; [
+        MyBuiltin,
+        MyCachedBuiltin,
+    ]
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The <code>defpackage!</code> macro generates:</p>
+<ul>
+<li>A <code>pub struct P</code> that implements the <code>Package</code> trait</li>
+<li>Registration code for all listed builtins</li>
+<li>Automatic inclusion of all <code>.gx</code> and <code>.gxi</code> files from <code>src/graphix/</code></li>
+<li>Test infrastructure (<code>TEST_REGISTER</code>) for the test harness</li>
+</ul>
+<h3 id="srcgraphix----graphix-source-modules"><a class="header" href="#srcgraphix----graphix-source-modules"><code>src/graphix/</code> -- Graphix Source Modules</a></h3>
+<p>Graphix source files in <code>src/graphix/</code> are automatically included in the
+package. These files provide the Graphix-level API for your package. The
+directory structure maps to the module hierarchy: <code>src/graphix/foo.gx</code> becomes
+the module <code>mylib::foo</code> (note you still need <code>mod foo</code> in mod.gx).</p>
+<p>The top-level module file is <code>src/graphix/mod.gx</code>. This is where you typically
+bind your builtins to Graphix names and re-export them:</p>
+<pre><code class="language-graphix">let my_builtin = |arg| 'mylib_my_builtin;
+let my_cached = |@args| 'mylib_my_cached;
+</code></pre>
+<h3 id="srcgraphixmodgxi----interface-file"><a class="header" href="#srcgraphixmodgxi----interface-file"><code>src/graphix/mod.gxi</code> -- Interface File</a></h3>
+<p>The interface file declares the public API of your package:</p>
+<pre><code class="language-graphix">/// Check if a value is an error
+val my_builtin: fn(Any) -&gt; bool;
+
+/// Logical OR of all arguments
+val my_cached: fn(@args: bool) -&gt; bool;
+</code></pre>
+<p>See <a href="packages/../modules/interfaces.html">Interface Files</a> for the full interface syntax.</p>
+<h2 id="writing-built-in-functions"><a class="header" href="#writing-built-in-functions">Writing Built-in Functions</a></h2>
+<p>There are two ways to write builtins: the simplified <code>CachedArgs</code> interface for
+pure functions, and the full <code>BuiltIn</code> + <code>Apply</code> traits for functions that need
+fine-grained control over the update cycle.</p>
+<h3 id="naming-convention"><a class="header" href="#naming-convention">Naming Convention</a></h3>
+<p>All builtin names <strong>must</strong> start with your package name. For a package named
+<code>mylib</code>, builtins must be named <code>mylib_something</code>. The <code>defpackage!</code> macro
+enforces this at compile time.</p>
+<h3 id="the-simple-path-evalcached--cachedargs"><a class="header" href="#the-simple-path-evalcached--cachedargs">The Simple Path: <code>EvalCached</code> / <code>CachedArgs</code></a></h3>
+<p>For pure functions that just compute a result from their arguments, use
+<code>EvalCached</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
+use netidx_value::Value;
 
 #[derive(Debug, Default)]
-struct MinEv;
+struct MyMinEv;
 
-impl EvalCached for MinEv {
-    const NAME: &amp;str = "min";
-    deftype!("core", "fn('a, @args:'a) -&gt; 'a");
+impl EvalCached for MyMinEv {
+    const NAME: &amp;str = "mylib_min";
+    deftype!("fn('a, @args: 'a) -&gt; 'a");
 
     fn eval(&amp;mut self, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
                 (None, None) | (Some(_), None) =&gt; return None,
-                (None, Some(v)) =&gt; {
-                    res = Some(v);
+                (None, Some(v)) =&gt; res = Some(v),
+                (Some(v0), Some(v)) =&gt; {
+                    res = if v &lt; v0 { Some(v) } else { Some(v0) };
                 }
+            }
+        }
+        res
+    }
+}
+
+type MyMin = CachedArgs&lt;MyMinEv&gt;;
+<span class="boring">}</span></code></pre></pre>
+<p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins. <code>CachedArgs</code> handles all the
+details of caching argument values, calling <code>eval</code> when arguments change, and
+implementing the <code>Apply</code> trait.</p>
+<h3 id="the-full-control-path-builtin--apply"><a class="header" href="#the-full-control-path-builtin--apply">The Full-Control Path: <code>BuiltIn</code> + <code>Apply</code></a></h3>
+<p>For builtins that need to interact with the execution context, manage internal
+state across cycles, or work with higher-order functions, implement the
+<code>BuiltIn</code> and <code>Apply</code> traits directly. See
+<a href="packages/../embedding/builtins.html">Writing Built in Functions</a> for a deep dive.</p>
+<p>Here is a minimal example -- <code>once</code> passes through exactly one update:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use anyhow::Result;
+use graphix_compiler::{
+    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+};
+use graphix_package_core::deftype;
+use netidx_value::Value;
+
+#[derive(Debug)]
+struct MyOnce {
+    val: bool,
+}
+
+impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
+    const NAME: &amp;str = "mylib_once";
+    deftype!("fn('a) -&gt; 'a");
+
+    fn init&lt;'a, 'b, 'c&gt;(
+        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _typ: &amp;'a FnType,
+        _scope: &amp;'b Scope,
+        _from: &amp;'c [Node&lt;R, E&gt;],
+        _top_id: ExprId,
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
+        Ok(Box::new(MyOnce { val: false }))
+    }
+}
+
+impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
+    fn update(
+        &amp;mut self,
+        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        from: &amp;mut [Node&lt;R, E&gt;],
+        event: &amp;mut Event&lt;E&gt;,
+    ) -&gt; Option&lt;Value&gt; {
+        match from {
+            [s] =&gt; s.update(ctx, event).and_then(|v| {
+                if self.val {
+                    None
+                } else {
+                    self.val = true;
+                    Some(v)
+                }
+            }),
+            _ =&gt; None,
+        }
+    }
+
+    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+        self.val = false
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="generic-builtins"><a class="header" href="#generic-builtins">Generic Builtins</a></h3>
+<p>If your builtin's type is parameterized over the runtime types <code>R</code> and <code>E</code>, use
+the <code>as</code> syntax in the builtins list:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>defpackage! {
+    builtins =&gt; [
+        MyGeneric as MyGeneric&lt;GXRt&lt;X&gt;, X::UserEvent&gt;,
+    ]
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="custom-displays"><a class="header" href="#custom-displays">Custom Displays</a></h2>
+<p>Packages can provide custom display implementations. Custom displays allow you
+to do something special with a value returned to the shell by a script or in the
+REPL. For example the TUI package uses a custom display to take control of the
+terminal and render a terminal UI from the returned value.</p>
+<h3 id="the-customdisplay-trait"><a class="header" href="#the-customdisplay-trait">The <code>CustomDisplay</code> Trait</a></h3>
+<p>A custom display implements <code>CustomDisplay&lt;X&gt;</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[async_trait]
+pub trait CustomDisplay&lt;X: GXExt&gt;: Any {
+    /// Called when the shell wants to return to normal display mode,
+    /// or when the custom display signals stop. Free any resources here.
+    async fn clear(&amp;mut self);
+
+    /// Called on every update from the Graphix runtime.
+    /// This includes all updates, not just ones related to the custom
+    /// display. The future returned must resolve promptly or the shell
+    /// will hang.
+    async fn process_update(&amp;mut self, env: &amp;Env, id: ExprId, v: Value);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="registering-a-custom-display"><a class="header" href="#registering-a-custom-display">Registering a Custom Display</a></h3>
+<p>To hook a custom display into the shell, provide <code>is_custom</code> and <code>init_custom</code>
+closures in <code>defpackage!</code>:</p>
+<ul>
+<li><strong><code>is_custom</code></strong> receives each compiled expression and returns <code>true</code> if your
+package should handle its display. The shell calls this to decide whether to
+use the default display or delegate to your package.</li>
+<li><strong><code>init_custom</code></strong> constructs your <code>CustomDisplay</code>. It receives a <code>stop</code>
+channel — send on it when the display wants to exit (e.g. the user closed a
+window), and the shell will call <code>clear()</code> before dropping the display.</li>
+</ul>
+<p>Here is a minimal example that prints every update to stderr:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use async_trait::async_trait;
+use graphix_compiler::{env::Env, expr::ExprId};
+use graphix_package::CustomDisplay;
+use graphix_rt::GXExt;
+use netidx_value::Value;
+
+struct DebugDisplay;
+
+#[async_trait]
+impl&lt;X: GXExt&gt; CustomDisplay&lt;X&gt; for DebugDisplay {
+    async fn clear(&amp;mut self) {
+        eprintln!("[debug display] cleared");
+    }
+
+    async fn process_update(&amp;mut self, _env: &amp;Env, id: ExprId, v: Value) {
+        eprintln!("[debug display] {id:?} = {v}");
+    }
+}
+
+defpackage! {
+    builtins =&gt; [...],
+    is_custom =&gt; |_gx, _env, e| {
+        // claim all expressions whose result type is an array
+        e.typ.with_deref(|t| {
+            matches!(t, Some(graphix_compiler::typ::Type::Array(_)))
+        })
+    },
+    init_custom =&gt; |_gx, _env, _stop, _e| {
+        Ok(Box::new(DebugDisplay))
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The <code>e</code> parameter is a <code>CompExp</code> which has a <code>typ</code> field (the inferred result
+type) and an <code>id</code> field (the expression ID). Typically <code>is_custom</code> checks
+whether the result type matches something your display knows how to render, as
+the TUI package does with its widget types. The custom display is responsible
+for keeping the CompExp alive (if that is necessary), if it is dropped the
+expression will be removed from the runtime (just like any other dropped
+CompExp).</p>
+<h2 id="dependencies-between-packages"><a class="header" href="#dependencies-between-packages">Dependencies Between Packages</a></h2>
+<p>Packages can depend on other packages via Cargo. Add the dependency to your
+<code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[dependencies]
+graphix-package-core = "0.3"
+graphix-package-time = "0.3"
+</code></pre>
+<p>Your package's <code>register()</code> function (generated by <code>defpackage!</code>) automatically
+calls <code>register()</code> on all its <code>graphix-package-*</code> dependencies before
+registering itself. This ensures transitive dependencies are always available.</p>
+<h2 id="testing"><a class="header" href="#testing">Testing</a></h2>
+<p>The <code>defpackage!</code> macro generates a <code>TEST_REGISTER</code> constant that includes
+register functions for all package dependencies. Use the test macros from
+<code>graphix-package-core</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod test {
+    use graphix_package_core::run;
+
+    run!(my_test, "mylib::my_builtin(true)", |r| {
+        matches!(r, Ok(netidx::subscriber::Value::Bool(true)))
+    });
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The <code>run!</code> macro sets up a full Graphix runtime with your package registered,
+compiles the expression, and checks the result against your predicate.</p>
+<h2 id="publishing"><a class="header" href="#publishing">Publishing</a></h2>
+<p>Packages are published to crates.io like any other Rust crate:</p>
+<pre><code>cd graphix-package-mylib
+cargo publish
+</code></pre>
+<p>Once published, anyone can install it with <code>graphix package add mylib</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="standalone-binaries"><a class="header" href="#standalone-binaries">Standalone Binaries</a></h1>
+<p>If you want to build a self-contained graphix binary with your package
+and all it's dependencies baked in (for deployment, distribution, or
+use as a custom application), you can create a <code>main.gx</code> program in
+your packages' src/graphix directory, which will enable the package to
+be built as a standalone binary.</p>
+<h2 id="adding-a-main-program"><a class="header" href="#adding-a-main-program">Adding a Main Program</a></h2>
+<p>Create <code>src/graphix/main.gx</code> in your package with the program to run at startup:</p>
+<pre><code class="language-graphix">"Hello from my standalone app!"
+</code></pre>
+<p>During normal library use (e.g. when loaded via <code>graphix package add</code>), <code>main.gx</code> is excluded from the virtual filesystem and has no
+effect. It only activates the package is building as standalone
+binary. This is very similar to Python's</p>
+<pre><code class="language-Python">if __name__ == '__main__':
+</code></pre>
+<p>mechanism, except it is ... somewhat less ugly to look at.</p>
+<h2 id="building"><a class="header" href="#building">Building</a></h2>
+<p>From your package directory:</p>
+<pre><code>cd graphix-package-mylib
+graphix package build-standalone
+</code></pre>
+<p>This builds a release-optimized <code>graphix</code> binary in the current
+directory that includes your local package and all it's
+dependencies. The build enables the <code>standalone</code> cargo feature on your
+package, which causes the contents of <code>main.gx</code> to be appended to the
+root module as the entry point program.</p>
+<p>Scaffolded packages already include <code>[features] standalone = []</code> in their
+<code>Cargo.toml</code>. If you created your package before this feature existed, add it
+manually:</p>
+<pre><code class="language-toml">[features]
+standalone = []
+</code></pre>
+<p>The resulting binary is fully standalone — it doesn't require <code>graphix package add</code> or any runtime .gx files in order to run.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="embedding-and-extending-graphix"><a class="header" href="#embedding-and-extending-graphix">Embedding and Extending Graphix</a></h1>
+<p>There are multiple ways you can embed Graphix in your application and
+extend it with Rust code.</p>
+<h2 id="packages-1"><a class="header" href="#packages-1">Packages</a></h2>
+<p>The recommended way to extend Graphix is by creating a
+<a href="embedding/../packages/overview.html">package</a>. Packages let you bundle Rust built-in
+functions and Graphix modules into a crate that can be installed with <code>graphix package add</code>. The standard library itself is built as a set of packages using the
+same tools available to third-party developers.</p>
+<p>See <a href="embedding/../packages/overview.html">Packages</a> for details.</p>
+<h2 id="writing-built-in-functions-in-rust"><a class="header" href="#writing-built-in-functions-in-rust">Writing Built-in Functions in Rust</a></h2>
+<p>For a simple pure function you can use the <code>CachedArgs</code> interface which takes
+care of most of the details for you. You only need to implement one method to
+evaluate changes to your arguments. For example, a function that finds the
+minimum value of all its arguments:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
+use netidx_value::Value;
+
+#[derive(Debug, Default)]
+struct MinEv;
+
+impl EvalCached for MinEv {
+    const NAME: &amp;str = "core_min";
+    deftype!("fn('a, @args: 'a) -&gt; 'a");
+
+    fn eval(&amp;mut self, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+        let mut res = None;
+        for v in from.flat_iter() {
+            match (res, v) {
+                (None, None) | (Some(_), None) =&gt; return None,
+                (None, Some(v)) =&gt; res = Some(v),
                 (Some(v0), Some(v)) =&gt; {
                     res = if v &lt; v0 { Some(v) } else { Some(v0) };
                 }
@@ -6764,8 +7080,8 @@ pub async fn run(
 <span class="boring">}</span></code></pre></pre>
 <p>See <a href="embedding/./shell.html">Stand Alone Graphix Applications</a> for details</p>
 <h2 id="embedding-graphix-in-your-application"><a class="header" href="#embedding-graphix-in-your-application">Embedding Graphix in Your Application</a></h2>
-<p>Using the <code>graphix-rt</code> crate you can embed the Graphix compiler and
-runtime in your application. Then you can,</p>
+<p>Using the <code>graphix-rt</code> crate you can embed the Graphix compiler and runtime in
+your application. Then you can:</p>
 <ul>
 <li>compile and run Graphix code</li>
 <li>receive events from Graphix expressions</li>
@@ -6784,9 +7100,10 @@ API, if you just want to write a pure function see the
 two traits,
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.BuiltIn.html"><code>graphix_compiler::BuiltIn</code></a>
 and
-<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Apply.html"><code>graphix_compiler::Apply</code></a>. See
-the rustdoc for details. These two traits give you more control than the
-<a href="https://docs.rs/graphix-stdlib/latest/graphix_stdlib/struct.CachedArgs.html"><code>graphix_stdlib::CachedArgs</code></a> method we covered in the overview. Lets look at the simplest possible example,</p>
+<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Apply.html"><code>graphix_compiler::Apply</code></a>.
+See the rustdoc for details. These two traits give you more control
+than the <code>CachedArgs</code> method we covered in the overview. Lets look at
+the simplest possible example.</p>
 <h2 id="understanding-the-once-function"><a class="header" href="#understanding-the-once-function">Understanding The Once Function</a></h2>
 <p>The <code>once</code> function evaluates it's arugment every cycle and passes
 through one and only one update. The <code>update</code> method is the most
@@ -6832,17 +7149,30 @@ events is,</p>
 <h2 id="implementing-once"><a class="header" href="#implementing-once">Implementing Once</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>#[derive(Debug)]
+</span>use anyhow::Result;
+use graphix_compiler::{
+    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+};
+use graphix_package_core::deftype;
+use netidx_value::Value;
+
+#[derive(Debug)]
 struct Once {
     val: bool,
 }
 
 impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
-    const NAME: &amp;str = "once";
-    deftype!("core", "fn('a) -&gt; 'a");
+    const NAME: &amp;str = "core_once";
+    deftype!("fn('a) -&gt; 'a");
 
-    fn init(_: &amp;mut ExecCtx&lt;R, E&gt;) -&gt; BuiltInInitFn&lt;R, E&gt; {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Once { val: false })))
+    fn init&lt;'a, 'b, 'c&gt;(
+        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _typ: &amp;'a FnType,
+        _scope: &amp;'b Scope,
+        _from: &amp;'c [Node&lt;R, E&gt;],
+        _top_id: ExprId,
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
+        Ok(Box::new(Once { val: false }))
     }
 }
 
@@ -6889,7 +7219,21 @@ that. Again lets look at the simplest example from the standard
 library, which is <code>array::group</code>.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>#[derive(Debug)]
+</span>use anyhow::bail;
+use compact_str::format_compact;
+use graphix_compiler::{
+    expr::ExprId,
+    genn,
+    node::Node,
+    typ::{FnType, Typ, Type},
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
+};
+use graphix_package_core::deftype;
+use netidx_value::Value;
+use smallvec::{smallvec, SmallVec};
+use std::collections::VecDeque;
+
+#[derive(Debug)]
 pub(super) struct Group&lt;R: Rt, E: UserEvent&gt; {
     queue: VecDeque&lt;Value&gt;,
     buf: SmallVec&lt;[Value; 16]&gt;,
@@ -6902,13 +7246,16 @@ pub(super) struct Group&lt;R: Rt, E: UserEvent&gt; {
 
 impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
     const NAME: &amp;str = "array_group";
-    deftype!(
-        "core::array",
-        "fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e"
-    );
+    deftype!("fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e");
 
-    fn init(_: &amp;mut ExecCtx&lt;R, E&gt;) -&gt; BuiltInInitFn&lt;R, E&gt; {
-        Arc::new(|ctx, typ, scope, from, top_id| match from {
+    fn init&lt;'a, 'b, 'c&gt;(
+        ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        typ: &amp;'a FnType,
+        scope: &amp;'b Scope,
+        from: &amp;'c [Node&lt;R, E&gt;],
+        top_id: ExprId,
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
+        match from {
             [_, _] =&gt; {
                 let scope =
                     scope.append(&amp;format_compact!("fn{}", LambdaId::new().inner()));
@@ -6920,9 +7267,11 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
                 };
                 let (nid, n) =
                     genn::bind(ctx, &amp;scope.lexical, "n", n_typ.clone(), top_id);
-                let (xid, x) = genn::bind(ctx, &amp;scope.lexical, "x", etyp.clone(), top_id);
+                let (xid, x) =
+                    genn::bind(ctx, &amp;scope.lexical, "x", etyp.clone(), top_id);
                 let pid = BindId::new();
-                let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
+                let fnode =
+                    genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
                 let pred = genn::apply(fnode, scope, vec![n, x], &amp;mftyp, top_id);
                 Ok(Box::new(Self {
                     queue: VecDeque::new(),
@@ -6935,7 +7284,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
                 }))
             }
             _ =&gt; bail!("expected two arguments"),
-        })
+        }
     }
 }
 
@@ -6975,9 +7324,11 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
                     self.ready = true;
                     match v {
                         Value::Bool(true) =&gt; {
-                            break Some(Value::Array(ValArray::from_iter_exact(
-                                self.buf.drain(..),
-                            )))
+                            break Some(Value::Array(
+                                netidx_value::ValArray::from_iter_exact(
+                                    self.buf.drain(..),
+                                ),
+                            ))
                         }
                         _ =&gt; match self.queue.pop_front() {
                             None =&gt; break None,
@@ -7023,13 +7374,13 @@ array::group(n, |_, n| (n == 50) || (n == 99))
 </code></pre>
 <p><code>seq(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
 create two arrays, one containing <code>[0, .. 50]</code> and the other
-containing <code>[51, .. 99]</code></p>
+containing <code>[51, .. 99]</code>.</p>
 <p>The implementation needs to build a <code>Node</code> representing the
-predicate. <code>Node</code> is the fundamental type of everything in the graph,
-ultimately the entire program compiles to a node. The kind of node we
+predicate. <code>Node</code> is the fundamental type of everything in the graph.
+Ultimately the entire program compiles to a node. The kind of node we
 need to create here is a function call site, that will handle all the
-details of late binding optional arguments, default args, etc,
-etc. The <code>genn</code> module is specifically for generating nodes.</p>
+details of late binding, optional arguments, default args, etc. The
+<code>genn</code> module is specifically for generating nodes.</p>
 <h3 id="typecheck"><a class="header" href="#typecheck">Typecheck</a></h3>
 <p>Because we generated code, we have to hook into the <code>typecheck</code>
 compiler phase and make sure the type checker runs on it. This
@@ -7044,7 +7395,7 @@ struct contains two tables indexed by it. The most important is
 updated this cycle, then it's updated value will be in the <code>variables</code>
 table indexed by it's <code>BindId</code>. In order to call this predicate
 function we actually create three different variables and store their
-<code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>. <code>gen::ref</code> returns a reference
+<code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>. <code>genn::reference</code> returns a reference
 <code>Node</code> and the <code>BindId</code> of the variable it is referencing. Since those
 ref nodes become the arguments to the predicate call site we create,
 <code>xid</code> and <code>nid</code> allow us to control the arguments passed into the
@@ -7066,8 +7417,8 @@ to know about it. Luckily we don't have to handle any of the wonderful
 details of late binding beyond this simple passing through of updates,
 the call site will take care of that.</p>
 <h3 id="execctxcached-refs-delete"><a class="header" href="#execctxcached-refs-delete">ExecCtx::cached, refs, delete</a></h3>
-<p>What is all this <code>ctx.cached</code> stuff. Well, when call sites get
-initialized for the first time, or when an branch of select wakes from
+<p>What is all this <code>ctx.cached</code> stuff? Well, when call sites get
+initialized for the first time, or when a branch of select wakes from
 sleep, it turns out we need to know what the current value of every
 variable they depend on is. Which means we need to cache globally the
 current value of every variable. So if you're setting variables, 90%
@@ -7108,27 +7459,29 @@ resolver called the <code>VFS</code>. This is pretty much exactly what it sounds
 is an example from the TUI library that is built into the shell by default.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>fn tui_mods() -&gt; ModuleResolver {
-    ModuleResolver::VFS(HashMap::from_iter([
-        (Path::from("/tui"), literal!(include_str!("tui/mod.gx"))),
-        (Path::from("/tui/input_handler"), literal!(include_str!("tui/input_handler.gx"))),
-        (Path::from("/tui/text"), literal!(include_str!("tui/text.gx"))),
-        (Path::from("/tui/paragraph"), literal!(include_str!("tui/paragraph.gx"))),
-        (Path::from("/tui/block"), literal!(include_str!("tui/block.gx"))),
-        (Path::from("/tui/scrollbar"), literal!(include_str!("tui/scrollbar.gx"))),
-        (Path::from("/tui/layout"), literal!(include_str!("tui/layout.gx"))),
-        (Path::from("/tui/tabs"), literal!(include_str!("tui/tabs.gx"))),
-        (Path::from("/tui/barchart"), literal!(include_str!("tui/barchart.gx"))),
-        (Path::from("/tui/chart"), literal!(include_str!("tui/chart.gx"))),
-        (Path::from("/tui/sparkline"), literal!(include_str!("tui/sparkline.gx"))),
-        (Path::from("/tui/line_gauge"), literal!(include_str!("tui/line_gauge.gx"))),
-        (Path::from("/tui/gauge"), literal!(include_str!("tui/gauge.gx"))),
-        (Path::from("/tui/list"), literal!(include_str!("tui/list.gx"))),
-        (Path::from("/tui/table"), literal!(include_str!("tui/table.gx"))),
-        (Path::from("/tui/calendar"), literal!(include_str!("tui/calendar.gx"))),
-        (Path::from("/tui/canvas"), literal!(include_str!("tui/canvas.gx"))),
-        (Path::from("/tui/browser"), literal!(include_str!("tui/browser.gx"))),
-    ]))
+</span>use anyhow::Result;
+use graphix_compiler::expr::Source;
+use graphix_rt::NoExt;
+use graphix_shell::{Mode, ShellBuilder};
+use netidx::{
+    publisher::{DesiredAuth, PublisherBuilder},
+    subscriber::Subscriber,
+};
+
+pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt;()&gt; {
+    let publisher = PublisherBuilder::new(cfg.clone())
+        .desired_auth(auth.clone())
+        .build()
+        .await?;
+    let subscriber = Subscriber::new(cfg, auth)?;
+    ShellBuilder::&lt;NoExt&gt;::default()
+        .mode(Mode::Script(Source::from("main.gx")))
+        .publisher(publisher)
+        .subscriber(subscriber)
+        .no_init(true)
+        .build()?
+        .run()
+        .await
 }
 <span class="boring">}</span></code></pre></pre>
 <p>And then when you build the shell, you can specify this
@@ -7160,12 +7513,10 @@ checked in order, so earlier ones shadow later ones.</p>
 }
 
 ShellBuilder::&lt;NoExt&gt;::default()
-    .register(Arc::new(|ctx| register(ctx)))
-    .module_resolvers(vec![tui_mods()])
-    .mode(Mode::Static(literal!(include_str!("main.gx"))))
+    .module_resolvers(vec![my_modules()])
+    .mode(Mode::Script(Source::from("main.gx")))
     .publisher(publisher)
     .subscriber(subscriber)
-    .no_init(true)
     .build()?
     .run()
     .await
@@ -7180,8 +7531,8 @@ a custom REPL with your desired builtins and pre loaded modules already present.
 <p>You can use Graphix as an embedded scripting engine in your application. For
 this application we leave the shell behind and move to the
 <a href="https://docs.rs/graphix-rt/latest/graphix_rt"><code>graphix-rt</code></a> crate. This is a
-lower level crate that gives you a lot more control over the compiler and run
-time.</p>
+lower level crate that gives you a lot more control over the compiler and
+runtime.</p>
 <h2 id="tokio"><a class="header" href="#tokio">Tokio</a></h2>
 <p><code>graphix-rt</code> uses tokio internally, it will run the compiler and run loop in
 it's own tokio task. You Interface with this task via a
@@ -7194,17 +7545,22 @@ As we get further into internals, the details can change more often, but in
 general getting a Graphix runtime going involves the following,</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// set up an execution context using the generic runtime with no customization
-let mut ctx = ExecCtx::new(GXRt::&lt;NoExt&gt;::new(publisher, subscriber));
+</span>use graphix_compiler::ExecCtx;
+use graphix_rt::{GXConfig, GXRt, NoExt};
+use tokio::sync::mpsc;
+
+// set up an execution context using the generic runtime with no customization
+let mut ctx = ExecCtx::new(GXRt::&lt;NoExt&gt;::new(publisher, subscriber))?;
 // ... use the context to register all your built-ins, etc
 
 // set up a channel to receive events from the RT
 let (tx, rx) = mpsc::channel(100);
 // build the config and start the runtime
 let handle = GXConfig::builder(ctx, tx)
-    // set up a root module. Note if you want the standard library you must load
-    // it as part of the root module. Otherwise you will get the bare compiler.
-    .root(literal!("root.gx"))
+    // set up a root module. Note if you want the standard library you must
+    // register packages or load modules manually. Otherwise you will get
+    // the bare compiler with no standard library.
+    .root(arcstr::literal!("mod mymod"))
     .build()?
     .start().await?
 <span class="boring">}</span></code></pre></pre>
@@ -7220,20 +7576,21 @@ on the handle. This results in one or more toplevel expressions and a copy of
 the environment (or a compile error).</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let cres = handle.compile(literal!("2 + 2")).await?;
+</span>let cres = handle.compile(arcstr::literal!("2 + 2")).await?;
 
 // in this case we know there is just one top level expression
-let e = cres.exprs[0];
+let e = &amp;cres.exprs[0];
 
 // the actual result will come to us on the channel. If the expression kept
-// producing results, we'd keep seeing updates for it's id on the channel.
+// producing results, we'd keep seeing updates for its id on the channel.
 // This is a batch of GXEvents
-let mut batch = rx.recv().await.ok_or_else(|| anyhow!("the runtime is dead"))?;
+let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
 let mut env = handle.get_env().await?;
 for ev in batch.drain(..) {
     match ev {
-        GXEvent::Updated(id, v) if id == e.id =&gt; println!("2 + 2 = {v}"),
-        GXEvent::Env(e) =&gt; env = e
+        graphix_rt::GXEvent::Updated(id, v) if id == e.id =&gt; println!("2 + 2 = {v}"),
+        graphix_rt::GXEvent::Env(e) =&gt; env = e,
+        _ =&gt; ()
     }
 }
 <span class="boring">}</span></code></pre></pre>
@@ -7241,7 +7598,7 @@ for ev in batch.drain(..) {
 <p>If you want to be notified when a variable in Graphix updates you can register a
 <a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.Ref.html"><code>Ref</code></a>, or a
 <a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.TRef.html"><code>TRef</code></a> if you
-have a corresponding rust type that implements
+have a corresponding Rust type that implements
 <a href="https://docs.rs/netidx-value/latest/netidx_value/trait.FromValue.html"><code>FromValue</code></a>.
 There are two ways to get a ref, by id and by name. By id is probably the most
 common, because
@@ -7250,8 +7607,8 @@ will appear in any data structure that has a value passed by ref (e.g. &amp;v),
 which should be common for large structures that don't change often.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// assume we got id from a data structure and it's type is &amp;i64
-let mut r = handle.compile_ref(id)
+</span>// assume we got id from a data structure and its type is &amp;i64
+let mut r = handle.compile_ref(id);
 
 // if the variable r is bound to has a value right now it will be in last
 if let Some(v) = &amp;r.last {
@@ -7259,15 +7616,15 @@ if let Some(v) = &amp;r.last {
 }
 
 // now we will get an update whenever the variable updates
-let mut batch = rx.recv().await.ok_or_else(|| anyhow!("the runtime is dead"))?;
+let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
 for ev in batch.drain(..) {
     match ev {
-        GXEvent::Updated(id, v) =&gt; {
+        graphix_rt::GXEvent::Updated(id, v) =&gt; {
             if let Some(v) = r.update(id, &amp;v) {
                 println!("current value {v}")
             }
         },
-        GXEvent::Env(_) =&gt; ()
+        graphix_rt::GXEvent::Env(_) =&gt; ()
     }
 }
 <span class="boring">}</span></code></pre></pre>
@@ -7277,7 +7634,11 @@ for ev in batch.drain(..) {
 <p>We can also reference a variable by name,</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let mut r = handle.compile_ref_by_name(&amp;env, &amp;Scope::root(), &amp;ModPath::from(["foo"])).await?;
+</span>let mut r = handle.compile_ref_by_name(
+    &amp;env,
+    &amp;graphix_compiler::Scope::root(),
+    &amp;graphix_compiler::ModPath::from(["foo"]),
+).await?;
 
 // the rest of the code is exactly the same
 <span class="boring">}</span></code></pre></pre>
@@ -7288,21 +7649,28 @@ do this by calling
 on the handle.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let mut f = handle.compile_callable_by_name(&amp;env, &amp;Scope::root(), &amp;ModPath::from(["sum"])).await?;
-f.call(ValArray::from_iter_exact([Value::from(1), Value::from(2), Value::from(3)])).await?;
+</span>let mut f = handle.compile_callable_by_name(
+    &amp;env,
+    &amp;graphix_compiler::Scope::root(),
+    &amp;graphix_compiler::ModPath::from(["sum"]),
+).await?;
+f.call(netidx_value::ValArray::from_iter_exact(
+    [Value::from(1), Value::from(2), Value::from(3)]
+)).await?;
 
 // now we must update f to drive both late binding, and get our return value
 // we need a loop this time because there will be multiple updates
 loop {
-    let mut batch = rx.recv().ok_or_else(|| anyhow!("the runtime is dead"))?;
+    let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
     for ev in batch.drain(..) {
         match ev {
-            GXEvent::Updated(id, v) =&gt; {
+            graphix_rt::GXEvent::Updated(id, v) =&gt; {
                 if let Some(v) = f.update(&amp;v).await {
                     println!("sum returned {v}")
                 }
             }
-            GXEvent::Env(e) =&gt; env = e,
+            graphix_rt::GXEvent::Env(e) =&gt; env = e,
+            _ =&gt; ()
         }
     }
 }
@@ -7319,18 +7687,21 @@ on the handle.</p>
 </span><span class="boring">fn main() {
 </span>// id is the LambdaId of the function as a Value. Lets assume it's sum
 let f = handle.compile_callable(id).await?;
-f.call(ValArray::from_iter_exact([Value::from(1), Value::from(41)])).await?;
+f.call(netidx_value::ValArray::from_iter_exact(
+    [Value::from(1), Value::from(41)]
+)).await?;
 
 // now wait for the value
-let mut batch = rx.recv().ok_or_else(|| anyhow!("the runtime is dead"))?;
+let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
 for ev in batch.drain(..) {
     match ev {
-        GXEvent::Updated(id, v) =&gt; {
+        graphix_rt::GXEvent::Updated(id, v) =&gt; {
             if let Some(v) = f.update(&amp;v) {
                 println!("sum returned {v}")
             }
         }
-        GxEvent::Env(e) =&gt; env = e,
+        graphix_rt::GXEvent::Env(e) =&gt; env = e,
+        _ =&gt; ()
     }
 }
 <span class="boring">}</span></code></pre></pre>

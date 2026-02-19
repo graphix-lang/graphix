@@ -157,16 +157,22 @@
                     <main>
                         <h1 id="writing-built-in-functions"><a class="header" href="#writing-built-in-functions">Writing Built in Functions</a></h1>
 <p>As mentioned in the introduction you can extend Graphix by writing
-built in functions in rust. This chapter will deep dive into the full
-API, if you just want to write a pure function see the
-<a href="./overview.html">Overview</a>.</p>
-<p>In order to implement a built-in graphix function you must implement
+built in functions in Rust. This chapter will deep dive into the full
+API. If you just want to write a pure function see the
+<a href="./overview.html">Overview</a>, or better yet the
+<a href="../packages/creating.html">Creating Packages</a> guide.</p>
+<p>Most users should create a <a href="../packages/overview.html">package</a> rather
+than using these traits directly. The <code>defpackage!</code> macro handles
+registration and module setup automatically. This chapter is for
+understanding the internals.</p>
+<p>In order to implement a built-in Graphix function you must implement
 two traits,
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.BuiltIn.html"><code>graphix_compiler::BuiltIn</code></a>
 and
-<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Apply.html"><code>graphix_compiler::Apply</code></a>. See
-the rustdoc for details. These two traits give you more control than the
-<a href="https://docs.rs/graphix-stdlib/latest/graphix_stdlib/struct.CachedArgs.html"><code>graphix_stdlib::CachedArgs</code></a> method we covered in the overview. Lets look at the simplest possible example,</p>
+<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Apply.html"><code>graphix_compiler::Apply</code></a>.
+See the rustdoc for details. These two traits give you more control
+than the <code>CachedArgs</code> method we covered in the overview. Lets look at
+the simplest possible example.</p>
 <h2 id="understanding-the-once-function"><a class="header" href="#understanding-the-once-function">Understanding The Once Function</a></h2>
 <p>The <code>once</code> function evaluates it's arugment every cycle and passes
 through one and only one update. The <code>update</code> method is the most
@@ -212,17 +218,30 @@ events is,</p>
 <h2 id="implementing-once"><a class="header" href="#implementing-once">Implementing Once</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>#[derive(Debug)]
+</span>use anyhow::Result;
+use graphix_compiler::{
+    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+};
+use graphix_package_core::deftype;
+use netidx_value::Value;
+
+#[derive(Debug)]
 struct Once {
     val: bool,
 }
 
 impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
-    const NAME: &amp;str = "once";
-    deftype!("core", "fn('a) -&gt; 'a");
+    const NAME: &amp;str = "core_once";
+    deftype!("fn('a) -&gt; 'a");
 
-    fn init(_: &amp;mut ExecCtx&lt;R, E&gt;) -&gt; BuiltInInitFn&lt;R, E&gt; {
-        Arc::new(|_, _, _, _, _| Ok(Box::new(Once { val: false })))
+    fn init&lt;'a, 'b, 'c&gt;(
+        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _typ: &amp;'a FnType,
+        _scope: &amp;'b Scope,
+        _from: &amp;'c [Node&lt;R, E&gt;],
+        _top_id: ExprId,
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
+        Ok(Box::new(Once { val: false }))
     }
 }
 
@@ -269,7 +288,21 @@ that. Again lets look at the simplest example from the standard
 library, which is <code>array::group</code>.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>#[derive(Debug)]
+</span>use anyhow::bail;
+use compact_str::format_compact;
+use graphix_compiler::{
+    expr::ExprId,
+    genn,
+    node::Node,
+    typ::{FnType, Typ, Type},
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
+};
+use graphix_package_core::deftype;
+use netidx_value::Value;
+use smallvec::{smallvec, SmallVec};
+use std::collections::VecDeque;
+
+#[derive(Debug)]
 pub(super) struct Group&lt;R: Rt, E: UserEvent&gt; {
     queue: VecDeque&lt;Value&gt;,
     buf: SmallVec&lt;[Value; 16]&gt;,
@@ -282,13 +315,16 @@ pub(super) struct Group&lt;R: Rt, E: UserEvent&gt; {
 
 impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
     const NAME: &amp;str = "array_group";
-    deftype!(
-        "core::array",
-        "fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e"
-    );
+    deftype!("fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e");
 
-    fn init(_: &amp;mut ExecCtx&lt;R, E&gt;) -&gt; BuiltInInitFn&lt;R, E&gt; {
-        Arc::new(|ctx, typ, scope, from, top_id| match from {
+    fn init&lt;'a, 'b, 'c&gt;(
+        ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        typ: &amp;'a FnType,
+        scope: &amp;'b Scope,
+        from: &amp;'c [Node&lt;R, E&gt;],
+        top_id: ExprId,
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
+        match from {
             [_, _] =&gt; {
                 let scope =
                     scope.append(&amp;format_compact!("fn{}", LambdaId::new().inner()));
@@ -300,9 +336,11 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
                 };
                 let (nid, n) =
                     genn::bind(ctx, &amp;scope.lexical, "n", n_typ.clone(), top_id);
-                let (xid, x) = genn::bind(ctx, &amp;scope.lexical, "x", etyp.clone(), top_id);
+                let (xid, x) =
+                    genn::bind(ctx, &amp;scope.lexical, "x", etyp.clone(), top_id);
                 let pid = BindId::new();
-                let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
+                let fnode =
+                    genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
                 let pred = genn::apply(fnode, scope, vec![n, x], &amp;mftyp, top_id);
                 Ok(Box::new(Self {
                     queue: VecDeque::new(),
@@ -315,7 +353,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
                 }))
             }
             _ =&gt; bail!("expected two arguments"),
-        })
+        }
     }
 }
 
@@ -355,9 +393,11 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
                     self.ready = true;
                     match v {
                         Value::Bool(true) =&gt; {
-                            break Some(Value::Array(ValArray::from_iter_exact(
-                                self.buf.drain(..),
-                            )))
+                            break Some(Value::Array(
+                                netidx_value::ValArray::from_iter_exact(
+                                    self.buf.drain(..),
+                                ),
+                            ))
                         }
                         _ =&gt; match self.queue.pop_front() {
                             None =&gt; break None,
@@ -403,13 +443,13 @@ array::group(n, |_, n| (n == 50) || (n == 99))
 </code></pre>
 <p><code>seq(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
 create two arrays, one containing <code>[0, .. 50]</code> and the other
-containing <code>[51, .. 99]</code></p>
+containing <code>[51, .. 99]</code>.</p>
 <p>The implementation needs to build a <code>Node</code> representing the
-predicate. <code>Node</code> is the fundamental type of everything in the graph,
-ultimately the entire program compiles to a node. The kind of node we
+predicate. <code>Node</code> is the fundamental type of everything in the graph.
+Ultimately the entire program compiles to a node. The kind of node we
 need to create here is a function call site, that will handle all the
-details of late binding optional arguments, default args, etc,
-etc. The <code>genn</code> module is specifically for generating nodes.</p>
+details of late binding, optional arguments, default args, etc. The
+<code>genn</code> module is specifically for generating nodes.</p>
 <h3 id="typecheck"><a class="header" href="#typecheck">Typecheck</a></h3>
 <p>Because we generated code, we have to hook into the <code>typecheck</code>
 compiler phase and make sure the type checker runs on it. This
@@ -424,7 +464,7 @@ struct contains two tables indexed by it. The most important is
 updated this cycle, then it's updated value will be in the <code>variables</code>
 table indexed by it's <code>BindId</code>. In order to call this predicate
 function we actually create three different variables and store their
-<code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>. <code>gen::ref</code> returns a reference
+<code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>. <code>genn::reference</code> returns a reference
 <code>Node</code> and the <code>BindId</code> of the variable it is referencing. Since those
 ref nodes become the arguments to the predicate call site we create,
 <code>xid</code> and <code>nid</code> allow us to control the arguments passed into the
@@ -446,8 +486,8 @@ to know about it. Luckily we don't have to handle any of the wonderful
 details of late binding beyond this simple passing through of updates,
 the call site will take care of that.</p>
 <h3 id="execctxcached-refs-delete"><a class="header" href="#execctxcached-refs-delete">ExecCtx::cached, refs, delete</a></h3>
-<p>What is all this <code>ctx.cached</code> stuff. Well, when call sites get
-initialized for the first time, or when an branch of select wakes from
+<p>What is all this <code>ctx.cached</code> stuff? Well, when call sites get
+initialized for the first time, or when a branch of select wakes from
 sleep, it turns out we need to know what the current value of every
 variable they depend on is. Which means we need to cache globally the
 current value of every variable. So if you're setting variables, 90%

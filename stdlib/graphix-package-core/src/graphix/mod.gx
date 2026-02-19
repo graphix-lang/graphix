@@ -1,0 +1,27 @@
+let all = |@args| 'core_all;
+let and = |@args| 'core_and;
+let count = |x| 'core_count;
+let divide = |@args| 'core_divide;
+let filter_err = |e| 'core_filter_err;
+let filter = |v, f| 'core_filter;
+let is_err = |e| 'core_is_err;
+let error = |e| 'core_error;
+let max = |a, @args| 'core_max;
+let mean = |v, @args| 'core_mean;
+let min = |a, @args| 'core_min;
+let once = |v| 'core_once;
+let take = |#n, e| 'core_take;
+let skip = |#n, e| 'core_skip;
+let seq = |i, j| 'core_seq;
+let or = |@args| 'core_or;
+let product = |@args| 'core_product;
+let sum = |@args| 'core_sum;
+let uniq = |v| 'core_uniq;
+let queue = |#clock, v| 'core_queue;
+let hold = |#clock, v| 'core_hold;
+let never = |@args| 'core_never;
+let dbg = |#dest: Log = `Stderr, v| 'core_dbg;
+let log = |#dest: Log = `Stdout, msg| 'core_log;
+let print = |#dest: Log = `Stdout, msg| 'core_print;
+let println = |#dest: Log = `Stdout, msg| 'core_println;
+let throttle = |#rate = duration:0.5s, v| 'core_throttle

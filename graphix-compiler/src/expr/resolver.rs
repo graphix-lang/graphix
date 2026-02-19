@@ -86,9 +86,22 @@ fn resolve_from_vfs(
     let scoped_impl = scope.append(&format_compact!("{name}.gx"));
     let implementation = match vfs.get(&scoped_impl) {
         Some(s) => ori!(s),
-        None => return Resolution::TryNextMethod,
+        None => {
+            // try {name}/mod.gx fallback (consistent with file resolver)
+            let mod_impl = scope.append(&format_compact!("{name}/mod.gx"));
+            match vfs.get(&mod_impl) {
+                Some(s) => ori!(s),
+                None => return Resolution::TryNextMethod,
+            }
+        }
     };
-    let interface = vfs.get(&scoped_intf).map(|s| ori!(s));
+    let interface = vfs
+        .get(&scoped_intf)
+        .or_else(|| {
+            let mod_intf = scope.append(&format_compact!("{name}/mod.gxi"));
+            vfs.get(&mod_intf)
+        })
+        .map(|s| ori!(s));
     Resolution::Resolved { interface, implementation }
 }
 

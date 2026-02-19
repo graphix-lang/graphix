@@ -1,42 +1,42 @@
 # Embedding and Extending Graphix
 
 There are multiple ways you can embed Graphix in your application and
-extend it with rust code.
+extend it with Rust code.
 
-## Writing built-in functions in rust
+## Packages
 
-You can implement Graphix functions in rust. Most of the standard
-library is actually written in rust (to improve startup time), and you
-can easily add more built-ins using rust code for computationally
-heavy tasks, or IO.
+The recommended way to extend Graphix is by creating a
+[package](../packages/overview.md). Packages let you bundle Rust built-in
+functions and Graphix modules into a crate that can be installed with `graphix
+package add`. The standard library itself is built as a set of packages using the
+same tools available to third-party developers.
 
-There are two different ways to write built-ins, for a simple pure
-function you can use a the `CachedArgs` interface which takes care of
-most of the details for you. You only need to implement one method to
-evaluate changes to your arguments. For example min finds the minimum
-value of all it's arguments,
+See [Packages](../packages/overview.md) for details.
+
+## Writing Built-in Functions in Rust
+
+For a simple pure function you can use the `CachedArgs` interface which takes
+care of most of the details for you. You only need to implement one method to
+evaluate changes to your arguments. For example, a function that finds the
+minimum value of all its arguments:
 
 ```rust
-use graphix_stdlib::{deftype, CachedArgs, EvalCached};
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
-use netidx::subscriber::Value;
+use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
+use netidx_value::Value;
 
 #[derive(Debug, Default)]
 struct MinEv;
 
 impl EvalCached for MinEv {
-    const NAME: &str = "min";
-    deftype!("core", "fn('a, @args:'a) -> 'a");
+    const NAME: &str = "core_min";
+    deftype!("fn('a, @args: 'a) -> 'a");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
                 (None, None) | (Some(_), None) => return None,
-                (None, Some(v)) => {
-                    res = Some(v);
-                }
+                (None, Some(v)) => res = Some(v),
                 (Some(v0), Some(v)) => {
                     res = if v < v0 { Some(v) } else { Some(v0) };
                 }
@@ -49,81 +49,38 @@ impl EvalCached for MinEv {
 type Min = CachedArgs<MinEv>;
 ```
 
-Then you must register this built-in with the exec context,
-
-```rust
-ctx.register_builtin::<Min>()?
-```
-
-And then you can call it from Graphix,
+Then register this built-in by listing it in your package's `defpackage!` macro,
+and bind it in your Graphix module:
 
 ```graphix
-let min = |@args| 'min
+let min = |@args| 'core_min
 ```
 
-The special form function body `'min` references a built-in rust
-function.
+The special form function body `'core_min` references a built-in Rust function.
 
-See [Writing Built in Functions](./builtins.md) for details.
+See [Writing Built in Functions](./builtins.md) for the full API details.
 
-## Building Stand Alone Graphix Applications
+## Custom Embedded Applications
 
-You can build single binary stand alone Graphix applications using the
-`graphix-shell` crate. All your Graphix source code, and built-ins are
-compiled together with the compiler and runtime into a single binary
-that you can then deploy and run. When combined with writing built-ins
-in rust this becomes a powerful mixed language toolset.
+For most standalone binaries, the simplest approach is `graphix package
+build-standalone` — see [Standalone Binaries](../packages/standalone.md).
 
-For example here is the netidx browser from `netidx-tools`:
-
-```rust
-use crate::publisher;
-use anyhow::{Context, Result};
-use arcstr::literal;
-use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
-use netidx::{
-    config::Config,
-    publisher::{DesiredAuth, PublisherBuilder},
-    subscriber::Subscriber,
-};
-
-pub async fn run(
-    cfg: Config,
-    auth: DesiredAuth,
-    params: publisher::Params,
-) -> Result<()> {
-    let publisher = PublisherBuilder::new(cfg.clone())
-        .desired_auth(auth.clone())
-        .bind_cfg(params.bind)
-        .build()
-        .await
-        .context("creating publisher")?;
-    let subscriber = Subscriber::new(cfg, auth).context("create subscriber")?;
-    ShellBuilder::<NoExt>::default()
-        .mode(Mode::Static(literal!(include_str!("browser.gx"))))
-        .publisher(publisher)
-        .subscriber(subscriber)
-        .no_init(true)
-        .build()?
-        .run()
-        .await
-}
-```
-
-See [Stand Alone Graphix Applications](./shell.md) for details
+If you need more control (custom module resolvers, embedded REPLs, compiler
+flags, or integration with your own Rust application), you can use the
+`graphix-shell` crate directly to build a custom application. See [Custom
+Embedded Applications](./shell.md) for details.
 
 ## Embedding Graphix in Your Application
 
-Using the `graphix-rt` crate you can embed the Graphix compiler and
-runtime in your application. Then you can,
+Using the `graphix-rt` crate you can embed the Graphix compiler and runtime in
+your application. Then you can:
 
 - compile and run Graphix code
 - receive events from Graphix expressions
 - inject events into Graphix pipelines
 - call Graphix functions
 
-The runtime uses tokio and runs in a background task so it integrates
-well into a normal async workflow.
+The runtime uses tokio and runs in a background task so it integrates well into
+a normal async workflow.
 
-See [Using Graphix as Embedded Scripting](./rt.md) for details
+See [Using Graphix as Embedded Scripting](./rt.md) for details.

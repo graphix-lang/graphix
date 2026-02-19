@@ -585,7 +585,7 @@ impl<X: GXExt> GX<X> {
             macro_rules! peek {
                 (updates) => {
                     if self.ctx.rt.net_updates.is_empty() {
-                        while let Ok(Some(mut up)) = self.ctx.rt.updates.try_next() {
+                        while let Ok(mut up) = self.ctx.rt.updates.try_recv() {
                             match &mut updates {
                                 None => updates = Some(up),
                                 Some(prev) => prev.extend(up.drain(..)),
@@ -595,7 +595,7 @@ impl<X: GXExt> GX<X> {
                 };
                 (writes) => {
                     if self.ctx.rt.net_writes.is_empty() {
-                        if let Ok(Some(wr)) = self.ctx.rt.writes.try_next() {
+                        if let Ok(wr) = self.ctx.rt.writes.try_recv() {
                             writes = Some(wr);
                         }
                     }
@@ -612,21 +612,21 @@ impl<X: GXExt> GX<X> {
                 };
                 (watches) => {
                     for rx in self.ctx.rt.watches.iter_mut() {
-                        while let Ok(Some(mut up)) = rx.try_next() {
+                        while let Ok(mut up) = rx.try_recv() {
                             custom_tasks.extend(up.drain(..))
                         }
                     }
                 };
                 (var_watches) => {
                     for rx in self.ctx.rt.var_watches.iter_mut() {
-                        while let Ok(Some(mut up)) = rx.try_next() {
+                        while let Ok(mut up) = rx.try_recv() {
                             tasks.extend(up.drain(..))
                         }
                     }
                 };
                 (rpcs) => {
                     if self.ctx.rt.rpc_overflow.is_empty() {
-                        while let Ok(Some(up)) = self.ctx.rt.rpcs.try_next() {
+                        while let Ok(up) = self.ctx.rt.rpcs.try_recv() {
                             rpcs.push(up);
                         }
                     }

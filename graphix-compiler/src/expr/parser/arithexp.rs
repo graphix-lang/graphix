@@ -105,6 +105,7 @@ fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
 /// Higher precedence binds tighter.
 pub(crate) fn precedence(op: &str) -> (u8, bool) {
     match op {
+        "~" => (0, true),
         "||" => (1, true),
         "&&" => (2, true),
         "==" | "!=" => (3, true),
@@ -112,7 +113,6 @@ pub(crate) fn precedence(op: &str) -> (u8, bool) {
         "+" | "-" => (5, true),
         "/" | "%" => (6, true),
         "*" => (7, true),
-        "~" => (8, true),
         _ => unreachable!(),
     }
 }

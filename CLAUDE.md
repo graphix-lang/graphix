@@ -176,8 +176,7 @@ The parser includes it's own dedicated tests:
   tests for the parser. Mostly obsoleted by the expr test.
 
 The stdlib includes test infrastructure for the compiler:
-- `graphix-stdlib/src/test/langtest.rs`: Language feature tests
-- `graphix-stdlib/src/test/libtest.rs`: Library function tests
+- `stdlib/graphix-tests/`: Language feature and stdlib integration tests (separate crate to avoid circular dev-deps)
 
 ## Book Examples
 

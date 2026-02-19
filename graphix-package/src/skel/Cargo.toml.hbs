@@ -1,0 +1,41 @@
+[package]
+name = "graphix-package-{{name}}"
+version = "0.1.0"
+authors = ["you <you@domain.net>"]
+edition = "2024"
+homepage = "https://your-homepage.net"
+repository = "https://github.com/{{user}}/graphix-package-{{name}}"
+documentation = "https://docs.rs/graphix-package-{{name}}"
+description = "A Graphix package for ..."
+readme = "README.md"
+license = "MIT"
+categories = []
+
+[dependencies]
+graphix-package = "0.4.0"
+graphix-package-core = "0.4.0"
+graphix-compiler = "0.4.0"
+graphix-derive = "0.4.0"
+graphix-rt = "0.4.0"
+anyhow = "1"
+arcstr = "1"
+fxhash = "0.2"
+netidx-core = "0.31.0"
+netidx-value = "0.31.3"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "time",
+    "io-util",
+    "fs",
+    "sync",
+    "process",
+    "macros",
+    "signal",
+    "io-std",
+] }
+triomphe = "0.1"
+async-trait = "0.1"
+
+[features]
+standalone = []

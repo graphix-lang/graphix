@@ -210,6 +210,17 @@ mode.</p>
 <li>Integrating with editors and build tools</li>
 <li>Quick validation during development</li>
 </ul>
+<h2 id="package-management"><a class="header" href="#package-management">Package Management</a></h2>
+<p>The shell includes a built-in package manager for extending Graphix with
+additional functionality. Use <code>graphix package</code> to search for, install, and
+manage packages:</p>
+<pre><code class="language-bash">graphix package search http       # search for packages
+graphix package add mypackage     # install a package
+graphix package remove mypackage  # remove a package
+graphix package list              # list installed packages
+</code></pre>
+<p>Adding or removing a package rebuilds the <code>graphix</code> binary with the new set of
+packages compiled in. See <a href="./packages/overview.html">Packages</a> for full details.</p>
 <h2 id="understanding-output"><a class="header" href="#understanding-output">Understanding Output</a></h2>
 <p>One of the most important concepts to understand about the shell is its output behavior. Not all expressions produce output, and expressions that do produce output can update multiple times.</p>
 <h3 id="output-vs-non-output-expressions"><a class="header" href="#output-vs-non-output-expressions">Output vs Non-Output Expressions</a></h3>
