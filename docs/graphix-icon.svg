@@ -1,0 +1,23 @@
+<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- background -->
+  <rect x="2" y="2" width="68" height="68" rx="8" fill="#0d1a26" stroke="#1e3a52" stroke-width="1"/>
+  <!-- corner accents -->
+  <path d="M2 18 L2 2 L18 2" stroke="#00d4b4" stroke-width="1.5" fill="none" opacity="0.5"/>
+  <path d="M70 54 L70 70 L54 70" stroke="#00d4b4" stroke-width="1.5" fill="none" opacity="0.5"/>
+  <!-- input nodes -->
+  <circle cx="18" cy="36" r="5" fill="none" stroke="#00b4d8" stroke-width="1.5"/>
+  <circle cx="36" cy="20" r="5" fill="none" stroke="#00b4d8" stroke-width="1.5"/>
+  <circle cx="36" cy="52" r="5" fill="none" stroke="#00b4d8" stroke-width="1.5"/>
+  <!-- output node with glow -->
+  <circle cx="54" cy="36" r="6" fill="#00d4b4"/>
+  <circle cx="54" cy="36" r="10" fill="none" stroke="#00d4b4" stroke-width="0.75" opacity="0.25"/>
+  <circle cx="54" cy="36" r="14" fill="none" stroke="#00d4b4" stroke-width="0.5" opacity="0.1"/>
+  <!-- edges -->
+  <line x1="23" y1="33" x2="31" y2="23" stroke="#00b4d8" stroke-width="1.2" opacity="0.7"/>
+  <line x1="23" y1="39" x2="31" y2="49" stroke="#00b4d8" stroke-width="1.2" opacity="0.7"/>
+  <line x1="41" y1="22" x2="48" y2="31" stroke="#00d4b4" stroke-width="1.2" opacity="0.7"/>
+  <line x1="41" y1="50" x2="48" y2="41" stroke="#00d4b4" stroke-width="1.2" opacity="0.7"/>
+  <!-- arrowheads -->
+  <polyline points="46,30 48,31 47,33" fill="none" stroke="#00d4b4" stroke-width="1.2"/>
+  <polyline points="46,42 48,41 47,39" fill="none" stroke="#00d4b4" stroke-width="1.2"/>
+</svg>

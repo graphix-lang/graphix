@@ -5,7 +5,7 @@ src = "src"
 title = "The Graphix Programming Language"
 
 [output.html]
-site-url = "/graphix/"
+site-url = "/graphix/book/"
 additional-js = ["theme/graphix-highlight.js"]
 
 [output.html.playground]

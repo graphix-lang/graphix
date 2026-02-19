@@ -1,3 +1,7 @@
+#![doc(
+    html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
+    html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
+)]
 //! A general purpose graphix runtime
 //!
 //! This module implements a generic graphix runtime suitable for most

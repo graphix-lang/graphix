@@ -1,4 +1,6 @@
-# Graphix
+<p align="center">
+  <img src="docs/graphix-logo-full.svg" alt="Graphix" height="72">
+</p>
 
 A reactive dataflow programming language for building user interfaces
 and network applications.

@@ -1,264 +1,444 @@
-<!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<!doctype html>
+<html lang="en">
     <head>
-        <!-- Book generated using mdBook -->
-        <meta charset="UTF-8">
-        <title>Intro to Graphix - The Graphix Programming Language</title>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+            name="description"
+            content="Graphix - A reactive dataflow programming language with strong static typing, perfect for building reactive UIs and network applications."
+        />
+        <meta
+            name="keywords"
+            content="graphix, dataflow, reactive programming, functional programming, static typing, TUI, terminal UI"
+        />
 
+        <!-- Open Graph / Social Media -->
+        <meta property="og:type" content="website" />
+        <meta
+            property="og:url"
+            content="https://graphix-lang.github.io/graphix/"
+        />
+        <meta
+            property="og:title"
+            content="Graphix - Reactive Dataflow Programming"
+        />
+        <meta
+            property="og:description"
+            content="A statically-typed functional language where changes propagate automatically through the dataflow graph."
+        />
+        <meta
+            property="og:image"
+            content="https://graphix-lang.github.io/graphix/graphix-icon.svg"
+        />
 
-        <!-- Custom HTML head -->
+        <title>Graphix - Reactive Dataflow Programming</title>
 
-        <meta name="description" content="">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta name="theme-color" content="#ffffff">
-
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
-
-        <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
-
-        <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
-
-        <!-- Custom theme stylesheets -->
-
-
-        <!-- Provide site root and default themes to javascript -->
-        <script>
-            const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-        </script>
-        <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <link rel="icon" type="image/svg+xml" href="graphix-icon.svg" />
+        <link rel="stylesheet" href="assets/css/landing.css" />
     </head>
     <body>
-    <div id="body-container">
-        <!-- Work around some values being stored in localStorage wrapped in quotes -->
-        <script>
-            try {
-                let theme = localStorage.getItem('mdbook-theme');
-                let sidebar = localStorage.getItem('mdbook-sidebar');
+        <!-- Animated Background -->
+        <div class="background">
+            <div class="orb orb-1"></div>
+            <div class="orb orb-2"></div>
+            <div class="orb orb-3"></div>
+        </div>
 
-                if (theme.startsWith('"') && theme.endsWith('"')) {
-                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
-                }
-
-                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
-                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
-                }
-            } catch (e) { }
-        </script>
-
-        <!-- Set the theme before any content is loaded, prevents flash -->
-        <script>
-            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
-            let theme;
-            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
-            if (theme === null || theme === undefined) { theme = default_theme; }
-            const html = document.documentElement;
-            html.classList.remove('light')
-            html.classList.add(theme);
-            html.classList.add("js");
-        </script>
-
-        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
-
-        <!-- Hide / unhide sidebar before it is displayed -->
-        <script>
-            let sidebar = null;
-            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
-            if (document.body.clientWidth >= 1080) {
-                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
-                sidebar = sidebar || 'visible';
-            } else {
-                sidebar = 'hidden';
-            }
-            sidebar_toggle.checked = sidebar === 'visible';
-            html.classList.remove('sidebar-visible');
-            html.classList.add("sidebar-" + sidebar);
-        </script>
-
-        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
-            <!-- populated by js -->
-            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
-            <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
-            </noscript>
-            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
-                <div class="sidebar-resize-indicator"></div>
-            </div>
-        </nav>
-
-        <div id="page-wrapper" class="page-wrapper">
-
-            <div class="page">
-                <div id="menu-bar-hover-placeholder"></div>
-                <div id="menu-bar" class="menu-bar sticky">
-                    <div class="left-buttons">
-                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
-                            <i class="fa fa-bars"></i>
-                        </label>
-                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
-                            <i class="fa fa-paint-brush"></i>
-                        </button>
-                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
-                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
-                        </ul>
-                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
-                            <i class="fa fa-search"></i>
-                        </button>
-                    </div>
-
-                    <h1 class="menu-title">The Graphix Programming Language</h1>
-
-                    <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
-                            <i id="print-button" class="fa fa-print"></i>
-                        </a>
-
-                    </div>
-                </div>
-
-                <div id="search-wrapper" class="hidden">
-                    <form id="searchbar-outer" class="searchbar-outer">
-                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
-                    </form>
-                    <div id="searchresults-outer" class="searchresults-outer hidden">
-                        <div id="searchresults-header" class="searchresults-header"></div>
-                        <ul id="searchresults">
-                        </ul>
-                    </div>
-                </div>
-
-                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
-                <script>
-                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
-                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
-                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
-                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
-                    });
-                </script>
-
-                <div id="content" class="content">
-                    <main>
-                        <h1 id="intro-to-graphix"><a class="header" href="#intro-to-graphix">Intro to Graphix</a></h1>
-<p>Graphix is a programming language using the dataflow paradigm. It is
-particularly well suited to building user interfaces, and interacting
-with resources in
-<a href="https://netidx.github.io/netidx-book">netidx</a>. Dataflow languages
-like Graphix are "reactive", like React or Vue, except at the language
-level instead of just as a library. A Graphix program is compiled to a
-directed graph, operations (such as +) are graph nodes, edges
-represent paths data can take through the program. A simple expression like,</p>
-<pre><code class="language-graphix">2 + 2
-</code></pre>
-<p>will compile to a graph like</p>
-<pre><code>         
-const(2) ──&gt; + &lt;── const(2)
-         
-</code></pre>
-<p>The semantics of simple examples like this aren't noticibly different
-from a normal programming language. However a more complex example
-such as,</p>
-<pre><code class="language-graphix">let x = cast&lt;i64&gt;(net::subscribe("/foo")?)?;
-print(x * 10)
-</code></pre>
-<p>compiles to a graph like</p>
-<pre><code>                                               const(10)
-                                                   │
-                                                   │
-                                                   ▼
-                                         
-const("/foo") ──&gt; net::subscribe ──&gt; cast&lt;i64&gt; ──&gt; * ──&gt; print
-                                         
-</code></pre>
-<p>Unlike the first example, the value of <code>net::subscribe</code> isn't a
-constant, it can change if the value published in netidx changes. If
-that happens the new value will flow through the graph and will be
-printed again. If the published value of "/foo" is initially 10, and
-then the value of "/foo" changes to 5 then the program will print.</p>
-<pre><code>100
-50
-</code></pre>
-<p>It will keep running forever, if "/foo" changes again, it will print
-more output. This is a powerful way to think about programming, and
-it's especially well suited to building user interfaces and
-transforming data streams.</p>
-<h2 id="dataflow-but-otherwise-normal"><a class="header" href="#dataflow-but-otherwise-normal">Dataflow but Otherwise Normal</a></h2>
-<p>Besides being a dataflow language Graphix tries hard to be a normal
-functional language that would feel familiar to anyone who knows
-Haskell, OCaml, F# or a similar ML derived language. Some of it's
-features are,</p>
-<ul>
-<li>lexically scoped</li>
-<li>expression oriented</li>
-<li>strongly statically typed</li>
-<li>type inference</li>
-<li>structural type discipline with nomial abstract types</li>
-<li>parametric polymorphism</li>
-<li>algebraic data types</li>
-<li>pattern matching</li>
-<li>first class functions, and closures</li>
-<li>late binding</li>
-</ul>
-
-                    </main>
-
-                    <nav class="nav-wrapper" aria-label="Page navigation">
-                        <!-- Mobile navigation buttons -->
-
-                            <a rel="next prefetch" href="install.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
-                            </a>
-
-                        <div style="clear: both"></div>
+        <!-- Header -->
+        <header class="header">
+            <div class="container">
+                <div class="header-content">
+                    <a href="/" class="logo">
+                        <img
+                            src="graphix-logo-full.svg"
+                            alt="Graphix"
+                            height="40"
+                        />
+                    </a>
+                    <nav class="nav">
+                        <a href="book/" class="nav-link">Documentation</a>
+                        <a
+                            href="https://github.com/graphix-lang/graphix"
+                            class="nav-link"
+                            target="_blank"
+                            rel="noopener"
+                            >GitHub</a
+                        >
+                        <a
+                            href="https://discord.gg/bQv4gNR8WK"
+                            class="nav-link"
+                            target="_blank"
+                            rel="noopener"
+                            >Discord</a
+                        >
                     </nav>
                 </div>
             </div>
+        </header>
 
-            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+        <main>
+            <!-- Hero Section -->
+            <section class="hero">
+                <div class="container">
+                    <div class="hero-content">
+                        <div class="hero-text">
+                            <h1 class="hero-title">
+                                Build Reactive UIs with Dataflow
+                            </h1>
+                            <p class="hero-subtitle">
+                                A statically-typed functional language where
+                                changes propagate automatically
+                            </p>
+                            <p class="hero-body">
+                                Unlike React or Vue where reactivity is a
+                                library bolted onto the language, Graphix is
+                                reactive at the language level. Every expression
+                                compiles to a node in a live dataflow graph —
+                                change any input and updates flow through
+                                automatically.
+                            </p>
+                            <div class="hero-cta">
+                                <a href="book/" class="btn btn-primary"
+                                    >Read the Docs</a
+                                >
+                                <a
+                                    href="book/ui/tui/overview.html"
+                                    class="btn btn-secondary"
+                                    >View Examples</a
+                                >
+                            </div>
+                        </div>
+                        <div class="hero-demo">
+                            <div class="code-window">
+                                <div class="code-header">
+                                    <div class="code-dots">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </div>
+                                    <span class="code-title"
+                                        >overview_first.gx</span
+                                    >
+                                </div>
+                                <pre><code><span class="keyword">use</span> tui;
+<span class="keyword">use</span> tui::block;
+<span class="keyword">use</span> tui::text;
 
-                    <a rel="next prefetch" href="install.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
-                    </a>
-            </nav>
+<span class="keyword">let</span> counter = <span class="number">0</span>;
+<span class="keyword">let</span> clock = time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>);
+counter <span class="operator">&lt;-</span> clock <span class="operator">~</span> (counter + <span class="number">1</span>);
 
-        </div>
+block(
+  <span class="operator">#</span>border: <span class="operator">&amp;</span>`All,
+  <span class="operator">#</span>title: <span class="operator">&amp;</span>line(<span class="string">"My First TUI"</span>),
+  <span class="operator">#</span>style: <span class="operator">&amp;</span>style(<span class="operator">#</span>fg: `Green),
+  <span class="operator">&amp;</span>text(<span class="operator">&amp;</span><span class="string">"Counter: [counter]"</span>)
+)</code></pre>
+                            </div>
+                            <div class="demo-image">
+                                <img
+                                    src="book/ui/tui/media/overview_first.gif"
+                                    alt="Reactive counter demo"
+                                    loading="eager"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
+            <!-- Features Section -->
+            <section class="features">
+                <div class="container">
+                    <h2 class="section-title">Key Features</h2>
+                    <div class="features-grid">
+                        <div class="feature-card">
+                            <div class="feature-icon">⚡</div>
+                            <h3 class="feature-title">Reactive Dataflow</h3>
+                            <p class="feature-description">
+                                Changes propagate automatically through the
+                                dataflow graph. No manual state management or
+                                update logic needed.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">🔒</div>
+                            <h3 class="feature-title">Strong Static Typing</h3>
+                            <p class="feature-description">
+                                Type inference with structural type discipline
+                                catches errors at compile time. Parametric
+                                polymorphism for flexible, type-safe code.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">📊</div>
+                            <h3 class="feature-title">Rich TUI Framework</h3>
+                            <p class="feature-description">
+                                Built-in widgets for charts, tables, gauges, and
+                                more. Create beautiful terminal interfaces with
+                                reactive updates.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">λ</div>
+                            <h3 class="feature-title">First-Class Functions</h3>
+                            <p class="feature-description">
+                                Closures, higher-order functions, and pattern
+                                matching. Functional programming meets reactive
+                                dataflow.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
+            <!-- Visual Showcase Section -->
+            <section class="showcase">
+                <div class="container">
+                    <h2 class="section-title">See It In Action</h2>
+                    <p class="section-subtitle">
+                        Interactive terminal UIs built with Graphix
+                    </p>
+                    <div class="showcase-grid">
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/chart.html"
+                            data-caption="Real-time chart updates"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/chart_realtime.gif"
+                                alt="Real-time chart"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/table.html"
+                            data-caption="Interactive tables"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/table_interactive.gif"
+                                alt="Interactive table"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/canvas.html"
+                            data-caption="Dynamic canvas animations"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/canvas_animated.gif"
+                                alt="Canvas animation"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/browser.html"
+                            data-caption="Navigation and routing"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/browser_navigation.gif"
+                                alt="Browser navigation"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/gauge.html"
+                            data-caption="Threshold gauges"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/gauge_threshold.gif"
+                                alt="Gauge with thresholds"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/layout.html"
+                            data-caption="Focus management"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/layout_focus.gif"
+                                alt="Layout focus"
+                                loading="lazy"
+                            />
+                        </a>
+                    </div>
+                </div>
+            </section>
 
+            <!-- Code Examples Section -->
+            <section class="examples">
+                <div class="container">
+                    <h2 class="section-title">Code Examples</h2>
+                    <div class="tabs">
+                        <div class="tab-buttons">
+                            <button
+                                class="tab-button active"
+                                data-tab="reactive"
+                            >
+                                Reactive Updates
+                            </button>
+                            <button class="tab-button" data-tab="pattern">
+                                Pattern Matching
+                            </button>
+                            <button class="tab-button" data-tab="network">
+                                Network Data
+                            </button>
+                        </div>
+                        <div class="tab-content">
+                            <div class="tab-pane active" id="reactive">
+                                <div class="code-window">
+                                    <pre><code><span class="keyword">use</span> tui;
+<span class="keyword">use</span> tui::block;
+<span class="keyword">use</span> tui::text;
 
-        <script>
-            window.playground_copyable = true;
-        </script>
+<span class="keyword">let</span> counter = <span class="number">0</span>;
+<span class="keyword">let</span> clock = time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>);
+counter <span class="operator">&lt;-</span> clock <span class="operator">~</span> (counter + <span class="number">1</span>);
 
+block(
+  <span class="operator">#</span>border: <span class="operator">&amp;</span>`All,
+  <span class="operator">#</span>title: <span class="operator">&amp;</span>line(<span class="string">"My First TUI"</span>),
+  <span class="operator">#</span>style: <span class="operator">&amp;</span>style(<span class="operator">#</span>fg: `Green),
+  <span class="operator">&amp;</span>text(<span class="operator">&amp;</span><span class="string">"Counter: [counter]"</span>)
+)</code></pre>
+                                </div>
+                                <p class="example-description">
+                                    The <code>&lt;-</code> operator sets up a
+                                    reactive binding. When
+                                    <code>clock</code> fires,
+                                    <code>counter</code> automatically updates
+                                    with the new value. The
+                                    <code>block</code> widget wraps the content
+                                    with borders, a title, and styling.
+                                </p>
+                            </div>
+                            <div class="tab-pane" id="pattern">
+                                <div class="code-window">
+                                    <pre><code><span class="keyword">let</span> status: [i64, string, null] = <span class="number">42</span>;
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+<span class="keyword">select</span> status {
+  i64 <span class="keyword">as</span> n <span class="keyword">if</span> n <span class="operator">&gt;</span> <span class="number">0</span> <span class="operator">=&gt;</span> <span class="string">"positive number: [n]"</span>,
+  i64 <span class="keyword">as</span> n <span class="operator">=&gt;</span> <span class="string">"non positive number: [n]"</span>,
+  string <span class="keyword">as</span> s <span class="operator">=&gt;</span> <span class="string">"got string: [s]"</span>,
+  null <span class="keyword">as</span> _ <span class="operator">=&gt;</span> <span class="string">"no value"</span>
+}</code></pre>
+                                </div>
+                                <p class="example-description">
+                                    Pattern matching on types with guards. The
+                                    <code>select</code> statement matches on
+                                    which type the variant currently holds. The
+                                    type system ensures all cases are covered.
+                                </p>
+                            </div>
+                            <div class="tab-pane" id="network">
+                                <div class="code-window">
+                                    <pre><code><span class="keyword">let</span> value = cast<span class="operator">&lt;</span>i64<span class="operator">&gt;</span>(net::subscribe(<span class="string">"/sensor/temperature"</span>)<span class="operator">?</span>)<span class="operator">?</span>;
+<span class="keyword">let</span> fahrenheit = value <span class="operator">*</span> ((<span class="number">9</span> <span class="operator">/</span> <span class="number">5</span>) + <span class="number">32</span>);
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+text(<span class="operator">&amp;</span><span class="string">"Temperature: [fahrenheit]°F"</span>)</code></pre>
+                                </div>
+                                <p class="example-description">
+                                    Subscribe to network data streams with
+                                    <code>net::subscribe</code>. Values update
+                                    reactively as new data arrives.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
-        <!-- Custom JS scripts -->
-        <script src="theme/graphix-highlight.js"></script>
+            <!-- Getting Started Section -->
+            <section class="getting-started">
+                <div class="container">
+                    <h2 class="section-title">Getting Started</h2>
+                    <div class="getting-started-content">
+                        <div class="install-steps">
+                            <div class="step">
+                                <div class="step-number">1</div>
+                                <div class="step-content">
+                                    <h3>Install Graphix</h3>
+                                    <div class="terminal">
+                                        <code>cargo install graphix-shell</code>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="step">
+                                <div class="step-number">2</div>
+                                <div class="step-content">
+                                    <h3>Start the REPL</h3>
+                                    <div class="terminal">
+                                        <code>graphix</code>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="step">
+                                <div class="step-number">3</div>
+                                <div class="step-content">
+                                    <h3>Try an Example</h3>
+                                    <div class="terminal">
+                                        <code>let x = 5; x * 2</code>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="install-note">
+                            <p>
+                                Requires Rust and some Linux dependencies. See
+                                the
+                                <a href="book/install.html"
+                                    >installation guide</a
+                                >
+                                for full details.
+                            </p>
+                            <a href="book/" class="btn btn-primary"
+                                >Read Full Documentation</a
+                            >
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
 
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="container">
+                <div class="footer-content">
+                    <div class="footer-brand">
+                        <img
+                            src="graphix-logo-full.svg"
+                            alt="Graphix"
+                            height="32"
+                        />
+                    </div>
+                    <nav class="footer-links">
+                        <a href="book/">Documentation</a>
+                        <a href="book/ui/tui/overview.html">Examples</a>
+                        <a
+                            href="https://github.com/graphix-lang/graphix"
+                            target="_blank"
+                            rel="noopener"
+                            >GitHub</a
+                        >
+                        <a
+                            href="https://discord.gg/bQv4gNR8WK"
+                            target="_blank"
+                            rel="noopener"
+                            >Discord</a
+                        >
+                    </nav>
+                    <div class="footer-legal">
+                        <p>Licensed under MIT</p>
+                    </div>
+                </div>
+            </div>
+        </footer>
 
-    </div>
+        <script src="assets/js/landing.js"></script>
     </body>
 </html>

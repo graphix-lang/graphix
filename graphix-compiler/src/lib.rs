@@ -1,3 +1,7 @@
+#![doc(
+    html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
+    html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
+)]
 #[macro_use]
 extern crate netidx_core;
 #[macro_use]
