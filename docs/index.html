@@ -1,164 +1,125 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Graphix - A reactive dataflow programming language with strong static typing, perfect for building reactive UIs and network applications.">
-    <meta name="keywords" content="graphix, dataflow, reactive programming, functional programming, static typing, TUI, terminal UI">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+            name="description"
+            content="Graphix - A reactive dataflow programming language with strong static typing, perfect for building reactive UIs and network applications."
+        />
+        <meta
+            name="keywords"
+            content="graphix, dataflow, reactive programming, functional programming, static typing, TUI, terminal UI"
+        />
 
-    <!-- Open Graph / Social Media -->
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://graphix-lang.github.io/graphix/">
-    <meta property="og:title" content="Graphix - Reactive Dataflow Programming">
-    <meta property="og:description" content="A statically-typed functional language where changes propagate automatically through the dataflow graph.">
-    <meta property="og:image" content="https://graphix-lang.github.io/graphix/graphix-icon.svg">
+        <!-- Open Graph / Social Media -->
+        <meta property="og:type" content="website" />
+        <meta
+            property="og:url"
+            content="https://graphix-lang.github.io/graphix/"
+        />
+        <meta
+            property="og:title"
+            content="Graphix - Reactive Dataflow Programming"
+        />
+        <meta
+            property="og:description"
+            content="A statically-typed functional language where changes propagate automatically through the dataflow graph."
+        />
+        <meta
+            property="og:image"
+            content="https://graphix-lang.github.io/graphix/graphix-icon.svg"
+        />
 
-    <title>Graphix - Reactive Dataflow Programming</title>
+        <title>Graphix - Reactive Dataflow Programming</title>
 
-    <link rel="icon" type="image/svg+xml" href="graphix-icon.svg">
-    <link rel="stylesheet" href="assets/css/landing.css">
-</head>
-<body>
-    <!-- Animated Background -->
-    <div class="background">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
-    </div>
-
-    <!-- Header -->
-    <header class="header">
-        <div class="container">
-            <div class="header-content">
-                <a href="/" class="logo">
-                    <img src="graphix-logo-full.svg" alt="Graphix" height="40">
-                </a>
-                <nav class="nav">
-                    <a href="book/" class="nav-link">Documentation</a>
-                    <a href="https://github.com/graphix-lang/graphix" class="nav-link" target="_blank" rel="noopener">GitHub</a>
-                    <a href="https://discord.gg/bQv4gNR8WK" class="nav-link" target="_blank" rel="noopener">Discord</a>
-                </nav>
-            </div>
+        <link rel="icon" type="image/svg+xml" href="graphix-icon.svg" />
+        <link rel="stylesheet" href="assets/css/landing.css" />
+    </head>
+    <body>
+        <!-- Animated Background -->
+        <div class="background">
+            <div class="orb orb-1"></div>
+            <div class="orb orb-2"></div>
+            <div class="orb orb-3"></div>
         </div>
-    </header>
 
-    <main>
-        <!-- Hero Section -->
-        <section class="hero">
+        <!-- Header -->
+        <header class="header">
             <div class="container">
-                <div class="hero-content">
-                    <div class="hero-text">
-                        <h1 class="hero-title">Build Reactive UIs with Dataflow</h1>
-                        <p class="hero-subtitle">A statically-typed functional language where changes propagate automatically</p>
-                        <p class="hero-body">Unlike React or Vue where reactivity is a library bolted onto the language, Graphix is reactive at the language level. Every expression compiles to a node in a live dataflow graph — change any input and updates flow through automatically. Familiar to anyone who knows Haskell, OCaml, or F#.</p>
-                        <div class="hero-cta">
-                            <a href="book/" class="btn btn-primary">Read the Docs</a>
-                            <a href="book/ui/tui/overview.html" class="btn btn-secondary">View Examples</a>
-                        </div>
-                    </div>
-                    <div class="hero-demo">
-                        <div class="code-window">
-                            <div class="code-header">
-                                <div class="code-dots">
-                                    <span></span>
-                                    <span></span>
-                                    <span></span>
-                                </div>
-                                <span class="code-title">overview_first.gx</span>
+                <div class="header-content">
+                    <a href="/" class="logo">
+                        <img
+                            src="graphix-logo-full.svg"
+                            alt="Graphix"
+                            height="40"
+                        />
+                    </a>
+                    <nav class="nav">
+                        <a href="book/" class="nav-link">Documentation</a>
+                        <a
+                            href="https://github.com/graphix-lang/graphix"
+                            class="nav-link"
+                            target="_blank"
+                            rel="noopener"
+                            >GitHub</a
+                        >
+                        <a
+                            href="https://discord.gg/bQv4gNR8WK"
+                            class="nav-link"
+                            target="_blank"
+                            rel="noopener"
+                            >Discord</a
+                        >
+                    </nav>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <!-- Hero Section -->
+            <section class="hero">
+                <div class="container">
+                    <div class="hero-content">
+                        <div class="hero-text">
+                            <h1 class="hero-title">
+                                Build Reactive UIs with Dataflow
+                            </h1>
+                            <p class="hero-subtitle">
+                                A statically-typed functional language where
+                                changes propagate automatically
+                            </p>
+                            <p class="hero-body">
+                                Unlike React or Vue where reactivity is a
+                                library bolted onto the language, Graphix is
+                                reactive at the language level. Every expression
+                                compiles to a node in a live dataflow graph —
+                                change any input and updates flow through
+                                automatically.
+                            </p>
+                            <div class="hero-cta">
+                                <a href="book/" class="btn btn-primary"
+                                    >Read the Docs</a
+                                >
+                                <a
+                                    href="book/ui/tui/overview.html"
+                                    class="btn btn-secondary"
+                                    >View Examples</a
+                                >
                             </div>
-                            <pre><code><span class="keyword">use</span> tui;
-<span class="keyword">use</span> tui::block;
-<span class="keyword">use</span> tui::text;
-
-<span class="keyword">let</span> counter = <span class="number">0</span>;
-<span class="keyword">let</span> clock = time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>);
-counter <span class="operator">&lt;-</span> clock <span class="operator">~</span> (counter + <span class="number">1</span>);
-
-block(
-  <span class="operator">#</span>border: <span class="operator">&amp;</span>`All,
-  <span class="operator">#</span>title: <span class="operator">&amp;</span>line(<span class="string">"My First TUI"</span>),
-  <span class="operator">#</span>style: <span class="operator">&amp;</span>style(<span class="operator">#</span>fg: `Green),
-  <span class="operator">&amp;</span>text(<span class="operator">&amp;</span><span class="string">"Counter: [counter]"</span>)
-)</code></pre>
                         </div>
-                        <div class="demo-image">
-                            <img src="book/ui/tui/media/overview_first.gif" alt="Reactive counter demo" loading="eager">
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Features Section -->
-        <section class="features">
-            <div class="container">
-                <h2 class="section-title">Key Features</h2>
-                <div class="features-grid">
-                    <div class="feature-card">
-                        <div class="feature-icon">⚡</div>
-                        <h3 class="feature-title">Reactive Dataflow</h3>
-                        <p class="feature-description">Changes propagate automatically through the dataflow graph. No manual state management or update logic needed.</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">🔒</div>
-                        <h3 class="feature-title">Strong Static Typing</h3>
-                        <p class="feature-description">Type inference with structural type discipline catches errors at compile time. Parametric polymorphism for flexible, type-safe code.</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">📊</div>
-                        <h3 class="feature-title">Rich TUI Framework</h3>
-                        <p class="feature-description">Built-in widgets for charts, tables, gauges, and more. Create beautiful terminal interfaces with reactive updates.</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">λ</div>
-                        <h3 class="feature-title">First-Class Functions</h3>
-                        <p class="feature-description">Closures, higher-order functions, and pattern matching. Functional programming meets reactive dataflow.</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Visual Showcase Section -->
-        <section class="showcase">
-            <div class="container">
-                <h2 class="section-title">See It In Action</h2>
-                <p class="section-subtitle">Interactive terminal UIs built with Graphix</p>
-                <div class="showcase-grid">
-                    <a class="showcase-item" href="book/ui/tui/chart.html" data-caption="Real-time chart updates">
-                        <img data-src="book/ui/tui/media/chart_realtime.gif" alt="Real-time chart" loading="lazy">
-                    </a>
-                    <a class="showcase-item" href="book/ui/tui/table.html" data-caption="Interactive tables">
-                        <img data-src="book/ui/tui/media/table_interactive.gif" alt="Interactive table" loading="lazy">
-                    </a>
-                    <a class="showcase-item" href="book/ui/tui/canvas.html" data-caption="Dynamic canvas animations">
-                        <img data-src="book/ui/tui/media/canvas_animated.gif" alt="Canvas animation" loading="lazy">
-                    </a>
-                    <a class="showcase-item" href="book/ui/tui/browser.html" data-caption="Navigation and routing">
-                        <img data-src="book/ui/tui/media/browser_navigation.gif" alt="Browser navigation" loading="lazy">
-                    </a>
-                    <a class="showcase-item" href="book/ui/tui/gauge.html" data-caption="Threshold gauges">
-                        <img data-src="book/ui/tui/media/gauge_threshold.gif" alt="Gauge with thresholds" loading="lazy">
-                    </a>
-                    <a class="showcase-item" href="book/ui/tui/layout.html" data-caption="Focus management">
-                        <img data-src="book/ui/tui/media/layout_focus.gif" alt="Layout focus" loading="lazy">
-                    </a>
-                </div>
-            </div>
-        </section>
-
-        <!-- Code Examples Section -->
-        <section class="examples">
-            <div class="container">
-                <h2 class="section-title">Code Examples</h2>
-                <div class="tabs">
-                    <div class="tab-buttons">
-                        <button class="tab-button active" data-tab="reactive">Reactive Updates</button>
-                        <button class="tab-button" data-tab="pattern">Pattern Matching</button>
-                        <button class="tab-button" data-tab="network">Network Data</button>
-                    </div>
-                    <div class="tab-content">
-                        <div class="tab-pane active" id="reactive">
+                        <div class="hero-demo">
                             <div class="code-window">
+                                <div class="code-header">
+                                    <div class="code-dots">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </div>
+                                    <span class="code-title"
+                                        >overview_first.gx</span
+                                    >
+                                </div>
                                 <pre><code><span class="keyword">use</span> tui;
 <span class="keyword">use</span> tui::block;
 <span class="keyword">use</span> tui::text;
@@ -174,11 +135,191 @@ block(
   <span class="operator">&amp;</span>text(<span class="operator">&amp;</span><span class="string">"Counter: [counter]"</span>)
 )</code></pre>
                             </div>
-                            <p class="example-description">The <code>&lt;-</code> operator sets up a reactive binding. When <code>clock</code> fires, <code>counter</code> automatically updates with the new value. The <code>block</code> widget wraps the content with borders, a title, and styling.</p>
+                            <div class="demo-image">
+                                <img
+                                    src="book/ui/tui/media/overview_first.gif"
+                                    alt="Reactive counter demo"
+                                    loading="eager"
+                                />
+                            </div>
                         </div>
-                        <div class="tab-pane" id="pattern">
-                            <div class="code-window">
-                                <pre><code><span class="keyword">let</span> status: [i64, string, null] = <span class="number">42</span>;
+                    </div>
+                </div>
+            </section>
+
+            <!-- Features Section -->
+            <section class="features">
+                <div class="container">
+                    <h2 class="section-title">Key Features</h2>
+                    <div class="features-grid">
+                        <div class="feature-card">
+                            <div class="feature-icon">⚡</div>
+                            <h3 class="feature-title">Reactive Dataflow</h3>
+                            <p class="feature-description">
+                                Changes propagate automatically through the
+                                dataflow graph. No manual state management or
+                                update logic needed.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">🔒</div>
+                            <h3 class="feature-title">Strong Static Typing</h3>
+                            <p class="feature-description">
+                                Type inference with structural type discipline
+                                catches errors at compile time. Parametric
+                                polymorphism for flexible, type-safe code.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">📊</div>
+                            <h3 class="feature-title">Rich TUI Framework</h3>
+                            <p class="feature-description">
+                                Built-in widgets for charts, tables, gauges, and
+                                more. Create beautiful terminal interfaces with
+                                reactive updates.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">λ</div>
+                            <h3 class="feature-title">First-Class Functions</h3>
+                            <p class="feature-description">
+                                Closures, higher-order functions, and pattern
+                                matching. Functional programming meets reactive
+                                dataflow.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Visual Showcase Section -->
+            <section class="showcase">
+                <div class="container">
+                    <h2 class="section-title">See It In Action</h2>
+                    <p class="section-subtitle">
+                        Interactive terminal UIs built with Graphix
+                    </p>
+                    <div class="showcase-grid">
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/chart.html"
+                            data-caption="Real-time chart updates"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/chart_realtime.gif"
+                                alt="Real-time chart"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/table.html"
+                            data-caption="Interactive tables"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/table_interactive.gif"
+                                alt="Interactive table"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/canvas.html"
+                            data-caption="Dynamic canvas animations"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/canvas_animated.gif"
+                                alt="Canvas animation"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/browser.html"
+                            data-caption="Navigation and routing"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/browser_navigation.gif"
+                                alt="Browser navigation"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/gauge.html"
+                            data-caption="Threshold gauges"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/gauge_threshold.gif"
+                                alt="Gauge with thresholds"
+                                loading="lazy"
+                            />
+                        </a>
+                        <a
+                            class="showcase-item"
+                            href="book/ui/tui/layout.html"
+                            data-caption="Focus management"
+                        >
+                            <img
+                                data-src="book/ui/tui/media/layout_focus.gif"
+                                alt="Layout focus"
+                                loading="lazy"
+                            />
+                        </a>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Code Examples Section -->
+            <section class="examples">
+                <div class="container">
+                    <h2 class="section-title">Code Examples</h2>
+                    <div class="tabs">
+                        <div class="tab-buttons">
+                            <button
+                                class="tab-button active"
+                                data-tab="reactive"
+                            >
+                                Reactive Updates
+                            </button>
+                            <button class="tab-button" data-tab="pattern">
+                                Pattern Matching
+                            </button>
+                            <button class="tab-button" data-tab="network">
+                                Network Data
+                            </button>
+                        </div>
+                        <div class="tab-content">
+                            <div class="tab-pane active" id="reactive">
+                                <div class="code-window">
+                                    <pre><code><span class="keyword">use</span> tui;
+<span class="keyword">use</span> tui::block;
+<span class="keyword">use</span> tui::text;
+
+<span class="keyword">let</span> counter = <span class="number">0</span>;
+<span class="keyword">let</span> clock = time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>);
+counter <span class="operator">&lt;-</span> clock <span class="operator">~</span> (counter + <span class="number">1</span>);
+
+block(
+  <span class="operator">#</span>border: <span class="operator">&amp;</span>`All,
+  <span class="operator">#</span>title: <span class="operator">&amp;</span>line(<span class="string">"My First TUI"</span>),
+  <span class="operator">#</span>style: <span class="operator">&amp;</span>style(<span class="operator">#</span>fg: `Green),
+  <span class="operator">&amp;</span>text(<span class="operator">&amp;</span><span class="string">"Counter: [counter]"</span>)
+)</code></pre>
+                                </div>
+                                <p class="example-description">
+                                    The <code>&lt;-</code> operator sets up a
+                                    reactive binding. When
+                                    <code>clock</code> fires,
+                                    <code>counter</code> automatically updates
+                                    with the new value. The
+                                    <code>block</code> widget wraps the content
+                                    with borders, a title, and styling.
+                                </p>
+                            </div>
+                            <div class="tab-pane" id="pattern">
+                                <div class="code-window">
+                                    <pre><code><span class="keyword">let</span> status: [i64, string, null] = <span class="number">42</span>;
 
 <span class="keyword">select</span> status {
   i64 <span class="keyword">as</span> n <span class="keyword">if</span> n <span class="operator">&gt;</span> <span class="number">0</span> <span class="operator">=&gt;</span> <span class="string">"positive number: [n]"</span>,
@@ -186,86 +327,118 @@ block(
   string <span class="keyword">as</span> s <span class="operator">=&gt;</span> <span class="string">"got string: [s]"</span>,
   null <span class="keyword">as</span> _ <span class="operator">=&gt;</span> <span class="string">"no value"</span>
 }</code></pre>
+                                </div>
+                                <p class="example-description">
+                                    Pattern matching on types with guards. The
+                                    <code>select</code> statement matches on
+                                    which type the variant currently holds. The
+                                    type system ensures all cases are covered.
+                                </p>
                             </div>
-                            <p class="example-description">Pattern matching on types with guards. The <code>select</code> statement matches on which type the variant currently holds. The type system ensures all cases are covered.</p>
-                        </div>
-                        <div class="tab-pane" id="network">
-                            <div class="code-window">
-                                <pre><code><span class="keyword">let</span> value = cast<span class="operator">&lt;</span>i64<span class="operator">&gt;</span>(net::subscribe(<span class="string">"/sensor/temperature"</span>)<span class="operator">?</span>)<span class="operator">?</span>;
+                            <div class="tab-pane" id="network">
+                                <div class="code-window">
+                                    <pre><code><span class="keyword">let</span> value = cast<span class="operator">&lt;</span>i64<span class="operator">&gt;</span>(net::subscribe(<span class="string">"/sensor/temperature"</span>)<span class="operator">?</span>)<span class="operator">?</span>;
 <span class="keyword">let</span> fahrenheit = value <span class="operator">*</span> ((<span class="number">9</span> <span class="operator">/</span> <span class="number">5</span>) + <span class="number">32</span>);
 
 text(<span class="operator">&amp;</span><span class="string">"Temperature: [fahrenheit]°F"</span>)</code></pre>
+                                </div>
+                                <p class="example-description">
+                                    Subscribe to network data streams with
+                                    <code>net::subscribe</code>. Values update
+                                    reactively as new data arrives.
+                                </p>
                             </div>
-                            <p class="example-description">Subscribe to network data streams with <code>net::subscribe</code>. Values update reactively as new data arrives.</p>
                         </div>
                     </div>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <!-- Getting Started Section -->
-        <section class="getting-started">
+            <!-- Getting Started Section -->
+            <section class="getting-started">
+                <div class="container">
+                    <h2 class="section-title">Getting Started</h2>
+                    <div class="getting-started-content">
+                        <div class="install-steps">
+                            <div class="step">
+                                <div class="step-number">1</div>
+                                <div class="step-content">
+                                    <h3>Install Graphix</h3>
+                                    <div class="terminal">
+                                        <code>cargo install graphix-shell</code>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="step">
+                                <div class="step-number">2</div>
+                                <div class="step-content">
+                                    <h3>Start the REPL</h3>
+                                    <div class="terminal">
+                                        <code>graphix</code>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="step">
+                                <div class="step-number">3</div>
+                                <div class="step-content">
+                                    <h3>Try an Example</h3>
+                                    <div class="terminal">
+                                        <code>let x = 5; x * 2</code>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="install-note">
+                            <p>
+                                Requires Rust and some Linux dependencies. See
+                                the
+                                <a href="book/install.html"
+                                    >installation guide</a
+                                >
+                                for full details.
+                            </p>
+                            <a href="book/" class="btn btn-primary"
+                                >Read Full Documentation</a
+                            >
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
             <div class="container">
-                <h2 class="section-title">Getting Started</h2>
-                <div class="getting-started-content">
-                    <div class="install-steps">
-                        <div class="step">
-                            <div class="step-number">1</div>
-                            <div class="step-content">
-                                <h3>Install Graphix</h3>
-                                <div class="terminal">
-                                    <code>cargo install graphix-shell</code>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">2</div>
-                            <div class="step-content">
-                                <h3>Start the REPL</h3>
-                                <div class="terminal">
-                                    <code>graphix</code>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">3</div>
-                            <div class="step-content">
-                                <h3>Try an Example</h3>
-                                <div class="terminal">
-                                    <code>let x = 5; x * 2</code>
-                                </div>
-                            </div>
-                        </div>
+                <div class="footer-content">
+                    <div class="footer-brand">
+                        <img
+                            src="graphix-logo-full.svg"
+                            alt="Graphix"
+                            height="32"
+                        />
                     </div>
-                    <div class="install-note">
-                        <p>Requires Rust and some Linux dependencies. See the <a href="book/install.html">installation guide</a> for full details.</p>
-                        <a href="book/" class="btn btn-primary">Read Full Documentation</a>
+                    <nav class="footer-links">
+                        <a href="book/">Documentation</a>
+                        <a href="book/ui/tui/overview.html">Examples</a>
+                        <a
+                            href="https://github.com/graphix-lang/graphix"
+                            target="_blank"
+                            rel="noopener"
+                            >GitHub</a
+                        >
+                        <a
+                            href="https://discord.gg/bQv4gNR8WK"
+                            target="_blank"
+                            rel="noopener"
+                            >Discord</a
+                        >
+                    </nav>
+                    <div class="footer-legal">
+                        <p>Licensed under MIT</p>
                     </div>
                 </div>
             </div>
-        </section>
-    </main>
+        </footer>
 
-    <!-- Footer -->
-    <footer class="footer">
-        <div class="container">
-            <div class="footer-content">
-                <div class="footer-brand">
-                    <img src="graphix-logo-full.svg" alt="Graphix" height="32">
-                </div>
-                <nav class="footer-links">
-                    <a href="book/">Documentation</a>
-                    <a href="book/ui/tui/overview.html">Examples</a>
-                    <a href="https://github.com/graphix-lang/graphix" target="_blank" rel="noopener">GitHub</a>
-                    <a href="https://discord.gg/bQv4gNR8WK" target="_blank" rel="noopener">Discord</a>
-                </nav>
-                <div class="footer-legal">
-                    <p>Licensed under MIT</p>
-                </div>
-            </div>
-        </div>
-    </footer>
-
-    <script src="assets/js/landing.js"></script>
-</body>
+        <script src="assets/js/landing.js"></script>
+    </body>
 </html>
