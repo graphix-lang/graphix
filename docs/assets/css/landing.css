@@ -149,7 +149,7 @@ body {
 
 /* Hero Section */
 .hero {
-    padding: 0.5rem 0 4rem;
+    padding: 2rem 0 5rem;
     position: relative;
 }
 
@@ -157,7 +157,7 @@ body {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 4rem;
-    align-items: center;
+    align-items: start;
 }
 
 .hero-title {
