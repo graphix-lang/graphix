@@ -748,9 +748,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 }
 
-#[cfg(test)]
-mod test;
-
 graphix_derive::defpackage! {
     builtins => [
         Write,

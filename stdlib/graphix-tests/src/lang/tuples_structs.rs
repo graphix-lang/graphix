@@ -1,6 +1,6 @@
 // Tests for tuples and structs
 
-use crate::run;
+use graphix_package_core::run;
 use anyhow::Result;
 use arcstr::ArcStr;
 use netidx::publisher::Value;

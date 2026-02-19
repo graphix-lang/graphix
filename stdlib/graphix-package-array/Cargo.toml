@@ -30,10 +30,3 @@ netidx-value = { workspace = true }
 netidx = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
-
-[dev-dependencies]
-graphix-package-str = { version = "0.4.0", path = "../graphix-package-str" }
-env_logger = { workspace = true }
-tokio = { workspace = true }
-arcstr = { workspace = true }
-poolshark = { workspace = true }

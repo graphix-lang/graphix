@@ -1,6 +1,6 @@
 // Tests for datetime arithmetic
 
-use crate::run;
+use graphix_package_core::run;
 use anyhow::Result;
 use chrono::prelude::*;
 use netidx::publisher::Value;

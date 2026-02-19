@@ -776,9 +776,6 @@ impl EvalCached for ParseEv {
 
 type Parse = CachedArgs<ParseEv>;
 
-#[cfg(test)]
-mod test;
-
 graphix_derive::defpackage! {
     builtins => [
         StartsWith,

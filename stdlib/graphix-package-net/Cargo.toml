@@ -33,11 +33,3 @@ netidx = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
-
-[dev-dependencies]
-graphix-package-array = { version = "0.4.0", path = "../graphix-package-array" }
-graphix-package-time = { version = "0.4.0", path = "../graphix-package-time" }
-env_logger = { workspace = true }
-tokio = { workspace = true }
-arcstr = { workspace = true }
-poolshark = { workspace = true }

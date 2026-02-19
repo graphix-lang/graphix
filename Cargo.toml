@@ -103,5 +103,6 @@ members = [
     "stdlib/graphix-package-re",
     "stdlib/graphix-package-str",
     "stdlib/graphix-package-time",
-    "stdlib/graphix-package-tui"
+    "stdlib/graphix-package-tui",
+    "stdlib/graphix-tests"
 ]

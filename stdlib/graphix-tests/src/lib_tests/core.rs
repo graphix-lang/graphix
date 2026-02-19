@@ -1,4 +1,4 @@
-use crate::run;
+use graphix_package_core::run;
 use anyhow::Result;
 use netidx::subscriber::Value;
 

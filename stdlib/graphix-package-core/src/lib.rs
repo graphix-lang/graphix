@@ -63,9 +63,6 @@ macro_rules! arity2 {
 
 pub mod testing;
 
-#[cfg(test)]
-mod test;
-
 // ── Shared traits and structs ──────────────────────────────────────
 
 #[derive(Debug)]

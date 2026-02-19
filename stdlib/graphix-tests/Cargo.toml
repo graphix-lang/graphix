@@ -1,0 +1,28 @@
+[package]
+name = "graphix-tests"
+version = "0.4.0"
+authors = ["Eric Stokes <eestokes@pm.me>"]
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+chrono = { workspace = true }
+fxhash = { workspace = true }
+graphix-compiler = { version = "0.4.0", path = "../../graphix-compiler" }
+graphix-package = { version = "0.4.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.4.0", path = "../graphix-package-core" }
+graphix-package-array = { version = "0.4.0", path = "../graphix-package-array" }
+graphix-package-fs = { version = "0.4.0", path = "../graphix-package-fs" }
+graphix-package-map = { version = "0.4.0", path = "../graphix-package-map" }
+graphix-package-net = { version = "0.4.0", path = "../graphix-package-net" }
+graphix-package-rand = { version = "0.4.0", path = "../graphix-package-rand" }
+graphix-package-re = { version = "0.4.0", path = "../graphix-package-re" }
+graphix-package-str = { version = "0.4.0", path = "../graphix-package-str" }
+graphix-package-time = { version = "0.4.0", path = "../graphix-package-time" }
+graphix-rt = { version = "0.4.0", path = "../../graphix-rt" }
+netidx = { workspace = true }
+netidx-core = { workspace = true }
+poolshark = { workspace = true }
+tokio = { workspace = true }

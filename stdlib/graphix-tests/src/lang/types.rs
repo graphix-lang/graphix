@@ -1,6 +1,6 @@
 // Tests for type system features: type checking, annotations, type variables
 
-use crate::run;
+use graphix_package_core::run;
 use anyhow::Result;
 use netidx::publisher::Value;
 

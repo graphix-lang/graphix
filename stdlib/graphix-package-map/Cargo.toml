@@ -31,9 +31,3 @@ netidx = { workspace = true }
 poolshark = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
-
-[dev-dependencies]
-graphix-package-array = { version = "0.4.0", path = "../graphix-package-array" }
-env_logger = { workspace = true }
-tokio = { workspace = true }
-arcstr = { workspace = true }

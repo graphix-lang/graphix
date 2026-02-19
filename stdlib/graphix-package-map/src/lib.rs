@@ -294,9 +294,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 }
 
-#[cfg(test)]
-mod test;
-
 graphix_derive::defpackage! {
     builtins => [
         Map as Map<GXRt<X>, X::UserEvent>,

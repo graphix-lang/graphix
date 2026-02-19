@@ -1,7 +1,7 @@
 // Basic language feature tests: bindings, arithmetic, scoping
 
-use crate::run;
-use crate::test::init;
+use graphix_package_core::run;
+use crate::init;
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use graphix_rt::GXEvent;
