@@ -149,7 +149,7 @@ body {
 
 /* Hero Section */
 .hero {
-    padding: 6rem 0 8rem;
+    padding: 2rem 0 5rem;
     position: relative;
 }
 
@@ -385,12 +385,14 @@ body {
 
 .showcase-item {
     position: relative;
+    display: block;
     border-radius: 0.75rem;
     overflow: hidden;
     border: 1px solid var(--glass-border);
     background: var(--glass-bg);
     backdrop-filter: blur(20px);
     cursor: pointer;
+    text-decoration: none;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -648,7 +650,7 @@ body {
     }
 
     .hero {
-        padding: 4rem 0 6rem;
+        padding: 1.5rem 0 4rem;
     }
 
     .hero-title {
