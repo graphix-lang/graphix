@@ -100,12 +100,12 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     version: env!("CARGO_PKG_VERSION"),
-    cargo_toml: include_str!("../skel/Cargo.toml"),
-    deps_rs: include_str!("../skel/deps.rs"),
-    lib_rs: include_str!("../skel/lib.rs"),
-    mod_gx: include_str!("../skel/mod.gx"),
-    mod_gxi: include_str!("../skel/mod.gxi"),
-    readme_md: include_str!("../skel/README.md"),
+    cargo_toml: include_str!("skel/Cargo.toml"),
+    deps_rs: include_str!("skel/deps.rs"),
+    lib_rs: include_str!("skel/lib.rs"),
+    mod_gx: include_str!("skel/mod.gx"),
+    mod_gxi: include_str!("skel/mod.gxi"),
+    readme_md: include_str!("skel/README.md"),
 };
 
 /// Create a new graphix package
