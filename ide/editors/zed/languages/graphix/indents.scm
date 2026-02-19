@@ -1,0 +1,1 @@
+../../../../tree-sitter-graphix/queries/indents.scm

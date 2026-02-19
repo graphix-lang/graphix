@@ -1,52 +1,27 @@
-# Graphix Support for Zed
+# Graphix support for Zed
 
-This directory contains configuration for Graphix language support in Zed editor.
+Tree-sitter syntax highlighting and LSP integration for the Graphix
+programming language in Zed editor.
 
 ## Installation
 
-1. Copy the `languages/graphix` directory to your Zed extensions directory
+### From source (dev install)
 
-2. Install the Graphix binary:
+1. Clone or symlink this directory into your Zed extensions:
+
    ```bash
-   cargo install --path path/to/graphix-claude/graphix-shell
+   ln -s /path/to/graphix/ide/editors/zed ~/.config/zed/extensions/installed/graphix
    ```
 
-3. Add to your Zed settings.json:
-   ```json
-   {
-     "lsp": {
-       "graphix-lsp": {
-         "binary": {
-           "path": "graphix",
-           "arguments": ["lsp"]
-         }
-       }
-     },
-     "languages": {
-       "Graphix": {
-         "language_servers": ["graphix-lsp"]
-       }
-     }
-   }
-   ```
+2. Ensure `graphix` is on your PATH (the LSP server is launched via
+   `graphix lsp`).
 
-## Tree-sitter Grammar
-
-Zed uses tree-sitter for syntax highlighting. To build the tree-sitter grammar:
-
-```bash
-cd path/to/graphix-claude/ide/tree-sitter-graphix
-npm install
-npm run build
-```
-
-Then copy the built grammar to your Zed configuration.
+3. Restart Zed. The extension will detect `.gx` files automatically.
 
 ## Features
 
-- Syntax highlighting (via tree-sitter or TextMate grammar)
-- LSP support for:
-  - Diagnostics (parse errors)
-  - Completions
-  - Hover information
-  - Go to definition
+- Syntax highlighting via tree-sitter (highlights.scm)
+- Indentation rules (indents.scm)
+- Local variable tracking (locals.scm)
+- LSP support: diagnostics, completions, hover, go-to-definition
+- Bracket matching and auto-closing

@@ -254,6 +254,10 @@
           "named": true
         },
         {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
           "type": "variant",
           "named": true
         }
@@ -1003,11 +1007,6 @@
         }
       ]
     }
-  },
-  {
-    "type": "bare_value",
-    "named": true,
-    "fields": {}
   },
   {
     "type": "binary_expression",
@@ -6456,6 +6455,10 @@
           "named": true
         },
         {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
           "type": "variant",
           "named": true
         }
@@ -7498,6 +7501,10 @@
           "named": true
         },
         {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
           "type": "variant",
           "named": true
         }
@@ -7662,10 +7669,6 @@
       "multiple": true,
       "required": true,
       "types": [
-        {
-          "type": "bare_value",
-          "named": true
-        },
         {
           "type": "identifier",
           "named": true

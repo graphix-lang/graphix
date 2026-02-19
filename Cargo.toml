@@ -34,10 +34,10 @@ indexmap = "2"
 log = "0.4"
 lsp-server = "0.7"
 lsp-types = "0.97"
-netidx-core = { path = "../netidx/netidx-core", version = "0.31.0" }
-netidx-protocols = { path = "../netidx/netidx-protocols", version = "0.31.0" }
-netidx-value = { path = "../netidx/netidx-value", version = "0.31.3" }
-netidx = { path = "../netidx/netidx", version = "0.31.0", default-features = false }
+netidx-core = "0.31.0"
+netidx-protocols = "0.31.0"
+netidx-value = "0.31.3"
+netidx = { version = "0.31.0", default-features = false }
 parking_lot = "0.12.1"
 poolshark = { version = "0.2.6" }
 rand = "0.9"
