@@ -39,7 +39,19 @@
       "Bash(node:*)",
       "WebSearch",
       "WebFetch(domain:docs.rs)",
-      "WebFetch(domain:rfdonnelly.github.io)"
+      "WebFetch(domain:rfdonnelly.github.io)",
+      "Bash(python3:*)",
+      "Bash(PROPTEST_CASES=20 PROPTEST_MAX_SHRINK_ITERS=1000000 cargo test:*)",
+      "Bash(PROPTEST_CASES=5 PROPTEST_MAX_SHRINK_ITERS=1000000 cargo test:*)",
+      "Bash(printf:*)",
+      "Bash(PROPTEST_CASES=100 PROPTEST_MAX_SHRINK_ITERS=1000000 cargo test -p graphix-compiler ts_expr0 -- --nocapture)",
+      "Bash(PROPTEST_CASES=1000 PROPTEST_MAX_SHRINK_ITERS=1000000 cargo test:*)",
+      "Bash(PROPTEST_CASES=100 PROPTEST_MAX_SHRINK_ITERS=1000000 cargo test:*)",
+      "Bash(PROPTEST_CASES=10 PROPTEST_MAX_SHRINK_ITERS=0 cargo test:*)",
+      "Bash(PROPTEST_CASES=1 PROPTEST_MAX_SHRINK_ITERS=0 cargo test:*)",
+      "Bash(PROPTEST_CASES=10000 PROPTEST_MAX_SHRINK_ITERS=1000000 cargo test:*)",
+      "Bash(git stash:*)",
+      "Bash(npx tree-sitter:*)"
     ],
     "deny": [],
     "ask": []
