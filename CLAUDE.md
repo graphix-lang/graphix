@@ -10,20 +10,33 @@ Key language features: lexically scoped, expression-oriented, strongly staticall
 
 ## Project Structure
 
-This is a Rust workspace with 4 main crates:
+This is a Rust workspace with these main crates:
 
 - **graphix-compiler**: The compiler that parses and compiles Graphix expressions into node graphs. Entry point is `compile()` in `lib.rs` which calls `compiler::compile()` then typechecks the resulting node.
 - **graphix-rt**: A general-purpose runtime that executes the compiled node graphs. The runtime runs in a background task and is interacted with via `GXHandle`. Supports custom extensions via the `GXExt` trait.
-- **graphix-stdlib**: Standard library implementation (both Rust and Graphix code). Graphix source files are in `src/*.gx`, Rust implementations are in corresponding `.rs` files.
-- **graphix-shell**: REPL and CLI tool. The binary is named `graphix`. Includes TUI widget implementations in `src/tui/`.
+- **graphix-package**: Package system for graphix. Handles package loading, vendoring, and standalone builds.
+- **graphix-derive**: Proc macros (e.g. `defpackage!`) used by packages.
+- **graphix-shell**: REPL and CLI tool. The binary is named `graphix`.
+
+The standard library is split into individual packages under `stdlib/`:
+- **graphix-package-core**: Core builtins and types
+- **graphix-package-array**, **-map**, **-str**, **-re**, **-rand**, **-time**: Data structure and utility packages
+- **graphix-package-fs**, **-net**: Filesystem and network packages
+- **graphix-package-tui**: Terminal UI widgets (ratatui-based)
+- **graphix-package-gui**: Graphical UI widgets (iced-based)
+- **graphix-tests**: Language feature and stdlib integration tests (separate crate to avoid circular dev-deps)
+
+Each stdlib package has Rust implementations in `src/` and Graphix source in `src/graphix/*.gx`.
 
 Additional directories:
 - **book/**: mdbook documentation source
+- **book/src/examples/**: All graphix example programs (`tui/`, `gui/`, `net/` subdirs)
+- **examples/**: Symlink to `book/src/examples/` for convenience
 - **docs/**: Compiled HTML documentation
 
 The compiler depends on netidx (a networked publish-subscribe system) which is expected to be at `../netidx/` (sibling directory).
 
-The project uses workspace level dependencies where possible.
+The project uses workspace-level dependencies where possible.
 
 ## Building and Testing
 
@@ -116,17 +129,28 @@ Built-ins implement the `BuiltIn<R, E>` trait:
 
 Register built-ins with `ExecCtx::register_builtin::<T>()`.
 
-Stdlib built-ins are in `graphix-stdlib/src/*.rs` with corresponding Graphix implementations in `*.gx` files.
+## Coding Style
+
+- Rust code is formatted with `rustfmt` (`rustfmt.toml` in repo). Run `cargo fmt` before submitting.
+- Rust conventions: `snake_case` for modules/functions, `CamelCase` for types/traits, `SCREAMING_SNAKE_CASE` for constants.
+- Graphix source files use the `.gx` extension; keep examples small and focused.
 
 ## Code Review Process
 
-When doing code review, follow the CR/XCR comment system defined in AGENTS.md:
+When doing code review, follow the CR/XCR comment system:
 
 1. Add comments as: `// CR <your-name> for <addressee>: comment text` to the relevant file near the relevant code
 2. When issues are addressed, the comment becomes: `// XCR ...`
 3. Review XCRs - delete if resolved, convert back to CR with explanation if not
 
 This project maintains very high code quality standards - no shortcuts, careful consideration of all implications.
+
+## Commits and Pull Requests
+
+- Don't commit code unless the user explicitly asks for it
+- Commit messages should be short, lowercase, and imperative (e.g., `fix many parser problems`).
+- PRs should include a concise summary, testing notes, and links to related issues.
+- Treat `docs/` as build output — edit sources in `book/` and regenerate with `mdbook`. If you update docs or examples, rebuild the book.
 
 ## Common Patterns
 
@@ -167,7 +191,7 @@ bugs in the main code. Never work around a problem with a test that
 you think should work. Even if it isn't related to the purpose of the
 test you are writing, every failure is an opportunity to learn about a
 bug and fix it. If you find such an "off topic" bug, discuss it with
-me before trying to fix it yourself.
+the user before trying to fix it yourself.
 
 The parser includes it's own dedicated tests:
 - `graphix-compiler/src/expr/test.rs`: The round trip test of the
@@ -175,21 +199,21 @@ The parser includes it's own dedicated tests:
   proptest. Whenever we change the syntax we must update this test and
   it must run successfully (preferably overnight)
 - `graphix-compiler/src/expr/parser/test.rs`: A selection of specific
-  tests for the parser. Mostly obsoleted by the expr test.
+  tests for the parser.
 
-The stdlib includes test infrastructure for the compiler:
-- `stdlib/graphix-tests/`: Language feature and stdlib integration tests (separate crate to avoid circular dev-deps)
+## Examples
 
-## Book Examples
+All graphix example programs live in `book/src/examples/` (symlinked as `examples/` from the project root), organized by UI backend:
+- `tui/` — Terminal UI examples
+- `gui/` — Graphical UI examples (iced-based)
+- `net/` — Network examples
 
-The book's code examples are stored as separate `.gx` files in `book/src/examples/` and included into the documentation via mdbook's `{{#include ...}}` syntax. This serves two purposes:
+The book includes these via mdbook's `{{#include ...}}` syntax, so they serve double duty as documentation and testable code.
 
-1. Keeps documentation and code in sync
-2. Allows manual testing of examples when the compiler changes
-
-TUI examples in `book/src/examples/tui/` are visual and must be tested manually:
+TUI and GUI examples are visual and must be tested manually:
 ```bash
-cargo run --bin graphix -- book/src/examples/tui/barchart_basic.gx
+cargo run --bin graphix -- examples/tui/barchart_basic.gx
+cargo run --bin graphix -- examples/gui/hello.gx
 ```
 
 Some examples are code snippets that reference undefined variables and are meant to illustrate concepts within a larger context. These should remain syntactically valid but may not run standalone. When updating the compiler, review these examples to ensure they still compile.
@@ -198,7 +222,7 @@ Some examples are code snippets that reference undefined variables and are meant
 
 - The compiler is optimized for dev builds (opt-level="s", lto="thin")
   to reduce compile times. If you need to debug something you can turn
-  this optimization off, however the parser will often overflow the
+  this optimization off, however the parser may overflow the
   stack without at least some optimization.
 - Release builds use full optimization (opt-level=3, codegen-units=1, lto=true)
 - Rust edition 2024 is used throughout
@@ -207,31 +231,6 @@ Some examples are code snippets that reference undefined variables and are meant
 
 ## Recent Changes
 
-### Filesystem Module Refactoring (Nov 2025)
+### GUI Package (Feb 2026)
 
-The `graphix-stdlib/src/fs/` module was refactored to split functionality into separate files:
-- `mod.rs`: Core tempdir and join_path functionality
-- `file.rs`: Read/write operations (read_all, read_all_bin, write_all, write_all_bin)
-- `watch.rs`: Filesystem watch functionality
-
-**fs::tempdir enhancements:**
-- Added `#in` parameter to specify parent directory for temp directory creation
-- Added `#name` parameter with two variants:
-  - `Prefix(string)`: Add prefix to temp directory name
-  - `Suffix(string)`: Add suffix to temp directory name
-- All combinations of `#in` and `#name` are supported
-- The temp directory is kept alive via `Arc<Mutex<Option<TempDir>>>` and automatically cleaned up when replaced or dropped
-
-**Documentation improvements:**
-- Updated `fs.gx` to clarify that read/write operations are queued and executed in order
-- Previous documentation suggested results arrived in order but execution could be concurrent
-- New documentation accurately reflects that operations complete sequentially in queue order
-
-**Test coverage:**
-- Created comprehensive test suite in `graphix-stdlib/src/test/lib/fs/tempdir.rs` covering:
-  - Basic tempdir creation
-  - Parent directory specification
-  - Prefix and suffix naming
-  - Error handling for invalid paths
-  - Integration with read/write operations
-- All fs tests passing (40 tests total as of Nov 2025)
+Added `graphix-package-gui` — an iced 0.14 based GUI backend. Uses iced sub-crates directly (`iced_core`, `iced_wgpu`, `iced_widget`, etc.) rather than the umbrella `iced` crate for low-level control over the rendering pipeline. Note: `iced_renderer` requires both `wgpu` and `wgpu-bare` features (the cfg checks use the `wgpu-bare` flag which `wgpu` alone doesn't set).
