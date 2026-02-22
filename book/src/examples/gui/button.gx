@@ -1,0 +1,26 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::button;
+
+window(
+  #title: &"Button Widget",
+  &column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+      text(#size: &24.0, &"Button Demo"),
+      button(
+        #padding: &`All(10.0),
+        &text(&"Click me!")
+      ),
+      button(
+        #padding: &`All(8.0),
+        #width: &`Fixed(200.0),
+        &text(&"Wide button")
+      )
+    ]
+  )
+)

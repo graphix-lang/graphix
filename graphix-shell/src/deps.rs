@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 pub(crate) struct RegisterResult {
     pub root: ArcStr,
     pub main_program: Option<&'static str>,
+    pub main_thread: Option<graphix_package::MainThreadFn>,
 }
 
 pub(crate) fn register<X: GXExt>(
@@ -29,6 +30,7 @@ pub(crate) fn register<X: GXExt>(
     graphix_package_re::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_rand::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_tui::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_gui::P::register(ctx, modules, &mut root_mods)?;
     let mut parts = Vec::new();
     for name in &root_mods {
         if name == "core" {
@@ -37,9 +39,29 @@ pub(crate) fn register<X: GXExt>(
             parts.push(format!("mod {name}"));
         }
     }
+    let mut main_thread = None;
+    macro_rules! collect_main_thread {
+        ($pkg:path) => {
+            if main_thread.is_none() {
+                main_thread = <$pkg as Package<X>>::MAIN_THREAD;
+            }
+        };
+    }
+    collect_main_thread!(graphix_package_core::P);
+    collect_main_thread!(graphix_package_array::P);
+    collect_main_thread!(graphix_package_str::P);
+    collect_main_thread!(graphix_package_map::P);
+    collect_main_thread!(graphix_package_fs::P);
+    collect_main_thread!(graphix_package_net::P);
+    collect_main_thread!(graphix_package_time::P);
+    collect_main_thread!(graphix_package_re::P);
+    collect_main_thread!(graphix_package_rand::P);
+    collect_main_thread!(graphix_package_tui::P);
+    collect_main_thread!(graphix_package_gui::P);
     Ok(RegisterResult {
         root: ArcStr::from(parts.join(";\n")),
         main_program: None,
+        main_thread,
     })
 }
 
@@ -57,56 +79,27 @@ pub(crate) fn maybe_init_custom<X: GXExt>(
     gx: &GXHandle<X>,
     env: &Env,
     e: CompExp<X>,
+    main_thread_rx: Option<graphix_package::MainThreadRx>,
 ) -> Result<CustomResult<X>> {
-    if graphix_package_core::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_core::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
+    macro_rules! try_pkg {
+        ($pkg:path) => {
+            if <$pkg>::is_custom(gx, env, &e) {
+                let (tx, rx) = oneshot::channel();
+                return <$pkg>::init_custom(gx, env, tx, e, main_thread_rx)
+                    .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
+            }
+        };
     }
-    if graphix_package_array::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_array::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_str::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_str::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_map::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_map::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_fs::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_fs::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_net::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_net::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_time::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_time::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_re::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_re::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_rand::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_rand::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
-    if graphix_package_tui::P::is_custom(gx, env, &e) {
-        let (tx, rx) = oneshot::channel();
-        return graphix_package_tui::P::init_custom(gx, env, tx, e)
-            .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
-    }
+    try_pkg!(graphix_package_core::P);
+    try_pkg!(graphix_package_array::P);
+    try_pkg!(graphix_package_str::P);
+    try_pkg!(graphix_package_map::P);
+    try_pkg!(graphix_package_fs::P);
+    try_pkg!(graphix_package_net::P);
+    try_pkg!(graphix_package_time::P);
+    try_pkg!(graphix_package_re::P);
+    try_pkg!(graphix_package_rand::P);
+    try_pkg!(graphix_package_tui::P);
+    try_pkg!(graphix_package_gui::P);
     Ok(CustomResult::NotCustom(e))
 }

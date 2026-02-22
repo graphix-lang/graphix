@@ -35,6 +35,20 @@ use walkdir::WalkDir;
 #[cfg(test)]
 mod test;
 
+/// Sender half of the main-thread channel. Packages that run code on
+/// the process main thread (e.g. GUI) send messages back to tokio
+/// through this.
+pub type MainThreadTx = tokio::sync::mpsc::Sender<Box<dyn std::any::Any + Send>>;
+
+/// Receiver half of the main-thread channel. The shell owns this and
+/// loans it to whichever package needs main-thread access.
+pub type MainThreadRx = tokio::sync::mpsc::Receiver<Box<dyn std::any::Any + Send>>;
+
+/// A function pointer that will be called on the process main thread.
+/// The function receives a `MainThreadTx` for sending messages back
+/// to the tokio runtime.
+pub type MainThreadFn = fn(MainThreadTx);
+
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
 pub trait CustomDisplay<X: GXExt>: Any {
@@ -43,7 +57,10 @@ pub trait CustomDisplay<X: GXExt>: Any {
     /// This is called when the shell user has indicated that they
     /// want to return to the normal display mode or when the stop
     /// channel has been triggered by this custom display.
-    async fn clear(&mut self);
+    ///
+    /// Returns the `MainThreadRx` if this display held one, so the
+    /// shell can reclaim it for future use.
+    async fn clear(&mut self) -> Option<MainThreadRx>;
 
     /// Process an update from the Graphix rt in the context of the
     /// custom display.
@@ -56,6 +73,12 @@ pub trait CustomDisplay<X: GXExt>: Any {
 
 /// Trait implemented by Graphix packages
 pub trait Package<X: GXExt> {
+    /// If set, this function will be called on the process main
+    /// thread. Use this for frameworks that require the main thread
+    /// (e.g. winit/NSApplication on macOS). Most packages leave this
+    /// as `None`.
+    const MAIN_THREAD: Option<MainThreadFn> = None;
+
     /// register builtins and return a resolver containing Graphix
     /// code contained in the package.
     ///
@@ -79,11 +102,17 @@ pub trait Package<X: GXExt> {
     /// user closed the last gui window), then the stop channel should
     /// be triggered, and the shell will call `CustomDisplay::clear`
     /// before dropping the `CustomDisplay`.
+    ///
+    /// `main_thread_rx` is `Some` if this package declared
+    /// `MAIN_THREAD` and the shell has a main-thread channel
+    /// available. The custom display should hold onto it and return
+    /// it from `clear()`.
     fn init_custom(
         gx: &GXHandle<X>,
         env: &Env,
         stop: oneshot::Sender<()>,
         e: CompExp<X>,
+        main_thread_rx: Option<MainThreadRx>,
     ) -> Result<Box<dyn CustomDisplay<X>>>;
 
     /// Return the main program source if this package has one and the

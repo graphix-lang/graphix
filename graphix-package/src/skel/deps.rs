@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 pub(crate) struct RegisterResult {
     pub root: ArcStr,
     pub main_program: Option<&'static str>,
+    pub main_thread: Option<graphix_package::MainThreadFn>,
 }
 
 pub(crate) fn register<X: GXExt>(
@@ -31,14 +32,19 @@ pub(crate) fn register<X: GXExt>(
         }
     }
     let mut main_program = None;
+    let mut main_thread = None;
     {{#each deps}}
     if let Some(m) = <{{this.crate_name}}::P as Package<X>>::main_program() {
         main_program = Some(m);
+    }
+    if main_thread.is_none() {
+        main_thread = <{{this.crate_name}}::P as Package<X>>::MAIN_THREAD;
     }
     {{/each}}
     Ok(RegisterResult {
         root: ArcStr::from(parts.join(";\n")),
         main_program,
+        main_thread,
     })
 }
 
@@ -56,11 +62,12 @@ pub(crate) fn maybe_init_custom<X: GXExt>(
     gx: &GXHandle<X>,
     env: &Env,
     e: CompExp<X>,
+    main_thread_rx: Option<graphix_package::MainThreadRx>,
 ) -> Result<CustomResult<X>> {
     {{#each deps}}
     if {{this.crate_name}}::P::is_custom(gx, env, &e) {
         let (tx, rx) = oneshot::channel();
-        return {{this.crate_name}}::P::init_custom(gx, env, tx, e)
+        return {{this.crate_name}}::P::init_custom(gx, env, tx, e, main_thread_rx)
             .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
     }
     {{/each}}

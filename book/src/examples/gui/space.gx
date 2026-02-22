@@ -1,0 +1,29 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::row;
+use gui::space;
+
+window(
+  #title: &"Space Widget",
+  &column(
+    #spacing: &10.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+      text(#size: &24.0, &"Space Widget"),
+      text(&"Space pushes items apart:"),
+      row(
+        #width: &`Fill,
+        &[
+          text(&"Left"),
+          space(#width: &`Fill),
+          text(&"Right")
+        ]
+      ),
+      text(&"Vertical space below:"),
+      space(#height: &`Fixed(50.0)),
+      text(&"...and above this line")
+    ]
+  )
+)

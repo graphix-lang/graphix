@@ -23,6 +23,8 @@ Additional directories:
 
 The compiler depends on netidx (a networked publish-subscribe system) which is expected to be at `../netidx/` (sibling directory).
 
+The project uses workspace level dependencies where possible.
+
 ## Building and Testing
 
 Build the workspace:

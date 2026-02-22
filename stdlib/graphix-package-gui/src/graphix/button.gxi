@@ -1,0 +1,15 @@
+type Button = {
+  child: &Gui,
+  on_press: &[bool, null],
+  width: &Length,
+  height: &Length,
+  padding: &Padding
+};
+
+val button: fn(
+  ?#on_press: &[bool, null],
+  ?#width: &Length,
+  ?#height: &Length,
+  ?#padding: &Padding,
+  &Gui
+) -> Gui

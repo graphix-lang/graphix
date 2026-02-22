@@ -561,8 +561,9 @@ static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {
-    async fn clear(&mut self) {
+    async fn clear(&mut self) -> Option<graphix_package::MainThreadRx> {
         self.clear().await;
+        None
     }
 
     async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
@@ -582,7 +583,7 @@ graphix_derive::defpackage! {
             false
         }
     },
-    init_custom => |gx, env, stop, e| {
+    init_custom => |gx, env, stop, e, _main_thread_rx| {
         Ok(Box::new(Tui::<X>::start(gx, env.clone(), e, stop)))
     },
 }

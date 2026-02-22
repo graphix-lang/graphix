@@ -1,0 +1,17 @@
+type Column = {
+  children: &Array<Gui>,
+  spacing: &f64,
+  padding: &Padding,
+  width: &Length,
+  height: &Length,
+  halign: &HAlign
+};
+
+val column: fn(
+  ?#spacing: &f64,
+  ?#padding: &Padding,
+  ?#width: &Length,
+  ?#height: &Length,
+  ?#halign: &HAlign,
+  &Array<Gui>
+) -> Gui

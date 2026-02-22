@@ -1,0 +1,8 @@
+let column = |
+  #spacing: &f64 = &0.0,
+  #padding: &Padding = &`All(0.0),
+  #width: &Length = &`Shrink,
+  #height: &Length = &`Shrink,
+  #halign: &HAlign = &`Left,
+  children: &Array<Gui>
+| -> Gui `Column({ children, spacing, padding, width, height, halign })

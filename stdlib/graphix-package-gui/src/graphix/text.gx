@@ -1,0 +1,10 @@
+let text = |
+  #size: &[f64, null] = &null,
+  #color: &[Color, null] = &null,
+  #font: &[Font, null] = &null,
+  #width: &Length = &`Shrink,
+  #height: &Length = &`Shrink,
+  #halign: &HAlign = &`Left,
+  #valign: &VAlign = &`Top,
+  content: &string
+| -> Gui `Text({ content, size, color, font, width, height, halign, valign })

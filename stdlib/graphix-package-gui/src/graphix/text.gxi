@@ -1,0 +1,21 @@
+type Text = {
+  content: &string,
+  size: &[f64, null],
+  color: &[Color, null],
+  font: &[Font, null],
+  width: &Length,
+  height: &Length,
+  halign: &HAlign,
+  valign: &VAlign
+};
+
+val text: fn(
+  ?#size: &[f64, null],
+  ?#color: &[Color, null],
+  ?#font: &[Font, null],
+  ?#width: &Length,
+  ?#height: &Length,
+  ?#halign: &HAlign,
+  ?#valign: &VAlign,
+  &string
+) -> Gui

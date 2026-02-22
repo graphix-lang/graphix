@@ -1,0 +1,8 @@
+let row = |
+  #spacing: &f64 = &0.0,
+  #padding: &Padding = &`All(0.0),
+  #width: &Length = &`Shrink,
+  #height: &Length = &`Shrink,
+  #valign: &VAlign = &`Top,
+  children: &Array<Gui>
+| -> Gui `Row({ children, spacing, padding, width, height, valign })

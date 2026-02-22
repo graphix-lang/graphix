@@ -1,0 +1,8 @@
+let container = |
+  #padding: &Padding = &`All(0.0),
+  #width: &Length = &`Shrink,
+  #height: &Length = &`Shrink,
+  #halign: &HAlign = &`Left,
+  #valign: &VAlign = &`Top,
+  child: &Gui
+| -> Gui `Container({ child, padding, width, height, halign, valign })

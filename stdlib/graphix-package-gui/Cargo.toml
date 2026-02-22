@@ -1,0 +1,40 @@
+[package]
+name = "graphix-package-gui"
+version = "0.4.0"
+authors = ["Eric Stokes <letaris@gmail.com>"]
+edition = "2024"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, GUI package"
+documentation = "https://docs.rs/graphix-package-gui"
+readme = "../../README.md"
+license = "MIT"
+categories = ["network-programming", "compilers", "gui"]
+
+[features]
+default = []
+krb5_iov = ["netidx/krb5_iov"]
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+fxhash = { workspace = true }
+graphix-compiler = { version = "0.4.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.4.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.4.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.4.0", path = "../graphix-package-core" }
+graphix-rt = { version = "0.4.0", path = "../../graphix-rt" }
+iced_core = { workspace = true }
+iced_renderer = { workspace = true }
+iced_runtime = { workspace = true }
+iced_wgpu = { workspace = true }
+iced_widget = { workspace = true }
+log = { workspace = true }
+netidx = { workspace = true }
+netidx-core = { workspace = true }
+smallvec = { workspace = true }
+tokio = { workspace = true }
+triomphe = { workspace = true }
+winit = { workspace = true }

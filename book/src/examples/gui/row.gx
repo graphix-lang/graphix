@@ -1,0 +1,34 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::row;
+use gui::button;
+
+window(
+  #title: &"Row Widget",
+  &column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+      text(#size: &24.0, &"Row Layout"),
+      row(
+        #spacing: &30.0,
+        &[
+          text(&"Left"),
+          text(&"Center"),
+          text(&"Right")
+        ]
+      ),
+      row(
+        #spacing: &10.0,
+        #valign: &`Center,
+        &[
+          button(#padding: &`All(10.0), &text(&"One")),
+          button(#padding: &`All(10.0), &text(&"Two")),
+          button(#padding: &`All(10.0), &text(&"Three"))
+        ]
+      )
+    ]
+  )
+)

@@ -1,0 +1,55 @@
+/// Widget types (content within a window)
+type Gui = [
+  `Button(button::Button),
+  `Column(column::Column),
+  `Container(container::Container),
+  `Row(row::Row),
+  `Space(space::Space),
+  `Text(text::Text)
+];
+
+type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
+type Padding = [`All(f64), `Axis(f64, f64), `Each(f64, f64, f64, f64)];
+type Size = { width: f64, height: f64 };
+type HAlign = [`Left, `Center, `Right];
+type VAlign = [`Top, `Center, `Bottom];
+type Color = { r: f64, g: f64, b: f64, a: f64 };
+type FontFamily = [`SansSerif, `Serif, `Monospace, `Name(string)];
+type FontWeight = [
+  `Thin, `ExtraLight, `Light, `Normal, `Medium,
+  `SemiBold, `Bold, `ExtraBold, `Black
+];
+type FontStyle = [`Normal, `Italic, `Oblique];
+type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+
+type Theme = [
+  `Light, `Dark, `Dracula, `Nord,
+  `SolarizedLight, `SolarizedDark, `GruvboxLight, `GruvboxDark,
+  `CatppuccinLatte, `CatppuccinFrappe, `CatppuccinMacchiato, `CatppuccinMocha,
+  `TokyoNight, `TokyoNightStorm, `TokyoNightLight,
+  `KanagawaWave, `KanagawaDragon, `KanagawaLotus,
+  `Moonfly, `Nightfly, `Oxocarbon, `Ferra
+];
+
+/// A window description. Return this type from a shell expression
+/// to open a GUI window.
+type Window = {
+  title: &string,
+  size: &Size,
+  theme: &Theme,
+  content: &Gui
+};
+
+val window: fn(
+  ?#title: &string,
+  ?#size: &Size,
+  ?#theme: &Theme,
+  &Gui
+) -> Window;
+
+mod text;
+mod column;
+mod row;
+mod container;
+mod button;
+mod space

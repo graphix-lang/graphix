@@ -1,0 +1,7 @@
+let button = |
+  #on_press: &[bool, null] = &null,
+  #width: &Length = &`Shrink,
+  #height: &Length = &`Shrink,
+  #padding: &Padding = &`All(5.0),
+  child: &Gui
+| -> Gui `Button({ child, on_press, width, height, padding })

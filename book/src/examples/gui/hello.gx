@@ -1,0 +1,24 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::button;
+
+window(
+  #title: &"Graphix Demo",
+  #theme: &`CatppuccinMocha,
+  &column(
+    #spacing: &20.0,
+    #padding: &`All(40.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+      text(#size: &24.0, &"Hello, Graphix GUI!"),
+      text(&"A simple window with text and a button"),
+      button(
+        #padding: &`All(10.0),
+        &text(&"Click me!")
+      )
+    ]
+  )
+)

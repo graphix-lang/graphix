@@ -1,0 +1,9 @@
+type Space = {
+  width: &Length,
+  height: &Length
+};
+
+val space: fn(
+  ?#width: &Length,
+  ?#height: &Length
+) -> Gui

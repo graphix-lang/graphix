@@ -1,0 +1,17 @@
+type Container = {
+  child: &Gui,
+  padding: &Padding,
+  width: &Length,
+  height: &Length,
+  halign: &HAlign,
+  valign: &VAlign
+};
+
+val container: fn(
+  ?#padding: &Padding,
+  ?#width: &Length,
+  ?#height: &Length,
+  ?#halign: &HAlign,
+  ?#valign: &VAlign,
+  &Gui
+) -> Gui
