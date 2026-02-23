@@ -52,18 +52,26 @@ impl<X: GXExt> ContainerW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
-    fn handle_update(&mut self, id: ExprId, v: &Value) -> Result<()> {
-        self.padding.update(id, v).context("container update padding")?;
-        self.width.update(id, v).context("container update width")?;
-        self.height.update(id, v).context("container update height")?;
-        self.halign.update(id, v).context("container update halign")?;
-        self.valign.update(id, v).context("container update valign")?;
-        self.child.handle_update(id, v)?;
-        Ok(())
-    }
-
-    fn needs_recompile(&self, id: ExprId) -> bool {
-        id == self.child_ref.id
+    fn handle_update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        changed |= self.padding.update(id, v).context("container update padding")?.is_some();
+        changed |= self.width.update(id, v).context("container update width")?.is_some();
+        changed |= self.height.update(id, v).context("container update height")?.is_some();
+        changed |= self.halign.update(id, v).context("container update halign")?.is_some();
+        changed |= self.valign.update(id, v).context("container update valign")?.is_some();
+        if id == self.child_ref.id {
+            self.child_ref.last = Some(v.clone());
+            self.child = rt.block_on(compile(self.gx.clone(), v.clone()))
+                .context("container child recompile")?;
+            changed = true;
+        }
+        changed |= self.child.handle_update(rt, id, v)?;
+        Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {

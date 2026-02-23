@@ -2,7 +2,7 @@ use gui;
 use gui::text;
 use gui::column;
 
-window(
+[&window(
   #title: &"Text Widget",
   &column(
     #spacing: &15.0,
@@ -19,4 +19,4 @@ window(
       text(#halign: &`Right, #width: &`Fill, &"Right-aligned")
     ]
   )
-)
+)]

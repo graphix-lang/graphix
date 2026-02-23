@@ -3,24 +3,29 @@ use gui::text;
 use gui::column;
 use gui::button;
 
-window(
-  #title: &"Button Widget",
-  &column(
+let b0 = button(
+    #on_press: |c| println(c ~ "normal button clicked"),
+    #padding: &`All(10.0),
+    &text(&"Click me!")
+);
+
+let b1 = button(
+    #on_press: |c| println(c ~ "wide button clicked"),
+    #padding: &`All(8.0),
+    #width: &`Fixed(200.0),
+    &text(#halign:&`Center, &"Wide button")
+);
+
+let col = column(
     #spacing: &20.0,
     #padding: &`All(30.0),
     #halign: &`Center,
     #width: &`Fill,
     &[
-      text(#size: &24.0, &"Button Demo"),
-      button(
-        #padding: &`All(10.0),
-        &text(&"Click me!")
-      ),
-      button(
-        #padding: &`All(8.0),
-        #width: &`Fixed(200.0),
-        &text(&"Wide button")
-      )
+        text(#size: &24.0, &"Button Demo"),
+        b0,
+        b1
     ]
-  )
-)
+);
+
+[&window(#title: &"Button Widget", &col)]

@@ -23,15 +23,18 @@ pub(crate) struct GpuState {
 }
 
 impl GpuState {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(window: Arc<Window>) -> Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
+        let surface = instance
+            .create_surface(window)
+            .context("failed to create init surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: None,
+                compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
             .await
@@ -40,7 +43,13 @@ impl GpuState {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("failed to create GPU device")?;
-        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let format = surface
+            .get_capabilities(&adapter)
+            .formats
+            .into_iter()
+            .next()
+            .context("surface has no supported formats")?;
+        drop(surface);
         Ok(Self { instance, adapter, device, queue, format })
     }
 

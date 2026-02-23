@@ -1,5 +1,5 @@
 type Container = {
-  child: &Gui,
+  child: &Widget,
   padding: &Padding,
   width: &Length,
   height: &Length,
@@ -13,5 +13,5 @@ val container: fn(
   ?#height: &Length,
   ?#halign: &HAlign,
   ?#valign: &VAlign,
-  &Gui
-) -> Gui
+  &Widget
+) -> Widget

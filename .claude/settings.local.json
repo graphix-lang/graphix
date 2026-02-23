@@ -65,7 +65,10 @@
       "WebFetch(domain:crates.io)",
       "Bash(tail:*)",
       "Bash(xargs -I{} basename {})",
-      "Bash(diff:*)"
+      "Bash(diff:*)",
+      "Bash(rustc --pretty=expanded -L dependency=/home/eric/proj/graphix/target/debug/deps 2>&1 | grep -A5 \"MainThread\" | head -30 || true)",
+      "Bash(cargo clippy:*)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

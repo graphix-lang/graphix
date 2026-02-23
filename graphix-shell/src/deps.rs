@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, ExecCtx};
-use graphix_package::{CustomDisplay, IndexSet, Package};
+use graphix_package::{CustomDisplay, IndexSet, MainThreadHandle, Package};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_core::path::Path;
 use tokio::sync::oneshot;
@@ -12,7 +12,6 @@ use tokio::sync::oneshot;
 pub(crate) struct RegisterResult {
     pub root: ArcStr,
     pub main_program: Option<&'static str>,
-    pub main_thread: Option<graphix_package::MainThreadFn>,
 }
 
 pub(crate) fn register<X: GXExt>(
@@ -39,29 +38,9 @@ pub(crate) fn register<X: GXExt>(
             parts.push(format!("mod {name}"));
         }
     }
-    let mut main_thread = None;
-    macro_rules! collect_main_thread {
-        ($pkg:path) => {
-            if main_thread.is_none() {
-                main_thread = <$pkg as Package<X>>::MAIN_THREAD;
-            }
-        };
-    }
-    collect_main_thread!(graphix_package_core::P);
-    collect_main_thread!(graphix_package_array::P);
-    collect_main_thread!(graphix_package_str::P);
-    collect_main_thread!(graphix_package_map::P);
-    collect_main_thread!(graphix_package_fs::P);
-    collect_main_thread!(graphix_package_net::P);
-    collect_main_thread!(graphix_package_time::P);
-    collect_main_thread!(graphix_package_re::P);
-    collect_main_thread!(graphix_package_rand::P);
-    collect_main_thread!(graphix_package_tui::P);
-    collect_main_thread!(graphix_package_gui::P);
     Ok(RegisterResult {
         root: ArcStr::from(parts.join(";\n")),
         main_program: None,
-        main_thread,
     })
 }
 
@@ -75,17 +54,17 @@ pub(crate) enum CustomResult<X: GXExt> {
     NotCustom(CompExp<X>),
 }
 
-pub(crate) fn maybe_init_custom<X: GXExt>(
+pub(crate) async fn maybe_init_custom<X: GXExt>(
     gx: &GXHandle<X>,
     env: &Env,
     e: CompExp<X>,
-    main_thread_rx: Option<graphix_package::MainThreadRx>,
+    run_on_main: &MainThreadHandle,
 ) -> Result<CustomResult<X>> {
     macro_rules! try_pkg {
         ($pkg:path) => {
             if <$pkg>::is_custom(gx, env, &e) {
                 let (tx, rx) = oneshot::channel();
-                return <$pkg>::init_custom(gx, env, tx, e, main_thread_rx)
+                return <$pkg>::init_custom(gx, env, tx, e, run_on_main.clone()).await
                     .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
             }
         };

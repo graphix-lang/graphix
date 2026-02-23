@@ -47,11 +47,8 @@ defpackage! {
     is_custom => |gx, env, e| {
         todo!()
     },
-    init_custom => |gx, env, stop, e, main_thread_rx| {
+    init_custom => |gx, env, stop, e, run_on_main| {
         todo!()
-    },
-    main_thread => |tx| {
-        // runs on the process main thread
     },
 }
 */
@@ -82,7 +79,6 @@ struct DefPackage {
     builtins: Vec<BuiltinEntry>,
     is_custom: Option<syn::ExprClosure>,
     init_custom: Option<syn::ExprClosure>,
-    main_thread: Option<syn::ExprClosure>,
 }
 
 impl syn::parse::Parse for DefPackage {
@@ -90,7 +86,6 @@ impl syn::parse::Parse for DefPackage {
         let mut builtins = Vec::new();
         let mut is_custom = None;
         let mut init_custom = None;
-        let mut main_thread = None;
         while !input.is_empty() {
             let key: Ident = input.parse()?;
             let _arrow: Token![=>] = input.parse()?;
@@ -106,8 +101,6 @@ impl syn::parse::Parse for DefPackage {
                 is_custom = Some(input.parse::<syn::ExprClosure>()?);
             } else if key == "init_custom" {
                 init_custom = Some(input.parse::<syn::ExprClosure>()?);
-            } else if key == "main_thread" {
-                main_thread = Some(input.parse::<syn::ExprClosure>()?);
             } else {
                 return Err(input.error("unknown key"));
             }
@@ -115,7 +108,7 @@ impl syn::parse::Parse for DefPackage {
                 let _comma: Option<Token![,]> = input.parse()?;
             }
         }
-        Ok(DefPackage { builtins, is_custom, init_custom, main_thread })
+        Ok(DefPackage { builtins, is_custom, init_custom })
     }
 }
 
@@ -360,27 +353,11 @@ fn init_custom(init_custom: &Option<syn::ExprClosure>) -> TokenStream {
         Some(cl) => {
             check_args(
                 "init_custom",
-                vec!["gx", "env", "stop", "e", "main_thread_rx"],
+                vec!["gx", "env", "stop", "e", "run_on_main"],
                 &cl.inputs,
             );
             let body = &cl.body;
             quote! { #body }
-        }
-    }
-}
-
-fn main_thread_const(main_thread: &Option<syn::ExprClosure>) -> TokenStream {
-    match main_thread {
-        None => quote! {
-            const MAIN_THREAD: Option<::graphix_package::MainThreadFn> = None;
-        },
-        Some(cl) => {
-            check_args("main_thread", vec!["tx"], &cl.inputs);
-            let body = &cl.body;
-            quote! {
-                const MAIN_THREAD: Option<::graphix_package::MainThreadFn> =
-                    Some(|tx| { #body });
-            }
         }
     }
 }
@@ -392,7 +369,6 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let register_builtins = register_builtins(&input.builtins);
     let is_custom = is_custom(&input.is_custom);
     let init_custom = init_custom(&input.init_custom);
-    let main_thread_const = main_thread_const(&input.main_thread);
     let graphix_files = graphix_files();
     let main_program = main_program_impl();
     let test_harness = test_harness();
@@ -416,8 +392,6 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         pub struct P;
 
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
-            #main_thread_const
-
             fn register(
                 ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
                 modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
@@ -443,12 +417,12 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
 
             #[allow(unused)]
-            fn init_custom(
+            async fn init_custom(
                 gx: &::graphix_rt::GXHandle<X>,
                 env: &::graphix_compiler::env::Env,
                 stop: ::tokio::sync::oneshot::Sender<()>,
                 e: ::graphix_rt::CompExp<X>,
-                main_thread_rx: Option<::graphix_package::MainThreadRx>,
+                run_on_main: ::graphix_package::MainThreadHandle,
             ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
                 #init_custom
             }

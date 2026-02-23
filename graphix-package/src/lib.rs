@@ -21,6 +21,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::mpsc as smpsc,
     time::Duration,
 };
 use tokio::{
@@ -35,19 +36,20 @@ use walkdir::WalkDir;
 #[cfg(test)]
 mod test;
 
-/// Sender half of the main-thread channel. Packages that run code on
-/// the process main thread (e.g. GUI) send messages back to tokio
-/// through this.
-pub type MainThreadTx = tokio::sync::mpsc::Sender<Box<dyn std::any::Any + Send>>;
+/// Handle to run a closure on the main thread
+#[derive(Clone)]
+pub struct MainThreadHandle(smpsc::Sender<Box<dyn FnOnce() + Send + 'static>>);
 
-/// Receiver half of the main-thread channel. The shell owns this and
-/// loans it to whichever package needs main-thread access.
-pub type MainThreadRx = tokio::sync::mpsc::Receiver<Box<dyn std::any::Any + Send>>;
+impl MainThreadHandle {
+    pub fn new() -> (Self, smpsc::Receiver<Box<dyn FnOnce() + Send + 'static>>) {
+        let (tx, rx) = smpsc::channel();
+        (Self(tx), rx)
+    }
 
-/// A function pointer that will be called on the process main thread.
-/// The function receives a `MainThreadTx` for sending messages back
-/// to the tokio runtime.
-pub type MainThreadFn = fn(MainThreadTx);
+    pub fn run(&self, f: Box<dyn FnOnce() + Send + 'static>) -> Result<()> {
+        self.0.send(f).map_err(|_| anyhow!("main thread receiver dropped"))
+    }
+}
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
@@ -58,9 +60,9 @@ pub trait CustomDisplay<X: GXExt>: Any {
     /// want to return to the normal display mode or when the stop
     /// channel has been triggered by this custom display.
     ///
-    /// Returns the `MainThreadRx` if this display held one, so the
-    /// shell can reclaim it for future use.
-    async fn clear(&mut self) -> Option<MainThreadRx>;
+    /// If the custom display has started a closure on the main thread, it must
+    /// now stop it.
+    async fn clear(&mut self);
 
     /// Process an update from the Graphix rt in the context of the
     /// custom display.
@@ -72,13 +74,8 @@ pub trait CustomDisplay<X: GXExt>: Any {
 }
 
 /// Trait implemented by Graphix packages
+#[allow(async_fn_in_trait)]
 pub trait Package<X: GXExt> {
-    /// If set, this function will be called on the process main
-    /// thread. Use this for frameworks that require the main thread
-    /// (e.g. winit/NSApplication on macOS). Most packages leave this
-    /// as `None`.
-    const MAIN_THREAD: Option<MainThreadFn> = None;
-
     /// register builtins and return a resolver containing Graphix
     /// code contained in the package.
     ///
@@ -107,12 +104,12 @@ pub trait Package<X: GXExt> {
     /// `MAIN_THREAD` and the shell has a main-thread channel
     /// available. The custom display should hold onto it and return
     /// it from `clear()`.
-    fn init_custom(
+    async fn init_custom(
         gx: &GXHandle<X>,
         env: &Env,
         stop: oneshot::Sender<()>,
         e: CompExp<X>,
-        main_thread_rx: Option<MainThreadRx>,
+        run_on_main: MainThreadHandle,
     ) -> Result<Box<dyn CustomDisplay<X>>>;
 
     /// Return the main program source if this package has one and the

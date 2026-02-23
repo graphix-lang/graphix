@@ -1,15 +1,15 @@
 type Button = {
-  child: &Gui,
-  on_press: &[bool, null],
+  child: &Widget,
+  on_press: &fn(null) -> Any,
   width: &Length,
   height: &Length,
   padding: &Padding
 };
 
 val button: fn(
-  ?#on_press: &[bool, null],
+  ?#on_press: fn(null) -> Any,
   ?#width: &Length,
   ?#height: &Length,
   ?#padding: &Padding,
-  &Gui
-) -> Gui
+  &Widget
+) -> Widget

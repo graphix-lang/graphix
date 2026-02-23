@@ -1,4 +1,4 @@
 let space = |
   #width: &Length = &`Shrink,
   #height: &Length = &`Shrink
-| -> Gui `Space({ width, height })
+| -> Widget `Space({ width, height })

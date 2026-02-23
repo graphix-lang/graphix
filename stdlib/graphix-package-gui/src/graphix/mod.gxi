@@ -1,5 +1,5 @@
 /// Widget types (content within a window)
-type Gui = [
+type Widget = [
   `Button(button::Button),
   `Column(column::Column),
   `Container(container::Container),
@@ -31,20 +31,23 @@ type Theme = [
   `Moonfly, `Nightfly, `Oxocarbon, `Ferra
 ];
 
-/// A window description. Return this type from a shell expression
-/// to open a GUI window.
+/// A window description
 type Window = {
   title: &string,
   size: &Size,
   theme: &Theme,
-  content: &Gui
+  content: &Widget
 };
+
+/// The custom display root type. An expression of this type
+/// triggers the GUI display mode in the shell.
+type Gui = Array<&Window>;
 
 val window: fn(
   ?#title: &string,
   ?#size: &Size,
   ?#theme: &Theme,
-  &Gui
+  &Widget
 ) -> Window;
 
 mod text;

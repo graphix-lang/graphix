@@ -38,6 +38,8 @@ The compiler depends on netidx (a networked publish-subscribe system) which is e
 
 The project uses workspace-level dependencies where possible.
 
+The project uses poolshark where possible to avoid repeated allocations
+
 ## Building and Testing
 
 Build the workspace:

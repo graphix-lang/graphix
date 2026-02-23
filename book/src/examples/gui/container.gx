@@ -3,7 +3,7 @@ use gui::text;
 use gui::column;
 use gui::container;
 
-window(
+[&window(
   #title: &"Container Widget",
   &column(
     #spacing: &15.0,
@@ -31,4 +31,4 @@ window(
       )
     ]
   )
-)
+)]

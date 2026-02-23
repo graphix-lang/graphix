@@ -264,6 +264,11 @@ impl<X: GXExt> Drop for Callable<X> {
 }
 
 impl<X: GXExt> Callable<X> {
+    /// Get the id of this callable
+    pub fn id(&self) -> CallableId {
+        self.id
+    }
+
     /// Call the lambda with args
     ///
     /// Argument types and arity will be checked and an error will be returned
@@ -591,6 +596,17 @@ impl<X: GXExt> GXHandle<X> {
     pub fn set<T: Into<Value>>(&self, id: BindId, v: T) -> Result<()> {
         let v = v.into();
         self.0.tx.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
+    }
+
+    /// Call a callable by id with the given arguments
+    ///
+    /// This is a fire-and-forget call that does not wait for the result.
+    /// Unlike `Callable::call`, no type or arity checking is performed.
+    pub fn call(&self, id: CallableId, args: ValArray) -> Result<()> {
+        self.0
+            .tx
+            .send(ToGX::Call { id, args })
+            .map_err(|_| anyhow!("runtime is dead"))
     }
 }
 

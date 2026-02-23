@@ -4,5 +4,5 @@ let row = |
   #width: &Length = &`Shrink,
   #height: &Length = &`Shrink,
   #valign: &VAlign = &`Top,
-  children: &Array<Gui>
-| -> Gui `Row({ children, spacing, padding, width, height, valign })
+  children: &Array<Widget>
+| -> Widget `Row({ children, spacing, padding, width, height, valign })

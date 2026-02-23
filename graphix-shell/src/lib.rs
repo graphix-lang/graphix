@@ -14,7 +14,7 @@ use graphix_compiler::{
     typ::TVal,
     CFlag, ExecCtx, PrintFlag,
 };
-use graphix_package::{MainThreadFn, MainThreadRx};
+use graphix_package::MainThreadHandle;
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use input::InputReader;
 use netidx::{
@@ -38,13 +38,13 @@ enum Output<X: GXExt> {
 }
 
 impl<X: GXExt> Output<X> {
-    fn from_expr(
+    async fn from_expr(
         gx: &GXHandle<X>,
         env: &Env,
         e: CompExp<X>,
-        main_thread_rx: &mut Option<MainThreadRx>,
+        run_on_main: &MainThreadHandle,
     ) -> Self {
-        match deps::maybe_init_custom(gx, env, e, main_thread_rx.take()) {
+        match deps::maybe_init_custom(gx, env, e, run_on_main).await {
             Err(e) => {
                 eprintln!("error initializing custom display: {e:?}");
                 Self::None
@@ -54,13 +54,11 @@ impl<X: GXExt> Output<X> {
         }
     }
 
-    async fn clear(&mut self) -> Option<MainThreadRx> {
-        let rx = match self {
-            Self::None | Self::Text(_) | Self::EmptyScript => None,
-            Self::Custom(cdc) => cdc.custom.clear().await,
-        };
+    async fn clear(&mut self) {
+        if let Self::Custom(cdc) = self {
+            cdc.custom.clear().await;
+        }
         *self = Self::None;
-        rx
     }
 
     async fn process_update(&mut self, env: &Env, id: ExprId, v: Value) {
@@ -143,7 +141,7 @@ impl<X: GXExt> Shell<X> {
     async fn init(
         &mut self,
         sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    ) -> Result<(GXHandle<X>, Option<MainThreadFn>)> {
+    ) -> Result<GXHandle<X>> {
         let publisher = self.publisher.clone();
         let subscriber = self.subscriber.clone();
         let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
@@ -182,7 +180,7 @@ impl<X: GXExt> Shell<X> {
             .start()
             .await
             .context("loading initial modules")?;
-        Ok((handle, result.main_thread))
+        Ok(handle)
     }
 
     async fn load_env(
@@ -191,7 +189,7 @@ impl<X: GXExt> Shell<X> {
         newenv: &mut Option<Env>,
         output: &mut Output<X>,
         exprs: &mut Vec<CompExp<X>>,
-        main_thread_rx: &mut Option<MainThreadRx>,
+        run_on_main: &MainThreadHandle,
     ) -> Result<Env> {
         let env;
         match &self.mode {
@@ -204,7 +202,7 @@ impl<X: GXExt> Shell<X> {
                 exprs.extend(r.exprs);
                 env = gx.get_env().await?;
                 if let Some(e) = exprs.pop() {
-                    *output = Output::from_expr(&gx, &env, e, main_thread_rx);
+                    *output = Output::from_expr(&gx, &env, e, run_on_main).await;
                 }
                 *newenv = None
             }
@@ -234,19 +232,17 @@ impl<X: GXExt> Shell<X> {
 
     pub async fn run(
         mut self,
-        mt_tx: std::sync::mpsc::SyncSender<Option<MainThreadFn>>,
-        mut main_thread_rx: Option<MainThreadRx>,
+        run_on_main: MainThreadHandle,
     ) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
-        let (gx, main_thread_fn) = self.init(tx).await?;
-        let _ = mt_tx.send(main_thread_fn);
+        let gx = self.init(tx).await?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
         let mut output = if script { Output::EmptyScript } else { Output::None };
         let mut newenv = None;
         let mut exprs = vec![];
         let mut env = self
-            .load_env(&gx, &mut newenv, &mut output, &mut exprs, &mut main_thread_rx)
+            .load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main)
             .await?;
         if !script {
             println!("Welcome to the graphix shell");
@@ -275,9 +271,7 @@ impl<X: GXExt> Shell<X> {
                         Err(e) => eprintln!("error reading line {e:?}"),
                         Ok(Signal::CtrlC) if script => break Ok(()),
                         Ok(Signal::CtrlC) => {
-                            if let Some(rx) = output.clear().await {
-                                main_thread_rx = Some(rx);
-                            }
+                            output.clear().await;
                         }
                         Ok(Signal::CtrlD) => break Ok(()),
                         Ok(Signal::Success(line)) => {
@@ -296,16 +290,12 @@ impl<X: GXExt> Shell<X> {
                                             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                                             || println!("-: {}", typ)
                                         );
-                                        if let Some(rx) = output.clear().await {
-                                            main_thread_rx = Some(rx);
-                                        }
+                                        output.clear().await;
                                         output = Output::from_expr(
-                                            &gx, &env, e, &mut main_thread_rx,
-                                        );
+                                            &gx, &env, e, &run_on_main,
+                                        ).await;
                                     } else {
-                                        if let Some(rx) = output.clear().await {
-                                            main_thread_rx = Some(rx);
-                                        }
+                                        output.clear().await;
                                     }
                                 }
                             }

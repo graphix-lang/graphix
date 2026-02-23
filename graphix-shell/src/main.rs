@@ -7,7 +7,7 @@ use graphix_compiler::{
     expr::{ModuleResolver, Source},
     CFlag,
 };
-use graphix_package::{GraphixPM, MainThreadFn, PackageId};
+use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use log::info;
@@ -287,8 +287,7 @@ async fn handle_package(action: PackageAction) -> Result<()> {
 fn tokio_main(
     p: Params,
     cfg: Result<Config>,
-    mt_tx: std::sync::mpsc::SyncSender<Option<MainThreadFn>>,
-    main_thread_rx: Option<graphix_package::MainThreadRx>,
+    run_on_main: MainThreadHandle,
 ) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -363,7 +362,7 @@ fn tokio_main(
             .enable_flags(enable)
             .disable_flags(disable)
             .build()?
-            .run(mt_tx, main_thread_rx)
+            .run(run_on_main)
             .await
     })
 }
@@ -378,29 +377,15 @@ fn main() -> Result<()> {
         None => Config::load_default_or_local_only(),
         Some(p) => Config::load(p),
     };
-    // Create the main-thread channel eagerly (cheap, no runtime needed)
-    let (mpsc_tx, mpsc_rx) =
-        tokio::sync::mpsc::channel::<Box<dyn std::any::Any + Send>>(100);
-    let (mt_tx, mt_rx) =
-        std::sync::mpsc::sync_channel::<Option<MainThreadFn>>(0);
+    let (handle, main_rx) = MainThreadHandle::new();
     let tokio_handle = std::thread::Builder::new()
         .name("graphix-tokio".into())
-        .spawn(move || tokio_main(p, cfg, mt_tx, Some(mpsc_rx)))
+        .spawn(move || tokio_main(p, cfg, handle))
         .expect("failed to spawn tokio thread");
-    match mt_rx.recv() {
-        Ok(Some(f)) => {
-            f(mpsc_tx);
-            // main_thread fn returned (e.g. all windows closed)
-            // tokio thread should be winding down too
-            tokio_handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("tokio thread panicked"))?
-        }
-        _ => {
-            drop(mpsc_tx);
-            tokio_handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("tokio thread panicked"))?
-        }
+    while let Ok(f) = main_rx.recv() {
+        f();
     }
+    tokio_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("tokio thread panicked"))?
 }

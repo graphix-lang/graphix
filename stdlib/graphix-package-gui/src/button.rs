@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -16,7 +16,8 @@ pub(crate) struct ButtonW<X: GXExt> {
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
     padding: TRef<X, PaddingV>,
-    on_press: TRef<X, Option<bool>>,
+    on_press: Ref<X>,
+    on_press_callable: Option<Callable<X>>,
     child_ref: Ref<X>,
     child: GuiW<X>,
 }
@@ -36,12 +37,21 @@ impl<X: GXExt> ButtonW<X> {
             None => Box::new(crate::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("button child")?,
         };
+        let callable = match on_press.last.as_ref() {
+            Some(v) => Some(
+                gx.compile_callable(v.clone())
+                    .await
+                    .context("button on_press callable")?,
+            ),
+            None => None,
+        };
         Ok(Box::new(Self {
             gx: gx.clone(),
             width: TRef::new(width).context("button tref width")?,
             height: TRef::new(height).context("button tref height")?,
             padding: TRef::new(padding).context("button tref padding")?,
-            on_press: TRef::new(on_press).context("button tref on_press")?,
+            on_press,
+            on_press_callable: callable,
             child_ref,
             child: compiled_child,
         }))
@@ -49,24 +59,38 @@ impl<X: GXExt> ButtonW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
-    fn handle_update(&mut self, id: ExprId, v: &Value) -> Result<()> {
-        self.width.update(id, v).context("button update width")?;
-        self.height.update(id, v).context("button update height")?;
-        self.padding.update(id, v).context("button update padding")?;
-        self.on_press.update(id, v).context("button update on_press")?;
-        self.child.handle_update(id, v)?;
-        Ok(())
-    }
-
-    fn needs_recompile(&self, id: ExprId) -> bool {
-        id == self.child_ref.id
+    fn handle_update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        changed |= self.width.update(id, v).context("button update width")?.is_some();
+        changed |= self.height.update(id, v).context("button update height")?.is_some();
+        changed |= self.padding.update(id, v).context("button update padding")?.is_some();
+        if id == self.on_press.id {
+            self.on_press.last = Some(v.clone());
+            self.on_press_callable = Some(
+                rt.block_on(self.gx.compile_callable(v.clone()))
+                    .context("button on_press callable recompile")?,
+            );
+        }
+        if id == self.child_ref.id {
+            self.child_ref.last = Some(v.clone());
+            self.child = rt
+                .block_on(compile(self.gx.clone(), v.clone()))
+                .context("button child recompile")?;
+            changed = true;
+        }
+        changed |= self.child.handle_update(rt, id, v)?;
+        Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.view());
-        // If on_press has a bind target, wire up the press event
-        if let Some(bid) = self.on_press.r.target_bid {
-            btn = btn.on_press(Message::Set(bid, true.into()));
+        if let Some(callable) = &self.on_press_callable {
+            btn = btn.on_press(Message::Call(callable.id()));
         }
         if let Some(w) = self.width.t.as_ref() {
             btn = btn.width(w.0);

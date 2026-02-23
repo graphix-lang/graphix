@@ -6,4 +6,4 @@ type Space = {
 val space: fn(
   ?#width: &Length,
   ?#height: &Length
-) -> Gui
+) -> Widget

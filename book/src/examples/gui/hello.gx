@@ -3,7 +3,7 @@ use gui::text;
 use gui::column;
 use gui::button;
 
-window(
+[&window(
   #title: &"Graphix Demo",
   #theme: &`CatppuccinMocha,
   &column(
@@ -21,4 +21,4 @@ window(
       )
     ]
   )
-)
+)]

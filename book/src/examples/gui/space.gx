@@ -4,7 +4,7 @@ use gui::column;
 use gui::row;
 use gui::space;
 
-window(
+[&window(
   #title: &"Space Widget",
   &column(
     #spacing: &10.0,
@@ -26,4 +26,4 @@ window(
       text(&"...and above this line")
     ]
   )
-)
+)]

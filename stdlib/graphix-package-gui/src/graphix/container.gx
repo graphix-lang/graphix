@@ -4,5 +4,5 @@ let container = |
   #height: &Length = &`Shrink,
   #halign: &HAlign = &`Left,
   #valign: &VAlign = &`Top,
-  child: &Gui
-| -> Gui `Container({ child, padding, width, height, halign, valign })
+  child: &Widget
+| -> Widget `Container({ child, padding, width, height, halign, valign })

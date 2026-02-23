@@ -4,5 +4,5 @@ let column = |
   #width: &Length = &`Shrink,
   #height: &Length = &`Shrink,
   #halign: &HAlign = &`Left,
-  children: &Array<Gui>
-| -> Gui `Column({ children, spacing, padding, width, height, halign })
+  children: &Array<Widget>
+| -> Widget `Column({ children, spacing, padding, width, height, halign })

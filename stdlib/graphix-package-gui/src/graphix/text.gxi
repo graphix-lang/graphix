@@ -18,4 +18,4 @@ val text: fn(
   ?#halign: &HAlign,
   ?#valign: &VAlign,
   &string
-) -> Gui
+) -> Widget

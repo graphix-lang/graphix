@@ -4,7 +4,7 @@ use gui::column;
 use gui::row;
 use gui::button;
 
-window(
+[&window(
   #title: &"Row Widget",
   &column(
     #spacing: &20.0,
@@ -31,4 +31,4 @@ window(
       )
     ]
   )
-)
+)]

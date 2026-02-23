@@ -34,6 +34,7 @@ iced_widget = { workspace = true }
 log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
+poolshark = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }

@@ -1,5 +1,5 @@
 type Column = {
-  children: &Array<Gui>,
+  children: &Array<Widget>,
   spacing: &f64,
   padding: &Padding,
   width: &Length,
@@ -13,5 +13,5 @@ val column: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#halign: &HAlign,
-  &Array<Gui>
-) -> Gui
+  &Array<Widget>
+) -> Widget

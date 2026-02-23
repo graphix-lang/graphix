@@ -28,10 +28,16 @@ impl<X: GXExt> SpaceW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for SpaceW<X> {
-    fn handle_update(&mut self, id: ExprId, v: &Value) -> Result<()> {
-        self.width.update(id, v).context("space update width")?;
-        self.height.update(id, v).context("space update height")?;
-        Ok(())
+    fn handle_update(
+        &mut self,
+        _rt: &tokio::runtime::Handle,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        changed |= self.width.update(id, v).context("space update width")?.is_some();
+        changed |= self.height.update(id, v).context("space update height")?.is_some();
+        Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {

@@ -7,4 +7,4 @@ let text = |
   #halign: &HAlign = &`Left,
   #valign: &VAlign = &`Top,
   content: &string
-| -> Gui `Text({ content, size, color, font, width, height, halign, valign })
+| -> Widget `Text({ content, size, color, font, width, height, halign, valign })

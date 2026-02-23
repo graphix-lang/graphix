@@ -6,6 +6,13 @@ use iced_core::{
     Color, Font, Length, Padding, Size,
 };
 use netidx::publisher::{FromValue, Value};
+use std::{
+    collections::HashSet,
+    sync::{LazyLock, Mutex},
+};
+
+static FONT_NAMES: LazyLock<Mutex<HashSet<&'static str>>> =
+    LazyLock::new(Default::default);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LengthV(pub Length);
@@ -72,10 +79,10 @@ impl FromValue for SizeV {
     }
 }
 
-impl Into<Value> for SizeV {
-    fn into(self) -> Value {
+impl From<SizeV> for Value {
+    fn from(v: SizeV) -> Value {
         use arcstr::literal;
-        [(literal!("height"), self.0.height as f64), (literal!("width"), self.0.width as f64)]
+        [(literal!("height"), v.0.height as f64), (literal!("width"), v.0.width as f64)]
             .into()
     }
 }
@@ -125,11 +132,30 @@ impl FromValue for FontV {
     fn from_value(v: Value) -> Result<Self> {
         let [(_, family), (_, style), (_, weight)] =
             v.cast_to::<[(ArcStr, Value); 3]>()?;
-        let family = match &*family.cast_to::<ArcStr>()? {
-            "SansSerif" => Family::SansSerif,
-            "Serif" => Family::Serif,
-            "Monospace" => Family::Monospace,
-            s => bail!("invalid font family {s}"),
+        let family = match family {
+            Value::String(s) => match &*s {
+                "SansSerif" => Family::SansSerif,
+                "Serif" => Family::Serif,
+                "Monospace" => Family::Monospace,
+                s => bail!("invalid font family {s}"),
+            },
+            v => match v.cast_to::<(ArcStr, Value)>()? {
+                (s, v) if &*s == "Name" => {
+                    let name = v.cast_to::<ArcStr>()?;
+                    let mut cache = FONT_NAMES.lock().unwrap();
+                    let interned = match cache.get(name.as_str()) {
+                        Some(&s) => s,
+                        None => {
+                            let leaked: &'static str =
+                                Box::leak(name.to_string().into_boxed_str());
+                            cache.insert(leaked);
+                            leaked
+                        }
+                    };
+                    Family::Name(interned)
+                }
+                (s, _) => bail!("invalid font family {s}"),
+            },
         };
         let weight = match &*weight.cast_to::<ArcStr>()? {
             "Thin" => Weight::Thin,

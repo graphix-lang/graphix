@@ -23,10 +23,8 @@ pub(crate) struct TextW<X: GXExt> {
 
 impl<X: GXExt> TextW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, color), (_, content), (_, font), (_, halign),
-            (_, height), (_, size), (_, valign), (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("text flds")?;
+        let [(_, color), (_, content), (_, font), (_, halign), (_, height), (_, size), (_, valign), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 8]>().context("text flds")?;
         let (color, content, font, halign, height, size, valign, width) = try_join! {
             gx.compile_ref(color),
             gx.compile_ref(content),
@@ -51,16 +49,22 @@ impl<X: GXExt> TextW<X> {
 }
 
 impl<X: GXExt> crate::GuiWidget<X> for TextW<X> {
-    fn handle_update(&mut self, id: ExprId, v: &Value) -> Result<()> {
-        self.content.update(id, v).context("text update content")?;
-        self.size.update(id, v).context("text update size")?;
-        self.color.update(id, v).context("text update color")?;
-        self.font.update(id, v).context("text update font")?;
-        self.width.update(id, v).context("text update width")?;
-        self.height.update(id, v).context("text update height")?;
-        self.halign.update(id, v).context("text update halign")?;
-        self.valign.update(id, v).context("text update valign")?;
-        Ok(())
+    fn handle_update(
+        &mut self,
+        _rt: &tokio::runtime::Handle,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        changed |= self.content.update(id, v).context("text update content")?.is_some();
+        changed |= self.size.update(id, v).context("text update size")?.is_some();
+        changed |= self.color.update(id, v).context("text update color")?.is_some();
+        changed |= self.font.update(id, v).context("text update font")?.is_some();
+        changed |= self.width.update(id, v).context("text update width")?.is_some();
+        changed |= self.height.update(id, v).context("text update height")?.is_some();
+        changed |= self.halign.update(id, v).context("text update halign")?.is_some();
+        changed |= self.valign.update(id, v).context("text update valign")?.is_some();
+        Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {

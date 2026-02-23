@@ -1,5 +1,5 @@
 type Row = {
-  children: &Array<Gui>,
+  children: &Array<Widget>,
   spacing: &f64,
   padding: &Padding,
   width: &Length,
@@ -13,5 +13,5 @@ val row: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#valign: &VAlign,
-  &Array<Gui>
-) -> Gui
+  &Array<Widget>
+) -> Widget
