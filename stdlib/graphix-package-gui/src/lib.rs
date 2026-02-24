@@ -19,8 +19,8 @@ use smallvec::SmallVec;
 use std::{future::Future, marker::PhantomData, pin::Pin, sync::LazyLock};
 use tokio::sync::oneshot;
 use triomphe::Arc;
-use types::{HAlignV, LengthV, PaddingV, VAlignV};
-use winit::event_loop::EventLoopProxy;
+use types::{HAlignV, LengthV, PaddingV, SizeV, VAlignV};
+use winit::{event_loop::EventLoopProxy, window::WindowId};
 
 mod button;
 mod container;
@@ -251,6 +251,7 @@ pub(crate) async fn compile_children<X: GXExt>(
 
 pub(crate) enum ToGui {
     Update(ExprId, Value),
+    ResizeTimer(WindowId, SizeV),
     Stop(oneshot::Sender<()>),
 }
 

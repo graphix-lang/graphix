@@ -22,13 +22,13 @@ use iced_core::{mouse, renderer::Style, Size};
 use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::wgpu;
 use log::error;
-use netidx::{
-    protocol::valarray::ValArray,
-    publisher::Value,
-};
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;
-use tokio::sync::oneshot;
+use std::time::{Duration, Instant};
+
+const RESIZE_THROTTLE: Duration = Duration::from_millis(16);
+use tokio::sync::{mpsc, oneshot};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -48,6 +48,7 @@ struct GuiHandler<X: GXExt> {
     win_to_bid: FxHashMap<WindowId, BindId>,
     surfaces: FxHashMap<WindowId, WindowSurface>,
     ui_caches: FxHashMap<WindowId, user_interface::Cache>,
+    resize_tx: mpsc::UnboundedSender<(WindowId, SizeV)>,
     messages: Vec<Message>,
     modifiers: ModifiersState,
 }
@@ -69,17 +70,6 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
 
         if let Some(&bid) = self.win_to_bid.get(&window_id) {
             if let Some(tw) = self.windows.get_mut(&bid) {
-                let scale = tw.window.scale_factor();
-                let iced_events = convert::window_event(&event, scale, self.modifiers);
-                for ev in iced_events {
-                    if let iced_core::Event::Mouse(mouse::Event::CursorMoved {
-                        position,
-                    }) = &ev
-                    {
-                        tw.cursor_position = *position;
-                    }
-                    tw.push_event(ev);
-                }
                 if let WindowEvent::Resized(size) = &event {
                     if let Some(ws) = self.surfaces.get_mut(&window_id) {
                         let gpu = self.gpu.as_ref().unwrap();
@@ -88,13 +78,28 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     let scale = tw.window.scale_factor();
                     let logical = size.to_logical::<f32>(scale);
                     let new_sz = SizeV(Size::new(logical.width, logical.height));
-                    if tw.size.t.as_ref() != Some(&new_sz) {
-                        tw.last_set_size = Some(new_sz);
-                        if let Err(e) = tw.size.set(new_sz) {
-                            error!("failed to set window size: {e:?}");
-                        }
+                    let _ = self.resize_tx.send((window_id, new_sz));
+                    // Throttle iced redraws to ~60fps during resize;
+                    // the graphix size update is debounced separately at 100ms.
+                    if tw.last_resize_draw.elapsed() >= RESIZE_THROTTLE {
+                        tw.push_event(iced_core::Event::Window(
+                            iced_core::window::Event::Resized(new_sz.0),
+                        ));
+                        tw.last_resize_draw = Instant::now();
                     }
-                    tw.needs_redraw = true;
+                } else {
+                    let scale = tw.window.scale_factor();
+                    let iced_events =
+                        convert::window_event(&event, scale, self.modifiers);
+                    for ev in iced_events {
+                        if let iced_core::Event::Mouse(mouse::Event::CursorMoved {
+                            position,
+                        }) = &ev
+                        {
+                            tw.cursor_position = *position;
+                        }
+                        tw.push_event(ev);
+                    }
                 }
             }
         }
@@ -129,6 +134,21 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     let _ = s.send(());
                 }
                 event_loop.exit();
+            }
+            ToGui::ResizeTimer(window_id, sz) => {
+                if let Some(&bid) = self.win_to_bid.get(&window_id) {
+                    if let Some(tw) = self.windows.get_mut(&bid) {
+                        if tw.size.t.as_ref() != Some(&sz) {
+                            tw.last_set_size = Some(sz);
+                            if let Err(e) = tw.size.set(sz) {
+                                error!("failed to set window size: {e:?}");
+                            }
+                        }
+                        tw.push_event(iced_core::Event::Window(
+                            iced_core::window::Event::Resized(sz.0),
+                        ));
+                    }
+                }
             }
             ToGui::Update(id, v) => {
                 if id == self.root_exp.id {
@@ -233,6 +253,9 @@ pub(crate) fn run<X: GXExt>(
         }
     };
     let _ = proxy_tx.send(event_loop.create_proxy());
+    let (resize_tx, resize_rx) = mpsc::unbounded_channel();
+    let debounce_proxy = event_loop.create_proxy();
+    rt.spawn(resize_debounce(resize_rx, debounce_proxy));
     let mut handler = GuiHandler {
         gx,
         root_exp,
@@ -243,11 +266,44 @@ pub(crate) fn run<X: GXExt>(
         win_to_bid: FxHashMap::default(),
         surfaces: FxHashMap::default(),
         ui_caches: FxHashMap::default(),
+        resize_tx,
         messages: Vec::new(),
         modifiers: ModifiersState::default(),
     };
     if let Err(e) = event_loop.run_app(&mut handler) {
         error!("gui event loop error: {e:?}");
+    }
+}
+
+/// Debounce resize events: collect per-window sizes and only forward
+/// to the event loop 100ms after the last resize for that window.
+async fn resize_debounce(
+    mut rx: mpsc::UnboundedReceiver<(WindowId, SizeV)>,
+    proxy: EventLoopProxy<ToGui>,
+) {
+    use tokio::time::{sleep_until, Duration, Instant};
+    let far = || Instant::now() + Duration::from_secs(86400);
+    let timer = sleep_until(far());
+    tokio::pin!(timer);
+    let mut pending: FxHashMap<WindowId, SizeV> = FxHashMap::default();
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Some((wid, sz)) => {
+                        pending.insert(wid, sz);
+                        timer.as_mut().reset(Instant::now() + Duration::from_millis(100));
+                    }
+                    None => break,
+                }
+            }
+            _ = &mut timer => {
+                for (wid, sz) in pending.drain() {
+                    let _ = proxy.send_event(ToGui::ResizeTimer(wid, sz));
+                }
+                timer.as_mut().reset(far());
+            }
+        }
     }
 }
 

@@ -10,6 +10,7 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
 use netidx::publisher::Value;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::try_join;
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -81,6 +82,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             pending_events: Vec::new(),
             needs_redraw: true,
             last_set_size: None,
+            last_resize_draw: Instant::now(),
         }
     }
 }
@@ -99,6 +101,7 @@ pub(crate) struct TrackedWindow<X: GXExt> {
     pub pending_events: Vec<iced_core::Event>,
     pub needs_redraw: bool,
     pub last_set_size: Option<SizeV>,
+    pub last_resize_draw: Instant,
 }
 
 impl<X: GXExt> TrackedWindow<X> {
