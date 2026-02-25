@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, BindId};
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
@@ -72,6 +72,14 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
         }
         changed |= self.child.handle_update(rt, id, v)?;
         Ok(changed)
+    }
+
+    fn editor_action(
+        &mut self,
+        id: ExprId,
+        action: &iced_widget::text_editor::Action,
+    ) -> Option<(BindId, Value)> {
+        self.child.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {

@@ -1,0 +1,7 @@
+let progress_bar = |
+  #min: &f64 = &0.0,
+  #max: &f64 = &100.0,
+  #width: &Length = &`Fill,
+  #height: &[f64, null] = &null,
+  value: &f64
+| -> Widget `ProgressBar({ value, min, max, width, height })

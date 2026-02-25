@@ -1,0 +1,11 @@
+type Stack = {
+  children: &Array<Widget>,
+  width: &Length,
+  height: &Length
+};
+
+val stack: fn(
+  ?#width: &Length,
+  ?#height: &Length,
+  &Array<Widget>
+) -> Widget

@@ -102,6 +102,9 @@ pub(crate) fn window_event(
         WindowEvent::CloseRequested => {
             events.push(Event::Window(window::Event::CloseRequested));
         }
+        WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+            events.push(Event::Window(window::Event::Rescaled(*scale_factor as f32)));
+        }
         _ => {}
     }
     events

@@ -1,0 +1,22 @@
+use gui;
+use gui::text;
+use gui::slider;
+use gui::progress_bar;
+use gui::column;
+
+let volume = &50.0;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Slider & Progress Bar"),
+        text(&"Drag the slider:"),
+        slider(#min: &0.0, #max: &100.0, volume),
+        text(&"Progress bar mirrors the slider:"),
+        progress_bar(#min: &0.0, #max: &100.0, volume)
+    ]
+);
+
+[&window(#title: &"Slider & ProgressBar", &col)]

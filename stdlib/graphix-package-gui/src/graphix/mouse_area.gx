@@ -1,0 +1,7 @@
+let mouse_area = |
+  #on_press: fn(null) -> Any = |_| null,
+  #on_release: fn(null) -> Any = |_| null,
+  #on_enter: fn(null) -> Any = |_| null,
+  #on_exit: fn(null) -> Any = |_| null,
+  child: &Widget
+| -> Widget `MouseArea({ child, on_press: &on_press, on_release: &on_release, on_enter: &on_enter, on_exit: &on_exit })

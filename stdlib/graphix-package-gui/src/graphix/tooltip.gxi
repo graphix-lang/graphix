@@ -1,0 +1,13 @@
+type Tooltip = {
+  child: &Widget,
+  tip: &Widget,
+  position: &TooltipPosition,
+  gap: &[f64, null]
+};
+
+val tooltip: fn(
+  #tip: &Widget,
+  ?#position: &TooltipPosition,
+  ?#gap: &[f64, null],
+  &Widget
+) -> Widget

@@ -1,0 +1,7 @@
+let toggler = |
+  #label: &string = &"",
+  #width: &Length = &`Shrink,
+  #size: &[f64, null] = &null,
+  #spacing: &[f64, null] = &null,
+  is_toggled: &bool
+| -> Widget `Toggler({ is_toggled, label, width, size, spacing })

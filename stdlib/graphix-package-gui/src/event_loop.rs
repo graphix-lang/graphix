@@ -18,12 +18,13 @@ use anyhow::{Context, Result};
 use fxhash::FxHashMap;
 use graphix_compiler::BindId;
 use graphix_rt::{CompExp, GXExt, GXHandle};
-use iced_core::{mouse, renderer::Style, Size};
+use iced_core::{clipboard, mouse, renderer::Style, window, Size};
 use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::wgpu;
 use log::error;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,8 +35,68 @@ use winit::{
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::ModifiersState,
-    window::WindowId,
+    window::{CursorIcon, WindowId},
 };
+
+/// System clipboard backed by arboard.
+struct Clipboard {
+    state: RefCell<Option<arboard::Clipboard>>,
+}
+
+impl Clipboard {
+    fn new() -> Self {
+        Self { state: RefCell::new(arboard::Clipboard::new().ok()) }
+    }
+}
+
+impl clipboard::Clipboard for Clipboard {
+    fn read(&self, kind: clipboard::Kind) -> Option<String> {
+        if kind == clipboard::Kind::Primary {
+            return None;
+        }
+        self.state.borrow_mut().as_mut()?.get_text().ok()
+    }
+
+    fn write(&mut self, kind: clipboard::Kind, contents: String) {
+        if kind == clipboard::Kind::Primary {
+            return;
+        }
+        if let Some(cb) = self.state.borrow_mut().as_mut() {
+            let _ = cb.set_text(contents);
+        }
+    }
+}
+
+fn mouse_interaction_to_cursor(interaction: mouse::Interaction) -> CursorIcon {
+    match interaction {
+        mouse::Interaction::None | mouse::Interaction::Idle => CursorIcon::Default,
+        mouse::Interaction::Hidden => CursorIcon::Default,
+        mouse::Interaction::Pointer => CursorIcon::Pointer,
+        mouse::Interaction::Grab => CursorIcon::Grab,
+        mouse::Interaction::Grabbing => CursorIcon::Grabbing,
+        mouse::Interaction::Text => CursorIcon::Text,
+        mouse::Interaction::Crosshair => CursorIcon::Crosshair,
+        mouse::Interaction::Cell => CursorIcon::Cell,
+        mouse::Interaction::Help => CursorIcon::Help,
+        mouse::Interaction::ContextMenu => CursorIcon::ContextMenu,
+        mouse::Interaction::Progress => CursorIcon::Progress,
+        mouse::Interaction::Wait => CursorIcon::Wait,
+        mouse::Interaction::Alias => CursorIcon::Alias,
+        mouse::Interaction::Copy => CursorIcon::Copy,
+        mouse::Interaction::Move => CursorIcon::Move,
+        mouse::Interaction::NoDrop => CursorIcon::NoDrop,
+        mouse::Interaction::NotAllowed => CursorIcon::NotAllowed,
+        mouse::Interaction::ResizingHorizontally => CursorIcon::EwResize,
+        mouse::Interaction::ResizingVertically => CursorIcon::NsResize,
+        mouse::Interaction::ResizingDiagonallyUp => CursorIcon::NeswResize,
+        mouse::Interaction::ResizingDiagonallyDown => CursorIcon::NwseResize,
+        mouse::Interaction::ResizingColumn => CursorIcon::ColResize,
+        mouse::Interaction::ResizingRow => CursorIcon::RowResize,
+        mouse::Interaction::AllScroll => CursorIcon::AllScroll,
+        mouse::Interaction::ZoomIn => CursorIcon::ZoomIn,
+        mouse::Interaction::ZoomOut => CursorIcon::ZoomOut,
+    }
+}
 
 /// All GUI state, implementing winit's ApplicationHandler.
 struct GuiHandler<X: GXExt> {
@@ -48,6 +109,7 @@ struct GuiHandler<X: GXExt> {
     win_to_bid: FxHashMap<WindowId, BindId>,
     surfaces: FxHashMap<WindowId, WindowSurface>,
     ui_caches: FxHashMap<WindowId, user_interface::Cache>,
+    clipboard: Clipboard,
     resize_tx: mpsc::UnboundedSender<(WindowId, SizeV)>,
     messages: Vec<Message>,
     modifiers: ModifiersState,
@@ -87,6 +149,8 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         ));
                         tw.last_resize_draw = Instant::now();
                     }
+                } else if let WindowEvent::RedrawRequested = &event {
+                    tw.needs_redraw = true;
                 } else {
                     let scale = tw.window.scale_factor();
                     let iced_events =
@@ -189,13 +253,29 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 let viewport_size = ws.logical_size();
                 let mut ui =
                     UserInterface::build(element, viewport_size, cache, &mut ws.renderer);
-                let (_, _statuses) = ui.update(
+                let (state, _statuses) = ui.update(
                     &tw.pending_events,
                     tw.cursor(),
                     &mut ws.renderer,
-                    &mut iced_core::clipboard::Null,
+                    &mut self.clipboard,
                     &mut self.messages,
                 );
+                if let user_interface::State::Updated { mouse_interaction, .. } = &state {
+                    if tw.last_mouse_interaction != *mouse_interaction {
+                        tw.last_mouse_interaction = *mouse_interaction;
+                        match mouse_interaction {
+                            mouse::Interaction::Hidden => {
+                                tw.window.set_cursor_visible(false);
+                            }
+                            _ => {
+                                tw.window.set_cursor_visible(true);
+                                tw.window.set_cursor(
+                                    mouse_interaction_to_cursor(*mouse_interaction),
+                                );
+                            }
+                        }
+                    }
+                }
                 let theme = tw.iced_theme();
                 let style = Style { text_color: theme.palette().text };
                 ui.draw(&mut ws.renderer, &theme, &style, tw.cursor());
@@ -209,20 +289,35 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                             .create_view(&wgpu::TextureViewDescriptor::default());
                         ws.renderer.present(None, gpu.format, &view, &ws.viewport);
                         frame.present();
+                        tw.needs_redraw = match &state {
+                            user_interface::State::Outdated => true,
+                            user_interface::State::Updated { redraw_request, .. } => {
+                                !matches!(
+                                    redraw_request,
+                                    window::RedrawRequest::Wait
+                                )
+                            }
+                        };
                     }
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         ws.surface.configure(&gpu.device, &ws.config);
                         tw.needs_redraw = true;
                         continue;
                     }
-                    Err(e) => error!("surface frame error: {e:?}"),
+                    Err(e) => {
+                        error!("surface frame error: {e:?}");
+                        tw.needs_redraw = false;
+                    }
                 }
-                tw.needs_redraw = false;
+                if tw.needs_redraw {
+                    tw.window.request_redraw();
+                }
             }
         }
 
         for msg in self.messages.drain(..) {
             match msg {
+                Message::Nop => {}
                 Message::Set(bid, v) => {
                     if let Err(e) = self.gx.set(bid, v) {
                         error!("failed to set ref: {e:?}");
@@ -231,6 +326,16 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 Message::Call(id) => {
                     if let Err(e) = self.gx.call(id, ValArray::from_iter([Value::Null])) {
                         error!("failed to call: {e:?}");
+                    }
+                }
+                Message::EditorAction(id, action) => {
+                    for tw in self.windows.values_mut() {
+                        if let Some((bid, v)) = tw.editor_action(id, &action) {
+                            if let Err(e) = self.gx.set(bid, v) {
+                                error!("failed to set editor text: {e:?}");
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -266,6 +371,7 @@ pub(crate) fn run<X: GXExt>(
         win_to_bid: FxHashMap::default(),
         surfaces: FxHashMap::default(),
         ui_caches: FxHashMap::default(),
+        clipboard: Clipboard::new(),
         resize_tx,
         messages: Vec::new(),
         modifiers: ModifiersState::default(),

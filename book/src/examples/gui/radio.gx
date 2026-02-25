@@ -1,0 +1,21 @@
+use gui;
+use gui::text;
+use gui::radio;
+use gui::column;
+
+let size = &"Medium";
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Radio Button Demo"),
+        text(&"Choose a size:"),
+        radio(#label: &"Small",  #selected: size, &"Small"),
+        radio(#label: &"Medium", #selected: size, &"Medium"),
+        radio(#label: &"Large",  #selected: size, &"Large")
+    ]
+);
+
+[&window(#title: &"Radio Buttons", &col)]

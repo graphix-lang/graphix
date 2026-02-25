@@ -1,0 +1,30 @@
+use gui;
+use gui::text;
+use gui::tooltip;
+use gui::button;
+use gui::column;
+
+let col = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Tooltip Demo"),
+        text(&"Hover over the buttons below:"),
+        tooltip(
+            #tip: &text(&"Save your work"),
+            #position: &`Bottom,
+            #gap: &5.0,
+            &button(#padding: &`All(10.0), &text(&"Save"))
+        ),
+        tooltip(
+            #tip: &text(&"Delete permanently"),
+            #position: &`Right,
+            #gap: &5.0,
+            &button(#padding: &`All(10.0), &text(&"Delete"))
+        )
+    ]
+);
+
+[&window(#title: &"Tooltip", &col)]

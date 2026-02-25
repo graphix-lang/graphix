@@ -1,0 +1,19 @@
+type VerticalSlider = {
+  value: &f64,
+  min: &f64,
+  max: &f64,
+  step: &[f64, null],
+  on_release: &fn(null) -> Any,
+  width: &[f64, null],
+  height: &Length
+};
+
+val vertical_slider: fn(
+  ?#min: &f64,
+  ?#max: &f64,
+  ?#step: &[f64, null],
+  ?#on_release: fn(null) -> Any,
+  ?#width: &[f64, null],
+  ?#height: &Length,
+  &f64
+) -> Widget

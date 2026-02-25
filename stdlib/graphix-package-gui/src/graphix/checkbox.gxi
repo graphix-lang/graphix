@@ -1,0 +1,15 @@
+type Checkbox = {
+  is_checked: &bool,
+  label: &string,
+  width: &Length,
+  size: &[f64, null],
+  spacing: &[f64, null]
+};
+
+val checkbox: fn(
+  ?#label: &string,
+  ?#width: &Length,
+  ?#size: &[f64, null],
+  ?#spacing: &[f64, null],
+  &bool
+) -> Widget

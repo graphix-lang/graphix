@@ -1,0 +1,6 @@
+let scrollable = |
+  #direction: &ScrollDirection = &`Vertical,
+  #width: &Length = &`Fill,
+  #height: &Length = &`Fill,
+  child: &Widget
+| -> Widget `Scrollable({ child, direction, width, height })

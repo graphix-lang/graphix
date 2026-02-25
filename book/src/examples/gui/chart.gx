@@ -1,0 +1,31 @@
+use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Chart Demo"),
+        chart(
+            #title: &"Sample Data",
+            #x_label: &"x",
+            #y_label: &"y",
+            &[
+                { data: [(0.0, 1.0), (1.0, 3.0), (2.0, 2.0), (3.0, 5.0), (4.0, 4.0), (5.0, 7.0)],
+                  chart_type: `Line,
+                  color: null,
+                  label: "Series A" },
+                { data: [(0.0, 2.0), (1.0, 1.0), (2.0, 4.0), (3.0, 3.0), (4.0, 6.0), (5.0, 5.0)],
+                  chart_type: `Scatter,
+                  color: null,
+                  label: "Series B" }
+            ]
+        )
+    ]
+);
+
+[&window(#title: &"Chart", #size: &{ width: 900.0, height: 700.0 }, &col)]

@@ -1,0 +1,19 @@
+type Slider = {
+  value: &f64,
+  min: &f64,
+  max: &f64,
+  step: &[f64, null],
+  on_release: &fn(null) -> Any,
+  width: &Length,
+  height: &[f64, null]
+};
+
+val slider: fn(
+  ?#min: &f64,
+  ?#max: &f64,
+  ?#step: &[f64, null],
+  ?#on_release: fn(null) -> Any,
+  ?#width: &Length,
+  ?#height: &[f64, null],
+  &f64
+) -> Widget

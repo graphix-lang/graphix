@@ -1,0 +1,5 @@
+type HorizontalRule = { height: &f64 };
+type VerticalRule = { width: &f64 };
+
+val horizontal_rule: fn(?#height: &f64) -> Widget;
+val vertical_rule: fn(?#width: &f64) -> Widget

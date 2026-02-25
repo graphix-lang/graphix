@@ -79,6 +79,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             content_ref: self.content_ref,
             content: self.content,
             cursor_position: iced_core::Point::ORIGIN,
+            last_mouse_interaction: mouse::Interaction::default(),
             pending_events: Vec::new(),
             needs_redraw: true,
             last_set_size: None,
@@ -98,6 +99,7 @@ pub(crate) struct TrackedWindow<X: GXExt> {
     pub content_ref: Ref<X>,
     pub content: GuiW<X>,
     pub cursor_position: iced_core::Point,
+    pub last_mouse_interaction: mouse::Interaction,
     pub pending_events: Vec<iced_core::Event>,
     pub needs_redraw: bool,
     pub last_set_size: Option<SizeV>,
@@ -173,6 +175,14 @@ impl<X: GXExt> TrackedWindow<X> {
     pub fn push_event(&mut self, event: iced_core::Event) {
         self.pending_events.push(event);
         self.needs_redraw = true;
+    }
+
+    pub fn editor_action(
+        &mut self,
+        id: ExprId,
+        action: &iced_widget::text_editor::Action,
+    ) -> Option<(graphix_compiler::BindId, Value)> {
+        self.content.editor_action(id, action)
     }
 
     pub fn cursor(&self) -> mouse::Cursor {

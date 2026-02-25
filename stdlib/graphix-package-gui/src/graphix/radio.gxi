@@ -1,0 +1,17 @@
+type Radio = {
+  value: &string,
+  label: &string,
+  selected: &[string, null],
+  width: &Length,
+  size: &[f64, null],
+  spacing: &[f64, null]
+};
+
+val radio: fn(
+  #label: &string,
+  ?#selected: &[string, null],
+  ?#width: &Length,
+  ?#size: &[f64, null],
+  ?#spacing: &[f64, null],
+  &string
+) -> Widget

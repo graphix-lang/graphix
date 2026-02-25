@@ -1,0 +1,10 @@
+let chart = |
+  #title: &[string, null] = &null,
+  #x_label: &[string, null] = &null,
+  #y_label: &[string, null] = &null,
+  #x_range: &[{min: f64, max: f64}, null] = &null,
+  #y_range: &[{min: f64, max: f64}, null] = &null,
+  #width: &Length = &`Fill,
+  #height: &Length = &`Fill,
+  datasets: &Array<Dataset>
+| -> Widget `Chart({ datasets, title, x_label, y_label, x_range, y_range, width, height })

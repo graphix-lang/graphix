@@ -1,0 +1,9 @@
+let text_editor = |
+  #placeholder: &string = &"",
+  #width: &[f64, null] = &null,
+  #height: &[f64, null] = &null,
+  #padding: &Padding = &`All(5.0),
+  #font: &[Font, null] = &null,
+  #size: &[f64, null] = &null,
+  content: &string
+| -> Widget `TextEditor({ content, placeholder, width, height, padding, font, size })

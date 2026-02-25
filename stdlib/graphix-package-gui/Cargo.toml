@@ -17,6 +17,7 @@ krb5_iov = ["netidx/krb5_iov"]
 
 [dependencies]
 anyhow = { workspace = true }
+arboard = { workspace = true }
 arcstr = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -34,6 +35,8 @@ iced_widget = { workspace = true }
 log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
+plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series"] }
+plotters-backend = "0.3"
 poolshark = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }

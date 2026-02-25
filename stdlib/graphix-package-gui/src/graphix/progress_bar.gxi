@@ -1,0 +1,15 @@
+type ProgressBar = {
+  value: &f64,
+  min: &f64,
+  max: &f64,
+  width: &Length,
+  height: &[f64, null]
+};
+
+val progress_bar: fn(
+  ?#min: &f64,
+  ?#max: &f64,
+  ?#width: &Length,
+  ?#height: &[f64, null],
+  &f64
+) -> Widget

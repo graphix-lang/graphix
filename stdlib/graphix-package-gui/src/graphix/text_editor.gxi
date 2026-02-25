@@ -1,0 +1,19 @@
+type TextEditor = {
+  content: &string,
+  placeholder: &string,
+  width: &[f64, null],
+  height: &[f64, null],
+  padding: &Padding,
+  font: &[Font, null],
+  size: &[f64, null]
+};
+
+val text_editor: fn(
+  ?#placeholder: &string,
+  ?#width: &[f64, null],
+  ?#height: &[f64, null],
+  ?#padding: &Padding,
+  ?#font: &[Font, null],
+  ?#size: &[f64, null],
+  &string
+) -> Widget

@@ -1,0 +1,6 @@
+let canvas = |
+  #width: &Length = &`Fill,
+  #height: &Length = &`Fill,
+  #background: &[Color, null] = &null,
+  shapes: &Array<CanvasShape>
+| -> Widget `Canvas({ shapes, width, height, background })

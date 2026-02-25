@@ -1,0 +1,6 @@
+let combo_box = |
+  #selected: &[string, null] = &null,
+  #placeholder: &string = &"Type to search...",
+  #width: &Length = &`Fill,
+  options: &Array<string>
+| -> Widget `ComboBox({ options, selected, placeholder, width })

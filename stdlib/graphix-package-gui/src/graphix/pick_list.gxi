@@ -1,0 +1,15 @@
+type PickList = {
+  options: &Array<string>,
+  selected: &[string, null],
+  placeholder: &string,
+  width: &Length,
+  padding: &Padding
+};
+
+val pick_list: fn(
+  ?#selected: &[string, null],
+  ?#placeholder: &string,
+  ?#width: &Length,
+  ?#padding: &Padding,
+  &Array<string>
+) -> Widget

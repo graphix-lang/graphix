@@ -1,0 +1,13 @@
+type Scrollable = {
+  child: &Widget,
+  direction: &ScrollDirection,
+  width: &Length,
+  height: &Length
+};
+
+val scrollable: fn(
+  ?#direction: &ScrollDirection,
+  ?#width: &Length,
+  ?#height: &Length,
+  &Widget
+) -> Widget

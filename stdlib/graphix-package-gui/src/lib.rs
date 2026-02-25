@@ -23,13 +23,33 @@ use types::{HAlignV, LengthV, PaddingV, SizeV, VAlignV};
 use winit::{event_loop::EventLoopProxy, window::WindowId};
 
 mod button;
+mod canvas;
+mod chart;
+mod checkbox;
+mod combo_box;
 mod container;
 mod convert;
 mod event_loop;
+mod image;
+mod mouse_area;
+mod pick_list;
+mod plotters_backend;
+mod progress_bar;
+mod radio;
 mod render;
+mod rule;
+mod scrollable;
+mod slider;
 mod space;
+mod stack;
+mod svg;
 mod text;
+mod text_editor;
+mod text_input;
+mod toggler;
+mod tooltip;
 mod types;
+mod vertical_slider;
 mod window;
 
 /// Concrete iced renderer type used throughout the GUI package.
@@ -43,14 +63,16 @@ pub(crate) type IcedElement<'a> =
 /// Message type for iced widget interactions.
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
+    Nop,
     Set(BindId, Value),
     Call(CallableId),
+    EditorAction(ExprId, iced_widget::text_editor::Action),
 }
 
 /// Trait for GUI widgets. Unlike TUI widgets, GUI widgets are not
 /// async — handle_update is synchronous, and the view method builds
 /// an iced Element tree.
-pub(crate) trait GuiWidget<X: GXExt>: Send + Sync + 'static {
+pub(crate) trait GuiWidget<X: GXExt>: Send + 'static {
     /// Process a value update from graphix. Widgets that own child
     /// refs use `rt` to `block_on` recompilation of their subtree.
     /// Returns `true` if the widget changed and the window should redraw.
@@ -63,6 +85,18 @@ pub(crate) trait GuiWidget<X: GXExt>: Send + Sync + 'static {
 
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
+
+    /// Route a text editor action to the widget that owns the given
+    /// content ref. Returns `Some((bid, value))` if the action was an
+    /// edit and the result should be pushed to graphix.
+    fn editor_action(
+        &mut self,
+        id: ExprId,
+        action: &iced_widget::text_editor::Action,
+    ) -> Option<(BindId, Value)> {
+        let _ = (id, action);
+        None
+    }
 }
 
 pub(crate) type GuiW<X> = Box<dyn GuiWidget<X>>;
@@ -169,6 +203,19 @@ macro_rules! flex_widget {
                 Ok(changed)
             }
 
+            fn editor_action(
+                &mut self,
+                id: ExprId,
+                action: &iced_widget::text_editor::Action,
+            ) -> Option<(BindId, Value)> {
+                for child in &mut self.children {
+                    if let some @ Some(_) = child.editor_action(id, action) {
+                        return some;
+                    }
+                }
+                None
+            }
+
             fn view(&self) -> IcedElement<'_> {
                 let mut w = iced_widget::$Widget::new();
                 if let Some(sp) = self.$spacing.t {
@@ -234,6 +281,26 @@ pub(crate) fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X>
             (s, v) if &s == "Container" => container::ContainerW::compile(gx, v).await,
             (s, v) if &s == "Button" => button::ButtonW::compile(gx, v).await,
             (s, v) if &s == "Space" => space::SpaceW::compile(gx, v).await,
+            (s, v) if &s == "TextInput" => text_input::TextInputW::compile(gx, v).await,
+            (s, v) if &s == "Checkbox" => checkbox::CheckboxW::compile(gx, v).await,
+            (s, v) if &s == "Toggler" => toggler::TogglerW::compile(gx, v).await,
+            (s, v) if &s == "Slider" => slider::SliderW::compile(gx, v).await,
+            (s, v) if &s == "ProgressBar" => progress_bar::ProgressBarW::compile(gx, v).await,
+            (s, v) if &s == "Scrollable" => scrollable::ScrollableW::compile(gx, v).await,
+            (s, v) if &s == "HorizontalRule" => rule::HorizontalRuleW::compile(gx, v).await,
+            (s, v) if &s == "VerticalRule" => rule::VerticalRuleW::compile(gx, v).await,
+            (s, v) if &s == "Tooltip" => tooltip::TooltipW::compile(gx, v).await,
+            (s, v) if &s == "PickList" => pick_list::PickListW::compile(gx, v).await,
+            (s, v) if &s == "Stack" => stack::StackW::compile(gx, v).await,
+            (s, v) if &s == "Radio" => radio::RadioW::compile(gx, v).await,
+            (s, v) if &s == "VerticalSlider" => vertical_slider::VerticalSliderW::compile(gx, v).await,
+            (s, v) if &s == "ComboBox" => combo_box::ComboBoxW::compile(gx, v).await,
+            (s, v) if &s == "TextEditor" => text_editor::TextEditorW::compile(gx, v).await,
+            (s, v) if &s == "MouseArea" => mouse_area::MouseAreaW::compile(gx, v).await,
+            (s, v) if &s == "Image" => image::ImageW::compile(gx, v).await,
+            (s, v) if &s == "Svg" => svg::SvgW::compile(gx, v).await,
+            (s, v) if &s == "Canvas" => canvas::CanvasW::compile(gx, v).await,
+            (s, v) if &s == "Chart" => chart::ChartW::compile(gx, v).await,
             (s, v) => bail!("invalid gui widget type `{s}({v})"),
         }
     })

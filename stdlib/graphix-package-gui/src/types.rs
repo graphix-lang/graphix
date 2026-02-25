@@ -3,9 +3,11 @@ use arcstr::ArcStr;
 use iced_core::{
     alignment::{Horizontal, Vertical},
     font::{Family, Style, Weight},
-    Color, Font, Length, Padding, Size,
+    Color, ContentFit, Font, Length, Padding, Size,
 };
+use iced_widget::{scrollable, tooltip};
 use netidx::publisher::{FromValue, Value};
+use smallvec::SmallVec;
 use std::{
     collections::HashSet,
     sync::{LazyLock, Mutex},
@@ -210,5 +212,70 @@ impl FromValue for ThemeV {
             "Ferra" => Ok(Self(Theme::Ferra)),
             s => bail!("invalid theme {s}"),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScrollDirectionV(pub scrollable::Direction);
+
+impl FromValue for ScrollDirectionV {
+    fn from_value(v: Value) -> Result<Self> {
+        match &*v.cast_to::<ArcStr>()? {
+            "Vertical" => Ok(Self(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::default(),
+            ))),
+            "Horizontal" => Ok(Self(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::default(),
+            ))),
+            "Both" => Ok(Self(scrollable::Direction::Both {
+                vertical: scrollable::Scrollbar::default(),
+                horizontal: scrollable::Scrollbar::default(),
+            })),
+            s => bail!("invalid scroll direction {s}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TooltipPositionV(pub tooltip::Position);
+
+impl FromValue for TooltipPositionV {
+    fn from_value(v: Value) -> Result<Self> {
+        match &*v.cast_to::<ArcStr>()? {
+            "Top" => Ok(Self(tooltip::Position::Top)),
+            "Bottom" => Ok(Self(tooltip::Position::Bottom)),
+            "Left" => Ok(Self(tooltip::Position::Left)),
+            "Right" => Ok(Self(tooltip::Position::Right)),
+            "FollowCursor" => Ok(Self(tooltip::Position::FollowCursor)),
+            s => bail!("invalid tooltip position {s}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContentFitV(pub ContentFit);
+
+impl FromValue for ContentFitV {
+    fn from_value(v: Value) -> Result<Self> {
+        match &*v.cast_to::<ArcStr>()? {
+            "Fill" => Ok(Self(ContentFit::Fill)),
+            "Contain" => Ok(Self(ContentFit::Contain)),
+            "Cover" => Ok(Self(ContentFit::Cover)),
+            "None" => Ok(Self(ContentFit::None)),
+            "ScaleDown" => Ok(Self(ContentFit::ScaleDown)),
+            s => bail!("invalid content fit {s}"),
+        }
+    }
+}
+
+/// Newtype for `Vec<String>` to satisfy orphan rules.
+#[derive(Clone, Debug)]
+pub(crate) struct StringVec(pub Vec<String>);
+
+impl FromValue for StringVec {
+    fn from_value(v: Value) -> Result<Self> {
+        let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
+        let v: Vec<String> = items.into_iter().map(|v| v.cast_to::<String>()).collect::<Result<_>>()?;
+        Ok(Self(v))
     }
 }

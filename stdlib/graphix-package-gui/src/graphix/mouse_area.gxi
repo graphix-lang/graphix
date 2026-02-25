@@ -1,0 +1,15 @@
+type MouseArea = {
+  child: &Widget,
+  on_press: &fn(null) -> Any,
+  on_release: &fn(null) -> Any,
+  on_enter: &fn(null) -> Any,
+  on_exit: &fn(null) -> Any
+};
+
+val mouse_area: fn(
+  ?#on_press: fn(null) -> Any,
+  ?#on_release: fn(null) -> Any,
+  ?#on_enter: fn(null) -> Any,
+  ?#on_exit: fn(null) -> Any,
+  &Widget
+) -> Widget

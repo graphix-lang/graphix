@@ -1,0 +1,5 @@
+let stack = |
+  #width: &Length = &`Shrink,
+  #height: &Length = &`Shrink,
+  children: &Array<Widget>
+| -> Widget `Stack({ children, width, height })

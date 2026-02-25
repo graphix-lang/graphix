@@ -1,0 +1,7 @@
+let horizontal_rule = |
+  #height: &f64 = &1.0
+| -> Widget `HorizontalRule({ height });
+
+let vertical_rule = |
+  #width: &f64 = &1.0
+| -> Widget `VerticalRule({ width })

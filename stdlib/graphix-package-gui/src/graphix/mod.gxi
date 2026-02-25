@@ -1,11 +1,31 @@
 /// Widget types (content within a window)
 type Widget = [
   `Button(button::Button),
+  `Canvas(canvas::Canvas),
+  `Chart(chart::Chart),
+  `Checkbox(checkbox::Checkbox),
   `Column(column::Column),
+  `ComboBox(combo_box::ComboBox),
   `Container(container::Container),
+  `HorizontalRule(rule::HorizontalRule),
+  `Image(image::Image),
+  `MouseArea(mouse_area::MouseArea),
+  `PickList(pick_list::PickList),
+  `ProgressBar(progress_bar::ProgressBar),
+  `Radio(radio::Radio),
   `Row(row::Row),
+  `Scrollable(scrollable::Scrollable),
+  `Slider(slider::Slider),
   `Space(space::Space),
-  `Text(text::Text)
+  `Stack(stack::Stack),
+  `Svg(svg::Svg),
+  `Text(text::Text),
+  `TextEditor(text_editor::TextEditor),
+  `TextInput(text_input::TextInput),
+  `Toggler(toggler::Toggler),
+  `Tooltip(tooltip::Tooltip),
+  `VerticalRule(rule::VerticalRule),
+  `VerticalSlider(vertical_slider::VerticalSlider)
 ];
 
 type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
@@ -21,6 +41,10 @@ type FontWeight = [
 ];
 type FontStyle = [`Normal, `Italic, `Oblique];
 type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+
+type ScrollDirection = [`Vertical, `Horizontal, `Both];
+type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
+type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
 
 type Theme = [
   `Light, `Dark, `Dracula, `Nord,
@@ -55,4 +79,23 @@ mod column;
 mod row;
 mod container;
 mod button;
-mod space
+mod space;
+mod text_input;
+mod checkbox;
+mod toggler;
+mod slider;
+mod progress_bar;
+mod scrollable;
+mod rule;
+mod tooltip;
+mod pick_list;
+mod stack;
+mod radio;
+mod vertical_slider;
+mod combo_box;
+mod text_editor;
+mod mouse_area;
+mod image;
+mod svg;
+mod canvas;
+mod chart

@@ -1,0 +1,20 @@
+type CanvasShape = [
+  `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
+  `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `Rect({ top_left: {x: f64, y: f64}, size: {width: f64, height: f64}, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `Text({ content: string, position: {x: f64, y: f64}, color: Color, size: f64 })
+];
+
+type Canvas = {
+  shapes: &Array<CanvasShape>,
+  width: &Length,
+  height: &Length,
+  background: &[Color, null]
+};
+
+val canvas: fn(
+  ?#width: &Length,
+  ?#height: &Length,
+  ?#background: &[Color, null],
+  &Array<CanvasShape>
+) -> Widget

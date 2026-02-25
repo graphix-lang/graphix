@@ -68,7 +68,8 @@
       "Bash(diff:*)",
       "Bash(rustc --pretty=expanded -L dependency=/home/eric/proj/graphix/target/debug/deps 2>&1 | grep -A5 \"MainThread\" | head -30 || true)",
       "Bash(cargo clippy:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(cargo search:*)"
     ],
     "deny": [],
     "ask": []

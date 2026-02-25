@@ -1,0 +1,6 @@
+let tooltip = |
+  #tip: &Widget,
+  #position: &TooltipPosition = &`Bottom,
+  #gap: &[f64, null] = &null,
+  child: &Widget
+| -> Widget `Tooltip({ child, tip, position, gap })

@@ -1,0 +1,13 @@
+type Image = {
+  source: &string,
+  width: &Length,
+  height: &Length,
+  content_fit: &ContentFit
+};
+
+val image: fn(
+  ?#width: &Length,
+  ?#height: &Length,
+  ?#content_fit: &ContentFit,
+  &string
+) -> Widget

@@ -1,0 +1,7 @@
+let checkbox = |
+  #label: &string = &"",
+  #width: &Length = &`Shrink,
+  #size: &[f64, null] = &null,
+  #spacing: &[f64, null] = &null,
+  is_checked: &bool
+| -> Widget `Checkbox({ is_checked, label, width, size, spacing })

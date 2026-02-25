@@ -1,0 +1,30 @@
+type ChartType = [`Line, `Scatter, `Bar, `Area];
+
+type Dataset = {
+  data: Array<(f64, f64)>,
+  chart_type: ChartType,
+  color: [Color, null],
+  label: [string, null]
+};
+
+type Chart = {
+  datasets: &Array<Dataset>,
+  title: &[string, null],
+  x_label: &[string, null],
+  y_label: &[string, null],
+  x_range: &[{min: f64, max: f64}, null],
+  y_range: &[{min: f64, max: f64}, null],
+  width: &Length,
+  height: &Length
+};
+
+val chart: fn(
+  ?#title: &[string, null],
+  ?#x_label: &[string, null],
+  ?#y_label: &[string, null],
+  ?#x_range: &[{min: f64, max: f64}, null],
+  ?#y_range: &[{min: f64, max: f64}, null],
+  ?#width: &Length,
+  ?#height: &Length,
+  &Array<Dataset>
+) -> Widget

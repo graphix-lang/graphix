@@ -1,0 +1,13 @@
+type ComboBox = {
+  options: &Array<string>,
+  selected: &[string, null],
+  placeholder: &string,
+  width: &Length
+};
+
+val combo_box: fn(
+  ?#selected: &[string, null],
+  ?#placeholder: &string,
+  ?#width: &Length,
+  &Array<string>
+) -> Widget

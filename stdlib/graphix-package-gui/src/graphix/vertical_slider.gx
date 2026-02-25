@@ -1,0 +1,9 @@
+let vertical_slider = |
+  #min: &f64 = &0.0,
+  #max: &f64 = &100.0,
+  #step: &[f64, null] = &null,
+  #on_release: fn(null) -> Any = |_| null,
+  #width: &[f64, null] = &null,
+  #height: &Length = &`Fill,
+  value: &f64
+| -> Widget `VerticalSlider({ value, min, max, step, on_release: &on_release, width, height })
