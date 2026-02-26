@@ -1,7 +1,4 @@
-use crate::{
-    compile,
-    GuiW, GuiWidget, IcedElement, Message,
-};
+use super::{compile, GuiW, GuiWidget, IcedElement, Message};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::{expr::ExprId, BindId};
@@ -36,7 +33,7 @@ impl<X: GXExt> MouseAreaW<X> {
             gx.compile_ref(on_release),
         }?;
         let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(super::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("mouse_area child")?,
         };
         let on_press_callable = match on_press.last.as_ref() {

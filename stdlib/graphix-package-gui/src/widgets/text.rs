@@ -1,7 +1,5 @@
-use crate::{
-    types::{ColorV, FontV, HAlignV, LengthV, VAlignV},
-    GuiW, IcedElement,
-};
+use super::{GuiW, IcedElement};
+use crate::types::{ColorV, FontV, HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -48,7 +46,7 @@ impl<X: GXExt> TextW<X> {
     }
 }
 
-impl<X: GXExt> crate::GuiWidget<X> for TextW<X> {
+impl<X: GXExt> super::GuiWidget<X> for TextW<X> {
     fn handle_update(
         &mut self,
         _rt: &tokio::runtime::Handle,

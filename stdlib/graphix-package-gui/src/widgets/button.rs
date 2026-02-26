@@ -1,8 +1,5 @@
-use crate::{
-    compile,
-    types::{LengthV, PaddingV},
-    GuiW, GuiWidget, IcedElement, Message,
-};
+use super::{compile, GuiW, GuiWidget, IcedElement, Message};
+use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::{expr::ExprId, BindId};
@@ -34,7 +31,7 @@ impl<X: GXExt> ButtonW<X> {
             gx.compile_ref(width),
         }?;
         let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(super::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("button child")?,
         };
         let callable = match on_press.last.as_ref() {

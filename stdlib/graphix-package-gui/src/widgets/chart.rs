@@ -1,8 +1,5 @@
-use crate::{
-    plotters_backend::IcedBackend,
-    types::{ColorV, LengthV},
-    GuiW, GuiWidget, IcedElement, Renderer,
-};
+use super::{plotters_backend::IcedBackend, GuiW, GuiWidget, IcedElement, Renderer};
+use crate::types::{ColorV, LengthV};
 use log::error;
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -212,7 +209,7 @@ fn iced_to_plotters(c: iced_core::Color) -> RGBColor {
     RGBColor(r, g, b)
 }
 
-impl<X: GXExt> iced_canvas::Program<crate::Message> for ChartW<X> {
+impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
     type State = ();
 
     fn draw(

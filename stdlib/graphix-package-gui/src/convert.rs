@@ -3,11 +3,11 @@
 //! Based on iced_winit/src/conversion.rs but adapted for our event loop.
 
 use iced_core::{keyboard, mouse, window, Event, Point, Size};
+use keyboard::key::NativeCode;
 use smallvec::SmallVec;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey, NativeKeyCode};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-use keyboard::key::NativeCode;
 
 /// Convert a winit WindowEvent to zero or more iced Events.
 pub(crate) fn window_event(
@@ -15,6 +15,8 @@ pub(crate) fn window_event(
     scale_factor: f64,
     modifiers: winit::keyboard::ModifiersState,
 ) -> SmallVec<[Event; 1]> {
+    // CR estokes: Use an LPooled Vec here, that way we won't allocate no matter
+    // how many iced events the window event translates to
     let mut events = SmallVec::new();
     match event {
         WindowEvent::Resized(size) => {
@@ -461,9 +463,7 @@ fn convert_modifiers(mods: winit::keyboard::ModifiersState) -> keyboard::Modifie
     result
 }
 
-fn convert_key_location(
-    loc: winit::keyboard::KeyLocation,
-) -> keyboard::Location {
+fn convert_key_location(loc: winit::keyboard::KeyLocation) -> keyboard::Location {
     match loc {
         winit::keyboard::KeyLocation::Standard => keyboard::Location::Standard,
         winit::keyboard::KeyLocation::Left => keyboard::Location::Left,
@@ -472,9 +472,7 @@ fn convert_key_location(
     }
 }
 
-fn physical_key(
-    key: winit::keyboard::PhysicalKey,
-) -> keyboard::key::Physical {
+fn physical_key(key: winit::keyboard::PhysicalKey) -> keyboard::key::Physical {
     match key {
         winit::keyboard::PhysicalKey::Code(code) => match convert_key_code(code) {
             Some(c) => keyboard::key::Physical::Code(c),

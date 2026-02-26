@@ -1,4 +1,5 @@
-use crate::{types::LengthV, GuiW, GuiWidget, IcedElement};
+use super::{GuiW, GuiWidget, IcedElement};
+use crate::types::LengthV;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;

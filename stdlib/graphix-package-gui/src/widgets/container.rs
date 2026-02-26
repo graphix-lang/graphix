@@ -1,8 +1,5 @@
-use crate::{
-    compile,
-    types::{HAlignV, LengthV, PaddingV, VAlignV},
-    GuiW, GuiWidget, IcedElement,
-};
+use super::{compile, GuiW, GuiWidget, IcedElement};
+use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::{expr::ExprId, BindId};
@@ -35,7 +32,7 @@ impl<X: GXExt> ContainerW<X> {
             gx.compile_ref(width),
         }?;
         let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(super::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("container child")?,
         };
         Ok(Box::new(Self {

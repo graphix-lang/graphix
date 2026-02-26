@@ -38,7 +38,9 @@ The compiler depends on netidx (a networked publish-subscribe system) which is e
 
 The project uses workspace-level dependencies where possible.
 
-The project uses poolshark where possible to avoid repeated allocations
+The project uses poolshark where possible to avoid allocations. If it isn't
+possible to avoid allocation using poolshark, then smallvec should be
+considered.
 
 ## Building and Testing
 

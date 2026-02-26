@@ -42,3 +42,9 @@ smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 winit = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+fxhash = { workspace = true }
+netidx-core = { workspace = true }
+poolshark = { workspace = true }

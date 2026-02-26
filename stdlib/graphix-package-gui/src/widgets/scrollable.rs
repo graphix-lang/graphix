@@ -1,8 +1,5 @@
-use crate::{
-    compile,
-    types::LengthV,
-    GuiW, GuiWidget, IcedElement,
-};
+use super::{compile, GuiW, GuiWidget, IcedElement};
+use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::{expr::ExprId, BindId};
@@ -10,8 +7,6 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
-
-use crate::types::ScrollDirectionV;
 
 pub(crate) struct ScrollableW<X: GXExt> {
     gx: GXHandle<X>,
@@ -33,7 +28,7 @@ impl<X: GXExt> ScrollableW<X> {
             gx.compile_ref(width),
         }?;
         let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(super::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("scrollable child")?,
         };
         Ok(Box::new(Self {

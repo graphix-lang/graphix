@@ -11,8 +11,9 @@ use crate::{
     convert,
     render::{GpuState, WindowSurface},
     types::SizeV,
+    widgets::Message,
     window::{ResolvedWindow, TrackedWindow},
-    Message, ToGui,
+    ToGui,
 };
 use anyhow::{Context, Result};
 use fxhash::FxHashMap;
@@ -49,8 +50,12 @@ impl Clipboard {
     }
 }
 
+// CR estokes: What about non string clipboard contents? Someone may want to
+// build an app that accepts images, files, etc
 impl clipboard::Clipboard for Clipboard {
     fn read(&self, kind: clipboard::Kind) -> Option<String> {
+        // CR estokes: why do we skip reading and writing to the primary
+        // clipboard. this is a genuine question, I don't know how this works.
         if kind == clipboard::Kind::Primary {
             return None;
         }
@@ -160,6 +165,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                             position,
                         }) = &ev
                         {
+                            // CR estokes: this would be a very useful graphix
+                            // event to have. Probably as a lambda to express
+                            // that it's a one way relationship. e.g.
+                            // #on_cursor_move: fn(Point) -> Any
                             tw.cursor_position = *position;
                         }
                         tw.push_event(ev);
@@ -269,9 +278,9 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                             }
                             _ => {
                                 tw.window.set_cursor_visible(true);
-                                tw.window.set_cursor(
-                                    mouse_interaction_to_cursor(*mouse_interaction),
-                                );
+                                tw.window.set_cursor(mouse_interaction_to_cursor(
+                                    *mouse_interaction,
+                                ));
                             }
                         }
                     }
@@ -292,10 +301,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         tw.needs_redraw = match &state {
                             user_interface::State::Outdated => true,
                             user_interface::State::Updated { redraw_request, .. } => {
-                                !matches!(
-                                    redraw_request,
-                                    window::RedrawRequest::Wait
-                                )
+                                !matches!(redraw_request, window::RedrawRequest::Wait)
                             }
                         };
                     }
@@ -323,6 +329,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         error!("failed to set ref: {e:?}");
                     }
                 }
+                // CR estokes: Maybe we want to allow the widget to specify the arguments
                 Message::Call(id) => {
                     if let Err(e) = self.gx.call(id, ValArray::from_iter([Value::Null])) {
                         error!("failed to call: {e:?}");

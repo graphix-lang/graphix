@@ -1,4 +1,4 @@
-use crate::{GuiW, GuiWidget, IcedElement};
+use super::{GuiW, GuiWidget, IcedElement};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;

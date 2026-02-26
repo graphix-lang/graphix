@@ -1,8 +1,5 @@
-use crate::{
-    compile,
-    types::TooltipPositionV,
-    GuiW, GuiWidget, IcedElement,
-};
+use super::{compile, GuiW, GuiWidget, IcedElement};
+use crate::types::TooltipPositionV;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::{expr::ExprId, BindId};
@@ -32,11 +29,11 @@ impl<X: GXExt> TooltipW<X> {
             gx.compile_ref(tip),
         }?;
         let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(super::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("tooltip child")?,
         };
         let compiled_tip: GuiW<X> = match tip_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(super::EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("tooltip tip")?,
         };
         Ok(Box::new(Self {

@@ -3,7 +3,7 @@
 //! Translates plotters drawing operations to iced Frame methods for
 //! GPU-accelerated chart rendering.
 
-use crate::Renderer;
+use super::Renderer;
 use iced_core::{Color, Point, Size};
 use iced_widget::canvas::{Frame, Path, Stroke};
 use plotters_backend::{

@@ -1,7 +1,5 @@
-use crate::{
-    types::{ColorV, LengthV},
-    GuiW, GuiWidget, IcedElement, Renderer,
-};
+use super::{GuiW, GuiWidget, IcedElement, Renderer};
+use crate::types::{ColorV, LengthV};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -207,7 +205,7 @@ impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
     }
 }
 
-impl<X: GXExt> iced_canvas::Program<crate::Message> for CanvasW<X> {
+impl<X: GXExt> iced_canvas::Program<super::Message> for CanvasW<X> {
     type State = ();
 
     fn draw(

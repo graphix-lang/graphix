@@ -1,7 +1,6 @@
 use crate::{
-    compile,
     types::{SizeV, ThemeV},
-    GuiW,
+    widgets::{compile, EmptyW, GuiW},
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -36,7 +35,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             gx.compile_ref(title),
         }?;
         let compiled_content: GuiW<X> = match content_ref.last.as_ref() {
-            None => Box::new(crate::EmptyW),
+            None => Box::new(EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("window content")?,
         };
         Ok(Self {
