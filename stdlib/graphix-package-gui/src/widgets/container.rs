@@ -2,8 +2,8 @@ use super::{compile, GuiW, GuiWidget, IcedElement};
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
-use graphix_compiler::{expr::ExprId, BindId};
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_compiler::expr::ExprId;
+use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -56,14 +56,19 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        changed |= self.padding.update(id, v).context("container update padding")?.is_some();
+        changed |=
+            self.padding.update(id, v).context("container update padding")?.is_some();
         changed |= self.width.update(id, v).context("container update width")?.is_some();
-        changed |= self.height.update(id, v).context("container update height")?.is_some();
-        changed |= self.halign.update(id, v).context("container update halign")?.is_some();
-        changed |= self.valign.update(id, v).context("container update valign")?.is_some();
+        changed |=
+            self.height.update(id, v).context("container update height")?.is_some();
+        changed |=
+            self.halign.update(id, v).context("container update halign")?.is_some();
+        changed |=
+            self.valign.update(id, v).context("container update valign")?.is_some();
         if id == self.child_ref.id {
             self.child_ref.last = Some(v.clone());
-            self.child = rt.block_on(compile(self.gx.clone(), v.clone()))
+            self.child = rt
+                .block_on(compile(self.gx.clone(), v.clone()))
                 .context("container child recompile")?;
             changed = true;
         }
@@ -75,7 +80,7 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
         &mut self,
         id: ExprId,
         action: &iced_widget::text_editor::Action,
-    ) -> Option<(BindId, Value)> {
+    ) -> Option<(CallableId, Value)> {
         self.child.editor_action(id, action)
     }
 

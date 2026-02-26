@@ -1,8 +1,9 @@
 let radio = |
   #label: &string,
-  #selected: &[string, null] = &null,
+  #selected: &[Any, null] = &null,
+  #on_select: fn(Any) -> Any = |_| null,
   #width: &Length = &`Shrink,
   #size: &[f64, null] = &null,
   #spacing: &[f64, null] = &null,
-  value: &string
-| -> Widget `Radio({ value, label, selected, width, size, spacing })
+  value: &Any
+| -> Widget `Radio({ value, label, on_select: &on_select, selected, width, size, spacing })

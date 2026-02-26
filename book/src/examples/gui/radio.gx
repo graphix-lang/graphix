@@ -3,7 +3,7 @@ use gui::text;
 use gui::radio;
 use gui::column;
 
-let size = &"Medium";
+let size: Any = "Medium";
 
 let col = column(
     #spacing: &15.0,
@@ -12,9 +12,9 @@ let col = column(
     &[
         text(#size: &24.0, &"Radio Button Demo"),
         text(&"Choose a size:"),
-        radio(#label: &"Small",  #selected: size, &"Small"),
-        radio(#label: &"Medium", #selected: size, &"Medium"),
-        radio(#label: &"Large",  #selected: size, &"Large")
+        radio(#label: &"Small",  #selected: &size, #on_select: |v| size <- v, &"Small"),
+        radio(#label: &"Medium", #selected: &size, #on_select: |v| size <- v, &"Medium"),
+        radio(#label: &"Large",  #selected: &size, #on_select: |v| size <- v, &"Large")
     ]
 );
 

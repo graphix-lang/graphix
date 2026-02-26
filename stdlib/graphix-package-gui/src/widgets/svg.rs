@@ -45,7 +45,8 @@ impl<X: GXExt> GuiWidget<X> for SvgW<X> {
         changed |= self.source.update(id, v).context("svg update source")?.is_some();
         changed |= self.width.update(id, v).context("svg update width")?.is_some();
         changed |= self.height.update(id, v).context("svg update height")?.is_some();
-        changed |= self.content_fit.update(id, v).context("svg update content_fit")?.is_some();
+        changed |=
+            self.content_fit.update(id, v).context("svg update content_fit")?.is_some();
         Ok(changed)
     }
 

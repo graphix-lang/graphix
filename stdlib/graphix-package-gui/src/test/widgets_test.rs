@@ -24,7 +24,11 @@ use gui::stack;\n\
 use gui::tooltip;\n\
 use gui::vertical_slider;\n\
 use gui::combo_box;\n\
-use gui::mouse_area";
+use gui::mouse_area;\n\
+use gui::canvas;\n\
+use gui::chart;\n\
+use gui::image;\n\
+use gui::svg";
 
 /// Helper: compile a simple widget expression.
 /// Wraps the code in standard imports + `let result = <expr>`.
@@ -35,7 +39,9 @@ async fn harness(widget_expr: &str) -> Result<GuiTestHarness> {
 
 /// Call view() inside a block so the borrow ends before we do anything else.
 macro_rules! view {
-    ($h:expr) => {{ let _ = $h.view(); }};
+    ($h:expr) => {{
+        let _ = $h.view();
+    }};
 }
 
 // ── Text ────────────────────────────────────────────────────────────
@@ -152,10 +158,8 @@ async fn slider_with_step() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn radio_renders() -> Result<()> {
-    let h = harness(
-        r#"radio(#label: &"Option A", #selected: &"option_a", &"option_a")"#,
-    )
-    .await?;
+    let h = harness(r#"radio(#label: &"Option A", #selected: &"option_a", &"option_a")"#)
+        .await?;
     view!(h);
     Ok(())
 }
@@ -197,20 +201,15 @@ async fn text_editor_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn row_with_children() -> Result<()> {
-    let h = harness(
-        "row(#spacing: &10.0, &[text(&\"Left\"), text(&\"Right\")])",
-    )
-    .await?;
+    let h = harness("row(#spacing: &10.0, &[text(&\"Left\"), text(&\"Right\")])").await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn column_with_children() -> Result<()> {
-    let h = harness(
-        "column(#spacing: &10.0, &[text(&\"Top\"), text(&\"Bottom\")])",
-    )
-    .await?;
+    let h =
+        harness("column(#spacing: &10.0, &[text(&\"Top\"), text(&\"Bottom\")])").await?;
     view!(h);
     Ok(())
 }
@@ -219,10 +218,9 @@ async fn column_with_children() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn container_renders() -> Result<()> {
-    let h = harness(
-        "container(#halign: &`Center, #valign: &`Center, &text(&\"Centered\"))",
-    )
-    .await?;
+    let h =
+        harness("container(#halign: &`Center, #valign: &`Center, &text(&\"Centered\"))")
+            .await?;
     view!(h);
     Ok(())
 }
@@ -265,10 +263,7 @@ async fn vertical_rule_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stack_renders() -> Result<()> {
-    let h = harness(
-        "stack(&[text(&\"Background\"), text(&\"Foreground\")])",
-    )
-    .await?;
+    let h = harness("stack(&[text(&\"Background\"), text(&\"Foreground\")])").await?;
     view!(h);
     Ok(())
 }
@@ -313,10 +308,7 @@ async fn combo_box_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_renders() -> Result<()> {
-    let h = harness(
-        "mouse_area(#on_press: |_| null, &text(&\"Click zone\"))",
-    )
-    .await?;
+    let h = harness("mouse_area(#on_press: |_| null, &text(&\"Click zone\"))").await?;
     view!(h);
     Ok(())
 }
@@ -438,6 +430,60 @@ async fn row_with_reactive_children() -> Result<()> {
     let mut h = GuiTestHarness::new(&code).await?;
     view!(h);
     h.drain().await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Canvas ─────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn canvas_renders() -> Result<()> {
+    let h = harness(
+        "canvas(#width: &`Fill, #height: &`Fixed(200.0), &[\
+            `Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 100.0}, \
+                   color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, width: 2.0}),\
+            `Circle({center: {x: 50.0, y: 50.0}, radius: 25.0, \
+                     fill: {r: 0.0, g: 1.0, b: 0.0, a: 1.0}, stroke: null}),\
+            `Rect({top_left: {x: 10.0, y: 10.0}, size: {width: 40.0, height: 30.0}, \
+                   fill: null, \
+                   stroke: {color: {r: 0.0, g: 0.0, b: 1.0, a: 1.0}, width: 1.0}}),\
+            `Text({content: \"hi\", position: {x: 0.0, y: 0.0}, \
+                   color: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}, size: 16.0})\
+        ])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Chart ──────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn chart_renders() -> Result<()> {
+    let h = harness(
+        "chart(#title: &\"Test\", #width: &`Fill, #height: &`Fixed(200.0), \
+            &[{data: [(0.0, 1.0), (1.0, 2.0), (2.0, 0.5)], \
+               chart_type: `Line, color: null, label: null}])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Image ──────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn image_renders() -> Result<()> {
+    let h = harness(r#"image(&"/dev/null")"#).await?;
+    view!(h);
+    Ok(())
+}
+
+// ── SVG ────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn svg_renders() -> Result<()> {
+    let h = harness(r#"svg(&"/dev/null")"#).await?;
     view!(h);
     Ok(())
 }

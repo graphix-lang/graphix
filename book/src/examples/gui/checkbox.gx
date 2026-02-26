@@ -3,9 +3,9 @@ use gui::text;
 use gui::checkbox;
 use gui::column;
 
-let dark_mode = &true;
-let notifications = &false;
-let auto_save = &true;
+let dark_mode = true;
+let notifications = false;
+let auto_save = true;
 
 let col = column(
     #spacing: &15.0,
@@ -13,9 +13,9 @@ let col = column(
     #width: &`Fill,
     &[
         text(#size: &24.0, &"Checkbox Demo"),
-        checkbox(#label: &"Dark mode", dark_mode),
-        checkbox(#label: &"Enable notifications", notifications),
-        checkbox(#label: &"Auto-save", auto_save)
+        checkbox(#label: &"Dark mode", #on_toggle: |v| dark_mode <- v, &dark_mode),
+        checkbox(#label: &"Enable notifications", #on_toggle: |v| notifications <- v, &notifications),
+        checkbox(#label: &"Auto-save", #on_toggle: |v| auto_save <- v, &auto_save)
     ]
 );
 

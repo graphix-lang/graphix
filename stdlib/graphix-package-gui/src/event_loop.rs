@@ -158,17 +158,13 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     tw.needs_redraw = true;
                 } else {
                     let scale = tw.window.scale_factor();
-                    let iced_events =
+                    let mut iced_events =
                         convert::window_event(&event, scale, self.modifiers);
-                    for ev in iced_events {
+                    for ev in iced_events.drain(..) {
                         if let iced_core::Event::Mouse(mouse::Event::CursorMoved {
                             position,
                         }) = &ev
                         {
-                            // CR estokes: this would be a very useful graphix
-                            // event to have. Probably as a lambda to express
-                            // that it's a one way relationship. e.g.
-                            // #on_cursor_move: fn(Point) -> Any
                             tw.cursor_position = *position;
                         }
                         tw.push_event(ev);
@@ -324,22 +320,18 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
         for msg in self.messages.drain(..) {
             match msg {
                 Message::Nop => {}
-                Message::Set(bid, v) => {
-                    if let Err(e) = self.gx.set(bid, v) {
-                        error!("failed to set ref: {e:?}");
-                    }
-                }
-                // CR estokes: Maybe we want to allow the widget to specify the arguments
-                Message::Call(id) => {
-                    if let Err(e) = self.gx.call(id, ValArray::from_iter([Value::Null])) {
+                Message::Call(id, args) => {
+                    if let Err(e) = self.gx.call(id, args) {
                         error!("failed to call: {e:?}");
                     }
                 }
                 Message::EditorAction(id, action) => {
                     for tw in self.windows.values_mut() {
-                        if let Some((bid, v)) = tw.editor_action(id, &action) {
-                            if let Err(e) = self.gx.set(bid, v) {
-                                error!("failed to set editor text: {e:?}");
+                        if let Some((callable_id, v)) = tw.editor_action(id, &action) {
+                            if let Err(e) =
+                                self.gx.call(callable_id, ValArray::from_iter([v]))
+                            {
+                                error!("failed to call editor callback: {e:?}");
                             }
                             break;
                         }

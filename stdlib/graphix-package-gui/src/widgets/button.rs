@@ -2,10 +2,10 @@ use super::{compile, GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
-use graphix_compiler::{expr::ExprId, BindId};
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_compiler::expr::ExprId;
+use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
 
 pub(crate) struct ButtonW<X: GXExt> {
@@ -88,14 +88,17 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         &mut self,
         id: ExprId,
         action: &iced_widget::text_editor::Action,
-    ) -> Option<(BindId, Value)> {
+    ) -> Option<(CallableId, Value)> {
         self.child.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.view());
         if let Some(callable) = &self.on_press_callable {
-            btn = btn.on_press(Message::Call(callable.id()));
+            btn = btn.on_press(Message::Call(
+                callable.id(),
+                ValArray::from_iter([Value::Null]),
+            ));
         }
         if let Some(w) = self.width.t.as_ref() {
             btn = btn.width(w.0);

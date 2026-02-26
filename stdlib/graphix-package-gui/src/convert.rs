@@ -4,7 +4,7 @@
 
 use iced_core::{keyboard, mouse, window, Event, Point, Size};
 use keyboard::key::NativeCode;
-use smallvec::SmallVec;
+use poolshark::local::LPooled;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey, NativeKeyCode};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -14,10 +14,8 @@ pub(crate) fn window_event(
     event: &WindowEvent,
     scale_factor: f64,
     modifiers: winit::keyboard::ModifiersState,
-) -> SmallVec<[Event; 1]> {
-    // CR estokes: Use an LPooled Vec here, that way we won't allocate no matter
-    // how many iced events the window event translates to
-    let mut events = SmallVec::new();
+) -> LPooled<Vec<Event>> {
+    let mut events: LPooled<Vec<Event>> = LPooled::take();
     match event {
         WindowEvent::Resized(size) => {
             let logical = size.to_logical::<f32>(scale_factor);

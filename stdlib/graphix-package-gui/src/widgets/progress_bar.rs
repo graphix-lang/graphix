@@ -45,11 +45,14 @@ impl<X: GXExt> GuiWidget<X> for ProgressBarW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        changed |= self.value.update(id, v).context("progress_bar update value")?.is_some();
+        changed |=
+            self.value.update(id, v).context("progress_bar update value")?.is_some();
         changed |= self.min.update(id, v).context("progress_bar update min")?.is_some();
         changed |= self.max.update(id, v).context("progress_bar update max")?.is_some();
-        changed |= self.width.update(id, v).context("progress_bar update width")?.is_some();
-        changed |= self.height.update(id, v).context("progress_bar update height")?.is_some();
+        changed |=
+            self.width.update(id, v).context("progress_bar update width")?.is_some();
+        changed |=
+            self.height.update(id, v).context("progress_bar update height")?.is_some();
         Ok(changed)
     }
 

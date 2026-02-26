@@ -1,4 +1,5 @@
 type ComboBox = {
+  on_select: &fn(string) -> Any,
   options: &Array<string>,
   selected: &[string, null],
   placeholder: &string,
@@ -7,6 +8,7 @@ type ComboBox = {
 
 val combo_box: fn(
   ?#selected: &[string, null],
+  ?#on_select: fn(string) -> Any,
   ?#placeholder: &string,
   ?#width: &Length,
   &Array<string>

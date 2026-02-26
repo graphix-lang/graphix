@@ -1,5 +1,7 @@
+type ImageSource = [string, `Path(string), `Bytes(bytes), `Rgba({width: u32, height: u32, pixels: bytes})];
+
 type Image = {
-  source: &string,
+  source: &ImageSource,
   width: &Length,
   height: &Length,
   content_fit: &ContentFit
@@ -9,5 +11,5 @@ val image: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#content_fit: &ContentFit,
-  &string
+  &ImageSource
 ) -> Widget

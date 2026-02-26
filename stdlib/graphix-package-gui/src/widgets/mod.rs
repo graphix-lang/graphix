@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
-use graphix_compiler::{expr::ExprId, BindId};
+use graphix_compiler::expr::ExprId;
 use graphix_rt::{CallableId, GXExt, GXHandle};
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use smallvec::SmallVec;
 use std::{future::Future, pin::Pin};
 
@@ -45,8 +45,7 @@ pub(crate) type IcedElement<'a> =
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Nop,
-    Set(BindId, Value),
-    Call(CallableId),
+    Call(CallableId, ValArray),
     EditorAction(ExprId, iced_widget::text_editor::Action),
 }
 
@@ -68,13 +67,13 @@ pub(crate) trait GuiWidget<X: GXExt>: Send + 'static {
     fn view(&self) -> IcedElement<'_>;
 
     /// Route a text editor action to the widget that owns the given
-    /// content ref. Returns `Some((bid, value))` if the action was an
-    /// edit and the result should be pushed to graphix.
+    /// content ref. Returns `Some((callable_id, value))` if the action
+    /// was an edit and the result should be called back to graphix.
     fn editor_action(
         &mut self,
         id: ExprId,
         action: &iced_widget::text_editor::Action,
-    ) -> Option<(BindId, Value)> {
+    ) -> Option<(CallableId, Value)> {
         let _ = (id, action);
         None
     }
@@ -189,7 +188,7 @@ macro_rules! flex_widget {
                 &mut self,
                 id: ExprId,
                 action: &iced_widget::text_editor::Action,
-            ) -> Option<(BindId, Value)> {
+            ) -> Option<(CallableId, Value)> {
                 for child in &mut self.children {
                     if let some @ Some(_) = child.editor_action(id, action) {
                         return some;
@@ -270,9 +269,7 @@ pub(crate) fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X>
             (s, v) if &s == "ProgressBar" => {
                 progress_bar::ProgressBarW::compile(gx, v).await
             }
-            (s, v) if &s == "Scrollable" => {
-                scrollable::ScrollableW::compile(gx, v).await
-            }
+            (s, v) if &s == "Scrollable" => scrollable::ScrollableW::compile(gx, v).await,
             (s, v) if &s == "HorizontalRule" => {
                 rule::HorizontalRuleW::compile(gx, v).await
             }
@@ -304,7 +301,6 @@ pub(crate) async fn compile_children<X: GXExt>(
     v: Value,
 ) -> Result<Vec<GuiW<X>>> {
     let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
-    let futs: Vec<_> =
-        items.into_iter().map(|item| compile(gx.clone(), item)).collect();
+    let futs: Vec<_> = items.into_iter().map(|item| compile(gx.clone(), item)).collect();
     futures::future::try_join_all(futs).await
 }

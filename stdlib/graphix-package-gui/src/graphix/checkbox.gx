@@ -1,7 +1,8 @@
 let checkbox = |
   #label: &string = &"",
+  #on_toggle: fn(bool) -> Any = |_| null,
   #width: &Length = &`Shrink,
   #size: &[f64, null] = &null,
   #spacing: &[f64, null] = &null,
   is_checked: &bool
-| -> Widget `Checkbox({ is_checked, label, width, size, spacing })
+| -> Widget `Checkbox({ is_checked, label, on_toggle: &on_toggle, size, spacing, width })

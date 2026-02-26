@@ -3,7 +3,7 @@ use gui::text;
 use gui::pick_list;
 use gui::column;
 
-let language = &null;
+let language: [string, null] = null;
 
 let col = column(
     #spacing: &15.0,
@@ -12,7 +12,8 @@ let col = column(
     &[
         text(#size: &24.0, &"Pick List Demo"),
         pick_list(
-            #selected: language,
+            #selected: &language,
+            #on_select: |v| language <- v,
             #placeholder: &"Choose a language...",
             &["English", "Spanish", "French", "Japanese"]
         )

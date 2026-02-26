@@ -1,8 +1,23 @@
+type PathSegment = [
+  `MoveTo({x: f64, y: f64}),
+  `LineTo({x: f64, y: f64}),
+  `BezierTo({ control_a: {x: f64, y: f64}, control_b: {x: f64, y: f64}, to: {x: f64, y: f64} }),
+  `QuadraticTo({ control: {x: f64, y: f64}, to: {x: f64, y: f64} }),
+  `ArcTo({ a: {x: f64, y: f64}, b: {x: f64, y: f64}, radius: f64 }),
+  `Close(null)
+];
+
 type CanvasShape = [
   `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
   `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
   `Rect({ top_left: {x: f64, y: f64}, size: {width: f64, height: f64}, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
-  `Text({ content: string, position: {x: f64, y: f64}, color: Color, size: f64 })
+  `RoundedRect({ top_left: {x: f64, y: f64}, size: {width: f64, height: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `Arc({ center: {x: f64, y: f64}, radius: f64, start_angle: f64, end_angle: f64, stroke: {color: Color, width: f64} }),
+  `Ellipse({ center: {x: f64, y: f64}, radii: {x: f64, y: f64}, rotation: f64, start_angle: f64, end_angle: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `BezierCurve({ from: {x: f64, y: f64}, control_a: {x: f64, y: f64}, control_b: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
+  `QuadraticCurve({ from: {x: f64, y: f64}, control: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
+  `Text({ content: string, position: {x: f64, y: f64}, color: Color, size: f64 }),
+  `Path({ segments: Array<PathSegment>, fill: [Color, null], stroke: [{color: Color, width: f64}, null] })
 ];
 
 type Canvas = {

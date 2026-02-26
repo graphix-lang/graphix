@@ -3,7 +3,8 @@ type MouseArea = {
   on_press: &fn(null) -> Any,
   on_release: &fn(null) -> Any,
   on_enter: &fn(null) -> Any,
-  on_exit: &fn(null) -> Any
+  on_exit: &fn(null) -> Any,
+  on_move: &fn({x: f64, y: f64}) -> Any
 };
 
 val mouse_area: fn(
@@ -11,5 +12,6 @@ val mouse_area: fn(
   ?#on_release: fn(null) -> Any,
   ?#on_enter: fn(null) -> Any,
   ?#on_exit: fn(null) -> Any,
+  ?#on_move: fn({x: f64, y: f64}) -> Any,
   &Widget
 ) -> Widget

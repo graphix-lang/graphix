@@ -1,7 +1,8 @@
 let pick_list = |
   #selected: &[string, null] = &null,
+  #on_select: fn(string) -> Any = |_| null,
   #placeholder: &string = &"Choose...",
   #width: &Length = &`Shrink,
   #padding: &Padding = &`All(5.0),
   options: &Array<string>
-| -> Widget `PickList({ options, selected, placeholder, width, padding })
+| -> Widget `PickList({ on_select: &on_select, options, selected, placeholder, width, padding })

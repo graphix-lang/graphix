@@ -4,7 +4,7 @@ use gui::slider;
 use gui::progress_bar;
 use gui::column;
 
-let volume = &50.0;
+let volume = 50.0;
 
 let col = column(
     #spacing: &15.0,
@@ -13,9 +13,9 @@ let col = column(
     &[
         text(#size: &24.0, &"Slider & Progress Bar"),
         text(&"Drag the slider:"),
-        slider(#min: &0.0, #max: &100.0, volume),
+        slider(#min: &0.0, #max: &100.0, #on_change: |v| volume <- v, &volume),
         text(&"Progress bar mirrors the slider:"),
-        progress_bar(#min: &0.0, #max: &100.0, volume)
+        progress_bar(#min: &0.0, #max: &100.0, &volume)
     ]
 );
 

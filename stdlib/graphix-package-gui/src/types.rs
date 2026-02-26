@@ -57,8 +57,7 @@ impl FromValue for PaddingV {
                 Ok(Self(Padding::from([y as f32, x as f32])))
             }
             (s, v) if &*s == "Each" => {
-                let (top, right, bottom, left) =
-                    v.cast_to::<(f64, f64, f64, f64)>()?;
+                let (top, right, bottom, left) = v.cast_to::<(f64, f64, f64, f64)>()?;
                 Ok(Self(Padding {
                     top: top as f32,
                     right: right as f32,
@@ -268,6 +267,62 @@ impl FromValue for ContentFitV {
     }
 }
 
+/// Image source: file path, raw encoded bytes, or decoded RGBA pixels.
+#[derive(Clone, Debug)]
+pub(crate) enum ImageSourceV {
+    Path(String),
+    Bytes(iced_core::Bytes),
+    Rgba { width: u32, height: u32, pixels: iced_core::Bytes },
+}
+
+impl ImageSourceV {
+    pub(crate) fn to_handle(&self) -> iced_core::image::Handle {
+        match self {
+            Self::Path(p) => iced_core::image::Handle::from_path(p),
+            Self::Bytes(b) => iced_core::image::Handle::from_bytes(b.clone()),
+            Self::Rgba { width, height, pixels } => {
+                iced_core::image::Handle::from_rgba(*width, *height, pixels.clone())
+            }
+        }
+    }
+}
+
+impl FromValue for ImageSourceV {
+    fn from_value(v: Value) -> Result<Self> {
+        match v {
+            // Bare string → file path (backward compat)
+            Value::String(s) => Ok(Self::Path(s.to_string())),
+            // Bare bytes → encoded image data
+            Value::Bytes(b) => Ok(Self::Bytes(iced_core::Bytes::copy_from_slice(&b))),
+            // Variant tag
+            v => {
+                let (tag, val) = v.cast_to::<(ArcStr, Value)>()?;
+                match &*tag {
+                    "Path" => Ok(Self::Path(val.cast_to::<String>()?)),
+                    "Bytes" => match val {
+                        Value::Bytes(b) => {
+                            Ok(Self::Bytes(iced_core::Bytes::copy_from_slice(&b)))
+                        }
+                        _ => bail!("ImageSource Bytes: expected bytes value"),
+                    },
+                    "Rgba" => {
+                        let [(_, height), (_, pixels), (_, width)] =
+                            val.cast_to::<[(ArcStr, Value); 3]>()?;
+                        let width = width.cast_to::<u32>()?;
+                        let height = height.cast_to::<u32>()?;
+                        let pixels = match pixels {
+                            Value::Bytes(b) => iced_core::Bytes::copy_from_slice(&b),
+                            _ => bail!("ImageSource Rgba: expected bytes for pixels"),
+                        };
+                        Ok(Self::Rgba { width, height, pixels })
+                    }
+                    s => bail!("invalid ImageSource variant: {s}"),
+                }
+            }
+        }
+    }
+}
+
 /// Newtype for `Vec<String>` to satisfy orphan rules.
 #[derive(Clone, Debug)]
 pub(crate) struct StringVec(pub Vec<String>);
@@ -275,7 +330,8 @@ pub(crate) struct StringVec(pub Vec<String>);
 impl FromValue for StringVec {
     fn from_value(v: Value) -> Result<Self> {
         let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
-        let v: Vec<String> = items.into_iter().map(|v| v.cast_to::<String>()).collect::<Result<_>>()?;
+        let v: Vec<String> =
+            items.into_iter().map(|v| v.cast_to::<String>()).collect::<Result<_>>()?;
         Ok(Self(v))
     }
 }

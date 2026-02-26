@@ -3,7 +3,7 @@ use gui::text;
 use gui::text_input;
 use gui::column;
 
-let name = &"";
+let name = "";
 
 let col = column(
     #spacing: &15.0,
@@ -12,8 +12,8 @@ let col = column(
     #width: &`Fill,
     &[
         text(#size: &24.0, &"Text Input Demo"),
-        text_input(#placeholder: &"Enter your name...", name),
-        text(name)
+        text_input(#placeholder: &"Enter your name...", #on_input: |v| name <- v, &name),
+        text(&name)
     ]
 );
 

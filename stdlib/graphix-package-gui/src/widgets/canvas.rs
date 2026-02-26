@@ -32,12 +32,65 @@ pub(crate) enum CanvasShape {
         fill: Option<Color>,
         stroke: Option<(Color, f32)>,
     },
+    RoundedRect {
+        top_left: Point,
+        size: Size,
+        radius: f32,
+        fill: Option<Color>,
+        stroke: Option<(Color, f32)>,
+    },
+    Arc {
+        center: Point,
+        radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+        stroke: (Color, f32),
+    },
+    Ellipse {
+        center: Point,
+        radii: Point,
+        rotation: f32,
+        start_angle: f32,
+        end_angle: f32,
+        fill: Option<Color>,
+        stroke: Option<(Color, f32)>,
+    },
+    BezierCurve {
+        from: Point,
+        control_a: Point,
+        control_b: Point,
+        to: Point,
+        color: Color,
+        width: f32,
+    },
+    QuadraticCurve {
+        from: Point,
+        control: Point,
+        to: Point,
+        color: Color,
+        width: f32,
+    },
     Text {
         content: String,
         position: Point,
         color: Color,
         size: f32,
     },
+    Path {
+        segments: Vec<PathSegment>,
+        fill: Option<Color>,
+        stroke: Option<(Color, f32)>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PathSegment {
+    MoveTo(Point),
+    LineTo(Point),
+    BezierTo { control_a: Point, control_b: Point, to: Point },
+    QuadraticTo { control: Point, to: Point },
+    ArcTo { a: Point, b: Point, radius: f32 },
+    Close,
 }
 
 impl FromValue for CanvasShape {
@@ -86,6 +139,95 @@ impl FromValue for CanvasShape {
                     stroke,
                 })
             }
+            "RoundedRect" => {
+                let [(_, fill), (_, radius), (_, size), (_, stroke), (_, top_left)] =
+                    val.cast_to::<[(ArcStr, Value); 5]>()?;
+                let (x, y) = parse_point(top_left)?;
+                let [(_, h), (_, w)] = size.cast_to::<[(ArcStr, f64); 2]>()?;
+                let radius = radius.cast_to::<f64>()? as f32;
+                let fill = parse_opt_color(fill)?;
+                let stroke = parse_opt_stroke(stroke)?;
+                Ok(CanvasShape::RoundedRect {
+                    top_left: Point::new(x, y),
+                    size: Size::new(w as f32, h as f32),
+                    radius,
+                    fill,
+                    stroke,
+                })
+            }
+            "Arc" => {
+                let [(_, center), (_, end_angle), (_, radius), (_, start_angle), (_, stroke)] =
+                    val.cast_to::<[(ArcStr, Value); 5]>()?;
+                let (cx, cy) = parse_point(center)?;
+                let radius = radius.cast_to::<f64>()? as f32;
+                let start_angle = start_angle.cast_to::<f64>()? as f32;
+                let end_angle = end_angle.cast_to::<f64>()? as f32;
+                let [(_, color), (_, width)] =
+                    stroke.cast_to::<[(ArcStr, Value); 2]>()?;
+                let ColorV(color) = ColorV::from_value(color)?;
+                let width = width.cast_to::<f64>()? as f32;
+                Ok(CanvasShape::Arc {
+                    center: Point::new(cx, cy),
+                    radius,
+                    start_angle,
+                    end_angle,
+                    stroke: (color, width),
+                })
+            }
+            "Ellipse" => {
+                let [(_, center), (_, end_angle), (_, fill), (_, radii), (_, rotation), (_, start_angle), (_, stroke)] =
+                    val.cast_to::<[(ArcStr, Value); 7]>()?;
+                let (cx, cy) = parse_point(center)?;
+                let (rx, ry) = parse_point(radii)?;
+                let rotation = rotation.cast_to::<f64>()? as f32;
+                let start_angle = start_angle.cast_to::<f64>()? as f32;
+                let end_angle = end_angle.cast_to::<f64>()? as f32;
+                let fill = parse_opt_color(fill)?;
+                let stroke = parse_opt_stroke(stroke)?;
+                Ok(CanvasShape::Ellipse {
+                    center: Point::new(cx, cy),
+                    radii: Point::new(rx, ry),
+                    rotation,
+                    start_angle,
+                    end_angle,
+                    fill,
+                    stroke,
+                })
+            }
+            "BezierCurve" => {
+                let [(_, color), (_, control_a), (_, control_b), (_, from), (_, to), (_, width)] =
+                    val.cast_to::<[(ArcStr, Value); 6]>()?;
+                let ColorV(color) = ColorV::from_value(color)?;
+                let (fx, fy) = parse_point(from)?;
+                let (ax, ay) = parse_point(control_a)?;
+                let (bx, by) = parse_point(control_b)?;
+                let (tx, ty) = parse_point(to)?;
+                let width = width.cast_to::<f64>()? as f32;
+                Ok(CanvasShape::BezierCurve {
+                    from: Point::new(fx, fy),
+                    control_a: Point::new(ax, ay),
+                    control_b: Point::new(bx, by),
+                    to: Point::new(tx, ty),
+                    color,
+                    width,
+                })
+            }
+            "QuadraticCurve" => {
+                let [(_, color), (_, control), (_, from), (_, to), (_, width)] =
+                    val.cast_to::<[(ArcStr, Value); 5]>()?;
+                let ColorV(color) = ColorV::from_value(color)?;
+                let (fx, fy) = parse_point(from)?;
+                let (cx, cy) = parse_point(control)?;
+                let (tx, ty) = parse_point(to)?;
+                let width = width.cast_to::<f64>()? as f32;
+                Ok(CanvasShape::QuadraticCurve {
+                    from: Point::new(fx, fy),
+                    control: Point::new(cx, cy),
+                    to: Point::new(tx, ty),
+                    color,
+                    width,
+                })
+            }
             "Text" => {
                 let [(_, color), (_, content), (_, position), (_, size)] =
                     val.cast_to::<[(ArcStr, Value); 4]>()?;
@@ -100,7 +242,70 @@ impl FromValue for CanvasShape {
                     size,
                 })
             }
+            "Path" => {
+                let [(_, fill), (_, segments), (_, stroke)] =
+                    val.cast_to::<[(ArcStr, Value); 3]>()?;
+                let fill = parse_opt_color(fill)?;
+                let stroke = parse_opt_stroke(stroke)?;
+                let seg_items = segments.cast_to::<Vec<Value>>()?;
+                let segments = seg_items
+                    .into_iter()
+                    .map(PathSegment::from_value)
+                    .collect::<Result<_>>()?;
+                Ok(CanvasShape::Path { segments, fill, stroke })
+            }
             s => bail!("invalid canvas shape tag: {s}"),
+        }
+    }
+}
+
+impl FromValue for PathSegment {
+    fn from_value(v: Value) -> Result<Self> {
+        let (tag, val) = v.cast_to::<(ArcStr, Value)>()?;
+        match &*tag {
+            "MoveTo" => {
+                let (x, y) = parse_point(val)?;
+                Ok(PathSegment::MoveTo(Point::new(x, y)))
+            }
+            "LineTo" => {
+                let (x, y) = parse_point(val)?;
+                Ok(PathSegment::LineTo(Point::new(x, y)))
+            }
+            "BezierTo" => {
+                let [(_, control_a), (_, control_b), (_, to)] =
+                    val.cast_to::<[(ArcStr, Value); 3]>()?;
+                let (ax, ay) = parse_point(control_a)?;
+                let (bx, by) = parse_point(control_b)?;
+                let (tx, ty) = parse_point(to)?;
+                Ok(PathSegment::BezierTo {
+                    control_a: Point::new(ax, ay),
+                    control_b: Point::new(bx, by),
+                    to: Point::new(tx, ty),
+                })
+            }
+            "QuadraticTo" => {
+                let [(_, control), (_, to)] = val.cast_to::<[(ArcStr, Value); 2]>()?;
+                let (cx, cy) = parse_point(control)?;
+                let (tx, ty) = parse_point(to)?;
+                Ok(PathSegment::QuadraticTo {
+                    control: Point::new(cx, cy),
+                    to: Point::new(tx, ty),
+                })
+            }
+            "ArcTo" => {
+                let [(_, a), (_, b), (_, radius)] =
+                    val.cast_to::<[(ArcStr, Value); 3]>()?;
+                let (ax, ay) = parse_point(a)?;
+                let (bx, by) = parse_point(b)?;
+                let radius = radius.cast_to::<f64>()? as f32;
+                Ok(PathSegment::ArcTo {
+                    a: Point::new(ax, ay),
+                    b: Point::new(bx, by),
+                    radius,
+                })
+            }
+            "Close" => Ok(PathSegment::Close),
+            s => bail!("invalid path segment tag: {s}"),
         }
     }
 }
@@ -136,10 +341,8 @@ pub(crate) struct ShapeVec(pub Vec<CanvasShape>);
 impl FromValue for ShapeVec {
     fn from_value(v: Value) -> Result<Self> {
         let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
-        let shapes: Vec<CanvasShape> = items
-            .into_iter()
-            .map(CanvasShape::from_value)
-            .collect::<Result<_>>()?;
+        let shapes: Vec<CanvasShape> =
+            items.into_iter().map(CanvasShape::from_value).collect::<Result<_>>()?;
         Ok(Self(shapes))
     }
 }
@@ -218,11 +421,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for CanvasW<X> {
     ) -> Vec<iced_canvas::Geometry<Renderer>> {
         let geom = self.cache.draw(renderer, bounds.size(), |frame| {
             if let Some(Some(bg)) = self.background.t.as_ref() {
-                frame.fill_rectangle(
-                    Point::ORIGIN,
-                    frame.size(),
-                    bg.0,
-                );
+                frame.fill_rectangle(Point::ORIGIN, frame.size(), bg.0);
             }
             if let Some(shapes) = self.shapes.t.as_ref() {
                 for shape in &shapes.0 {
@@ -234,19 +433,13 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for CanvasW<X> {
     }
 }
 
-fn draw_shape(
-    frame: &mut iced_widget::canvas::Frame<Renderer>,
-    shape: &CanvasShape,
-) {
+fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasShape) {
     use iced_widget::canvas::{Path, Stroke};
 
     match shape {
         CanvasShape::Line { from, to, color, width } => {
             let path = Path::line(*from, *to);
-            frame.stroke(
-                &path,
-                Stroke::default().with_color(*color).with_width(*width),
-            );
+            frame.stroke(&path, Stroke::default().with_color(*color).with_width(*width));
         }
         CanvasShape::Circle { center, radius, fill, stroke } => {
             let path = Path::circle(*center, *radius);
@@ -254,10 +447,7 @@ fn draw_shape(
                 frame.fill(&path, *c);
             }
             if let Some((c, w)) = stroke {
-                frame.stroke(
-                    &path,
-                    Stroke::default().with_color(*c).with_width(*w),
-                );
+                frame.stroke(&path, Stroke::default().with_color(*c).with_width(*w));
             }
         }
         CanvasShape::Rect { top_left, size, fill, stroke } => {
@@ -266,11 +456,69 @@ fn draw_shape(
             }
             if let Some((c, w)) = stroke {
                 let path = Path::rectangle(*top_left, *size);
-                frame.stroke(
-                    &path,
-                    Stroke::default().with_color(*c).with_width(*w),
-                );
+                frame.stroke(&path, Stroke::default().with_color(*c).with_width(*w));
             }
+        }
+        CanvasShape::RoundedRect { top_left, size, radius, fill, stroke } => {
+            let border_radius = iced_core::border::Radius::from(*radius);
+            let path = Path::rounded_rectangle(*top_left, *size, border_radius);
+            if let Some(c) = fill {
+                frame.fill(&path, *c);
+            }
+            if let Some((c, w)) = stroke {
+                frame.stroke(&path, Stroke::default().with_color(*c).with_width(*w));
+            }
+        }
+        CanvasShape::Arc { center, radius, start_angle, end_angle, stroke } => {
+            let path = Path::new(|b| {
+                b.arc(iced_widget::canvas::path::Arc {
+                    center: *center,
+                    radius: *radius,
+                    start_angle: iced_core::Radians(*start_angle),
+                    end_angle: iced_core::Radians(*end_angle),
+                });
+            });
+            let (c, w) = stroke;
+            frame.stroke(&path, Stroke::default().with_color(*c).with_width(*w));
+        }
+        CanvasShape::Ellipse {
+            center,
+            radii,
+            rotation,
+            start_angle,
+            end_angle,
+            fill,
+            stroke,
+        } => {
+            let path = Path::new(|b| {
+                b.ellipse(iced_widget::canvas::path::arc::Elliptical {
+                    center: *center,
+                    radii: iced_core::Vector::new(radii.x, radii.y),
+                    rotation: iced_core::Radians(*rotation),
+                    start_angle: iced_core::Radians(*start_angle),
+                    end_angle: iced_core::Radians(*end_angle),
+                });
+            });
+            if let Some(c) = fill {
+                frame.fill(&path, *c);
+            }
+            if let Some((c, w)) = stroke {
+                frame.stroke(&path, Stroke::default().with_color(*c).with_width(*w));
+            }
+        }
+        CanvasShape::BezierCurve { from, control_a, control_b, to, color, width } => {
+            let path = Path::new(|b| {
+                b.move_to(*from);
+                b.bezier_curve_to(*control_a, *control_b, *to);
+            });
+            frame.stroke(&path, Stroke::default().with_color(*color).with_width(*width));
+        }
+        CanvasShape::QuadraticCurve { from, control, to, color, width } => {
+            let path = Path::new(|b| {
+                b.move_to(*from);
+                b.quadratic_curve_to(*control, *to);
+            });
+            frame.stroke(&path, Stroke::default().with_color(*color).with_width(*width));
         }
         CanvasShape::Text { content, position, color, size } => {
             frame.fill_text(iced_widget::canvas::Text {
@@ -280,6 +528,32 @@ fn draw_shape(
                 size: (*size).into(),
                 ..iced_widget::canvas::Text::default()
             });
+        }
+        CanvasShape::Path { segments, fill, stroke } => {
+            let path = Path::new(|b| {
+                for seg in segments {
+                    match seg {
+                        PathSegment::MoveTo(p) => b.move_to(*p),
+                        PathSegment::LineTo(p) => b.line_to(*p),
+                        PathSegment::BezierTo { control_a, control_b, to } => {
+                            b.bezier_curve_to(*control_a, *control_b, *to);
+                        }
+                        PathSegment::QuadraticTo { control, to } => {
+                            b.quadratic_curve_to(*control, *to);
+                        }
+                        PathSegment::ArcTo { a, b: bp, radius } => {
+                            b.arc_to(*a, *bp, *radius);
+                        }
+                        PathSegment::Close => b.close(),
+                    }
+                }
+            });
+            if let Some(c) = fill {
+                frame.fill(&path, *c);
+            }
+            if let Some((c, w)) = stroke {
+                frame.stroke(&path, Stroke::default().with_color(*c).with_width(*w));
+            }
         }
     }
 }

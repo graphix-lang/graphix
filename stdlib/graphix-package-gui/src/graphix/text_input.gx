@@ -1,5 +1,6 @@
 let text_input = |
   #placeholder: &string = &"",
+  #on_input: fn(string) -> Any = |_| null,
   #on_submit: fn(null) -> Any = |_| null,
   #is_secure: &bool = &false,
   #width: &Length = &`Fill,
@@ -7,4 +8,4 @@ let text_input = |
   #size: &[f64, null] = &null,
   #font: &[Font, null] = &null,
   value: &string
-| -> Widget `TextInput({ value, placeholder, on_submit: &on_submit, is_secure, width, padding, size, font })
+| -> Widget `TextInput({ value, placeholder, on_input: &on_input, on_submit: &on_submit, is_secure, width, padding, size, font })

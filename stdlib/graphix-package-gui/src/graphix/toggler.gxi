@@ -1,6 +1,7 @@
 type Toggler = {
   is_toggled: &bool,
   label: &string,
+  on_toggle: &fn(bool) -> Any,
   width: &Length,
   size: &[f64, null],
   spacing: &[f64, null]
@@ -8,6 +9,7 @@ type Toggler = {
 
 val toggler: fn(
   ?#label: &string,
+  ?#on_toggle: fn(bool) -> Any,
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],

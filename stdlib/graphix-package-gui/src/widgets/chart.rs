@@ -1,22 +1,20 @@
 use super::{plotters_backend::IcedBackend, GuiW, GuiWidget, IcedElement, Renderer};
 use crate::types::{ColorV, LengthV};
-use log::error;
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_core::mouse;
 use iced_widget::canvas as iced_canvas;
+use log::error;
 use netidx::publisher::{FromValue, Value};
 use plotters::{
     chart::ChartBuilder,
     element::PathElement,
-    prelude::{
-        AreaSeries, Circle, IntoDrawingArea, LineSeries,
-    },
-    style::{Color as PlotColor, IntoFont, RGBColor, ShapeStyle, WHITE, BLACK},
+    prelude::{AreaSeries, Circle, IntoDrawingArea, LineSeries},
+    style::{Color as PlotColor, IntoFont, RGBColor, ShapeStyle, BLACK, WHITE},
 };
-use smallvec::SmallVec;
+use poolshark::local::LPooled;
 use tokio::try_join;
 
 #[derive(Clone, Debug)]
@@ -41,10 +39,13 @@ impl FromValue for ChartType {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Dataset {
-    data: Vec<(f64, f64)>,
-    chart_type: ChartType,
-    color: Option<iced_core::Color>,
-    label: Option<String>,
+    // CR estokes: should the data be a ref, so the user can update the graph on
+    // the fly easily, e.g. by building a realtime data set with the window
+    // function?
+    pub(crate) data: LPooled<Vec<(f64, f64)>>,
+    pub(crate) chart_type: ChartType,
+    pub(crate) color: Option<iced_core::Color>,
+    pub(crate) label: Option<String>,
 }
 
 impl FromValue for Dataset {
@@ -52,29 +53,25 @@ impl FromValue for Dataset {
         let [(_, chart_type), (_, color), (_, data), (_, label)] =
             v.cast_to::<[(ArcStr, Value); 4]>()?;
         let chart_type = ChartType::from_value(chart_type)?;
-        let color = if color == Value::Null {
-            None
-        } else {
-            Some(ColorV::from_value(color)?.0)
+        let color =
+            if color == Value::Null { None } else { Some(ColorV::from_value(color)?.0) };
+        let data: LPooled<Vec<(f64, f64)>> = match data {
+            Value::Array(a) => a
+                .iter()
+                .map(|v| v.clone().cast_to::<(f64, f64)>())
+                .collect::<Result<_>>()?,
+            _ => bail!("chart dataset: expected array for data"),
         };
-        let data_items = data.cast_to::<SmallVec<[Value; 16]>>()?;
-        let data: Vec<(f64, f64)> = data_items
-            .into_iter()
-            .map(|item| item.cast_to::<(f64, f64)>())
-            .collect::<Result<_>>()?;
-        let label = if label == Value::Null {
-            None
-        } else {
-            Some(label.cast_to::<String>()?)
-        };
+        let label =
+            if label == Value::Null { None } else { Some(label.cast_to::<String>()?) };
         Ok(Dataset { data, chart_type, color, label })
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct AxisRange {
-    min: f64,
-    max: f64,
+    pub(crate) min: f64,
+    pub(crate) max: f64,
 }
 
 impl FromValue for AxisRange {
@@ -90,11 +87,9 @@ pub(crate) struct DatasetVec(pub Vec<Dataset>);
 
 impl FromValue for DatasetVec {
     fn from_value(v: Value) -> Result<Self> {
-        let items = v.cast_to::<SmallVec<[Value; 4]>>()?;
-        let ds: Vec<Dataset> = items
-            .into_iter()
-            .map(Dataset::from_value)
-            .collect::<Result<_>>()?;
+        let items = v.cast_to::<Vec<Value>>()?;
+        let ds: Vec<Dataset> =
+            items.into_iter().map(Dataset::from_value).collect::<Result<_>>()?;
         Ok(Self(ds))
     }
 }
@@ -163,7 +158,12 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
         let mut changed = false;
         macro_rules! up {
             ($f:ident) => {
-                if self.$f.update(id, v).context(concat!("chart update ", stringify!($f)))?.is_some() {
+                if self
+                    .$f
+                    .update(id, v)
+                    .context(concat!("chart update ", stringify!($f)))?
+                    .is_some()
+                {
                     self.cache.clear();
                     changed = true;
                 }
@@ -231,11 +231,13 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                 _ => return,
             };
 
-            let (x_min, x_max) = match self.x_range.t.as_ref().and_then(|r| r.0.as_ref()) {
+            let (x_min, x_max) = match self.x_range.t.as_ref().and_then(|r| r.0.as_ref())
+            {
                 Some(r) => (r.min, r.max),
                 None => auto_range(datasets, |p| p.0),
             };
-            let (y_min, y_max) = match self.y_range.t.as_ref().and_then(|r| r.0.as_ref()) {
+            let (y_min, y_max) = match self.y_range.t.as_ref().and_then(|r| r.0.as_ref())
+            {
                 Some(r) => (r.min, r.max),
                 None => auto_range(datasets, |p| p.1),
             };
@@ -279,37 +281,41 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
             }
 
             for (i, ds) in datasets.iter().enumerate() {
-                let color = ds.color
-                    .map(iced_to_plotters)
-                    .unwrap_or(PALETTE[i % PALETTE.len()]);
+                let color =
+                    ds.color.map(iced_to_plotters).unwrap_or(PALETTE[i % PALETTE.len()]);
                 let label = ds.label.as_deref();
                 let line_style = ShapeStyle::from(color).stroke_width(2);
                 let fill_style = ShapeStyle::from(color).filled();
 
                 match ds.chart_type {
                     ChartType::Line => {
-                        let series = LineSeries::new(
-                            ds.data.iter().copied(),
-                            line_style,
-                        );
+                        let series = LineSeries::new(ds.data.iter().copied(), line_style);
                         match chart.draw_series(series) {
-                            Ok(ann) => if let Some(l) = label {
-                                ann.label(l).legend(move |(x, y)| {
-                                    PathElement::new([(x, y), (x + 20, y)], line_style)
-                                });
+                            Ok(ann) => {
+                                if let Some(l) = label {
+                                    ann.label(l).legend(move |(x, y)| {
+                                        PathElement::new(
+                                            [(x, y), (x + 20, y)],
+                                            line_style,
+                                        )
+                                    });
+                                }
                             }
                             Err(e) => error!("chart draw line series: {e:?}"),
                         }
                     }
                     ChartType::Scatter => {
-                        let series = ds.data.iter().map(|&(x, y)| {
-                            Circle::new((x, y), 3, fill_style)
-                        });
+                        let series = ds
+                            .data
+                            .iter()
+                            .map(|&(x, y)| Circle::new((x, y), 3, fill_style));
                         match chart.draw_series(series) {
-                            Ok(ann) => if let Some(l) = label {
-                                ann.label(l).legend(move |(x, y)| {
-                                    Circle::new((x, y), 3, fill_style)
-                                });
+                            Ok(ann) => {
+                                if let Some(l) = label {
+                                    ann.label(l).legend(move |(x, y)| {
+                                        Circle::new((x, y), 3, fill_style)
+                                    });
+                                }
                             }
                             Err(e) => error!("chart draw scatter series: {e:?}"),
                         }
@@ -328,13 +334,15 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                             )
                         });
                         match chart.draw_series(series) {
-                            Ok(ann) => if let Some(l) = label {
-                                ann.label(l).legend(move |(x, y)| {
-                                    plotters::element::Rectangle::new(
-                                        [(x, y - 5), (x + 20, y + 5)],
-                                        fill_style,
-                                    )
-                                });
+                            Ok(ann) => {
+                                if let Some(l) = label {
+                                    ann.label(l).legend(move |(x, y)| {
+                                        plotters::element::Rectangle::new(
+                                            [(x, y - 5), (x + 20, y + 5)],
+                                            fill_style,
+                                        )
+                                    });
+                                }
                             }
                             Err(e) => error!("chart draw bar series: {e:?}"),
                         }
@@ -345,12 +353,18 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                             ds.data.iter().copied(),
                             0.0,
                             ShapeStyle::from(area_fill).filled(),
-                        ).border_style(line_style);
+                        )
+                        .border_style(line_style);
                         match chart.draw_series(series) {
-                            Ok(ann) => if let Some(l) = label {
-                                ann.label(l).legend(move |(x, y)| {
-                                    PathElement::new([(x, y), (x + 20, y)], line_style)
-                                });
+                            Ok(ann) => {
+                                if let Some(l) = label {
+                                    ann.label(l).legend(move |(x, y)| {
+                                        PathElement::new(
+                                            [(x, y), (x + 20, y)],
+                                            line_style,
+                                        )
+                                    });
+                                }
                             }
                             Err(e) => error!("chart draw area series: {e:?}"),
                         }
@@ -359,7 +373,8 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
             }
 
             if datasets.iter().any(|ds| ds.label.is_some()) {
-                if let Err(e) = chart.configure_series_labels()
+                if let Err(e) = chart
+                    .configure_series_labels()
                     .background_style(WHITE.mix(0.8))
                     .border_style(BLACK)
                     .draw()
@@ -376,14 +391,21 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
     }
 }
 
-fn auto_range(datasets: &[Dataset], f: impl Fn(&(f64, f64)) -> f64) -> (f64, f64) {
+pub(crate) fn auto_range(
+    datasets: &[Dataset],
+    f: impl Fn(&(f64, f64)) -> f64,
+) -> (f64, f64) {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
     for ds in datasets {
-        for pt in &ds.data {
+        for pt in ds.data.iter() {
             let v = f(pt);
-            if v < min { min = v; }
-            if v > max { max = v; }
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
         }
     }
     if min == max {

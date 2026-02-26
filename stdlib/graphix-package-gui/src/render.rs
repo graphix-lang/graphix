@@ -28,9 +28,8 @@ impl GpuState {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let surface = instance
-            .create_surface(window)
-            .context("failed to create init surface")?;
+        let surface =
+            instance.create_surface(window).context("failed to create init surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),

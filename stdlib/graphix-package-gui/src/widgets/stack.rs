@@ -2,8 +2,8 @@ use super::{compile_children, GuiW, GuiWidget, IcedElement};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
-use graphix_compiler::{expr::ExprId, BindId};
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_compiler::expr::ExprId;
+use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -27,8 +27,9 @@ impl<X: GXExt> StackW<X> {
         }?;
         let compiled_children = match children_ref.last.as_ref() {
             None => vec![],
-            Some(v) => compile_children(gx.clone(), v.clone()).await
-                .context("stack children")?,
+            Some(v) => {
+                compile_children(gx.clone(), v.clone()).await.context("stack children")?
+            }
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
@@ -52,9 +53,9 @@ impl<X: GXExt> GuiWidget<X> for StackW<X> {
         changed |= self.height.update(id, v).context("stack update height")?.is_some();
         if id == self.children_ref.id {
             self.children_ref.last = Some(v.clone());
-            self.children = rt.block_on(
-                compile_children(self.gx.clone(), v.clone())
-            ).context("stack children recompile")?;
+            self.children = rt
+                .block_on(compile_children(self.gx.clone(), v.clone()))
+                .context("stack children recompile")?;
             changed = true;
         }
         for child in &mut self.children {
@@ -67,7 +68,7 @@ impl<X: GXExt> GuiWidget<X> for StackW<X> {
         &mut self,
         id: ExprId,
         action: &iced_widget::text_editor::Action,
-    ) -> Option<(BindId, Value)> {
+    ) -> Option<(CallableId, Value)> {
         for child in &mut self.children {
             if let some @ Some(_) = child.editor_action(id, action) {
                 return some;

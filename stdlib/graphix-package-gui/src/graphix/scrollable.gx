@@ -1,6 +1,7 @@
 let scrollable = |
   #direction: &ScrollDirection = &`Vertical,
+  #on_scroll: fn({x: f64, y: f64}) -> Any = |_| null,
   #width: &Length = &`Fill,
   #height: &Length = &`Fill,
   child: &Widget
-| -> Widget `Scrollable({ child, direction, width, height })
+| -> Widget `Scrollable({ child, direction, on_scroll: &on_scroll, width, height })

@@ -2,5 +2,5 @@ let image = |
   #width: &Length = &`Shrink,
   #height: &Length = &`Shrink,
   #content_fit: &ContentFit = &`Contain,
-  source: &string
+  source: &ImageSource
 | -> Widget `Image({ source, width, height, content_fit })

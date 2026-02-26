@@ -57,11 +57,7 @@ impl DrawingBackend for IcedBackend<'_> {
         if color.alpha == 0.0 {
             return Ok(());
         }
-        self.frame.fill_rectangle(
-            to_point(point),
-            Size::new(1.0, 1.0),
-            to_color(color),
-        );
+        self.frame.fill_rectangle(to_point(point), Size::new(1.0, 1.0), to_color(color));
         Ok(())
     }
 

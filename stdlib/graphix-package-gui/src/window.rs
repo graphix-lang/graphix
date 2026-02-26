@@ -180,7 +180,7 @@ impl<X: GXExt> TrackedWindow<X> {
         &mut self,
         id: ExprId,
         action: &iced_widget::text_editor::Action,
-    ) -> Option<(graphix_compiler::BindId, Value)> {
+    ) -> Option<(graphix_rt::CallableId, Value)> {
         self.content.editor_action(id, action)
     }
 

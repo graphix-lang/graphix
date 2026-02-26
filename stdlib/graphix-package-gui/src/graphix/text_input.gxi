@@ -1,6 +1,7 @@
 type TextInput = {
   value: &string,
   placeholder: &string,
+  on_input: &fn(string) -> Any,
   on_submit: &fn(null) -> Any,
   is_secure: &bool,
   width: &Length,
@@ -11,6 +12,7 @@ type TextInput = {
 
 val text_input: fn(
   ?#placeholder: &string,
+  ?#on_input: fn(string) -> Any,
   ?#on_submit: fn(null) -> Any,
   ?#is_secure: &bool,
   ?#width: &Length,

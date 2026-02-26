@@ -2,8 +2,8 @@ use super::{compile, GuiW, GuiWidget, IcedElement};
 use crate::types::TooltipPositionV;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
-use graphix_compiler::{expr::ExprId, BindId};
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_compiler::expr::ExprId;
+use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -56,17 +56,20 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        changed |= self.position.update(id, v).context("tooltip update position")?.is_some();
+        changed |=
+            self.position.update(id, v).context("tooltip update position")?.is_some();
         changed |= self.gap.update(id, v).context("tooltip update gap")?.is_some();
         if id == self.child_ref.id {
             self.child_ref.last = Some(v.clone());
-            self.child = rt.block_on(compile(self.gx.clone(), v.clone()))
+            self.child = rt
+                .block_on(compile(self.gx.clone(), v.clone()))
                 .context("tooltip child recompile")?;
             changed = true;
         }
         if id == self.tip_ref.id {
             self.tip_ref.last = Some(v.clone());
-            self.tip = rt.block_on(compile(self.gx.clone(), v.clone()))
+            self.tip = rt
+                .block_on(compile(self.gx.clone(), v.clone()))
                 .context("tooltip tip recompile")?;
             changed = true;
         }
@@ -79,7 +82,7 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
         &mut self,
         id: ExprId,
         action: &iced_widget::text_editor::Action,
-    ) -> Option<(BindId, Value)> {
+    ) -> Option<(CallableId, Value)> {
         if let some @ Some(_) = self.child.editor_action(id, action) {
             return some;
         }
@@ -87,7 +90,10 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let pos = self.position.t.as_ref()
+        let pos = self
+            .position
+            .t
+            .as_ref()
             .map(|p| p.0)
             .unwrap_or(widget::tooltip::Position::Bottom);
         let mut tt = widget::Tooltip::new(self.child.view(), self.tip.view(), pos);

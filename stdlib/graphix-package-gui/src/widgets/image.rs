@@ -1,5 +1,5 @@
 use super::{GuiW, GuiWidget, IcedElement};
-use crate::types::{ContentFitV, LengthV};
+use crate::types::{ContentFitV, ImageSourceV, LengthV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -9,7 +9,8 @@ use netidx::publisher::Value;
 use tokio::try_join;
 
 pub(crate) struct ImageW<X: GXExt> {
-    source: TRef<X, String>,
+    source: TRef<X, ImageSourceV>,
+    handle: Option<iced_core::image::Handle>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
     content_fit: TRef<X, ContentFitV>,
@@ -25,8 +26,11 @@ impl<X: GXExt> ImageW<X> {
             gx.compile_ref(src),
             gx.compile_ref(width),
         }?;
+        let source = TRef::new(src).context("image tref source")?;
+        let handle = source.t.as_ref().map(|s: &ImageSourceV| s.to_handle());
         Ok(Box::new(Self {
-            source: TRef::new(src).context("image tref source")?,
+            source,
+            handle,
             width: TRef::new(width).context("image tref width")?,
             height: TRef::new(height).context("image tref height")?,
             content_fit: TRef::new(content_fit).context("image tref content_fit")?,
@@ -42,16 +46,23 @@ impl<X: GXExt> GuiWidget<X> for ImageW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        changed |= self.source.update(id, v).context("image update source")?.is_some();
+        if self.source.update(id, v).context("image update source")?.is_some() {
+            self.handle = self.source.t.as_ref().map(|s| s.to_handle());
+            changed = true;
+        }
         changed |= self.width.update(id, v).context("image update width")?.is_some();
         changed |= self.height.update(id, v).context("image update height")?.is_some();
-        changed |= self.content_fit.update(id, v).context("image update content_fit")?.is_some();
+        changed |=
+            self.content_fit.update(id, v).context("image update content_fit")?.is_some();
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let path = self.source.t.as_deref().unwrap_or("");
-        let mut img = widget::Image::new(path);
+        let handle = match &self.handle {
+            Some(h) => h.clone(),
+            None => iced_core::image::Handle::from_path(""),
+        };
+        let mut img = widget::Image::new(handle);
         if let Some(w) = self.width.t.as_ref() {
             img = img.width(w.0);
         }

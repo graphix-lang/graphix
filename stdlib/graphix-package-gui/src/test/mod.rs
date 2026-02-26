@@ -2,13 +2,16 @@ use anyhow::{bail, Context, Result};
 use graphix_compiler::expr::{ExprId, ModuleResolver};
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
 use graphix_rt::{GXEvent, NoExt};
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::global::GPooled;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::widgets::{self, GuiW};
+use crate::widgets::{self, GuiW, Message};
 
+mod canvas_test;
+mod chart_test;
+mod interaction_test;
 mod widgets_test;
 
 const TEST_REGISTER: &[RegisterFn] = &[
@@ -42,8 +45,7 @@ impl GuiTestHarness {
             arcstr::ArcStr::from(code),
         )]);
         let resolver = ModuleResolver::VFS(tbl);
-        let ctx =
-            testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;
+        let ctx = testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;
         let gx = ctx.rt.clone();
         let compiled = gx
             .compile(arcstr::literal!("{ mod test; test::result }"))
@@ -124,4 +126,270 @@ async fn wait_for_update(
             _ = &mut timeout => bail!("timeout waiting for initial widget value"),
         }
     }
+}
+
+// ── Headless GPU ────────────────────────────────────────────────────
+
+use iced_core::{clipboard, mouse, Event, Point, Size};
+use iced_runtime::user_interface::{self, UserInterface};
+use iced_wgpu::graphics::Shell;
+use iced_wgpu::wgpu;
+use tokio::sync::OnceCell;
+
+/// Shared headless wgpu adapter + device. Creating GPU resources is
+/// expensive, so we initialize once and share across all tests.
+struct HeadlessGpu {
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    format: wgpu::TextureFormat,
+}
+
+static HEADLESS_GPU: OnceCell<HeadlessGpu> = OnceCell::const_new();
+
+async fn headless_gpu() -> &'static HeadlessGpu {
+    HEADLESS_GPU
+        .get_or_init(|| async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+                ..Default::default()
+            });
+            // Try hardware adapter first, fall back to software
+            let adapter = match instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(a) => a,
+                Err(_) => instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        compatible_surface: None,
+                        force_fallback_adapter: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("no GPU adapter available (not even software fallback)"),
+            };
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .expect("failed to create GPU device");
+            HeadlessGpu {
+                adapter,
+                device,
+                queue,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            }
+        })
+        .await
+}
+
+impl HeadlessGpu {
+    fn create_renderer(&self) -> widgets::Renderer {
+        let engine = iced_wgpu::Engine::new(
+            &self.adapter,
+            self.device.clone(),
+            self.queue.clone(),
+            self.format,
+            None,
+            Shell::headless(),
+        );
+        iced_wgpu::Renderer::new(
+            engine,
+            iced_core::Font::DEFAULT,
+            iced_core::Pixels(16.0),
+        )
+    }
+}
+
+// ── Interaction Harness ─────────────────────────────────────────────
+
+/// Test harness that wraps `GuiTestHarness` with a headless renderer
+/// and iced `UserInterface` to simulate user interactions (clicks,
+/// typing, drags) and collect the resulting `Message`s.
+struct InteractionHarness {
+    inner: GuiTestHarness,
+    renderer: widgets::Renderer,
+    cache: user_interface::Cache,
+    viewport: Size,
+    cursor_position: Point,
+}
+
+impl InteractionHarness {
+    async fn new(code: &str) -> Result<Self> {
+        Self::with_viewport(code, Size::new(300.0, 50.0)).await
+    }
+
+    async fn with_viewport(code: &str, viewport: Size) -> Result<Self> {
+        let gpu = headless_gpu().await;
+        let renderer = gpu.create_renderer();
+        let inner = GuiTestHarness::new(code).await?;
+        Ok(Self {
+            inner,
+            renderer,
+            cache: user_interface::Cache::default(),
+            viewport,
+            cursor_position: Point::ORIGIN,
+        })
+    }
+
+    /// Build a UserInterface, feed events, and return the messages
+    /// produced by widget callbacks.
+    fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
+        let element = self.inner.widget.view();
+        let cache = std::mem::take(&mut self.cache);
+        let mut ui =
+            UserInterface::build(element, self.viewport, cache, &mut self.renderer);
+        let mut messages = Vec::new();
+        let mut clipboard = clipboard::Null;
+        let cursor = mouse::Cursor::Available(self.cursor_position);
+        let (_state, _statuses) =
+            ui.update(events, cursor, &mut self.renderer, &mut clipboard, &mut messages);
+        self.cache = ui.into_cache();
+        messages
+    }
+
+    #[allow(dead_code)]
+    async fn drain(&mut self) -> Result<bool> {
+        self.inner.drain().await
+    }
+
+    fn view(&self) -> crate::widgets::IcedElement<'_> {
+        self.inner.view()
+    }
+
+    #[allow(dead_code)]
+    fn viewport(&self) -> Size {
+        self.viewport
+    }
+
+    // ── Interaction helpers ─────────────────────────────────────
+
+    fn click(&mut self, pos: Point) -> Vec<Message> {
+        self.cursor_position = pos;
+        let mut all = Vec::new();
+        // Each event needs its own UI frame so widget state machines
+        // (pressed → released) transition correctly.
+        all.extend(self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
+            position: pos,
+        })]));
+        all.extend(self.process_events(&[Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Left,
+        ))]));
+        all.extend(self.process_events(&[Event::Mouse(mouse::Event::ButtonReleased(
+            mouse::Button::Left,
+        ))]));
+        all
+    }
+
+    #[allow(dead_code)]
+    fn click_center(&mut self) -> Vec<Message> {
+        let center = Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0);
+        self.click(center)
+    }
+
+    #[allow(dead_code)]
+    fn click_at(&mut self, frac_x: f32, frac_y: f32) -> Vec<Message> {
+        let pos = Point::new(self.viewport.width * frac_x, self.viewport.height * frac_y);
+        self.click(pos)
+    }
+
+    fn type_text(&mut self, text: &str) -> Vec<Message> {
+        use iced_core::keyboard;
+        let mut all_msgs = Vec::new();
+        for ch in text.chars() {
+            let s: iced_core::SmolStr = ch.to_string().into();
+            // Each character as a separate frame
+            all_msgs.extend(self.process_events(&[Event::Keyboard(
+                keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Character(s.clone()),
+                    modified_key: keyboard::Key::Character(s.clone()),
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: Some(s),
+                    repeat: false,
+                },
+            )]));
+        }
+        all_msgs
+    }
+
+    fn press_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {
+        use iced_core::keyboard;
+        self.process_events(&[Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(named),
+            modified_key: keyboard::Key::Named(named),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        })])
+    }
+
+    fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {
+        let mut all_msgs = Vec::new();
+        self.cursor_position = from;
+        all_msgs.extend(self.process_events(&[Event::Mouse(
+            mouse::Event::CursorMoved { position: from },
+        )]));
+        all_msgs.extend(self.process_events(&[Event::Mouse(
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+        )]));
+        let dx = (to_x - from.x) / steps as f32;
+        for i in 1..=steps {
+            let pos = Point::new(from.x + dx * i as f32, from.y);
+            self.cursor_position = pos;
+            all_msgs.extend(self.process_events(&[Event::Mouse(
+                mouse::Event::CursorMoved { position: pos },
+            )]));
+        }
+        all_msgs.extend(self.process_events(&[Event::Mouse(
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        )]));
+        all_msgs
+    }
+}
+
+// ── Message assertion helpers ───────────────────────────────────────
+
+use graphix_rt::CallableId;
+
+fn expect_call(msgs: &[Message]) -> CallableId {
+    let calls: Vec<_> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            Message::Call(id, _) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 1, "expected exactly one Call message, got {}", calls.len());
+    calls[0]
+}
+
+fn expect_call_with_args(
+    msgs: &[Message],
+    pred: impl Fn(&ValArray) -> bool,
+) -> CallableId {
+    let calls: Vec<_> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            Message::Call(id, args) if pred(args) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert!(!calls.is_empty(), "expected a Call message matching predicate, got none");
+    calls[0]
+}
+
+fn has_message(msgs: &[Message], pred: impl Fn(&Message) -> bool) -> bool {
+    msgs.iter().any(pred)
 }
