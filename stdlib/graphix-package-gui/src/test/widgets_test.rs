@@ -462,7 +462,7 @@ async fn canvas_renders() -> Result<()> {
 async fn chart_renders() -> Result<()> {
     let h = harness(
         "chart(#title: &\"Test\", #width: &`Fill, #height: &`Fixed(200.0), \
-            &[{data: [(0.0, 1.0), (1.0, 2.0), (2.0, 0.5)], \
+            &[{data: &[(0.0, 1.0), (1.0, 2.0), (2.0, 0.5)], \
                chart_type: `Line, color: null, label: null}])",
     )
     .await?;

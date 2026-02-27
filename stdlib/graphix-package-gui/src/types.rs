@@ -293,16 +293,14 @@ impl FromValue for ImageSourceV {
             // Bare string → file path (backward compat)
             Value::String(s) => Ok(Self::Path(s.to_string())),
             // Bare bytes → encoded image data
-            Value::Bytes(b) => Ok(Self::Bytes(iced_core::Bytes::copy_from_slice(&b))),
+            Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
             // Variant tag
             v => {
                 let (tag, val) = v.cast_to::<(ArcStr, Value)>()?;
                 match &*tag {
                     "Path" => Ok(Self::Path(val.cast_to::<String>()?)),
                     "Bytes" => match val {
-                        Value::Bytes(b) => {
-                            Ok(Self::Bytes(iced_core::Bytes::copy_from_slice(&b)))
-                        }
+                        Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
                         _ => bail!("ImageSource Bytes: expected bytes value"),
                     },
                     "Rgba" => {
@@ -311,7 +309,7 @@ impl FromValue for ImageSourceV {
                         let width = width.cast_to::<u32>()?;
                         let height = height.cast_to::<u32>()?;
                         let pixels = match pixels {
-                            Value::Bytes(b) => iced_core::Bytes::copy_from_slice(&b),
+                            Value::Bytes(b) => (*b).clone(),
                             _ => bail!("ImageSource Rgba: expected bytes for pixels"),
                         };
                         Ok(Self::Rgba { width, height, pixels })

@@ -1,7 +1,7 @@
 type ChartType = [`Line, `Scatter, `Bar, `Area];
 
 type Dataset = {
-  data: Array<(f64, f64)>,
+  data: &Array<(f64, f64)>,
   chart_type: ChartType,
   color: [Color, null],
   label: [string, null]

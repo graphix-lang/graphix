@@ -50,24 +50,44 @@ impl Clipboard {
     }
 }
 
-// CR estokes: What about non string clipboard contents? Someone may want to
-// build an app that accepts images, files, etc
 impl clipboard::Clipboard for Clipboard {
     fn read(&self, kind: clipboard::Kind) -> Option<String> {
-        // CR estokes: why do we skip reading and writing to the primary
-        // clipboard. this is a genuine question, I don't know how this works.
-        if kind == clipboard::Kind::Primary {
-            return None;
+        let mut cb = self.state.borrow_mut();
+        let cb = cb.as_mut()?;
+        match kind {
+            clipboard::Kind::Standard => cb.get_text().ok(),
+            clipboard::Kind::Primary => {
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::GetExtLinux;
+                    cb.get()
+                        .clipboard(arboard::LinuxClipboardKind::Primary)
+                        .text()
+                        .ok()
+                }
+                #[cfg(not(target_os = "linux"))]
+                None
+            }
         }
-        self.state.borrow_mut().as_mut()?.get_text().ok()
     }
 
     fn write(&mut self, kind: clipboard::Kind, contents: String) {
-        if kind == clipboard::Kind::Primary {
-            return;
-        }
-        if let Some(cb) = self.state.borrow_mut().as_mut() {
-            let _ = cb.set_text(contents);
+        let mut cb = self.state.borrow_mut();
+        let Some(cb) = cb.as_mut() else { return };
+        match kind {
+            clipboard::Kind::Standard => {
+                let _ = cb.set_text(contents);
+            }
+            clipboard::Kind::Primary => {
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::SetExtLinux;
+                    let _ = cb
+                        .set()
+                        .clipboard(arboard::LinuxClipboardKind::Primary)
+                        .text(contents);
+                }
+            }
         }
     }
 }

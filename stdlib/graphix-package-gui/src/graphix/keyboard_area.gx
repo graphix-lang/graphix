@@ -1,0 +1,5 @@
+let keyboard_area = |
+  #on_key_press: fn(KeyEvent) -> Any = |_| null,
+  #on_key_release: fn(KeyEvent) -> Any = |_| null,
+  child: &Widget
+| -> Widget `KeyboardArea({ child, on_key_press: &on_key_press, on_key_release: &on_key_release })

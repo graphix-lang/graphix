@@ -18,6 +18,7 @@ use triomphe::Arc;
 use types::SizeV;
 use winit::{event_loop::EventLoopProxy, window::WindowId};
 
+mod clipboard;
 mod convert;
 mod event_loop;
 mod render;
@@ -88,7 +89,17 @@ impl<X: GXExt> CustomDisplay<X> for Gui<X> {
 }
 
 graphix_derive::defpackage! {
-    builtins => [],
+    builtins => [
+        clipboard::ReadText,
+        clipboard::WriteText,
+        clipboard::ReadImage,
+        clipboard::WriteImage,
+        clipboard::ReadHtml,
+        clipboard::WriteHtml,
+        clipboard::ReadFiles,
+        clipboard::WriteFiles,
+        clipboard::Clear,
+    ],
     is_custom => |gx, env, e| {
         if let Some(typ) = e.typ.with_deref(|t| t.cloned())
             && typ != Type::Bottom

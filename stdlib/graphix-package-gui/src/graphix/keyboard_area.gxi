@@ -1,0 +1,18 @@
+type KeyEvent = {
+  key: string,
+  modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool},
+  text: string,
+  repeat: bool
+};
+
+type KeyboardArea = {
+  child: &Widget,
+  on_key_press: &fn(KeyEvent) -> Any,
+  on_key_release: &fn(KeyEvent) -> Any
+};
+
+val keyboard_area: fn(
+  ?#on_key_press: fn(KeyEvent) -> Any,
+  ?#on_key_release: fn(KeyEvent) -> Any,
+  &Widget
+) -> Widget

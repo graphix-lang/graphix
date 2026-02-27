@@ -1,0 +1,9 @@
+let read_text = |trigger| 'gui_clipboard_read_text;
+let write_text = |text| 'gui_clipboard_write_text;
+let read_image = |trigger| 'gui_clipboard_read_image;
+let write_image = |image| 'gui_clipboard_write_image;
+let read_html = |trigger| 'gui_clipboard_read_html;
+let write_html = |content| 'gui_clipboard_write_html;
+let read_files = |trigger| 'gui_clipboard_read_files;
+let write_files = |files| 'gui_clipboard_write_files;
+let clear = |trigger| 'gui_clipboard_clear

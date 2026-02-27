@@ -41,23 +41,12 @@ impl<X: GXExt> MouseAreaW<X> {
                 compile(gx.clone(), v.clone()).await.context("mouse_area child")?
             }
         };
-        macro_rules! compile_callable {
-            ($ref:ident, $label:literal) => {
-                match $ref.last.as_ref() {
-                    Some(v) => Some(
-                        gx.compile_callable(v.clone())
-                            .await
-                            .context(concat!("mouse_area ", $label))?,
-                    ),
-                    None => None,
-                }
-            };
-        }
-        let on_press_callable = compile_callable!(on_press, "on_press");
-        let on_release_callable = compile_callable!(on_release, "on_release");
-        let on_enter_callable = compile_callable!(on_enter, "on_enter");
-        let on_exit_callable = compile_callable!(on_exit, "on_exit");
-        let on_move_callable = compile_callable!(on_move, "on_move");
+        let on_press_callable = compile_callable!(gx, on_press, "mouse_area on_press");
+        let on_release_callable =
+            compile_callable!(gx, on_release, "mouse_area on_release");
+        let on_enter_callable = compile_callable!(gx, on_enter, "mouse_area on_enter");
+        let on_exit_callable = compile_callable!(gx, on_exit, "mouse_area on_exit");
+        let on_move_callable = compile_callable!(gx, on_move, "mouse_area on_move");
         Ok(Box::new(Self {
             gx: gx.clone(),
             child_ref,
@@ -92,22 +81,11 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
             changed = true;
         }
         changed |= self.child.handle_update(rt, id, v)?;
-        macro_rules! update_callable {
-            ($field:ident, $callable:ident, $label:literal) => {
-                if id == self.$field.id {
-                    self.$field.last = Some(v.clone());
-                    self.$callable = Some(
-                        rt.block_on(self.gx.compile_callable(v.clone()))
-                            .context(concat!("mouse_area ", $label, " recompile"))?,
-                    );
-                }
-            };
-        }
-        update_callable!(on_press, on_press_callable, "on_press");
-        update_callable!(on_release, on_release_callable, "on_release");
-        update_callable!(on_enter, on_enter_callable, "on_enter");
-        update_callable!(on_exit, on_exit_callable, "on_exit");
-        update_callable!(on_move, on_move_callable, "on_move");
+        update_callable!(self, rt, id, v, on_press, on_press_callable, "mouse_area on_press");
+        update_callable!(self, rt, id, v, on_release, on_release_callable, "mouse_area on_release");
+        update_callable!(self, rt, id, v, on_enter, on_enter_callable, "mouse_area on_enter");
+        update_callable!(self, rt, id, v, on_exit, on_exit_callable, "mouse_area on_exit");
+        update_callable!(self, rt, id, v, on_move, on_move_callable, "mouse_area on_move");
         Ok(changed)
     }
 

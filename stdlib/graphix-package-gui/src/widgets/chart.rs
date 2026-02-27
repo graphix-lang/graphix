@@ -3,7 +3,7 @@ use crate::types::{ColorV, LengthV};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
 use iced_widget::canvas as iced_canvas;
 use log::error;
@@ -37,35 +37,51 @@ impl FromValue for ChartType {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct Dataset {
-    // CR estokes: should the data be a ref, so the user can update the graph on
-    // the fly easily, e.g. by building a realtime data set with the window
-    // function?
-    pub(crate) data: LPooled<Vec<(f64, f64)>>,
+/// Parsed data points from a dataset's data ref.
+pub(crate) struct DataPoints(pub LPooled<Vec<(f64, f64)>>);
+
+impl FromValue for DataPoints {
+    fn from_value(v: Value) -> Result<Self> {
+        match v {
+            Value::Array(a) => Ok(Self(
+                a.iter()
+                    .map(|v| v.clone().cast_to::<(f64, f64)>())
+                    .collect::<Result<_>>()?,
+            )),
+            _ => bail!("chart dataset data: expected array"),
+        }
+    }
+}
+
+/// Dataset metadata parsed from the datasets array value.
+/// The `data` field is a bind ID (the data is behind a ref).
+pub(crate) struct DatasetMeta {
+    pub(crate) data_id: u64,
     pub(crate) chart_type: ChartType,
     pub(crate) color: Option<iced_core::Color>,
     pub(crate) label: Option<String>,
 }
 
-impl FromValue for Dataset {
+impl FromValue for DatasetMeta {
     fn from_value(v: Value) -> Result<Self> {
         let [(_, chart_type), (_, color), (_, data), (_, label)] =
             v.cast_to::<[(ArcStr, Value); 4]>()?;
         let chart_type = ChartType::from_value(chart_type)?;
         let color =
             if color == Value::Null { None } else { Some(ColorV::from_value(color)?.0) };
-        let data: LPooled<Vec<(f64, f64)>> = match data {
-            Value::Array(a) => a
-                .iter()
-                .map(|v| v.clone().cast_to::<(f64, f64)>())
-                .collect::<Result<_>>()?,
-            _ => bail!("chart dataset: expected array for data"),
-        };
+        let data_id = data.cast_to::<u64>()?;
         let label =
             if label == Value::Null { None } else { Some(label.cast_to::<String>()?) };
-        Ok(Dataset { data, chart_type, color, label })
+        Ok(DatasetMeta { data_id, chart_type, color, label })
     }
+}
+
+/// A compiled dataset with a live reactive data ref.
+struct DatasetEntry<X: GXExt> {
+    data: TRef<X, DataPoints>,
+    chart_type: ChartType,
+    color: Option<iced_core::Color>,
+    label: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,19 +94,6 @@ impl FromValue for AxisRange {
     fn from_value(v: Value) -> Result<Self> {
         let [(_, max), (_, min)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
         Ok(AxisRange { min, max })
-    }
-}
-
-/// Newtype for Vec<Dataset> to satisfy orphan rules.
-#[derive(Clone, Debug)]
-pub(crate) struct DatasetVec(pub Vec<Dataset>);
-
-impl FromValue for DatasetVec {
-    fn from_value(v: Value) -> Result<Self> {
-        let items = v.cast_to::<Vec<Value>>()?;
-        let ds: Vec<Dataset> =
-            items.into_iter().map(Dataset::from_value).collect::<Result<_>>()?;
-        Ok(Self(ds))
     }
 }
 
@@ -108,8 +111,34 @@ impl FromValue for OptAxisRange {
     }
 }
 
+/// Compile dataset metadata into live entries with data refs.
+async fn compile_datasets<X: GXExt>(
+    gx: &GXHandle<X>,
+    v: Value,
+) -> Result<Vec<DatasetEntry<X>>> {
+    let metas: Vec<DatasetMeta> = v
+        .cast_to::<Vec<Value>>()?
+        .into_iter()
+        .map(DatasetMeta::from_value)
+        .collect::<Result<_>>()?;
+    let mut entries = Vec::with_capacity(metas.len());
+    for meta in metas {
+        let data_ref = gx.compile_ref(meta.data_id).await?;
+        let data = TRef::new(data_ref).context("chart dataset data")?;
+        entries.push(DatasetEntry {
+            data,
+            chart_type: meta.chart_type,
+            color: meta.color,
+            label: meta.label,
+        });
+    }
+    Ok(entries)
+}
+
 pub(crate) struct ChartW<X: GXExt> {
-    datasets: TRef<X, DatasetVec>,
+    gx: GXHandle<X>,
+    datasets_ref: Ref<X>,
+    datasets: Vec<DatasetEntry<X>>,
     title: TRef<X, Option<String>>,
     x_label: TRef<X, Option<String>>,
     y_label: TRef<X, Option<String>>,
@@ -124,7 +153,7 @@ impl<X: GXExt> ChartW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let [(_, datasets), (_, height), (_, title), (_, width), (_, x_label), (_, x_range), (_, y_label), (_, y_range)] =
             source.cast_to::<[(ArcStr, u64); 8]>().context("chart flds")?;
-        let (datasets, height, title, width, x_label, x_range, y_label, y_range) = try_join! {
+        let (datasets_ref, height, title, width, x_label, x_range, y_label, y_range) = try_join! {
             gx.compile_ref(datasets),
             gx.compile_ref(height),
             gx.compile_ref(title),
@@ -134,8 +163,14 @@ impl<X: GXExt> ChartW<X> {
             gx.compile_ref(y_label),
             gx.compile_ref(y_range),
         }?;
+        let entries = match datasets_ref.last.as_ref() {
+            Some(v) => compile_datasets(&gx, v.clone()).await?,
+            None => vec![],
+        };
         Ok(Box::new(Self {
-            datasets: TRef::new(datasets).context("chart tref datasets")?,
+            gx: gx.clone(),
+            datasets_ref,
+            datasets: entries,
             title: TRef::new(title).context("chart tref title")?,
             x_label: TRef::new(x_label).context("chart tref x_label")?,
             y_label: TRef::new(y_label).context("chart tref y_label")?,
@@ -151,11 +186,30 @@ impl<X: GXExt> ChartW<X> {
 impl<X: GXExt> GuiWidget<X> for ChartW<X> {
     fn handle_update(
         &mut self,
-        _rt: &tokio::runtime::Handle,
+        rt: &tokio::runtime::Handle,
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        if id == self.datasets_ref.id {
+            self.datasets_ref.last = Some(v.clone());
+            self.datasets = rt
+                .block_on(compile_datasets(&self.gx, v.clone()))
+                .context("chart datasets recompile")?;
+            self.cache.clear();
+            changed = true;
+        }
+        for ds in &mut self.datasets {
+            if ds
+                .data
+                .update(id, v)
+                .context("chart update dataset data")?
+                .is_some()
+            {
+                self.cache.clear();
+                changed = true;
+            }
+        }
         macro_rules! up {
             ($f:ident) => {
                 if self
@@ -169,7 +223,6 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
                 }
             };
         }
-        up!(datasets);
         up!(title);
         up!(x_label);
         up!(y_label);
@@ -226,20 +279,27 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
             if w == 0 || h == 0 {
                 return;
             }
-            let datasets = match self.datasets.t.as_ref() {
-                Some(ds) if !ds.0.is_empty() => &ds.0,
-                _ => return,
+            if self.datasets.is_empty()
+                || !self.datasets.iter().any(|ds| ds.data.t.is_some())
+            {
+                return;
+            }
+
+            let data_slices = || {
+                self.datasets
+                    .iter()
+                    .filter_map(|ds| ds.data.t.as_ref().map(|d| d.0.as_slice()))
             };
 
             let (x_min, x_max) = match self.x_range.t.as_ref().and_then(|r| r.0.as_ref())
             {
                 Some(r) => (r.min, r.max),
-                None => auto_range(datasets, |p| p.0),
+                None => auto_range(data_slices(), |p| p.0),
             };
             let (y_min, y_max) = match self.y_range.t.as_ref().and_then(|r| r.0.as_ref())
             {
                 Some(r) => (r.min, r.max),
-                None => auto_range(datasets, |p| p.1),
+                None => auto_range(data_slices(), |p| p.1),
             };
 
             let backend = IcedBackend::new(frame, w, h);
@@ -280,7 +340,11 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                 return;
             }
 
-            for (i, ds) in datasets.iter().enumerate() {
+            for (i, ds) in self.datasets.iter().enumerate() {
+                let data = match ds.data.t.as_ref() {
+                    Some(d) => &d.0,
+                    None => continue,
+                };
                 let color =
                     ds.color.map(iced_to_plotters).unwrap_or(PALETTE[i % PALETTE.len()]);
                 let label = ds.label.as_deref();
@@ -289,7 +353,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
 
                 match ds.chart_type {
                     ChartType::Line => {
-                        let series = LineSeries::new(ds.data.iter().copied(), line_style);
+                        let series = LineSeries::new(data.iter().copied(), line_style);
                         match chart.draw_series(series) {
                             Ok(ann) => {
                                 if let Some(l) = label {
@@ -305,8 +369,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                         }
                     }
                     ChartType::Scatter => {
-                        let series = ds
-                            .data
+                        let series = data
                             .iter()
                             .map(|&(x, y)| Circle::new((x, y), 3, fill_style));
                         match chart.draw_series(series) {
@@ -321,13 +384,13 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                         }
                     }
                     ChartType::Bar => {
-                        let bar_width = if ds.data.len() > 1 {
-                            let dx = (x_max - x_min) / ds.data.len() as f64;
+                        let bar_width = if data.len() > 1 {
+                            let dx = (x_max - x_min) / data.len() as f64;
                             dx * 0.8
                         } else {
                             1.0
                         };
-                        let series = ds.data.iter().map(|&(x, y)| {
+                        let series = data.iter().map(|&(x, y)| {
                             plotters::element::Rectangle::new(
                                 [(x - bar_width / 2.0, 0.0), (x + bar_width / 2.0, y)],
                                 fill_style,
@@ -350,7 +413,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                     ChartType::Area => {
                         let area_fill = color.mix(0.3);
                         let series = AreaSeries::new(
-                            ds.data.iter().copied(),
+                            data.iter().copied(),
                             0.0,
                             ShapeStyle::from(area_fill).filled(),
                         )
@@ -372,7 +435,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
                 }
             }
 
-            if datasets.iter().any(|ds| ds.label.is_some()) {
+            if self.datasets.iter().any(|ds| ds.label.is_some()) {
                 if let Err(e) = chart
                     .configure_series_labels()
                     .background_style(WHITE.mix(0.8))
@@ -391,14 +454,14 @@ impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
     }
 }
 
-pub(crate) fn auto_range(
-    datasets: &[Dataset],
+pub(crate) fn auto_range<'a>(
+    data: impl IntoIterator<Item = &'a [(f64, f64)]>,
     f: impl Fn(&(f64, f64)) -> f64,
 ) -> (f64, f64) {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
-    for ds in datasets {
-        for pt in ds.data.iter() {
+    for slice in data {
+        for pt in slice {
             let v = f(pt);
             if v < min {
                 min = v;

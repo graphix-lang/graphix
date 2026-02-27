@@ -8,13 +8,38 @@ use std::{future::Future, pin::Pin};
 
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
+/// Compile an optional callable ref during widget construction.
+macro_rules! compile_callable {
+    ($gx:expr, $ref:ident, $label:literal) => {
+        match $ref.last.as_ref() {
+            Some(v) => Some($gx.compile_callable(v.clone()).await.context($label)?),
+            None => None,
+        }
+    };
+}
+
+/// Recompile a callable ref inside `handle_update`.
+macro_rules! update_callable {
+    ($self:ident, $rt:ident, $id:ident, $v:ident, $field:ident, $callable:ident, $label:literal) => {
+        if $id == $self.$field.id {
+            $self.$field.last = Some($v.clone());
+            $self.$callable = Some(
+                $rt.block_on($self.gx.compile_callable($v.clone()))
+                    .context(concat!($label, " recompile"))?,
+            );
+        }
+    };
+}
+
 pub(crate) mod button;
 pub(crate) mod canvas;
 pub(crate) mod chart;
 pub(crate) mod checkbox;
 pub(crate) mod combo_box;
 pub(crate) mod container;
+pub(crate) mod iced_keyboard_area;
 pub(crate) mod image;
+pub(crate) mod keyboard_area;
 pub(crate) mod mouse_area;
 pub(crate) mod pick_list;
 pub(crate) mod plotters_backend;
@@ -284,6 +309,9 @@ pub(crate) fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X>
             (s, v) if &s == "ComboBox" => combo_box::ComboBoxW::compile(gx, v).await,
             (s, v) if &s == "TextEditor" => {
                 text_editor::TextEditorW::compile(gx, v).await
+            }
+            (s, v) if &s == "KeyboardArea" => {
+                keyboard_area::KeyboardAreaW::compile(gx, v).await
             }
             (s, v) if &s == "MouseArea" => mouse_area::MouseAreaW::compile(gx, v).await,
             (s, v) if &s == "Image" => image::ImageW::compile(gx, v).await,

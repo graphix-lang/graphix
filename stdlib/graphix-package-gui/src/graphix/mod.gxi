@@ -9,6 +9,7 @@ type Widget = [
   `Container(container::Container),
   `HorizontalRule(rule::HorizontalRule),
   `Image(image::Image),
+  `KeyboardArea(keyboard_area::KeyboardArea),
   `MouseArea(mouse_area::MouseArea),
   `PickList(pick_list::PickList),
   `ProgressBar(progress_bar::ProgressBar),
@@ -94,8 +95,10 @@ mod radio;
 mod vertical_slider;
 mod combo_box;
 mod text_editor;
+mod keyboard_area;
 mod mouse_area;
 mod image;
 mod svg;
 mod canvas;
-mod chart
+mod chart;
+mod clipboard

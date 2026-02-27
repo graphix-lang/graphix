@@ -11,6 +11,7 @@ use crate::widgets::{self, GuiW, Message};
 
 mod canvas_test;
 mod chart_test;
+mod clipboard_test;
 mod interaction_test;
 mod widgets_test;
 
