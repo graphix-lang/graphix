@@ -78,6 +78,7 @@ pub(crate) async fn maybe_init_custom<X: GXExt>(
     try_pkg!(graphix_package_re::P);
     try_pkg!(graphix_package_rand::P);
     try_pkg!(graphix_package_tui::P);
+    #[cfg(feature = "gui")]
     try_pkg!(graphix_package_gui::P);
     Ok(CustomResult::NotCustom(e))
 }
