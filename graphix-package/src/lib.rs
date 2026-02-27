@@ -197,6 +197,7 @@ const DEFAULT_PACKAGES: &[(&str, &str)] = &[
     ("re", SKEL.version),
     ("rand", SKEL.version),
     ("tui", SKEL.version),
+    ("gui", SKEL.version),
 ];
 
 fn is_stdlib_package(name: &str) -> bool {

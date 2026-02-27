@@ -22,12 +22,13 @@ name = "graphix"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["gui"]
 krb5_iov = [
     "graphix-compiler/krb5_iov",
     "graphix-rt/krb5_iov",
     "netidx/krb5_iov",
 ]
+gui = ["dep:graphix-package-gui"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -50,7 +51,7 @@ graphix-package-str = { version = "0.4.0", path = "../stdlib/graphix-package-str
 graphix-package-time = { version = "0.4.0", path = "../stdlib/graphix-package-time" }
 graphix-package-net = { version = "0.4.0", path = "../stdlib/graphix-package-net" }
 graphix-package-tui = { version = "0.4.0", path = "../stdlib/graphix-package-tui" }
-graphix-package-gui = { version = "0.4.0", path = "../stdlib/graphix-package-gui" }
+graphix-package-gui = { version = "0.4.0", path = "../stdlib/graphix-package-gui", optional = true }
 graphix-rt = { version = "0.4.0", path = "../graphix-rt" }
 log = { workspace = true }
 netidx = { workspace = true }

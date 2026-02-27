@@ -29,6 +29,7 @@ pub(crate) fn register<X: GXExt>(
     graphix_package_re::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_rand::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_tui::P::register(ctx, modules, &mut root_mods)?;
+    #[cfg(feature = "gui")]
     graphix_package_gui::P::register(ctx, modules, &mut root_mods)?;
     let mut parts = Vec::new();
     for name in &root_mods {
@@ -38,10 +39,7 @@ pub(crate) fn register<X: GXExt>(
             parts.push(format!("mod {name}"));
         }
     }
-    Ok(RegisterResult {
-        root: ArcStr::from(parts.join(";\n")),
-        main_program: None,
-    })
+    Ok(RegisterResult { root: ArcStr::from(parts.join(";\n")), main_program: None })
 }
 
 pub(crate) struct Cdc<X: GXExt> {
@@ -64,7 +62,8 @@ pub(crate) async fn maybe_init_custom<X: GXExt>(
         ($pkg:path) => {
             if <$pkg>::is_custom(gx, env, &e) {
                 let (tx, rx) = oneshot::channel();
-                return <$pkg>::init_custom(gx, env, tx, e, run_on_main.clone()).await
+                return <$pkg>::init_custom(gx, env, tx, e, run_on_main.clone())
+                    .await
                     .map(|custom| CustomResult::Custom(Cdc { stop: rx, custom }));
             }
         };
