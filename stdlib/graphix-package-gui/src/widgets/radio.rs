@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct RadioW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     value: Ref<X>,
     label: TRef<X, String>,
     selected: Ref<X>,
@@ -22,9 +23,10 @@ pub(crate) struct RadioW<X: GXExt> {
 
 impl<X: GXExt> RadioW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, label), (_, on_select), (_, selected), (_, size), (_, spacing), (_, value), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 7]>().context("radio flds")?;
-        let (label, on_select, selected, size, spacing, value, width) = try_join! {
+        let [(_, disabled), (_, label), (_, on_select), (_, selected), (_, size), (_, spacing), (_, value), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 8]>().context("radio flds")?;
+        let (disabled, label, on_select, selected, size, spacing, value, width) = try_join! {
+            gx.compile_ref(disabled),
             gx.compile_ref(label),
             gx.compile_ref(on_select),
             gx.compile_ref(selected),
@@ -43,6 +45,7 @@ impl<X: GXExt> RadioW<X> {
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("radio tref disabled")?,
             value,
             label: TRef::new(label).context("radio tref label")?,
             selected,
@@ -63,6 +66,8 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("radio update disabled")?.is_some();
         if id == self.value.id {
             self.value.last = Some(v.clone());
             changed = true;
@@ -89,7 +94,11 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
         let label = self.label.t.as_deref().unwrap_or("");
         let is_selected =
             self.value.last.is_some() && self.value.last == self.selected.last;
-        let on_select_id = self.on_select_callable.as_ref().map(|c| c.id());
+        let on_select_id = if self.disabled.t.unwrap_or(false) {
+            None
+        } else {
+            self.on_select_callable.as_ref().map(|c| c.id())
+        };
         let value_for_callback = self.value.last.clone().unwrap_or(Value::Null);
         // Use bool as the dummy value type for iced's Radio (needs Copy + Eq).
         // Selection state is computed by us via value/selected comparison.

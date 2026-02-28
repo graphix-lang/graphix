@@ -1,4 +1,5 @@
 type ComboBox = {
+  disabled: &bool,
   on_select: &fn(string) -> Any,
   options: &Array<string>,
   selected: &[string, null],
@@ -11,5 +12,6 @@ val combo_box: fn(
   ?#on_select: fn(string) -> Any,
   ?#placeholder: &string,
   ?#width: &Length,
+  ?#disabled: &bool,
   &Array<string>
 ) -> Widget

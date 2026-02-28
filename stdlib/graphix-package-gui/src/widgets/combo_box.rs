@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct ComboBoxW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     options: TRef<X, StringVec>,
     state: combo_box::State<String>,
     selected: TRef<X, Option<String>>,
@@ -21,9 +22,10 @@ pub(crate) struct ComboBoxW<X: GXExt> {
 
 impl<X: GXExt> ComboBoxW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, on_select), (_, options), (_, placeholder), (_, selected), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("combo_box flds")?;
-        let (on_select, options, placeholder, selected, width) = try_join! {
+        let [(_, disabled), (_, on_select), (_, options), (_, placeholder), (_, selected), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 6]>().context("combo_box flds")?;
+        let (disabled, on_select, options, placeholder, selected, width) = try_join! {
+            gx.compile_ref(disabled),
             gx.compile_ref(on_select),
             gx.compile_ref(options),
             gx.compile_ref(placeholder),
@@ -45,6 +47,7 @@ impl<X: GXExt> ComboBoxW<X> {
         );
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("combo_box tref disabled")?,
             options: options_tref,
             state,
             selected: TRef::new(selected).context("combo_box tref selected")?,
@@ -64,6 +67,8 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("combo_box update disabled")?.is_some();
         if let Some(opts) =
             self.options.update(id, v).context("combo_box update options")?
         {
@@ -91,7 +96,11 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
     fn view(&self) -> IcedElement<'_> {
         let selected = self.selected.t.as_ref().and_then(|o| o.as_ref());
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
-        let on_select_id = self.on_select_callable.as_ref().map(|c| c.id());
+        let on_select_id = if self.disabled.t.unwrap_or(false) {
+            None
+        } else {
+            self.on_select_callable.as_ref().map(|c| c.id())
+        };
         let mut cb = widget::ComboBox::new(
             &self.state,
             placeholder,

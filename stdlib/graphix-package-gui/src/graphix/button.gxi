@@ -1,5 +1,6 @@
 type Button = {
   child: &Widget,
+  disabled: &bool,
   on_press: &fn(null) -> Any,
   width: &Length,
   height: &Length,
@@ -11,5 +12,6 @@ val button: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#padding: &Padding,
+  ?#disabled: &bool,
   &Widget
 ) -> Widget

@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct PickListW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     options: TRef<X, StringVec>,
     selected: TRef<X, Option<String>>,
     on_select: Ref<X>,
@@ -21,9 +22,10 @@ pub(crate) struct PickListW<X: GXExt> {
 
 impl<X: GXExt> PickListW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, on_select), (_, options), (_, padding), (_, placeholder), (_, selected), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 6]>().context("pick_list flds")?;
-        let (on_select, options, padding, placeholder, selected, width) = try_join! {
+        let [(_, disabled), (_, on_select), (_, options), (_, padding), (_, placeholder), (_, selected), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 7]>().context("pick_list flds")?;
+        let (disabled, on_select, options, padding, placeholder, selected, width) = try_join! {
+            gx.compile_ref(disabled),
             gx.compile_ref(on_select),
             gx.compile_ref(options),
             gx.compile_ref(padding),
@@ -41,6 +43,7 @@ impl<X: GXExt> PickListW<X> {
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("pick_list tref disabled")?,
             options: TRef::new(options).context("pick_list tref options")?,
             selected: TRef::new(selected).context("pick_list tref selected")?,
             on_select,
@@ -60,6 +63,8 @@ impl<X: GXExt> GuiWidget<X> for PickListW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("pick_list update disabled")?.is_some();
         changed |=
             self.options.update(id, v).context("pick_list update options")?.is_some();
         changed |=
@@ -85,7 +90,11 @@ impl<X: GXExt> GuiWidget<X> for PickListW<X> {
     fn view(&self) -> IcedElement<'_> {
         let options = self.options.t.as_ref().map(|v| v.0.as_slice()).unwrap_or(&[]);
         let selected = self.selected.t.as_ref().and_then(|o| o.clone());
-        let on_select_id = self.on_select_callable.as_ref().map(|c| c.id());
+        let on_select_id = if self.disabled.t.unwrap_or(false) {
+            None
+        } else {
+            self.on_select_callable.as_ref().map(|c| c.id())
+        };
         let mut pl =
             widget::PickList::new(
                 options,

@@ -1,8 +1,9 @@
 type Radio = {
+  disabled: &bool,
   value: &Any,
   label: &string,
   on_select: &fn(Any) -> Any,
-  selected: &[Any, null],
+  selected: &Any,
   width: &Length,
   size: &[f64, null],
   spacing: &[f64, null]
@@ -10,10 +11,11 @@ type Radio = {
 
 val radio: fn(
   #label: &string,
-  ?#selected: &[Any, null],
+  ?#selected: &Any,
   ?#on_select: fn(Any) -> Any,
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],
+  ?#disabled: &bool,
   &Any
 ) -> Widget

@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct TextInputW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     value: TRef<X, String>,
     placeholder: TRef<X, String>,
     on_input: Ref<X>,
@@ -25,9 +26,10 @@ pub(crate) struct TextInputW<X: GXExt> {
 
 impl<X: GXExt> TextInputW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, font), (_, is_secure), (_, on_input), (_, on_submit), (_, padding), (_, placeholder), (_, size), (_, value), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 9]>().context("text_input flds")?;
+        let [(_, disabled), (_, font), (_, is_secure), (_, on_input), (_, on_submit), (_, padding), (_, placeholder), (_, size), (_, value), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 10]>().context("text_input flds")?;
         let (
+            disabled,
             font,
             is_secure,
             on_input,
@@ -38,6 +40,7 @@ impl<X: GXExt> TextInputW<X> {
             value,
             width,
         ) = try_join! {
+            gx.compile_ref(disabled),
             gx.compile_ref(font),
             gx.compile_ref(is_secure),
             gx.compile_ref(on_input),
@@ -66,6 +69,7 @@ impl<X: GXExt> TextInputW<X> {
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("text_input tref disabled")?,
             value: TRef::new(value).context("text_input tref value")?,
             placeholder: TRef::new(placeholder).context("text_input tref placeholder")?,
             on_input,
@@ -89,6 +93,8 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("text_input update disabled")?.is_some();
         changed |= self.value.update(id, v).context("text_input update value")?.is_some();
         changed |= self
             .placeholder
@@ -126,17 +132,19 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         let val = self.value.t.as_deref().unwrap_or("");
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
         let mut ti = widget::TextInput::new(placeholder, val);
-        if let Some(callable) = &self.on_input_callable {
-            let id = callable.id();
-            ti = ti.on_input(move |s| {
-                Message::Call(id, ValArray::from_iter([Value::String(s.into())]))
-            });
-        }
-        if let Some(callable) = &self.on_submit_callable {
-            ti = ti.on_submit(Message::Call(
-                callable.id(),
-                ValArray::from_iter([Value::Null]),
-            ));
+        if !self.disabled.t.unwrap_or(false) {
+            if let Some(callable) = &self.on_input_callable {
+                let id = callable.id();
+                ti = ti.on_input(move |s| {
+                    Message::Call(id, ValArray::from_iter([Value::String(s.into())]))
+                });
+            }
+            if let Some(callable) = &self.on_submit_callable {
+                ti = ti.on_submit(Message::Call(
+                    callable.id(),
+                    ValArray::from_iter([Value::Null]),
+                ));
+            }
         }
         if self.is_secure.t == Some(true) {
             ti = ti.secure(true);

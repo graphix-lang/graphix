@@ -3,5 +3,6 @@ let button = |
   #width: &Length = &`Shrink,
   #height: &Length = &`Shrink,
   #padding: &Padding = &`All(5.0),
+  #disabled: &bool = &false,
   child: &Widget
-| -> Widget `Button({ child, on_press: &on_press, width, height, padding })
+| -> Widget `Button({ child, on_press: &on_press, width, height, padding, disabled })

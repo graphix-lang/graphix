@@ -11,6 +11,7 @@ use tokio::try_join;
 /// Multi-line text editor widget. Editable when on_edit callback is provided.
 pub(crate) struct TextEditorW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     content: text_editor::Content,
     content_ref: TRef<X, String>,
     on_edit: Ref<X>,
@@ -28,10 +29,11 @@ pub(crate) struct TextEditorW<X: GXExt> {
 
 impl<X: GXExt> TextEditorW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, content), (_, font), (_, height), (_, on_edit), (_, padding), (_, placeholder), (_, size), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 8]>().context("text_editor flds")?;
-        let (content, font, height, on_edit, padding, placeholder, size, width) = try_join! {
+        let [(_, content), (_, disabled), (_, font), (_, height), (_, on_edit), (_, padding), (_, placeholder), (_, size), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 9]>().context("text_editor flds")?;
+        let (content, disabled, font, height, on_edit, padding, placeholder, size, width) = try_join! {
             gx.compile_ref(content),
+            gx.compile_ref(disabled),
             gx.compile_ref(font),
             gx.compile_ref(height),
             gx.compile_ref(on_edit),
@@ -54,6 +56,7 @@ impl<X: GXExt> TextEditorW<X> {
         let editor_content = text_editor::Content::with_text(initial_text);
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("text_editor tref disabled")?,
             content: editor_content,
             content_ref: content_tref,
             on_edit,
@@ -78,6 +81,11 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |= self
+            .disabled
+            .update(id, v)
+            .context("text_editor update disabled")?
+            .is_some();
         if let Some(new_text) =
             self.content_ref.update(id, v).context("text_editor update content")?
         {
@@ -113,7 +121,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let mut te = widget::TextEditor::new(&self.content);
-        if self.on_edit_callable.is_some() {
+        if !self.disabled.t.unwrap_or(false) && self.on_edit_callable.is_some() {
             let content_id = self.content_ref.r.id;
             te = te.on_action(move |a| Message::EditorAction(content_id, a));
         }

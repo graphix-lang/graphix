@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct TogglerW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     is_toggled: TRef<X, bool>,
     label: TRef<X, String>,
     on_toggle: Ref<X>,
@@ -21,9 +22,10 @@ pub(crate) struct TogglerW<X: GXExt> {
 
 impl<X: GXExt> TogglerW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, is_toggled), (_, label), (_, on_toggle), (_, size), (_, spacing), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 6]>().context("toggler flds")?;
-        let (is_toggled, label, on_toggle, size, spacing, width) = try_join! {
+        let [(_, disabled), (_, is_toggled), (_, label), (_, on_toggle), (_, size), (_, spacing), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 7]>().context("toggler flds")?;
+        let (disabled, is_toggled, label, on_toggle, size, spacing, width) = try_join! {
+            gx.compile_ref(disabled),
             gx.compile_ref(is_toggled),
             gx.compile_ref(label),
             gx.compile_ref(on_toggle),
@@ -41,6 +43,7 @@ impl<X: GXExt> TogglerW<X> {
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("toggler tref disabled")?,
             is_toggled: TRef::new(is_toggled).context("toggler tref is_toggled")?,
             label: TRef::new(label).context("toggler tref label")?,
             on_toggle,
@@ -60,6 +63,8 @@ impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("toggler update disabled")?.is_some();
         changed |=
             self.is_toggled.update(id, v).context("toggler update is_toggled")?.is_some();
         changed |= self.label.update(id, v).context("toggler update label")?.is_some();
@@ -84,11 +89,13 @@ impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
         if !label.is_empty() {
             tg = tg.label(label);
         }
-        if let Some(callable) = &self.on_toggle_callable {
-            let id = callable.id();
-            tg = tg.on_toggle(move |b| {
-                Message::Call(id, ValArray::from_iter([Value::from(b)]))
-            });
+        if !self.disabled.t.unwrap_or(false) {
+            if let Some(callable) = &self.on_toggle_callable {
+                let id = callable.id();
+                tg = tg.on_toggle(move |b| {
+                    Message::Call(id, ValArray::from_iter([Value::from(b)]))
+                });
+            }
         }
         if let Some(w) = self.width.t.as_ref() {
             tg = tg.width(w.0);

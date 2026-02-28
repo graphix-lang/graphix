@@ -1,4 +1,5 @@
 type PickList = {
+  disabled: &bool,
   on_select: &fn(string) -> Any,
   options: &Array<string>,
   selected: &[string, null],
@@ -13,5 +14,6 @@ val pick_list: fn(
   ?#placeholder: &string,
   ?#width: &Length,
   ?#padding: &Padding,
+  ?#disabled: &bool,
   &Array<string>
 ) -> Widget

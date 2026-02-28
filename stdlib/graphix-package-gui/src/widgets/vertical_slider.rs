@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct VerticalSliderW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     value: TRef<X, f64>,
     min: TRef<X, f64>,
     max: TRef<X, f64>,
@@ -24,9 +25,10 @@ pub(crate) struct VerticalSliderW<X: GXExt> {
 
 impl<X: GXExt> VerticalSliderW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, height), (_, max), (_, min), (_, on_change), (_, on_release), (_, step), (_, value), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 8]>().context("vertical_slider flds")?;
-        let (height, max, min, on_change, on_release, step, value, width) = try_join! {
+        let [(_, disabled), (_, height), (_, max), (_, min), (_, on_change), (_, on_release), (_, step), (_, value), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 9]>().context("vertical_slider flds")?;
+        let (disabled, height, max, min, on_change, on_release, step, value, width) = try_join! {
+            gx.compile_ref(disabled),
             gx.compile_ref(height),
             gx.compile_ref(max),
             gx.compile_ref(min),
@@ -54,6 +56,7 @@ impl<X: GXExt> VerticalSliderW<X> {
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("vertical_slider tref disabled")?,
             value: TRef::new(value).context("vertical_slider tref value")?,
             min: TRef::new(min).context("vertical_slider tref min")?,
             max: TRef::new(max).context("vertical_slider tref max")?,
@@ -76,6 +79,8 @@ impl<X: GXExt> GuiWidget<X> for VerticalSliderW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("vslider update disabled")?.is_some();
         changed |= self.value.update(id, v).context("vslider update value")?.is_some();
         changed |= self.min.update(id, v).context("vslider update min")?.is_some();
         changed |= self.max.update(id, v).context("vslider update max")?.is_some();
@@ -104,7 +109,12 @@ impl<X: GXExt> GuiWidget<X> for VerticalSliderW<X> {
         let min = self.min.t.unwrap_or(0.0) as f32;
         let max = self.max.t.unwrap_or(100.0) as f32;
         let range = min..=max;
-        let on_change_id = self.on_change_callable.as_ref().map(|c| c.id());
+        let disabled = self.disabled.t.unwrap_or(false);
+        let on_change_id = if disabled {
+            None
+        } else {
+            self.on_change_callable.as_ref().map(|c| c.id())
+        };
         let mut sl =
             widget::VerticalSlider::new(range, val, move |v| match on_change_id {
                 Some(id) => {
@@ -115,11 +125,13 @@ impl<X: GXExt> GuiWidget<X> for VerticalSliderW<X> {
         if let Some(Some(step)) = self.step.t {
             sl = sl.step(step as f32);
         }
-        if let Some(callable) = &self.on_release_callable {
-            sl = sl.on_release(Message::Call(
-                callable.id(),
-                ValArray::from_iter([Value::Null]),
-            ));
+        if !disabled {
+            if let Some(callable) = &self.on_release_callable {
+                sl = sl.on_release(Message::Call(
+                    callable.id(),
+                    ValArray::from_iter([Value::Null]),
+                ));
+            }
         }
         if let Some(Some(w)) = self.width.t {
             sl = sl.width(w as f32);

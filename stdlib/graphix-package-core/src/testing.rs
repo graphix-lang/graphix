@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use graphix_compiler::expr::ModuleResolver;
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
+use netidx::publisher::Value;
 use poolshark::global::GPooled;
 use tokio::sync::mpsc;
 
@@ -64,6 +65,43 @@ pub async fn init(
     register: &[RegisterFn],
 ) -> Result<TestCtx> {
     init_with_resolvers(sub, register, vec![]).await
+}
+
+/// Evaluate a graphix expression and return its Value.
+///
+/// Compiles `code` as `let result = {code}` in a throwaway module,
+/// waits for the first update, and returns the resulting value along
+/// with the test context (caller must shut it down).
+pub async fn eval(code: &str, register: &[RegisterFn]) -> Result<(Value, TestCtx)> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let gx_code = format!("let result = {code}");
+    let tbl = fxhash::FxHashMap::from_iter([(
+        netidx_core::path::Path::from("/test.gx"),
+        arcstr::ArcStr::from(gx_code),
+    )]);
+    let resolver = ModuleResolver::VFS(tbl);
+    let ctx = init_with_resolvers(tx, register, vec![resolver]).await?;
+    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let eid = compiled.exprs[0].id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => bail!("timeout waiting for graphix result"),
+            batch = rx.recv() => match batch {
+                None => bail!("graphix runtime died"),
+                Some(mut batch) => {
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e {
+                            if id == eid {
+                                return Ok((v, ctx));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub use graphix_compiler::expr::parser::GRAPHIX_ESC;

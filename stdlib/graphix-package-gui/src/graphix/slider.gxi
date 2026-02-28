@@ -1,4 +1,5 @@
 type Slider = {
+  disabled: &bool,
   value: &f64,
   min: &f64,
   max: &f64,
@@ -17,5 +18,6 @@ val slider: fn(
   ?#on_release: fn(null) -> Any,
   ?#width: &Length,
   ?#height: &[f64, null],
+  ?#disabled: &bool,
   &f64
 ) -> Widget

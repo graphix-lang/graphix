@@ -3,4 +3,25 @@ let window = |
   #size: &Size = &{ width: 800.0, height: 600.0 },
   #theme: &Theme = &`Dark,
   content: &Widget
-| -> Window { title, size, theme, content }
+| -> Window { title, size, theme, content };
+
+let custom_theme = |
+  #palette: &Palette,
+  #button: [ButtonStyle, null] = null,
+  #checkbox: [CheckboxStyle, null] = null,
+  #container: [ContainerStyle, null] = null,
+  #menu: [MenuStyle, null] = null,
+  #pick_list: [PickListStyle, null] = null,
+  #progress_bar: [ProgressBarStyle, null] = null,
+  #radio: [RadioStyle, null] = null,
+  #rule: [RuleStyle, null] = null,
+  #scrollable: [ScrollableStyle, null] = null,
+  #slider: [SliderStyle, null] = null,
+  #text_editor: [TextEditorStyle, null] = null,
+  #text_input: [TextInputStyle, null] = null,
+  #toggler: [TogglerStyle, null] = null
+| -> StyleSheet {
+  button, checkbox, container, menu, palette,
+  pick_list, progress_bar, radio, rule,
+  scrollable, slider, text_editor, text_input, toggler
+}

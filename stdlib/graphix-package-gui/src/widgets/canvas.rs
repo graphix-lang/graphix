@@ -408,14 +408,14 @@ impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
     }
 }
 
-impl<X: GXExt> iced_canvas::Program<super::Message> for CanvasW<X> {
+impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme> for CanvasW<X> {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &iced_core::Theme,
+        _theme: &crate::theme::GraphixTheme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<iced_canvas::Geometry<Renderer>> {

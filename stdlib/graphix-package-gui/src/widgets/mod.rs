@@ -64,7 +64,7 @@ pub(crate) type Renderer = iced_renderer::Renderer;
 
 /// Concrete iced Element type with our Message/Theme/Renderer.
 pub(crate) type IcedElement<'a> =
-    iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
+    iced_core::Element<'a, Message, crate::theme::GraphixTheme, Renderer>;
 
 /// Message type for iced widget interactions.
 #[derive(Debug, Clone)]

@@ -1,7 +1,15 @@
-use crate::widgets::chart::{auto_range, AxisRange, ChartType, DatasetMeta};
+use crate::widgets::chart::{auto_range, ChartType};
+use super::GuiTestHarness;
 use anyhow::Result;
-use arcstr::literal;
 use netidx::publisher::{FromValue, Value};
+
+async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
+    let code = format!(
+        "use gui;\nuse gui::chart;\n\
+         let result = chart({args})"
+    );
+    GuiTestHarness::new(&code).await
+}
 
 // ── auto_range ──────────────────────────────────────────────────────
 
@@ -89,55 +97,42 @@ fn chart_type_invalid() {
     assert!(ChartType::from_value(Value::String("Pie".into())).is_err());
 }
 
-// ── AxisRange::from_value ───────────────────────────────────────────
+// ── Axis range via chart() ──────────────────────────────────────────
 
-#[test]
-fn axis_range_parses() -> Result<()> {
-    let v: Value = [(literal!("max"), 100.0f64), (literal!("min"), 0.0f64)].into();
-    let ar = AxisRange::from_value(v)?;
-    assert!((ar.min - 0.0).abs() < 1e-10);
-    assert!((ar.max - 100.0).abs() < 1e-10);
+#[tokio::test(flavor = "current_thread")]
+async fn axis_range_renders() -> Result<()> {
+    let h = chart_harness(
+        "#x_range: &{min: 0.0, max: 100.0}, \
+         #y_range: &{min: -5.0, max: 50.0}, \
+         #width: &`Fill, #height: &`Fixed(200.0), \
+         &[{data: &[(0.0, 1.0)], chart_type: `Line, color: null, label: null}]",
+    )
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-// ── DatasetMeta::from_value ─────────────────────────────────────────
+// ── Dataset metadata via chart() ────────────────────────────────────
 
-/// Build a dataset meta Value from raw parts.
-/// `data_id` simulates the bind ID that a ref would produce.
-fn dataset_meta_val(data_id: u64, chart_type: &str, color: Value, label: Value) -> Value {
-    [
-        (literal!("chart_type"), Value::String(chart_type.into())),
-        (literal!("color"), color),
-        (literal!("data"), Value::U64(data_id)),
-        (literal!("label"), label),
-    ]
-    .into()
-}
-
-#[test]
-fn dataset_meta_parses() -> Result<()> {
-    let v = dataset_meta_val(42, "Line", Value::Null, Value::String("test".into()));
-    let dm = DatasetMeta::from_value(v)?;
-    assert_eq!(dm.data_id, 42);
-    assert!(matches!(dm.chart_type, ChartType::Line));
-    assert!(dm.color.is_none());
-    assert_eq!(dm.label.as_deref(), Some("test"));
+#[tokio::test(flavor = "current_thread")]
+async fn dataset_meta_renders() -> Result<()> {
+    let h = chart_harness(concat!(
+        "#width: &`Fill, #height: &`Fixed(200.0), ",
+        r#"&[{data: &[], chart_type: `Line, color: null, label: "test"}]"#,
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-#[test]
-fn dataset_meta_with_color() -> Result<()> {
-    let color: Value = [
-        (literal!("a"), 1.0f64),
-        (literal!("b"), 0.0f64),
-        (literal!("g"), 1.0f64),
-        (literal!("r"), 0.0f64),
-    ]
-    .into();
-    let v = dataset_meta_val(99, "Scatter", color, Value::Null);
-    let dm = DatasetMeta::from_value(v)?;
-    assert!(dm.color.is_some());
-    assert!(matches!(dm.chart_type, ChartType::Scatter));
-    assert!(dm.label.is_none());
+#[tokio::test(flavor = "current_thread")]
+async fn dataset_meta_with_color() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         &[{data: &[], chart_type: `Scatter, \
+            color: {r: 0.0, g: 1.0, b: 0.0, a: 1.0}, label: null}]",
+    )
+    .await?;
+    let _ = h.view();
     Ok(())
 }

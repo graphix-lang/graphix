@@ -10,6 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct ButtonW<X: GXExt> {
     gx: GXHandle<X>,
+    disabled: TRef<X, bool>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
     padding: TRef<X, PaddingV>,
@@ -21,10 +22,11 @@ pub(crate) struct ButtonW<X: GXExt> {
 
 impl<X: GXExt> ButtonW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, child), (_, height), (_, on_press), (_, padding), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("button flds")?;
-        let (child_ref, height, on_press, padding, width) = try_join! {
+        let [(_, child), (_, disabled), (_, height), (_, on_press), (_, padding), (_, width)] =
+            source.cast_to::<[(ArcStr, u64); 6]>().context("button flds")?;
+        let (child_ref, disabled, height, on_press, padding, width) = try_join! {
             gx.compile_ref(child),
+            gx.compile_ref(disabled),
             gx.compile_ref(height),
             gx.compile_ref(on_press),
             gx.compile_ref(padding),
@@ -44,6 +46,7 @@ impl<X: GXExt> ButtonW<X> {
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
+            disabled: TRef::new(disabled).context("button tref disabled")?,
             width: TRef::new(width).context("button tref width")?,
             height: TRef::new(height).context("button tref height")?,
             padding: TRef::new(padding).context("button tref padding")?,
@@ -63,6 +66,8 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        changed |=
+            self.disabled.update(id, v).context("button update disabled")?.is_some();
         changed |= self.width.update(id, v).context("button update width")?.is_some();
         changed |= self.height.update(id, v).context("button update height")?.is_some();
         changed |= self.padding.update(id, v).context("button update padding")?.is_some();
@@ -94,11 +99,13 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.view());
-        if let Some(callable) = &self.on_press_callable {
-            btn = btn.on_press(Message::Call(
-                callable.id(),
-                ValArray::from_iter([Value::Null]),
-            ));
+        if !self.disabled.t.unwrap_or(false) {
+            if let Some(callable) = &self.on_press_callable {
+                btn = btn.on_press(Message::Call(
+                    callable.id(),
+                    ValArray::from_iter([Value::Null]),
+                ));
+            }
         }
         if let Some(w) = self.width.t.as_ref() {
             btn = btn.width(w.0);

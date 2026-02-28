@@ -7,5 +7,6 @@ let text_input = |
   #padding: &Padding = &`All(5.0),
   #size: &[f64, null] = &null,
   #font: &[Font, null] = &null,
+  #disabled: &bool = &false,
   value: &string
-| -> Widget `TextInput({ value, placeholder, on_input: &on_input, on_submit: &on_submit, is_secure, width, padding, size, font })
+| -> Widget `TextInput({ value, placeholder, on_input: &on_input, on_submit: &on_submit, is_secure, width, padding, size, font, disabled })

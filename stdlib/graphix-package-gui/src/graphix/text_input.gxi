@@ -1,4 +1,5 @@
 type TextInput = {
+  disabled: &bool,
   value: &string,
   placeholder: &string,
   on_input: &fn(string) -> Any,
@@ -19,5 +20,6 @@ val text_input: fn(
   ?#padding: &Padding,
   ?#size: &[f64, null],
   ?#font: &[Font, null],
+  ?#disabled: &bool,
   &string
 ) -> Widget

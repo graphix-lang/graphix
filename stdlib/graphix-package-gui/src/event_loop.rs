@@ -304,6 +304,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 let theme = tw.iced_theme();
                 let style = Style { text_color: theme.palette().text };
                 ui.draw(&mut ws.renderer, &theme, &style, tw.cursor());
+
                 self.ui_caches.insert(win_id, ui.into_cache());
                 tw.pending_events.clear();
 

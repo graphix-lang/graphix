@@ -6,5 +6,6 @@ let slider = |
   #on_release: fn(null) -> Any = |_| null,
   #width: &Length = &`Fill,
   #height: &[f64, null] = &null,
+  #disabled: &bool = &false,
   value: &f64
-| -> Widget `Slider({ value, min, max, step, on_change: &on_change, on_release: &on_release, width, height })
+| -> Widget `Slider({ value, min, max, step, on_change: &on_change, on_release: &on_release, width, height, disabled })

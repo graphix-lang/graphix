@@ -262,14 +262,14 @@ fn iced_to_plotters(c: iced_core::Color) -> RGBColor {
     RGBColor(r, g, b)
 }
 
-impl<X: GXExt> iced_canvas::Program<super::Message> for ChartW<X> {
+impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme> for ChartW<X> {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &iced_core::Theme,
+        _theme: &crate::theme::GraphixTheme,
         bounds: iced_core::Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<iced_canvas::Geometry<Renderer>> {

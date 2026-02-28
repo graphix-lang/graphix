@@ -6,5 +6,6 @@ let vertical_slider = |
   #on_release: fn(null) -> Any = |_| null,
   #width: &[f64, null] = &null,
   #height: &Length = &`Fill,
+  #disabled: &bool = &false,
   value: &f64
-| -> Widget `VerticalSlider({ value, min, max, step, on_change: &on_change, on_release: &on_release, width, height })
+| -> Widget `VerticalSlider({ value, min, max, step, on_change: &on_change, on_release: &on_release, width, height, disabled })

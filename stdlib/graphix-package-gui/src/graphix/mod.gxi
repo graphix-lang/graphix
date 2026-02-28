@@ -47,13 +47,107 @@ type ScrollDirection = [`Vertical, `Horizontal, `Both];
 type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
 type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
 
+type Palette = {
+  background: Color,
+  danger: Color,
+  primary: Color,
+  success: Color,
+  text: Color,
+  warning: Color
+};
+
+/// Per-widget style types for custom theming
+type ButtonStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, text_color: Color
+};
+
+type CheckboxStyle = {
+  accent: Color, background: Color, border_color: Color,
+  border_radius: f64, border_width: f64, icon_color: Color, text_color: Color
+};
+
+type ContainerStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, text_color: Color
+};
+
+type MenuStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, selected_background: Color, selected_text_color: Color,
+  text_color: Color
+};
+
+type PickListStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, handle_color: Color, placeholder_color: Color,
+  text_color: Color
+};
+
+type ProgressBarStyle = {
+  background: Color, bar_color: Color, border_radius: f64
+};
+
+type RadioStyle = {
+  background: Color, border_color: Color, border_width: f64,
+  dot_color: Color, text_color: Color
+};
+
+type RuleStyle = { color: Color, radius: f64, width: f64 };
+
+type ScrollableStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, scroller_color: Color
+};
+
+type SliderStyle = {
+  handle_border_color: Color, handle_border_width: f64, handle_color: Color,
+  handle_radius: f64, rail_color: Color, rail_fill_color: Color, rail_width: f64
+};
+
+type TextEditorStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, placeholder_color: Color, selection_color: Color,
+  value_color: Color
+};
+
+type TextInputStyle = {
+  background: Color, border_color: Color, border_radius: f64,
+  border_width: f64, icon_color: Color, placeholder_color: Color,
+  selection_color: Color, value_color: Color
+};
+
+type TogglerStyle = {
+  background: Color, background_border_color: Color, border_radius: f64,
+  foreground: Color, foreground_border_color: Color, text_color: Color
+};
+
+/// Full custom theme with optional per-widget style overrides
+type StyleSheet = {
+  button: [ButtonStyle, null],
+  checkbox: [CheckboxStyle, null],
+  container: [ContainerStyle, null],
+  menu: [MenuStyle, null],
+  palette: &Palette,
+  pick_list: [PickListStyle, null],
+  progress_bar: [ProgressBarStyle, null],
+  radio: [RadioStyle, null],
+  rule: [RuleStyle, null],
+  scrollable: [ScrollableStyle, null],
+  slider: [SliderStyle, null],
+  text_editor: [TextEditorStyle, null],
+  text_input: [TextInputStyle, null],
+  toggler: [TogglerStyle, null]
+};
+
 type Theme = [
   `Light, `Dark, `Dracula, `Nord,
   `SolarizedLight, `SolarizedDark, `GruvboxLight, `GruvboxDark,
   `CatppuccinLatte, `CatppuccinFrappe, `CatppuccinMacchiato, `CatppuccinMocha,
   `TokyoNight, `TokyoNightStorm, `TokyoNightLight,
   `KanagawaWave, `KanagawaDragon, `KanagawaLotus,
-  `Moonfly, `Nightfly, `Oxocarbon, `Ferra
+  `Moonfly, `Nightfly, `Oxocarbon, `Ferra,
+  `Custom(StyleSheet), `CustomPalette(Palette)
 ];
 
 /// A window description
@@ -74,6 +168,17 @@ val window: fn(
   ?#theme: &Theme,
   &Widget
 ) -> Window;
+
+/// Build a full custom theme from a palette and optional per-widget styles.
+/// Omitted widget styles default to the theme's built-in palette-derived style.
+val custom_theme: fn(#palette: &Palette,
+  ?#button: [ButtonStyle, null], ?#checkbox: [CheckboxStyle, null],
+  ?#container: [ContainerStyle, null], ?#menu: [MenuStyle, null],
+  ?#pick_list: [PickListStyle, null], ?#progress_bar: [ProgressBarStyle, null],
+  ?#radio: [RadioStyle, null], ?#rule: [RuleStyle, null],
+  ?#scrollable: [ScrollableStyle, null], ?#slider: [SliderStyle, null],
+  ?#text_editor: [TextEditorStyle, null], ?#text_input: [TextInputStyle, null],
+  ?#toggler: [TogglerStyle, null]) -> StyleSheet;
 
 mod text;
 mod column;

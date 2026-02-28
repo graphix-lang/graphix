@@ -434,42 +434,6 @@ async fn row_with_reactive_children() -> Result<()> {
     Ok(())
 }
 
-// ── Canvas ─────────────────────────────────────────────────────────
-
-#[tokio::test(flavor = "current_thread")]
-async fn canvas_renders() -> Result<()> {
-    let h = harness(
-        "canvas(#width: &`Fill, #height: &`Fixed(200.0), &[\
-            `Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 100.0}, \
-                   color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, width: 2.0}),\
-            `Circle({center: {x: 50.0, y: 50.0}, radius: 25.0, \
-                     fill: {r: 0.0, g: 1.0, b: 0.0, a: 1.0}, stroke: null}),\
-            `Rect({top_left: {x: 10.0, y: 10.0}, size: {width: 40.0, height: 30.0}, \
-                   fill: null, \
-                   stroke: {color: {r: 0.0, g: 0.0, b: 1.0, a: 1.0}, width: 1.0}}),\
-            `Text({content: \"hi\", position: {x: 0.0, y: 0.0}, \
-                   color: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}, size: 16.0})\
-        ])",
-    )
-    .await?;
-    view!(h);
-    Ok(())
-}
-
-// ── Chart ──────────────────────────────────────────────────────────
-
-#[tokio::test(flavor = "current_thread")]
-async fn chart_renders() -> Result<()> {
-    let h = harness(
-        "chart(#title: &\"Test\", #width: &`Fill, #height: &`Fixed(200.0), \
-            &[{data: &[(0.0, 1.0), (1.0, 2.0), (2.0, 0.5)], \
-               chart_type: `Line, color: null, label: null}])",
-    )
-    .await?;
-    view!(h);
-    Ok(())
-}
-
 // ── Image ──────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

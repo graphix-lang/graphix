@@ -4,5 +4,6 @@ let pick_list = |
   #placeholder: &string = &"Choose...",
   #width: &Length = &`Shrink,
   #padding: &Padding = &`All(5.0),
+  #disabled: &bool = &false,
   options: &Array<string>
-| -> Widget `PickList({ on_select: &on_select, options, selected, placeholder, width, padding })
+| -> Widget `PickList({ on_select: &on_select, options, selected, placeholder, width, padding, disabled })

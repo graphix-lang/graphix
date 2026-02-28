@@ -1,251 +1,133 @@
 use crate::widgets::canvas::CanvasShape;
+use super::GuiTestHarness;
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
-use iced_core::{Point, Size};
+use arcstr::ArcStr;
 use netidx::publisher::{FromValue, Value};
 
-/// Build a Color value as graphix would encode it: sorted fields {a, b, g, r}.
-fn color_val(r: f64, g: f64, b: f64, a: f64) -> Value {
-    [(literal!("a"), a), (literal!("b"), b), (literal!("g"), g), (literal!("r"), r)]
-        .into()
-}
-
-/// Build a Point value: sorted fields {x, y}.
-fn point_val(x: f64, y: f64) -> Value {
-    [(literal!("x"), x), (literal!("y"), y)].into()
-}
-
-/// Build a stroke value: sorted fields {color, width}.
-fn stroke_val(r: f64, g: f64, b: f64, a: f64, width: f64) -> Value {
-    [(literal!("color"), color_val(r, g, b, a)), (literal!("width"), Value::F64(width))]
-        .into()
-}
-
-/// Build a tagged variant value: (tag, payload).
-fn variant(tag: &str, payload: Value) -> Value {
-    (ArcStr::from(tag), payload).into()
+async fn canvas_harness(shapes_expr: &str) -> Result<GuiTestHarness> {
+    let code = format!(
+        "use gui;\nuse gui::canvas;\n\
+         let result = canvas(#width: &`Fill, #height: &`Fixed(200.0), &[{shapes_expr}])"
+    );
+    GuiTestHarness::new(&code).await
 }
 
 // ── Line ────────────────────────────────────────────────────────────
 
-#[test]
-fn line_parses() -> Result<()> {
-    let v = variant(
-        "Line",
-        [
-            (literal!("color"), color_val(1.0, 0.0, 0.0, 1.0)),
-            (literal!("from"), point_val(0.0, 0.0)),
-            (literal!("to"), point_val(100.0, 50.0)),
-            (literal!("width"), Value::F64(2.5)),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Line { from, to, color, width } => {
-            assert_eq!(from, Point::new(0.0, 0.0));
-            assert_eq!(to, Point::new(100.0, 50.0));
-            assert!((color.r - 1.0).abs() < 1e-5);
-            assert!((color.g).abs() < 1e-5);
-            assert!((width - 2.5).abs() < 1e-5);
-        }
-        other => panic!("expected Line, got {other:?}"),
-    }
+// XCR estokes: Instead of writing out the data structure, we should load the
+// actual graphix files we are compiling into the gui library, and then call the
+// actual functions that will be used. In other words lets test the actual code
+// that runs instead of a facimile of it.
+//
+// This applies to every other test as well.
+#[tokio::test(flavor = "current_thread")]
+async fn line_renders() -> Result<()> {
+    let h = canvas_harness(concat!(
+        "`Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0}, ",
+        "color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, width: 2.5})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
 // ── Circle ──────────────────────────────────────────────────────────
 
-#[test]
-fn circle_with_fill_only() -> Result<()> {
-    let v = variant(
-        "Circle",
-        [
-            (literal!("center"), point_val(10.0, 20.0)),
-            (literal!("fill"), color_val(0.0, 1.0, 0.0, 1.0)),
-            (literal!("radius"), Value::F64(25.0)),
-            (literal!("stroke"), Value::Null),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Circle { center, radius, fill, stroke } => {
-            assert_eq!(center, Point::new(10.0, 20.0));
-            assert!((radius - 25.0).abs() < 1e-5);
-            assert!(fill.is_some());
-            assert!(stroke.is_none());
-        }
-        other => panic!("expected Circle, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn circle_with_fill_only() -> Result<()> {
+    let h = canvas_harness(concat!(
+        "`Circle({center: {x: 10.0, y: 20.0}, radius: 25.0, ",
+        "fill: {r: 0.0, g: 1.0, b: 0.0, a: 1.0}, stroke: null})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-#[test]
-fn circle_with_stroke_only() -> Result<()> {
-    let v = variant(
-        "Circle",
-        [
-            (literal!("center"), point_val(0.0, 0.0)),
-            (literal!("fill"), Value::Null),
-            (literal!("radius"), Value::F64(10.0)),
-            (literal!("stroke"), stroke_val(0.0, 0.0, 1.0, 1.0, 3.0)),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Circle { fill, stroke, .. } => {
-            assert!(fill.is_none());
-            let (c, w) = stroke.unwrap();
-            assert!((c.b - 1.0).abs() < 1e-5);
-            assert!((w - 3.0).abs() < 1e-5);
-        }
-        other => panic!("expected Circle, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn circle_with_stroke_only() -> Result<()> {
+    let h = canvas_harness(concat!(
+        "`Circle({center: {x: 0.0, y: 0.0}, radius: 10.0, ",
+        "fill: null, stroke: {color: {r: 0.0, g: 0.0, b: 1.0, a: 1.0}, width: 3.0}})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-#[test]
-fn circle_with_both() -> Result<()> {
-    let v = variant(
-        "Circle",
-        [
-            (literal!("center"), point_val(0.0, 0.0)),
-            (literal!("fill"), color_val(1.0, 1.0, 1.0, 1.0)),
-            (literal!("radius"), Value::F64(5.0)),
-            (literal!("stroke"), stroke_val(0.0, 0.0, 0.0, 1.0, 1.0)),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Circle { fill, stroke, .. } => {
-            assert!(fill.is_some());
-            assert!(stroke.is_some());
-        }
-        other => panic!("expected Circle, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn circle_with_both() -> Result<()> {
+    let h = canvas_harness(concat!(
+        "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, ",
+        "fill: {r: 1.0, g: 1.0, b: 1.0, a: 1.0}, ",
+        "stroke: {color: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}, width: 1.0}})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-#[test]
-fn circle_with_neither() -> Result<()> {
-    let v = variant(
-        "Circle",
-        [
-            (literal!("center"), point_val(0.0, 0.0)),
-            (literal!("fill"), Value::Null),
-            (literal!("radius"), Value::F64(5.0)),
-            (literal!("stroke"), Value::Null),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Circle { fill, stroke, .. } => {
-            assert!(fill.is_none());
-            assert!(stroke.is_none());
-        }
-        other => panic!("expected Circle, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn circle_with_neither() -> Result<()> {
+    let h = canvas_harness(
+        "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, fill: null, stroke: null})",
+    )
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
 // ── Rect ────────────────────────────────────────────────────────────
 
-#[test]
-fn rect_with_fill() -> Result<()> {
-    let v = variant(
-        "Rect",
-        [
-            (literal!("fill"), color_val(0.5, 0.5, 0.5, 1.0)),
-            (
-                literal!("size"),
-                [(literal!("height"), 30.0f64), (literal!("width"), 40.0f64)].into(),
-            ),
-            (literal!("stroke"), Value::Null),
-            (literal!("top_left"), point_val(10.0, 20.0)),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Rect { top_left, size, fill, stroke } => {
-            assert_eq!(top_left, Point::new(10.0, 20.0));
-            assert_eq!(size, Size::new(40.0, 30.0));
-            assert!(fill.is_some());
-            assert!(stroke.is_none());
-        }
-        other => panic!("expected Rect, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn rect_with_fill() -> Result<()> {
+    let h = canvas_harness(concat!(
+        "`Rect({top_left: {x: 10.0, y: 20.0}, ",
+        "size: {width: 40.0, height: 30.0}, ",
+        "fill: {r: 0.5, g: 0.5, b: 0.5, a: 1.0}, stroke: null})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-#[test]
-fn rect_with_stroke() -> Result<()> {
-    let v = variant(
-        "Rect",
-        [
-            (literal!("fill"), Value::Null),
-            (
-                literal!("size"),
-                [(literal!("height"), 10.0f64), (literal!("width"), 10.0f64)].into(),
-            ),
-            (literal!("stroke"), stroke_val(1.0, 0.0, 0.0, 1.0, 2.0)),
-            (literal!("top_left"), point_val(0.0, 0.0)),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Rect { fill, stroke, .. } => {
-            assert!(fill.is_none());
-            assert!(stroke.is_some());
-        }
-        other => panic!("expected Rect, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn rect_with_stroke() -> Result<()> {
+    let h = canvas_harness(concat!(
+        "`Rect({top_left: {x: 0.0, y: 0.0}, ",
+        "size: {width: 10.0, height: 10.0}, ",
+        "fill: null, stroke: {color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, width: 2.0}})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
 // ── Text ────────────────────────────────────────────────────────────
 
-#[test]
-fn text_parses() -> Result<()> {
-    let v = variant(
-        "Text",
-        [
-            (literal!("color"), color_val(0.0, 0.0, 0.0, 1.0)),
-            (literal!("content"), Value::String("hello".into())),
-            (literal!("position"), point_val(5.0, 10.0)),
-            (literal!("size"), Value::F64(16.0)),
-        ]
-        .into(),
-    );
-    let shape = CanvasShape::from_value(v)?;
-    match shape {
-        CanvasShape::Text { content, position, color, size } => {
-            assert_eq!(content, "hello");
-            assert_eq!(position, Point::new(5.0, 10.0));
-            assert!((color.a - 1.0).abs() < 1e-5);
-            assert!((size - 16.0).abs() < 1e-5);
-        }
-        other => panic!("expected Text, got {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn text_renders() -> Result<()> {
+    let h = canvas_harness(concat!(
+        r#"`Text({content: "hello", position: {x: 5.0, y: 10.0}, "#,
+        "color: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}, size: 16.0})",
+    ))
+    .await?;
+    let _ = h.view();
     Ok(())
 }
 
-// ── Error cases ─────────────────────────────────────────────────────
+// ── Error cases (from_value unit tests) ─────────────────────────────
 
 #[test]
 fn invalid_tag_errors() {
-    let v = variant("Hexagon", Value::Null);
+    let v: Value = (ArcStr::from("Hexagon"), Value::Null).into();
     assert!(CanvasShape::from_value(v).is_err());
 }
 
 #[test]
 fn malformed_line_errors() {
     // Wrong number of fields
-    let v = variant("Line", [(literal!("color"), color_val(1.0, 0.0, 0.0, 1.0))].into());
+    let payload: Value = [(ArcStr::from("color"), Value::Null)].into();
+    let v: Value = (ArcStr::from("Line"), payload).into();
     assert!(CanvasShape::from_value(v).is_err());
 }

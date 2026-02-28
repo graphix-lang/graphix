@@ -336,6 +336,48 @@ impl InteractionHarness {
         })])
     }
 
+    fn release_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {
+        use iced_core::keyboard;
+        self.process_events(&[Event::Keyboard(keyboard::Event::KeyReleased {
+            key: keyboard::Key::Named(named),
+            modified_key: keyboard::Key::Named(named),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+        })])
+    }
+
+    fn scroll(&mut self, delta_x: f32, delta_y: f32) -> Vec<Message> {
+        self.process_events(&[Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: delta_x, y: delta_y },
+        })])
+    }
+
+    fn move_cursor(&mut self, pos: Point) -> Vec<Message> {
+        self.cursor_position = pos;
+        self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
+            position: pos,
+        })])
+    }
+
+    /// Route `Message::EditorAction` messages through the widget's
+    /// `editor_action` method and collect the callback results.
+    fn process_editor_actions(
+        &mut self,
+        msgs: &[Message],
+    ) -> Vec<(CallableId, Value)> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                Message::EditorAction(id, action) => {
+                    self.inner.widget.editor_action(*id, action)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {
         let mut all_msgs = Vec::new();
         self.cursor_position = from;

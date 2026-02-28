@@ -22,6 +22,7 @@ mod clipboard;
 mod convert;
 mod event_loop;
 mod render;
+pub(crate) mod theme;
 mod types;
 pub(crate) mod widgets;
 mod window;

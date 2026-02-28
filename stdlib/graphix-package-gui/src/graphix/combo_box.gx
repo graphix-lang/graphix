@@ -3,5 +3,6 @@ let combo_box = |
   #on_select: fn(string) -> Any = |_| null,
   #placeholder: &string = &"Type to search...",
   #width: &Length = &`Fill,
+  #disabled: &bool = &false,
   options: &Array<string>
-| -> Widget `ComboBox({ on_select: &on_select, options, selected, placeholder, width })
+| -> Widget `ComboBox({ on_select: &on_select, options, selected, placeholder, width, disabled })

@@ -4,5 +4,6 @@ let toggler = |
   #width: &Length = &`Shrink,
   #size: &[f64, null] = &null,
   #spacing: &[f64, null] = &null,
+  #disabled: &bool = &false,
   is_toggled: &bool
-| -> Widget `Toggler({ is_toggled, label, on_toggle: &on_toggle, size, spacing, width })
+| -> Widget `Toggler({ is_toggled, label, on_toggle: &on_toggle, size, spacing, width, disabled })

@@ -6,5 +6,6 @@ let text_editor = |
   #padding: &Padding = &`All(5.0),
   #font: &[Font, null] = &null,
   #size: &[f64, null] = &null,
+  #disabled: &bool = &false,
   content: &string
-| -> Widget `TextEditor({ content, on_edit: &on_edit, placeholder, width, height, padding, font, size })
+| -> Widget `TextEditor({ content, on_edit: &on_edit, placeholder, width, height, padding, font, size, disabled })

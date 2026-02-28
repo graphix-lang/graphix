@@ -18,7 +18,7 @@ use super::{Message, Renderer};
 /// Gains focus on mouse click inside bounds, loses focus on click
 /// outside. Participates in tab-order focus traversal.
 pub(crate) struct KeyboardArea<'a> {
-    content: Element<'a, Message, iced_core::Theme, Renderer>,
+    content: Element<'a, Message, crate::theme::GraphixTheme, Renderer>,
     on_key_press: Option<Box<dyn Fn(&keyboard::Event) -> Message + 'a>>,
     on_key_release: Option<Box<dyn Fn(&keyboard::Event) -> Message + 'a>>,
 }
@@ -30,7 +30,7 @@ struct State {
 
 impl<'a> KeyboardArea<'a> {
     pub(crate) fn new(
-        content: impl Into<Element<'a, Message, iced_core::Theme, Renderer>>,
+        content: impl Into<Element<'a, Message, crate::theme::GraphixTheme, Renderer>>,
     ) -> Self {
         Self {
             content: content.into(),
@@ -58,7 +58,7 @@ impl<'a> KeyboardArea<'a> {
     }
 }
 
-impl Widget<Message, iced_core::Theme, Renderer> for KeyboardArea<'_> {
+impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
     }
@@ -180,7 +180,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for KeyboardArea<'_> {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        theme: &iced_core::Theme,
+        theme: &crate::theme::GraphixTheme,
         style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -204,7 +204,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for KeyboardArea<'_> {
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, iced_core::Theme, Renderer>> {
+    ) -> Option<overlay::Element<'b, Message, crate::theme::GraphixTheme, Renderer>> {
         self.content.as_widget_mut().overlay(
             &mut tree.children[0],
             layout,
@@ -230,7 +230,7 @@ impl iced_core::widget::operation::focusable::Focusable for State {
 }
 
 impl<'a> From<KeyboardArea<'a>>
-    for Element<'a, Message, iced_core::Theme, Renderer>
+    for Element<'a, Message, crate::theme::GraphixTheme, Renderer>
 {
     fn from(area: KeyboardArea<'a>) -> Self {
         Element::new(area)
