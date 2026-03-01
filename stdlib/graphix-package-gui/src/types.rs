@@ -213,8 +213,20 @@ impl FromValue for PaletteV {
 #[derive(Clone, Debug)]
 pub(crate) struct ThemeV(pub GraphixTheme);
 
-fn parse_color(v: Value) -> Result<Color> {
-    Ok(ColorV::from_value(v)?.0)
+pub(crate) fn parse_opt_color(v: Value) -> Result<Option<Color>> {
+    if v == Value::Null {
+        Ok(None)
+    } else {
+        Ok(Some(ColorV::from_value(v)?.0))
+    }
+}
+
+fn parse_opt_f32(v: Value) -> Result<Option<f32>> {
+    if v == Value::Null {
+        Ok(None)
+    } else {
+        Ok(Some(v.cast_to::<f64>()? as f32))
+    }
 }
 
 fn parse_opt_spec<T>(v: Value, f: impl FnOnce(Value) -> Result<T>) -> Result<Option<T>> {
@@ -229,11 +241,11 @@ fn parse_button_spec(v: Value) -> Result<ButtonSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 5]>()?;
     Ok(ButtonSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        text_color: parse_color(tc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
@@ -241,13 +253,13 @@ fn parse_checkbox_spec(v: Value) -> Result<CheckboxSpec> {
     let [(_, accent), (_, bg), (_, bc), (_, br), (_, bw), (_, ic), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 7]>()?;
     Ok(CheckboxSpec {
-        accent: parse_color(accent)?,
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        icon_color: parse_color(ic)?,
-        text_color: parse_color(tc)?,
+        accent: parse_opt_color(accent)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        icon_color: parse_opt_color(ic)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
@@ -255,11 +267,11 @@ fn parse_container_spec(v: Value) -> Result<ContainerSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 5]>()?;
     Ok(ContainerSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        text_color: parse_color(tc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
@@ -267,13 +279,13 @@ fn parse_menu_spec(v: Value) -> Result<MenuSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, sb), (_, stc), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 7]>()?;
     Ok(MenuSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        selected_background: parse_color(sb)?,
-        selected_text_color: parse_color(stc)?,
-        text_color: parse_color(tc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        selected_background: parse_opt_color(sb)?,
+        selected_text_color: parse_opt_color(stc)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
@@ -281,22 +293,22 @@ fn parse_pick_list_spec(v: Value) -> Result<PickListSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, hc), (_, pc), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 7]>()?;
     Ok(PickListSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        handle_color: parse_color(hc)?,
-        placeholder_color: parse_color(pc)?,
-        text_color: parse_color(tc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        handle_color: parse_opt_color(hc)?,
+        placeholder_color: parse_opt_color(pc)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
 fn parse_progress_bar_spec(v: Value) -> Result<ProgressBarSpec> {
     let [(_, bg), (_, bar), (_, br)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
     Ok(ProgressBarSpec {
-        background: parse_color(bg)?,
-        bar_color: parse_color(bar)?,
-        border_radius: br.cast_to::<f64>()? as f32,
+        background: parse_opt_color(bg)?,
+        bar_color: parse_opt_color(bar)?,
+        border_radius: parse_opt_f32(br)?,
     })
 }
 
@@ -304,20 +316,20 @@ fn parse_radio_spec(v: Value) -> Result<RadioSpec> {
     let [(_, bg), (_, bc), (_, bw), (_, dc), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 5]>()?;
     Ok(RadioSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_width: bw.cast_to::<f64>()? as f32,
-        dot_color: parse_color(dc)?,
-        text_color: parse_color(tc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_width: parse_opt_f32(bw)?,
+        dot_color: parse_opt_color(dc)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
 fn parse_rule_spec(v: Value) -> Result<RuleSpec> {
     let [(_, color), (_, radius), (_, width)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
     Ok(RuleSpec {
-        color: parse_color(color)?,
-        radius: radius.cast_to::<f64>()? as f32,
-        width: width.cast_to::<f64>()? as f32,
+        color: parse_opt_color(color)?,
+        radius: parse_opt_f32(radius)?,
+        width: parse_opt_f32(width)?,
     })
 }
 
@@ -325,11 +337,11 @@ fn parse_scrollable_spec(v: Value) -> Result<ScrollableSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, sc)] =
         v.cast_to::<[(ArcStr, Value); 5]>()?;
     Ok(ScrollableSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        scroller_color: parse_color(sc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        scroller_color: parse_opt_color(sc)?,
     })
 }
 
@@ -337,13 +349,13 @@ fn parse_slider_spec(v: Value) -> Result<SliderSpec> {
     let [(_, hbc), (_, hbw), (_, hc), (_, hr), (_, rc), (_, rfc), (_, rw)] =
         v.cast_to::<[(ArcStr, Value); 7]>()?;
     Ok(SliderSpec {
-        handle_border_color: parse_color(hbc)?,
-        handle_border_width: hbw.cast_to::<f64>()? as f32,
-        handle_color: parse_color(hc)?,
-        handle_radius: hr.cast_to::<f64>()? as f32,
-        rail_color: parse_color(rc)?,
-        rail_fill_color: parse_color(rfc)?,
-        rail_width: rw.cast_to::<f64>()? as f32,
+        handle_border_color: parse_opt_color(hbc)?,
+        handle_border_width: parse_opt_f32(hbw)?,
+        handle_color: parse_opt_color(hc)?,
+        handle_radius: parse_opt_f32(hr)?,
+        rail_color: parse_opt_color(rc)?,
+        rail_fill_color: parse_opt_color(rfc)?,
+        rail_width: parse_opt_f32(rw)?,
     })
 }
 
@@ -351,13 +363,13 @@ fn parse_text_editor_spec(v: Value) -> Result<TextEditorSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, pc), (_, sc), (_, vc)] =
         v.cast_to::<[(ArcStr, Value); 7]>()?;
     Ok(TextEditorSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        placeholder_color: parse_color(pc)?,
-        selection_color: parse_color(sc)?,
-        value_color: parse_color(vc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        placeholder_color: parse_opt_color(pc)?,
+        selection_color: parse_opt_color(sc)?,
+        value_color: parse_opt_color(vc)?,
     })
 }
 
@@ -365,14 +377,14 @@ fn parse_text_input_spec(v: Value) -> Result<TextInputSpec> {
     let [(_, bg), (_, bc), (_, br), (_, bw), (_, ic), (_, pc), (_, sc), (_, vc)] =
         v.cast_to::<[(ArcStr, Value); 8]>()?;
     Ok(TextInputSpec {
-        background: parse_color(bg)?,
-        border_color: parse_color(bc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        border_width: bw.cast_to::<f64>()? as f32,
-        icon_color: parse_color(ic)?,
-        placeholder_color: parse_color(pc)?,
-        selection_color: parse_color(sc)?,
-        value_color: parse_color(vc)?,
+        background: parse_opt_color(bg)?,
+        border_color: parse_opt_color(bc)?,
+        border_radius: parse_opt_f32(br)?,
+        border_width: parse_opt_f32(bw)?,
+        icon_color: parse_opt_color(ic)?,
+        placeholder_color: parse_opt_color(pc)?,
+        selection_color: parse_opt_color(sc)?,
+        value_color: parse_opt_color(vc)?,
     })
 }
 
@@ -380,19 +392,19 @@ fn parse_toggler_spec(v: Value) -> Result<TogglerSpec> {
     let [(_, bg), (_, bbc), (_, br), (_, fg), (_, fbc), (_, tc)] =
         v.cast_to::<[(ArcStr, Value); 6]>()?;
     Ok(TogglerSpec {
-        background: parse_color(bg)?,
-        background_border_color: parse_color(bbc)?,
-        border_radius: br.cast_to::<f64>()? as f32,
-        foreground: parse_color(fg)?,
-        foreground_border_color: parse_color(fbc)?,
-        text_color: parse_color(tc)?,
+        background: parse_opt_color(bg)?,
+        background_border_color: parse_opt_color(bbc)?,
+        border_radius: parse_opt_f32(br)?,
+        foreground: parse_opt_color(fg)?,
+        foreground_border_color: parse_opt_color(fbc)?,
+        text_color: parse_opt_color(tc)?,
     })
 }
 
-fn parse_stylesheet(v: Value) -> Result<(iced_core::theme::palette::Palette, StyleOverrides)> {
-    let [(_, button), (_, checkbox), (_, container), (_, menu), (_, palette),
-     (_, pick_list), (_, progress_bar), (_, radio), (_, rule),
-     (_, scrollable), (_, slider), (_, text_editor), (_, text_input), (_, toggler)] =
+fn parse_stylesheet(
+    v: Value,
+) -> Result<(iced_core::theme::palette::Palette, StyleOverrides)> {
+    let [(_, button), (_, checkbox), (_, container), (_, menu), (_, palette), (_, pick_list), (_, progress_bar), (_, radio), (_, rule), (_, scrollable), (_, slider), (_, text_editor), (_, text_input), (_, toggler)] =
         v.cast_to::<[(ArcStr, Value); 14]>()?;
     let palette = PaletteV::from_value(palette)?;
     Ok((
@@ -552,7 +564,6 @@ impl FromValue for ImageSourceV {
             v => {
                 let (tag, val) = v.cast_to::<(ArcStr, Value)>()?;
                 match &*tag {
-                    "Path" => Ok(Self::Path(val.cast_to::<String>()?)),
                     "Bytes" => match val {
                         Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
                         _ => bail!("ImageSource Bytes: expected bytes value"),

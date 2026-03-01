@@ -1,7 +1,8 @@
 use anyhow::{bail, Context, Result};
 use graphix_compiler::expr::{ExprId, ModuleResolver};
+use graphix_compiler::BindId;
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
-use graphix_rt::{GXEvent, NoExt};
+use graphix_rt::{CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::global::GPooled;
 use std::time::Duration;
@@ -27,10 +28,15 @@ const TEST_REGISTER: &[RegisterFn] = &[
 /// through the reactive loop.
 struct GuiTestHarness {
     _ctx: TestCtx,
-    _gx: graphix_rt::GXHandle<NoExt>,
+    gx: graphix_rt::GXHandle<NoExt>,
+    #[allow(dead_code)]
+    compiled: CompRes<NoExt>,
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     widget: GuiW<NoExt>,
     rt_handle: tokio::runtime::Handle,
+    watched: fxhash::FxHashMap<ExprId, Value>,
+    watch_names: fxhash::FxHashMap<String, ExprId>,
+    _refs: Vec<Ref<NoExt>>,
 }
 
 impl GuiTestHarness {
@@ -67,7 +73,17 @@ impl GuiTestHarness {
         // Drain any additional updates that arrive during widget compilation
         while rx.try_recv().is_ok() {}
 
-        Ok(Self { _ctx: ctx, _gx: gx, rx, widget, rt_handle })
+        Ok(Self {
+            _ctx: ctx,
+            gx,
+            compiled,
+            rx,
+            widget,
+            rt_handle,
+            watched: fxhash::FxHashMap::default(),
+            watch_names: fxhash::FxHashMap::default(),
+            _refs: Vec::new(),
+        })
     }
 
     /// Drain all pending reactive updates into the widget tree.
@@ -82,6 +98,9 @@ impl GuiTestHarness {
                 Some(mut batch) = self.rx.recv() => {
                     for event in batch.drain(..) {
                         if let GXEvent::Updated(id, v) = event {
+                            if self.watched.contains_key(&id) {
+                                self.watched.insert(id, v.clone());
+                            }
                             changed |= self.widget.handle_update(
                                 &self.rt_handle, id, &v
                             )?;
@@ -96,6 +115,45 @@ impl GuiTestHarness {
             }
         }
         Ok(changed)
+    }
+
+    /// Watch a graphix variable by name and return its initial value.
+    ///
+    /// The name should be a module-qualified path like "test::released".
+    /// Looks up the BindId in the compiled env and creates a Ref to
+    /// track updates. Use `get_watched()` to read the latest value
+    /// after calling `drain()`.
+    async fn watch(&mut self, name: &str) -> Result<Value> {
+        let bid = find_bind_id(&self.compiled.env, name)
+            .with_context(|| format!("watch: lookup {name}"))?;
+        let r = self
+            .gx
+            .compile_ref(bid)
+            .await
+            .with_context(|| format!("watch: compile ref to {name}"))?;
+        let initial = r.last.clone().unwrap_or(Value::Null);
+        self.watched.insert(r.id, initial.clone());
+        self.watch_names.insert(name.to_string(), r.id);
+        self._refs.push(r);
+        // Drain to pick up the ref's initial update event
+        self.drain().await?;
+        Ok(initial)
+    }
+
+    /// Get the most recent value of a watched variable by name.
+    fn get_watched(&self, name: &str) -> Option<&Value> {
+        self.watch_names.get(name).and_then(|eid| self.watched.get(eid))
+    }
+
+    /// Dispatch Call messages back into the runtime and drain resulting updates.
+    async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
+        for msg in msgs {
+            if let Message::Call(id, args) = msg {
+                self.gx.call(*id, args.clone())?;
+            }
+        }
+        self.drain().await?;
+        Ok(())
     }
 
     /// Call view() on the widget. Panicking here means the widget
@@ -127,6 +185,31 @@ async fn wait_for_update(
             _ = &mut timeout => bail!("timeout waiting for initial widget value"),
         }
     }
+}
+
+/// Find a BindId by a short name like "test::released" in the env.
+///
+/// The env stores bindings under generated scope prefixes (e.g.
+/// `/do1234/test`), so we can't use `lookup_bind` with a root scope.
+/// Instead, scan all scopes for one whose suffix matches the module
+/// path and contains the variable name.
+fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> {
+    use netidx::path::Path;
+    // Split "test::released" into module = "test", var = "released"
+    let parts: Vec<&str> = name.split("::").collect();
+    let (module, var) = match parts.as_slice() {
+        [module, var] => (*module, *var),
+        _ => bail!("expected module::var, got {name}"),
+    };
+    let suffix = format!("/{module}");
+    for (scope, vars) in &env.binds {
+        if Path::as_ref(&scope.0).ends_with(&suffix) {
+            if let Some(bid) = vars.get(var) {
+                return Ok(*bid);
+            }
+        }
+    }
+    bail!("no binding {name} found in env")
 }
 
 // ── Headless GPU ────────────────────────────────────────────────────
@@ -267,6 +350,18 @@ impl InteractionHarness {
         self.viewport
     }
 
+    async fn watch(&mut self, name: &str) -> Result<Value> {
+        self.inner.watch(name).await
+    }
+
+    fn get_watched(&self, name: &str) -> Option<&Value> {
+        self.inner.get_watched(name)
+    }
+
+    async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
+        self.inner.dispatch_calls(msgs).await
+    }
+
     // ── Interaction helpers ─────────────────────────────────────
 
     fn click(&mut self, pos: Point) -> Vec<Message> {
@@ -357,17 +452,12 @@ impl InteractionHarness {
 
     fn move_cursor(&mut self, pos: Point) -> Vec<Message> {
         self.cursor_position = pos;
-        self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
-            position: pos,
-        })])
+        self.process_events(&[Event::Mouse(mouse::Event::CursorMoved { position: pos })])
     }
 
     /// Route `Message::EditorAction` messages through the widget's
     /// `editor_action` method and collect the callback results.
-    fn process_editor_actions(
-        &mut self,
-        msgs: &[Message],
-    ) -> Vec<(CallableId, Value)> {
+    fn process_editor_actions(&mut self, msgs: &[Message]) -> Vec<(CallableId, Value)> {
         msgs.iter()
             .filter_map(|m| match m {
                 Message::EditorAction(id, action) => {
@@ -431,8 +521,4 @@ fn expect_call_with_args(
         .collect();
     assert!(!calls.is_empty(), "expected a Call message matching predicate, got none");
     calls[0]
-}
-
-fn has_message(msgs: &[Message], pred: impl Fn(&Message) -> bool) -> bool {
-    msgs.iter().any(pred)
 }

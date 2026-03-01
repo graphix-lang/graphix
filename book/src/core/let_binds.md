@@ -39,13 +39,6 @@ You can mix type annotations with pattern matches
 let (x, y): (i64, string) = (3, "hello")
 ```
 
-You can assign documentation to a let bind using a `///` comment. Documentation
-will be displayed in the shell when the user tab completes and will be made
-available by the lsp server.
-
-```graphix
-// this is a normal comment
-let x = 1;
-/// this is documentation for y
-let y = 2;
-```
+To document the public API of a module, use `///` documentation comments in
+[interface files](../modules/interfaces.md). Documentation is displayed in the
+shell during tab completion and made available by the LSP server.

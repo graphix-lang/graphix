@@ -1,11 +1,7 @@
-use super::{expect_call, expect_call_with_args, has_message, InteractionHarness};
-use crate::widgets::Message;
+use super::{expect_call, expect_call_with_args, InteractionHarness};
 use anyhow::Result;
 use iced_core::{Point, Size};
 use netidx::publisher::Value;
-
-// CR estokes: If a widget has an input or an output, we should be testing it.
-// I've noted specific examples that we missed.
 
 /// Standard widget imports for interaction tests.
 const IMPORTS: &str = "\
@@ -139,19 +135,20 @@ async fn slider_drag_no_panic() -> Result<()> {
     Ok(())
 }
 
-// XCR estokes: We should test slider #on_change, and #on_release
-
 #[tokio::test(flavor = "current_thread")]
 async fn slider_on_change_produces_call() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\
-         let result = slider(#min: &0.0, #max: &100.0, #on_change: |v| null, &50.0)"
+         let changed = false;\n\
+         let result = slider(#min: &0.0, #max: &100.0, \
+             #on_change: |v| changed <- v ~ true, &50.0)"
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
+    let initial = h.watch("test::changed").await?;
+    assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(150.0, 10.0));
-    expect_call_with_args(&msgs, |args| {
-        matches!(args.iter().next(), Some(Value::F64(_)))
-    });
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::changed"), Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -159,14 +156,16 @@ async fn slider_on_change_produces_call() -> Result<()> {
 async fn slider_on_release_produces_call() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\
-         let result = slider(#min: &0.0, #max: &100.0, #on_release: |_| null, &50.0)"
+         let released = false;\n\
+         let result = slider(#min: &0.0, #max: &100.0, \
+             #on_release: |click| released <- click ~ true, &50.0)"
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(200.0, 22.0)).await?;
+    let initial = h.watch("test::released").await?;
+    assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(150.0, 10.0));
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "slider on_release should produce Call on mouse release"
-    );
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::released"), Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -184,20 +183,20 @@ async fn vertical_slider_click_no_panic() -> Result<()> {
     Ok(())
 }
 
-// XCR estokes: We should test vertical_slider #on_change, and #on_release
-
 #[tokio::test(flavor = "current_thread")]
 async fn vertical_slider_on_change_produces_call() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\
+         let changed = false;\n\
          let result = vertical_slider(\
-             #min: &0.0, #max: &100.0, #on_change: |v| null, &50.0)"
+             #min: &0.0, #max: &100.0, #on_change: |v| changed <- v ~ true, &50.0)"
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
+    let initial = h.watch("test::changed").await?;
+    assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(10.0, 50.0));
-    expect_call_with_args(&msgs, |args| {
-        matches!(args.iter().next(), Some(Value::F64(_)))
-    });
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::changed"), Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -205,15 +204,17 @@ async fn vertical_slider_on_change_produces_call() -> Result<()> {
 async fn vertical_slider_on_release_produces_call() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\
+         let released = false;\n\
          let result = vertical_slider(\
-             #min: &0.0, #max: &100.0, #on_release: |_| null, &50.0)"
+             #min: &0.0, #max: &100.0, \
+             #on_release: |click| released <- click ~ true, &50.0)"
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(22.0, 200.0)).await?;
+    let initial = h.watch("test::released").await?;
+    assert_eq!(initial, Value::Bool(false));
     let msgs = h.click(Point::new(10.0, 50.0));
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "vertical_slider on_release should produce Call on mouse release"
-    );
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::released"), Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -246,14 +247,9 @@ async fn text_input_submit_produces_call() -> Result<()> {
     h.click(WIDGET_HIT);
     h.type_text("query");
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "pressing Enter should produce a Call message"
-    );
+    expect_call(&msgs);
     Ok(())
 }
-
-// XCR estokes: we should test on_input as well as on_submit
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_input_on_input_produces_call() -> Result<()> {
@@ -287,8 +283,6 @@ async fn radio_click_no_panic() -> Result<()> {
     let _ = h.click(WIDGET_HIT);
     Ok(())
 }
-
-// XCR estokes: we should test on_select for radio
 
 #[tokio::test(flavor = "current_thread")]
 async fn radio_on_select_produces_call() -> Result<()> {
@@ -324,8 +318,6 @@ async fn pick_list_basic() -> Result<()> {
     Ok(())
 }
 
-// XCR estokes: we should test on_select for pick list
-
 #[tokio::test(flavor = "current_thread")]
 async fn pick_list_on_select_produces_call() -> Result<()> {
     let code = format!(
@@ -340,8 +332,7 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
     // UserInterface may not route overlay clicks correctly, so we
     // verify the widget compiles and accepts clicks without panic.
     // A full on_select test requires overlay interaction support.
-    let mut h =
-        InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     // TODO: investigate overlay interaction to verify Call message
@@ -352,25 +343,37 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_press_produces_call() -> Result<()> {
-    let mut h =
-        harness("mouse_area(#on_press: |_| null, &text(&\"Click zone\"))").await?;
-    let msgs = h.click(WIDGET_HIT);
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "mouse_area on_press should produce Call"
+    let code = format!(
+        "{IMPORTS};\n\
+         let pressed = false;\n\
+         let result = mouse_area(\
+             #on_press: |click| pressed <- click ~ true, \
+             &text(&\"Click zone\"))"
     );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::pressed").await?;
+    assert_eq!(initial, Value::Bool(false));
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::pressed"), Some(&Value::Bool(true)));
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_release_produces_call() -> Result<()> {
-    let mut h =
-        harness("mouse_area(#on_release: |_| null, &text(&\"Click zone\"))").await?;
-    let msgs = h.click(WIDGET_HIT);
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "mouse_area on_release should produce Call"
+    let code = format!(
+        "{IMPORTS};\n\
+         let released = false;\n\
+         let result = mouse_area(\
+             #on_release: |click| released <- click ~ true, \
+             &text(&\"Click zone\"))"
     );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::released").await?;
+    assert_eq!(initial, Value::Bool(false));
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::released"), Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -420,8 +423,7 @@ async fn combo_box_on_select_produces_call() -> Result<()> {
     );
     // ComboBox uses an overlay for suggestions, similar to PickList.
     // Verify it compiles and accepts focus without panic.
-    let mut h =
-        InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     // TODO: investigate overlay interaction to verify Call message
@@ -445,55 +447,47 @@ async fn scrollable_on_scroll_produces_call() -> Result<()> {
                  text(&\"Line 10\")\
              ]))"
     );
-    let mut h =
-        InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
     // Move cursor into bounds, then scroll
     h.move_cursor(Point::new(10.0, 10.0));
     let msgs = h.scroll(0.0, 3.0);
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "scrollable on_scroll should produce Call on wheel scroll"
-    );
+    expect_call(&msgs);
     Ok(())
 }
 
 // ── MouseArea (additional callbacks) ────────────────────────────────
 
+// CR estokes: mouse area has multiple callbacks, therefore we can't technically
+// tell whether the right one is being called just by getting a Call message. To
+// properly test, we must use the pattern used in slider et al. Its true that in
+// some cases, due to the semantics expect_call would be sufficient, but for
+// example this is broken by on_move. So lets just use the non brittle pattern
+// uniformly. This applies to all the mouse area callbacks and all the keyboard
+// area callbacks
+
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_enter_produces_call() -> Result<()> {
-    let mut h =
-        harness("mouse_area(#on_enter: |_| null, &text(&\"Zone\"))").await?;
+    let mut h = harness("mouse_area(#on_enter: |_| null, &text(&\"Zone\"))").await?;
     let msgs = h.move_cursor(WIDGET_HIT);
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "mouse_area on_enter should produce Call when cursor enters"
-    );
+    expect_call(&msgs);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_exit_produces_call() -> Result<()> {
-    let mut h =
-        harness("mouse_area(#on_exit: |_| null, &text(&\"Zone\"))").await?;
+    let mut h = harness("mouse_area(#on_exit: |_| null, &text(&\"Zone\"))").await?;
     // Enter first, then exit
     h.move_cursor(WIDGET_HIT);
     let msgs = h.move_cursor(Point::new(999.0, 999.0));
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "mouse_area on_exit should produce Call when cursor leaves"
-    );
+    expect_call(&msgs);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_move_produces_call() -> Result<()> {
-    let mut h =
-        harness("mouse_area(#on_move: |pos| null, &text(&\"Zone\"))").await?;
+    let mut h = harness("mouse_area(#on_move: |pos| null, &text(&\"Zone\"))").await?;
     let msgs = h.move_cursor(WIDGET_HIT);
-    assert!(
-        has_message(&msgs, |m| matches!(m, Message::Call(_, _))),
-        "mouse_area on_move should produce Call on cursor movement"
-    );
+    expect_call(&msgs);
     Ok(())
 }
 
@@ -515,10 +509,9 @@ async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
-    let mut h = harness(
-        "keyboard_area(#on_key_release: |ev| null, &text(&\"Type here\"))",
-    )
-    .await?;
+    let mut h =
+        harness("keyboard_area(#on_key_release: |ev| null, &text(&\"Type here\"))")
+            .await?;
     // Click to focus the keyboard_area
     h.click(WIDGET_HIT);
     let msgs = h.release_key(iced_core::keyboard::key::Named::Space);

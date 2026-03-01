@@ -14,12 +14,6 @@ async fn canvas_harness(shapes_expr: &str) -> Result<GuiTestHarness> {
 
 // ── Line ────────────────────────────────────────────────────────────
 
-// XCR estokes: Instead of writing out the data structure, we should load the
-// actual graphix files we are compiling into the gui library, and then call the
-// actual functions that will be used. In other words lets test the actual code
-// that runs instead of a facimile of it.
-//
-// This applies to every other test as well.
 #[tokio::test(flavor = "current_thread")]
 async fn line_renders() -> Result<()> {
     let h = canvas_harness(concat!(

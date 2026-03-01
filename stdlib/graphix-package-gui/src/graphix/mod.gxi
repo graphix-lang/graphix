@@ -56,71 +56,244 @@ type Palette = {
   warning: Color
 };
 
-/// Per-widget style types for custom theming
+/// Per-widget style types for custom theming.
+/// All fields are optional — null fields inherit the theme default.
 type ButtonStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, text_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  text_color: [Color, null]
 };
 
 type CheckboxStyle = {
-  accent: Color, background: Color, border_color: Color,
-  border_radius: f64, border_width: f64, icon_color: Color, text_color: Color
+  accent: [Color, null],
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  icon_color: [Color, null],
+  text_color: [Color, null]
 };
 
 type ContainerStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, text_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  text_color: [Color, null]
 };
 
 type MenuStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, selected_background: Color, selected_text_color: Color,
-  text_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  selected_background: [Color, null],
+  selected_text_color: [Color, null],
+  text_color: [Color, null]
 };
 
 type PickListStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, handle_color: Color, placeholder_color: Color,
-  text_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  handle_color: [Color, null],
+  placeholder_color: [Color, null],
+  text_color: [Color, null]
 };
 
 type ProgressBarStyle = {
-  background: Color, bar_color: Color, border_radius: f64
+  background: [Color, null],
+  bar_color: [Color, null],
+  border_radius: [f64, null]
 };
 
 type RadioStyle = {
-  background: Color, border_color: Color, border_width: f64,
-  dot_color: Color, text_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_width: [f64, null],
+  dot_color: [Color, null],
+  text_color: [Color, null]
 };
 
-type RuleStyle = { color: Color, radius: f64, width: f64 };
+type RuleStyle = { color: [Color, null], radius: [f64, null], width: [f64, null] };
 
 type ScrollableStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, scroller_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  scroller_color: [Color, null]
 };
 
 type SliderStyle = {
-  handle_border_color: Color, handle_border_width: f64, handle_color: Color,
-  handle_radius: f64, rail_color: Color, rail_fill_color: Color, rail_width: f64
+  handle_border_color: [Color, null],
+  handle_border_width: [f64, null],
+  handle_color: [Color, null],
+  handle_radius: [f64, null],
+  rail_color: [Color, null],
+  rail_fill_color: [Color, null],
+  rail_width: [f64, null]
 };
 
 type TextEditorStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, placeholder_color: Color, selection_color: Color,
-  value_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  placeholder_color: [Color, null],
+  selection_color: [Color, null],
+  value_color: [Color, null]
 };
 
 type TextInputStyle = {
-  background: Color, border_color: Color, border_radius: f64,
-  border_width: f64, icon_color: Color, placeholder_color: Color,
-  selection_color: Color, value_color: Color
+  background: [Color, null],
+  border_color: [Color, null],
+  border_radius: [f64, null],
+  border_width: [f64, null],
+  icon_color: [Color, null],
+  placeholder_color: [Color, null],
+  selection_color: [Color, null],
+  value_color: [Color, null]
 };
 
 type TogglerStyle = {
-  background: Color, background_border_color: Color, border_radius: f64,
-  foreground: Color, foreground_border_color: Color, text_color: Color
+  background: [Color, null],
+  background_border_color: [Color, null],
+  border_radius: [f64, null],
+  foreground: [Color, null],
+  foreground_border_color: [Color, null],
+  text_color: [Color, null]
 };
+
+/// Build a ButtonStyle with optional overrides
+val button_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#text_color: [Color, null]
+) -> ButtonStyle;
+
+/// Build a CheckboxStyle with optional overrides
+val checkbox_style: fn(
+  ?#accent: [Color, null],
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#icon_color: [Color, null],
+  ?#text_color: [Color, null]
+) -> CheckboxStyle;
+
+/// Build a ContainerStyle with optional overrides
+val container_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#text_color: [Color, null]
+) -> ContainerStyle;
+
+/// Build a MenuStyle with optional overrides
+val menu_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#selected_background: [Color, null],
+  ?#selected_text_color: [Color, null],
+  ?#text_color: [Color, null]
+) -> MenuStyle;
+
+/// Build a PickListStyle with optional overrides
+val pick_list_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#handle_color: [Color, null],
+  ?#placeholder_color: [Color, null],
+  ?#text_color: [Color, null]
+) -> PickListStyle;
+
+/// Build a ProgressBarStyle with optional overrides
+val progress_bar_style: fn(
+  ?#background: [Color, null],
+  ?#bar_color: [Color, null],
+  ?#border_radius: [f64, null]
+) -> ProgressBarStyle;
+
+/// Build a RadioStyle with optional overrides
+val radio_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_width: [f64, null],
+  ?#dot_color: [Color, null],
+  ?#text_color: [Color, null]
+) -> RadioStyle;
+
+/// Build a RuleStyle with optional overrides
+val rule_style: fn(
+  ?#color: [Color, null],
+  ?#radius: [f64, null],
+  ?#width: [f64, null]
+) -> RuleStyle;
+
+/// Build a ScrollableStyle with optional overrides
+val scrollable_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#scroller_color: [Color, null]
+) -> ScrollableStyle;
+
+/// Build a SliderStyle with optional overrides
+val slider_style: fn(
+  ?#handle_border_color: [Color, null],
+  ?#handle_border_width: [f64, null],
+  ?#handle_color: [Color, null],
+  ?#handle_radius: [f64, null],
+  ?#rail_color: [Color, null],
+  ?#rail_fill_color: [Color, null],
+  ?#rail_width: [f64, null]
+) -> SliderStyle;
+
+/// Build a TextEditorStyle with optional overrides
+val text_editor_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#placeholder_color: [Color, null],
+  ?#selection_color: [Color, null],
+  ?#value_color: [Color, null]
+) -> TextEditorStyle;
+
+/// Build a TextInputStyle with optional overrides
+val text_input_style: fn(
+  ?#background: [Color, null],
+  ?#border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#border_width: [f64, null],
+  ?#icon_color: [Color, null],
+  ?#placeholder_color: [Color, null],
+  ?#selection_color: [Color, null],
+  ?#value_color: [Color, null]
+) -> TextInputStyle;
+
+/// Build a TogglerStyle with optional overrides
+val toggler_style: fn(
+  ?#background: [Color, null],
+  ?#background_border_color: [Color, null],
+  ?#border_radius: [f64, null],
+  ?#foreground: [Color, null],
+  ?#foreground_border_color: [Color, null],
+  ?#text_color: [Color, null]
+) -> TogglerStyle;
 
 /// Full custom theme with optional per-widget style overrides
 type StyleSheet = {
@@ -140,14 +313,50 @@ type StyleSheet = {
   toggler: [TogglerStyle, null]
 };
 
+/// Build a full custom theme from a palette and optional per-widget styles.
+/// Omitted widget styles default to the theme's built-in palette-derived style.
+val stylesheet: fn(
+  #palette: &Palette,
+  ?#button: [ButtonStyle, null],
+  ?#checkbox: [CheckboxStyle, null],
+  ?#container: [ContainerStyle, null],
+  ?#menu: [MenuStyle, null],
+  ?#pick_list: [PickListStyle, null],
+  ?#progress_bar: [ProgressBarStyle, null],
+  ?#radio: [RadioStyle, null],
+  ?#rule: [RuleStyle, null],
+  ?#scrollable: [ScrollableStyle, null],
+  ?#slider: [SliderStyle, null],
+  ?#text_editor: [TextEditorStyle, null],
+  ?#text_input: [TextInputStyle, null],
+  ?#toggler: [TogglerStyle, null]
+) -> StyleSheet;
+
 type Theme = [
-  `Light, `Dark, `Dracula, `Nord,
-  `SolarizedLight, `SolarizedDark, `GruvboxLight, `GruvboxDark,
-  `CatppuccinLatte, `CatppuccinFrappe, `CatppuccinMacchiato, `CatppuccinMocha,
-  `TokyoNight, `TokyoNightStorm, `TokyoNightLight,
-  `KanagawaWave, `KanagawaDragon, `KanagawaLotus,
-  `Moonfly, `Nightfly, `Oxocarbon, `Ferra,
-  `Custom(StyleSheet), `CustomPalette(Palette)
+  `Light,
+  `Dark,
+  `Dracula,
+  `Nord,
+  `SolarizedLight,
+  `SolarizedDark,
+  `GruvboxLight,
+  `GruvboxDark,
+  `CatppuccinLatte,
+  `CatppuccinFrappe,
+  `CatppuccinMacchiato,
+  `CatppuccinMocha,
+  `TokyoNight,
+  `TokyoNightStorm,
+  `TokyoNightLight,
+  `KanagawaWave,
+  `KanagawaDragon,
+  `KanagawaLotus,
+  `Moonfly,
+  `Nightfly,
+  `Oxocarbon,
+  `Ferra,
+  `Custom(StyleSheet),
+  `CustomPalette(Palette)
 ];
 
 /// A window description
@@ -168,17 +377,6 @@ val window: fn(
   ?#theme: &Theme,
   &Widget
 ) -> Window;
-
-/// Build a full custom theme from a palette and optional per-widget styles.
-/// Omitted widget styles default to the theme's built-in palette-derived style.
-val custom_theme: fn(#palette: &Palette,
-  ?#button: [ButtonStyle, null], ?#checkbox: [CheckboxStyle, null],
-  ?#container: [ContainerStyle, null], ?#menu: [MenuStyle, null],
-  ?#pick_list: [PickListStyle, null], ?#progress_bar: [ProgressBarStyle, null],
-  ?#radio: [RadioStyle, null], ?#rule: [RuleStyle, null],
-  ?#scrollable: [ScrollableStyle, null], ?#slider: [SliderStyle, null],
-  ?#text_editor: [TextEditorStyle, null], ?#text_input: [TextInputStyle, null],
-  ?#toggler: [TogglerStyle, null]) -> StyleSheet;
 
 mod text;
 mod column;

@@ -18,7 +18,7 @@ use netidx_value::Value;
 use serde_json::json;
 use std::{
     any::Any,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::mpsc as smpsc,
@@ -549,6 +549,43 @@ impl GraphixPM {
                     );
                     deps[&crate_name] = toml_edit::Item::Value(tbl.into());
                 }
+            }
+        }
+        // Snapshot dep names so we can release the mutable borrow on doc
+        let dep_names: BTreeSet<String> =
+            deps.iter().map(|(k, _)| k.to_string()).collect();
+        // Clean up [features] that reference removed graphix-package-* deps
+        if let Some(features) =
+            doc.get_mut("features").and_then(|f| f.as_table_mut())
+        {
+            let mut empty_features = Vec::new();
+            for (feat, val) in features.iter_mut() {
+                if let Some(arr) = val.as_array_mut() {
+                    arr.retain(|v| match v.as_str() {
+                        Some(s) if s.starts_with("dep:graphix-package-") => {
+                            dep_names.contains(&s["dep:".len()..])
+                        }
+                        Some(s) if s.starts_with("graphix-package-") => {
+                            dep_names.contains(s)
+                        }
+                        _ => true,
+                    });
+                    if arr.is_empty() {
+                        empty_features.push(feat.to_string());
+                    }
+                }
+            }
+            for feat in &empty_features {
+                features.remove(feat);
+            }
+            // Clean up default to remove references to deleted features
+            if let Some(default) =
+                features.get_mut("default").and_then(|v| v.as_array_mut())
+            {
+                default.retain(|v| match v.as_str() {
+                    Some(s) => !empty_features.contains(&s.to_string()),
+                    _ => true,
+                });
             }
         }
         Ok(doc.to_string())

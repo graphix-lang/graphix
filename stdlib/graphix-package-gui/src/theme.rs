@@ -1,4 +1,4 @@
-use iced_core::{border::Border, Color, Shadow};
+use iced_core::Color;
 use iced_widget::{
     button, checkbox, combo_box, container, overlay::menu, pick_list, progress_bar, radio,
     rule, scrollable, slider, svg, text_editor, text_input, toggler,
@@ -44,129 +44,129 @@ pub(crate) struct StyleOverrides {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ButtonSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub text_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub text_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CheckboxSpec {
-    pub accent: Color,
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub icon_color: Color,
-    pub text_color: Color,
+    pub accent: Option<Color>,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub icon_color: Option<Color>,
+    pub text_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TextInputSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub icon_color: Color,
-    pub placeholder_color: Color,
-    pub selection_color: Color,
-    pub value_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub icon_color: Option<Color>,
+    pub placeholder_color: Option<Color>,
+    pub selection_color: Option<Color>,
+    pub value_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TogglerSpec {
-    pub background: Color,
-    pub background_border_color: Color,
-    pub border_radius: f32,
-    pub foreground: Color,
-    pub foreground_border_color: Color,
-    pub text_color: Color,
+    pub background: Option<Color>,
+    pub background_border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub foreground: Option<Color>,
+    pub foreground_border_color: Option<Color>,
+    pub text_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SliderSpec {
-    pub handle_border_color: Color,
-    pub handle_border_width: f32,
-    pub handle_color: Color,
-    pub handle_radius: f32,
-    pub rail_color: Color,
-    pub rail_fill_color: Color,
-    pub rail_width: f32,
+    pub handle_border_color: Option<Color>,
+    pub handle_border_width: Option<f32>,
+    pub handle_color: Option<Color>,
+    pub handle_radius: Option<f32>,
+    pub rail_color: Option<Color>,
+    pub rail_fill_color: Option<Color>,
+    pub rail_width: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RadioSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_width: f32,
-    pub dot_color: Color,
-    pub text_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_width: Option<f32>,
+    pub dot_color: Option<Color>,
+    pub text_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PickListSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub handle_color: Color,
-    pub placeholder_color: Color,
-    pub text_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub handle_color: Option<Color>,
+    pub placeholder_color: Option<Color>,
+    pub text_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TextEditorSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub placeholder_color: Color,
-    pub selection_color: Color,
-    pub value_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub placeholder_color: Option<Color>,
+    pub selection_color: Option<Color>,
+    pub value_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ContainerSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub text_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub text_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScrollableSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub scroller_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub scroller_color: Option<Color>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProgressBarSpec {
-    pub background: Color,
-    pub bar_color: Color,
-    pub border_radius: f32,
+    pub background: Option<Color>,
+    pub bar_color: Option<Color>,
+    pub border_radius: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RuleSpec {
-    pub color: Color,
-    pub radius: f32,
-    pub width: f32,
+    pub color: Option<Color>,
+    pub radius: Option<f32>,
+    pub width: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MenuSpec {
-    pub background: Color,
-    pub border_color: Color,
-    pub border_radius: f32,
-    pub border_width: f32,
-    pub selected_background: Color,
-    pub selected_text_color: Color,
-    pub text_color: Color,
+    pub background: Option<Color>,
+    pub border_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub selected_background: Option<Color>,
+    pub selected_text_color: Option<Color>,
+    pub text_color: Option<Color>,
 }
 
 // --- Color adjustment helpers ---
@@ -193,309 +193,425 @@ fn dim(color: Color) -> Color {
     Color::from_rgba(color.r, color.g, color.b, color.a * 0.5)
 }
 
-// --- Resolve methods ---
+// --- Resolve methods (overlay pattern) ---
+//
+// Each resolve starts from iced's complete default style for the given
+// theme + status, then selectively overrides only user-specified fields.
 
 impl ButtonSpec {
-    fn resolve(&self, is_dark: bool, status: button::Status) -> button::Style {
-        let base = button::Style {
-            background: Some(self.background.into()),
-            text_color: self.text_color,
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            shadow: Shadow::default(),
-            snap: false,
-        };
-        match status {
-            button::Status::Active | button::Status::Pressed => base,
-            button::Status::Hovered => button::Style {
-                background: Some(hover_adjust(self.background, is_dark).into()),
-                ..base
-            },
-            button::Status::Disabled => button::Style {
-                background: Some(dim(self.background).into()),
-                text_color: dim(self.text_color),
-                ..base
-            },
+    fn resolve(&self, theme: &iced_core::Theme, status: button::Status) -> button::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = button::primary(theme, status);
+        if let Some(bg) = self.background {
+            let bg = match status {
+                button::Status::Hovered => hover_adjust(bg, is_dark),
+                button::Status::Disabled => dim(bg),
+                _ => bg,
+            };
+            s.background = Some(bg.into());
         }
+        if let Some(tc) = self.text_color {
+            s.text_color =
+                if matches!(status, button::Status::Disabled) { dim(tc) } else { tc };
+        }
+        if let Some(bc) = self.border_color {
+            s.border.color = bc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        s
     }
 }
 
 impl CheckboxSpec {
-    fn resolve(&self, is_dark: bool, status: checkbox::Status) -> checkbox::Style {
-        let (bg, is_hovered) = match status {
-            checkbox::Status::Active { is_checked } => {
-                (if is_checked { self.accent } else { self.background }, false)
-            }
-            checkbox::Status::Hovered { is_checked } => {
-                (if is_checked { self.accent } else { self.background }, true)
-            }
-            checkbox::Status::Disabled { is_checked } => {
-                let c = if is_checked { self.accent } else { self.background };
-                return checkbox::Style {
-                    background: dim(c).into(),
-                    icon_color: dim(self.icon_color),
-                    border: Border {
-                        color: dim(self.border_color),
-                        width: self.border_width,
-                        radius: self.border_radius.into(),
-                    },
-                    text_color: Some(dim(self.text_color)),
-                };
-            }
+    fn resolve(&self, theme: &iced_core::Theme, status: checkbox::Status) -> checkbox::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = checkbox::primary(theme, status);
+        let is_disabled = matches!(status, checkbox::Status::Disabled { .. });
+        let is_hovered = matches!(status, checkbox::Status::Hovered { .. });
+        let is_checked = match status {
+            checkbox::Status::Active { is_checked }
+            | checkbox::Status::Hovered { is_checked }
+            | checkbox::Status::Disabled { is_checked } => is_checked,
         };
-        let bg = if is_hovered { hover_adjust(bg, is_dark) } else { bg };
-        checkbox::Style {
-            background: bg.into(),
-            icon_color: self.icon_color,
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            text_color: Some(self.text_color),
+        if let Some(accent) = self.accent {
+            if let Some(bg) = self.background {
+                let c = if is_checked { accent } else { bg };
+                let c = if is_disabled {
+                    dim(c)
+                } else if is_hovered {
+                    hover_adjust(c, is_dark)
+                } else {
+                    c
+                };
+                s.background = c.into();
+            } else {
+                // only accent specified
+                if is_checked {
+                    let c = if is_disabled {
+                        dim(accent)
+                    } else if is_hovered {
+                        hover_adjust(accent, is_dark)
+                    } else {
+                        accent
+                    };
+                    s.background = c.into();
+                }
+            }
+        } else if let Some(bg) = self.background {
+            if !is_checked {
+                let c = if is_disabled {
+                    dim(bg)
+                } else if is_hovered {
+                    hover_adjust(bg, is_dark)
+                } else {
+                    bg
+                };
+                s.background = c.into();
+            }
         }
+        if let Some(ic) = self.icon_color {
+            s.icon_color = if is_disabled { dim(ic) } else { ic };
+        }
+        if let Some(tc) = self.text_color {
+            s.text_color = Some(if is_disabled { dim(tc) } else { tc });
+        }
+        if let Some(bc) = self.border_color {
+            s.border.color = if is_disabled { dim(bc) } else { bc };
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        s
     }
 }
 
 impl TextInputSpec {
-    fn resolve(&self, is_dark: bool, status: text_input::Status) -> text_input::Style {
-        let bg = match status {
-            text_input::Status::Active => self.background,
-            text_input::Status::Hovered | text_input::Status::Focused { .. } => {
-                hover_adjust(self.background, is_dark)
+    fn resolve(
+        &self,
+        theme: &iced_core::Theme,
+        status: text_input::Status,
+    ) -> text_input::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = text_input::default(theme, status);
+        if let Some(bg) = self.background {
+            s.background = match status {
+                text_input::Status::Active => bg,
+                text_input::Status::Hovered | text_input::Status::Focused { .. } => {
+                    hover_adjust(bg, is_dark)
+                }
+                text_input::Status::Disabled => dim(bg),
             }
-            text_input::Status::Disabled => dim(self.background),
-        };
-        text_input::Style {
-            background: bg.into(),
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            icon: self.icon_color,
-            placeholder: self.placeholder_color,
-            value: self.value_color,
-            selection: self.selection_color,
+            .into();
         }
+        if let Some(bc) = self.border_color {
+            s.border.color = bc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        if let Some(ic) = self.icon_color {
+            s.icon = ic;
+        }
+        if let Some(pc) = self.placeholder_color {
+            s.placeholder = pc;
+        }
+        if let Some(vc) = self.value_color {
+            s.value = vc;
+        }
+        if let Some(sc) = self.selection_color {
+            s.selection = sc;
+        }
+        s
     }
 }
 
 impl TogglerSpec {
-    fn resolve(&self, is_dark: bool, status: toggler::Status) -> toggler::Style {
+    fn resolve(&self, theme: &iced_core::Theme, status: toggler::Status) -> toggler::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = toggler::default(theme, status);
         let is_hovered = matches!(status, toggler::Status::Hovered { .. });
         let is_disabled = matches!(status, toggler::Status::Disabled { .. });
-        let bg = if is_disabled {
-            dim(self.background)
-        } else if is_hovered {
-            hover_adjust(self.background, is_dark)
-        } else {
-            self.background
-        };
-        toggler::Style {
-            background: bg.into(),
-            background_border_width: 1.0,
-            background_border_color: if is_disabled {
-                dim(self.background_border_color)
+        if let Some(bg) = self.background {
+            s.background = if is_disabled {
+                dim(bg)
+            } else if is_hovered {
+                hover_adjust(bg, is_dark)
             } else {
-                self.background_border_color
-            },
-            foreground: if is_disabled { dim(self.foreground) } else { self.foreground }.into(),
-            foreground_border_width: 1.0,
-            foreground_border_color: if is_disabled {
-                dim(self.foreground_border_color)
-            } else {
-                self.foreground_border_color
-            },
-            text_color: Some(if is_disabled { dim(self.text_color) } else { self.text_color }),
-            border_radius: Some(self.border_radius.into()),
-            padding_ratio: 0.1,
+                bg
+            }
+            .into();
         }
+        if let Some(bbc) = self.background_border_color {
+            s.background_border_color = if is_disabled { dim(bbc) } else { bbc };
+        }
+        if let Some(fg) = self.foreground {
+            s.foreground = if is_disabled { dim(fg) } else { fg }.into();
+        }
+        if let Some(fbc) = self.foreground_border_color {
+            s.foreground_border_color = if is_disabled { dim(fbc) } else { fbc };
+        }
+        if let Some(tc) = self.text_color {
+            s.text_color = Some(if is_disabled { dim(tc) } else { tc });
+        }
+        if let Some(br) = self.border_radius {
+            s.border_radius = Some(br.into());
+        }
+        s
     }
 }
 
 impl SliderSpec {
-    fn resolve(&self, is_dark: bool, status: slider::Status) -> slider::Style {
+    fn resolve(&self, theme: &iced_core::Theme, status: slider::Status) -> slider::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = slider::default(theme, status);
         let is_hovered = matches!(status, slider::Status::Hovered);
-        let handle_bg = if is_hovered {
-            hover_adjust(self.handle_color, is_dark)
-        } else {
-            self.handle_color
-        };
-        slider::Style {
-            rail: slider::Rail {
-                backgrounds: (self.rail_fill_color.into(), self.rail_color.into()),
-                width: self.rail_width,
-                border: Border::default(),
-            },
-            handle: slider::Handle {
-                shape: slider::HandleShape::Circle { radius: self.handle_radius },
-                background: handle_bg.into(),
-                border_width: self.handle_border_width,
-                border_color: self.handle_border_color,
-            },
+        if let Some(rfc) = self.rail_fill_color {
+            s.rail.backgrounds.0 = rfc.into();
         }
+        if let Some(rc) = self.rail_color {
+            s.rail.backgrounds.1 = rc.into();
+        }
+        if let Some(rw) = self.rail_width {
+            s.rail.width = rw;
+        }
+        if let Some(hc) = self.handle_color {
+            let hc = if is_hovered { hover_adjust(hc, is_dark) } else { hc };
+            s.handle.background = hc.into();
+        }
+        if let Some(hr) = self.handle_radius {
+            s.handle.shape = slider::HandleShape::Circle { radius: hr };
+        }
+        if let Some(hbw) = self.handle_border_width {
+            s.handle.border_width = hbw;
+        }
+        if let Some(hbc) = self.handle_border_color {
+            s.handle.border_color = hbc;
+        }
+        s
     }
 }
 
 impl RadioSpec {
-    fn resolve(&self, is_dark: bool, status: radio::Status) -> radio::Style {
+    fn resolve(&self, theme: &iced_core::Theme, status: radio::Status) -> radio::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = radio::default(theme, status);
         let is_hovered = matches!(status, radio::Status::Hovered { .. });
-        let bg = if is_hovered {
-            hover_adjust(self.background, is_dark)
-        } else {
-            self.background
-        };
-        radio::Style {
-            background: bg.into(),
-            dot_color: self.dot_color,
-            border_width: self.border_width,
-            border_color: self.border_color,
-            text_color: Some(self.text_color),
+        if let Some(bg) = self.background {
+            s.background =
+                if is_hovered { hover_adjust(bg, is_dark) } else { bg }.into();
         }
+        if let Some(dc) = self.dot_color {
+            s.dot_color = dc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border_width = bw;
+        }
+        if let Some(bc) = self.border_color {
+            s.border_color = bc;
+        }
+        if let Some(tc) = self.text_color {
+            s.text_color = Some(tc);
+        }
+        s
     }
 }
 
 impl PickListSpec {
-    fn resolve(&self, is_dark: bool, status: pick_list::Status) -> pick_list::Style {
+    fn resolve(&self, theme: &iced_core::Theme, status: pick_list::Status) -> pick_list::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = pick_list::default(theme, status);
         let is_hovered = matches!(
             status,
             pick_list::Status::Hovered | pick_list::Status::Opened { .. }
         );
-        let bg = if is_hovered {
-            hover_adjust(self.background, is_dark)
-        } else {
-            self.background
-        };
-        pick_list::Style {
-            text_color: self.text_color,
-            placeholder_color: self.placeholder_color,
-            handle_color: self.handle_color,
-            background: bg.into(),
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
+        if let Some(bg) = self.background {
+            s.background =
+                if is_hovered { hover_adjust(bg, is_dark) } else { bg }.into();
         }
+        if let Some(tc) = self.text_color {
+            s.text_color = tc;
+        }
+        if let Some(pc) = self.placeholder_color {
+            s.placeholder_color = pc;
+        }
+        if let Some(hc) = self.handle_color {
+            s.handle_color = hc;
+        }
+        if let Some(bc) = self.border_color {
+            s.border.color = bc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        s
     }
 }
 
 impl TextEditorSpec {
-    fn resolve(&self, is_dark: bool, status: text_editor::Status) -> text_editor::Style {
-        let bg = match status {
-            text_editor::Status::Active => self.background,
-            text_editor::Status::Hovered | text_editor::Status::Focused { .. } => {
-                hover_adjust(self.background, is_dark)
+    fn resolve(
+        &self,
+        theme: &iced_core::Theme,
+        status: text_editor::Status,
+    ) -> text_editor::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = text_editor::default(theme, status);
+        if let Some(bg) = self.background {
+            s.background = match status {
+                text_editor::Status::Active => bg,
+                text_editor::Status::Hovered | text_editor::Status::Focused { .. } => {
+                    hover_adjust(bg, is_dark)
+                }
+                text_editor::Status::Disabled => dim(bg),
             }
-            text_editor::Status::Disabled => dim(self.background),
-        };
-        text_editor::Style {
-            background: bg.into(),
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            placeholder: self.placeholder_color,
-            value: self.value_color,
-            selection: self.selection_color,
+            .into();
         }
+        if let Some(bc) = self.border_color {
+            s.border.color = bc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        if let Some(pc) = self.placeholder_color {
+            s.placeholder = pc;
+        }
+        if let Some(vc) = self.value_color {
+            s.value = vc;
+        }
+        if let Some(sc) = self.selection_color {
+            s.selection = sc;
+        }
+        s
     }
 }
 
 impl ContainerSpec {
-    fn resolve(&self) -> container::Style {
-        container::Style {
-            text_color: Some(self.text_color),
-            background: Some(self.background.into()),
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            shadow: Shadow::default(),
-            snap: false,
+    fn resolve(&self, theme: &iced_core::Theme) -> container::Style {
+        let mut s = container::transparent(theme);
+        if let Some(bg) = self.background {
+            s.background = Some(bg.into());
         }
+        if let Some(tc) = self.text_color {
+            s.text_color = Some(tc);
+        }
+        if let Some(bc) = self.border_color {
+            s.border.color = bc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        s
     }
 }
 
 impl ScrollableSpec {
-    fn resolve(&self, is_dark: bool, status: scrollable::Status) -> scrollable::Style {
-        let is_hovered = matches!(status, scrollable::Status::Hovered { .. });
-        let scroller_bg = if is_hovered {
-            hover_adjust(self.scroller_color, is_dark)
-        } else {
-            self.scroller_color
-        };
-        let rail = scrollable::Rail {
-            background: Some(self.background.into()),
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            scroller: scrollable::Scroller {
-                background: scroller_bg.into(),
-                border: Border::default(),
-            },
-        };
-        scrollable::Style {
-            container: container::Style::default(),
-            vertical_rail: rail,
-            horizontal_rail: rail,
-            gap: None,
-            auto_scroll: scrollable::AutoScroll {
-                background: Color::TRANSPARENT.into(),
-                border: Border::default(),
-                shadow: Shadow::default(),
-                icon: Color::TRANSPARENT,
-            },
+    fn resolve(
+        &self,
+        theme: &iced_core::Theme,
+        status: scrollable::Status,
+    ) -> scrollable::Style {
+        let is_dark = theme.extended_palette().is_dark;
+        let mut s = scrollable::default(theme, status);
+        // Apply to both rails symmetrically
+        for rail in [&mut s.vertical_rail, &mut s.horizontal_rail] {
+            if let Some(bg) = self.background {
+                rail.background = Some(bg.into());
+            }
+            if let Some(bc) = self.border_color {
+                rail.border.color = bc;
+            }
+            if let Some(bw) = self.border_width {
+                rail.border.width = bw;
+            }
+            if let Some(br) = self.border_radius {
+                rail.border.radius = br.into();
+            }
+            if let Some(sc) = self.scroller_color {
+                let is_hovered = matches!(status, scrollable::Status::Hovered { .. });
+                let sc = if is_hovered { hover_adjust(sc, is_dark) } else { sc };
+                rail.scroller.background = sc.into();
+            }
         }
+        s
     }
 }
 
 impl ProgressBarSpec {
-    fn resolve(&self) -> progress_bar::Style {
-        progress_bar::Style {
-            background: self.background.into(),
-            bar: self.bar_color.into(),
-            border: Border {
-                radius: self.border_radius.into(),
-                ..Border::default()
-            },
+    fn resolve(&self, theme: &iced_core::Theme) -> progress_bar::Style {
+        let mut s = progress_bar::primary(theme);
+        if let Some(bg) = self.background {
+            s.background = bg.into();
         }
+        if let Some(bar) = self.bar_color {
+            s.bar = bar.into();
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        s
     }
 }
 
 impl RuleSpec {
-    fn resolve(&self) -> rule::Style {
-        rule::Style {
-            color: self.color,
-            radius: self.radius.into(),
-            fill_mode: rule::FillMode::Percent(self.width),
-            snap: false,
+    fn resolve(&self, theme: &iced_core::Theme) -> rule::Style {
+        let mut s = rule::default(theme);
+        if let Some(c) = self.color {
+            s.color = c;
         }
+        if let Some(r) = self.radius {
+            s.radius = r.into();
+        }
+        if let Some(w) = self.width {
+            s.fill_mode = rule::FillMode::Percent(w);
+        }
+        s
     }
 }
 
 impl MenuSpec {
-    fn resolve(&self) -> menu::Style {
-        menu::Style {
-            background: self.background.into(),
-            border: Border {
-                color: self.border_color,
-                width: self.border_width,
-                radius: self.border_radius.into(),
-            },
-            text_color: self.text_color,
-            selected_text_color: self.selected_text_color,
-            selected_background: self.selected_background.into(),
-            shadow: Shadow::default(),
+    fn resolve(&self, theme: &iced_core::Theme) -> menu::Style {
+        let mut s = menu::default(theme);
+        if let Some(bg) = self.background {
+            s.background = bg.into();
         }
+        if let Some(bc) = self.border_color {
+            s.border.color = bc;
+        }
+        if let Some(bw) = self.border_width {
+            s.border.width = bw;
+        }
+        if let Some(br) = self.border_radius {
+            s.border.radius = br.into();
+        }
+        if let Some(tc) = self.text_color {
+            s.text_color = tc;
+        }
+        if let Some(stc) = self.selected_text_color {
+            s.selected_text_color = stc;
+        }
+        if let Some(sb) = self.selected_background {
+            s.selected_background = sb.into();
+        }
+        s
     }
 }
 
@@ -513,7 +629,7 @@ macro_rules! impl_catalog_with_status {
                     if let Some(spec) =
                         theme.overrides.as_ref().and_then(|o| o.$field.as_ref())
                     {
-                        spec.resolve(theme.inner.extended_palette().is_dark, status)
+                        spec.resolve(&theme.inner, status)
                     } else {
                         #[allow(clippy::redundant_closure_call)]
                         ($fallback)(&theme.inner, status)
@@ -538,7 +654,7 @@ macro_rules! impl_catalog_no_status {
                     if let Some(spec) =
                         theme.overrides.as_ref().and_then(|o| o.$field.as_ref())
                     {
-                        spec.resolve()
+                        spec.resolve(&theme.inner)
                     } else {
                         #[allow(clippy::redundant_closure_call)]
                         ($fallback)(&theme.inner)
@@ -566,7 +682,7 @@ impl pick_list::Catalog for GraphixTheme {
     fn default<'a>() -> <Self as pick_list::Catalog>::Class<'a> {
         Box::new(|theme, status| {
             if let Some(spec) = theme.overrides.as_ref().and_then(|o| o.pick_list.as_ref()) {
-                spec.resolve(theme.inner.extended_palette().is_dark, status)
+                spec.resolve(&theme.inner, status)
             } else {
                 pick_list::default(&theme.inner, status)
             }
@@ -583,14 +699,13 @@ impl pick_list::Catalog for GraphixTheme {
 }
 impl_catalog_with_status!(text_editor, text_editor, text_editor::default);
 
-// Scrollable has status but its resolve takes is_dark
 impl scrollable::Catalog for GraphixTheme {
     type Class<'a> = scrollable::StyleFn<'a, Self>;
 
     fn default<'a>() -> Self::Class<'a> {
         Box::new(|theme, status| {
             if let Some(spec) = theme.overrides.as_ref().and_then(|o| o.scrollable.as_ref()) {
-                spec.resolve(theme.inner.extended_palette().is_dark, status)
+                spec.resolve(&theme.inner, status)
             } else {
                 scrollable::default(&theme.inner, status)
             }
@@ -613,7 +728,7 @@ impl menu::Catalog for GraphixTheme {
     fn default<'a>() -> <Self as menu::Catalog>::Class<'a> {
         Box::new(|theme| {
             if let Some(spec) = theme.overrides.as_ref().and_then(|o| o.menu.as_ref()) {
-                spec.resolve()
+                spec.resolve(&theme.inner)
             } else {
                 menu::default(&theme.inner)
             }

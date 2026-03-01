@@ -1,4 +1,4 @@
-type ImageSource = [string, `Path(string), `Bytes(bytes), `Rgba({width: u32, height: u32, pixels: bytes})];
+type ImageSource = [string, `Bytes(bytes), `Rgba({width: u32, height: u32, pixels: bytes})];
 
 type Image = {
   source: &ImageSource,

@@ -1,5 +1,5 @@
 use super::{GuiW, GuiWidget, IcedElement, Renderer};
-use crate::types::{ColorV, LengthV};
+use crate::types::{parse_opt_color, ColorV, LengthV};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -313,14 +313,6 @@ impl FromValue for PathSegment {
 fn parse_point(v: Value) -> Result<(f32, f32)> {
     let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
     Ok((x as f32, y as f32))
-}
-
-fn parse_opt_color(v: Value) -> Result<Option<Color>> {
-    if v == Value::Null {
-        Ok(None)
-    } else {
-        Ok(Some(ColorV::from_value(v)?.0))
-    }
 }
 
 fn parse_opt_stroke(v: Value) -> Result<Option<(Color, f32)>> {

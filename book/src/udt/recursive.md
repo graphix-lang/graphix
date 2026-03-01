@@ -25,10 +25,10 @@ type List<'a> = [
   `Nil
 ];
 
-/// cons a new item on the head of the list
+// cons a new item on the head of the list
 let cons = |l: List<'a>, v: 'a| -> List<'a> `Cons(v, l);
 
-/// compute the length of the list
+// compute the length of the list
 let len = |l: List<'a>| {
   let rec len_int = |l: List<'a>, n: i64| select l {
     `Cons(_, tl) => len_int(tl, n + 1),
@@ -37,13 +37,13 @@ let len = |l: List<'a>| {
   len_int(l, 0)
 };
 
-/// map f over the list
+// map f over the list
 let rec map = |l: List<'a>, f: fn('a) -> 'b| -> List<'b> select l {
   `Cons(v, tl) => `Cons(f(v), map(tl, f)),
   `Nil => `Nil
 };
 
-/// fold f over the list
+// fold f over the list
 let rec fold = |l: List<'a>, init: 'b, f: fn('b, 'a) -> 'b| -> 'b select l {
   `Cons(v, tl) => fold(tl, f(init, v), f),
   `Nil => init
