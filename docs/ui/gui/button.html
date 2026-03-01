@@ -172,7 +172,7 @@
 <li><strong><code>#on_press</code></strong> -- Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button renders but does nothing when clicked.</li>
 <li><strong><code>#width</code></strong> -- Width of the button. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#height</code></strong> -- Height of the button. Same <code>Length</code> values as width. Defaults to <code>`Shrink</code>.</li>
-<li><strong><code>#padding</code></strong> -- Interior padding around the child widget. Accepts <code>Padding</code> values: <code>`All(f64)</code>, <code>`Xy(f64, f64)</code>, or <code>`Ltrb(f64, f64, f64, f64)</code>.</li>
+<li><strong><code>#padding</code></strong> -- Interior padding around the child widget. Accepts <code>Padding</code> values: <code>`All(f64)</code>, <code>`Axis({x: f64, y: f64})</code>, or <code>`Each({top: f64, right: f64, bottom: f64, left: f64})</code>.</li>
 <li><strong><code>#disabled</code></strong> -- When <code>true</code>, the button is grayed out and <code>#on_press</code> is not triggered. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>&amp;Widget</code></strong> -- The child widget displayed inside the button. Usually a <code>text</code> widget.</li>
 </ul>

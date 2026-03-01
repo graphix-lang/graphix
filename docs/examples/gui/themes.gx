@@ -5,7 +5,7 @@ use gui::container;
 
 [&window(
   #title: &"Theme Demo",
-  #theme: &`CatppuccinMocha,
+  #theme: &`TokyoNight,
   &container(
     #width: &`Fill,
     #height: &`Fill,
@@ -20,7 +20,7 @@ use gui::container;
         text(#size: &28.0, #halign: &`Center, #width: &`Fill, &"Theme Demo"),
         text(
           #size: &16.0, #halign: &`Center, #width: &`Fill,
-          &"Using CatppuccinMocha theme")
+          &"Using TokyoNight theme")
       ]
     )
   )

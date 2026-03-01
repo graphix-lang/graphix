@@ -34,7 +34,7 @@ val toggler: fn(
 {{#include ../../examples/gui/toggler.gx}}
 ```
 
-![Toggler](./media/toggler.png)
+![Toggler](./media/toggler.gif)
 
 ## See Also
 

@@ -78,23 +78,10 @@ The palette defines the core colors from which iced derives all widget styles au
 - `warning` -- color for warning indicators.
 
 ```graphix
-use gui;
-use gui::text;
-
-let my_palette = {
-  background: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
-  text:       { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
-  primary:    { r: 0.4, g: 0.6, b: 1.0, a: 1.0 },
-  success:    { r: 0.3, g: 0.8, b: 0.4, a: 1.0 },
-  danger:     { r: 1.0, g: 0.3, b: 0.3, a: 1.0 },
-  warning:    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 }
-}
-
-[&window(
-  #theme: &`CustomPalette(my_palette),
-  &text(&"Custom palette theme")
-)]
+{{#include ../../examples/gui/custom_palette.gx}}
 ```
+
+![Custom Palette](media/custom_palette.png)
 
 ## Custom Stylesheets
 
@@ -106,7 +93,7 @@ type StyleSheet = {
   checkbox: [CheckboxStyle, null],
   container: [ContainerStyle, null],
   menu: [MenuStyle, null],
-  palette: &Palette,
+  palette: Palette,
   pick_list: [PickListStyle, null],
   progress_bar: [ProgressBarStyle, null],
   radio: [RadioStyle, null],
@@ -127,7 +114,7 @@ Use the `stylesheet` function to construct a `StyleSheet` without filling in eve
 
 ```graphix
 val stylesheet: fn(
-  #palette: &Palette,
+  #palette: Palette,
   ?#button: [ButtonStyle, null],
   ?#checkbox: [CheckboxStyle, null],
   ?#container: [ContainerStyle, null],
@@ -147,48 +134,10 @@ val stylesheet: fn(
 Example with a custom palette and button override:
 
 ```graphix
-use gui;
-use gui::text;
-use gui::button;
-use gui::column;
-
-let palette = {
-  background: { r: 0.12, g: 0.12, b: 0.18, a: 1.0 },
-  text:       { r: 0.85, g: 0.85, b: 0.9, a: 1.0 },
-  primary:    { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
-  success:    { r: 0.2, g: 0.8, b: 0.5, a: 1.0 },
-  danger:     { r: 0.95, g: 0.25, b: 0.35, a: 1.0 },
-  warning:    { r: 1.0, g: 0.7, b: 0.1, a: 1.0 }
-}
-
-let theme = `Custom(stylesheet(
-  #palette: &palette,
-  #button: button_style(
-    #background: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
-    #text_color: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-    #border_radius: 8.0
-  ),
-  #container: container_style(
-    #border_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
-    #border_width: 1.0,
-    #border_radius: 6.0
-  )
-))
-
-[&window(
-  #theme: &theme,
-  &column(
-    #spacing: &20.0,
-    #padding: &`All(40.0),
-    #halign: &`Center,
-    #width: &`Fill,
-    &[
-      text(#size: &20.0, &"Custom Stylesheet"),
-      button(#padding: &`All(12.0), &text(&"Styled Button"))
-    ]
-  )
-)]
+{{#include ../../examples/gui/custom_styles.gx}}
 ```
+
+![Custom Styles](media/custom_styles.png)
 
 ## Per-Widget Style Types
 

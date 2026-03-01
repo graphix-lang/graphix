@@ -93,7 +93,7 @@ val progress_bar: fn(
 {{#include ../../examples/gui/slider.gx}}
 ```
 
-![Slider](./media/slider.png)
+![Slider](./media/slider.gif)
 
 ### Vertical Slider
 
@@ -101,7 +101,7 @@ val progress_bar: fn(
 {{#include ../../examples/gui/vertical_slider.gx}}
 ```
 
-![Vertical Slider](./media/vertical_slider.png)
+![Vertical Slider](./media/vertical_slider.gif)
 
 ## See Also
 

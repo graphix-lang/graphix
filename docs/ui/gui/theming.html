@@ -219,7 +219,12 @@ window(#theme: &amp;theme, &amp;content)
 <li><code>warning</code> -- color for warning indicators.</li>
 </ul>
 <pre><code class="language-graphix">use gui;
+use gui::style;
 use gui::text;
+use gui::button;
+use gui::toggler;
+use gui::slider;
+use gui::column;
 
 let my_palette = {
   background: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
@@ -228,13 +233,31 @@ let my_palette = {
   success:    { r: 0.3, g: 0.8, b: 0.4, a: 1.0 },
   danger:     { r: 1.0, g: 0.3, b: 0.3, a: 1.0 },
   warning:    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 }
-}
+};
+
+let enabled = true;
+let volume = 50.0;
+
+let col = column(
+  #spacing: &amp;15.0,
+  #padding: &amp;`All(30.0),
+  #width: &amp;`Fill,
+  &amp;[
+    text(#size: &amp;24.0, &amp;"Custom Palette"),
+    button(#padding: &amp;`All(10.0), &amp;text(&amp;"Primary Button")),
+    toggler(#label: &amp;"Enabled", #on_toggle: |v| enabled &lt;- v, &amp;enabled),
+    slider(#min: &amp;0.0, #max: &amp;100.0, #on_change: |v| volume &lt;- v, &amp;volume),
+    text(&amp;"Volume: [volume]")
+  ]
+);
 
 [&amp;window(
+  #title: &amp;"Custom Palette",
   #theme: &amp;`CustomPalette(my_palette),
-  &amp;text(&amp;"Custom palette theme")
+  &amp;col
 )]
 </code></pre>
+<p><img src="media/custom_palette.png" alt="Custom Palette" /></p>
 <h2 id="custom-stylesheets"><a class="header" href="#custom-stylesheets">Custom Stylesheets</a></h2>
 <p>For full control over individual widget appearances, use <code>`Custom(StyleSheet)</code>. A stylesheet combines a palette with optional per-widget style overrides:</p>
 <pre><code class="language-graphix">type StyleSheet = {
@@ -242,7 +265,7 @@ let my_palette = {
   checkbox: [CheckboxStyle, null],
   container: [ContainerStyle, null],
   menu: [MenuStyle, null],
-  palette: &amp;Palette,
+  palette: Palette,
   pick_list: [PickListStyle, null],
   progress_bar: [ProgressBarStyle, null],
   radio: [RadioStyle, null],
@@ -258,7 +281,7 @@ let my_palette = {
 <h3 id="the-stylesheet-builder"><a class="header" href="#the-stylesheet-builder">The <code>stylesheet</code> Builder</a></h3>
 <p>Use the <code>stylesheet</code> function to construct a <code>StyleSheet</code> without filling in every field manually. Only <code>#palette</code> is required; all widget style parameters default to <code>null</code>:</p>
 <pre><code class="language-graphix">val stylesheet: fn(
-  #palette: &amp;Palette,
+  #palette: Palette,
   ?#button: [ButtonStyle, null],
   ?#checkbox: [CheckboxStyle, null],
   ?#container: [ContainerStyle, null],
@@ -276,9 +299,15 @@ let my_palette = {
 </code></pre>
 <p>Example with a custom palette and button override:</p>
 <pre><code class="language-graphix">use gui;
+use gui::style;
 use gui::text;
 use gui::button;
+use gui::text_input;
+use gui::slider;
+use gui::toggler;
+use gui::container;
 use gui::column;
+use gui::rule;
 
 let palette = {
   background: { r: 0.12, g: 0.12, b: 0.18, a: 1.0 },
@@ -287,36 +316,81 @@ let palette = {
   success:    { r: 0.2, g: 0.8, b: 0.5, a: 1.0 },
   danger:     { r: 0.95, g: 0.25, b: 0.35, a: 1.0 },
   warning:    { r: 1.0, g: 0.7, b: 0.1, a: 1.0 }
-}
+};
 
 let theme = `Custom(stylesheet(
-  #palette: &amp;palette,
+  #palette: palette,
   #button: button_style(
     #background: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
     #text_color: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-    #border_radius: 8.0
+    #border_radius: 12.0
+  ),
+  #text_input: text_input_style(
+    #background: { r: 0.16, g: 0.16, b: 0.24, a: 1.0 },
+    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.5 },
+    #border_radius: 8.0,
+    #border_width: 2.0,
+    #value_color: { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
+    #placeholder_color: { r: 0.5, g: 0.5, b: 0.6, a: 1.0 }
+  ),
+  #slider: slider_style(
+    #rail_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #rail_fill_color: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
+    #handle_color: { r: 0.7, g: 0.55, b: 1.0, a: 1.0 },
+    #handle_radius: 8.0
+  ),
+  #toggler: toggler_style(
+    #background: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #foreground: { r: 0.85, g: 0.85, b: 0.9, a: 1.0 }
   ),
   #container: container_style(
-    #border_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #background: { r: 0.15, g: 0.15, b: 0.22, a: 1.0 },
+    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.3 },
     #border_width: 1.0,
-    #border_radius: 6.0
+    #border_radius: 10.0
   )
-))
+));
+
+let name = "";
+let volume = 50.0;
+let dark_mode = true;
 
 [&amp;window(
+  #title: &amp;"Custom Styles",
   #theme: &amp;theme,
-  &amp;column(
-    #spacing: &amp;20.0,
-    #padding: &amp;`All(40.0),
-    #halign: &amp;`Center,
+  &amp;container(
+    #padding: &amp;`All(30.0),
     #width: &amp;`Fill,
-    &amp;[
-      text(#size: &amp;20.0, &amp;"Custom Stylesheet"),
-      button(#padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
-    ]
+    #height: &amp;`Fill,
+    &amp;column(
+      #spacing: &amp;15.0,
+      #width: &amp;`Fill,
+      &amp;[
+        text(#size: &amp;24.0, &amp;"Custom Stylesheet Demo"),
+        horizontal_rule(),
+        text_input(
+          #placeholder: &amp;"Type something...",
+          #on_input: |v| name &lt;- v,
+          &amp;name
+        ),
+        slider(
+          #min: &amp;0.0, #max: &amp;100.0,
+          #on_change: |v| volume &lt;- v,
+          &amp;volume
+        ),
+        text(&amp;"Volume: [volume]"),
+        toggler(
+          #label: &amp;"Dark mode",
+          #on_toggle: |v| dark_mode &lt;- v,
+          &amp;dark_mode
+        ),
+        button(#padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
+      ]
+    )
   )
 )]
 </code></pre>
+<p><img src="media/custom_styles.png" alt="Custom Styles" /></p>
 <h2 id="per-widget-style-types"><a class="header" href="#per-widget-style-types">Per-Widget Style Types</a></h2>
 <p>Each widget style type is a struct where every field is optional (<code>[T, null]</code>). A <code>null</code> field means "inherit from the theme palette." The GUI module provides both the types and corresponding builder functions.</p>
 <h3 id="buttonstyle"><a class="header" href="#buttonstyle">ButtonStyle</a></h3>

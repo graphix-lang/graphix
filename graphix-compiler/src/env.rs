@@ -331,7 +331,6 @@ impl Env {
                     bail!("duplicate type variable {tv} in definition of {name}");
                 }
             }
-            typ.check_tvars_declared(&mut declared)?;
             for (_, t) in params.iter() {
                 if let Some(t) = t {
                     t.check_tvars_declared(&mut declared)?;

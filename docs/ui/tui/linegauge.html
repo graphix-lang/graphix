@@ -158,27 +158,22 @@
                         <h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It's more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type LineSet = [
-  `Normal,
-  `Rounded,
-  `Double,
-  `Thick
-];
-
-val line_gauge: fn(
+<pre><code class="language-graphix">val line_gauge: fn(
   ?#filled_style: &amp;[Style, null],
+  ?#filled_symbol: &amp;[string, null],
   ?#label: &amp;[Line, null],
-  ?#line_set: &amp;[LineSet, null],
   ?#style: &amp;[Style, null],
   ?#unfilled_style: &amp;[Style, null],
+  ?#unfilled_symbol: &amp;[string, null],
   &amp;f64
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong>filled_style</strong> - Style for the filled portion</li>
+<li><strong>filled_symbol</strong> - Character used to draw the filled portion</li>
 <li><strong>unfilled_style</strong> - Style for the unfilled portion</li>
-<li><strong>line_set</strong> - Character set: <code>Thin</code>, <code>Thick</code> (default), or <code>Double</code></li>
+<li><strong>unfilled_symbol</strong> - Character used to draw the unfilled portion</li>
 <li><strong>label</strong> - Line or span displayed within the gauge</li>
 <li><strong>style</strong> - Base style for the widget</li>
 </ul>

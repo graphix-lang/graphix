@@ -122,7 +122,7 @@ and are enforced at each call site. For example consider,
 159
 ```
 
-The type is a bit of a mouthfull, lets format it a bit so it's easier to read.
+The type is a bit of a mouthful, lets format it a bit so it's easier to read.
 
 ```
 fn<'_2073: unbound: Error<ErrChain<`ArithError(string)>>,

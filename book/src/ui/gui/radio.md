@@ -7,13 +7,13 @@ A radio button for single-select choices within a group. Each `radio` widget rep
 ```graphix
 val radio: fn(
   #label: &string,
-  ?#selected: &Any,
-  ?#on_select: fn(Any) -> Any,
+  ?#selected: &'a,
+  ?#on_select: fn('a) -> Any,
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],
   ?#disabled: &bool,
-  &Any
+  &'a
 ) -> Widget
 ```
 
@@ -36,7 +36,7 @@ val radio: fn(
 {{#include ../../examples/gui/radio.gx}}
 ```
 
-![Radio](./media/radio.png)
+![Radio](./media/radio.gif)
 
 Note: the `selected` variable is typed as `Any` so it can hold any value used for comparison. In the example above, string values are used as the radio values.
 

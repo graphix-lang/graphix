@@ -18,7 +18,7 @@ val paragraph: fn(
 
 - **scroll** - Record with `x` and `y` fields for scroll position
 - **alignment** - `Left`, `Center`, or `Right`
-- **wrap** - Enable/disable word wrapping (default: true)
+- **trim** - Trim leading whitespace when wrapping (default: true)
 
 ## Examples
 

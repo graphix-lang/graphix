@@ -1,10 +1,10 @@
 let radio = |
   #label: &string,
-  #selected: &Any = &null,
-  #on_select: fn(Any) -> Any = |_| null,
+  #selected: &'a = &null,
+  #on_select: fn('a) -> Any = |_| null,
   #width: &Length = &`Shrink,
   #size: &[f64, null] = &null,
   #spacing: &[f64, null] = &null,
   #disabled: &bool = &false,
-  value: &Any
+  value: &'a
 | -> Widget `Radio({ value, label, on_select: &on_select, selected, width, size, spacing, disabled })

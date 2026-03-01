@@ -280,7 +280,10 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme> 
                 return;
             }
             if self.datasets.is_empty()
-                || !self.datasets.iter().any(|ds| ds.data.t.is_some())
+                || !self
+                    .datasets
+                    .iter()
+                    .any(|ds| ds.data.t.as_ref().is_some_and(|d| !d.0.is_empty()))
             {
                 return;
             }
@@ -470,6 +473,9 @@ pub(crate) fn auto_range<'a>(
                 max = v;
             }
         }
+    }
+    if min > max {
+        return (-1.0, 1.0);
     }
     if min == max {
         min -= 1.0;

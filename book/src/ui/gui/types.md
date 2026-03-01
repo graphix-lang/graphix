@@ -32,12 +32,16 @@ column(
 Controls spacing between a widget's border and its content:
 
 ```graphix
-type Padding = [`All(f64), `Axis(f64, f64), `Each(f64, f64, f64, f64)];
+type Padding = [
+  `All(f64),
+  `Axis({x: f64, y: f64}),
+  `Each({top: f64, right: f64, bottom: f64, left: f64})
+];
 ```
 
 - `` `All(px) `` -- uniform padding on all sides.
-- `` `Axis(horizontal, vertical) `` -- separate horizontal and vertical padding.
-- `` `Each(top, right, bottom, left) `` -- individual padding per side.
+- `` `Axis({x, y}) `` -- separate horizontal (`x`) and vertical (`y`) padding.
+- `` `Each({top, right, bottom, left}) `` -- individual padding per side.
 
 ```graphix
 container(
@@ -46,7 +50,7 @@ container(
 )
 
 container(
-  #padding: &`Each(10.0, 20.0, 10.0, 20.0),
+  #padding: &`Each({top: 10.0, right: 20.0, bottom: 10.0, left: 20.0}),
   &text(&"Different padding per side")
 )
 ```
@@ -158,7 +162,7 @@ type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
 ```graphix
 tooltip(
   #position: &`Top,
-  #content: &text(&"Tooltip text"),
+  #tip: &text(&"Tooltip text"),
   &button(&text(&"Hover me"))
 )
 ```
@@ -221,14 +225,14 @@ use gui::text;
 use gui::button;
 use gui::slider;
 
-let val = 50.0
+let v = 50.0
 
 column(
   #spacing: &10.0,
   &[
     text(&"A text widget"),
     button(&text(&"A button")),
-    slider(#min: &0.0, #max: &100.0, &val)
+    slider(#min: &0.0, #max: &100.0, &v)
   ]
 )
 ```

@@ -34,7 +34,7 @@ val checkbox: fn(
 {{#include ../../examples/gui/checkbox.gx}}
 ```
 
-![Checkbox](./media/checkbox.png)
+![Checkbox](./media/checkbox.gif)
 
 ## See Also
 

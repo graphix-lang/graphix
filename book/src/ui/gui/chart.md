@@ -62,7 +62,7 @@ Each `Dataset` struct has four fields:
 {{#include ../../examples/gui/chart.gx}}
 ```
 
-![Chart](./media/chart.png)
+![Chart](./media/chart.gif)
 
 ## See Also
 

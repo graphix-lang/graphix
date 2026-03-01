@@ -59,11 +59,12 @@ impl FromValue for PaddingV {
                 Ok(Self(Padding::new(n)))
             }
             (s, v) if &*s == "Axis" => {
-                let (y, x) = v.cast_to::<(f64, f64)>()?;
+                let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
                 Ok(Self(Padding::from([y as f32, x as f32])))
             }
             (s, v) if &*s == "Each" => {
-                let (top, right, bottom, left) = v.cast_to::<(f64, f64, f64, f64)>()?;
+                let [(_, bottom), (_, left), (_, right), (_, top)] =
+                    v.cast_to::<[(ArcStr, f64); 4]>()?;
                 Ok(Self(Padding {
                     top: top as f32,
                     right: right as f32,

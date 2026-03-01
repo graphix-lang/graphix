@@ -2,13 +2,14 @@
 
 Graphix includes a GUI library built on the Rust [iced](https://iced.rs) framework. It provides native desktop windowing with GPU-accelerated rendering via wgpu, giving you high-performance graphical applications with the same reactive programming model used throughout Graphix.
 
-## Key Differences from TUI
+## What the GUI Library Offers
 
-The GUI library shares the same reactive philosophy as the TUI library, but differs in a few important ways:
-
-- **Reference arguments**: GUI widgets take `&` reference arguments rather than plain values. This enables fine-grained reactivity -- when a referenced value changes, only the affected widget updates rather than the entire tree.
-- **Return type**: GUI programs return `Array<&Window>` (aliased as `Gui`), allowing multi-window applications. TUI programs return a single widget.
-- **Auto-detection**: The Graphix shell auto-detects GUI mode when the program's last expression has type `Gui`. No special flags needed.
+- **Native windowing**: Real desktop windows managed by the OS, not terminal emulation
+- **GPU-accelerated rendering**: All drawing goes through wgpu for smooth, high-performance output
+- **Reactive widgets**: A rich set of interactive widgets (buttons, text inputs, sliders, etc.) that update automatically when their data changes
+- **Multi-window support**: Programs can create and manage multiple windows simultaneously
+- **Theming**: 22 built-in themes plus fully custom palettes and per-widget style overrides
+- **Auto-detection**: The Graphix shell detects GUI mode automatically when the program's last expression has type `Gui` -- no special flags needed
 
 ## The Window Type
 

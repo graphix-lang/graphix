@@ -1,0 +1,38 @@
+use gui;
+use gui::style;
+use gui::text;
+use gui::button;
+use gui::toggler;
+use gui::slider;
+use gui::column;
+
+let my_palette = {
+  background: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+  text:       { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
+  primary:    { r: 0.4, g: 0.6, b: 1.0, a: 1.0 },
+  success:    { r: 0.3, g: 0.8, b: 0.4, a: 1.0 },
+  danger:     { r: 1.0, g: 0.3, b: 0.3, a: 1.0 },
+  warning:    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 }
+};
+
+let enabled = true;
+let volume = 50.0;
+
+let col = column(
+  #spacing: &15.0,
+  #padding: &`All(30.0),
+  #width: &`Fill,
+  &[
+    text(#size: &24.0, &"Custom Palette"),
+    button(#padding: &`All(10.0), &text(&"Primary Button")),
+    toggler(#label: &"Enabled", #on_toggle: |v| enabled <- v, &enabled),
+    slider(#min: &0.0, #max: &100.0, #on_change: |v| volume <- v, &volume),
+    text(&"Volume: [volume]")
+  ]
+);
+
+[&window(
+  #title: &"Custom Palette",
+  #theme: &`CustomPalette(my_palette),
+  &col
+)]

@@ -281,14 +281,14 @@ tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
 <p>Most widgets accept style parameters. For example:</p>
 <pre><code class="language-graphix">// Styled paragraph
 tui::paragraph::paragraph(
-  #style: tui::style(#fg: `White, #bg: `Blue),
-  "Hello, styled world!"
+  #style: &amp;tui::style(#fg: `White, #bg: `Blue),
+  &amp;"Hello, styled world!"
 )
 
 // Styled gauge
 tui::gauge::gauge(
-  #style: tui::style(#fg: `Green),
-  #ratio: 0.75
+  #style: &amp;tui::style(#fg: `Green),
+  &amp;0.75
 )
 </code></pre>
 <p>See individual widget documentation for specific style parameters they accept.</p>

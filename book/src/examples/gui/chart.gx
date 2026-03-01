@@ -2,6 +2,28 @@ use gui;
 use gui::text;
 use gui::chart;
 use gui::column;
+use gui::row;
+use gui::slider;
+
+let rate = 0.;
+let clock = time::timer(1. - rate, true);
+let x = 0.;
+x <- clock ~ x + 1.;
+
+let series = |start, end| {
+    let d = [];
+    let y = rand::rand(#start, #end, #clock);
+    d <- array::window(#n:20, clock ~ d, (x, y));
+    d
+};
+
+let adjust_speed = row(
+    #spacing:&15.0,
+    &[
+        text(#size: &14.0, &"Adjust Speed"),
+        slider(#min:&0., #max:&0.9, #step:&0.1, #on_change:|v| rate <- v, &rate)
+     ]
+);
 
 let col = column(
     #spacing: &15.0,
@@ -10,16 +32,17 @@ let col = column(
     #height: &`Fill,
     &[
         text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Chart Demo"),
+        adjust_speed,
         chart(
             #title: &"Sample Data",
             #x_label: &"x",
             #y_label: &"y",
             &[
-                { data: &[(0.0, 1.0), (1.0, 3.0), (2.0, 2.0), (3.0, 5.0), (4.0, 4.0), (5.0, 7.0)],
+                { data: &series(0., 50.),
                   chart_type: `Line,
                   color: null,
                   label: "Series A" },
-                { data: &[(0.0, 2.0), (1.0, 1.0), (2.0, 4.0), (3.0, 3.0), (4.0, 6.0), (5.0, 5.0)],
+                { data: &series(0., 5.),
                   chart_type: `Scatter,
                   color: null,
                   label: "Series B" }

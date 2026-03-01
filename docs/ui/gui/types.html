@@ -177,12 +177,16 @@
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
 <p>Controls spacing between a widget's border and its content:</p>
-<pre><code class="language-graphix">type Padding = [`All(f64), `Axis(f64, f64), `Each(f64, f64, f64, f64)];
+<pre><code class="language-graphix">type Padding = [
+  `All(f64),
+  `Axis({x: f64, y: f64}),
+  `Each({top: f64, right: f64, bottom: f64, left: f64})
+];
 </code></pre>
 <ul>
 <li><code>`All(px)</code> -- uniform padding on all sides.</li>
-<li><code>`Axis(horizontal, vertical)</code> -- separate horizontal and vertical padding.</li>
-<li><code>`Each(top, right, bottom, left)</code> -- individual padding per side.</li>
+<li><code>`Axis({x, y})</code> -- separate horizontal (<code>x</code>) and vertical (<code>y</code>) padding.</li>
+<li><code>`Each({top, right, bottom, left})</code> -- individual padding per side.</li>
 </ul>
 <pre><code class="language-graphix">container(
   #padding: &amp;`All(20.0),
@@ -190,7 +194,7 @@
 )
 
 container(
-  #padding: &amp;`Each(10.0, 20.0, 10.0, 20.0),
+  #padding: &amp;`Each({top: 10.0, right: 20.0, bottom: 10.0, left: 20.0}),
   &amp;text(&amp;"Different padding per side")
 )
 </code></pre>
@@ -264,7 +268,7 @@ type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 </code></pre>
 <pre><code class="language-graphix">tooltip(
   #position: &amp;`Top,
-  #content: &amp;text(&amp;"Tooltip text"),
+  #tip: &amp;text(&amp;"Tooltip text"),
   &amp;button(&amp;text(&amp;"Hover me"))
 )
 </code></pre>
@@ -317,14 +321,14 @@ use gui::text;
 use gui::button;
 use gui::slider;
 
-let val = 50.0
+let v = 50.0
 
 column(
   #spacing: &amp;10.0,
   &amp;[
     text(&amp;"A text widget"),
     button(&amp;text(&amp;"A button")),
-    slider(#min: &amp;0.0, #max: &amp;100.0, &amp;val)
+    slider(#min: &amp;0.0, #max: &amp;100.0, &amp;v)
   ]
 )
 </code></pre>

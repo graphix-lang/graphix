@@ -40,7 +40,7 @@ val text_input: fn(
 {{#include ../../examples/gui/text_input.gx}}
 ```
 
-![Text Input](./media/text_input.png)
+![Text Input](./media/text_input.gif)
 
 ## See Also
 

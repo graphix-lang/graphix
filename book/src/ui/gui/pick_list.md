@@ -66,7 +66,7 @@ Note: `combo_box` does not have a `#padding` parameter, unlike `pick_list`.
 {{#include ../../examples/gui/pick_list.gx}}
 ```
 
-![Pick List](./media/pick_list.png)
+![Pick List](./media/pick_list.gif)
 
 ### Combo Box
 
@@ -74,7 +74,7 @@ Note: `combo_box` does not have a `#padding` parameter, unlike `pick_list`.
 {{#include ../../examples/gui/combo_box.gx}}
 ```
 
-![Combo Box](./media/combo_box.png)
+![Combo Box](./media/combo_box.gif)
 
 ## See Also
 

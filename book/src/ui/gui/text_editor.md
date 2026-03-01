@@ -38,7 +38,7 @@ val text_editor: fn(
 {{#include ../../examples/gui/text_editor.gx}}
 ```
 
-![Text Editor](./media/text_editor.png)
+![Text Editor](./media/text_editor.gif)
 
 ## See Also
 

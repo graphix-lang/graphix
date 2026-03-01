@@ -39,7 +39,7 @@ The positional argument is a reference to the child widget.
 {{#include ../../examples/gui/keyboard_area.gx}}
 ```
 
-![Keyboard Area](./media/keyboard_area.png)
+![Keyboard Area](./media/keyboard_area.gif)
 
 ## See Also
 

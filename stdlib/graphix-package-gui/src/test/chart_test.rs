@@ -46,6 +46,21 @@ fn auto_range_identical_values() {
 }
 
 #[test]
+fn auto_range_empty() {
+    let empty: &[(f64, f64)] = &[];
+    let (xmin, xmax) = auto_range([empty], |p| p.0);
+    assert!(xmin.is_finite());
+    assert!(xmax.is_finite());
+    assert!(xmin < xmax);
+
+    // Also with no slices at all
+    let (xmin, xmax) = auto_range(std::iter::empty::<&[(f64, f64)]>(), |p| p.0);
+    assert!(xmin.is_finite());
+    assert!(xmax.is_finite());
+    assert!(xmin < xmax);
+}
+
+#[test]
 fn auto_range_negative() {
     let data: &[(f64, f64)] = &[(-10.0, -5.0), (-3.0, 2.0)];
     let (xmin, xmax) = auto_range([data], |p| p.0);

@@ -186,10 +186,17 @@ type Position = [
   `Bottom
 ];
 
+type MergeStrategy = [
+  `Replace,
+  `Exact,
+  `Fuzzy
+];
+
 val block: fn(
   ?#border: &amp;[Array&lt;Border&gt;, `All, `None, null],
   ?#border_type: &amp;[BorderType, null],
   ?#border_style: &amp;[Style, null],
+  ?#merge_borders: &amp;[MergeStrategy, null],
   ?#padding: &amp;[Padding, null],
   ?#style: &amp;[Style, null],
   ?#title: &amp;[Line, null],
@@ -206,6 +213,7 @@ val block: fn(
 <ul>
 <li><strong>border</strong> - Border style: <code>All</code>, <code>None</code>, <code>Top</code>, <code>Bottom</code>, <code>Left</code>, or <code>Right</code></li>
 <li><strong>border_style</strong> - Style for the border</li>
+<li><strong>merge_borders</strong> - Strategy for merging borders of adjacent blocks: <code>Replace</code>, <code>Exact</code>, or <code>Fuzzy</code></li>
 <li><strong>title</strong> - Line displayed at the top of the block</li>
 <li><strong>title_bottom</strong> - Line displayed at the bottom of the block</li>
 <li><strong>style</strong> - Style for the block's interior</li>

@@ -582,17 +582,19 @@ parameters and constraints.
 `split`, `rsplit`, `to_upper`, `to_lower`, `concat`, `join`, `len`,
 `sub`, `parse`
 
-**map**: `insert`, `remove`, `get`, `contains_key`, `keys`, `values`,
-`len`, `iter`, `fold`
+**map**: `map`, `filter`, `filter_map`, `fold`, `len`, `get`, `insert`,
+`remove`, `iter`, `iterq`
 
 **time**: `timer(timeout, repeat)`
 
-**re**: `regex`, `is_match`, `find`, `captures`, `replace`,
-`replace_all`, `split`
+**re**: `is_match`, `find`, `captures`, `split`, `splitn`
 
-**rand**: `random`, `range`
+**rand**: `rand`, `pick`, `shuffle`
 
-**fs**: `read`, `write`, `list`, `exists`
+**fs**: `read_all`, `read_all_bin`, `write_all`, `write_all_bin`,
+`watch`, `watch_full`, `readdir`, `metadata`, `is_file`, `is_dir`,
+`tempdir`, `join_path`, `create_dir`, `remove_dir`, `remove_file`,
+`set_global_watch_parameters`
 
 ### GUI Patterns (iced-based)
 
@@ -633,7 +635,7 @@ let col = column(
 
 **Layout enums**: `` `Fill ``, `` `Shrink ``, `` `Fixed(f64) ``
 
-**Padding**: `` `All(f64) ``, `` `Xy(f64,f64) ``, `` `Ltrb(f64,f64,f64,f64) ``
+**Padding**: `` `All(f64) ``, `` `Axis({x: f64, y: f64}) ``, `` `Each({top: f64, right: f64, bottom: f64, left: f64}) ``
 
 ### TUI Patterns (ratatui-based)
 

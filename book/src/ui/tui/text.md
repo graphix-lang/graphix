@@ -62,9 +62,7 @@ The `text` widget uses types from the [style](style.md) module including `Style`
 
 ## Text Modifiers
 
-- `Bold`, `Italic`, `Underlined`, `CrossedOut`
-- `SlowBlink`, `RapidBlink` (terminal support varies)
-- `Reversed`, `Hidden`
+- `Bold`, `Italic`
 
 ## See Also
 

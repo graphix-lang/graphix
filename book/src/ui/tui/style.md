@@ -166,14 +166,14 @@ Most widgets accept style parameters. For example:
 ```graphix
 // Styled paragraph
 tui::paragraph::paragraph(
-  #style: tui::style(#fg: `White, #bg: `Blue),
-  "Hello, styled world!"
+  #style: &tui::style(#fg: `White, #bg: `Blue),
+  &"Hello, styled world!"
 )
 
 // Styled gauge
 tui::gauge::gauge(
-  #style: tui::style(#fg: `Green),
-  #ratio: 0.75
+  #style: &tui::style(#fg: `Green),
+  &0.75
 )
 ```
 

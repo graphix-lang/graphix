@@ -36,7 +36,7 @@ The core concepts of reactive data flow, component composition, and declarative 
 
 The Graphix shell automatically detects the UI backend from the type of your program's last value:
 
-- `tui::Widget` — launches a terminal UI
+- `tui::Tui` — launches a terminal UI
 - `gui::Gui` (i.e. `Array<&Window>`) — launches a graphical desktop UI
 
 You can try out the examples in this book by pasting them in a file, or even typing (the short ones) into the interactive REPL. Each component has detailed documentation in the following sections, including complete API references and practical examples.

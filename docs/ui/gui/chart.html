@@ -210,6 +210,28 @@ val chart: fn(
 use gui::text;
 use gui::chart;
 use gui::column;
+use gui::row;
+use gui::slider;
+
+let rate = 0.;
+let clock = time::timer(1. - rate, true);
+let x = 0.;
+x &lt;- clock ~ x + 1.;
+
+let series = |start, end| {
+    let d = [];
+    let y = rand::rand(#start, #end, #clock);
+    d &lt;- array::window(#n:20, clock ~ d, (x, y));
+    d
+};
+
+let adjust_speed = row(
+    #spacing:&amp;15.0,
+    &amp;[
+        text(#size: &amp;14.0, &amp;"Adjust Speed"),
+        slider(#min:&amp;0., #max:&amp;0.9, #step:&amp;0.1, #on_change:|v| rate &lt;- v, &amp;rate)
+     ]
+);
 
 let col = column(
     #spacing: &amp;15.0,
@@ -218,16 +240,17 @@ let col = column(
     #height: &amp;`Fill,
     &amp;[
         text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Chart Demo"),
+        adjust_speed,
         chart(
             #title: &amp;"Sample Data",
             #x_label: &amp;"x",
             #y_label: &amp;"y",
             &amp;[
-                { data: &amp;[(0.0, 1.0), (1.0, 3.0), (2.0, 2.0), (3.0, 5.0), (4.0, 4.0), (5.0, 7.0)],
+                { data: &amp;series(0., 50.),
                   chart_type: `Line,
                   color: null,
                   label: "Series A" },
-                { data: &amp;[(0.0, 2.0), (1.0, 1.0), (2.0, 4.0), (3.0, 3.0), (4.0, 6.0), (5.0, 5.0)],
+                { data: &amp;series(0., 5.),
                   chart_type: `Scatter,
                   color: null,
                   label: "Series B" }
@@ -238,7 +261,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Chart", #size: &amp;{ width: 900.0, height: 700.0 }, &amp;col)]
 </code></pre>
-<p><img src="./media/chart.png" alt="Chart" /></p>
+<p><img src="./media/chart.gif" alt="Chart" /></p>
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
 <ul>
 <li><a href="canvas.html">canvas</a> - Low-level drawing for custom visualizations</li>

@@ -31,7 +31,7 @@ The positional argument is a reference to the child widget.
 {{#include ../../examples/gui/mouse_area.gx}}
 ```
 
-![Mouse Area](./media/mouse_area.png)
+![Mouse Area](./media/mouse_area.gif)
 
 ## See Also
 

@@ -29,7 +29,7 @@ The positional argument is a reference to the child widget to scroll.
 {{#include ../../examples/gui/scrollable.gx}}
 ```
 
-![Scrollable](./media/scrollable.png)
+![Scrollable](./media/scrollable.gif)
 
 ## See Also
 

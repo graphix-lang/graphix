@@ -1,0 +1,134 @@
+let stylesheet = |
+  #palette: Palette,
+  #button: [ButtonStyle, null] = null,
+  #checkbox: [CheckboxStyle, null] = null,
+  #container: [ContainerStyle, null] = null,
+  #menu: [MenuStyle, null] = null,
+  #pick_list: [PickListStyle, null] = null,
+  #progress_bar: [ProgressBarStyle, null] = null,
+  #radio: [RadioStyle, null] = null,
+  #rule: [RuleStyle, null] = null,
+  #scrollable: [ScrollableStyle, null] = null,
+  #slider: [SliderStyle, null] = null,
+  #text_editor: [TextEditorStyle, null] = null,
+  #text_input: [TextInputStyle, null] = null,
+  #toggler: [TogglerStyle, null] = null
+| -> StyleSheet {
+  button, checkbox, container, menu, palette,
+  pick_list, progress_bar, radio, rule,
+  scrollable, slider, text_editor, text_input, toggler
+};
+
+let button_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #text_color: [Color, null] = null
+| -> ButtonStyle { background, border_color, border_radius, border_width, text_color };
+
+let checkbox_style = |
+  #accent: [Color, null] = null,
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #icon_color: [Color, null] = null,
+  #text_color: [Color, null] = null
+| -> CheckboxStyle { accent, background, border_color, border_radius, border_width, icon_color, text_color };
+
+let container_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #text_color: [Color, null] = null
+| -> ContainerStyle { background, border_color, border_radius, border_width, text_color };
+
+let menu_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #selected_background: [Color, null] = null,
+  #selected_text_color: [Color, null] = null,
+  #text_color: [Color, null] = null
+| -> MenuStyle { background, border_color, border_radius, border_width, selected_background, selected_text_color, text_color };
+
+let pick_list_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #handle_color: [Color, null] = null,
+  #placeholder_color: [Color, null] = null,
+  #text_color: [Color, null] = null
+| -> PickListStyle { background, border_color, border_radius, border_width, handle_color, placeholder_color, text_color };
+
+let progress_bar_style = |
+  #background: [Color, null] = null,
+  #bar_color: [Color, null] = null,
+  #border_radius: [f64, null] = null
+| -> ProgressBarStyle { background, bar_color, border_radius };
+
+let radio_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_width: [f64, null] = null,
+  #dot_color: [Color, null] = null,
+  #text_color: [Color, null] = null
+| -> RadioStyle { background, border_color, border_width, dot_color, text_color };
+
+let rule_style = |
+  #color: [Color, null] = null,
+  #radius: [f64, null] = null,
+  #width: [f64, null] = null
+| -> RuleStyle { color, radius, width };
+
+let scrollable_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #scroller_color: [Color, null] = null
+| -> ScrollableStyle { background, border_color, border_radius, border_width, scroller_color };
+
+let slider_style = |
+  #handle_border_color: [Color, null] = null,
+  #handle_border_width: [f64, null] = null,
+  #handle_color: [Color, null] = null,
+  #handle_radius: [f64, null] = null,
+  #rail_color: [Color, null] = null,
+  #rail_fill_color: [Color, null] = null,
+  #rail_width: [f64, null] = null
+| -> SliderStyle { handle_border_color, handle_border_width, handle_color, handle_radius, rail_color, rail_fill_color, rail_width };
+
+let text_editor_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #placeholder_color: [Color, null] = null,
+  #selection_color: [Color, null] = null,
+  #value_color: [Color, null] = null
+| -> TextEditorStyle { background, border_color, border_radius, border_width, placeholder_color, selection_color, value_color };
+
+let text_input_style = |
+  #background: [Color, null] = null,
+  #border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #border_width: [f64, null] = null,
+  #icon_color: [Color, null] = null,
+  #placeholder_color: [Color, null] = null,
+  #selection_color: [Color, null] = null,
+  #value_color: [Color, null] = null
+| -> TextInputStyle { background, border_color, border_radius, border_width, icon_color, placeholder_color, selection_color, value_color };
+
+let toggler_style = |
+  #background: [Color, null] = null,
+  #background_border_color: [Color, null] = null,
+  #border_radius: [f64, null] = null,
+  #foreground: [Color, null] = null,
+  #foreground_border_color: [Color, null] = null,
+  #text_color: [Color, null] = null
+| -> TogglerStyle { background, background_border_color, border_radius, foreground, foreground_border_color, text_color }

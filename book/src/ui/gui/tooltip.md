@@ -27,7 +27,7 @@ The positional argument is a reference to the child widget that triggers the too
 {{#include ../../examples/gui/tooltip.gx}}
 ```
 
-![Tooltip](./media/tooltip.png)
+![Tooltip](./media/tooltip.gif)
 
 ## See Also
 

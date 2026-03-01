@@ -1,0 +1,91 @@
+use gui;
+use gui::style;
+use gui::text;
+use gui::button;
+use gui::text_input;
+use gui::slider;
+use gui::toggler;
+use gui::container;
+use gui::column;
+use gui::rule;
+
+let palette = {
+  background: { r: 0.12, g: 0.12, b: 0.18, a: 1.0 },
+  text:       { r: 0.85, g: 0.85, b: 0.9, a: 1.0 },
+  primary:    { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
+  success:    { r: 0.2, g: 0.8, b: 0.5, a: 1.0 },
+  danger:     { r: 0.95, g: 0.25, b: 0.35, a: 1.0 },
+  warning:    { r: 1.0, g: 0.7, b: 0.1, a: 1.0 }
+};
+
+let theme = `Custom(stylesheet(
+  #palette: palette,
+  #button: button_style(
+    #background: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
+    #text_color: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+    #border_radius: 12.0
+  ),
+  #text_input: text_input_style(
+    #background: { r: 0.16, g: 0.16, b: 0.24, a: 1.0 },
+    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.5 },
+    #border_radius: 8.0,
+    #border_width: 2.0,
+    #value_color: { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
+    #placeholder_color: { r: 0.5, g: 0.5, b: 0.6, a: 1.0 }
+  ),
+  #slider: slider_style(
+    #rail_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #rail_fill_color: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
+    #handle_color: { r: 0.7, g: 0.55, b: 1.0, a: 1.0 },
+    #handle_radius: 8.0
+  ),
+  #toggler: toggler_style(
+    #background: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #foreground: { r: 0.85, g: 0.85, b: 0.9, a: 1.0 }
+  ),
+  #container: container_style(
+    #background: { r: 0.15, g: 0.15, b: 0.22, a: 1.0 },
+    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.3 },
+    #border_width: 1.0,
+    #border_radius: 10.0
+  )
+));
+
+let name = "";
+let volume = 50.0;
+let dark_mode = true;
+
+[&window(
+  #title: &"Custom Styles",
+  #theme: &theme,
+  &container(
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &column(
+      #spacing: &15.0,
+      #width: &`Fill,
+      &[
+        text(#size: &24.0, &"Custom Stylesheet Demo"),
+        horizontal_rule(),
+        text_input(
+          #placeholder: &"Type something...",
+          #on_input: |v| name <- v,
+          &name
+        ),
+        slider(
+          #min: &0.0, #max: &100.0,
+          #on_change: |v| volume <- v,
+          &volume
+        ),
+        text(&"Volume: [volume]"),
+        toggler(
+          #label: &"Dark mode",
+          #on_toggle: |v| dark_mode <- v,
+          &dark_mode
+        ),
+        button(#padding: &`All(12.0), &text(&"Styled Button"))
+      ]
+    )
+  )
+)]

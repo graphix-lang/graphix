@@ -157,12 +157,14 @@
                     <main>
                         <h1 id="graphical-user-interfaces-guis"><a class="header" href="#graphical-user-interfaces-guis">Graphical User Interfaces (GUIs)</a></h1>
 <p>Graphix includes a GUI library built on the Rust <a href="https://iced.rs">iced</a> framework. It provides native desktop windowing with GPU-accelerated rendering via wgpu, giving you high-performance graphical applications with the same reactive programming model used throughout Graphix.</p>
-<h2 id="key-differences-from-tui"><a class="header" href="#key-differences-from-tui">Key Differences from TUI</a></h2>
-<p>The GUI library shares the same reactive philosophy as the TUI library, but differs in a few important ways:</p>
+<h2 id="what-the-gui-library-offers"><a class="header" href="#what-the-gui-library-offers">What the GUI Library Offers</a></h2>
 <ul>
-<li><strong>Reference arguments</strong>: GUI widgets take <code>&amp;</code> reference arguments rather than plain values. This enables fine-grained reactivity -- when a referenced value changes, only the affected widget updates rather than the entire tree.</li>
-<li><strong>Return type</strong>: GUI programs return <code>Array&lt;&amp;Window&gt;</code> (aliased as <code>Gui</code>), allowing multi-window applications. TUI programs return a single widget.</li>
-<li><strong>Auto-detection</strong>: The Graphix shell auto-detects GUI mode when the program's last expression has type <code>Gui</code>. No special flags needed.</li>
+<li><strong>Native windowing</strong>: Real desktop windows managed by the OS, not terminal emulation</li>
+<li><strong>GPU-accelerated rendering</strong>: All drawing goes through wgpu for smooth, high-performance output</li>
+<li><strong>Reactive widgets</strong>: A rich set of interactive widgets (buttons, text inputs, sliders, etc.) that update automatically when their data changes</li>
+<li><strong>Multi-window support</strong>: Programs can create and manage multiple windows simultaneously</li>
+<li><strong>Theming</strong>: 22 built-in themes plus fully custom palettes and per-widget style overrides</li>
+<li><strong>Auto-detection</strong>: The Graphix shell detects GUI mode automatically when the program's last expression has type <code>Gui</code> -- no special flags needed</li>
 </ul>
 <h2 id="the-window-type"><a class="header" href="#the-window-type">The Window Type</a></h2>
 <p>Every GUI program is built around windows. The <code>Window</code> type describes a window and its content:</p>
@@ -233,7 +235,7 @@ use gui::container;
 
 [&amp;window(
   #title: &amp;"Theme Demo",
-  #theme: &amp;`CatppuccinMocha,
+  #theme: &amp;`TokyoNight,
   &amp;container(
     #width: &amp;`Fill,
     #height: &amp;`Fill,
@@ -248,7 +250,7 @@ use gui::container;
         text(#size: &amp;28.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Theme Demo"),
         text(
           #size: &amp;16.0, #halign: &amp;`Center, #width: &amp;`Fill,
-          &amp;"Using CatppuccinMocha theme")
+          &amp;"Using TokyoNight theme")
       ]
     )
   )

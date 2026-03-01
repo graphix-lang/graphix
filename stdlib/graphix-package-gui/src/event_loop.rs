@@ -28,8 +28,6 @@ use poolshark::local::LPooled;
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-const RESIZE_THROTTLE: Duration = Duration::from_millis(16);
 use tokio::sync::{mpsc, oneshot};
 use winit::{
     application::ApplicationHandler,
@@ -123,6 +121,10 @@ fn mouse_interaction_to_cursor(interaction: mouse::Interaction) -> CursorIcon {
     }
 }
 
+/// During active resize, cap the render+configure rate to avoid
+/// saturating the GPU queue and accumulating latency.
+const RESIZE_RENDER_INTERVAL: Duration = Duration::from_millis(8);
+
 /// All GUI state, implementing winit's ApplicationHandler.
 struct GuiHandler<X: GXExt> {
     gx: GXHandle<X>,
@@ -158,22 +160,14 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
         if let Some(&bid) = self.win_to_bid.get(&window_id) {
             if let Some(tw) = self.windows.get_mut(&bid) {
                 if let WindowEvent::Resized(size) = &event {
-                    if let Some(ws) = self.surfaces.get_mut(&window_id) {
-                        let gpu = self.gpu.as_ref().unwrap();
-                        ws.resize(gpu, size.width, size.height, tw.window.scale_factor());
-                    }
                     let scale = tw.window.scale_factor();
+                    tw.pending_resize = Some((size.width, size.height, scale));
+                    tw.needs_redraw = true;
                     let logical = size.to_logical::<f32>(scale);
-                    let new_sz = SizeV(Size::new(logical.width, logical.height));
-                    let _ = self.resize_tx.send((window_id, new_sz));
-                    // Throttle iced redraws to ~60fps during resize;
-                    // the graphix size update is debounced separately at 100ms.
-                    if tw.last_resize_draw.elapsed() >= RESIZE_THROTTLE {
-                        tw.push_event(iced_core::Event::Window(
-                            iced_core::window::Event::Resized(new_sz.0),
-                        ));
-                        tw.last_resize_draw = Instant::now();
-                    }
+                    let _ = self.resize_tx.send((
+                        window_id,
+                        SizeV(Size::new(logical.width, logical.height)),
+                    ));
                 } else if let WindowEvent::RedrawRequested = &event {
                     tw.needs_redraw = true;
                 } else {
@@ -265,14 +259,30 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(gpu) = self.gpu.as_ref() else { return };
+        let mut deferred_until: Option<Instant> = None;
         for tw in self.windows.values_mut() {
             if !tw.needs_redraw {
                 continue;
             }
             let win_id = tw.window_id();
+            // During resize, throttle the entire render+configure cycle
+            if tw.pending_resize.is_some() {
+                let elapsed = tw.last_render.elapsed();
+                if elapsed < RESIZE_RENDER_INTERVAL {
+                    let wake = tw.last_render + RESIZE_RENDER_INTERVAL;
+                    deferred_until = Some(deferred_until.map_or(wake, |d| d.min(wake)));
+                    continue;
+                }
+            }
             if let Some(ws) = self.surfaces.get_mut(&win_id) {
+                if let Some((pw, ph, scale)) = tw.pending_resize.take() {
+                    ws.resize(gpu, pw, ph, scale);
+                    tw.push_event(iced_core::Event::Window(
+                        iced_core::window::Event::Resized(ws.logical_size()),
+                    ));
+                }
                 let cache = self.ui_caches.remove(&win_id).unwrap_or_default();
                 let element = tw.content.view();
                 let viewport_size = ws.logical_size();
@@ -315,6 +325,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                             .create_view(&wgpu::TextureViewDescriptor::default());
                         ws.renderer.present(None, gpu.format, &view, &ws.viewport);
                         frame.present();
+                        tw.last_render = Instant::now();
                         tw.needs_redraw = match &state {
                             user_interface::State::Outdated => true,
                             user_interface::State::Updated { redraw_request, .. } => {
@@ -359,6 +370,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                 }
             }
+        }
+
+        if let Some(wake) = deferred_until {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
     }
 }

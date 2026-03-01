@@ -1767,7 +1767,7 @@ and are enforced at each call site. For example consider,</p>
 -: fn&lt;'_2073: unbound: Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;, '_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;('_2067: unbound, '_2069: unbound) -&gt; '_2071: unbound throws '_2073: unbound
 159
 </code></pre>
-<p>The type is a bit of a mouthfull, lets format it a bit so it's easier to read.</p>
+<p>The type is a bit of a mouthful, lets format it a bit so it's easier to read.</p>
 <pre><code>fn&lt;'_2073: unbound: Error&lt;ErrChain&lt;`ArithError(string)&gt;&gt;,
    '_2069: unbound: Number,
    '_2067: unbound: Number,
@@ -1892,7 +1892,7 @@ means there is just one <code>sum</code>, one <code>a</code>, basically just one
 connect to iterate we are using graph traversal cycles to do a new element of
 the array every cycle until we are done. It will take 5 cycles for the first
 array to be done, and that's the problem, because we update <code>a</code> with a whole new
-array in cycle 1 and again in cycle 2. That's why we get 4, it's determanistic,
+array in cycle 1 and again in cycle 2. That's why we get 4, it's deterministic,
 we will get 4 every time.</p>
 <ul>
 <li>the first cycle we add 1 to <code>sum</code> and set the inner <code>a</code> to <code>tl</code> (it's not the
@@ -3953,7 +3953,7 @@ val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
 <h2 id="getting-started-1"><a class="header" href="#getting-started-1">Getting Started</a></h2>
 <p>The Graphix shell automatically detects the UI backend from the type of your program's last value:</p>
 <ul>
-<li><code>tui::Widget</code> — launches a terminal UI</li>
+<li><code>tui::Tui</code> — launches a terminal UI</li>
 <li><code>gui::Gui</code> (i.e. <code>Array&lt;&amp;Window&gt;</code>) — launches a graphical desktop UI</li>
 </ul>
 <p>You can try out the examples in this book by pasting them in a file, or even typing (the short ones) into the interactive REPL. Each component has detailed documentation in the following sections, including complete API references and practical examples.</p>
@@ -4015,7 +4015,7 @@ block(
 <p>Graphix TUIs support rich styling with:</p>
 <ul>
 <li><strong>Colors</strong>: Named colors (<code>Red</code>, <code>Green</code>, <code>Blue</code>), indexed colors (<code>Indexed(202)</code>), and RGB (<code>Rgb({r: 255, g: 100, b: 50})</code>)</li>
-<li><strong>Text Effects</strong>: Bold, italic, underline, strikethrough</li>
+<li><strong>Text Effects</strong>: Bold, italic</li>
 <li><strong>Background Colors</strong>: Set background colors for any component</li>
 <li><strong>Conditional Styling</strong>: Use <code>select</code> expressions to change styles based on state</li>
 </ul>
@@ -4221,14 +4221,14 @@ tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
 <p>Most widgets accept style parameters. For example:</p>
 <pre><code class="language-graphix">// Styled paragraph
 tui::paragraph::paragraph(
-  #style: tui::style(#fg: `White, #bg: `Blue),
-  "Hello, styled world!"
+  #style: &amp;tui::style(#fg: `White, #bg: `Blue),
+  &amp;"Hello, styled world!"
 )
 
 // Styled gauge
 tui::gauge::gauge(
-  #style: tui::style(#fg: `Green),
-  #ratio: 0.75
+  #style: &amp;tui::style(#fg: `Green),
+  &amp;0.75
 )
 </code></pre>
 <p>See individual widget documentation for specific style parameters they accept.</p>
@@ -4397,10 +4397,17 @@ type Position = [
   `Bottom
 ];
 
+type MergeStrategy = [
+  `Replace,
+  `Exact,
+  `Fuzzy
+];
+
 val block: fn(
   ?#border: &amp;[Array&lt;Border&gt;, `All, `None, null],
   ?#border_type: &amp;[BorderType, null],
   ?#border_style: &amp;[Style, null],
+  ?#merge_borders: &amp;[MergeStrategy, null],
   ?#padding: &amp;[Padding, null],
   ?#style: &amp;[Style, null],
   ?#title: &amp;[Line, null],
@@ -4417,6 +4424,7 @@ val block: fn(
 <ul>
 <li><strong>border</strong> - Border style: <code>All</code>, <code>None</code>, <code>Top</code>, <code>Bottom</code>, <code>Left</code>, or <code>Right</code></li>
 <li><strong>border_style</strong> - Style for the border</li>
+<li><strong>merge_borders</strong> - Strategy for merging borders of adjacent blocks: <code>Replace</code>, <code>Exact</code>, or <code>Fuzzy</code></li>
 <li><strong>title</strong> - Line displayed at the top of the block</li>
 <li><strong>title_bottom</strong> - Line displayed at the bottom of the block</li>
 <li><strong>style</strong> - Style for the block's interior</li>
@@ -4899,6 +4907,11 @@ val dataset: fn(
   &amp;Array&lt;(f64, f64)&gt;
 ) -&gt; Dataset;
 
+type LegendConstraints = {
+  width: Constraint,
+  height: Constraint
+};
+
 val chart: fn(
   ?#hidden_legend_constraints: &amp;[LegendConstraints, null],
   ?#legend_position: &amp;[LegendPosition, null],
@@ -5126,9 +5139,7 @@ text(&amp;[
 </ul>
 <h2 id="text-modifiers"><a class="header" href="#text-modifiers">Text Modifiers</a></h2>
 <ul>
-<li><code>Bold</code>, <code>Italic</code>, <code>Underlined</code>, <code>CrossedOut</code></li>
-<li><code>SlowBlink</code>, <code>RapidBlink</code> (terminal support varies)</li>
-<li><code>Reversed</code>, <code>Hidden</code></li>
+<li><code>Bold</code>, <code>Italic</code></li>
 </ul>
 <h2 id="see-also-7"><a class="header" href="#see-also-7">See Also</a></h2>
 <ul>
@@ -5151,7 +5162,7 @@ text(&amp;[
 <ul>
 <li><strong>scroll</strong> - Record with <code>x</code> and <code>y</code> fields for scroll position</li>
 <li><strong>alignment</strong> - <code>Left</code>, <code>Center</code>, or <code>Right</code></li>
-<li><strong>wrap</strong> - Enable/disable word wrapping (default: true)</li>
+<li><strong>trim</strong> - Trim leading whitespace when wrapping (default: true)</li>
 </ul>
 <h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
 <h3 id="basic-usage-7"><a class="header" href="#basic-usage-7">Basic Usage</a></h3>
@@ -5336,27 +5347,22 @@ gauge(
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It's more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
 <h2 id="interface-10"><a class="header" href="#interface-10">Interface</a></h2>
-<pre><code class="language-graphix">type LineSet = [
-  `Normal,
-  `Rounded,
-  `Double,
-  `Thick
-];
-
-val line_gauge: fn(
+<pre><code class="language-graphix">val line_gauge: fn(
   ?#filled_style: &amp;[Style, null],
+  ?#filled_symbol: &amp;[string, null],
   ?#label: &amp;[Line, null],
-  ?#line_set: &amp;[LineSet, null],
   ?#style: &amp;[Style, null],
   ?#unfilled_style: &amp;[Style, null],
+  ?#unfilled_symbol: &amp;[string, null],
   &amp;f64
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-8"><a class="header" href="#parameters-8">Parameters</a></h2>
 <ul>
 <li><strong>filled_style</strong> - Style for the filled portion</li>
+<li><strong>filled_symbol</strong> - Character used to draw the filled portion</li>
 <li><strong>unfilled_style</strong> - Style for the unfilled portion</li>
-<li><strong>line_set</strong> - Character set: <code>Thin</code>, <code>Thick</code> (default), or <code>Double</code></li>
+<li><strong>unfilled_symbol</strong> - Character used to draw the unfilled portion</li>
 <li><strong>label</strong> - Line or span displayed within the gauge</li>
 <li><strong>style</strong> - Base style for the widget</li>
 </ul>
@@ -6673,12 +6679,14 @@ tabs(&amp;[
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="graphical-user-interfaces-guis"><a class="header" href="#graphical-user-interfaces-guis">Graphical User Interfaces (GUIs)</a></h1>
 <p>Graphix includes a GUI library built on the Rust <a href="https://iced.rs">iced</a> framework. It provides native desktop windowing with GPU-accelerated rendering via wgpu, giving you high-performance graphical applications with the same reactive programming model used throughout Graphix.</p>
-<h2 id="key-differences-from-tui"><a class="header" href="#key-differences-from-tui">Key Differences from TUI</a></h2>
-<p>The GUI library shares the same reactive philosophy as the TUI library, but differs in a few important ways:</p>
+<h2 id="what-the-gui-library-offers"><a class="header" href="#what-the-gui-library-offers">What the GUI Library Offers</a></h2>
 <ul>
-<li><strong>Reference arguments</strong>: GUI widgets take <code>&amp;</code> reference arguments rather than plain values. This enables fine-grained reactivity -- when a referenced value changes, only the affected widget updates rather than the entire tree.</li>
-<li><strong>Return type</strong>: GUI programs return <code>Array&lt;&amp;Window&gt;</code> (aliased as <code>Gui</code>), allowing multi-window applications. TUI programs return a single widget.</li>
-<li><strong>Auto-detection</strong>: The Graphix shell auto-detects GUI mode when the program's last expression has type <code>Gui</code>. No special flags needed.</li>
+<li><strong>Native windowing</strong>: Real desktop windows managed by the OS, not terminal emulation</li>
+<li><strong>GPU-accelerated rendering</strong>: All drawing goes through wgpu for smooth, high-performance output</li>
+<li><strong>Reactive widgets</strong>: A rich set of interactive widgets (buttons, text inputs, sliders, etc.) that update automatically when their data changes</li>
+<li><strong>Multi-window support</strong>: Programs can create and manage multiple windows simultaneously</li>
+<li><strong>Theming</strong>: 22 built-in themes plus fully custom palettes and per-widget style overrides</li>
+<li><strong>Auto-detection</strong>: The Graphix shell detects GUI mode automatically when the program's last expression has type <code>Gui</code> -- no special flags needed</li>
 </ul>
 <h2 id="the-window-type"><a class="header" href="#the-window-type">The Window Type</a></h2>
 <p>Every GUI program is built around windows. The <code>Window</code> type describes a window and its content:</p>
@@ -6749,7 +6757,7 @@ use gui::container;
 
 [&amp;window(
   #title: &amp;"Theme Demo",
-  #theme: &amp;`CatppuccinMocha,
+  #theme: &amp;`TokyoNight,
   &amp;container(
     #width: &amp;`Fill,
     #height: &amp;`Fill,
@@ -6764,7 +6772,7 @@ use gui::container;
         text(#size: &amp;28.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Theme Demo"),
         text(
           #size: &amp;16.0, #halign: &amp;`Center, #width: &amp;`Fill,
-          &amp;"Using CatppuccinMocha theme")
+          &amp;"Using TokyoNight theme")
       ]
     )
   )
@@ -6799,12 +6807,16 @@ use gui::container;
 </code></pre>
 <h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
 <p>Controls spacing between a widget's border and its content:</p>
-<pre><code class="language-graphix">type Padding = [`All(f64), `Axis(f64, f64), `Each(f64, f64, f64, f64)];
+<pre><code class="language-graphix">type Padding = [
+  `All(f64),
+  `Axis({x: f64, y: f64}),
+  `Each({top: f64, right: f64, bottom: f64, left: f64})
+];
 </code></pre>
 <ul>
 <li><code>`All(px)</code> -- uniform padding on all sides.</li>
-<li><code>`Axis(horizontal, vertical)</code> -- separate horizontal and vertical padding.</li>
-<li><code>`Each(top, right, bottom, left)</code> -- individual padding per side.</li>
+<li><code>`Axis({x, y})</code> -- separate horizontal (<code>x</code>) and vertical (<code>y</code>) padding.</li>
+<li><code>`Each({top, right, bottom, left})</code> -- individual padding per side.</li>
 </ul>
 <pre><code class="language-graphix">container(
   #padding: &amp;`All(20.0),
@@ -6812,7 +6824,7 @@ use gui::container;
 )
 
 container(
-  #padding: &amp;`Each(10.0, 20.0, 10.0, 20.0),
+  #padding: &amp;`Each({top: 10.0, right: 20.0, bottom: 10.0, left: 20.0}),
   &amp;text(&amp;"Different padding per side")
 )
 </code></pre>
@@ -6886,7 +6898,7 @@ type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 </code></pre>
 <pre><code class="language-graphix">tooltip(
   #position: &amp;`Top,
-  #content: &amp;text(&amp;"Tooltip text"),
+  #tip: &amp;text(&amp;"Tooltip text"),
   &amp;button(&amp;text(&amp;"Hover me"))
 )
 </code></pre>
@@ -6939,14 +6951,14 @@ use gui::text;
 use gui::button;
 use gui::slider;
 
-let val = 50.0
+let v = 50.0
 
 column(
   #spacing: &amp;10.0,
   &amp;[
     text(&amp;"A text widget"),
     button(&amp;text(&amp;"A button")),
-    slider(#min: &amp;0.0, #max: &amp;100.0, &amp;val)
+    slider(#min: &amp;0.0, #max: &amp;100.0, &amp;v)
   ]
 )
 </code></pre>
@@ -7014,7 +7026,12 @@ window(#theme: &amp;theme, &amp;content)
 <li><code>warning</code> -- color for warning indicators.</li>
 </ul>
 <pre><code class="language-graphix">use gui;
+use gui::style;
 use gui::text;
+use gui::button;
+use gui::toggler;
+use gui::slider;
+use gui::column;
 
 let my_palette = {
   background: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
@@ -7023,13 +7040,31 @@ let my_palette = {
   success:    { r: 0.3, g: 0.8, b: 0.4, a: 1.0 },
   danger:     { r: 1.0, g: 0.3, b: 0.3, a: 1.0 },
   warning:    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 }
-}
+};
+
+let enabled = true;
+let volume = 50.0;
+
+let col = column(
+  #spacing: &amp;15.0,
+  #padding: &amp;`All(30.0),
+  #width: &amp;`Fill,
+  &amp;[
+    text(#size: &amp;24.0, &amp;"Custom Palette"),
+    button(#padding: &amp;`All(10.0), &amp;text(&amp;"Primary Button")),
+    toggler(#label: &amp;"Enabled", #on_toggle: |v| enabled &lt;- v, &amp;enabled),
+    slider(#min: &amp;0.0, #max: &amp;100.0, #on_change: |v| volume &lt;- v, &amp;volume),
+    text(&amp;"Volume: [volume]")
+  ]
+);
 
 [&amp;window(
+  #title: &amp;"Custom Palette",
   #theme: &amp;`CustomPalette(my_palette),
-  &amp;text(&amp;"Custom palette theme")
+  &amp;col
 )]
 </code></pre>
+<p><img src="ui/gui/media/custom_palette.png" alt="Custom Palette" /></p>
 <h2 id="custom-stylesheets"><a class="header" href="#custom-stylesheets">Custom Stylesheets</a></h2>
 <p>For full control over individual widget appearances, use <code>`Custom(StyleSheet)</code>. A stylesheet combines a palette with optional per-widget style overrides:</p>
 <pre><code class="language-graphix">type StyleSheet = {
@@ -7037,7 +7072,7 @@ let my_palette = {
   checkbox: [CheckboxStyle, null],
   container: [ContainerStyle, null],
   menu: [MenuStyle, null],
-  palette: &amp;Palette,
+  palette: Palette,
   pick_list: [PickListStyle, null],
   progress_bar: [ProgressBarStyle, null],
   radio: [RadioStyle, null],
@@ -7053,7 +7088,7 @@ let my_palette = {
 <h3 id="the-stylesheet-builder"><a class="header" href="#the-stylesheet-builder">The <code>stylesheet</code> Builder</a></h3>
 <p>Use the <code>stylesheet</code> function to construct a <code>StyleSheet</code> without filling in every field manually. Only <code>#palette</code> is required; all widget style parameters default to <code>null</code>:</p>
 <pre><code class="language-graphix">val stylesheet: fn(
-  #palette: &amp;Palette,
+  #palette: Palette,
   ?#button: [ButtonStyle, null],
   ?#checkbox: [CheckboxStyle, null],
   ?#container: [ContainerStyle, null],
@@ -7071,9 +7106,15 @@ let my_palette = {
 </code></pre>
 <p>Example with a custom palette and button override:</p>
 <pre><code class="language-graphix">use gui;
+use gui::style;
 use gui::text;
 use gui::button;
+use gui::text_input;
+use gui::slider;
+use gui::toggler;
+use gui::container;
 use gui::column;
+use gui::rule;
 
 let palette = {
   background: { r: 0.12, g: 0.12, b: 0.18, a: 1.0 },
@@ -7082,36 +7123,81 @@ let palette = {
   success:    { r: 0.2, g: 0.8, b: 0.5, a: 1.0 },
   danger:     { r: 0.95, g: 0.25, b: 0.35, a: 1.0 },
   warning:    { r: 1.0, g: 0.7, b: 0.1, a: 1.0 }
-}
+};
 
 let theme = `Custom(stylesheet(
-  #palette: &amp;palette,
+  #palette: palette,
   #button: button_style(
     #background: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
     #text_color: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-    #border_radius: 8.0
+    #border_radius: 12.0
+  ),
+  #text_input: text_input_style(
+    #background: { r: 0.16, g: 0.16, b: 0.24, a: 1.0 },
+    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.5 },
+    #border_radius: 8.0,
+    #border_width: 2.0,
+    #value_color: { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
+    #placeholder_color: { r: 0.5, g: 0.5, b: 0.6, a: 1.0 }
+  ),
+  #slider: slider_style(
+    #rail_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #rail_fill_color: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
+    #handle_color: { r: 0.7, g: 0.55, b: 1.0, a: 1.0 },
+    #handle_radius: 8.0
+  ),
+  #toggler: toggler_style(
+    #background: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #foreground: { r: 0.85, g: 0.85, b: 0.9, a: 1.0 }
   ),
   #container: container_style(
-    #border_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
+    #background: { r: 0.15, g: 0.15, b: 0.22, a: 1.0 },
+    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.3 },
     #border_width: 1.0,
-    #border_radius: 6.0
+    #border_radius: 10.0
   )
-))
+));
+
+let name = "";
+let volume = 50.0;
+let dark_mode = true;
 
 [&amp;window(
+  #title: &amp;"Custom Styles",
   #theme: &amp;theme,
-  &amp;column(
-    #spacing: &amp;20.0,
-    #padding: &amp;`All(40.0),
-    #halign: &amp;`Center,
+  &amp;container(
+    #padding: &amp;`All(30.0),
     #width: &amp;`Fill,
-    &amp;[
-      text(#size: &amp;20.0, &amp;"Custom Stylesheet"),
-      button(#padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
-    ]
+    #height: &amp;`Fill,
+    &amp;column(
+      #spacing: &amp;15.0,
+      #width: &amp;`Fill,
+      &amp;[
+        text(#size: &amp;24.0, &amp;"Custom Stylesheet Demo"),
+        horizontal_rule(),
+        text_input(
+          #placeholder: &amp;"Type something...",
+          #on_input: |v| name &lt;- v,
+          &amp;name
+        ),
+        slider(
+          #min: &amp;0.0, #max: &amp;100.0,
+          #on_change: |v| volume &lt;- v,
+          &amp;volume
+        ),
+        text(&amp;"Volume: [volume]"),
+        toggler(
+          #label: &amp;"Dark mode",
+          #on_toggle: |v| dark_mode &lt;- v,
+          &amp;dark_mode
+        ),
+        button(#padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
+      ]
+    )
   )
 )]
 </code></pre>
+<p><img src="ui/gui/media/custom_styles.png" alt="Custom Styles" /></p>
 <h2 id="per-widget-style-types"><a class="header" href="#per-widget-style-types">Per-Widget Style Types</a></h2>
 <p>Each widget style type is a struct where every field is optional (<code>[T, null]</code>). A <code>null</code> field means "inherit from the theme palette." The GUI module provides both the types and corresponding builder functions.</p>
 <h3 id="buttonstyle"><a class="header" href="#buttonstyle">ButtonStyle</a></h3>
@@ -7271,7 +7357,7 @@ use gui::column;
 <li><strong><code>#on_press</code></strong> -- Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button renders but does nothing when clicked.</li>
 <li><strong><code>#width</code></strong> -- Width of the button. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#height</code></strong> -- Height of the button. Same <code>Length</code> values as width. Defaults to <code>`Shrink</code>.</li>
-<li><strong><code>#padding</code></strong> -- Interior padding around the child widget. Accepts <code>Padding</code> values: <code>`All(f64)</code>, <code>`Xy(f64, f64)</code>, or <code>`Ltrb(f64, f64, f64, f64)</code>.</li>
+<li><strong><code>#padding</code></strong> -- Interior padding around the child widget. Accepts <code>Padding</code> values: <code>`All(f64)</code>, <code>`Axis({x: f64, y: f64})</code>, or <code>`Each({top: f64, right: f64, bottom: f64, left: f64})</code>.</li>
 <li><strong><code>#disabled</code></strong> -- When <code>true</code>, the button is grayed out and <code>#on_press</code> is not triggered. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>&amp;Widget</code></strong> -- The child widget displayed inside the button. Usually a <code>text</code> widget.</li>
 </ul>
@@ -7367,7 +7453,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Text Input", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/text_input.png" alt="Text Input" /></p>
+<p><img src="ui/gui/./media/text_input.gif" alt="Text Input" /></p>
 <h2 id="see-also-20"><a class="header" href="#see-also-20">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/text_editor.html">text_editor</a> -- multi-line text editing</li>
@@ -7428,7 +7514,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Text Editor", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/text_editor.png" alt="Text Editor" /></p>
+<p><img src="ui/gui/./media/text_editor.gif" alt="Text Editor" /></p>
 <h2 id="see-also-21"><a class="header" href="#see-also-21">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/text_input.html">text_input</a> -- single-line text input</li>
@@ -7482,7 +7568,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Checkbox", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/checkbox.png" alt="Checkbox" /></p>
+<p><img src="ui/gui/./media/checkbox.gif" alt="Checkbox" /></p>
 <h2 id="see-also-22"><a class="header" href="#see-also-22">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/toggler.html">toggler</a> -- a toggle switch with the same interface</li>
@@ -7534,7 +7620,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Toggler", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/toggler.png" alt="Toggler" /></p>
+<p><img src="ui/gui/./media/toggler.gif" alt="Toggler" /></p>
 <h2 id="see-also-23"><a class="header" href="#see-also-23">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/checkbox.html">checkbox</a> -- same interface, rendered as a checkbox</li>
@@ -7545,13 +7631,13 @@ let col = column(
 <h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
 <pre><code class="language-graphix">val radio: fn(
   #label: &amp;string,
-  ?#selected: &amp;Any,
-  ?#on_select: fn(Any) -&gt; Any,
+  ?#selected: &amp;'a,
+  ?#on_select: fn('a) -&gt; Any,
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;Any
+  &amp;'a
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-21"><a class="header" href="#parameters-21">Parameters</a></h2>
@@ -7572,7 +7658,8 @@ use gui::text;
 use gui::radio;
 use gui::column;
 
-let size: Any = "Medium";
+let size: [`Small, `Medium, `Large] = `Medium;
+let dir: [`Vertical, `Horizontal] = `Vertical;
 
 let col = column(
     #spacing: &amp;15.0,
@@ -7580,16 +7667,19 @@ let col = column(
     #width: &amp;`Fill,
     &amp;[
         text(#size: &amp;24.0, &amp;"Radio Button Demo"),
-        text(&amp;"Choose a size:"),
-        radio(#label: &amp;"Small",  #selected: &amp;size, #on_select: |v| size &lt;- v, &amp;"Small"),
-        radio(#label: &amp;"Medium", #selected: &amp;size, #on_select: |v| size &lt;- v, &amp;"Medium"),
-        radio(#label: &amp;"Large",  #selected: &amp;size, #on_select: |v| size &lt;- v, &amp;"Large")
+        text(&amp;"Choose a size: [size]"),
+        radio(#label: &amp;"Small",  #selected: &amp;size, #on_select: |v| size &lt;- v, &amp;`Small),
+        radio(#label: &amp;"Medium", #selected: &amp;size, #on_select: |v| size &lt;- v, &amp;`Medium),
+        radio(#label: &amp;"Large",  #selected: &amp;size, #on_select: |v| size &lt;- v, &amp;`Large),
+        text(&amp;"Choose a direction: [dir]"),
+        radio(#label: &amp;"Vertical",  #selected: &amp;dir, #on_select: |v| dir &lt;- v, &amp;`Vertical),
+        radio(#label: &amp;"Horizontal", #selected: &amp;dir, #on_select: |v| dir &lt;- v, &amp;`Horizontal),
     ]
 );
 
 [&amp;window(#title: &amp;"Radio Buttons", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/radio.png" alt="Radio" /></p>
+<p><img src="ui/gui/./media/radio.gif" alt="Radio" /></p>
 <p>Note: the <code>selected</code> variable is typed as <code>Any</code> so it can hold any value used for comparison. In the example above, string values are used as the radio values.</p>
 <h2 id="see-also-24"><a class="header" href="#see-also-24">See Also</a></h2>
 <ul>
@@ -7691,7 +7781,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Slider &amp; ProgressBar", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/slider.png" alt="Slider" /></p>
+<p><img src="ui/gui/./media/slider.gif" alt="Slider" /></p>
 <h3 id="vertical-slider-1"><a class="header" href="#vertical-slider-1">Vertical Slider</a></h3>
 <pre><code class="language-graphix">use gui;
 use gui::text;
@@ -7727,7 +7817,7 @@ let value = 50.0;
     )
 )]
 </code></pre>
-<p><img src="ui/gui/./media/vertical_slider.png" alt="Vertical Slider" /></p>
+<p><img src="ui/gui/./media/vertical_slider.gif" alt="Vertical Slider" /></p>
 <h2 id="see-also-25"><a class="header" href="#see-also-25">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/text_input.html">text_input</a> -- for entering numeric values as text</li>
@@ -7806,7 +7896,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Pick List", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/pick_list.png" alt="Pick List" /></p>
+<p><img src="ui/gui/./media/pick_list.gif" alt="Pick List" /></p>
 <h3 id="combo-box-1"><a class="header" href="#combo-box-1">Combo Box</a></h3>
 <pre><code class="language-graphix">use gui;
 use gui::text;
@@ -7833,7 +7923,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Combo Box", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/combo_box.png" alt="Combo Box" /></p>
+<p><img src="ui/gui/./media/combo_box.gif" alt="Combo Box" /></p>
 <h2 id="see-also-26"><a class="header" href="#see-also-26">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/radio.html">radio</a> -- for inline single-select when there are few options</li>
@@ -8078,7 +8168,7 @@ let col = column(
     )
 )]
 </code></pre>
-<p><img src="ui/gui/./media/scrollable.png" alt="Scrollable" /></p>
+<p><img src="ui/gui/./media/scrollable.gif" alt="Scrollable" /></p>
 <h2 id="see-also-30"><a class="header" href="#see-also-30">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/column.html">Column</a> — commonly used inside scrollable for vertical lists</li>
@@ -8524,6 +8614,28 @@ val chart: fn(
 use gui::text;
 use gui::chart;
 use gui::column;
+use gui::row;
+use gui::slider;
+
+let rate = 0.;
+let clock = time::timer(1. - rate, true);
+let x = 0.;
+x &lt;- clock ~ x + 1.;
+
+let series = |start, end| {
+    let d = [];
+    let y = rand::rand(#start, #end, #clock);
+    d &lt;- array::window(#n:20, clock ~ d, (x, y));
+    d
+};
+
+let adjust_speed = row(
+    #spacing:&amp;15.0,
+    &amp;[
+        text(#size: &amp;14.0, &amp;"Adjust Speed"),
+        slider(#min:&amp;0., #max:&amp;0.9, #step:&amp;0.1, #on_change:|v| rate &lt;- v, &amp;rate)
+     ]
+);
 
 let col = column(
     #spacing: &amp;15.0,
@@ -8532,16 +8644,17 @@ let col = column(
     #height: &amp;`Fill,
     &amp;[
         text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Chart Demo"),
+        adjust_speed,
         chart(
             #title: &amp;"Sample Data",
             #x_label: &amp;"x",
             #y_label: &amp;"y",
             &amp;[
-                { data: &amp;[(0.0, 1.0), (1.0, 3.0), (2.0, 2.0), (3.0, 5.0), (4.0, 4.0), (5.0, 7.0)],
+                { data: &amp;series(0., 50.),
                   chart_type: `Line,
                   color: null,
                   label: "Series A" },
-                { data: &amp;[(0.0, 2.0), (1.0, 1.0), (2.0, 4.0), (3.0, 3.0), (4.0, 6.0), (5.0, 5.0)],
+                { data: &amp;series(0., 5.),
                   chart_type: `Scatter,
                   color: null,
                   label: "Series B" }
@@ -8552,7 +8665,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Chart", #size: &amp;{ width: 900.0, height: 700.0 }, &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/chart.png" alt="Chart" /></p>
+<p><img src="ui/gui/./media/chart.gif" alt="Chart" /></p>
 <h2 id="see-also-34"><a class="header" href="#see-also-34">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/canvas.html">canvas</a> - Low-level drawing for custom visualizations</li>
@@ -8722,7 +8835,7 @@ let col = column(
 
 [&amp;window(#title: &amp;"Tooltip", &amp;col)]
 </code></pre>
-<p><img src="ui/gui/./media/tooltip.png" alt="Tooltip" /></p>
+<p><img src="ui/gui/./media/tooltip.gif" alt="Tooltip" /></p>
 <h2 id="see-also-36"><a class="header" href="#see-also-36">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/button.html">Button</a> — commonly wrapped with tooltips</li>
@@ -8787,7 +8900,7 @@ let position = "---";
     )
 )]
 </code></pre>
-<p><img src="ui/gui/./media/mouse_area.png" alt="Mouse Area" /></p>
+<p><img src="ui/gui/./media/mouse_area.gif" alt="Mouse Area" /></p>
 <h2 id="see-also-37"><a class="header" href="#see-also-37">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/keyboard_area.html">Keyboard Area</a> — keyboard event capture</li>
@@ -8865,7 +8978,7 @@ let mod_name = "None";
     )
 )]
 </code></pre>
-<p><img src="ui/gui/./media/keyboard_area.png" alt="Keyboard Area" /></p>
+<p><img src="ui/gui/./media/keyboard_area.gif" alt="Keyboard Area" /></p>
 <h2 id="see-also-38"><a class="header" href="#see-also-38">See Also</a></h2>
 <ul>
 <li><a href="ui/gui/mouse_area.html">Mouse Area</a> — mouse event capture</li>

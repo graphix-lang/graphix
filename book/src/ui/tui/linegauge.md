@@ -5,19 +5,13 @@ The `line_gauge` widget displays a horizontal progress indicator using line-draw
 ## Interface
 
 ```graphix
-type LineSet = [
-  `Normal,
-  `Rounded,
-  `Double,
-  `Thick
-];
-
 val line_gauge: fn(
   ?#filled_style: &[Style, null],
+  ?#filled_symbol: &[string, null],
   ?#label: &[Line, null],
-  ?#line_set: &[LineSet, null],
   ?#style: &[Style, null],
   ?#unfilled_style: &[Style, null],
+  ?#unfilled_symbol: &[string, null],
   &f64
 ) -> Tui;
 ```
@@ -25,8 +19,9 @@ val line_gauge: fn(
 ## Parameters
 
 - **filled_style** - Style for the filled portion
+- **filled_symbol** - Character used to draw the filled portion
 - **unfilled_style** - Style for the unfilled portion
-- **line_set** - Character set: `Thin`, `Thick` (default), or `Double`
+- **unfilled_symbol** - Character used to draw the unfilled portion
 - **label** - Line or span displayed within the gauge
 - **style** - Base style for the widget
 

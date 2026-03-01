@@ -207,6 +207,11 @@ val dataset: fn(
   &amp;Array&lt;(f64, f64)&gt;
 ) -&gt; Dataset;
 
+type LegendConstraints = {
+  width: Constraint,
+  height: Constraint
+};
+
 val chart: fn(
   ?#hidden_legend_constraints: &amp;[LegendConstraints, null],
   ?#legend_position: &amp;[LegendPosition, null],

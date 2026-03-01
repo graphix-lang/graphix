@@ -89,7 +89,7 @@ means there is just one `sum`, one `a`, basically just one graph. When we use
 connect to iterate we are using graph traversal cycles to do a new element of
 the array every cycle until we are done. It will take 5 cycles for the first
 array to be done, and that's the problem, because we update `a` with a whole new
-array in cycle 1 and again in cycle 2. That's why we get 4, it's determanistic,
+array in cycle 1 and again in cycle 2. That's why we get 4, it's deterministic,
 we will get 4 every time.
 
 - the first cycle we add 1 to `sum` and set the inner `a` to `tl` (it's not the
