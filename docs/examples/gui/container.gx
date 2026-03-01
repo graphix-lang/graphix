@@ -1,0 +1,34 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::container;
+
+[&window(
+  #title: &"Container Widget",
+  &column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+      text(#size: &24.0, &"Container Widget"),
+      container(
+        #width: &`Fill,
+        #height: &`Fixed(100.0),
+        #halign: &`Center,
+        #valign: &`Center,
+        &text(&"Centered in a fill container")
+      ),
+      container(
+        #padding: &`All(20.0),
+        &text(&"Padded content")
+      ),
+      container(
+        #width: &`Fill,
+        #height: &`Fixed(80.0),
+        #halign: &`Right,
+        #valign: &`Bottom,
+        &text(&"Bottom-right aligned")
+      )
+    ]
+  )
+)]

@@ -1,0 +1,9 @@
+let table = net::list_table("/local/bench");
+let columns = array::filter(table.columns, |c| c.0 != "sum");
+let table = uniq({ table with columns });
+array::map(table.rows, |row| {
+  let sum = array::fold(table.columns, v64:0,
+    |acc, c| acc + cast<v64>(net::subscribe("[row]/[c.0]")?)?);
+  net::publish("[row]/sum", sum)
+});
+errors

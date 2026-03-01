@@ -1,0 +1,25 @@
+use gui;
+use gui::text;
+use gui::text_editor;
+use gui::column;
+
+let content = "";
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, &"Text Editor Demo"),
+        text_editor(
+            #placeholder: &"Start typing here...",
+            #on_edit: |v| content <- v,
+            #height: &300.0,
+            &content
+        ),
+        text(&"Length: [str::len(content)] characters")
+    ]
+);
+
+[&window(#title: &"Text Editor", &col)]

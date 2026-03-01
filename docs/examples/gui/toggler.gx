@@ -1,0 +1,20 @@
+use gui;
+use gui::text;
+use gui::toggler;
+use gui::column;
+
+let wifi = true;
+let bluetooth = false;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Toggler Demo"),
+        toggler(#label: &"WiFi", #on_toggle: |v| wifi <- v, &wifi),
+        toggler(#label: &"Bluetooth", #on_toggle: |v| bluetooth <- v, &bluetooth)
+    ]
+);
+
+[&window(#title: &"Toggler", &col)]

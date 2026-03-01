@@ -1,0 +1,26 @@
+use gui;
+use gui::text;
+use gui::image;
+use gui::column;
+
+let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AAAD//8DL/6UqKv8AgID//9cA/w==;
+
+[&window(
+    #title: &"Image Widget",
+    &column(
+        #spacing: &15.0,
+        #padding: &`All(30.0),
+        #halign: &`Center,
+        #width: &`Fill,
+        #height: &`Fill,
+        &[
+            text(#size: &24.0, &"Image Demo"),
+            text(&"A 4x4 pixel image scaled up:"),
+            image(
+                #width: &`Fixed(200.0),
+                #height: &`Fixed(200.0),
+                &`Rgba({ width: cast<u32>(4)$, height: cast<u32>(4)$, pixels: pixels })
+            )
+        ]
+    )
+)]

@@ -1,0 +1,383 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Types - The Graphix Programming Language</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Graphix Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="types"><a class="header" href="#types">Types</a></h1>
+<p>The GUI library defines a set of shared types used across all widgets. These types control layout, sizing, colors, fonts, and more. They are all defined in the top-level <code>gui</code> module and become available when you write <code>use gui</code>.</p>
+<h2 id="layout-types"><a class="header" href="#layout-types">Layout Types</a></h2>
+<h3 id="length"><a class="header" href="#length">Length</a></h3>
+<p>Controls how a widget is sized along a single axis:</p>
+<pre><code class="language-graphix">type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
+</code></pre>
+<ul>
+<li><code>`Fill</code> -- expand to fill all available space.</li>
+<li><code>`FillPortion(n)</code> -- fill proportionally. Two widgets with <code>FillPortion(1)</code> and <code>FillPortion(2)</code> split space 1:2.</li>
+<li><code>`Shrink</code> -- take only as much space as the content needs.</li>
+<li><code>`Fixed(px)</code> -- exact size in logical pixels.</li>
+</ul>
+<p>Most layout widgets accept <code>#width</code> and <code>#height</code> parameters of type <code>&amp;Length</code>:</p>
+<pre><code class="language-graphix">column(
+  #width: &amp;`Fill,
+  #height: &amp;`Fixed(300.0),
+  &amp;[...]
+)
+</code></pre>
+<h3 id="padding"><a class="header" href="#padding">Padding</a></h3>
+<p>Controls spacing between a widget's border and its content:</p>
+<pre><code class="language-graphix">type Padding = [`All(f64), `Axis(f64, f64), `Each(f64, f64, f64, f64)];
+</code></pre>
+<ul>
+<li><code>`All(px)</code> -- uniform padding on all sides.</li>
+<li><code>`Axis(horizontal, vertical)</code> -- separate horizontal and vertical padding.</li>
+<li><code>`Each(top, right, bottom, left)</code> -- individual padding per side.</li>
+</ul>
+<pre><code class="language-graphix">container(
+  #padding: &amp;`All(20.0),
+  &amp;text(&amp;"Padded content")
+)
+
+container(
+  #padding: &amp;`Each(10.0, 20.0, 10.0, 20.0),
+  &amp;text(&amp;"Different padding per side")
+)
+</code></pre>
+<h3 id="size"><a class="header" href="#size">Size</a></h3>
+<p>A width/height pair used for window dimensions:</p>
+<pre><code class="language-graphix">type Size = { width: f64, height: f64 };
+</code></pre>
+<pre><code class="language-graphix">window(#size: &amp;{ width: 1024.0, height: 768.0 }, &amp;content)
+</code></pre>
+<h3 id="halign-and-valign"><a class="header" href="#halign-and-valign">HAlign and VAlign</a></h3>
+<p>Horizontal and vertical alignment for positioning content within a container:</p>
+<pre><code class="language-graphix">type HAlign = [`Left, `Center, `Right];
+type VAlign = [`Top, `Center, `Bottom];
+</code></pre>
+<pre><code class="language-graphix">column(
+  #halign: &amp;`Center,
+  #width: &amp;`Fill,
+  &amp;[text(&amp;"Centered text")]
+)
+
+container(
+  #halign: &amp;`Center,
+  #valign: &amp;`Center,
+  #width: &amp;`Fill,
+  #height: &amp;`Fill,
+  &amp;text(&amp;"Dead center")
+)
+</code></pre>
+<h2 id="visual-types"><a class="header" href="#visual-types">Visual Types</a></h2>
+<h3 id="color"><a class="header" href="#color">Color</a></h3>
+<p>RGBA color with floating-point components in the range 0.0 to 1.0:</p>
+<pre><code class="language-graphix">type Color = { r: f64, g: f64, b: f64, a: f64 };
+</code></pre>
+<pre><code class="language-graphix">// Solid red
+let red = { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }
+
+// Semi-transparent blue
+let blue_50 = { r: 0.0, g: 0.0, b: 1.0, a: 0.5 }
+</code></pre>
+<p>Colors are used in custom themes and per-widget style overrides. See the <a href="theming.html">theming</a> page for details.</p>
+<h3 id="font-types"><a class="header" href="#font-types">Font Types</a></h3>
+<p>Fonts are described by family, weight, and style:</p>
+<pre><code class="language-graphix">type FontFamily = [`SansSerif, `Serif, `Monospace, `Name(string)];
+type FontWeight = [
+  `Thin, `ExtraLight, `Light, `Normal, `Medium,
+  `SemiBold, `Bold, `ExtraBold, `Black
+];
+type FontStyle = [`Normal, `Italic, `Oblique];
+type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
+</code></pre>
+<ul>
+<li><code>FontFamily</code> selects the font. <code>`Name(string)</code> allows loading a specific named font.</li>
+<li><code>FontWeight</code> ranges from <code>`Thin</code> (lightest) to <code>`Black</code> (heaviest).</li>
+<li><code>FontStyle</code> controls italic/oblique rendering.</li>
+</ul>
+<pre><code class="language-graphix">text(
+  #font: &amp;{ family: `Monospace, weight: `Bold, style: `Normal },
+  &amp;"Monospace bold text"
+)
+</code></pre>
+<h2 id="content-types"><a class="header" href="#content-types">Content Types</a></h2>
+<h3 id="scrolldirection"><a class="header" href="#scrolldirection">ScrollDirection</a></h3>
+<p>Controls which axes a scrollable widget allows scrolling on:</p>
+<pre><code class="language-graphix">type ScrollDirection = [`Vertical, `Horizontal, `Both];
+</code></pre>
+<pre><code class="language-graphix">scrollable(#direction: &amp;`Both, &amp;content)
+</code></pre>
+<h3 id="tooltipposition"><a class="header" href="#tooltipposition">TooltipPosition</a></h3>
+<p>Controls where a tooltip appears relative to its target widget:</p>
+<pre><code class="language-graphix">type TooltipPosition = [`Top, `Bottom, `Left, `Right, `FollowCursor];
+</code></pre>
+<pre><code class="language-graphix">tooltip(
+  #position: &amp;`Top,
+  #content: &amp;text(&amp;"Tooltip text"),
+  &amp;button(&amp;text(&amp;"Hover me"))
+)
+</code></pre>
+<h3 id="contentfit"><a class="header" href="#contentfit">ContentFit</a></h3>
+<p>Controls how an image or SVG is scaled within its bounds:</p>
+<pre><code class="language-graphix">type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
+</code></pre>
+<ul>
+<li><code>`Fill</code> -- stretch to fill the bounds exactly (may distort).</li>
+<li><code>`Contain</code> -- scale to fit within bounds, preserving aspect ratio.</li>
+<li><code>`Cover</code> -- scale to cover bounds, preserving aspect ratio (may crop).</li>
+<li><code>`None</code> -- no scaling, display at original size.</li>
+<li><code>`ScaleDown</code> -- like <code>`Contain</code> but never scales up.</li>
+</ul>
+<h2 id="the-widget-type"><a class="header" href="#the-widget-type">The Widget Type</a></h2>
+<p><code>Widget</code> is a union of all individual widget types. Most widget constructor functions return <code>Widget</code>, which means you can freely mix different widget types in arrays and containers:</p>
+<pre><code class="language-graphix">type Widget = [
+  `Button(button::Button),
+  `Canvas(canvas::Canvas),
+  `Chart(chart::Chart),
+  `Checkbox(checkbox::Checkbox),
+  `Column(column::Column),
+  `ComboBox(combo_box::ComboBox),
+  `Container(container::Container),
+  `HorizontalRule(rule::HorizontalRule),
+  `Image(image::Image),
+  `KeyboardArea(keyboard_area::KeyboardArea),
+  `MouseArea(mouse_area::MouseArea),
+  `PickList(pick_list::PickList),
+  `ProgressBar(progress_bar::ProgressBar),
+  `Radio(radio::Radio),
+  `Row(row::Row),
+  `Scrollable(scrollable::Scrollable),
+  `Slider(slider::Slider),
+  `Space(space::Space),
+  `Stack(stack::Stack),
+  `Svg(svg::Svg),
+  `Text(text::Text),
+  `TextEditor(text_editor::TextEditor),
+  `TextInput(text_input::TextInput),
+  `Toggler(toggler::Toggler),
+  `Tooltip(tooltip::Tooltip),
+  `VerticalRule(rule::VerticalRule),
+  `VerticalSlider(vertical_slider::VerticalSlider)
+];
+</code></pre>
+<p>You do not normally construct <code>Widget</code> variants directly. Each widget module exports a constructor function (e.g., <code>gui::text::text(...)</code>, <code>gui::button::button(...)</code>) that returns <code>Widget</code>. This means a column's children array has type <code>Array&lt;Widget&gt;</code> and can contain any mix of widgets:</p>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::button;
+use gui::slider;
+
+let val = 50.0
+
+column(
+  #spacing: &amp;10.0,
+  &amp;[
+    text(&amp;"A text widget"),
+    button(&amp;text(&amp;"A button")),
+    slider(#min: &amp;0.0, #max: &amp;100.0, &amp;val)
+  ]
+)
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../ui/gui/overview.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../../ui/gui/theming.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../ui/gui/overview.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../../ui/gui/theming.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../../theme/graphix-highlight.js"></script>
+
+
+    </div>
+    </body>
+</html>

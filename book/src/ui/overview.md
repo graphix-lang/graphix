@@ -11,22 +11,34 @@ Traditional UI frameworks require you to manually manage state changes, update D
 - **Composition is natural**: Complex UIs are built by composing simple, reusable components
 - **Performance is built-in**: Only components that depend on changed data will re-render
 
-## Currently Targeting TUIs
+## UI Backends
 
-The first UI target for Graphix is TUIs. Surprisingly complex and useful UIs can be built in the standard terminal, and it is the absolute lowest common denominator that will always be present even on a bandwidth constrained remote system. Graphix uses the excellent ratatui library as a basis to build upon.
+Graphix currently supports two UI backends:
+
+### Terminal UIs (TUIs)
+
+Surprisingly complex and useful UIs can be built in the standard terminal, and it is the absolute lowest common denominator that will always be present even on a bandwidth constrained remote system. Graphix uses the excellent ratatui library as a basis to build upon.
+
+### Graphical UIs (GUIs)
+
+Native desktop applications with GPU-accelerated rendering, built on the iced framework. GUI programs return `Array<&Window>` (aliased as `gui::Gui`) to create one or more windows with rich widget trees, theming, and the same reactive programming model as TUIs.
 
 ## Future UI Targets
 
-While Graphix currently implements support for building TUIs, the reactive architecture makes it well-suited for other UI paradigms:
+The reactive architecture makes Graphix well-suited for additional UI paradigms:
 
-- **Desktop Applications**: Native desktop applications. Support for this is planned next.
 - **Web UIs**: The dataflow model maps naturally to modern web frameworks
 - **Mobile UIs**: Touch-based interfaces with gesture handling
 
-The core concepts of reactive data flow, component composition, and declarative styling will apply across all UI targets.
+The core concepts of reactive data flow, component composition, and declarative styling apply across all UI targets.
 
 ## Getting Started
 
-The Graphix shell will automatically build a UI if the last value in your module has type `tui::Widget` (or in the future `gui::Widget`). You can try out the examples in this book by pasting them in a file, or even typing (the short ones) into the interactive REPL. Each TUI component has detailed documentation in the following sections, including complete API references and practical examples.
+The Graphix shell automatically detects the UI backend from the type of your program's last value:
 
-You can also study and run the examples in `graphix-shell/examples/`. Start with simple components like `text.gx` and `block.gx`, then work your way up to more complex examples like `browser.gx` and `table-advanced.gx`.
+- `tui::Widget` — launches a terminal UI
+- `gui::Gui` (i.e. `Array<&Window>`) — launches a graphical desktop UI
+
+You can try out the examples in this book by pasting them in a file, or even typing (the short ones) into the interactive REPL. Each component has detailed documentation in the following sections, including complete API references and practical examples.
+
+TUI examples are in `examples/tui/`, GUI examples in `examples/gui/`.

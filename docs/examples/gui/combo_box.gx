@@ -1,0 +1,24 @@
+use gui;
+use gui::text;
+use gui::combo_box;
+use gui::column;
+
+let selected: [string, null] = null;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Combo Box Demo"),
+        combo_box(
+            #selected: &selected,
+            #on_select: |v| selected <- v,
+            #placeholder: &"Type or select a fruit...",
+            &["Apple", "Banana", "Cherry", "Date", "Elderberry", "Fig", "Grape"]
+        ),
+        text(&"Selected: [selected]")
+    ]
+);
+
+[&window(#title: &"Combo Box", &col)]

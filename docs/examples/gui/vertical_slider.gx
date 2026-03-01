@@ -1,0 +1,33 @@
+use gui;
+use gui::text;
+use gui::vertical_slider;
+use gui::column;
+use gui::row;
+
+let value = 50.0;
+
+[&window(
+    #title: &"Vertical Slider",
+    &row(
+        #spacing: &30.0,
+        #padding: &`All(30.0),
+        #height: &`Fill,
+        #valign: &`Center,
+        &[
+            column(
+                #spacing: &10.0,
+                &[
+                    text(#size: &24.0, &"Vertical Slider"),
+                    text(&"Value: [value]")
+                ]
+            ),
+            vertical_slider(
+                #min: &0.0,
+                #max: &100.0,
+                #on_change: |v| value <- v,
+                #height: &`Fixed(200.0),
+                &value
+            )
+        ]
+    )
+)]

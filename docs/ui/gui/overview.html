@@ -1,0 +1,316 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>GUIs - The Graphix Programming Language</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Graphix Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="graphical-user-interfaces-guis"><a class="header" href="#graphical-user-interfaces-guis">Graphical User Interfaces (GUIs)</a></h1>
+<p>Graphix includes a GUI library built on the Rust <a href="https://iced.rs">iced</a> framework. It provides native desktop windowing with GPU-accelerated rendering via wgpu, giving you high-performance graphical applications with the same reactive programming model used throughout Graphix.</p>
+<h2 id="key-differences-from-tui"><a class="header" href="#key-differences-from-tui">Key Differences from TUI</a></h2>
+<p>The GUI library shares the same reactive philosophy as the TUI library, but differs in a few important ways:</p>
+<ul>
+<li><strong>Reference arguments</strong>: GUI widgets take <code>&amp;</code> reference arguments rather than plain values. This enables fine-grained reactivity -- when a referenced value changes, only the affected widget updates rather than the entire tree.</li>
+<li><strong>Return type</strong>: GUI programs return <code>Array&lt;&amp;Window&gt;</code> (aliased as <code>Gui</code>), allowing multi-window applications. TUI programs return a single widget.</li>
+<li><strong>Auto-detection</strong>: The Graphix shell auto-detects GUI mode when the program's last expression has type <code>Gui</code>. No special flags needed.</li>
+</ul>
+<h2 id="the-window-type"><a class="header" href="#the-window-type">The Window Type</a></h2>
+<p>Every GUI program is built around windows. The <code>Window</code> type describes a window and its content:</p>
+<pre><code class="language-graphix">type Window = { title: &amp;string, size: &amp;Size, theme: &amp;Theme, content: &amp;Widget };
+type Gui = Array&lt;&amp;Window&gt;;
+
+val window: fn(
+  ?#title: &amp;string,
+  ?#size: &amp;Size,
+  ?#theme: &amp;Theme,
+  &amp;Widget
+) -&gt; Window;
+</code></pre>
+<p>All parameters except the content widget are optional. Defaults are <code>"Graphix"</code> for the title, <code>{ width: 800.0, height: 600.0 }</code> for the size, and <code>`Dark</code> for the theme.</p>
+<p>The final expression of your program should be an <code>Array&lt;&amp;Window&gt;</code> -- the shell sees this type and launches the GUI runtime.</p>
+<h2 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h2>
+<p>Here is a minimal GUI program that creates a window with text and a button:</p>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::column;
+use gui::button;
+
+[&amp;window(
+  #title: &amp;"Graphix Demo",
+  #theme: &amp;`CatppuccinMocha,
+  &amp;column(
+    #spacing: &amp;20.0,
+    #padding: &amp;`All(40.0),
+    #halign: &amp;`Center,
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+      text(#size: &amp;24.0, &amp;"Hello, Graphix GUI!"),
+      text(&amp;"A simple window with text and a button"),
+      button(
+        #padding: &amp;`All(10.0),
+        &amp;text(&amp;"Click me!")
+      )
+    ]
+  )
+)]
+</code></pre>
+<p><img src="./media/hello.png" alt="Hello GUI" /></p>
+<p>A few things to notice:</p>
+<ul>
+<li><code>use gui</code> brings the top-level GUI module into scope, which gives access to <code>window</code> and shared types like <code>Length</code>, <code>Padding</code>, and <code>Theme</code>.</li>
+<li>Individual widget modules (<code>gui::text</code>, <code>gui::column</code>, <code>gui::button</code>) are imported separately.</li>
+<li>Widget arguments are passed as references with <code>&amp;</code>. Even literal values like <code>&amp;20.0</code> and <code>&amp;"Hello, Graphix GUI!"</code> are wrapped in <code>&amp;</code>.</li>
+<li>The program's final value is a one-element array <code>[&amp;window(...)]</code>, which has type <code>Gui</code>.</li>
+</ul>
+<h2 id="the-reference-pattern"><a class="header" href="#the-reference-pattern">The Reference Pattern</a></h2>
+<p>GUI widgets take <code>&amp;</code> references so that updates propagate with fine granularity. When you write:</p>
+<pre><code class="language-graphix">let name = "world"
+text(&amp;"Hello, [name]!")
+</code></pre>
+<p>The <code>text</code> widget holds a reference to the string expression <code>"Hello, [name]!"</code>. When <code>name</code> changes, only this specific text widget re-renders -- the rest of the window is untouched.</p>
+<p>This is especially important for interactive widgets. A text input, for example, takes a <code>&amp;string</code> for its current value and provides a callback to update it:</p>
+<pre><code class="language-graphix">let name = ""
+text_input(#on_input: |v| name &lt;- v, #placeholder: &amp;"Type here...", &amp;name)
+</code></pre>
+<p>The <code>&lt;-</code> connect operator schedules <code>name</code> to update on the next cycle, and because the text input holds a reference to <code>name</code>, it automatically reflects the new value.</p>
+<h2 id="theming"><a class="header" href="#theming">Theming</a></h2>
+<p>Every window accepts a <code>#theme</code> parameter that controls its visual appearance. Graphix ships with 22 built-in themes plus support for fully custom palettes and stylesheets:</p>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::column;
+use gui::container;
+
+[&amp;window(
+  #title: &amp;"Theme Demo",
+  #theme: &amp;`CatppuccinMocha,
+  &amp;container(
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    #halign: &amp;`Center,
+    #valign: &amp;`Center,
+    #padding: &amp;`All(40.0),
+    &amp;column(
+      #spacing: &amp;20.0,
+      #halign: &amp;`Center,
+      #width: &amp;`Fill,
+      &amp;[
+        text(#size: &amp;28.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Theme Demo"),
+        text(
+          #size: &amp;16.0, #halign: &amp;`Center, #width: &amp;`Fill,
+          &amp;"Using CatppuccinMocha theme")
+      ]
+    )
+  )
+)]
+</code></pre>
+<p><img src="./media/themes.png" alt="Theme Demo" /></p>
+<p>See the <a href="theming.html">theming</a> page for the full list of built-in themes, custom palette creation, and per-widget style overrides.</p>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further Reading</a></h2>
+<ul>
+<li><a href="types.html">Types</a> -- reference for all shared types (<code>Widget</code>, <code>Length</code>, <code>Padding</code>, <code>Color</code>, <code>Font</code>, etc.)</li>
+<li><a href="theming.html">Theming</a> -- built-in themes, custom palettes, and per-widget stylesheets</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../ui/tui/tabs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../../ui/gui/types.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../ui/tui/tabs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../../ui/gui/types.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../../theme/graphix-highlight.js"></script>
+
+
+    </div>
+    </body>
+</html>

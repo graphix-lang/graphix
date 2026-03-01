@@ -1,0 +1,27 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::container;
+
+[&window(
+  #title: &"Theme Demo",
+  #theme: &`CatppuccinMocha,
+  &container(
+    #width: &`Fill,
+    #height: &`Fill,
+    #halign: &`Center,
+    #valign: &`Center,
+    #padding: &`All(40.0),
+    &column(
+      #spacing: &20.0,
+      #halign: &`Center,
+      #width: &`Fill,
+      &[
+        text(#size: &28.0, #halign: &`Center, #width: &`Fill, &"Theme Demo"),
+        text(
+          #size: &16.0, #halign: &`Center, #width: &`Fill,
+          &"Using CatppuccinMocha theme")
+      ]
+    )
+  )
+)]

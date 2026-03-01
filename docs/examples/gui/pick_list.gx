@@ -1,0 +1,23 @@
+use gui;
+use gui::text;
+use gui::pick_list;
+use gui::column;
+
+let language: [string, null] = null;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Pick List Demo"),
+        pick_list(
+            #selected: &language,
+            #on_select: |v| language <- v,
+            #placeholder: &"Choose a language...",
+            &["English", "Spanish", "French", "Japanese"]
+        )
+    ]
+);
+
+[&window(#title: &"Pick List", &col)]

@@ -1,0 +1,30 @@
+use gui;
+use gui::text;
+use gui::svg;
+use gui::column;
+
+let svg_content = r'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <circle cx="100" cy="100" r="80" fill="#4a9eff" opacity="0.8"/>
+  <circle cx="100" cy="100" r="50" fill="#ff6b6b" opacity="0.8"/>
+  <circle cx="100" cy="100" r="25" fill="#ffd93d" opacity="0.9"/>
+</svg>';
+
+[&window(
+    #title: &"SVG Widget",
+    &column(
+        #spacing: &15.0,
+        #padding: &`All(30.0),
+        #halign: &`Center,
+        #width: &`Fill,
+        #height: &`Fill,
+        &[
+            text(#size: &24.0, &"SVG Demo"),
+            svg(
+                #width: &`Fixed(300.0),
+                #height: &`Fixed(300.0),
+                #content_fit: &`Contain,
+                &svg_content
+            )
+        ]
+    )
+)]

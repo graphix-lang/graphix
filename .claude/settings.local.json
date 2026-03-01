@@ -72,7 +72,8 @@
       "Bash(cargo search:*)",
       "Bash(cargo doc:*)",
       "Bash(git stash:*)",
-      "Bash(cargo vendor:*)"
+      "Bash(cargo vendor:*)",
+      "Bash(do echo:*)"
     ],
     "deny": [],
     "ask": []

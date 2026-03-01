@@ -1,0 +1,38 @@
+use gui;
+use gui::text;
+use gui::scrollable;
+use gui::column;
+use gui::rule;
+
+let col = column(
+    #spacing: &10.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    &[
+        text(&"Item 1"), horizontal_rule(),
+        text(&"Item 2"), horizontal_rule(),
+        text(&"Item 3"), horizontal_rule(),
+        text(&"Item 4"), horizontal_rule(),
+        text(&"Item 5"), horizontal_rule(),
+        text(&"Item 6"), horizontal_rule(),
+        text(&"Item 7"), horizontal_rule(),
+        text(&"Item 8"), horizontal_rule(),
+        text(&"Item 9"), horizontal_rule(),
+        text(&"Item 10"), horizontal_rule(),
+        text(&"Item 11"), horizontal_rule(),
+        text(&"Item 12"), horizontal_rule(),
+        text(&"Item 13"), horizontal_rule(),
+        text(&"Item 14"), horizontal_rule(),
+        text(&"Item 15")
+    ]
+);
+
+[&window(
+    #title: &"Scrollable",
+    #size: &{ width: 400.0, height: 300.0 },
+    &scrollable(
+        #height: &`Fill,
+        #width: &`Fill,
+        &col
+    )
+)]

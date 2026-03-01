@@ -1,0 +1,36 @@
+use gui;
+use gui::text;
+use gui::mouse_area;
+use gui::container;
+use gui::column;
+
+let status = "Move the mouse over the box";
+let position = "---";
+
+[&window(
+    #title: &"Mouse Area",
+    &column(
+        #spacing: &15.0,
+        #padding: &`All(30.0),
+        #width: &`Fill,
+        &[
+            text(#size: &24.0, &"Mouse Area Demo"),
+            text(&status),
+            text(&"Position: [position]"),
+            mouse_area(
+                #on_press: |p| status <- p ~ "Pressed!",
+                #on_release: |r| status <- r ~ "Released!",
+                #on_enter: |e| status <- e ~ "Mouse entered",
+                #on_exit: |e| status <- e ~ "Mouse exited",
+                #on_move: |pos| position <- pos ~ "[pos.x], [pos.y]",
+                &container(
+                    #width: &`Fixed(300.0),
+                    #height: &`Fixed(200.0),
+                    #halign: &`Center,
+                    #valign: &`Center,
+                    &text(&"Interact here")
+                )
+            )
+        ]
+    )
+)]

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Intro to Graphix - The Graphix Programming Language</title>
+        <title>Clipboard - The Graphix Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -12,33 +12,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../../toc.js"></script>
     </head>
     <body>
     <div id="body-container">
@@ -91,7 +91,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -126,7 +126,7 @@
                     <h1 class="menu-title">The Graphix Programming Language</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -155,73 +155,98 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="intro-to-graphix"><a class="header" href="#intro-to-graphix">Intro to Graphix</a></h1>
-<p>Graphix is a programming language using the dataflow paradigm. It is
-particularly well suited to building user interfaces, and interacting
-with resources in
-<a href="https://netidx.github.io/netidx-book">netidx</a>. Dataflow languages
-like Graphix are "reactive", like React or Vue, except at the language
-level instead of just as a library. A Graphix program is compiled to a
-directed graph, operations (such as +) are graph nodes, edges
-represent paths data can take through the program. A simple expression like,</p>
-<pre><code class="language-graphix">2 + 2
+                        <h1 id="the-clipboard-module"><a class="header" href="#the-clipboard-module">The Clipboard Module</a></h1>
+<p>The <code>clipboard</code> module provides functions for reading from and writing to the system clipboard. Unlike other GUI components, clipboard is a plain module of functions, not a widget constructor.</p>
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
+type HtmlContent = { alt_text: string, html: string };
+
+val read_text:   fn(Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+val write_text:  fn(string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_image:  fn(Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
+val write_image: fn(ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_html:   fn(Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+val write_html:  fn(HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_files:  fn(Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
+val write_files: fn(Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val clear:       fn(Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
 </code></pre>
-<p>will compile to a graph like</p>
-<pre><code>         
-const(2) ──&gt; + &lt;── const(2)
-         
-</code></pre>
-<p>The semantics of simple examples like this aren't noticibly different
-from a normal programming language. However a more complex example
-such as,</p>
-<pre><code class="language-graphix">let x = cast&lt;i64&gt;(net::subscribe("/foo")?)?;
-print(x * 10)
-</code></pre>
-<p>compiles to a graph like</p>
-<pre><code>                                               const(10)
-                                                   │
-                                                   │
-                                                   ▼
-                                         
-const("/foo") ──&gt; net::subscribe ──&gt; cast&lt;i64&gt; ──&gt; * ──&gt; print
-                                         
-</code></pre>
-<p>Unlike the first example, the value of <code>net::subscribe</code> isn't a
-constant, it can change if the value published in netidx changes. If
-that happens the new value will flow through the graph and will be
-printed again. If the published value of "/foo" is initially 10, and
-then the value of "/foo" changes to 5 then the program will print.</p>
-<pre><code>100
-50
-</code></pre>
-<p>It will keep running forever, if "/foo" changes again, it will print
-more output. This is a powerful way to think about programming, and
-it's especially well suited to building user interfaces and
-transforming data streams.</p>
-<h2 id="dataflow-but-otherwise-normal"><a class="header" href="#dataflow-but-otherwise-normal">Dataflow but Otherwise Normal</a></h2>
-<p>Besides being a dataflow language Graphix tries hard to be a normal
-functional language that would feel familiar to anyone who knows
-Haskell, OCaml, F# or a similar ML derived language. Some of it's
-features are,</p>
+<h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
+<h3 id="text"><a class="header" href="#text">Text</a></h3>
 <ul>
-<li>lexically scoped</li>
-<li>expression oriented</li>
-<li>strongly statically typed</li>
-<li>type inference</li>
-<li>structural type discipline with nomial abstract types</li>
-<li>parametric polymorphism</li>
-<li>algebraic data types</li>
-<li>pattern matching</li>
-<li>first class functions, and closures</li>
-<li>late binding</li>
+<li><strong>read_text</strong> — reads text from the clipboard. Takes an event trigger (<code>Any</code>) to control when the read happens.</li>
+<li><strong>write_text</strong> — writes a string to the clipboard.</li>
+</ul>
+<h3 id="images"><a class="header" href="#images">Images</a></h3>
+<ul>
+<li><strong>read_image</strong> — reads an image from the clipboard as a <code>ClipboardImage</code> containing raw pixel data.</li>
+<li><strong>write_image</strong> — writes a <code>ClipboardImage</code> to the clipboard.</li>
+</ul>
+<h3 id="html"><a class="header" href="#html">HTML</a></h3>
+<ul>
+<li><strong>read_html</strong> — reads HTML content from the clipboard.</li>
+<li><strong>write_html</strong> — writes HTML content with alt text to the clipboard.</li>
+</ul>
+<h3 id="files"><a class="header" href="#files">Files</a></h3>
+<ul>
+<li><strong>read_files</strong> — reads file paths from the clipboard (e.g. from a file manager copy).</li>
+<li><strong>write_files</strong> — writes file paths to the clipboard.</li>
+</ul>
+<h3 id="utility"><a class="header" href="#utility">Utility</a></h3>
+<ul>
+<li><strong>clear</strong> — clears all clipboard contents.</li>
+</ul>
+<p>All read functions take an <code>Any</code> argument as an event trigger — they execute when the trigger fires. All functions return <code>Result</code> types that may contain a <code>ClipboardError</code>.</p>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::text_input;
+use gui::button;
+use gui::column;
+use gui::clipboard;
+
+let content = "Hello, clipboard!";
+let pasted = "";
+
+let col = column(
+    #spacing: &amp;15.0,
+    #padding: &amp;`All(30.0),
+    #width: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;24.0, &amp;"Clipboard Demo"),
+        text_input(#placeholder: &amp;"Text to copy...", #on_input: |v| content &lt;- v, &amp;content),
+        button(
+            #on_press: |c| clipboard::write_text(c ~ content)$,
+            #padding: &amp;`All(10.0),
+            &amp;text(&amp;"Copy to clipboard")
+        ),
+        button(
+            #on_press: |c| pasted &lt;- c ~ clipboard::read_text(c)$,
+            #padding: &amp;`All(10.0),
+            &amp;text(&amp;"Paste from clipboard")
+        ),
+        text(&amp;"Pasted: [pasted]")
+    ]
+);
+
+[&amp;window(#title: &amp;"Clipboard", &amp;col)]
+</code></pre>
+<p><img src="./media/clipboard.png" alt="Clipboard" /></p>
+<h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
+<ul>
+<li><a href="button.html">Button</a> — commonly used to trigger clipboard operations</li>
+<li><a href="text_input.html">Text Input</a> — text entry for clipboard content</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../ui/gui/keyboard_area.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="install.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../packages/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -231,8 +256,11 @@ features are,</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../ui/gui/keyboard_area.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="install.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../packages/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -247,16 +275,16 @@ features are,</p>
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="theme/graphix-highlight.js"></script>
+        <script src="../../theme/graphix-highlight.js"></script>
 
 
     </div>

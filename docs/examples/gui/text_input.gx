@@ -1,0 +1,20 @@
+use gui;
+use gui::text;
+use gui::text_input;
+use gui::column;
+
+let name = "";
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Text Input Demo"),
+        text_input(#placeholder: &"Enter your name...", #on_input: |v| name <- v, &name),
+        text(&name)
+    ]
+);
+
+[&window(#title: &"Text Input", &col)]

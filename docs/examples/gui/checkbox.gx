@@ -1,0 +1,22 @@
+use gui;
+use gui::text;
+use gui::checkbox;
+use gui::column;
+
+let dark_mode = true;
+let notifications = false;
+let auto_save = true;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Checkbox Demo"),
+        checkbox(#label: &"Dark mode", #on_toggle: |v| dark_mode <- v, &dark_mode),
+        checkbox(#label: &"Enable notifications", #on_toggle: |v| notifications <- v, &notifications),
+        checkbox(#label: &"Auto-save", #on_toggle: |v| auto_save <- v, &auto_save)
+    ]
+);
+
+[&window(#title: &"Checkbox", &col)]
