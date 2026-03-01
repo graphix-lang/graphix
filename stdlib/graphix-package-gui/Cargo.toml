@@ -37,7 +37,7 @@ iced_widget = { workspace = true }
 log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
-plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series"] }
+plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series", "point_series", "candlestick", "errorbar"] }
 plotters-backend = "0.3"
 poolshark = { workspace = true }
 smallvec = { workspace = true }

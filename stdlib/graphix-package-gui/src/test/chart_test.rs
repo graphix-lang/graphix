@@ -1,7 +1,26 @@
-use crate::widgets::chart::{auto_range, ChartType};
 use super::GuiTestHarness;
+use crate::widgets::chart::pad_range;
 use anyhow::Result;
-use netidx::publisher::{FromValue, Value};
+
+fn auto_range<'a>(
+    data: impl IntoIterator<Item = &'a [(f64, f64)]>,
+    f: impl Fn(&(f64, f64)) -> f64,
+) -> (f64, f64) {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for slice in data {
+        for pt in slice {
+            let v = f(pt);
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
+        }
+    }
+    pad_range(min, max)
+}
 
 async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
     let code = format!(
@@ -77,42 +96,7 @@ fn auto_range_multiple_datasets() {
     assert!(xmax > 20.0);
 }
 
-// ── ChartType::from_value ───────────────────────────────────────────
-
-#[test]
-fn chart_type_line() -> Result<()> {
-    let ct = ChartType::from_value(Value::String("Line".into()))?;
-    assert!(matches!(ct, ChartType::Line));
-    Ok(())
-}
-
-#[test]
-fn chart_type_scatter() -> Result<()> {
-    let ct = ChartType::from_value(Value::String("Scatter".into()))?;
-    assert!(matches!(ct, ChartType::Scatter));
-    Ok(())
-}
-
-#[test]
-fn chart_type_bar() -> Result<()> {
-    let ct = ChartType::from_value(Value::String("Bar".into()))?;
-    assert!(matches!(ct, ChartType::Bar));
-    Ok(())
-}
-
-#[test]
-fn chart_type_area() -> Result<()> {
-    let ct = ChartType::from_value(Value::String("Area".into()))?;
-    assert!(matches!(ct, ChartType::Area));
-    Ok(())
-}
-
-#[test]
-fn chart_type_invalid() {
-    assert!(ChartType::from_value(Value::String("Pie".into())).is_err());
-}
-
-// ── Axis range via chart() ──────────────────────────────────────────
+// ── Chart with new constructor syntax ───────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn axis_range_renders() -> Result<()> {
@@ -120,20 +104,18 @@ async fn axis_range_renders() -> Result<()> {
         "#x_range: &{min: 0.0, max: 100.0}, \
          #y_range: &{min: -5.0, max: 50.0}, \
          #width: &`Fill, #height: &`Fixed(200.0), \
-         &[{data: &[(0.0, 1.0)], chart_type: `Line, color: null, label: null}]",
+         &[chart::line(#label: \"test\", &[(0.0, 1.0)])]",
     )
     .await?;
     let _ = h.view();
     Ok(())
 }
 
-// ── Dataset metadata via chart() ────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn dataset_meta_renders() -> Result<()> {
     let h = chart_harness(concat!(
         "#width: &`Fill, #height: &`Fixed(200.0), ",
-        r#"&[{data: &[], chart_type: `Line, color: null, label: "test"}]"#,
+        r#"&[chart::line(#label: "test", &[])]"#,
     ))
     .await?;
     let _ = h.view();
@@ -144,8 +126,119 @@ async fn dataset_meta_renders() -> Result<()> {
 async fn dataset_meta_with_color() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         &[{data: &[], chart_type: `Scatter, \
-            color: {r: 0.0, g: 1.0, b: 0.0, a: 1.0}, label: null}]",
+         &[chart::scatter(#color: {r: 0.0, g: 1.0, b: 0.0, a: 1.0}, &[])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn candlestick_renders() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         &[chart::candlestick(#label: \"OHLC\", \
+           &[{x: 1.0, open: 10.0, high: 15.0, low: 8.0, close: 12.0}, \
+             {x: 2.0, open: 12.0, high: 14.0, low: 9.0, close: 11.0}])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn error_bar_renders() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         &[chart::error_bar(#label: \"Confidence\", \
+           &[{x: 1.0, min: 3.0, avg: 5.0, max: 7.0}, \
+             {x: 2.0, min: 4.0, avg: 6.0, max: 8.0}])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dashed_line_renders() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         &[chart::dashed_line(#dash: 10.0, #gap: 5.0, \
+           &[(0.0, 0.0), (5.0, 5.0), (10.0, 2.0)])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn series_style_stroke_width() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         &[chart::line(#stroke_width: 4.0, #point_size: 5.0, \
+           &[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn background_color() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #background: &{r: 0.1, g: 0.1, b: 0.1, a: 1.0}, \
+         &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mesh_style() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #mesh: &{show_x_grid: true, show_y_grid: false, \
+                   grid_color: null, axis_color: null, \
+                   label_color: null, label_size: 12.0, \
+                   x_labels: 5, y_labels: 5}, \
+         &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dark_background_label_colors() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #title: &\"Dark Chart\", \
+         #title_color: &{r: 0.9, g: 0.9, b: 0.9, a: 1.0}, \
+         #x_label: &\"X\", #y_label: &\"Y\", \
+         #background: &{r: 0.1, g: 0.1, b: 0.15, a: 1.0}, \
+         #mesh: &{show_x_grid: true, show_y_grid: true, \
+                   grid_color: {r: 0.3, g: 0.3, b: 0.35, a: 1.0}, \
+                   axis_color: {r: 0.5, g: 0.5, b: 0.55, a: 1.0}, \
+                   label_color: {r: 0.8, g: 0.8, b: 0.8, a: 1.0}, \
+                   label_size: 14.0, x_labels: null, y_labels: null}, \
+         &[chart::line(#label: \"Series\", &[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn legend_style() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #legend_style: &{ \
+           background: {r: 0.2, g: 0.2, b: 0.25, a: 1.0}, \
+           border: {r: 0.5, g: 0.5, b: 0.5, a: 1.0}, \
+           label_color: {r: 0.9, g: 0.9, b: 0.9, a: 1.0}}, \
+         &[chart::line(#label: \"Test\", &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
     let _ = h.view();

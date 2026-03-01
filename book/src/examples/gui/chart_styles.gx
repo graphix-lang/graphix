@@ -1,0 +1,82 @@
+use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let clock = time::timer(duration:0.5s, true);
+let x = 0.;
+x <- clock ~ x + 1.;
+
+let series = |offset, scale| {
+    let d = [];
+    let y = rand::rand(#start: 0., #end: scale, #clock) + offset;
+    d <- array::window(#n: 30, clock ~ d, (x, y));
+    d
+};
+
+let line_data = series(50., 20.);
+let area_data = series(20., 15.);
+let dash_data = series(70., 10.);
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Chart Styling"),
+        chart::chart(
+            #title: &"Styled Chart",
+            #title_color: &{r: 0.9, g: 0.9, b: 0.95, a: 1.0},
+            #x_label: &"Time",
+            #y_label: &"Value",
+            #background: &{r: 0.12, g: 0.12, b: 0.18, a: 1.0},
+            #margin: &20.0,
+            #title_size: &22.0,
+            #legend_position: &`UpperRight,
+            #legend_style: &{
+                background: {r: 0.18, g: 0.18, b: 0.24, a: 1.0},
+                border: {r: 0.4, g: 0.4, b: 0.45, a: 1.0},
+                label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0}
+            },
+            #mesh: &{
+                show_x_grid: true,
+                show_y_grid: false,
+                grid_color: {r: 0.25, g: 0.25, b: 0.3, a: 1.0},
+                axis_color: {r: 0.5, g: 0.5, b: 0.55, a: 1.0},
+                label_color: {r: 0.75, g: 0.75, b: 0.8, a: 1.0},
+                label_size: 14.0,
+                x_labels: null,
+                y_labels: null
+            },
+            &[
+                chart::line(
+                    #label: "Signal",
+                    #color: {r: 0.3, g: 0.7, b: 1.0, a: 1.0},
+                    #stroke_width: 3.0,
+                    &line_data
+                ),
+                chart::area(
+                    #label: "Baseline",
+                    #color: {r: 0.4, g: 0.8, b: 0.4, a: 1.0},
+                    &area_data
+                ),
+                chart::dashed_line(
+                    #label: "Projection",
+                    #color: {r: 1.0, g: 0.6, b: 0.2, a: 1.0},
+                    #dash: 12.0,
+                    #gap: 6.0,
+                    #stroke_width: 2.0,
+                    &dash_data
+                )
+            ]
+        )
+    ]
+);
+
+[&window(
+    #title: &"Chart Styles",
+    #size: &{width: 900.0, height: 700.0},
+    #theme: &`CatppuccinMocha,
+    &col
+)]

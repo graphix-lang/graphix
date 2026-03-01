@@ -1,0 +1,49 @@
+use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let clock = time::timer(duration:1.s, true);
+let x = 0.;
+x <- clock ~ x + 1.;
+
+let avg_data = [];
+let err_data = [];
+
+let avg = rand::rand(#start: 20., #end: 80., #clock);
+let noise = rand::rand(#start: 3., #end: 15., #clock);
+
+avg_data <- array::window(#n: 25, clock ~ avg_data, (x, avg));
+err_data <- array::window(#n: 25, clock ~ err_data, {
+    x, min: avg - noise, avg, max: avg + noise
+});
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Error Bar Chart"),
+        chart::chart(
+            #title: &"Measurements with Confidence Bands",
+            #x_label: &"Sample",
+            #y_label: &"Value",
+            &[
+                chart::error_bar(
+                    #label: "Confidence",
+                    #color: {r: 0.8, g: 0.4, b: 0.4, a: 1.0},
+                    &err_data
+                ),
+                chart::line(
+                    #label: "Average",
+                    #color: {r: 0.2, g: 0.4, b: 0.8, a: 1.0},
+                    #stroke_width: 2.0,
+                    &avg_data
+                )
+            ]
+        )
+    ]
+);
+
+[&window(#title: &"Error Bars", #size: &{width: 900.0, height: 650.0}, &col)]

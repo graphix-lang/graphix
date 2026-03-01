@@ -8560,53 +8560,154 @@ let col = column(
 <li><a href="ui/gui/image.html">image</a> - Display raster images and SVGs</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-chart-widget-1"><a class="header" href="#the-chart-widget-1">The Chart Widget</a></h1>
-<p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, and area charts, making it suitable for dashboards, data exploration, and real-time monitoring.</p>
+<p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, and error bars. Multiple series types can be mixed on the same chart.</p>
 <h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
-<pre><code class="language-graphix">type ChartType = [`Line, `Scatter, `Bar, `Area];
-
-type Dataset = {
-  data: &amp;Array&lt;(f64, f64)&gt;,
-  chart_type: ChartType,
+<pre><code class="language-graphix">type SeriesStyle = {
   color: [Color, null],
+  label: [string, null],
+  stroke_width: [f64, null],
+  point_size: [f64, null]
+};
+
+type CandlestickStyle = {
+  gain_color: [Color, null],
+  loss_color: [Color, null],
+  bar_width: [f64, null],
   label: [string, null]
 };
 
+type OhlcPoint = {x: f64, open: f64, high: f64, low: f64, close: f64};
+type ErrorBarPoint = {x: f64, min: f64, avg: f64, max: f64};
+
+type Dataset = [
+  `Line({data: &amp;Array&lt;(f64, f64)&gt;, style: SeriesStyle}),
+  `Scatter({data: &amp;Array&lt;(f64, f64)&gt;, style: SeriesStyle}),
+  `Bar({data: &amp;Array&lt;(f64, f64)&gt;, style: SeriesStyle}),
+  `Area({data: &amp;Array&lt;(f64, f64)&gt;, style: SeriesStyle}),
+  `DashedLine({data: &amp;Array&lt;(f64, f64)&gt;, dash: f64, gap: f64, style: SeriesStyle}),
+  `Candlestick({data: &amp;Array&lt;OhlcPoint&gt;, style: CandlestickStyle}),
+  `ErrorBar({data: &amp;Array&lt;ErrorBarPoint&gt;, style: SeriesStyle})
+];
+
+type MeshStyle = {
+  show_x_grid: [bool, null],
+  show_y_grid: [bool, null],
+  grid_color: [Color, null],
+  axis_color: [Color, null],
+  label_color: [Color, null],
+  label_size: [f64, null],
+  x_labels: [i64, null],
+  y_labels: [i64, null]
+};
+
+type LegendStyle = {
+  background: [Color, null],
+  border: [Color, null],
+  label_color: [Color, null]
+};
+
+type LegendPosition = [
+  `UpperLeft, `UpperRight, `LowerLeft, `LowerRight,
+  `MiddleLeft, `MiddleRight, `UpperMiddle, `LowerMiddle
+];
+
 val chart: fn(
   ?#title: &amp;[string, null],
+  ?#title_color: &amp;[Color, null],
   ?#x_label: &amp;[string, null],
   ?#y_label: &amp;[string, null],
   ?#x_range: &amp;[{min: f64, max: f64}, null],
   ?#y_range: &amp;[{min: f64, max: f64}, null],
   ?#width: &amp;Length,
   ?#height: &amp;Length,
+  ?#background: &amp;[Color, null],
+  ?#margin: &amp;[f64, null],
+  ?#title_size: &amp;[f64, null],
+  ?#legend_position: &amp;[LegendPosition, null],
+  ?#legend_style: &amp;[LegendStyle, null],
+  ?#mesh: &amp;[MeshStyle, null],
   &amp;Array&lt;Dataset&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-35"><a class="header" href="#parameters-35">Parameters</a></h2>
+<h2 id="chart-parameters"><a class="header" href="#chart-parameters">Chart Parameters</a></h2>
 <ul>
-<li><strong>title</strong> - Chart title displayed above the plot area. Null for no title.</li>
-<li><strong>x_label</strong> - Label for the x-axis. Null for no label.</li>
-<li><strong>y_label</strong> - Label for the y-axis. Null for no label.</li>
-<li><strong>x_range</strong> - Manual x-axis range as <code>{min: f64, max: f64}</code>. When null, the range is computed automatically from the data.</li>
-<li><strong>y_range</strong> - Manual y-axis range as <code>{min: f64, max: f64}</code>. When null, the range is computed automatically from the data.</li>
-<li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
-<li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
+<li><strong>title</strong> — Chart title displayed above the plot area. Null for no title.</li>
+<li><strong>title_color</strong> — Color of the chart title text. Defaults to black when null.</li>
+<li><strong>x_label</strong> — Label for the x-axis. Null for no label.</li>
+<li><strong>y_label</strong> — Label for the y-axis. Null for no label.</li>
+<li><strong>x_range</strong> — Manual x-axis range as <code>{min: f64, max: f64}</code>. When null, the range is computed automatically from the data.</li>
+<li><strong>y_range</strong> — Manual y-axis range. Same format as x_range.</li>
+<li><strong>width</strong> — Horizontal sizing as a <code>Length</code>. Defaults to <code>`Fill</code>.</li>
+<li><strong>height</strong> — Vertical sizing as a <code>Length</code>. Defaults to <code>`Fill</code>.</li>
+<li><strong>background</strong> — Background color as a <code>Color</code> struct. Defaults to white when null.</li>
+<li><strong>margin</strong> — Margin in pixels around the plot area. Defaults to 10.</li>
+<li><strong>title_size</strong> — Font size for the chart title. Defaults to 16.</li>
+<li><strong>legend_position</strong> — Position of the series legend. Defaults to <code>`UpperLeft</code> when null.</li>
+<li><strong>legend_style</strong> — Legend appearance via a <code>LegendStyle</code> struct. Controls background, border, and text color. When null, defaults to white background with black border.</li>
+<li><strong>mesh</strong> — Grid and axis styling via a <code>MeshStyle</code> struct. When null, plotters defaults are used.</li>
 </ul>
 <p>The positional argument is a reference to an array of <code>Dataset</code> values. Multiple datasets can be plotted on the same axes.</p>
-<h2 id="chart-types"><a class="header" href="#chart-types">Chart Types</a></h2>
+<h2 id="series-constructors"><a class="header" href="#series-constructors">Series Constructors</a></h2>
+<p>Rather than constructing <code>Dataset</code> variants directly, use these convenience functions. All style parameters are optional and default to null.</p>
+<h3 id="chartline"><a class="header" href="#chartline"><code>chart::line</code></a></h3>
+<pre><code class="language-graphix">chart::line(#label: "Price", #color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, &amp;data)
+</code></pre>
+<p>Points connected by straight line segments. Good for time series and trends.</p>
+<h3 id="chartscatter"><a class="header" href="#chartscatter"><code>chart::scatter</code></a></h3>
+<pre><code class="language-graphix">chart::scatter(#label: "Points", #point_size: 5.0, &amp;data)
+</code></pre>
+<p>Individual points without connecting lines. Good for distributions and correlations.</p>
+<h3 id="chartbar"><a class="header" href="#chartbar"><code>chart::bar</code></a></h3>
+<pre><code class="language-graphix">chart::bar(#label: "Counts", &amp;data)
+</code></pre>
+<p>Vertical bars from the x-axis to each data point. Good for categorical comparisons.</p>
+<h3 id="chartarea"><a class="header" href="#chartarea"><code>chart::area</code></a></h3>
+<pre><code class="language-graphix">chart::area(#label: "Volume", &amp;data)
+</code></pre>
+<p>Like line but with the region between the line and the x-axis filled with 30% opacity.</p>
+<h3 id="chartdashed_line"><a class="header" href="#chartdashed_line"><code>chart::dashed_line</code></a></h3>
+<pre><code class="language-graphix">chart::dashed_line(#label: "Projection", #dash: 10.0, #gap: 5.0, &amp;data)
+</code></pre>
+<p>A dashed line series. <code>dash</code> and <code>gap</code> control the dash and gap lengths in pixels. Defaults to 5.0 each.</p>
+<h3 id="chartcandlestick"><a class="header" href="#chartcandlestick"><code>chart::candlestick</code></a></h3>
+<pre><code class="language-graphix">chart::candlestick(#label: "OHLC", &amp;ohlc_data)
+</code></pre>
+<p>Financial candlestick chart. Data is <code>Array&lt;OhlcPoint&gt;</code> where each point has <code>{x, open, high, low, close}</code> fields. Gain candles (close &gt; open) are green by default; loss candles are red. Override with <code>#gain_color</code> and <code>#loss_color</code>.</p>
+<h3 id="charterror_bar"><a class="header" href="#charterror_bar"><code>chart::error_bar</code></a></h3>
+<pre><code class="language-graphix">chart::error_bar(#label: "Confidence", &amp;error_data)
+</code></pre>
+<p>Vertical error bars. Data is <code>Array&lt;ErrorBarPoint&gt;</code> where each point has <code>{x, min, avg, max}</code> fields. A circle is drawn at the average value with whiskers extending to min and max.</p>
+<h2 id="series-style-fields"><a class="header" href="#series-style-fields">Series Style Fields</a></h2>
+<p>The <code>SeriesStyle</code> struct (used by line, scatter, bar, area, dashed_line, error_bar) has:</p>
 <ul>
-<li><code>`Line</code> -- Points connected by straight line segments. Good for time series and trends.</li>
-<li><code>`Scatter</code> -- Individual points without connecting lines. Good for showing distributions and correlations.</li>
-<li><code>`Bar</code> -- Vertical bars from the x-axis to each data point. Good for categorical comparisons.</li>
-<li><code>`Area</code> -- Like <code>`Line</code> but with the region between the line and the x-axis filled in. Good for showing magnitude over time.</li>
+<li><strong>color</strong> — Series color. When null, a color is assigned from a default palette.</li>
+<li><strong>label</strong> — Display name shown in the legend. When null, no legend entry is created.</li>
+<li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2.</li>
+<li><strong>point_size</strong> — Point radius for scatter plots. Defaults to 3.</li>
 </ul>
-<h2 id="dataset-fields"><a class="header" href="#dataset-fields">Dataset Fields</a></h2>
-<p>Each <code>Dataset</code> struct has four fields:</p>
+<p>The <code>CandlestickStyle</code> struct (used by candlestick) has:</p>
 <ul>
-<li><strong>data</strong> - A reference to an array of <code>(f64, f64)</code> points. Because this is a reference, the chart updates reactively when the data changes.</li>
-<li><strong>chart_type</strong> - One of the <code>ChartType</code> variants controlling how the data is rendered.</li>
-<li><strong>color</strong> - Color for the dataset as a <code>Color</code> struct. When null, a color is assigned automatically.</li>
-<li><strong>label</strong> - Display name for the dataset, shown in the chart legend. When null, no legend entry is created.</li>
+<li><strong>gain_color</strong> — Color for gain candles (close &gt; open). Defaults to green.</li>
+<li><strong>loss_color</strong> — Color for loss candles (close &lt;= open). Defaults to red.</li>
+<li><strong>bar_width</strong> — Width of candlestick bodies in pixels. Defaults to 5.</li>
+<li><strong>label</strong> — Display name shown in the legend.</li>
+</ul>
+<h2 id="mesh-style-fields"><a class="header" href="#mesh-style-fields">Mesh Style Fields</a></h2>
+<ul>
+<li><strong>show_x_grid</strong> — Show vertical grid lines. Defaults to true when null.</li>
+<li><strong>show_y_grid</strong> — Show horizontal grid lines. Defaults to true when null.</li>
+<li><strong>grid_color</strong> — Color of grid lines.</li>
+<li><strong>axis_color</strong> — Color of axis lines.</li>
+<li><strong>label_color</strong> — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.</li>
+<li><strong>label_size</strong> — Font size for axis labels.</li>
+<li><strong>x_labels</strong> — Number of x-axis tick labels.</li>
+<li><strong>y_labels</strong> — Number of y-axis tick labels.</li>
+</ul>
+<h2 id="legend-style-fields"><a class="header" href="#legend-style-fields">Legend Style Fields</a></h2>
+<ul>
+<li><strong>background</strong> — Legend background color. Defaults to white when null.</li>
+<li><strong>border</strong> — Legend border color. Defaults to black when null.</li>
+<li><strong>label_color</strong> — Color of legend text labels. Defaults to plotters default (black) when null.</li>
 </ul>
 <h2 id="examples-31"><a class="header" href="#examples-31">Examples</a></h2>
 <h3 id="multiple-datasets-1"><a class="header" href="#multiple-datasets-1">Multiple Datasets</a></h3>
@@ -8645,19 +8746,14 @@ let col = column(
     &amp;[
         text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Chart Demo"),
         adjust_speed,
-        chart(
+        chart::chart(
             #title: &amp;"Sample Data",
             #x_label: &amp;"x",
             #y_label: &amp;"y",
+            #margin:&amp;20.,
             &amp;[
-                { data: &amp;series(0., 50.),
-                  chart_type: `Line,
-                  color: null,
-                  label: "Series A" },
-                { data: &amp;series(0., 5.),
-                  chart_type: `Scatter,
-                  color: null,
-                  label: "Series B" }
+                chart::line(#label: "Series A", &amp;series(0., 50.)),
+                chart::scatter(#label: "Series B", &amp;series(0., 5.))
             ]
         )
     ]
@@ -8666,9 +8762,265 @@ let col = column(
 [&amp;window(#title: &amp;"Chart", #size: &amp;{ width: 900.0, height: 700.0 }, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/./media/chart.gif" alt="Chart" /></p>
+<h3 id="bar-chart"><a class="header" href="#bar-chart">Bar Chart</a></h3>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let data = [
+    (1., 42.),
+    (2., 67.),
+    (3., 35.),
+    (4., 89.),
+    (5., 54.),
+    (6., 73.),
+    (7., 28.),
+    (8., 61.)
+];
+
+let col = column(
+    #spacing: &amp;15.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Bar Chart"),
+        chart::chart(
+            #title: &amp;"Monthly Sales",
+            #x_label: &amp;"Month",
+            #y_label: &amp;"Units Sold",
+            &amp;[
+                chart::bar(
+                    #label: "Product A",
+                    #color: {r: 0.2, g: 0.5, b: 0.8, a: 1.0},
+                    &amp;data
+                )
+            ]
+        )
+    ]
+);
+
+[&amp;window(#title: &amp;"Bar Chart", #size: &amp;{width: 800.0, height: 600.0}, &amp;col)]
+</code></pre>
+<h3 id="candlestick"><a class="header" href="#candlestick">Candlestick</a></h3>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let dark_bg = {r: 0.1, g: 0.1, b: 0.15, a: 1.0};
+
+let ohlc_data = [
+    {x: 1.,  open: 100., high: 108., low: 97.,  close: 105.},
+    {x: 2.,  open: 105., high: 112., low: 103., close: 110.},
+    {x: 3.,  open: 110., high: 115., low: 106., close: 107.},
+    {x: 4.,  open: 107., high: 111., low: 101., close: 103.},
+    {x: 5.,  open: 103., high: 109., low: 100., close: 108.},
+    {x: 6.,  open: 108., high: 116., low: 107., close: 114.},
+    {x: 7.,  open: 114., high: 118., low: 110., close: 112.},
+    {x: 8.,  open: 112., high: 117., low: 108., close: 116.},
+    {x: 9.,  open: 116., high: 120., low: 113., close: 115.},
+    {x: 10., open: 115., high: 119., low: 109., close: 110.},
+    {x: 11., open: 110., high: 114., low: 105., close: 106.},
+    {x: 12., open: 106., high: 112., low: 104., close: 111.},
+    {x: 13., open: 111., high: 117., low: 109., close: 115.},
+    {x: 14., open: 115., high: 121., low: 114., close: 120.},
+    {x: 15., open: 120., high: 125., low: 118., close: 119.},
+    {x: 16., open: 119., high: 122., low: 112., close: 113.},
+    {x: 17., open: 113., high: 118., low: 110., close: 117.},
+    {x: 18., open: 117., high: 123., low: 115., close: 122.},
+    {x: 19., open: 122., high: 126., low: 118., close: 119.},
+    {x: 20., open: 119., high: 124., low: 116., close: 123.}
+];
+
+let col = column(
+    #spacing: &amp;15.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Candlestick Chart"),
+        chart::chart(
+            #title: &amp;"ACME Corp",
+            #title_color: &amp;{r: 0.9, g: 0.9, b: 0.95, a: 1.0},
+            #x_label: &amp;"Day",
+            #y_label: &amp;"Price",
+            #background: &amp;dark_bg,
+            #title_size: &amp;20.0,
+            #legend_style: &amp;{
+                background: {r: 0.15, g: 0.15, b: 0.2, a: 1.0},
+                border: {r: 0.4, g: 0.4, b: 0.45, a: 1.0},
+                label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0}
+            },
+            #mesh: &amp;{
+                show_x_grid: false,
+                show_y_grid: true,
+                grid_color: {r: 0.3, g: 0.3, b: 0.35, a: 1.0},
+                axis_color: {r: 0.6, g: 0.6, b: 0.65, a: 1.0},
+                label_color: {r: 0.75, g: 0.75, b: 0.8, a: 1.0},
+                label_size: null,
+                x_labels: null,
+                y_labels: null
+            },
+            &amp;[
+                chart::candlestick(
+                    #label: "ACME",
+                    #gain_color: {r: 0.0, g: 0.8, b: 0.4, a: 1.0},
+                    #loss_color: {r: 0.9, g: 0.2, b: 0.2, a: 1.0},
+                    #bar_width: 6.0,
+                    &amp;ohlc_data
+                )
+            ]
+        )
+    ]
+);
+
+[&amp;window(
+    #title: &amp;"Candlestick",
+    #size: &amp;{width: 900.0, height: 650.0},
+    #theme: &amp;`CatppuccinMocha,
+    &amp;col
+)]
+</code></pre>
+<h3 id="error-bars"><a class="header" href="#error-bars">Error Bars</a></h3>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let clock = time::timer(duration:1.s, true);
+let x = 0.;
+x &lt;- clock ~ x + 1.;
+
+let avg_data = [];
+let err_data = [];
+
+let avg = rand::rand(#start: 20., #end: 80., #clock);
+let noise = rand::rand(#start: 3., #end: 15., #clock);
+
+avg_data &lt;- array::window(#n: 25, clock ~ avg_data, (x, avg));
+err_data &lt;- array::window(#n: 25, clock ~ err_data, {
+    x, min: avg - noise, avg, max: avg + noise
+});
+
+let col = column(
+    #spacing: &amp;15.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Error Bar Chart"),
+        chart::chart(
+            #title: &amp;"Measurements with Confidence Bands",
+            #x_label: &amp;"Sample",
+            #y_label: &amp;"Value",
+            &amp;[
+                chart::error_bar(
+                    #label: "Confidence",
+                    #color: {r: 0.8, g: 0.4, b: 0.4, a: 1.0},
+                    &amp;err_data
+                ),
+                chart::line(
+                    #label: "Average",
+                    #color: {r: 0.2, g: 0.4, b: 0.8, a: 1.0},
+                    #stroke_width: 2.0,
+                    &amp;avg_data
+                )
+            ]
+        )
+    ]
+);
+
+[&amp;window(#title: &amp;"Error Bars", #size: &amp;{width: 900.0, height: 650.0}, &amp;col)]
+</code></pre>
+<h3 id="styling"><a class="header" href="#styling">Styling</a></h3>
+<pre><code class="language-graphix">use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let clock = time::timer(duration:0.5s, true);
+let x = 0.;
+x &lt;- clock ~ x + 1.;
+
+let series = |offset, scale| {
+    let d = [];
+    let y = rand::rand(#start: 0., #end: scale, #clock) + offset;
+    d &lt;- array::window(#n: 30, clock ~ d, (x, y));
+    d
+};
+
+let line_data = series(50., 20.);
+let area_data = series(20., 15.);
+let dash_data = series(70., 10.);
+
+let col = column(
+    #spacing: &amp;15.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;24.0, #halign: &amp;`Center, #width: &amp;`Fill, &amp;"Chart Styling"),
+        chart::chart(
+            #title: &amp;"Styled Chart",
+            #title_color: &amp;{r: 0.9, g: 0.9, b: 0.95, a: 1.0},
+            #x_label: &amp;"Time",
+            #y_label: &amp;"Value",
+            #background: &amp;{r: 0.12, g: 0.12, b: 0.18, a: 1.0},
+            #margin: &amp;20.0,
+            #title_size: &amp;22.0,
+            #legend_position: &amp;`UpperRight,
+            #legend_style: &amp;{
+                background: {r: 0.18, g: 0.18, b: 0.24, a: 1.0},
+                border: {r: 0.4, g: 0.4, b: 0.45, a: 1.0},
+                label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0}
+            },
+            #mesh: &amp;{
+                show_x_grid: true,
+                show_y_grid: false,
+                grid_color: {r: 0.25, g: 0.25, b: 0.3, a: 1.0},
+                axis_color: {r: 0.5, g: 0.5, b: 0.55, a: 1.0},
+                label_color: {r: 0.75, g: 0.75, b: 0.8, a: 1.0},
+                label_size: 14.0,
+                x_labels: null,
+                y_labels: null
+            },
+            &amp;[
+                chart::line(
+                    #label: "Signal",
+                    #color: {r: 0.3, g: 0.7, b: 1.0, a: 1.0},
+                    #stroke_width: 3.0,
+                    &amp;line_data
+                ),
+                chart::area(
+                    #label: "Baseline",
+                    #color: {r: 0.4, g: 0.8, b: 0.4, a: 1.0},
+                    &amp;area_data
+                ),
+                chart::dashed_line(
+                    #label: "Projection",
+                    #color: {r: 1.0, g: 0.6, b: 0.2, a: 1.0},
+                    #dash: 12.0,
+                    #gap: 6.0,
+                    #stroke_width: 2.0,
+                    &amp;dash_data
+                )
+            ]
+        )
+    ]
+);
+
+[&amp;window(
+    #title: &amp;"Chart Styles",
+    #size: &amp;{width: 900.0, height: 700.0},
+    #theme: &amp;`CatppuccinMocha,
+    &amp;col
+)]
+</code></pre>
 <h2 id="see-also-34"><a class="header" href="#see-also-34">See Also</a></h2>
 <ul>
-<li><a href="ui/gui/canvas.html">canvas</a> - Low-level drawing for custom visualizations</li>
+<li><a href="ui/gui/canvas.html">canvas</a> — Low-level drawing for custom visualizations</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-image--svg-widgets"><a class="header" href="#the-image--svg-widgets">The Image &amp; SVG Widgets</a></h1>
 <p>The <code>image</code> widget displays raster images from files, raw bytes, or pixel buffers. The <code>svg</code> widget renders Scalable Vector Graphics from files or inline XML. Both support sizing and content fitting controls.</p>
@@ -8695,7 +9047,7 @@ val image: fn(
   &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-36"><a class="header" href="#parameters-36">Parameters</a></h2>
+<h2 id="parameters-35"><a class="header" href="#parameters-35">Parameters</a></h2>
 <p>Both widgets share the same labeled arguments:</p>
 <ul>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
@@ -8796,7 +9148,7 @@ let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
   &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-37"><a class="header" href="#parameters-37">Parameters</a></h2>
+<h2 id="parameters-36"><a class="header" href="#parameters-36">Parameters</a></h2>
 <ul>
 <li><strong>tip</strong> — (required) the tooltip content widget, typically <code>text(...)</code>. This is a required labeled argument.</li>
 <li><strong>position</strong> — where the tooltip appears relative to the child: <code>Top</code>, <code>Bottom</code>, <code>Left</code>, <code>Right</code>, or <code>FollowCursor</code></li>
@@ -8853,7 +9205,7 @@ let col = column(
   &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-38"><a class="header" href="#parameters-38">Parameters</a></h2>
+<h2 id="parameters-37"><a class="header" href="#parameters-37">Parameters</a></h2>
 <ul>
 <li><strong>on_press</strong> — called when the mouse button is pressed inside the area</li>
 <li><strong>on_release</strong> — called when the mouse button is released inside the area</li>
@@ -8930,7 +9282,7 @@ val keyboard_area: fn(
 <li><strong>text</strong> — the text produced by the key press (empty for non-character keys)</li>
 <li><strong>repeat</strong> — <code>true</code> if this is an auto-repeat event from holding the key</li>
 </ul>
-<h2 id="parameters-39"><a class="header" href="#parameters-39">Parameters</a></h2>
+<h2 id="parameters-38"><a class="header" href="#parameters-38">Parameters</a></h2>
 <ul>
 <li><strong>on_key_press</strong> — called with a <code>KeyEvent</code> when a key is pressed</li>
 <li><strong>on_key_release</strong> — called with a <code>KeyEvent</code> when a key is released</li>

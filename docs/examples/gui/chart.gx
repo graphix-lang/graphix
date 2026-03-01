@@ -33,19 +33,14 @@ let col = column(
     &[
         text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Chart Demo"),
         adjust_speed,
-        chart(
+        chart::chart(
             #title: &"Sample Data",
             #x_label: &"x",
             #y_label: &"y",
+            #margin:&20.,
             &[
-                { data: &series(0., 50.),
-                  chart_type: `Line,
-                  color: null,
-                  label: "Series A" },
-                { data: &series(0., 5.),
-                  chart_type: `Scatter,
-                  color: null,
-                  label: "Series B" }
+                chart::line(#label: "Series A", &series(0., 50.)),
+                chart::scatter(#label: "Series B", &series(0., 5.))
             ]
         )
     ]

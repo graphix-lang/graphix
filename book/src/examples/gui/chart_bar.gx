@@ -1,0 +1,39 @@
+use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let data = [
+    (1., 42.),
+    (2., 67.),
+    (3., 35.),
+    (4., 89.),
+    (5., 54.),
+    (6., 73.),
+    (7., 28.),
+    (8., 61.)
+];
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Bar Chart"),
+        chart::chart(
+            #title: &"Monthly Sales",
+            #x_label: &"Month",
+            #y_label: &"Units Sold",
+            &[
+                chart::bar(
+                    #label: "Product A",
+                    #color: {r: 0.2, g: 0.5, b: 0.8, a: 1.0},
+                    &data
+                )
+            ]
+        )
+    ]
+);
+
+[&window(#title: &"Bar Chart", #size: &{width: 800.0, height: 600.0}, &col)]

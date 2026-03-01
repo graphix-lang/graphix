@@ -73,7 +73,8 @@
       "Bash(cargo doc:*)",
       "Bash(git stash:*)",
       "Bash(cargo vendor:*)",
-      "Bash(do echo:*)"
+      "Bash(do echo:*)",
+      "WebFetch(domain:plotters-rs.github.io)"
     ],
     "deny": [],
     "ask": []

@@ -1,30 +1,142 @@
-type ChartType = [`Line, `Scatter, `Bar, `Area];
-
-type Dataset = {
-  data: &Array<(f64, f64)>,
-  chart_type: ChartType,
+type SeriesStyle = {
   color: [Color, null],
+  label: [string, null],
+  stroke_width: [f64, null],
+  point_size: [f64, null]
+};
+
+type CandlestickStyle = {
+  gain_color: [Color, null],
+  loss_color: [Color, null],
+  bar_width: [f64, null],
   label: [string, null]
 };
+
+type OhlcPoint = {x: f64, open: f64, high: f64, low: f64, close: f64};
+type ErrorBarPoint = {x: f64, min: f64, avg: f64, max: f64};
+
+type Dataset = [
+  `Line({data: &Array<(f64, f64)>, style: SeriesStyle}),
+  `Scatter({data: &Array<(f64, f64)>, style: SeriesStyle}),
+  `Bar({data: &Array<(f64, f64)>, style: SeriesStyle}),
+  `Area({data: &Array<(f64, f64)>, style: SeriesStyle}),
+  `DashedLine({data: &Array<(f64, f64)>, dash: f64, gap: f64, style: SeriesStyle}),
+  `Candlestick({data: &Array<OhlcPoint>, style: CandlestickStyle}),
+  `ErrorBar({data: &Array<ErrorBarPoint>, style: SeriesStyle})
+];
+
+type MeshStyle = {
+  show_x_grid: [bool, null],
+  show_y_grid: [bool, null],
+  grid_color: [Color, null],
+  axis_color: [Color, null],
+  label_color: [Color, null],
+  label_size: [f64, null],
+  x_labels: [i64, null],
+  y_labels: [i64, null]
+};
+
+type LegendStyle = {
+  background: [Color, null],
+  border: [Color, null],
+  label_color: [Color, null]
+};
+
+type LegendPosition = [
+  `UpperLeft, `UpperRight, `LowerLeft, `LowerRight,
+  `MiddleLeft, `MiddleRight, `UpperMiddle, `LowerMiddle
+];
 
 type Chart = {
   datasets: &Array<Dataset>,
   title: &[string, null],
+  title_color: &[Color, null],
   x_label: &[string, null],
   y_label: &[string, null],
   x_range: &[{min: f64, max: f64}, null],
   y_range: &[{min: f64, max: f64}, null],
   width: &Length,
-  height: &Length
+  height: &Length,
+  background: &[Color, null],
+  margin: &[f64, null],
+  title_size: &[f64, null],
+  legend_position: &[LegendPosition, null],
+  legend_style: &[LegendStyle, null],
+  mesh: &[MeshStyle, null]
 };
 
 val chart: fn(
   ?#title: &[string, null],
+  ?#title_color: &[Color, null],
   ?#x_label: &[string, null],
   ?#y_label: &[string, null],
   ?#x_range: &[{min: f64, max: f64}, null],
   ?#y_range: &[{min: f64, max: f64}, null],
   ?#width: &Length,
   ?#height: &Length,
+  ?#background: &[Color, null],
+  ?#margin: &[f64, null],
+  ?#title_size: &[f64, null],
+  ?#legend_position: &[LegendPosition, null],
+  ?#legend_style: &[LegendStyle, null],
+  ?#mesh: &[MeshStyle, null],
   &Array<Dataset>
-) -> Widget
+) -> Widget;
+
+val line: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<(f64, f64)>
+) -> Dataset;
+
+val scatter: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<(f64, f64)>
+) -> Dataset;
+
+val bar: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<(f64, f64)>
+) -> Dataset;
+
+val area: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<(f64, f64)>
+) -> Dataset;
+
+val dashed_line: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  ?#dash: f64,
+  ?#gap: f64,
+  &Array<(f64, f64)>
+) -> Dataset;
+
+val candlestick: fn(
+  ?#gain_color: [Color, null],
+  ?#loss_color: [Color, null],
+  ?#bar_width: [f64, null],
+  ?#label: [string, null],
+  &Array<OhlcPoint>
+) -> Dataset;
+
+val error_bar: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<ErrorBarPoint>
+) -> Dataset

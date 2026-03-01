@@ -1,0 +1,78 @@
+use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let dark_bg = {r: 0.1, g: 0.1, b: 0.15, a: 1.0};
+
+let ohlc_data = [
+    {x: 1.,  open: 100., high: 108., low: 97.,  close: 105.},
+    {x: 2.,  open: 105., high: 112., low: 103., close: 110.},
+    {x: 3.,  open: 110., high: 115., low: 106., close: 107.},
+    {x: 4.,  open: 107., high: 111., low: 101., close: 103.},
+    {x: 5.,  open: 103., high: 109., low: 100., close: 108.},
+    {x: 6.,  open: 108., high: 116., low: 107., close: 114.},
+    {x: 7.,  open: 114., high: 118., low: 110., close: 112.},
+    {x: 8.,  open: 112., high: 117., low: 108., close: 116.},
+    {x: 9.,  open: 116., high: 120., low: 113., close: 115.},
+    {x: 10., open: 115., high: 119., low: 109., close: 110.},
+    {x: 11., open: 110., high: 114., low: 105., close: 106.},
+    {x: 12., open: 106., high: 112., low: 104., close: 111.},
+    {x: 13., open: 111., high: 117., low: 109., close: 115.},
+    {x: 14., open: 115., high: 121., low: 114., close: 120.},
+    {x: 15., open: 120., high: 125., low: 118., close: 119.},
+    {x: 16., open: 119., high: 122., low: 112., close: 113.},
+    {x: 17., open: 113., high: 118., low: 110., close: 117.},
+    {x: 18., open: 117., high: 123., low: 115., close: 122.},
+    {x: 19., open: 122., high: 126., low: 118., close: 119.},
+    {x: 20., open: 119., high: 124., low: 116., close: 123.}
+];
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Candlestick Chart"),
+        chart::chart(
+            #title: &"ACME Corp",
+            #title_color: &{r: 0.9, g: 0.9, b: 0.95, a: 1.0},
+            #x_label: &"Day",
+            #y_label: &"Price",
+            #background: &dark_bg,
+            #title_size: &20.0,
+            #legend_style: &{
+                background: {r: 0.15, g: 0.15, b: 0.2, a: 1.0},
+                border: {r: 0.4, g: 0.4, b: 0.45, a: 1.0},
+                label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0}
+            },
+            #mesh: &{
+                show_x_grid: false,
+                show_y_grid: true,
+                grid_color: {r: 0.3, g: 0.3, b: 0.35, a: 1.0},
+                axis_color: {r: 0.6, g: 0.6, b: 0.65, a: 1.0},
+                label_color: {r: 0.75, g: 0.75, b: 0.8, a: 1.0},
+                label_size: null,
+                x_labels: null,
+                y_labels: null
+            },
+            &[
+                chart::candlestick(
+                    #label: "ACME",
+                    #gain_color: {r: 0.0, g: 0.8, b: 0.4, a: 1.0},
+                    #loss_color: {r: 0.9, g: 0.2, b: 0.2, a: 1.0},
+                    #bar_width: 6.0,
+                    &ohlc_data
+                )
+            ]
+        )
+    ]
+);
+
+[&window(
+    #title: &"Candlestick",
+    #size: &{width: 900.0, height: 650.0},
+    #theme: &`CatppuccinMocha,
+    &col
+)]
