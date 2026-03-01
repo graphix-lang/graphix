@@ -37,7 +37,6 @@ let col = column(
             #title: &"Sample Data",
             #x_label: &"x",
             #y_label: &"y",
-            #margin:&20.,
             &[
                 chart::line(#label: "Series A", &series(0., 50.)),
                 chart::scatter(#label: "Series B", &series(0., 5.))

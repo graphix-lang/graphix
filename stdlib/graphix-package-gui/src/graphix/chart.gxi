@@ -32,14 +32,17 @@ type MeshStyle = {
   axis_color: [Color, null],
   label_color: [Color, null],
   label_size: [f64, null],
+  x_label_area_size: [f64, null],
   x_labels: [i64, null],
+  y_label_area_size: [f64, null],
   y_labels: [i64, null]
 };
 
 type LegendStyle = {
   background: [Color, null],
   border: [Color, null],
-  label_color: [Color, null]
+  label_color: [Color, null],
+  label_size: [f64, null]
 };
 
 type LegendPosition = [

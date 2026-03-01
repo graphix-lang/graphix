@@ -4,13 +4,24 @@
 //! GPU-accelerated chart rendering.
 
 use super::Renderer;
-use iced_core::{Color, Point, Size};
+use iced_core::{
+    alignment,
+    text::Alignment as TextAlign,
+    Color, Point, Size, Vector,
+};
 use iced_widget::canvas::{Frame, Path, Stroke};
 use plotters_backend::{
-    BackendColor, BackendCoord, BackendStyle, BackendTextStyle, DrawingBackend,
-    DrawingErrorKind,
+    text_anchor, BackendColor, BackendCoord, BackendStyle, BackendTextStyle, DrawingBackend,
+    DrawingErrorKind, FontTransform,
 };
 use std::convert::Infallible;
+
+/// Estimate text dimensions using the same heuristic as the plotters backend.
+pub(crate) fn estimate_text(text: &str, font_size: f64) -> (u32, u32) {
+    let width = (text.len() as f64 * font_size * 0.65 + 2.0) as u32;
+    let height = (font_size * 1.2) as u32;
+    (width, height)
+}
 
 /// Wraps an iced Canvas Frame as a plotters DrawingBackend.
 pub(crate) struct IcedBackend<'a> {
@@ -196,13 +207,48 @@ impl DrawingBackend for IcedBackend<'_> {
         if style.color().alpha == 0.0 {
             return Ok(());
         }
-        self.frame.fill_text(iced_widget::canvas::Text {
+        let anchor = style.anchor();
+        let align_x = match anchor.h_pos {
+            text_anchor::HPos::Left => TextAlign::Left,
+            text_anchor::HPos::Center => TextAlign::Center,
+            text_anchor::HPos::Right => TextAlign::Right,
+        };
+        let align_y = match anchor.v_pos {
+            text_anchor::VPos::Top => alignment::Vertical::Top,
+            text_anchor::VPos::Center => alignment::Vertical::Center,
+            text_anchor::VPos::Bottom => alignment::Vertical::Bottom,
+        };
+        let canvas_text = iced_widget::canvas::Text {
             content: text.to_string(),
-            position: to_point(pos),
+            position: Point::ORIGIN,
             color: to_color(style.color()),
             size: (style.size() as f32).into(),
+            align_x,
+            align_y,
             ..iced_widget::canvas::Text::default()
-        });
+        };
+        let transform = style.transform();
+        match transform {
+            FontTransform::None => {
+                self.frame.with_save(|frame| {
+                    frame.translate(Vector::new(pos.0 as f32, pos.1 as f32));
+                    frame.fill_text(canvas_text);
+                });
+            }
+            _ => {
+                let angle = match transform {
+                    FontTransform::Rotate90 => std::f32::consts::FRAC_PI_2,
+                    FontTransform::Rotate180 => std::f32::consts::PI,
+                    FontTransform::Rotate270 => -std::f32::consts::FRAC_PI_2,
+                    FontTransform::None => unreachable!(),
+                };
+                self.frame.with_save(|frame| {
+                    frame.translate(Vector::new(pos.0 as f32, pos.1 as f32));
+                    frame.rotate(angle);
+                    frame.fill_text(canvas_text);
+                });
+            }
+        }
         Ok(())
     }
 
@@ -211,9 +257,6 @@ impl DrawingBackend for IcedBackend<'_> {
         text: &str,
         style: &TStyle,
     ) -> Result<(u32, u32), DrawingErrorKind<Self::ErrorType>> {
-        let size = style.size();
-        let width = (text.len() as f64 * size * 0.6) as u32;
-        let height = (size * 1.2) as u32;
-        Ok((width, height))
+        Ok(estimate_text(text, style.size()))
     }
 }

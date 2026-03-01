@@ -1,4 +1,7 @@
-use super::{plotters_backend::IcedBackend, GuiW, GuiWidget, IcedElement, Renderer};
+use super::{
+    plotters_backend::{estimate_text, IcedBackend},
+    GuiW, GuiWidget, IcedElement, Renderer,
+};
 use crate::types::{ColorV, LengthV};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -183,14 +186,16 @@ struct MeshStyleV {
     axis_color: Option<iced_core::Color>,
     label_color: Option<iced_core::Color>,
     label_size: Option<f64>,
+    x_label_area_size: Option<f64>,
     x_labels: Option<i64>,
+    y_label_area_size: Option<f64>,
     y_labels: Option<i64>,
 }
 
 impl FromValue for MeshStyleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, axis_color), (_, grid_color), (_, label_color), (_, label_size), (_, show_x_grid), (_, show_y_grid), (_, x_labels), (_, y_labels)] =
-            v.cast_to::<[(ArcStr, Value); 8]>()?;
+        let [(_, axis_color), (_, grid_color), (_, label_color), (_, label_size), (_, show_x_grid), (_, show_y_grid), (_, x_label_area_size), (_, x_labels), (_, y_label_area_size), (_, y_labels)] =
+            v.cast_to::<[(ArcStr, Value); 10]>()?;
         Ok(Self {
             show_x_grid: if show_x_grid == Value::Null {
                 None
@@ -222,10 +227,20 @@ impl FromValue for MeshStyleV {
             } else {
                 Some(label_size.cast_to::<f64>()?)
             },
+            x_label_area_size: if x_label_area_size == Value::Null {
+                None
+            } else {
+                Some(x_label_area_size.cast_to::<f64>()?)
+            },
             x_labels: if x_labels == Value::Null {
                 None
             } else {
                 Some(x_labels.cast_to::<i64>()?)
+            },
+            y_label_area_size: if y_label_area_size == Value::Null {
+                None
+            } else {
+                Some(y_label_area_size.cast_to::<f64>()?)
             },
             y_labels: if y_labels == Value::Null {
                 None
@@ -255,12 +270,13 @@ struct LegendStyleV {
     background: Option<iced_core::Color>,
     border: Option<iced_core::Color>,
     label_color: Option<iced_core::Color>,
+    label_size: Option<f64>,
 }
 
 impl FromValue for LegendStyleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, background), (_, border), (_, label_color)] =
-            v.cast_to::<[(ArcStr, Value); 3]>()?;
+        let [(_, background), (_, border), (_, label_color), (_, label_size)] =
+            v.cast_to::<[(ArcStr, Value); 4]>()?;
         Ok(Self {
             background: if background == Value::Null {
                 None
@@ -276,6 +292,11 @@ impl FromValue for LegendStyleV {
                 None
             } else {
                 Some(ColorV::from_value(label_color)?.0)
+            },
+            label_size: if label_size == Value::Null {
+                None
+            } else {
+                Some(label_size.cast_to::<f64>()?)
             },
         })
     }
@@ -849,19 +870,33 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
                     builder.caption(t, font);
                 }
             }
-            // Always allocate label area: tick labels need base space,
-            // axis descriptions (e.g. "Day", "Price") need additional room.
-            // Y-axis needs extra width since tick labels like "125.0" are wide.
-            builder.x_label_area_size(if x_label.is_some() {
-                (label_sz * 2.5 + 25.0) as u32
+            // Compute label areas from actual tick content.
+            let (_, tick_h) = estimate_text("0", label_sz as f64);
+            let y_min_s = format!("{y_min}");
+            let y_max_s = format!("{y_max}");
+            let widest =
+                if y_min_s.len() > y_max_s.len() { &y_min_s } else { &y_max_s };
+            let (tick_w, _) = estimate_text(widest, label_sz as f64);
+            let auto_y_area = if y_label.is_some() {
+                tick_w + tick_h + 15
             } else {
-                (label_sz + 10.0) as u32
-            });
-            builder.y_label_area_size(if y_label.is_some() {
-                (label_sz * 4.0 + 20.0) as u32
+                tick_w + 8
+            };
+            let auto_x_area = if x_label.is_some() {
+                tick_h * 2 + 15
             } else {
-                (label_sz * 3.0 + 10.0) as u32
-            });
+                tick_h + 8
+            };
+            let x_area = mesh_style
+                .and_then(|ms| ms.x_label_area_size)
+                .map(|s| s as u32)
+                .unwrap_or(auto_x_area);
+            let y_area = mesh_style
+                .and_then(|ms| ms.y_label_area_size)
+                .map(|s| s as u32)
+                .unwrap_or(auto_y_area);
+            builder.x_label_area_size(x_area);
+            builder.y_label_area_size(y_area);
 
             let mut chart = match builder.build_cartesian_2d(x_min..x_max, y_min..y_max) {
                 Ok(c) => c,
@@ -1149,16 +1184,19 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
                     ls.and_then(|s| s.background).map(iced_to_plotters).unwrap_or(WHITE);
                 let legend_border =
                     ls.and_then(|s| s.border).map(iced_to_plotters).unwrap_or(BLACK);
+                let legend_font_sz =
+                    ls.and_then(|s| s.label_size).unwrap_or(label_sz);
                 let mut labels = chart.configure_series_labels();
                 labels.position(legend_pos);
+                labels.margin(15);
                 labels.background_style(legend_bg.mix(0.8));
                 labels.border_style(legend_border);
+                let mut style =
+                    TextStyle::from(("sans-serif", legend_font_sz).into_font());
                 if let Some(lc) = ls.and_then(|s| s.label_color) {
-                    let mut style =
-                        TextStyle::from(("sans-serif", 12.0).into_font());
                     style.color = iced_to_plotters(lc).to_backend_color();
-                    labels.label_font(style);
                 }
+                labels.label_font(style);
                 if let Err(e) = labels.draw() {
                     error!("chart series labels draw: {e:?}");
                 }

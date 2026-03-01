@@ -45,7 +45,8 @@ let col = column(
             #legend_style: &{
                 background: {r: 0.15, g: 0.15, b: 0.2, a: 1.0},
                 border: {r: 0.4, g: 0.4, b: 0.45, a: 1.0},
-                label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0}
+                label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0},
+                label_size: null
             },
             #mesh: &{
                 show_x_grid: false,
@@ -54,7 +55,9 @@ let col = column(
                 axis_color: {r: 0.6, g: 0.6, b: 0.65, a: 1.0},
                 label_color: {r: 0.75, g: 0.75, b: 0.8, a: 1.0},
                 label_size: null,
+                x_label_area_size: null,
                 x_labels: null,
+                y_label_area_size: null,
                 y_labels: null
             },
             &[
