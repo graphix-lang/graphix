@@ -38,18 +38,19 @@ impl<'a> TVal<'a> {
             }
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => write!(f, "{}", NakedValue(v)),
-            (Type::Ref { .. }, v) => match self.typ.lookup_ref(&self.env) {
-                Err(e) => write!(f, "error, {e:?}"),
-                Ok(typ) => {
-                    let typ_addr = (typ as *const Type).addr();
-                    let v_addr = (self.v as *const Value).addr();
-                    if !hist.contains(&(typ_addr, v_addr)) {
-                        hist.insert((typ_addr, v_addr));
-                        Self { typ, env: self.env, v }.fmt_int(f, hist)?
-                    }
-                    Ok(())
+            (Type::Ref { .. }, v) => {
+                let typ = match self.typ.lookup_ref(&self.env) {
+                    Err(e) => return write!(f, "error, {e:?}"),
+                    Ok(typ) => typ,
+                };
+                let typ_addr = (&typ as *const Type).addr();
+                let v_addr = (self.v as *const Value).addr();
+                if !hist.contains(&(typ_addr, v_addr)) {
+                    hist.insert((typ_addr, v_addr));
+                    TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist)?
                 }
-            },
+                Ok(())
+            }
             (Type::Array(et), Value::Array(a)) => {
                 write!(f, "[")?;
                 for (i, v) in a.iter().enumerate() {

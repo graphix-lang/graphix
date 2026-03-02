@@ -1,4 +1,4 @@
-use crate::{env::Env, typ::Type};
+use crate::{env::Env, typ::{RefHist, Type}};
 use anyhow::Result;
 use enumflags2::BitFlags;
 use fxhash::FxHashMap;
@@ -11,7 +11,7 @@ impl Type {
     fn union_int(
         &self,
         env: &Env,
-        hist: &mut FxHashMap<(usize, usize), Type>,
+        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), Type>>,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -28,30 +28,30 @@ impl Type {
                 Ok(Self::Ref { scope: s0.clone(), name: n0.clone(), params })
             }
             (tr @ Type::Ref { .. }, t) => {
+                let t0_id = hist.ref_id(tr, env);
+                let t_id = hist.ref_id(t, env);
                 let t0 = tr.lookup_ref(env)?;
-                let t0_addr = (t0 as *const Type).addr();
-                let t_addr = (t as *const Type).addr();
-                match hist.get(&(t0_addr, t_addr)) {
+                match hist.get(&(t0_id, t_id)) {
                     Some(t) => Ok(t.clone()),
                     None => {
-                        hist.insert((t0_addr, t_addr), tr.clone());
-                        let r = t0.union_int(env, hist, t)?;
-                        hist.insert((t0_addr, t_addr), r.clone());
-                        Ok(r)
+                        hist.insert((t0_id, t_id), tr.clone());
+                        let r = t0.union_int(env, hist, t);
+                        hist.remove(&(t0_id, t_id));
+                        r
                     }
                 }
             }
             (t, tr @ Type::Ref { .. }) => {
+                let t_id = hist.ref_id(t, env);
+                let t1_id = hist.ref_id(tr, env);
                 let t1 = tr.lookup_ref(env)?;
-                let t1_addr = (t1 as *const Type).addr();
-                let t_addr = (t as *const Type).addr();
-                match hist.get(&(t_addr, t1_addr)) {
+                match hist.get(&(t_id, t1_id)) {
                     Some(t) => Ok(t.clone()),
                     None => {
-                        hist.insert((t_addr, t1_addr), tr.clone());
-                        let r = t.union_int(env, hist, t1)?;
-                        hist.insert((t_addr, t1_addr), r.clone());
-                        Ok(r)
+                        hist.insert((t_id, t1_id), tr.clone());
+                        let r = t.union_int(env, hist, &t1);
+                        hist.remove(&(t_id, t1_id));
+                        r
                     }
                 }
             }
@@ -208,13 +208,13 @@ impl Type {
     }
 
     pub fn union(&self, env: &Env, t: &Self) -> Result<Self> {
-        Ok(self.union_int(env, &mut LPooled::take(), t)?.normalize())
+        Ok(self.union_int(env, &mut RefHist::new(LPooled::take()), t)?.normalize())
     }
 
     fn diff_int(
         &self,
         env: &Env,
-        hist: &mut FxHashMap<(usize, usize), Type>,
+        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), Type>>,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -223,25 +223,18 @@ impl Type {
                 Type::Ref { scope: s1, name: n1, .. },
             ) if s0 == s1 && n0 == n1 => Ok(Type::Primitive(BitFlags::empty())),
             (t0 @ Type::Ref { .. }, t1) | (t0, t1 @ Type::Ref { .. }) => {
+                let t0_id = hist.ref_id(t0, env);
+                let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                let t0_addr = (t0 as *const Type).addr();
-                let t1_addr = (t1 as *const Type).addr();
-                match hist.get(&(t0_addr, t1_addr)) {
+                match hist.get(&(t0_id, t1_id)) {
                     Some(r) => Ok(r.clone()),
                     None => {
                         let r = Type::Primitive(BitFlags::empty());
-                        hist.insert((t0_addr, t1_addr), r);
-                        match t0.diff_int(env, hist, &t1) {
-                            Ok(r) => {
-                                hist.insert((t0_addr, t1_addr), r.clone());
-                                Ok(r)
-                            }
-                            Err(e) => {
-                                hist.remove(&(t0_addr, t1_addr));
-                                Err(e)
-                            }
-                        }
+                        hist.insert((t0_id, t1_id), r);
+                        let r = t0.diff_int(env, hist, &t1);
+                        hist.remove(&(t0_id, t1_id));
+                        r
                     }
                 }
             }
@@ -423,6 +416,6 @@ impl Type {
     }
 
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
-        Ok(self.diff_int(env, &mut LPooled::take(), t)?.normalize())
+        Ok(self.diff_int(env, &mut RefHist::new(LPooled::take()), t)?.normalize())
     }
 }

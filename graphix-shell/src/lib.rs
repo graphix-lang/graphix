@@ -230,10 +230,7 @@ impl<X: GXExt> Shell<X> {
         Ok(env)
     }
 
-    pub async fn run(
-        mut self,
-        run_on_main: MainThreadHandle,
-    ) -> Result<()> {
+    pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
         let script = self.mode.file_mode();

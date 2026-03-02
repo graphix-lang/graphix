@@ -1,5 +1,5 @@
-use crate::widgets::canvas::CanvasShape;
 use super::GuiTestHarness;
+use crate::widgets::canvas::CanvasShape;
 use anyhow::Result;
 use arcstr::ArcStr;
 use netidx::publisher::{FromValue, Value};

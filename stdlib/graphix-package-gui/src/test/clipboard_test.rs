@@ -22,10 +22,7 @@ fn image_value_roundtrip() {
     let args = image_args_from_value(&v).expect("should parse image value");
     assert_eq!(args.width, 2);
     assert_eq!(args.height, 1);
-    assert_eq!(
-        args.pixels.as_ref(),
-        &[255, 0, 0, 255, 0, 255, 0, 255]
-    );
+    assert_eq!(args.pixels.as_ref(), &[255, 0, 0, 255, 0, 255, 0, 255]);
 }
 
 #[test]
@@ -43,10 +40,7 @@ fn html_value_parse() {
 
 #[test]
 fn file_list_roundtrip() {
-    let paths = vec![
-        PathBuf::from("/tmp/test.txt"),
-        PathBuf::from("/home/user/doc.pdf"),
-    ];
+    let paths = vec![PathBuf::from("/tmp/test.txt"), PathBuf::from("/home/user/doc.pdf")];
     let v = files_to_value(paths.clone());
 
     let parsed = file_list_from_value(&v).expect("should parse file list");

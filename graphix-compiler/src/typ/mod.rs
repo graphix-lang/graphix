@@ -1,14 +1,16 @@
-use crate::{env::Env, expr::ModPath, format_with_flags, PrintFlag, PRINT_FLAGS};
+use crate::{env::{Env, TypeDef}, expr::ModPath, format_with_flags, PrintFlag, PRINT_FLAGS};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use fxhash::FxHashSet;
+use fxhash::{FxHashMap, FxHashSet};
 use netidx::{publisher::Typ, utils::Either};
-use poolshark::local::LPooled;
+use poolshark::{local::LPooled, IsoPoolable};
+use smallvec::SmallVec;
 use std::{
     cmp::{Eq, PartialEq},
     fmt::Debug,
     iter,
+    ops::{Deref, DerefMut},
 };
 use triomphe::Arc;
 
@@ -31,6 +33,56 @@ struct AndAc(bool);
 impl FromIterator<bool> for AndAc {
     fn from_iter<T: IntoIterator<Item = bool>>(iter: T) -> Self {
         AndAc(iter.into_iter().all(|b| b))
+    }
+}
+
+struct RefHist<H: IsoPoolable> {
+    inner: LPooled<H>,
+    ref_ids: LPooled<FxHashMap<usize, SmallVec<[(Arc<[Type]>, usize); 2]>>>,
+    next_id: usize,
+}
+
+impl<H: IsoPoolable> Deref for RefHist<H> {
+    type Target = H;
+    fn deref(&self) -> &H {
+        &*self.inner
+    }
+}
+
+impl<H: IsoPoolable> DerefMut for RefHist<H> {
+    fn deref_mut(&mut self) -> &mut H {
+        &mut *self.inner
+    }
+}
+
+impl<H: IsoPoolable> RefHist<H> {
+    fn new(inner: LPooled<H>) -> Self {
+        RefHist { inner, ref_ids: LPooled::take(), next_id: 0 }
+    }
+
+    /// Return a stable ID for a Ref type based on (typedef identity, params).
+    /// Returns None for non-Ref types — cycle detection is driven by the
+    /// Ref side, and None collapses all non-Ref types to the same key.
+    fn ref_id(&mut self, t: &Type, env: &Env) -> Option<usize> {
+        match t {
+            Type::Ref { scope, name, params } => match env.lookup_typedef(scope, name) {
+                Some(def) => {
+                    let def_addr = (def as *const TypeDef).addr();
+                    let entries = self.ref_ids.entry(def_addr).or_default();
+                    for &(ref p, id) in entries.iter() {
+                        if **p == **params {
+                            return Some(id);
+                        }
+                    }
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    entries.push((params.clone(), id));
+                    Some(id)
+                }
+                None => None,
+            },
+            _ => None,
+        }
     }
 }
 
@@ -95,7 +147,7 @@ impl Type {
         }
     }
 
-    pub fn lookup_ref<'a>(&'a self, env: &'a Env) -> Result<&'a Type> {
+    pub fn lookup_ref(&self, env: &Env) -> Result<Type> {
         match self {
             Self::Ref { scope, name, params } => {
                 let def = env
@@ -104,26 +156,16 @@ impl Type {
                 if def.params.len() != params.len() {
                     bail!("{} expects {} type parameters", name, def.params.len());
                 }
-                def.typ.unbind_tvars();
+                let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
                 for ((tv, ct), arg) in def.params.iter().zip(params.iter()) {
                     if let Some(ct) = ct {
                         ct.check_contains(env, arg)?;
                     }
-                    if !tv.would_cycle(arg) {
-                        match arg {
-                            Type::TVar(arg_tv) => match &*arg_tv.read().typ.read() {
-                                None => *tv.read().typ.write() = Some(arg.clone()),
-                                Some(t) => *tv.read().typ.write() = Some(t.clone()),
-                            },
-                            _ => {
-                                *tv.read().typ.write() = Some(arg.clone());
-                            }
-                        }
-                    }
+                    known.insert(tv.name.clone(), arg.clone());
                 }
-                Ok(&def.typ)
+                Ok(def.typ.replace_tvars(&known))
             }
-            t => Ok(t),
+            t => Ok(t.clone()),
         }
     }
 
@@ -147,7 +189,11 @@ impl Type {
         Self::Primitive(Typ::unsigned_integer())
     }
 
-    fn strip_error_int(&self, env: &Env, hist: &mut FxHashSet<usize>) -> Option<Type> {
+    fn strip_error_int(
+        &self,
+        env: &Env,
+        hist: &mut RefHist<FxHashSet<Option<usize>>>,
+    ) -> Option<Type> {
         match self {
             Type::Error(t) => match t.strip_error_int(env, hist) {
                 Some(t) => Some(t),
@@ -164,9 +210,9 @@ impl Type {
                 }
             }
             Type::Ref { .. } => {
+                let id = hist.ref_id(self, env);
                 let t = self.lookup_ref(env).ok()?;
-                let addr = t as *const Type as usize;
-                if hist.insert(addr) {
+                if hist.insert(id) {
                     t.strip_error_int(env, hist)
                 } else {
                     None
@@ -197,7 +243,7 @@ impl Type {
     /// remove the outer error type and return the inner payload, fail if self
     /// isn't an error or contains non error types
     pub fn strip_error(&self, env: &Env) -> Option<Self> {
-        self.strip_error_int(env, &mut LPooled::take())
+        self.strip_error_int(env, &mut RefHist::<FxHashSet<Option<usize>>>::new(LPooled::take()))
     }
 
     pub fn is_bot(&self) -> bool {

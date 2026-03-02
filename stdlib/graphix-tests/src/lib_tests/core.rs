@@ -1,5 +1,5 @@
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const IS_ERR: &str = r#"

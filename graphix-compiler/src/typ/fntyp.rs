@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay},
         ModPath,
     },
-    typ::{contains::ContainsFlags, AbstractId, TVar, Type},
+    typ::{contains::ContainsFlags, AbstractId, RefHist, TVar, Type},
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -194,15 +194,23 @@ impl FnType {
     }
 
     pub fn replace_tvars(&self, known: &FxHashMap<ArcStr, Type>) -> Self {
+        self.replace_tvars_int(known, &mut LPooled::take())
+    }
+
+    pub(super) fn replace_tvars_int(
+        &self,
+        known: &FxHashMap<ArcStr, Type>,
+        renamed: &mut FxHashMap<ArcStr, TVar>,
+    ) -> Self {
         let FnType { args, vargs, rtype, constraints, throws, explicit_throws } = self;
         let args = Arc::from_iter(args.iter().map(|a| FnArgType {
             label: a.label.clone(),
-            typ: a.typ.replace_tvars(known),
+            typ: a.typ.replace_tvars_int(known, renamed),
         }));
-        let vargs = vargs.as_ref().map(|t| t.replace_tvars(known));
-        let rtype = rtype.replace_tvars(known);
+        let vargs = vargs.as_ref().map(|t| t.replace_tvars_int(known, renamed));
+        let rtype = rtype.replace_tvars_int(known, renamed);
         let constraints = constraints.clone();
-        let throws = throws.replace_tvars(known);
+        let throws = throws.replace_tvars_int(known, renamed);
         let explicit_throws = *explicit_throws;
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
@@ -320,7 +328,7 @@ impl FnType {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
             env,
-            &mut LPooled::take(),
+            &mut RefHist::new(LPooled::take()),
             t,
         )
     }
@@ -329,7 +337,7 @@ impl FnType {
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut FxHashMap<(usize, usize), bool>,
+        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
         let mut sul = 0;
@@ -482,7 +490,7 @@ impl FnType {
             env,
             impl_fn,
             &mut LPooled::take(),
-            &mut LPooled::take(),
+            &mut RefHist::new(LPooled::take()),
             adts,
         )
     }
@@ -492,7 +500,7 @@ impl FnType {
         env: &Env,
         impl_fn: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
-        hist: &mut FxHashSet<(usize, usize)>,
+        hist: &mut RefHist<FxHashSet<(Option<usize>, Option<usize>)>>,
         adts: &FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         let Self {

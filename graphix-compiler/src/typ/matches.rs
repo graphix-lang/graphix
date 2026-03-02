@@ -1,7 +1,7 @@
 use crate::{
     env::Env,
     format_with_flags,
-    typ::{AbstractId, AndAc, Type},
+    typ::{AbstractId, AndAc, RefHist, Type},
     PrintFlag,
 };
 use anyhow::{bail, Result};
@@ -14,7 +14,7 @@ impl Type {
     fn could_match_int(
         &self,
         env: &Env,
-        hist: &mut FxHashMap<(usize, usize), bool>,
+        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
         let fl = BitFlags::empty();
@@ -30,24 +30,17 @@ impl Type {
                     .collect::<Result<AndAc>>()?
                     .0),
             (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+                let t0_id = hist.ref_id(t0, env);
+                let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                let t0_addr = (t0 as *const Type).addr();
-                let t1_addr = (t1 as *const Type).addr();
-                match hist.get(&(t0_addr, t1_addr)) {
+                match hist.get(&(t0_id, t1_id)) {
                     Some(r) => Ok(*r),
                     None => {
-                        hist.insert((t0_addr, t1_addr), true);
-                        match t0.could_match_int(env, hist, t1) {
-                            Ok(r) => {
-                                hist.insert((t0_addr, t1_addr), r);
-                                Ok(r)
-                            }
-                            Err(e) => {
-                                hist.remove(&(t0_addr, t1_addr));
-                                Err(e)
-                            }
-                        }
+                        hist.insert((t0_id, t1_id), true);
+                        let r = t0.could_match_int(env, hist, &t1);
+                        hist.remove(&(t0_id, t1_id));
+                        r
                     }
                 }
             }
@@ -152,7 +145,7 @@ impl Type {
     }
 
     pub fn could_match(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.could_match_int(env, &mut LPooled::take(), t)
+        self.could_match_int(env, &mut RefHist::new(LPooled::take()), t)
     }
 
     pub fn sig_matches(
@@ -165,7 +158,7 @@ impl Type {
             env,
             impl_type,
             &mut LPooled::take(),
-            &mut LPooled::take(),
+            &mut RefHist::new(LPooled::take()),
             adts,
         )
     }
@@ -175,7 +168,7 @@ impl Type {
         env: &Env,
         impl_type: &Self,
         tvar_map: &mut FxHashMap<usize, Type>,
-        hist: &mut FxHashSet<(usize, usize)>,
+        hist: &mut RefHist<FxHashSet<(Option<usize>, Option<usize>)>>,
         adts: &FxHashMap<AbstractId, Type>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
@@ -195,15 +188,17 @@ impl Type {
                 Ok(())
             }
             (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+                let t0_id = hist.ref_id(t0, env);
+                let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                let t0_addr = (t0 as *const Type).addr();
-                let t1_addr = (t1 as *const Type).addr();
-                if hist.contains(&(t0_addr, t1_addr)) {
+                if hist.contains(&(t0_id, t1_id)) {
                     Ok(())
                 } else {
-                    hist.insert((t0_addr, t1_addr));
-                    t0.sig_matches_int(env, t1, tvar_map, hist, adts)
+                    hist.insert((t0_id, t1_id));
+                    let r = t0.sig_matches_int(env, &t1, tvar_map, hist, adts);
+                    hist.remove(&(t0_id, t1_id));
+                    r
                 }
             }
             (Self::Fn(f0), Self::Fn(f1)) => {

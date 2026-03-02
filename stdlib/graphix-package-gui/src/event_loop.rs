@@ -58,10 +58,7 @@ impl clipboard::Clipboard for Clipboard {
                 #[cfg(target_os = "linux")]
                 {
                     use arboard::GetExtLinux;
-                    cb.get()
-                        .clipboard(arboard::LinuxClipboardKind::Primary)
-                        .text()
-                        .ok()
+                    cb.get().clipboard(arboard::LinuxClipboardKind::Primary).text().ok()
                 }
                 #[cfg(not(target_os = "linux"))]
                 None

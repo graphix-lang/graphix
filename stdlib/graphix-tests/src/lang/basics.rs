@@ -1,9 +1,9 @@
 // Basic language feature tests: bindings, arithmetic, scoping
 
-use graphix_package_core::run;
 use crate::init;
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
+use graphix_package_core::run;
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use tokio::sync::mpsc;

@@ -400,7 +400,9 @@ impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
     }
 }
 
-impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme> for CanvasW<X> {
+impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
+    for CanvasW<X>
+{
     type State = ();
 
     fn draw(

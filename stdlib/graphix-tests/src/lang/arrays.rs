@@ -1,8 +1,8 @@
 // Tests for arrays: indexing, matching, operations
 
-use graphix_package_core::run;
 use anyhow::Result;
 use arcstr::ArcStr;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const ARRAY_INDEXING0: &str = r#"

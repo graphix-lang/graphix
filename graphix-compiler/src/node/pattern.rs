@@ -95,9 +95,10 @@ impl StructPatternNode {
             }};
         }
         let type_predicate = match type_predicate {
-            Type::Ref { .. } => &type_predicate.lookup_ref(&ctx.env)?.clone(),
-            t => t,
+            Type::Ref { .. } => type_predicate.lookup_ref(&ctx.env)?,
+            t => t.clone(),
         };
+        let type_predicate = &type_predicate;
         let t = match &spec {
             StructurePattern::Ignore => Self::Ignore,
             StructurePattern::Literal(v) => {
@@ -607,7 +608,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         top_id: ExprId,
     ) -> Result<Self> {
         let (explicit, type_predicate) = match &spec.type_predicate {
-            Some(t) => (true, t.scope_refs(&scope.lexical).lookup_ref(&ctx.env)?.clone()),
+            Some(t) => (true, t.scope_refs(&scope.lexical).lookup_ref(&ctx.env)?),
             None => {
                 let typ = spec.structure_predicate.infer_type_predicate(&ctx.env)?;
                 (false, typ)

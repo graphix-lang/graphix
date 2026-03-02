@@ -1,9 +1,7 @@
 use iced_core::{
     keyboard,
     layout::{self, Layout},
-    mouse,
-    overlay,
-    renderer,
+    mouse, overlay, renderer,
     widget::{
         tree::{self, Tree},
         Operation,
@@ -32,11 +30,7 @@ impl<'a> KeyboardArea<'a> {
     pub(crate) fn new(
         content: impl Into<Element<'a, Message, crate::theme::GraphixTheme, Renderer>>,
     ) -> Self {
-        Self {
-            content: content.into(),
-            on_key_press: None,
-            on_key_release: None,
-        }
+        Self { content: content.into(), on_key_press: None, on_key_release: None }
     }
 
     #[must_use]
@@ -85,9 +79,7 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.content
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(
@@ -99,9 +91,12 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
     ) {
         let state: &mut State = tree.state.downcast_mut();
         operation.focusable(None, layout.bounds(), state);
-        self.content
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            operation,
+        );
     }
 
     fn update(

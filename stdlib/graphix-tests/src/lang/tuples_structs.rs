@@ -1,8 +1,8 @@
 // Tests for tuples and structs
 
-use graphix_package_core::run;
 use anyhow::Result;
 use arcstr::ArcStr;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const TUPLES0: &str = r#"

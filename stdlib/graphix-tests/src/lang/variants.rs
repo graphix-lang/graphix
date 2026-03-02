@@ -1,7 +1,7 @@
 // Tests for variant types
 
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const VARIANTS0: &str = r#"

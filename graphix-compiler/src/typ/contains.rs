@@ -1,7 +1,7 @@
 use crate::{
     env::Env,
     format_with_flags,
-    typ::{tvar::would_cycle_inner, AndAc, Type},
+    typ::{tvar::would_cycle_inner, AndAc, RefHist, Type},
     PrintFlag,
 };
 use anyhow::{bail, Result};
@@ -36,7 +36,7 @@ impl Type {
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut FxHashMap<(usize, usize), bool>,
+        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
         if (self as *const Type) == (t as *const Type) {
@@ -54,24 +54,17 @@ impl Type {
                     .collect::<Result<AndAc>>()?
                     .0),
             (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+                let t0_id = hist.ref_id(t0, env);
+                let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                let t0_addr = (t0 as *const Type).addr();
-                let t1_addr = (t1 as *const Type).addr();
-                match hist.get(&(t0_addr, t1_addr)) {
+                match hist.get(&(t0_id, t1_id)) {
                     Some(r) => Ok(*r),
                     None => {
-                        hist.insert((t0_addr, t1_addr), true);
-                        match t0.contains_int(flags, env, hist, t1) {
-                            Ok(r) => {
-                                hist.insert((t0_addr, t1_addr), r);
-                                Ok(r)
-                            }
-                            Err(e) => {
-                                hist.remove(&(t0_addr, t1_addr));
-                                Err(e)
-                            }
-                        }
+                        hist.insert((t0_id, t1_id), true);
+                        let r = t0.contains_int(flags, env, hist, &t1);
+                        hist.remove(&(t0_id, t1_id));
+                        r
                     }
                 }
             }
@@ -347,7 +340,7 @@ impl Type {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
             env,
-            &mut LPooled::take(),
+            &mut RefHist::new(LPooled::take()),
             t,
         )
     }
@@ -358,6 +351,6 @@ impl Type {
         env: &Env,
         t: &Self,
     ) -> Result<bool> {
-        self.contains_int(flags, env, &mut LPooled::take(), t)
+        self.contains_int(flags, env, &mut RefHist::new(LPooled::take()), t)
     }
 }

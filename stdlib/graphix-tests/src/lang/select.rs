@@ -1,7 +1,7 @@
 // Tests for select/match expressions
 
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const SELECT0: &str = r#"

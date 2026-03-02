@@ -603,10 +603,7 @@ impl<X: GXExt> GXHandle<X> {
     /// This is a fire-and-forget call that does not wait for the result.
     /// Unlike `Callable::call`, no type or arity checking is performed.
     pub fn call(&self, id: CallableId, args: ValArray) -> Result<()> {
-        self.0
-            .tx
-            .send(ToGX::Call { id, args })
-            .map_err(|_| anyhow!("runtime is dead"))
+        self.0.tx.send(ToGX::Call { id, args }).map_err(|_| anyhow!("runtime is dead"))
     }
 }
 

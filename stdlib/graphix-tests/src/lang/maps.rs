@@ -1,8 +1,8 @@
 // Tests for map literals and operations
 
-use graphix_package_core::run;
 use anyhow::Result;
 use arcstr::ArcStr;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const MAP0: &str = r#"

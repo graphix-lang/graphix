@@ -345,14 +345,14 @@ fn tokio_main(
                         None => (),
                         Some(p) => {
                             let p = PathBuf::from(p);
-                            shell = shell.module_resolvers(vec![ModuleResolver::Files(p)]);
+                            shell =
+                                shell.module_resolvers(vec![ModuleResolver::Files(p)]);
                         }
                     };
                     Source::File(path)
                 }
             };
-            let mode =
-                if p.check { Mode::Check(source) } else { Mode::Script(source) };
+            let mode = if p.check { Mode::Check(source) } else { Mode::Script(source) };
             shell = shell.mode(mode);
         }
         let (enable, disable) = RawFlag::as_flags(&p.warn);
@@ -385,7 +385,5 @@ fn main() -> Result<()> {
     while let Ok(f) = main_rx.recv() {
         f();
     }
-    tokio_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("tokio thread panicked"))?
+    tokio_handle.join().map_err(|_| anyhow::anyhow!("tokio thread panicked"))?
 }

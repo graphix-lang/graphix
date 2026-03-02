@@ -530,12 +530,28 @@ impl Type {
     }
 
     /// return a copy of self with every TVar named in known replaced
-    /// with the corresponding type
+    /// with the corresponding type. TVars not in known are replaced with
+    /// fresh TVars using unique names to avoid entanglement with the caller's
+    /// TVars that happen to share the same name.
     pub fn replace_tvars(&self, known: &FxHashMap<ArcStr, Self>) -> Type {
+        use poolshark::local::LPooled;
+        self.replace_tvars_int(known, &mut LPooled::take())
+    }
+
+    pub(super) fn replace_tvars_int(
+        &self,
+        known: &FxHashMap<ArcStr, Self>,
+        renamed: &mut FxHashMap<ArcStr, TVar>,
+    ) -> Type {
         match self {
             Type::TVar(tv) => match known.get(&tv.name) {
                 Some(t) => t.clone(),
-                None => Type::TVar(tv.clone()),
+                None => {
+                    let fresh = renamed
+                        .entry(tv.name.clone())
+                        .or_insert_with(TVar::default);
+                    Type::TVar(fresh.clone())
+                }
             },
             Type::Bottom => Type::Bottom,
             Type::Any => Type::Any,
@@ -543,33 +559,40 @@ impl Type {
             Type::Ref { scope, name, params } => Type::Ref {
                 scope: scope.clone(),
                 name: name.clone(),
-                params: Arc::from_iter(params.iter().map(|t| t.replace_tvars(known))),
+                params: Arc::from_iter(
+                    params.iter().map(|t| t.replace_tvars_int(known, renamed)),
+                ),
             },
-            Type::Error(t0) => Type::Error(Arc::new(t0.replace_tvars(known))),
-            Type::Array(t0) => Type::Array(Arc::new(t0.replace_tvars(known))),
+            Type::Error(t0) => Type::Error(Arc::new(t0.replace_tvars_int(known, renamed))),
+            Type::Array(t0) => Type::Array(Arc::new(t0.replace_tvars_int(known, renamed))),
             Type::Map { key, value } => {
-                let key = Arc::new(key.replace_tvars(known));
-                let value = Arc::new(value.replace_tvars(known));
+                let key = Arc::new(key.replace_tvars_int(known, renamed));
+                let value = Arc::new(value.replace_tvars_int(known, renamed));
                 Type::Map { key, value }
             }
-            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.replace_tvars(known))),
-            Type::Tuple(ts) => {
-                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.replace_tvars(known))))
-            }
+            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.replace_tvars_int(known, renamed))),
+            Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
+                ts.iter().map(|t| t.replace_tvars_int(known, renamed)),
+            )),
             Type::Struct(ts) => Type::Struct(Arc::from_iter(
-                ts.iter().map(|(n, t)| (n.clone(), t.replace_tvars(known))),
+                ts.iter()
+                    .map(|(n, t)| (n.clone(), t.replace_tvars_int(known, renamed))),
             )),
             Type::Variant(tag, ts) => Type::Variant(
                 tag.clone(),
-                Arc::from_iter(ts.iter().map(|t| t.replace_tvars(known))),
+                Arc::from_iter(ts.iter().map(|t| t.replace_tvars_int(known, renamed))),
             ),
-            Type::Set(s) => {
-                Type::Set(Arc::from_iter(s.iter().map(|t| t.replace_tvars(known))))
+            Type::Set(s) => Type::Set(Arc::from_iter(
+                s.iter().map(|t| t.replace_tvars_int(known, renamed)),
+            )),
+            Type::Fn(fntyp) => {
+                Type::Fn(Arc::new(fntyp.replace_tvars_int(known, renamed)))
             }
-            Type::Fn(fntyp) => Type::Fn(Arc::new(fntyp.replace_tvars(known))),
             Type::Abstract { id, params } => Type::Abstract {
                 id: *id,
-                params: Arc::from_iter(params.iter().map(|t| t.replace_tvars(known))),
+                params: Arc::from_iter(
+                    params.iter().map(|t| t.replace_tvars_int(known, renamed)),
+                ),
             },
         }
     }

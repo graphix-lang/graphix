@@ -171,14 +171,10 @@ impl<X: GXExt> TrackedWindow<X> {
     }
 
     pub fn iced_theme(&self) -> crate::theme::GraphixTheme {
-        self.theme
-            .t
-            .as_ref()
-            .map(|t| t.0.clone())
-            .unwrap_or(crate::theme::GraphixTheme {
-                inner: iced_core::Theme::Dark,
-                overrides: None,
-            })
+        self.theme.t.as_ref().map(|t| t.0.clone()).unwrap_or(crate::theme::GraphixTheme {
+            inner: iced_core::Theme::Dark,
+            overrides: None,
+        })
     }
 
     pub fn push_event(&mut self, event: iced_core::Event) {

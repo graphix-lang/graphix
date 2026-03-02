@@ -1,7 +1,7 @@
 use iced_core::Color;
 use iced_widget::{
-    button, checkbox, combo_box, container, overlay::menu, pick_list, progress_bar, radio,
-    rule, scrollable, slider, svg, text_editor, text_input, toggler,
+    button, checkbox, combo_box, container, overlay::menu, pick_list, progress_bar,
+    radio, rule, scrollable, slider, svg, text_editor, text_input, toggler,
 };
 use triomphe::Arc;
 
@@ -228,7 +228,11 @@ impl ButtonSpec {
 }
 
 impl CheckboxSpec {
-    fn resolve(&self, theme: &iced_core::Theme, status: checkbox::Status) -> checkbox::Style {
+    fn resolve(
+        &self,
+        theme: &iced_core::Theme,
+        status: checkbox::Status,
+    ) -> checkbox::Style {
         let is_dark = theme.extended_palette().is_dark;
         let mut s = checkbox::primary(theme, status);
         let is_disabled = matches!(status, checkbox::Status::Disabled { .. });
@@ -337,7 +341,11 @@ impl TextInputSpec {
 }
 
 impl TogglerSpec {
-    fn resolve(&self, theme: &iced_core::Theme, status: toggler::Status) -> toggler::Style {
+    fn resolve(
+        &self,
+        theme: &iced_core::Theme,
+        status: toggler::Status,
+    ) -> toggler::Style {
         let is_dark = theme.extended_palette().is_dark;
         let mut s = toggler::default(theme, status);
         let is_hovered = matches!(status, toggler::Status::Hovered { .. });
@@ -408,8 +416,7 @@ impl RadioSpec {
         let mut s = radio::default(theme, status);
         let is_hovered = matches!(status, radio::Status::Hovered { .. });
         if let Some(bg) = self.background {
-            s.background =
-                if is_hovered { hover_adjust(bg, is_dark) } else { bg }.into();
+            s.background = if is_hovered { hover_adjust(bg, is_dark) } else { bg }.into();
         }
         if let Some(dc) = self.dot_color {
             s.dot_color = dc;
@@ -428,7 +435,11 @@ impl RadioSpec {
 }
 
 impl PickListSpec {
-    fn resolve(&self, theme: &iced_core::Theme, status: pick_list::Status) -> pick_list::Style {
+    fn resolve(
+        &self,
+        theme: &iced_core::Theme,
+        status: pick_list::Status,
+    ) -> pick_list::Style {
         let is_dark = theme.extended_palette().is_dark;
         let mut s = pick_list::default(theme, status);
         let is_hovered = matches!(
@@ -436,8 +447,7 @@ impl PickListSpec {
             pick_list::Status::Hovered | pick_list::Status::Opened { .. }
         );
         if let Some(bg) = self.background {
-            s.background =
-                if is_hovered { hover_adjust(bg, is_dark) } else { bg }.into();
+            s.background = if is_hovered { hover_adjust(bg, is_dark) } else { bg }.into();
         }
         if let Some(tc) = self.text_color {
             s.text_color = tc;
@@ -637,7 +647,11 @@ macro_rules! impl_catalog_with_status {
                 })
             }
 
-            fn style(&self, class: &Self::Class<'_>, status: $module::Status) -> $module::Style {
+            fn style(
+                &self,
+                class: &Self::Class<'_>,
+                status: $module::Status,
+            ) -> $module::Style {
                 class(self, status)
             }
         }
@@ -681,7 +695,9 @@ impl pick_list::Catalog for GraphixTheme {
 
     fn default<'a>() -> <Self as pick_list::Catalog>::Class<'a> {
         Box::new(|theme, status| {
-            if let Some(spec) = theme.overrides.as_ref().and_then(|o| o.pick_list.as_ref()) {
+            if let Some(spec) =
+                theme.overrides.as_ref().and_then(|o| o.pick_list.as_ref())
+            {
                 spec.resolve(&theme.inner, status)
             } else {
                 pick_list::default(&theme.inner, status)
@@ -704,7 +720,9 @@ impl scrollable::Catalog for GraphixTheme {
 
     fn default<'a>() -> Self::Class<'a> {
         Box::new(|theme, status| {
-            if let Some(spec) = theme.overrides.as_ref().and_then(|o| o.scrollable.as_ref()) {
+            if let Some(spec) =
+                theme.overrides.as_ref().and_then(|o| o.scrollable.as_ref())
+            {
                 spec.resolve(&theme.inner, status)
             } else {
                 scrollable::default(&theme.inner, status)
@@ -712,7 +730,11 @@ impl scrollable::Catalog for GraphixTheme {
         })
     }
 
-    fn style(&self, class: &Self::Class<'_>, status: scrollable::Status) -> scrollable::Style {
+    fn style(
+        &self,
+        class: &Self::Class<'_>,
+        status: scrollable::Status,
+    ) -> scrollable::Style {
         class(self, status)
     }
 }

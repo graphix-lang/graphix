@@ -1,7 +1,7 @@
 // Tests for try/catch and error handling
 
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const CATCH0: &str = r#"
@@ -62,8 +62,8 @@ run!(catch3, CATCH3, |v: Result<&Value>| match v {
 const CATCH4: &str = r#"
 {
     let a = [0, 1, 2, 3, 4, 5];
-    let err0: Error<ErrChain<`ArrayIndexError(string)>> = never();
-    let err1: Error<ErrChain<`ArithError(string)>> = never();
+    let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never();
+    let err1: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never();
     try
        try
            a[5]? / a[0]?;

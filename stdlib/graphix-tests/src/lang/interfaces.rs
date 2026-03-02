@@ -4,8 +4,8 @@
 // The implementation file must provide a concrete definition for each abstract type.
 // Abstract types are opaque - the caller cannot see the concrete type.
 
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 // =============================================================================

@@ -3,7 +3,7 @@ let chart = |
   #title_color: &[Color, null] = &null,
   #x_label: &[string, null] = &null,
   #y_label: &[string, null] = &null,
-  #x_range: &[{min: f64, max: f64}, null] = &null,
+  #x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null] = &null,
   #y_range: &[{min: f64, max: f64}, null] = &null,
   #width: &Length = &`Fill,
   #height: &Length = &`Fill,
@@ -24,7 +24,7 @@ let line = |
   #label: [string, null] = null,
   #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
-  data: &Array<(f64, f64)>
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 | -> Dataset `Line({data, style: {color, label, stroke_width, point_size}});
 
 let scatter = |
@@ -32,7 +32,7 @@ let scatter = |
   #label: [string, null] = null,
   #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
-  data: &Array<(f64, f64)>
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 | -> Dataset `Scatter({data, style: {color, label, stroke_width, point_size}});
 
 let bar = |
@@ -40,7 +40,7 @@ let bar = |
   #label: [string, null] = null,
   #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
-  data: &Array<(f64, f64)>
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 | -> Dataset `Bar({data, style: {color, label, stroke_width, point_size}});
 
 let area = |
@@ -48,7 +48,7 @@ let area = |
   #label: [string, null] = null,
   #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
-  data: &Array<(f64, f64)>
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 | -> Dataset `Area({data, style: {color, label, stroke_width, point_size}});
 
 let dashed_line = |
@@ -58,7 +58,7 @@ let dashed_line = |
   #point_size: [f64, null] = null,
   #dash: f64 = 5.0,
   #gap: f64 = 5.0,
-  data: &Array<(f64, f64)>
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 | -> Dataset `DashedLine({data, dash, gap, style: {color, label, stroke_width, point_size}});
 
 let candlestick = |
@@ -66,7 +66,7 @@ let candlestick = |
   #loss_color: [Color, null] = null,
   #bar_width: [f64, null] = null,
   #label: [string, null] = null,
-  data: &Array<OhlcPoint>
+  data: &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>]
 | -> Dataset `Candlestick({data, style: {gain_color, loss_color, bar_width, label}});
 
 let error_bar = |
@@ -74,5 +74,29 @@ let error_bar = |
   #label: [string, null] = null,
   #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
-  data: &Array<ErrorBarPoint>
-| -> Dataset `ErrorBar({data, style: {color, label, stroke_width, point_size}})
+  data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>]
+| -> Dataset `ErrorBar({data, style: {color, label, stroke_width, point_size}});
+
+let mesh_style = |
+  #show_x_grid: [bool, null] = null,
+  #show_y_grid: [bool, null] = null,
+  #grid_color: [Color, null] = null,
+  #axis_color: [Color, null] = null,
+  #label_color: [Color, null] = null,
+  #label_size: [f64, null] = null,
+  #x_label_area_size: [f64, null] = null,
+  #x_labels: [i64, null] = null,
+  #y_label_area_size: [f64, null] = null,
+  #y_labels: [i64, null] = null
+| -> MeshStyle {
+  show_x_grid, show_y_grid, grid_color, axis_color,
+  label_color, label_size, x_label_area_size, x_labels,
+  y_label_area_size, y_labels
+};
+
+let legend_style = |
+  #background: [Color, null] = null,
+  #border: [Color, null] = null,
+  #label_color: [Color, null] = null,
+  #label_size: [f64, null] = null
+| -> LegendStyle {background, border, label_color, label_size}

@@ -12,19 +12,6 @@ type CandlestickStyle = {
   label: [string, null]
 };
 
-type OhlcPoint = {x: f64, open: f64, high: f64, low: f64, close: f64};
-type ErrorBarPoint = {x: f64, min: f64, avg: f64, max: f64};
-
-type Dataset = [
-  `Line({data: &Array<(f64, f64)>, style: SeriesStyle}),
-  `Scatter({data: &Array<(f64, f64)>, style: SeriesStyle}),
-  `Bar({data: &Array<(f64, f64)>, style: SeriesStyle}),
-  `Area({data: &Array<(f64, f64)>, style: SeriesStyle}),
-  `DashedLine({data: &Array<(f64, f64)>, dash: f64, gap: f64, style: SeriesStyle}),
-  `Candlestick({data: &Array<OhlcPoint>, style: CandlestickStyle}),
-  `ErrorBar({data: &Array<ErrorBarPoint>, style: SeriesStyle})
-];
-
 type MeshStyle = {
   show_x_grid: [bool, null],
   show_y_grid: [bool, null],
@@ -50,13 +37,26 @@ type LegendPosition = [
   `MiddleLeft, `MiddleRight, `UpperMiddle, `LowerMiddle
 ];
 
+type OhlcPoint<'a: [f64, datetime]> = {x: 'a, open: f64, high: f64, low: f64, close: f64};
+type ErrorBarPoint<'a: [f64, datetime]> = {x: 'a, min: f64, avg: f64, max: f64};
+
+type Dataset = [
+  `Line({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
+  `Scatter({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
+  `Bar({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
+  `Area({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
+  `DashedLine({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], dash: f64, gap: f64, style: SeriesStyle}),
+  `Candlestick({data: &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>], style: CandlestickStyle}),
+  `ErrorBar({data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>], style: SeriesStyle})
+];
+
 type Chart = {
   datasets: &Array<Dataset>,
   title: &[string, null],
   title_color: &[Color, null],
   x_label: &[string, null],
   y_label: &[string, null],
-  x_range: &[{min: f64, max: f64}, null],
+  x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
   y_range: &[{min: f64, max: f64}, null],
   width: &Length,
   height: &Length,
@@ -73,7 +73,7 @@ val chart: fn(
   ?#title_color: &[Color, null],
   ?#x_label: &[string, null],
   ?#y_label: &[string, null],
-  ?#x_range: &[{min: f64, max: f64}, null],
+  ?#x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
   ?#y_range: &[{min: f64, max: f64}, null],
   ?#width: &Length,
   ?#height: &Length,
@@ -91,7 +91,7 @@ val line: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<(f64, f64)>
+  &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val scatter: fn(
@@ -99,7 +99,7 @@ val scatter: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<(f64, f64)>
+  &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val bar: fn(
@@ -107,7 +107,7 @@ val bar: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<(f64, f64)>
+  &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val area: fn(
@@ -115,7 +115,7 @@ val area: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<(f64, f64)>
+  &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val dashed_line: fn(
@@ -125,7 +125,7 @@ val dashed_line: fn(
   ?#point_size: [f64, null],
   ?#dash: f64,
   ?#gap: f64,
-  &Array<(f64, f64)>
+  &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val candlestick: fn(
@@ -133,7 +133,7 @@ val candlestick: fn(
   ?#loss_color: [Color, null],
   ?#bar_width: [f64, null],
   ?#label: [string, null],
-  &Array<OhlcPoint>
+  &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>]
 ) -> Dataset;
 
 val error_bar: fn(
@@ -141,5 +141,25 @@ val error_bar: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<ErrorBarPoint>
-) -> Dataset
+  &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>]
+) -> Dataset;
+
+val mesh_style: fn(
+  ?#show_x_grid: [bool, null],
+  ?#show_y_grid: [bool, null],
+  ?#grid_color: [Color, null],
+  ?#axis_color: [Color, null],
+  ?#label_color: [Color, null],
+  ?#label_size: [f64, null],
+  ?#x_label_area_size: [f64, null],
+  ?#x_labels: [i64, null],
+  ?#y_label_area_size: [f64, null],
+  ?#y_labels: [i64, null]
+) -> MeshStyle;
+
+val legend_style: fn(
+  ?#background: [Color, null],
+  ?#border: [Color, null],
+  ?#label_color: [Color, null],
+  ?#label_size: [f64, null]
+) -> LegendStyle

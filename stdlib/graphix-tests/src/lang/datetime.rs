@@ -1,8 +1,8 @@
 // Tests for datetime arithmetic
 
-use graphix_package_core::run;
 use anyhow::Result;
 use chrono::prelude::*;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 use std::time::Duration;
 

@@ -1,4 +1,4 @@
-use crate::{env::Env, errf, typ::Type, AbstractTypeRegistry, CAST_ERR_TAG};
+use crate::{env::Env, errf, typ::{RefHist, Type}, AbstractTypeRegistry, CAST_ERR_TAG};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use fxhash::FxHashSet;
@@ -10,7 +10,7 @@ use std::iter;
 use triomphe::Arc;
 
 impl Type {
-    fn check_cast_int(&self, env: &Env, hist: &mut FxHashSet<usize>) -> Result<()> {
+    fn check_cast_int(&self, env: &Env, hist: &mut RefHist<FxHashSet<Option<usize>>>) -> Result<()> {
         match self {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
@@ -39,12 +39,12 @@ impl Type {
                 t.check_cast_int(env, hist)?
             }),
             Type::Ref { .. } => {
+                let id = hist.ref_id(self, env);
                 let t = self.lookup_ref(env)?;
-                let t_addr = (t as *const Type).addr();
-                if hist.contains(&t_addr) {
+                if hist.contains(&id) {
                     Ok(())
                 } else {
-                    hist.insert(t_addr);
+                    hist.insert(id);
                     t.check_cast_int(env, hist)
                 }
             }
@@ -52,7 +52,7 @@ impl Type {
     }
 
     pub fn check_cast(&self, env: &Env) -> Result<()> {
-        self.check_cast_int(env, &mut LPooled::take())
+        self.check_cast_int(env, &mut RefHist::new(LPooled::take()))
     }
 
     fn cast_value_int(
@@ -230,7 +230,10 @@ impl Type {
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
-            Type::Ref { .. } => self.lookup_ref(env)?.cast_value_int(env, hist, v),
+            Type::Ref { .. } => {
+                let t = self.lookup_ref(env)?;
+                t.cast_value_int(env, hist, v)
+            }
             Type::Set(ts) => ts
                 .iter()
                 .find_map(|t| t.cast_value_int(env, hist, v.clone()).ok())
@@ -259,7 +262,7 @@ impl Type {
             Type::Ref { .. } => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
-                    let t_addr = (t as *const Type).addr();
+                    let t_addr = (&t as *const Type).addr();
                     let v_addr = (v as *const Value).addr();
                     !hist.contains(&(t_addr, v_addr)) && {
                         hist.insert((t_addr, v_addr));

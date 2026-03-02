@@ -1,7 +1,7 @@
 // Tests for type system features: type checking, annotations, type variables
 
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const SIMPLE_TYPECHECK: &str = r#"
@@ -224,18 +224,6 @@ const RECTYPES2: &str = r#"
 "#;
 
 run!(rectypes2, RECTYPES2, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-});
-
-const TYPEDEF_TVAR_ERR: &str = r#"
-{
-  type T<'a, 'b> = { foo: 'a, bar: 'b, baz: 'c };
-  0
-}
-"#;
-
-run!(typedef_tvar_err, TYPEDEF_TVAR_ERR, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });

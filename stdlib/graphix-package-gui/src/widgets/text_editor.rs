@@ -31,17 +31,18 @@ impl<X: GXExt> TextEditorW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let [(_, content), (_, disabled), (_, font), (_, height), (_, on_edit), (_, padding), (_, placeholder), (_, size), (_, width)] =
             source.cast_to::<[(ArcStr, u64); 9]>().context("text_editor flds")?;
-        let (content, disabled, font, height, on_edit, padding, placeholder, size, width) = try_join! {
-            gx.compile_ref(content),
-            gx.compile_ref(disabled),
-            gx.compile_ref(font),
-            gx.compile_ref(height),
-            gx.compile_ref(on_edit),
-            gx.compile_ref(padding),
-            gx.compile_ref(placeholder),
-            gx.compile_ref(size),
-            gx.compile_ref(width),
-        }?;
+        let (content, disabled, font, height, on_edit, padding, placeholder, size, width) =
+            try_join! {
+                gx.compile_ref(content),
+                gx.compile_ref(disabled),
+                gx.compile_ref(font),
+                gx.compile_ref(height),
+                gx.compile_ref(on_edit),
+                gx.compile_ref(padding),
+                gx.compile_ref(placeholder),
+                gx.compile_ref(size),
+                gx.compile_ref(width),
+            }?;
         let on_edit_callable = match on_edit.last.as_ref() {
             Some(v) => Some(
                 gx.compile_callable(v.clone())
@@ -81,11 +82,8 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        changed |= self
-            .disabled
-            .update(id, v)
-            .context("text_editor update disabled")?
-            .is_some();
+        changed |=
+            self.disabled.update(id, v).context("text_editor update disabled")?.is_some();
         if let Some(new_text) =
             self.content_ref.update(id, v).context("text_editor update content")?
         {

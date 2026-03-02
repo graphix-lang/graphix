@@ -555,9 +555,7 @@ impl GraphixPM {
         let dep_names: BTreeSet<String> =
             deps.iter().map(|(k, _)| k.to_string()).collect();
         // Clean up [features] that reference removed graphix-package-* deps
-        if let Some(features) =
-            doc.get_mut("features").and_then(|f| f.as_table_mut())
-        {
+        if let Some(features) = doc.get_mut("features").and_then(|f| f.as_table_mut()) {
             let mut empty_features = Vec::new();
             for (feat, val) in features.iter_mut() {
                 if let Some(arr) = val.as_array_mut() {

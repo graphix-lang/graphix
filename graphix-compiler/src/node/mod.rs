@@ -62,8 +62,8 @@ macro_rules! deref_typ {
                     $($pat => break $body),+,
                     Some(rt @ Type::Ref { .. }) => {
                         let rt = rt.lookup_ref(&$ctx.env)?;
-                        if hist.insert(rt as *const _ as usize) {
-                            typ = Some(rt.clone());
+                        if hist.insert(&rt as *const _ as usize) {
+                            typ = Some(rt);
                         } else {
                             $crate::format_with_flags(PrintFlag::DerefTVars, || {
                                 anyhow::bail!("expected {} not {rt}", $name)

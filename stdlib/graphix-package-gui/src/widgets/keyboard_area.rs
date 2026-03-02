@@ -1,4 +1,6 @@
-use super::{compile, iced_keyboard_area::KeyboardArea, GuiW, GuiWidget, IcedElement, Message};
+use super::{
+    compile, iced_keyboard_area::KeyboardArea, GuiW, GuiWidget, IcedElement, Message,
+};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -28,9 +30,9 @@ impl<X: GXExt> KeyboardAreaW<X> {
         }?;
         let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
             None => Box::new(super::EmptyW),
-            Some(v) => compile(gx.clone(), v.clone())
-                .await
-                .context("keyboard_area child")?,
+            Some(v) => {
+                compile(gx.clone(), v.clone()).await.context("keyboard_area child")?
+            }
         };
         let on_key_press_callable =
             compile_callable!(gx, on_key_press, "keyboard_area on_key_press");
@@ -98,8 +100,24 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
             changed = true;
         }
         changed |= self.child.handle_update(rt, id, v)?;
-        update_callable!(self, rt, id, v, on_key_press, on_key_press_callable, "keyboard_area on_key_press");
-        update_callable!(self, rt, id, v, on_key_release, on_key_release_callable, "keyboard_area on_key_release");
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_key_press,
+            on_key_press_callable,
+            "keyboard_area on_key_press"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_key_release,
+            on_key_release_callable,
+            "keyboard_area on_key_release"
+        );
         Ok(changed)
     }
 
