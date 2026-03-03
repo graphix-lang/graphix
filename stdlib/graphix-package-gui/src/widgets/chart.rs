@@ -14,10 +14,10 @@ use log::error;
 use netidx::publisher::{FromValue, Value};
 use plotters::{
     chart::ChartBuilder,
-    element::{CandleStick, ErrorBar, PathElement},
+    element::{CandleStick, ErrorBar, PathElement, Pie},
     prelude::{
-        AreaSeries, Circle, DashedLineSeries, IntoDrawingArea, LineSeries,
-        SeriesLabelPosition,
+        AreaSeries, Circle, DashedLineSeries, Histogram, IntoDrawingArea,
+        IntoSegmentedCoord, LineSeries, SeriesLabelPosition, SurfaceSeries,
     },
     style::{
         Color as PlotColor, IntoFont, RGBColor, ShapeStyle, TextStyle, BLACK, WHITE,
@@ -43,8 +43,10 @@ impl FromValue for XYData {
         if a.is_empty() {
             return Ok(Self::Numeric(LPooled::take()));
         }
-        // Try datetime first (more specific), fall back to numeric
-        if a[0].clone().cast_to::<(DateTime<Utc>, f64)>().is_ok() {
+        // Check first element's x value variant directly.
+        // Don't use cast_to: netidx casts any number to DateTime (as Unix timestamp).
+        let is_datetime = matches!(&a[0], Value::Array(tup) if !tup.is_empty() && matches!(&tup[0], Value::DateTime(_)));
+        if is_datetime {
             Ok(Self::DateTime(
                 a.iter()
                     .map(|v| v.clone().cast_to::<(DateTime<Utc>, f64)>())
@@ -57,6 +59,23 @@ impl FromValue for XYData {
                     .collect::<Result<_>>()?,
             ))
         }
+    }
+}
+
+/// Bar chart data: categorical (String) x-axis, numeric y-axis.
+pub(crate) struct BarData(LPooled<Vec<(String, f64)>>);
+
+impl FromValue for BarData {
+    fn from_value(v: Value) -> Result<Self> {
+        let a = match v {
+            Value::Array(a) => a,
+            _ => bail!("chart bar data: expected array"),
+        };
+        Ok(Self(
+            a.iter()
+                .map(|v| v.clone().cast_to::<(String, f64)>())
+                .collect::<Result<_>>()?,
+        ))
     }
 }
 
@@ -119,7 +138,7 @@ impl FromValue for OHLCData {
         let first_fields = a[0].clone().cast_to::<[(ArcStr, Value); 5]>()?;
         // Fields are sorted alphabetically: close, high, low, open, x
         let x_val = &first_fields[4].1;
-        if x_val.clone().cast_to::<DateTime<Utc>>().is_ok() {
+        if matches!(x_val, Value::DateTime(_)) {
             Ok(Self::DateTime(
                 a.iter()
                     .map(|v| TimeOHLCPoint::from_value(v.clone()))
@@ -190,7 +209,7 @@ impl FromValue for EBData {
         let first_fields = a[0].clone().cast_to::<[(ArcStr, Value); 4]>()?;
         // Fields sorted alphabetically: avg, max, min, x
         let x_val = &first_fields[3].1;
-        if x_val.clone().cast_to::<DateTime<Utc>>().is_ok() {
+        if matches!(x_val, Value::DateTime(_)) {
             Ok(Self::DateTime(
                 a.iter()
                     .map(|v| TimeEBPoint::from_value(v.clone()))
@@ -203,6 +222,48 @@ impl FromValue for EBData {
                     .collect::<Result<_>>()?,
             ))
         }
+    }
+}
+
+/// 3D point data: Array<(f64, f64, f64)>.
+pub(crate) struct XYZData(LPooled<Vec<(f64, f64, f64)>>);
+
+impl FromValue for XYZData {
+    fn from_value(v: Value) -> Result<Self> {
+        let a = match v {
+            Value::Array(a) => a,
+            _ => bail!("chart xyz data: expected array"),
+        };
+        Ok(Self(
+            a.iter()
+                .map(|v| v.clone().cast_to::<(f64, f64, f64)>())
+                .collect::<Result<_>>()?,
+        ))
+    }
+}
+
+/// Surface data: Array<Array<(f64, f64, f64)>> — a grid of 3D points.
+pub(crate) struct SurfaceData(Vec<Vec<(f64, f64, f64)>>);
+
+impl FromValue for SurfaceData {
+    fn from_value(v: Value) -> Result<Self> {
+        let a = match v {
+            Value::Array(a) => a,
+            _ => bail!("chart surface data: expected array of arrays"),
+        };
+        let mut rows = Vec::with_capacity(a.len());
+        for row_v in a.iter() {
+            let row_a = match row_v {
+                Value::Array(a) => a,
+                _ => bail!("chart surface data: expected inner array"),
+            };
+            let row: Vec<(f64, f64, f64)> = row_a
+                .iter()
+                .map(|v| v.clone().cast_to::<(f64, f64, f64)>())
+                .collect::<Result<_>>()?;
+            rows.push(row);
+        }
+        Ok(Self(rows))
     }
 }
 
@@ -244,6 +305,36 @@ impl FromValue for SeriesStyleV {
     }
 }
 
+struct BarStyleV {
+    color: Option<iced_core::Color>,
+    label: Option<String>,
+    margin: Option<f64>,
+}
+
+impl FromValue for BarStyleV {
+    fn from_value(v: Value) -> Result<Self> {
+        let [(_, color), (_, label), (_, margin)] =
+            v.cast_to::<[(ArcStr, Value); 3]>()?;
+        Ok(Self {
+            color: if color == Value::Null {
+                None
+            } else {
+                Some(ColorV::from_value(color)?.0)
+            },
+            label: if label == Value::Null {
+                None
+            } else {
+                Some(label.cast_to::<String>()?)
+            },
+            margin: if margin == Value::Null {
+                None
+            } else {
+                Some(margin.cast_to::<f64>()?)
+            },
+        })
+    }
+}
+
 struct CandlestickStyleV {
     gain_color: Option<iced_core::Color>,
     loss_color: Option<iced_core::Color>,
@@ -270,6 +361,88 @@ impl FromValue for CandlestickStyleV {
                 None
             } else {
                 Some(bar_width.cast_to::<f64>()?)
+            },
+            label: if label == Value::Null {
+                None
+            } else {
+                Some(label.cast_to::<String>()?)
+            },
+        })
+    }
+}
+
+struct PieStyleV {
+    colors: Option<Vec<iced_core::Color>>,
+    donut: Option<f64>,
+    label_offset: Option<f64>,
+    show_percentages: Option<bool>,
+    start_angle: Option<f64>,
+}
+
+impl FromValue for PieStyleV {
+    fn from_value(v: Value) -> Result<Self> {
+        // Fields sorted alphabetically: colors, donut, label_offset, show_percentages, start_angle
+        let [(_, colors), (_, donut), (_, label_offset), (_, show_percentages), (_, start_angle)] =
+            v.cast_to::<[(ArcStr, Value); 5]>()?;
+        Ok(Self {
+            colors: if colors == Value::Null {
+                None
+            } else {
+                let arr = match colors {
+                    Value::Array(a) => a,
+                    _ => bail!("pie colors: expected array"),
+                };
+                Some(
+                    arr.iter()
+                        .map(|v| Ok(ColorV::from_value(v.clone())?.0))
+                        .collect::<Result<_>>()?,
+                )
+            },
+            donut: if donut == Value::Null {
+                None
+            } else {
+                Some(donut.cast_to::<f64>()?)
+            },
+            label_offset: if label_offset == Value::Null {
+                None
+            } else {
+                Some(label_offset.cast_to::<f64>()?)
+            },
+            show_percentages: if show_percentages == Value::Null {
+                None
+            } else {
+                Some(show_percentages.cast_to::<bool>()?)
+            },
+            start_angle: if start_angle == Value::Null {
+                None
+            } else {
+                Some(start_angle.cast_to::<f64>()?)
+            },
+        })
+    }
+}
+
+struct SurfaceStyleV {
+    color: Option<iced_core::Color>,
+    color_by_z: Option<bool>,
+    label: Option<String>,
+}
+
+impl FromValue for SurfaceStyleV {
+    fn from_value(v: Value) -> Result<Self> {
+        // Fields sorted alphabetically: color, color_by_z, label
+        let [(_, color), (_, color_by_z), (_, label)] =
+            v.cast_to::<[(ArcStr, Value); 3]>()?;
+        Ok(Self {
+            color: if color == Value::Null {
+                None
+            } else {
+                Some(ColorV::from_value(color)?.0)
+            },
+            color_by_z: if color_by_z == Value::Null {
+                None
+            } else {
+                Some(color_by_z.cast_to::<bool>()?)
             },
             label: if label == Value::Null {
                 None
@@ -480,6 +653,38 @@ impl FromValue for OptColor {
     }
 }
 
+// ── Projection3D ───────────────────────────────────────────────────
+
+struct Projection3DV {
+    pitch: Option<f64>,
+    scale: Option<f64>,
+    yaw: Option<f64>,
+}
+
+impl FromValue for Projection3DV {
+    fn from_value(v: Value) -> Result<Self> {
+        // Fields sorted alphabetically: pitch, scale, yaw
+        let [(_, pitch), (_, scale), (_, yaw)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
+        Ok(Self {
+            pitch: if pitch == Value::Null { None } else { Some(pitch.cast_to::<f64>()?) },
+            scale: if scale == Value::Null { None } else { Some(scale.cast_to::<f64>()?) },
+            yaw: if yaw == Value::Null { None } else { Some(yaw.cast_to::<f64>()?) },
+        })
+    }
+}
+
+struct OptProjection3D(Option<Projection3DV>);
+
+impl FromValue for OptProjection3D {
+    fn from_value(v: Value) -> Result<Self> {
+        if v == Value::Null {
+            Ok(Self(None))
+        } else {
+            Ok(Self(Some(Projection3DV::from_value(v)?)))
+        }
+    }
+}
+
 // ── Axis range ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -515,7 +720,6 @@ impl FromValue for OptAxisRange {
 enum XYKind {
     Line,
     Scatter,
-    Bar,
     Area,
 }
 
@@ -523,8 +727,13 @@ enum XYKind {
 enum DatasetEntry<X: GXExt> {
     XY { kind: XYKind, data: TRef<X, XYData>, style: SeriesStyleV },
     DashedLine { data: TRef<X, XYData>, dash: f64, gap: f64, style: SeriesStyleV },
+    Bar { data: TRef<X, BarData>, style: BarStyleV },
     Candlestick { data: TRef<X, OHLCData>, style: CandlestickStyleV },
     ErrorBar { data: TRef<X, EBData>, style: SeriesStyleV },
+    Pie { data: TRef<X, BarData>, style: PieStyleV },
+    Scatter3D { data: TRef<X, XYZData>, style: SeriesStyleV },
+    Line3D { data: TRef<X, XYZData>, style: SeriesStyleV },
+    Surface { data: TRef<X, SurfaceData>, style: SurfaceStyleV },
 }
 
 impl<X: GXExt> DatasetEntry<X> {
@@ -532,8 +741,13 @@ impl<X: GXExt> DatasetEntry<X> {
         match self {
             Self::XY { style, .. }
             | Self::DashedLine { style, .. }
-            | Self::ErrorBar { style, .. } => style.label.as_deref(),
+            | Self::ErrorBar { style, .. }
+            | Self::Scatter3D { style, .. }
+            | Self::Line3D { style, .. } => style.label.as_deref(),
+            Self::Bar { style, .. } => style.label.as_deref(),
             Self::Candlestick { style, .. } => style.label.as_deref(),
+            Self::Pie { .. } => None,
+            Self::Surface { style, .. } => style.label.as_deref(),
         }
     }
 }
@@ -542,8 +756,13 @@ impl<X: GXExt> DatasetEntry<X> {
 enum DatasetMeta {
     XY { kind: XYKind, data_id: u64, style: SeriesStyleV },
     DashedLine { data_id: u64, dash: f64, gap: f64, style: SeriesStyleV },
+    Bar { data_id: u64, style: BarStyleV },
     Candlestick { data_id: u64, style: CandlestickStyleV },
     ErrorBar { data_id: u64, style: SeriesStyleV },
+    Pie { data_id: u64, style: PieStyleV },
+    Scatter3D { data_id: u64, style: SeriesStyleV },
+    Line3D { data_id: u64, style: SeriesStyleV },
+    Surface { data_id: u64, style: SurfaceStyleV },
 }
 
 impl FromValue for DatasetMeta {
@@ -565,8 +784,8 @@ impl FromValue for DatasetMeta {
             "Bar" => {
                 let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
                 let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::XY { kind: XYKind::Bar, data_id, style })
+                let style = BarStyleV::from_value(style)?;
+                Ok(Self::Bar { data_id, style })
             }
             "Area" => {
                 let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
@@ -595,6 +814,30 @@ impl FromValue for DatasetMeta {
                 let style = SeriesStyleV::from_value(style)?;
                 Ok(Self::ErrorBar { data_id, style })
             }
+            "Pie" => {
+                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
+                let data_id = data.cast_to::<u64>()?;
+                let style = PieStyleV::from_value(style)?;
+                Ok(Self::Pie { data_id, style })
+            }
+            "Scatter3D" => {
+                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
+                let data_id = data.cast_to::<u64>()?;
+                let style = SeriesStyleV::from_value(style)?;
+                Ok(Self::Scatter3D { data_id, style })
+            }
+            "Line3D" => {
+                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
+                let data_id = data.cast_to::<u64>()?;
+                let style = SeriesStyleV::from_value(style)?;
+                Ok(Self::Line3D { data_id, style })
+            }
+            "Surface" => {
+                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
+                let data_id = data.cast_to::<u64>()?;
+                let style = SurfaceStyleV::from_value(style)?;
+                Ok(Self::Surface { data_id, style })
+            }
             s => bail!("invalid dataset variant: {s}"),
         }
     }
@@ -610,6 +853,7 @@ async fn compile_datasets<X: GXExt>(
         .into_iter()
         .map(DatasetMeta::from_value)
         .collect::<Result<_>>()?;
+    // CR estokes: use an LPooled<Vec> here
     let mut entries = Vec::with_capacity(metas.len());
     for meta in metas {
         match meta {
@@ -623,6 +867,11 @@ async fn compile_datasets<X: GXExt>(
                 let data = TRef::new(data_ref).context("chart dashed data")?;
                 entries.push(DatasetEntry::DashedLine { data, dash, gap, style });
             }
+            DatasetMeta::Bar { data_id, style } => {
+                let data_ref = gx.compile_ref(data_id).await?;
+                let data = TRef::new(data_ref).context("chart bar data")?;
+                entries.push(DatasetEntry::Bar { data, style });
+            }
             DatasetMeta::Candlestick { data_id, style } => {
                 let data_ref = gx.compile_ref(data_id).await?;
                 let data = TRef::new(data_ref).context("chart ohlc data")?;
@@ -632,6 +881,26 @@ async fn compile_datasets<X: GXExt>(
                 let data_ref = gx.compile_ref(data_id).await?;
                 let data = TRef::new(data_ref).context("chart errorbar data")?;
                 entries.push(DatasetEntry::ErrorBar { data, style });
+            }
+            DatasetMeta::Pie { data_id, style } => {
+                let data_ref = gx.compile_ref(data_id).await?;
+                let data = TRef::new(data_ref).context("chart pie data")?;
+                entries.push(DatasetEntry::Pie { data, style });
+            }
+            DatasetMeta::Scatter3D { data_id, style } => {
+                let data_ref = gx.compile_ref(data_id).await?;
+                let data = TRef::new(data_ref).context("chart scatter3d data")?;
+                entries.push(DatasetEntry::Scatter3D { data, style });
+            }
+            DatasetMeta::Line3D { data_id, style } => {
+                let data_ref = gx.compile_ref(data_id).await?;
+                let data = TRef::new(data_ref).context("chart line3d data")?;
+                entries.push(DatasetEntry::Line3D { data, style });
+            }
+            DatasetMeta::Surface { data_id, style } => {
+                let data_ref = gx.compile_ref(data_id).await?;
+                let data = TRef::new(data_ref).context("chart surface data")?;
+                entries.push(DatasetEntry::Surface { data, style });
             }
         }
     }
@@ -647,8 +916,11 @@ pub(crate) struct ChartW<X: GXExt> {
     title: TRef<X, Option<String>>,
     x_label: TRef<X, Option<String>>,
     y_label: TRef<X, Option<String>>,
+    z_label: TRef<X, Option<String>>,
     x_range: TRef<X, OptXAxisRange>,
     y_range: TRef<X, OptAxisRange>,
+    z_range: TRef<X, OptAxisRange>,
+    projection: TRef<X, OptProjection3D>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
     background: TRef<X, OptColor>,
@@ -663,8 +935,8 @@ pub(crate) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, background), (_, datasets), (_, height), (_, legend_position), (_, legend_style), (_, margin), (_, mesh), (_, title), (_, title_color), (_, title_size), (_, width), (_, x_label), (_, x_range), (_, y_label), (_, y_range)] =
-            source.cast_to::<[(ArcStr, u64); 15]>().context("chart flds")?;
+        let [(_, background), (_, datasets), (_, height), (_, legend_position), (_, legend_style), (_, margin), (_, mesh), (_, projection), (_, title), (_, title_color), (_, title_size), (_, width), (_, x_label), (_, x_range), (_, y_label), (_, y_range), (_, z_label), (_, z_range)] =
+            source.cast_to::<[(ArcStr, u64); 18]>().context("chart flds")?;
         let (
             background_ref,
             datasets_ref,
@@ -673,6 +945,7 @@ impl<X: GXExt> ChartW<X> {
             legend_style_ref,
             margin_ref,
             mesh_ref,
+            projection_ref,
             title_ref,
             title_color_ref,
             title_size_ref,
@@ -681,6 +954,8 @@ impl<X: GXExt> ChartW<X> {
             x_range_ref,
             y_label_ref,
             y_range_ref,
+            z_label_ref,
+            z_range_ref,
         ) = try_join! {
             gx.compile_ref(background),
             gx.compile_ref(datasets),
@@ -689,6 +964,7 @@ impl<X: GXExt> ChartW<X> {
             gx.compile_ref(legend_style),
             gx.compile_ref(margin),
             gx.compile_ref(mesh),
+            gx.compile_ref(projection),
             gx.compile_ref(title),
             gx.compile_ref(title_color),
             gx.compile_ref(title_size),
@@ -697,6 +973,8 @@ impl<X: GXExt> ChartW<X> {
             gx.compile_ref(x_range),
             gx.compile_ref(y_label),
             gx.compile_ref(y_range),
+            gx.compile_ref(z_label),
+            gx.compile_ref(z_range),
         }?;
         let entries = match datasets_ref.last.as_ref() {
             Some(v) => compile_datasets(&gx, v.clone()).await?,
@@ -709,8 +987,11 @@ impl<X: GXExt> ChartW<X> {
             title: TRef::new(title_ref).context("chart tref title")?,
             x_label: TRef::new(x_label_ref).context("chart tref x_label")?,
             y_label: TRef::new(y_label_ref).context("chart tref y_label")?,
+            z_label: TRef::new(z_label_ref).context("chart tref z_label")?,
             x_range: TRef::new(x_range_ref).context("chart tref x_range")?,
             y_range: TRef::new(y_range_ref).context("chart tref y_range")?,
+            z_range: TRef::new(z_range_ref).context("chart tref z_range")?,
+            projection: TRef::new(projection_ref).context("chart tref projection")?,
             width: TRef::new(width_ref).context("chart tref width")?,
             height: TRef::new(height_ref).context("chart tref height")?,
             background: TRef::new(background_ref).context("chart tref background")?,
@@ -748,11 +1029,24 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
                 DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
                     data.update(id, v).context("chart update xy data")?.is_some()
                 }
+                DatasetEntry::Bar { data, .. } => {
+                    data.update(id, v).context("chart update bar data")?.is_some()
+                }
                 DatasetEntry::Candlestick { data, .. } => {
                     data.update(id, v).context("chart update ohlc data")?.is_some()
                 }
                 DatasetEntry::ErrorBar { data, .. } => {
                     data.update(id, v).context("chart update errorbar data")?.is_some()
+                }
+                DatasetEntry::Pie { data, .. } => {
+                    data.update(id, v).context("chart update pie data")?.is_some()
+                }
+                DatasetEntry::Scatter3D { data, .. }
+                | DatasetEntry::Line3D { data, .. } => {
+                    data.update(id, v).context("chart update 3d data")?.is_some()
+                }
+                DatasetEntry::Surface { data, .. } => {
+                    data.update(id, v).context("chart update surface data")?.is_some()
                 }
             };
             if updated {
@@ -776,8 +1070,11 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
         up!(title);
         up!(x_label);
         up!(y_label);
+        up!(z_label);
         up!(x_range);
         up!(y_range);
+        up!(z_range);
+        up!(projection);
         up!(background);
         up!(margin);
         up!(title_color);
@@ -829,10 +1126,92 @@ fn iced_to_plotters(c: iced_core::Color) -> RGBColor {
 enum ChartMode {
     Numeric,
     TimeSeries,
+    Bar,
+    Pie,
+    ThreeD,
     Empty,
 }
 
 fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
+    let mut has_bar = false;
+    let mut has_pie = false;
+    let mut has_3d = false;
+    let mut has_other = false;
+    for ds in datasets {
+        match ds {
+            DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    match d {
+                        XYData::DateTime(v) if !v.is_empty() => has_other = true,
+                        XYData::Numeric(v) if !v.is_empty() => has_other = true,
+                        _ => {}
+                    }
+                }
+            }
+            DatasetEntry::Bar { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    if !d.0.is_empty() {
+                        has_bar = true;
+                    }
+                }
+            }
+            DatasetEntry::Candlestick { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    match d {
+                        OHLCData::DateTime(v) if !v.is_empty() => has_other = true,
+                        OHLCData::Numeric(v) if !v.is_empty() => has_other = true,
+                        _ => {}
+                    }
+                }
+            }
+            DatasetEntry::ErrorBar { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    match d {
+                        EBData::DateTime(v) if !v.is_empty() => has_other = true,
+                        EBData::Numeric(v) if !v.is_empty() => has_other = true,
+                        _ => {}
+                    }
+                }
+            }
+            DatasetEntry::Pie { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    if !d.0.is_empty() {
+                        has_pie = true;
+                    }
+                }
+            }
+            DatasetEntry::Scatter3D { data, .. } | DatasetEntry::Line3D { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    if !d.0.is_empty() {
+                        has_3d = true;
+                    }
+                }
+            }
+            DatasetEntry::Surface { data, .. } => {
+                if let Some(d) = data.t.as_ref() {
+                    if !d.0.is_empty() {
+                        has_3d = true;
+                    }
+                }
+            }
+        }
+    }
+    let mode_count =
+        has_bar as u8 + has_pie as u8 + has_3d as u8 + has_other as u8;
+    if mode_count > 1 {
+        error!("chart: cannot mix bar, pie, 3D, and XY/timeseries datasets");
+        return ChartMode::Empty;
+    }
+    if has_pie {
+        return ChartMode::Pie;
+    }
+    if has_bar {
+        return ChartMode::Bar;
+    }
+    if has_3d {
+        return ChartMode::ThreeD;
+    }
+    // Determine numeric vs timeseries from first non-empty dataset
     for ds in datasets {
         match ds {
             DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
@@ -846,6 +1225,11 @@ fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
                     }
                 }
             }
+            DatasetEntry::Bar { .. }
+            | DatasetEntry::Pie { .. }
+            | DatasetEntry::Scatter3D { .. }
+            | DatasetEntry::Line3D { .. }
+            | DatasetEntry::Surface { .. } => {}
             DatasetEntry::Candlestick { data, .. } => {
                 if let Some(d) = data.t.as_ref() {
                     match d {
@@ -910,6 +1294,11 @@ fn compute_ranges<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ((f64, f64), (f64, 
                     }
                 }
             }
+            DatasetEntry::Bar { .. }
+            | DatasetEntry::Pie { .. }
+            | DatasetEntry::Scatter3D { .. }
+            | DatasetEntry::Line3D { .. }
+            | DatasetEntry::Surface { .. } => {}
             DatasetEntry::Candlestick { data, .. } => {
                 if let Some(OHLCData::Numeric(pts)) = data.t.as_ref() {
                     for pt in pts.iter() {
@@ -971,6 +1360,11 @@ fn compute_time_ranges<X: GXExt>(
                     }
                 }
             }
+            DatasetEntry::Bar { .. }
+            | DatasetEntry::Pie { .. }
+            | DatasetEntry::Scatter3D { .. }
+            | DatasetEntry::Line3D { .. }
+            | DatasetEntry::Surface { .. } => {}
             DatasetEntry::Candlestick { data, .. } => {
                 if let Some(OHLCData::DateTime(pts)) = data.t.as_ref() {
                     for pt in pts.iter() {
@@ -993,6 +1387,54 @@ fn compute_time_ranges<X: GXExt>(
     (pad_time_range(x_min, x_max), pad_range(y_min, y_max))
 }
 
+/// Compute 3D axis ranges across all 3D dataset entries.
+fn compute_3d_ranges<X: GXExt>(
+    datasets: &[DatasetEntry<X>],
+) -> ((f64, f64), (f64, f64), (f64, f64)) {
+    let mut x_min = f64::INFINITY;
+    let mut x_max = f64::NEG_INFINITY;
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+    let mut z_min = f64::INFINITY;
+    let mut z_max = f64::NEG_INFINITY;
+
+    macro_rules! extend3 {
+        ($x:expr, $y:expr, $z:expr) => {
+            if $x < x_min { x_min = $x; }
+            if $x > x_max { x_max = $x; }
+            if $y < y_min { y_min = $y; }
+            if $y > y_max { y_max = $y; }
+            if $z < z_min { z_min = $z; }
+            if $z > z_max { z_max = $z; }
+        };
+    }
+
+    for ds in datasets {
+        match ds {
+            DatasetEntry::Scatter3D { data, .. }
+            | DatasetEntry::Line3D { data, .. } => {
+                if let Some(pts) = data.t.as_ref() {
+                    for &(x, y, z) in pts.0.iter() {
+                        extend3!(x, y, z);
+                    }
+                }
+            }
+            DatasetEntry::Surface { data, .. } => {
+                if let Some(grid) = data.t.as_ref() {
+                    for row in grid.0.iter() {
+                        for &(x, y, z) in row.iter() {
+                            extend3!(x, y, z);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (pad_range(x_min, x_max), pad_range(y_min, y_max), pad_range(z_min, z_max))
+}
+
 pub(crate) fn pad_range(min: f64, max: f64) -> (f64, f64) {
     if min > max {
         return (-1.0, 1.0);
@@ -1000,6 +1442,22 @@ pub(crate) fn pad_range(min: f64, max: f64) -> (f64, f64) {
     let (min, max) = if min == max { (min - 1.0, max + 1.0) } else { (min, max) };
     let pad = (max - min) * 0.05;
     (min - pad, max + pad)
+}
+
+/// Estimate the number of decimal places needed for tick labels
+/// given the axis range. Plotters generates ~10 ticks, so the step
+/// is roughly range/10. We need enough precision to distinguish ticks.
+fn tick_precision(range: f64) -> usize {
+    let step = range / 10.0;
+    if step >= 1.0 {
+        1
+    } else if step >= 0.1 {
+        2
+    } else if step >= 0.01 {
+        3
+    } else {
+        4
+    }
 }
 
 fn pad_time_range(
@@ -1105,30 +1563,6 @@ macro_rules! draw_chart_body {
                                 Err(e) => error!("chart draw scatter: {e:?}"),
                             }
                         }
-                        XYKind::Bar => {
-                            // Bar charts draw thin rectangles from y=0 to y.
-                            // Width is handled via line stroke since x may be
-                            // DateTime where arithmetic isn't straightforward.
-                            let series = pts.iter().map(|&(x, y)| {
-                                plotters::element::Rectangle::new(
-                                    [(x, 0.0_f64), (x, y)],
-                                    fill_style,
-                                )
-                            });
-                            match $chart.draw_series(series) {
-                                Ok(ann) => {
-                                    if let Some(l) = label {
-                                        ann.label(l).legend(move |(x, y)| {
-                                            plotters::element::Rectangle::new(
-                                                [(x, y - 5), (x + 20, y + 5)],
-                                                fill_style,
-                                            )
-                                        });
-                                    }
-                                }
-                                Err(e) => error!("chart draw bar: {e:?}"),
-                            }
-                        }
                         XYKind::Area => {
                             let area_fill = color.mix(0.3);
                             let series = AreaSeries::new(
@@ -1184,6 +1618,13 @@ macro_rules! draw_chart_body {
                         Err(e) => error!("chart draw dashed: {e:?}"),
                     }
                 }
+
+                // These dataset types are rendered in their own ChartMode paths
+                DatasetEntry::Bar { .. }
+                | DatasetEntry::Pie { .. }
+                | DatasetEntry::Scatter3D { .. }
+                | DatasetEntry::Line3D { .. }
+                | DatasetEntry::Surface { .. } => {}
 
                 DatasetEntry::Candlestick { data, style } => {
                     let gain =
@@ -1424,8 +1865,9 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
 
                     // Compute label areas
                     let (_, tick_h) = estimate_text("0", label_sz as f64);
-                    let y_min_s = format!("{y_min}");
-                    let y_max_s = format!("{y_max}");
+                    let prec = tick_precision(y_max - y_min);
+                    let y_min_s = format!("{y_min:.prec$}");
+                    let y_max_s = format!("{y_max:.prec$}");
                     let widest =
                         if y_min_s.len() > y_max_s.len() { &y_min_s } else { &y_max_s };
                     let (tick_w, _) = estimate_text(widest, label_sz as f64);
@@ -1474,8 +1916,9 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
 
                     // Compute label areas — datetime ticks are wider
                     let (_, tick_h) = estimate_text("0", label_sz as f64);
-                    let y_min_s = format!("{y_min}");
-                    let y_max_s = format!("{y_max}");
+                    let prec = tick_precision(y_max - y_min);
+                    let y_min_s = format!("{y_min:.prec$}");
+                    let y_max_s = format!("{y_max:.prec$}");
                     let widest =
                         if y_min_s.len() > y_max_s.len() { &y_min_s } else { &y_max_s };
                     let (tick_w, _) = estimate_text(widest, label_sz as f64);
@@ -1510,6 +1953,565 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
                     );
                 }
 
+                ChartMode::Bar => {
+                    // Collect unique categories (preserving first-appearance order)
+                    // and compute y-range across all bar datasets.
+                    let mut categories: Vec<String> = Vec::new();
+                    let mut y_min = f64::INFINITY;
+                    let mut y_max = f64::NEG_INFINITY;
+                    for ds in self.datasets.iter() {
+                        if let DatasetEntry::Bar { data, .. } = ds {
+                            if let Some(bd) = data.t.as_ref() {
+                                for (cat, val) in bd.0.iter() {
+                                    if !categories.iter().any(|c| c == cat) {
+                                        categories.push(cat.clone());
+                                    }
+                                    if *val < y_min {
+                                        y_min = *val;
+                                    }
+                                    if *val > y_max {
+                                        y_max = *val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if categories.is_empty() {
+                        return;
+                    }
+                    // Extend y-range to include 0 (bars should start from 0)
+                    if y_min > 0.0 {
+                        y_min = 0.0;
+                    }
+                    if y_max < 0.0 {
+                        y_max = 0.0;
+                    }
+                    let (y_min, y_max) = match y_range_opt {
+                        Some(r) => (r.min, r.max),
+                        None => pad_range(y_min, y_max),
+                    };
+
+                    // Compute label areas
+                    let (_, tick_h) = estimate_text("0", label_sz as f64);
+                    let prec = tick_precision(y_max - y_min);
+                    let y_min_s = format!("{y_min:.prec$}");
+                    let y_max_s = format!("{y_max:.prec$}");
+                    let widest = if y_min_s.len() > y_max_s.len() {
+                        &y_min_s
+                    } else {
+                        &y_max_s
+                    };
+                    let (tick_w, _) = estimate_text(widest, label_sz as f64);
+                    let auto_y_area =
+                        if y_label.is_some() { tick_w + tick_h + 15 } else { tick_w + 8 };
+                    let auto_x_area =
+                        if x_label.is_some() { tick_h * 2 + 15 } else { tick_h + 8 };
+                    let x_area = mesh_style
+                        .and_then(|ms| ms.x_label_area_size)
+                        .map(|s| s as u32)
+                        .unwrap_or(auto_x_area);
+                    let y_area = mesh_style
+                        .and_then(|ms| ms.y_label_area_size)
+                        .map(|s| s as u32)
+                        .unwrap_or(auto_y_area);
+                    builder.x_label_area_size(x_area);
+                    builder.y_label_area_size(y_area);
+
+                    let mut chart = match builder.build_cartesian_2d(
+                        categories.as_slice().into_segmented(),
+                        y_min..y_max,
+                    ) {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    configure_mesh!(chart, x_label, y_label, mesh_style);
+
+                    // Draw each bar dataset
+                    for (i, ds) in self.datasets.iter().enumerate() {
+                        if let DatasetEntry::Bar { data, style } = ds {
+                            if let Some(bd) = data.t.as_ref() {
+                                let color = style
+                                    .color
+                                    .map(iced_to_plotters)
+                                    .unwrap_or(PALETTE[i % PALETTE.len()]);
+                                let fill_style = ShapeStyle::from(color).filled();
+                                let margin_px =
+                                    style.margin.unwrap_or(5.0) as u32;
+                                let hist = Histogram::vertical(&chart)
+                                    .style(fill_style)
+                                    .margin(margin_px)
+                                    .data(
+                                        bd.0.iter().map(|(cat, val)| (cat, *val)),
+                                    );
+                                match chart.draw_series(hist) {
+                                    Ok(ann) => {
+                                        if let Some(l) = style.label.as_deref() {
+                                            ann.label(l).legend(move |(x, y)| {
+                                                plotters::element::Rectangle::new(
+                                                    [(x, y - 5), (x + 20, y + 5)],
+                                                    fill_style,
+                                                )
+                                            });
+                                        }
+                                    }
+                                    Err(e) => error!("chart draw bar: {e:?}"),
+                                }
+                            }
+                        }
+                    }
+
+                    // Legend
+                    let has_labels =
+                        self.datasets.iter().any(|ds| ds.label().is_some());
+                    if has_labels {
+                        let legend_pos = self
+                            .legend_position
+                            .t
+                            .as_ref()
+                            .and_then(|o| o.0.as_ref())
+                            .map(|p| p.0.clone())
+                            .unwrap_or(SeriesLabelPosition::UpperLeft);
+                        let ls =
+                            self.legend_style.t.as_ref().and_then(|o| o.0.as_ref());
+                        let legend_bg = ls
+                            .and_then(|s| s.background)
+                            .map(iced_to_plotters)
+                            .unwrap_or(WHITE);
+                        let legend_border = ls
+                            .and_then(|s| s.border)
+                            .map(iced_to_plotters)
+                            .unwrap_or(BLACK);
+                        let legend_font_sz =
+                            ls.and_then(|s| s.label_size).unwrap_or(label_sz);
+                        let mut labels = chart.configure_series_labels();
+                        labels.position(legend_pos);
+                        labels.margin(15);
+                        labels.background_style(legend_bg.mix(0.8));
+                        labels.border_style(legend_border);
+                        let mut style = TextStyle::from(
+                            ("sans-serif", legend_font_sz).into_font(),
+                        );
+                        if let Some(lc) = ls.and_then(|s| s.label_color) {
+                            style.color = iced_to_plotters(lc).to_backend_color();
+                        }
+                        labels.label_font(style);
+                        if let Err(e) = labels.draw() {
+                            error!("chart series labels draw: {e:?}");
+                        }
+                    }
+                }
+
+                ChartMode::Pie => {
+                    // Pie is drawn directly on the DrawingArea, no ChartBuilder
+                    // Find the first Pie dataset
+                    let (pie_data, pie_style) = match self.datasets.iter().find_map(|ds| {
+                        if let DatasetEntry::Pie { data, style } = ds {
+                            data.t.as_ref().map(|d| (d, style))
+                        } else {
+                            None
+                        }
+                    }) {
+                        Some(v) => v,
+                        None => return,
+                    };
+
+                    // Account for title height
+                    let title_h = if title.is_some() {
+                        let (_, th) = estimate_text(title.unwrap_or(""), title_size as f64);
+                        th + margin as u32
+                    } else {
+                        0
+                    };
+
+                    let center_x = (w / 2) as i32;
+                    let center_y = ((h + title_h) / 2) as i32;
+                    let radius = (w.min(h - title_h) as f64 * 0.35).max(10.0);
+
+                    let labels: Vec<String> =
+                        pie_data.0.iter().map(|(l, _)| l.clone()).collect();
+                    let sizes: Vec<f64> =
+                        pie_data.0.iter().map(|(_, v)| *v).collect();
+                    let colors: Vec<RGBColor> = match &pie_style.colors {
+                        Some(cs) => cs.iter().map(|c| iced_to_plotters(*c)).collect(),
+                        None => (0..sizes.len())
+                            .map(|i| PALETTE[i % PALETTE.len()])
+                            .collect(),
+                    };
+                    let label_strs: Vec<&str> =
+                        labels.iter().map(|s| s.as_str()).collect();
+
+                    let center = (center_x, center_y);
+                    let mut pie = Pie::new(
+                        &center,
+                        &radius,
+                        &sizes,
+                        &colors,
+                        &label_strs,
+                    );
+                    pie.label_style(
+                        ("sans-serif", label_sz).into_font(),
+                    );
+                    if let Some(angle) = pie_style.start_angle {
+                        pie.start_angle(angle);
+                    }
+                    if let Some(hole) = pie_style.donut {
+                        pie.donut_hole(hole);
+                    }
+                    if pie_style.show_percentages == Some(true) {
+                        pie.percentages(
+                            ("sans-serif", label_sz * 0.9).into_font(),
+                        );
+                    }
+                    if let Some(offset) = pie_style.label_offset {
+                        pie.label_offset(offset);
+                    }
+                    if let Err(e) = root.draw(&pie) {
+                        error!("chart draw pie: {e:?}");
+                    }
+                }
+
+                ChartMode::ThreeD => {
+                    let (auto_x, auto_y, auto_z) =
+                        compute_3d_ranges(&self.datasets);
+                    let (x_min, x_max) =
+                        match self.x_range.t.as_ref().and_then(|r| r.0.as_ref()) {
+                            Some(XAxisRange::Numeric { min, max }) => (*min, *max),
+                            _ => auto_x,
+                        };
+                    let (y_min, y_max) = match y_range_opt {
+                        Some(r) => (r.min, r.max),
+                        None => auto_y,
+                    };
+                    let z_range_opt =
+                        self.z_range.t.as_ref().and_then(|r| r.0.as_ref());
+                    let (z_min, z_max) = match z_range_opt {
+                        Some(r) => (r.min, r.max),
+                        None => auto_z,
+                    };
+
+                    let x_area = mesh_style
+                        .and_then(|ms| ms.x_label_area_size)
+                        .map(|s| s as u32)
+                        .unwrap_or(30);
+                    let y_area = mesh_style
+                        .and_then(|ms| ms.y_label_area_size)
+                        .map(|s| s as u32)
+                        .unwrap_or(30);
+                    builder.x_label_area_size(x_area);
+                    builder.y_label_area_size(y_area);
+
+                    let mut chart = match builder.build_cartesian_3d(
+                        x_min..x_max,
+                        z_min..z_max,
+                        y_min..y_max,
+                    ) {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+
+                    // Apply projection
+                    let proj = self
+                        .projection
+                        .t
+                        .as_ref()
+                        .and_then(|o| o.0.as_ref());
+                    chart.with_projection(|mut pb| {
+                        if let Some(p) = proj {
+                            if let Some(yaw) = p.yaw {
+                                pb.yaw = yaw;
+                            }
+                            if let Some(pitch) = p.pitch {
+                                pb.pitch = pitch;
+                            }
+                            if let Some(scale) = p.scale {
+                                pb.scale = scale;
+                            }
+                        }
+                        pb.into_matrix()
+                    });
+
+                    // Configure axes
+                    {
+                        let mut axes = chart.configure_axes();
+                        if mesh_style.and_then(|ms| ms.label_size).is_some()
+                            || mesh_style.and_then(|ms| ms.label_color).is_some()
+                        {
+                            let s = mesh_style
+                                .and_then(|ms| ms.label_size)
+                                .unwrap_or(12.0);
+                            if let Some(lc) =
+                                mesh_style.and_then(|ms| ms.label_color)
+                            {
+                                let mut style =
+                                    TextStyle::from(("sans-serif", s).into_font());
+                                style.color =
+                                    iced_to_plotters(lc).to_backend_color();
+                                axes.label_style(style);
+                            } else {
+                                axes.label_style(("sans-serif", s).into_font());
+                            }
+                        }
+                        // 3D axes use x_formatter/y_formatter/z_formatter
+                        // with label prefix when axis labels are set.
+                        let x_pfx = x_label.map(|l| format!("{l}: "));
+                        let y_pfx = y_label.map(|l| format!("{l}: "));
+                        let z_label_str = self.z_label.t.as_ref().and_then(|o| o.as_deref());
+                        let z_pfx = z_label_str.map(|l| format!("{l}: "));
+                        let x_fn = |x: &f64| match &x_pfx {
+                            Some(pfx) => format!("{pfx}{x:.1}"),
+                            None => format!("{x:.1}"),
+                        };
+                        let y_fn = |y: &f64| match &z_pfx {
+                            Some(pfx) => format!("{pfx}{y:.1}"),
+                            None => format!("{y:.1}"),
+                        };
+                        let z_fn = |z: &f64| match &y_pfx {
+                            Some(pfx) => format!("{pfx}{z:.1}"),
+                            None => format!("{z:.1}"),
+                        };
+                        axes.x_formatter(&x_fn);
+                        axes.y_formatter(&y_fn);
+                        axes.z_formatter(&z_fn);
+                        if let Err(e) = axes.draw() {
+                            error!("chart 3d axes draw: {e:?}");
+                        }
+                    }
+
+                    // Draw each 3D dataset
+                    for (i, ds) in self.datasets.iter().enumerate() {
+                        match ds {
+                            DatasetEntry::Scatter3D { data, style } => {
+                                if let Some(pts) = data.t.as_ref() {
+                                    let color = style
+                                        .color
+                                        .map(iced_to_plotters)
+                                        .unwrap_or(PALETTE[i % PALETTE.len()]);
+                                    let ps =
+                                        style.point_size.unwrap_or(3.0) as u32;
+                                    let fill_style =
+                                        ShapeStyle::from(color).filled();
+                                    let series = pts.0.iter().map(|&(x, y, z)| {
+                                        Circle::new((x, z, y), ps, fill_style)
+                                    });
+                                    match chart.draw_series(series) {
+                                        Ok(ann) => {
+                                            if let Some(l) =
+                                                style.label.as_deref()
+                                            {
+                                                ann.label(l).legend(
+                                                    move |(x, y)| {
+                                                        Circle::new(
+                                                            (x, y),
+                                                            ps,
+                                                            fill_style,
+                                                        )
+                                                    },
+                                                );
+                                            }
+                                        }
+                                        Err(e) => error!(
+                                            "chart draw scatter3d: {e:?}"
+                                        ),
+                                    }
+                                }
+                            }
+                            DatasetEntry::Line3D { data, style } => {
+                                if let Some(pts) = data.t.as_ref() {
+                                    let color = style
+                                        .color
+                                        .map(iced_to_plotters)
+                                        .unwrap_or(PALETTE[i % PALETTE.len()]);
+                                    let sw = style
+                                        .stroke_width
+                                        .unwrap_or(2.0)
+                                        as u32;
+                                    let line_style =
+                                        ShapeStyle::from(color).stroke_width(sw);
+                                    let series = LineSeries::new(
+                                        pts.0
+                                            .iter()
+                                            .map(|&(x, y, z)| (x, z, y)),
+                                        line_style,
+                                    );
+                                    match chart.draw_series(series) {
+                                        Ok(ann) => {
+                                            if let Some(l) =
+                                                style.label.as_deref()
+                                            {
+                                                ann.label(l).legend(
+                                                    move |(x, y)| {
+                                                        PathElement::new(
+                                                            [
+                                                                (x, y),
+                                                                (x + 20, y),
+                                                            ],
+                                                            line_style,
+                                                        )
+                                                    },
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("chart draw line3d: {e:?}")
+                                        }
+                                    }
+                                }
+                            }
+                            DatasetEntry::Surface { data, style } => {
+                                if let Some(grid) = data.t.as_ref() {
+                                    if grid.0.is_empty()
+                                        || grid.0[0].is_empty()
+                                    {
+                                        continue;
+                                    }
+                                    let color = style
+                                        .color
+                                        .map(iced_to_plotters)
+                                        .unwrap_or(PALETTE[i % PALETTE.len()]);
+                                    let color_by_z =
+                                        style.color_by_z.unwrap_or(false);
+
+                                    // Extract unique x and y values from the grid
+                                    let x_vals: Vec<f64> = grid
+                                        .0
+                                        .iter()
+                                        .map(|row| row[0].0)
+                                        .collect();
+                                    let y_vals: Vec<f64> = grid.0[0]
+                                        .iter()
+                                        .map(|pt| pt.1)
+                                        .collect();
+
+                                    let z_lookup = |x: f64, y: f64| -> f64 {
+                                        for row in grid.0.iter() {
+                                            for &(gx, gy, gz) in row.iter() {
+                                                if (gx - x).abs() < 1e-10
+                                                    && (gy - y).abs() < 1e-10
+                                                {
+                                                    return gz;
+                                                }
+                                            }
+                                        }
+                                        0.0
+                                    };
+                                    if color_by_z {
+                                        let z_color = |z: &f64| {
+                                            // Map z to a hue gradient (blue→red)
+                                            let t = if z_max > z_min {
+                                                (z - z_min) / (z_max - z_min)
+                                            } else {
+                                                0.5
+                                            };
+                                            let hue = (1.0 - t) * 240.0;
+                                            let (r, g, b) =
+                                                hsl_to_rgb(hue, 0.8, 0.5);
+                                            RGBColor(r, g, b)
+                                                .mix(0.6)
+                                                .filled()
+                                        };
+                                        let series = SurfaceSeries::xoz(
+                                            x_vals.iter().copied(),
+                                            y_vals.iter().copied(),
+                                            |x, y| z_lookup(x, y),
+                                        )
+                                        .style_func(&z_color);
+                                        match chart.draw_series(series) {
+                                            Ok(ann) => {
+                                                if let Some(l) =
+                                                    style.label.as_deref()
+                                                {
+                                                    let fill =
+                                                        ShapeStyle::from(color)
+                                                            .filled();
+                                                    ann.label(l).legend(
+                                                        move |(x, y)| {
+                                                            plotters::element::Rectangle::new(
+                                                                [(x, y - 5), (x + 20, y + 5)],
+                                                                fill,
+                                                            )
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => error!(
+                                                "chart draw surface: {e:?}"
+                                            ),
+                                        }
+                                    } else {
+                                        let fill_style = color.mix(0.6).filled();
+                                        let series = SurfaceSeries::xoz(
+                                            x_vals.iter().copied(),
+                                            y_vals.iter().copied(),
+                                            |x, y| z_lookup(x, y),
+                                        )
+                                        .style(fill_style);
+                                        match chart.draw_series(series) {
+                                            Ok(ann) => {
+                                                if let Some(l) =
+                                                    style.label.as_deref()
+                                                {
+                                                    ann.label(l).legend(
+                                                        move |(x, y)| {
+                                                            plotters::element::Rectangle::new(
+                                                                [(x, y - 5), (x + 20, y + 5)],
+                                                                fill_style,
+                                                            )
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => error!(
+                                                "chart draw surface: {e:?}"
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Legend
+                    let has_labels =
+                        self.datasets.iter().any(|ds| ds.label().is_some());
+                    if has_labels {
+                        let legend_pos = self
+                            .legend_position
+                            .t
+                            .as_ref()
+                            .and_then(|o| o.0.as_ref())
+                            .map(|p| p.0.clone())
+                            .unwrap_or(SeriesLabelPosition::UpperLeft);
+                        let ls =
+                            self.legend_style.t.as_ref().and_then(|o| o.0.as_ref());
+                        let legend_bg = ls
+                            .and_then(|s| s.background)
+                            .map(iced_to_plotters)
+                            .unwrap_or(WHITE);
+                        let legend_border = ls
+                            .and_then(|s| s.border)
+                            .map(iced_to_plotters)
+                            .unwrap_or(BLACK);
+                        let legend_font_sz =
+                            ls.and_then(|s| s.label_size).unwrap_or(label_sz);
+                        let mut labels = chart.configure_series_labels();
+                        labels.position(legend_pos);
+                        labels.margin(15);
+                        labels.background_style(legend_bg.mix(0.8));
+                        labels.border_style(legend_border);
+                        let mut style = TextStyle::from(
+                            ("sans-serif", legend_font_sz).into_font(),
+                        );
+                        if let Some(lc) = ls.and_then(|s| s.label_color) {
+                            style.color = iced_to_plotters(lc).to_backend_color();
+                        }
+                        labels.label_font(style);
+                        if let Err(e) = labels.draw() {
+                            error!("chart series labels draw: {e:?}");
+                        }
+                    }
+                }
+
                 ChartMode::Empty => unreachable!(),
             }
 
@@ -1519,4 +2521,30 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
         });
         vec![geom]
     }
+}
+
+/// Convert HSL to RGB (hue in degrees 0..360, s and l in 0..1).
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h2 = h / 60.0;
+    let x = c * (1.0 - (h2 % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = if h2 < 1.0 {
+        (c, x, 0.0)
+    } else if h2 < 2.0 {
+        (x, c, 0.0)
+    } else if h2 < 3.0 {
+        (0.0, c, x)
+    } else if h2 < 4.0 {
+        (0.0, x, c)
+    } else if h2 < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let m = l - c / 2.0;
+    (
+        ((r1 + m) * 255.0) as u8,
+        ((g1 + m) * 255.0) as u8,
+        ((b1 + m) * 255.0) as u8,
+    )
 }

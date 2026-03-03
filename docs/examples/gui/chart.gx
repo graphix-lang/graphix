@@ -10,7 +10,7 @@ let clock = time::timer(1. - rate, true);
 let x = 0.;
 x <- clock ~ x + 1.;
 
-let series = |start, end| {
+let series = |start: f64, end: f64| -> Array<(f64, f64)> {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
     d <- array::window(#n:20, clock ~ d, (x, y));

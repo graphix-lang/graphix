@@ -5,11 +5,37 @@ type SeriesStyle = {
   point_size: [f64, null]
 };
 
+type BarStyle = {
+  color: [Color, null],
+  label: [string, null],
+  margin: [f64, null]
+};
+
 type CandlestickStyle = {
   gain_color: [Color, null],
   loss_color: [Color, null],
   bar_width: [f64, null],
   label: [string, null]
+};
+
+type PieStyle = {
+  colors: [Array<Color>, null],
+  donut: [f64, null],
+  label_offset: [f64, null],
+  show_percentages: [bool, null],
+  start_angle: [f64, null]
+};
+
+type SurfaceStyle = {
+  color: [Color, null],
+  color_by_z: [bool, null],
+  label: [string, null]
+};
+
+type Projection3D = {
+  pitch: [f64, null],
+  scale: [f64, null],
+  yaw: [f64, null]
 };
 
 type MeshStyle = {
@@ -43,11 +69,15 @@ type ErrorBarPoint<'a: [f64, datetime]> = {x: 'a, min: f64, avg: f64, max: f64};
 type Dataset = [
   `Line({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
   `Scatter({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
-  `Bar({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
+  `Bar({data: &Array<(string, f64)>, style: BarStyle}),
   `Area({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
   `DashedLine({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], dash: f64, gap: f64, style: SeriesStyle}),
   `Candlestick({data: &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>], style: CandlestickStyle}),
-  `ErrorBar({data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>], style: SeriesStyle})
+  `ErrorBar({data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>], style: SeriesStyle}),
+  `Pie({data: &Array<(string, f64)>, style: PieStyle}),
+  `Scatter3D({data: &Array<(f64, f64, f64)>, style: SeriesStyle}),
+  `Line3D({data: &Array<(f64, f64, f64)>, style: SeriesStyle}),
+  `Surface({data: &Array<Array<(f64, f64, f64)>>, style: SurfaceStyle})
 ];
 
 type Chart = {
@@ -58,6 +88,9 @@ type Chart = {
   y_label: &[string, null],
   x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
   y_range: &[{min: f64, max: f64}, null],
+  z_label: &[string, null],
+  z_range: &[{min: f64, max: f64}, null],
+  projection: &[Projection3D, null],
   width: &Length,
   height: &Length,
   background: &[Color, null],
@@ -75,6 +108,9 @@ val chart: fn(
   ?#y_label: &[string, null],
   ?#x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
   ?#y_range: &[{min: f64, max: f64}, null],
+  ?#z_label: &[string, null],
+  ?#z_range: &[{min: f64, max: f64}, null],
+  ?#projection: &[Projection3D, null],
   ?#width: &Length,
   ?#height: &Length,
   ?#background: &[Color, null],
@@ -105,9 +141,8 @@ val scatter: fn(
 val bar: fn(
   ?#color: [Color, null],
   ?#label: [string, null],
-  ?#stroke_width: [f64, null],
-  ?#point_size: [f64, null],
-  &[Array<(f64, f64)>, Array<(datetime, f64)>]
+  ?#margin: [f64, null],
+  &Array<(string, f64)>
 ) -> Dataset;
 
 val area: fn(
@@ -156,6 +191,38 @@ val mesh_style: fn(
   ?#y_label_area_size: [f64, null],
   ?#y_labels: [i64, null]
 ) -> MeshStyle;
+
+val pie: fn(
+  ?#colors: [Array<Color>, null],
+  ?#donut: [f64, null],
+  ?#start_angle: [f64, null],
+  ?#show_percentages: [bool, null],
+  ?#label_offset: [f64, null],
+  &Array<(string, f64)>
+) -> Dataset;
+
+val scatter3d: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<(f64, f64, f64)>
+) -> Dataset;
+
+val line3d: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  &Array<(f64, f64, f64)>
+) -> Dataset;
+
+val surface: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#color_by_z: [bool, null],
+  &Array<Array<(f64, f64, f64)>>
+) -> Dataset;
 
 val legend_style: fn(
   ?#background: [Color, null],

@@ -259,6 +259,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(gpu) = self.gpu.as_ref() else { return };
         let mut deferred_until: Option<Instant> = None;
+        let mut next_redraw: Option<Instant> = None;
         for tw in self.windows.values_mut() {
             if !tw.needs_redraw {
                 continue;
@@ -323,25 +324,38 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         ws.renderer.present(None, gpu.format, &view, &ws.viewport);
                         frame.present();
                         tw.last_render = Instant::now();
-                        tw.needs_redraw = match &state {
-                            user_interface::State::Outdated => true,
+                        let redraw = match &state {
+                            user_interface::State::Outdated => {
+                                Some(window::RedrawRequest::NextFrame)
+                            }
                             user_interface::State::Updated { redraw_request, .. } => {
-                                !matches!(redraw_request, window::RedrawRequest::Wait)
+                                match redraw_request {
+                                    window::RedrawRequest::Wait => None,
+                                    r => Some(*r),
+                                }
                             }
                         };
+                        tw.needs_redraw = redraw.is_some();
+                        if let Some(r) = redraw {
+                            let t = match r {
+                                window::RedrawRequest::NextFrame => Instant::now(),
+                                window::RedrawRequest::At(t) => t,
+                                window::RedrawRequest::Wait => unreachable!(),
+                            };
+                            next_redraw = Some(next_redraw.map_or(t, |nr| nr.min(t)));
+                        }
                     }
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         ws.surface.configure(&gpu.device, &ws.config);
                         tw.needs_redraw = true;
+                        let now = Instant::now();
+                        next_redraw = Some(next_redraw.map_or(now, |nr| nr.min(now)));
                         continue;
                     }
                     Err(e) => {
                         error!("surface frame error: {e:?}");
                         tw.needs_redraw = false;
                     }
-                }
-                if tw.needs_redraw {
-                    tw.window.request_redraw();
                 }
             }
         }
@@ -369,8 +383,14 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             }
         }
 
-        if let Some(wake) = deferred_until {
+        let wake = match (deferred_until, next_redraw) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(wake) = wake {
             event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }

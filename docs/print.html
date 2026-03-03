@@ -8723,7 +8723,7 @@ let clock = time::timer(1. - rate, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 
-let series = |start, end| {
+let series = |start: f64, end: f64| -&gt; Array&lt;(f64, f64)&gt; {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
     d &lt;- array::window(#n:20, clock ~ d, (x, y));
@@ -8768,14 +8768,14 @@ use gui::chart;
 use gui::column;
 
 let data = [
-    (1., 42.),
-    (2., 67.),
-    (3., 35.),
-    (4., 89.),
-    (5., 54.),
-    (6., 73.),
-    (7., 28.),
-    (8., 61.)
+    ("Jan", 42.),
+    ("Feb", 67.),
+    ("Mar", 35.),
+    ("Apr", 89.),
+    ("May", 54.),
+    ("Jun", 73.),
+    ("Jul", 28.),
+    ("Aug", 61.)
 ];
 
 let col = column(
@@ -8853,7 +8853,7 @@ let col = column(
                 #label_color: {r: 0.85, g: 0.85, b: 0.9, a: 1.0}
             ),
             #mesh: &amp;chart::mesh_style(
-                #show_y_grid: true,
+                #show_x_grid: false,
                 #grid_color: {r: 0.3, g: 0.3, b: 0.35, a: 1.0},
                 #axis_color: {r: 0.6, g: 0.6, b: 0.65, a: 1.0},
                 #label_color: {r: 0.75, g: 0.75, b: 0.8, a: 1.0},

@@ -1,0 +1,38 @@
+use gui;
+use gui::text;
+use gui::chart;
+use gui::column;
+
+let surface_data = [
+    [(-4., -4., 32.), (-4., -2., 20.), (-4., 0., 16.), (-4., 2., 20.), (-4., 4., 32.)],
+    [(-2., -4., 20.), (-2., -2., 8.),  (-2., 0., 4.),  (-2., 2., 8.),  (-2., 4., 20.)],
+    [(0.,  -4., 16.), (0.,  -2., 4.),  (0.,  0., 0.),  (0.,  2., 4.),  (0.,  4., 16.)],
+    [(2.,  -4., 20.), (2.,  -2., 8.),  (2.,  0., 4.),  (2.,  2., 8.),  (2.,  4., 20.)],
+    [(4.,  -4., 32.), (4.,  -2., 20.), (4.,  0., 16.), (4.,  2., 20.), (4.,  4., 32.)]
+];
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"3D Surface Plot"),
+        chart::chart(
+            #title: &"Paraboloid",
+            #x_label: &"X",
+            #y_label: &"Y",
+            #z_label: &"Z",
+            #projection: &{yaw: 0.5, pitch: 0.15, scale: 0.9},
+            &[
+                chart::surface(
+                    #color_by_z: true,
+                    #label: "surface",
+                    &surface_data
+                )
+            ]
+        )
+    ]
+);
+
+[&window(#title: &"3D Chart", #size: &{width: 800.0, height: 600.0}, &col)]
