@@ -3,7 +3,7 @@
 //! Translates plotters drawing operations to iced Frame methods for
 //! GPU-accelerated chart rendering.
 
-use super::Renderer;
+use crate::widgets::Renderer;
 use iced_core::{alignment, text::Alignment as TextAlign, Color, Point, Size, Vector};
 use iced_widget::canvas::{Frame, Path, Stroke};
 use plotters_backend::{
@@ -13,14 +13,14 @@ use plotters_backend::{
 use std::convert::Infallible;
 
 /// Estimate text dimensions using the same heuristic as the plotters backend.
-pub(crate) fn estimate_text(text: &str, font_size: f64) -> (u32, u32) {
+pub(super) fn estimate_text(text: &str, font_size: f64) -> (u32, u32) {
     let width = (text.len() as f64 * font_size * 0.65 + 2.0) as u32;
     let height = (font_size * 1.2) as u32;
     (width, height)
 }
 
 /// Wraps an iced Canvas Frame as a plotters DrawingBackend.
-pub(crate) struct IcedBackend<'a> {
+pub(super) struct IcedBackend<'a> {
     frame: &'a mut Frame<Renderer>,
     width: u32,
     height: u32,

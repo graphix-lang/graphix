@@ -42,7 +42,6 @@ pub(crate) mod image;
 pub(crate) mod keyboard_area;
 pub(crate) mod mouse_area;
 pub(crate) mod pick_list;
-pub(crate) mod plotters_backend;
 pub(crate) mod progress_bar;
 pub(crate) mod radio;
 pub(crate) mod rule;
