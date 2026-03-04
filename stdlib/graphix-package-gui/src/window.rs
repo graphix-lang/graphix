@@ -1,5 +1,5 @@
 use crate::{
-    types::{SizeV, ThemeV},
+    types::{ImageSourceV, SizeV, ThemeV},
     widgets::{compile, EmptyW, GuiW},
 };
 use anyhow::{Context, Result};
@@ -20,6 +20,8 @@ pub(crate) struct ResolvedWindow<X: GXExt> {
     pub title: TRef<X, String>,
     pub size: TRef<X, SizeV>,
     pub theme: TRef<X, ThemeV>,
+    pub icon: TRef<X, ImageSourceV>,
+    pub decoded_icon: Option<winit::window::Icon>,
     pub content_ref: Ref<X>,
     pub content: GuiW<X>,
 }
@@ -27,10 +29,11 @@ pub(crate) struct ResolvedWindow<X: GXExt> {
 impl<X: GXExt> ResolvedWindow<X> {
     /// Compile a window struct value into resolved refs without creating an OS window.
     pub async fn compile(gx: GXHandle<X>, source: Value) -> Result<Self> {
-        let [(_, content), (_, size), (_, theme), (_, title)] =
-            source.cast_to::<[(ArcStr, u64); 4]>().context("window flds")?;
-        let (content_ref, size, theme, title) = try_join! {
+        let [(_, content), (_, icon), (_, size), (_, theme), (_, title)] =
+            source.cast_to::<[(ArcStr, u64); 5]>().context("window flds")?;
+        let (content_ref, icon, size, theme, title) = try_join! {
             gx.compile_ref(content),
+            gx.compile_ref(icon),
             gx.compile_ref(size),
             gx.compile_ref(theme),
             gx.compile_ref(title),
@@ -39,11 +42,24 @@ impl<X: GXExt> ResolvedWindow<X> {
             None => Box::new(EmptyW),
             Some(v) => compile(gx.clone(), v.clone()).await.context("window content")?,
         };
+        let icon = TRef::new(icon).context("window tref icon")?;
+        let decoded_icon = icon
+            .t
+            .as_ref()
+            .and_then(|s: &ImageSourceV| match s.decode_icon() {
+                Ok(i) => i,
+                Err(e) => {
+                    log::warn!("failed to decode window icon: {e}");
+                    None
+                }
+            });
         Ok(Self {
             gx,
             title: TRef::new(title).context("window tref title")?,
             size: TRef::new(size).context("window tref size")?,
             theme: TRef::new(theme).context("window tref theme")?,
+            icon,
+            decoded_icon,
             content_ref,
             content: compiled_content,
         })
@@ -61,6 +77,7 @@ impl<X: GXExt> ResolvedWindow<X> {
         WindowAttributes::default()
             .with_title(title)
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+            .with_window_icon(self.decoded_icon.clone())
     }
 
     /// Consume self and attach an OS window, producing a TrackedWindow.
@@ -76,6 +93,8 @@ impl<X: GXExt> ResolvedWindow<X> {
             title: self.title,
             size: self.size,
             theme: self.theme,
+            icon: self.icon,
+            decoded_icon: self.decoded_icon,
             content_ref: self.content_ref,
             content: self.content,
             cursor_position: iced_core::Point::ORIGIN,
@@ -97,6 +116,8 @@ pub(crate) struct TrackedWindow<X: GXExt> {
     pub title: TRef<X, String>,
     pub size: TRef<X, SizeV>,
     pub theme: TRef<X, ThemeV>,
+    pub icon: TRef<X, ImageSourceV>,
+    pub decoded_icon: Option<winit::window::Icon>,
     pub content_ref: Ref<X>,
     pub content: GuiW<X>,
     pub cursor_position: iced_core::Point,
@@ -123,6 +144,8 @@ impl<X: GXExt> TrackedWindow<X> {
             self.title = resolved.title;
             self.size = resolved.size;
             self.theme = resolved.theme;
+            self.icon = resolved.icon;
+            self.decoded_icon = resolved.decoded_icon;
             self.content_ref = resolved.content_ref;
             self.content = resolved.content;
             if let Some(t) = self.title.t.as_ref() {
@@ -134,6 +157,7 @@ impl<X: GXExt> TrackedWindow<X> {
                     sz.0.height,
                 ));
             }
+            self.window.set_window_icon(self.decoded_icon.clone());
             self.needs_redraw = true;
             return Ok(());
         }
@@ -152,6 +176,19 @@ impl<X: GXExt> TrackedWindow<X> {
             changed = true;
         }
         if self.theme.update(id, v).context("window update theme")?.is_some() {
+            changed = true;
+        }
+        if self.icon.update(id, v).context("window update icon")?.is_some() {
+            self.decoded_icon = self.icon.t.as_ref().and_then(
+                |s: &ImageSourceV| match s.decode_icon() {
+                    Ok(i) => i,
+                    Err(e) => {
+                        log::warn!("failed to decode window icon: {e}");
+                        None
+                    }
+                },
+            );
+            self.window.set_window_icon(self.decoded_icon.clone());
             changed = true;
         }
         if id == self.content_ref.id {

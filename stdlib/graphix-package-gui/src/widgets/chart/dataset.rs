@@ -4,6 +4,7 @@ use arcstr::ArcStr;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use log::error;
 use netidx::publisher::{FromValue, Value};
+use poolshark::local::LPooled;
 
 // ── Dataset types ───────────────────────────────────────────────────
 
@@ -138,14 +139,14 @@ impl FromValue for DatasetMeta {
 pub(super) async fn compile_datasets<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
-) -> Result<Vec<DatasetEntry<X>>> {
+) -> Result<LPooled<Vec<DatasetEntry<X>>>> {
     let metas: Vec<DatasetMeta> = v
         .cast_to::<Vec<Value>>()?
         .into_iter()
         .map(DatasetMeta::from_value)
         .collect::<Result<_>>()?;
-    // CR estokes: use an LPooled<Vec> here
-    let mut entries = Vec::with_capacity(metas.len());
+    let mut entries: LPooled<Vec<DatasetEntry<X>>> = LPooled::take();
+    entries.reserve(metas.len());
     for meta in metas {
         match meta {
             DatasetMeta::XY { kind, data_id, style } => {

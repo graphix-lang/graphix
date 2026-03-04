@@ -1,0 +1,47 @@
+use gui;
+use gui::text;
+use gui::column;
+use gui::container;
+use gui::menu;
+mod icon;
+
+let status = "Right-click anywhere";
+
+let items = [
+    menu::action(
+        #on_click: |v| status <- v ~ "Copied!",
+        #shortcut: &menu::shortcut(#ctrl: true, "C")$,
+        &"Copy"
+    ),
+    menu::action(
+        #on_click: |v| status <- v ~ "Pasted!",
+        #shortcut: &menu::shortcut(#ctrl: true, "V")$,
+        &"Paste"
+    ),
+    menu::divider(),
+    menu::action(
+        #on_click: |v| status <- v ~ "Deleted!",
+        &"Delete"
+    )
+];
+
+let content = container(
+    #halign: &`Center,
+    #valign: &`Center,
+    #width: &`Fill,
+    #height: &`Fill,
+    &column(
+        #halign: &`Center,
+        #spacing: &10.0,
+        &[
+            text(#size: &24.0, &"Context Menu Demo"),
+            text(&status)
+        ]
+    )
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Context Menu",
+    &menu::context_menu(&items, &content)
+)]

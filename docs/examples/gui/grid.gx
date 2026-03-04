@@ -3,6 +3,7 @@ use gui::text;
 use gui::grid;
 use gui::container;
 use gui::column;
+mod icon;
 
 let item = |label| container(
     #width: &`Fill,
@@ -34,4 +35,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Grid Widget", &col)]
+[&window(#icon: &icon::icon, #title: &"Grid Widget", &col)]

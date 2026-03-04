@@ -3,11 +3,13 @@ use gui::text;
 use gui::keyboard_area;
 use gui::container;
 use gui::column;
+mod icon;
 
 let last_key = "None";
 let mod_name = "None";
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Keyboard Area",
     &keyboard_area(
         #on_key_press: |e| {

@@ -3,8 +3,10 @@ use gui::text;
 use gui::stack;
 use gui::container;
 use gui::column;
+mod icon;
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Stack Widget",
     &column(
         #spacing: &15.0,

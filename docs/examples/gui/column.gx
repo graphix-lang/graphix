@@ -1,8 +1,10 @@
 use gui;
 use gui::text;
 use gui::column;
+mod icon;
 
 [&window(
+  #icon: &icon::icon,
   #title: &"Column Widget",
   &column(
     #spacing: &15.0,

@@ -41,4 +41,8 @@ val divider: fn() -> MenuItem;
 
 val menu: fn(&string, &Array<MenuItem>) -> MenuGroup;
 
+type ContextMenu = { child: &Widget, items: &Array<MenuItem> };
+
+val context_menu: fn(&Array<MenuItem>, &Widget) -> Widget;
+
 val bar: fn(?#width: &Length, &Array<MenuGroup>) -> Widget

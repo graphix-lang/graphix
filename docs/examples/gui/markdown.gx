@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::markdown;
 use gui::column;
+mod icon;
 
 let content = r'# Markdown Demo
 
@@ -32,4 +33,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Markdown", &col)]
+[&window(#icon: &icon::icon, #title: &"Markdown", &col)]

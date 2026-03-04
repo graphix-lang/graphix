@@ -76,7 +76,8 @@
       "Bash(do echo:*)",
       "WebFetch(domain:plotters-rs.github.io)",
       "Bash(cargo fmt:*)",
-      "Bash(RUST_MIN_STACK=67108864 cargo test:*)"
+      "Bash(RUST_MIN_STACK=67108864 cargo test:*)",
+      "Bash(xargs basename:*)"
     ],
     "deny": [],
     "ask": []

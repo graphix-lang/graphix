@@ -75,6 +75,7 @@
     - [Radio](./ui/gui/radio.md)
     - [Slider](./ui/gui/slider.md)
     - [Pick List](./ui/gui/pick_list.md)
+    - [Combo Box](./ui/gui/combo_box.md)
     - [Column](./ui/gui/column.md)
     - [Row](./ui/gui/row.md)
     - [Container](./ui/gui/container.md)

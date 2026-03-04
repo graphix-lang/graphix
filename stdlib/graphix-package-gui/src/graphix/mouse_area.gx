@@ -1,6 +1,6 @@
 let mouse_area = |
-  #on_press: fn(null) -> Any = |_| null,
-  #on_release: fn(null) -> Any = |_| null,
+  #on_press: fn(MouseButton) -> Any = |_| null,
+  #on_release: fn(MouseButton) -> Any = |_| null,
   #on_enter: fn(null) -> Any = |_| null,
   #on_exit: fn(null) -> Any = |_| null,
   #on_move: fn({x: f64, y: f64}) -> Any = |_| null,

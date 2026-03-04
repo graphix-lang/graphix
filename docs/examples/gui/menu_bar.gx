@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::menu;
 use gui::column;
+mod icon;
 
 let file_menu = menu::menu(
     &"File",
@@ -60,4 +61,4 @@ let layout = column(
     ]
 );
 
-[&window(#title: &"Menu Bar", &layout)]
+[&window(#icon: &icon::icon, #title: &"Menu Bar", &layout)]

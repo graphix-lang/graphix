@@ -4,6 +4,7 @@ use gui::chart;
 use gui::column;
 use gui::row;
 use gui::slider;
+mod icon;
 
 let rate = 0.;
 let clock = time::timer(1. - rate, true);
@@ -45,4 +46,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Chart", #size: &{ width: 900.0, height: 700.0 }, &col)]
+[&window(#icon: &icon::icon, #title: &"Chart", #size: &{ width: 900.0, height: 700.0 }, &col)]

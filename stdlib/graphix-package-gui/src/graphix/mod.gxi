@@ -6,6 +6,7 @@ type Widget = [
   `Checkbox(checkbox::Checkbox),
   `Column(column::Column),
   `ComboBox(combo_box::ComboBox),
+  `ContextMenu(menu::ContextMenu),
   `Container(container::Container),
   `Grid(grid::Grid),
   `HorizontalRule(rule::HorizontalRule),
@@ -23,7 +24,6 @@ type Widget = [
   `Slider(slider::Slider),
   `Space(space::Space),
   `Stack(stack::Stack),
-  `Svg(svg::Svg),
   `Table(table::Table),
   `Text(text::Text),
   `TextEditor(text_editor::TextEditor),
@@ -82,11 +82,14 @@ type Theme = [
   `CustomPalette(Palette)
 ];
 
+type ImageSource = [string, `Bytes(bytes), `Svg(string), `Rgba({width: u32, height: u32, pixels: bytes})];
+
 /// A window description
 type Window = {
   title: &string,
   size: &Size,
   theme: &Theme,
+  icon: &ImageSource,
   content: &Widget
 };
 
@@ -98,6 +101,7 @@ val window: fn(
   ?#title: &string,
   ?#size: &Size,
   ?#theme: &Theme,
+  ?#icon: &ImageSource,
   &Widget
 ) -> Window;
 
@@ -125,7 +129,6 @@ mod text_editor;
 mod keyboard_area;
 mod mouse_area;
 mod image;
-mod svg;
 mod canvas;
 mod chart;
 mod clipboard;
@@ -134,3 +137,7 @@ mod markdown;
 mod menu;
 mod qr_code;
 mod table
+
+// XCR estokes: The one thing that seems missing is context menus.
+// It seems like it would be pretty easy to use Overlay to Create
+// a widget that wraps any other widget and adds a context menu

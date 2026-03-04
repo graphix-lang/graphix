@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::canvas;
 use gui::column;
+mod icon;
 
 let shapes = &[
     `Rect({
@@ -46,4 +47,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Canvas", #size: &{ width: 600.0, height: 450.0 }, &col)]
+[&window(#icon: &icon::icon, #title: &"Canvas", #size: &{ width: 600.0, height: 450.0 }, &col)]

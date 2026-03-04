@@ -14,6 +14,7 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget::canvas as iced_canvas;
 use netidx::publisher::Value;
+use poolshark::local::LPooled;
 use std::cell::Cell;
 use tokio::try_join;
 use types::*;
@@ -26,7 +27,7 @@ pub(crate) use ranges::pad_range;
 pub(crate) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
     datasets_ref: Ref<X>,
-    datasets: Vec<DatasetEntry<X>>,
+    datasets: LPooled<Vec<DatasetEntry<X>>>,
     title: TRef<X, Option<String>>,
     x_label: TRef<X, Option<String>>,
     y_label: TRef<X, Option<String>>,
@@ -93,7 +94,7 @@ impl<X: GXExt> ChartW<X> {
         }?;
         let entries = match datasets_ref.last.as_ref() {
             Some(v) => compile_datasets(&gx, v.clone()).await?,
-            None => vec![],
+            None => LPooled::take(),
         };
         Ok(Box::new(Self {
             gx: gx.clone(),
@@ -139,7 +140,7 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
             self.dirty.set(true);
             changed = true;
         }
-        for ds in &mut self.datasets {
+        for ds in self.datasets.iter_mut() {
             let updated = match ds {
                 DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
                     data.update(id, v).context("chart update xy data")?.is_some()

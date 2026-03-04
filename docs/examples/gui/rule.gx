@@ -3,8 +3,10 @@ use gui::text;
 use gui::column;
 use gui::row;
 use gui::rule;
+mod icon;
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Rules",
     &row(
         #spacing: &20.0,

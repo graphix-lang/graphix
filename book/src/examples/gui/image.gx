@@ -2,10 +2,12 @@ use gui;
 use gui::text;
 use gui::image;
 use gui::column;
+mod icon;
 
 let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AAAD//8DL/6UqKv8AgID//9cA/w==;
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Image Widget",
     &column(
         #spacing: &15.0,

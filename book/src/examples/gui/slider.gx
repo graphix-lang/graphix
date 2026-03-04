@@ -3,6 +3,7 @@ use gui::text;
 use gui::slider;
 use gui::progress_bar;
 use gui::column;
+mod icon;
 
 let volume = 50.0;
 
@@ -19,4 +20,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Slider & ProgressBar", &col)]
+[&window(#icon: &icon::icon, #title: &"Slider & ProgressBar", &col)]

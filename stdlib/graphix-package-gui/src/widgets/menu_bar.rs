@@ -10,7 +10,7 @@ use netidx::publisher::Value;
 use smallvec::SmallVec;
 use tokio::try_join;
 
-enum MenuItemKind<X: GXExt> {
+pub(crate) enum MenuItemKind<X: GXExt> {
     Action {
         label: TRef<X, String>,
         shortcut: TRef<X, Option<ShortcutV>>,
@@ -34,7 +34,7 @@ pub(crate) struct MenuBarW<X: GXExt> {
     width: TRef<X, LengthV>,
 }
 
-async fn compile_menu_item<X: GXExt>(
+pub(crate) async fn compile_menu_item<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
 ) -> Result<MenuItemKind<X>> {
@@ -76,7 +76,7 @@ async fn compile_menu_item<X: GXExt>(
     }
 }
 
-async fn compile_menu_items<X: GXExt>(
+pub(crate) async fn compile_menu_items<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
 ) -> Result<Vec<MenuItemKind<X>>> {
@@ -135,6 +135,25 @@ impl<X: GXExt> MenuBarW<X> {
             menus,
             width: TRef::new(width).context("menu_bar tref width")?,
         }))
+    }
+}
+
+/// Convert a compiled `MenuItemKind` into the descriptor needed by the iced widget.
+pub(crate) fn menu_item_desc<X: GXExt>(item: &MenuItemKind<X>) -> MenuItemDesc {
+    match item {
+        MenuItemKind::Action {
+            label,
+            shortcut,
+            on_click_callable,
+            disabled,
+            ..
+        } => MenuItemDesc::Action {
+            label: label.t.as_deref().unwrap_or("").to_string(),
+            shortcut: shortcut.t.as_ref().and_then(|o| o.clone()),
+            callable_id: on_click_callable.as_ref().map(|c| c.id()),
+            disabled: disabled.t.unwrap_or(false),
+        },
+        MenuItemKind::Divider => MenuItemDesc::Divider,
     }
 }
 
@@ -206,28 +225,7 @@ impl<X: GXExt> super::GuiWidget<X> for MenuBarW<X> {
             .iter()
             .map(|group| MenuGroupDesc {
                 label: group.label.t.as_deref().unwrap_or("").to_string(),
-                items: group
-                    .items
-                    .iter()
-                    .map(|item| match item {
-                        MenuItemKind::Action {
-                            label,
-                            shortcut,
-                            on_click_callable,
-                            disabled,
-                            ..
-                        } => MenuItemDesc::Action {
-                            label: label.t.as_deref().unwrap_or("").to_string(),
-                            shortcut: shortcut
-                                .t
-                                .as_ref()
-                                .and_then(|o| o.clone()),
-                            callable_id: on_click_callable.as_ref().map(|c| c.id()),
-                            disabled: disabled.t.unwrap_or(false),
-                        },
-                        MenuItemKind::Divider => MenuItemDesc::Divider,
-                    })
-                    .collect(),
+                items: group.items.iter().map(menu_item_desc).collect(),
             })
             .collect();
         let width = self.width.t.as_ref().map(|w| w.0).unwrap_or(Length::Shrink);

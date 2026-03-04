@@ -8,6 +8,7 @@ use gui::toggler;
 use gui::container;
 use gui::column;
 use gui::rule;
+mod icon;
 
 let palette = {
   background: color(#r: 0.12, #g: 0.12, #b: 0.18)$,
@@ -56,6 +57,7 @@ let volume = 50.0;
 let dark_mode = true;
 
 [&window(
+  #icon: &icon::icon,
   #title: &"Custom Styles",
   #theme: &theme,
   &container(

@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::pick_list;
 use gui::column;
+mod icon;
 
 let language: [string, null] = null;
 
@@ -20,4 +21,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Pick List", &col)]
+[&window(#icon: &icon::icon, #title: &"Pick List", &col)]

@@ -5,9 +5,11 @@ The `mouse_area` widget wraps a child and captures mouse events within its bound
 ## Interface
 
 ```graphix
+type MouseButton = [`Left, `Right, `Middle];
+
 val mouse_area: fn(
-  ?#on_press: fn(null) -> Any,
-  ?#on_release: fn(null) -> Any,
+  ?#on_press: fn(MouseButton) -> Any,
+  ?#on_release: fn(MouseButton) -> Any,
   ?#on_enter: fn(null) -> Any,
   ?#on_exit: fn(null) -> Any,
   ?#on_move: fn({x: f64, y: f64}) -> Any,
@@ -17,8 +19,8 @@ val mouse_area: fn(
 
 ## Parameters
 
-- **on_press** — called when the mouse button is pressed inside the area
-- **on_release** — called when the mouse button is released inside the area
+- **on_press** — called when a mouse button is pressed inside the area. Receives a `MouseButton` variant (`` `Left ``, `` `Right ``, or `` `Middle ``).
+- **on_release** — called when a mouse button is released inside the area. Receives a `MouseButton` variant.
 - **on_enter** — called when the mouse cursor enters the area
 - **on_exit** — called when the mouse cursor leaves the area
 - **on_move** — called with `{x, y}` coordinates as the mouse moves within the area

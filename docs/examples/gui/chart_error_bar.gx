@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::chart;
 use gui::column;
+mod icon;
 
 let clock = time::timer(duration:1.s, true);
 let x = 0.;
@@ -46,4 +47,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Error Bars", #size: &{width: 900.0, height: 650.0}, &col)]
+[&window(#icon: &icon::icon, #title: &"Error Bars", #size: &{width: 900.0, height: 650.0}, &col)]

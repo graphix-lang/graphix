@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::toggler;
 use gui::column;
+mod icon;
 
 let wifi = true;
 let bluetooth = false;
@@ -17,4 +18,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Toggler", &col)]
+[&window(#icon: &icon::icon, #title: &"Toggler", &col)]

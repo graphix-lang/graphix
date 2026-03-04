@@ -5,6 +5,7 @@ use gui::button;
 use gui::toggler;
 use gui::slider;
 use gui::column;
+mod icon;
 
 let enabled = true;
 let br = 0.0;
@@ -33,6 +34,7 @@ let col = column(
 );
 
 [&window(
+  #icon: &icon::icon,
   #title: &"Custom Palette",
   #theme: &`CustomPalette(my_palette),
   &col

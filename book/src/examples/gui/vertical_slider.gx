@@ -3,10 +3,12 @@ use gui::text;
 use gui::vertical_slider;
 use gui::column;
 use gui::row;
+mod icon;
 
 let value = 50.0;
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Vertical Slider",
     &row(
         #spacing: &30.0,

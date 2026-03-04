@@ -28,7 +28,6 @@ use gui::mouse_area;\n\
 use gui::canvas;\n\
 use gui::chart;\n\
 use gui::image;\n\
-use gui::svg;\n\
 use gui::grid;\n\
 use gui::qr_code;\n\
 use gui::markdown;\n\
@@ -548,6 +547,30 @@ async fn table_with_params() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn table_column_mismatch_fewer_cells() -> Result<()> {
+    let h = harness(
+        "table(\
+            &[table_column(&text(&\"A\")), table_column(&text(&\"B\")), table_column(&text(&\"C\"))],\
+            &[[text(&\"1\"), text(&\"2\")]])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn table_column_mismatch_extra_cells() -> Result<()> {
+    let h = harness(
+        "table(\
+            &[table_column(&text(&\"Only\"))],\
+            &[[text(&\"a\"), text(&\"b\"), text(&\"c\")]])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
 // ── Menu Bar ───────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -560,6 +583,20 @@ async fn menu_bar_renders() -> Result<()> {
                 menu::action(&\"Quit\")\
             ])\
         ])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Context Menu ──────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn context_menu_renders() -> Result<()> {
+    let h = harness(
+        "menu::context_menu(\
+            &[menu::action(#on_click: |_| null, &\"Copy\"), menu::divider()],\
+            &text(&\"Right-click me\"))",
     )
     .await?;
     view!(h);

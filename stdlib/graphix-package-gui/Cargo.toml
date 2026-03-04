@@ -31,6 +31,7 @@ graphix-package = { version = "0.4.0", path = "../../graphix-package" }
 graphix-package-core = { version = "0.4.0", path = "../graphix-package-core" }
 graphix-package-str = { version = "0.4.0", path = "../graphix-package-str" }
 graphix-rt = { version = "0.4.0", path = "../../graphix-rt" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp"] }
 iced_core = { workspace = true }
 iced_renderer = { workspace = true }
 iced_runtime = { workspace = true }
@@ -42,6 +43,7 @@ netidx-core = { workspace = true }
 plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series", "point_series", "candlestick", "errorbar", "datetime", "histogram", "surface_series"] }
 plotters-backend = "0.3"
 poolshark = { workspace = true }
+resvg = "0.44"
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }

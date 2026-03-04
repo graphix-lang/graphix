@@ -20,6 +20,8 @@ val table_column: fn(
   &Widget
 ) -> TableColumn;
 
+// XCR estokes: We should add a test that passing a mismatched number of columns
+// does not cause anything bad like a panic.
 val table: fn(
   ?#width: &Length,
   ?#padding: &[f64, null],

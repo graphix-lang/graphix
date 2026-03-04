@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::radio;
 use gui::column;
+mod icon;
 
 let size: [`Small, `Medium, `Large] = `Medium;
 let dir: [`Vertical, `Horizontal] = `Vertical;
@@ -22,4 +23,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Radio Buttons", &col)]
+[&window(#icon: &icon::icon, #title: &"Radio Buttons", &col)]

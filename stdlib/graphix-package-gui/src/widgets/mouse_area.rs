@@ -7,6 +7,10 @@ use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
 
+fn mouse_button_value(button: &str) -> Value {
+    Value::String(button.into())
+}
+
 pub(crate) struct MouseAreaW<X: GXExt> {
     gx: GXHandle<X>,
     child_ref: Ref<X>,
@@ -88,10 +92,16 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
     fn view(&self) -> IcedElement<'_> {
         let mut ma = widget::MouseArea::new(self.child.view());
         if let Some(c) = &self.on_press_callable {
-            ma = ma.on_press(Message::Call(c.id(), ValArray::from_iter([Value::Null])));
+            let id = c.id();
+            ma = ma.on_press(Message::Call(id, ValArray::from_iter([mouse_button_value("Left")])));
+            ma = ma.on_right_press(Message::Call(id, ValArray::from_iter([mouse_button_value("Right")])));
+            ma = ma.on_middle_press(Message::Call(id, ValArray::from_iter([mouse_button_value("Middle")])));
         }
         if let Some(c) = &self.on_release_callable {
-            ma = ma.on_release(Message::Call(c.id(), ValArray::from_iter([Value::Null])));
+            let id = c.id();
+            ma = ma.on_release(Message::Call(id, ValArray::from_iter([mouse_button_value("Left")])));
+            ma = ma.on_right_release(Message::Call(id, ValArray::from_iter([mouse_button_value("Right")])));
+            ma = ma.on_middle_release(Message::Call(id, ValArray::from_iter([mouse_button_value("Middle")])));
         }
         if let Some(c) = &self.on_enter_callable {
             ma = ma.on_enter(Message::Call(c.id(), ValArray::from_iter([Value::Null])));

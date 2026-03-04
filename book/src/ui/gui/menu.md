@@ -1,6 +1,6 @@
-# The Menu Bar
+# Menus
 
-A horizontal menu bar with dropdown menus, typically placed at the top of a window. Built from actions (clickable items with optional keyboard shortcuts) and dividers grouped into named menus.
+The `menu` module provides menu bars and context menus. Both are built from the same `MenuItem` building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.
 
 ## Interface
 
@@ -29,6 +29,8 @@ type MenuGroup = {
   items: &Array<MenuItem>
 };
 
+type ContextMenu = { child: &Widget, items: &Array<MenuItem> };
+
 val action: fn(
   ?#on_click: fn(null) -> Any,
   ?#shortcut: &[Shortcut, null],
@@ -40,7 +42,9 @@ val divider: fn() -> MenuItem;
 
 val menu: fn(&string, &Array<MenuItem>) -> MenuGroup;
 
-val bar: fn(?#width: &Length, &Array<MenuGroup>) -> Widget
+val bar: fn(?#width: &Length, &Array<MenuGroup>) -> Widget;
+
+val context_menu: fn(&Array<MenuItem>, &Widget) -> Widget
 ```
 
 ## `menu::shortcut`
@@ -78,15 +82,31 @@ Groups a list of menu items under a label that appears in the menu bar.
 - **`#width`** -- Width of the menu bar. Accepts `Length` values. Defaults to `` `Shrink ``.
 - **positional `&Array<MenuGroup>`** -- The menu groups to display in the bar.
 
+## `menu::context_menu`
+
+Wraps any widget and shows a dropdown menu on right-click. Reuses the same `MenuItem` type as the menu bar.
+
+- **positional `&Array<MenuItem>`** -- The items to display in the context menu.
+- **positional `&Widget`** -- The child widget. Right-clicking anywhere on this widget opens the menu at the cursor position.
+
+The menu closes when an item is clicked, when the user clicks outside it, or when Escape is pressed.
+
 ## Examples
 
-### File and Edit Menus
+### Menu Bar
 
 ```graphix
 {{#include ../../examples/gui/menu_bar.gx}}
+```
+
+### Context Menu
+
+```graphix
+{{#include ../../examples/gui/context_menu.gx}}
 ```
 
 ## See Also
 
 - [button](button.md) -- for standalone clickable actions
 - [keyboard_area](keyboard_area.md) -- for capturing keyboard shortcuts
+- [mouse_area](mouse_area.md) -- for general mouse event handling

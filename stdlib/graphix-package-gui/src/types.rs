@@ -3,7 +3,7 @@ use crate::theme::{
     ProgressBarSpec, RadioSpec, RuleSpec, ScrollableSpec, SliderSpec, StyleOverrides,
     TextEditorSpec, TextInputSpec, TogglerSpec,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use iced_core::{
     alignment::{Horizontal, Vertical},
@@ -542,30 +542,100 @@ impl FromValue for ContentFitV {
     }
 }
 
-/// Image source: file path, raw encoded bytes, or decoded RGBA pixels.
+/// Image source: file path, raw encoded bytes, inline SVG, or decoded RGBA pixels.
 #[derive(Clone, Debug)]
 pub(crate) enum ImageSourceV {
     Path(String),
     Bytes(iced_core::Bytes),
+    Svg(String),
     Rgba { width: u32, height: u32, pixels: iced_core::Bytes },
 }
 
 impl ImageSourceV {
+    pub(crate) fn is_svg(&self) -> bool {
+        match self {
+            Self::Path(p) => p.ends_with(".svg") || p.ends_with(".svgz"),
+            Self::Svg(_) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn to_handle(&self) -> iced_core::image::Handle {
         match self {
             Self::Path(p) => iced_core::image::Handle::from_path(p),
             Self::Bytes(b) => iced_core::image::Handle::from_bytes(b.clone()),
+            Self::Svg(_) => iced_core::image::Handle::from_path(""),
             Self::Rgba { width, height, pixels } => {
                 iced_core::image::Handle::from_rgba(*width, *height, pixels.clone())
             }
         }
     }
+
+    pub(crate) fn to_svg_handle(&self) -> iced_core::svg::Handle {
+        match self {
+            Self::Path(p) => iced_core::svg::Handle::from_path(p),
+            Self::Bytes(b) => iced_core::svg::Handle::from_memory(b.to_vec()),
+            Self::Svg(s) => iced_core::svg::Handle::from_memory(s.as_bytes().to_vec()),
+            Self::Rgba { .. } => iced_core::svg::Handle::from_path(""),
+        }
+    }
+
+    pub(crate) fn decode_icon(&self) -> Result<Option<winit::window::Icon>> {
+        match self {
+            Self::Path(p) if p.is_empty() => Ok(None),
+            Self::Path(p) if self.is_svg() => {
+                let data = std::fs::read(p)?;
+                decode_svg_icon(&data)
+            }
+            Self::Path(p) => {
+                let img = ::image::open(p)?.into_rgba8();
+                let (w, h) = img.dimensions();
+                Ok(Some(winit::window::Icon::from_rgba(img.into_raw(), w, h)?))
+            }
+            Self::Bytes(b) if b.is_empty() => Ok(None),
+            Self::Bytes(b) => {
+                let img = ::image::load_from_memory(b)?.into_rgba8();
+                let (w, h) = img.dimensions();
+                Ok(Some(winit::window::Icon::from_rgba(img.into_raw(), w, h)?))
+            }
+            Self::Svg(s) if s.is_empty() => Ok(None),
+            Self::Svg(s) => decode_svg_icon(s.as_bytes()),
+            Self::Rgba { width, height, pixels } => {
+                if pixels.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(winit::window::Icon::from_rgba(
+                    pixels.to_vec(),
+                    *width,
+                    *height,
+                )?))
+            }
+        }
+    }
+}
+
+fn decode_svg_icon(data: &[u8]) -> Result<Option<winit::window::Icon>> {
+    let tree = resvg::usvg::Tree::from_data(data, &Default::default())?;
+    let size = 32;
+    let svg_size = tree.size();
+    let sx = size as f32 / svg_size.width();
+    let sy = size as f32 / svg_size.height();
+    let scale = sx.min(sy);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)
+        .context("failed to allocate pixmap for SVG icon")?;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Ok(Some(winit::window::Icon::from_rgba(
+        pixmap.data().to_vec(),
+        size,
+        size,
+    )?))
 }
 
 impl FromValue for ImageSourceV {
     fn from_value(v: Value) -> Result<Self> {
         match v {
-            // Bare string → file path (backward compat)
+            // Bare string → file path
             Value::String(s) => Ok(Self::Path(s.to_string())),
             // Bare bytes → encoded image data
             Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
@@ -577,6 +647,7 @@ impl FromValue for ImageSourceV {
                         Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
                         _ => bail!("ImageSource Bytes: expected bytes value"),
                     },
+                    "Svg" => Ok(Self::Svg(val.cast_to::<String>()?)),
                     "Rgba" => {
                         let [(_, height), (_, pixels), (_, width)] =
                             val.cast_to::<[(ArcStr, Value); 3]>()?;

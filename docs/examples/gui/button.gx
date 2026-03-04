@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::column;
 use gui::button;
+mod icon;
 
 let b0 = button(
     #on_press: |c| println(c ~ "normal button clicked"),
@@ -28,4 +29,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Button Widget", &col)]
+[&window(#icon: &icon::icon, #title: &"Button Widget", &col)]

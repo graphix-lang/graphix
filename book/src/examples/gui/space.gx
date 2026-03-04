@@ -3,8 +3,10 @@ use gui::text;
 use gui::column;
 use gui::row;
 use gui::space;
+mod icon;
 
 [&window(
+  #icon: &icon::icon,
   #title: &"Space Widget",
   &column(
     #spacing: &10.0,

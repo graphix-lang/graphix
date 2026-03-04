@@ -2,8 +2,10 @@ use gui;
 use gui::text;
 use gui::column;
 use gui::button;
+mod icon;
 
 [&window(
+  #icon: &icon::icon,
   #title: &"Graphix Demo",
   #theme: &`CatppuccinMocha,
   &column(

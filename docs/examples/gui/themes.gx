@@ -2,8 +2,10 @@ use gui;
 use gui::text;
 use gui::column;
 use gui::container;
+mod icon;
 
 [&window(
+  #icon: &icon::icon,
   #title: &"Theme Demo",
   #theme: &`TokyoNight,
   &container(

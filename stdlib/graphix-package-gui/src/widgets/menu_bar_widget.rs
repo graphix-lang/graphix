@@ -33,9 +33,13 @@ pub(crate) struct State {
 }
 
 /// Overlay that renders the dropdown menu below a menu bar label.
+/// When `open` is `Some`, the overlay sets it to `false` when an item
+/// is clicked (used by context menus). Menu bar passes `None` since
+/// it manages open state in its own `update()`.
 pub(crate) struct MenuOverlay<'a> {
     pub menu: &'a MenuGroupDesc,
     pub position: Point,
+    pub open: Option<&'a mut bool>,
 }
 
 const ITEM_PADDING: Padding = Padding {
@@ -291,6 +295,9 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                             ..
                         } = item
                         {
+                            if let Some(open) = self.open.as_deref_mut() {
+                                *open = false;
+                            }
                             shell.publish(Message::Call(
                                 *id,
                                 ValArray::from_iter([Value::Null]),
@@ -533,6 +540,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         Some(overlay::Element::new(Box::new(MenuOverlay {
             menu: &self.descs[idx],
             position,
+            open: None,
         })))
     }
 }

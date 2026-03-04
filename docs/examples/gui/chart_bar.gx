@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::chart;
 use gui::column;
+mod icon;
 
 let data = [
     ("Jan", 42.),
@@ -36,4 +37,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Bar Chart", #size: &{width: 800.0, height: 600.0}, &col)]
+[&window(#icon: &icon::icon, #title: &"Bar Chart", #size: &{width: 800.0, height: 600.0}, &col)]

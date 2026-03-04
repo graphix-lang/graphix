@@ -3,11 +3,13 @@ use gui::text;
 use gui::mouse_area;
 use gui::container;
 use gui::column;
+mod icon;
 
 let status = "Move the mouse over the box";
 let position = "---";
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Mouse Area",
     &column(
         #spacing: &15.0,
@@ -18,8 +20,16 @@ let position = "---";
             text(&status),
             text(&"Position: [position]"),
             mouse_area(
-                #on_press: |p| status <- p ~ "Pressed!",
-                #on_release: |r| status <- r ~ "Released!",
+                #on_press: |btn| status <- btn ~ select btn {
+                    `Left => "Left pressed",
+                    `Right => "Right pressed",
+                    `Middle => "Middle pressed"
+                },
+                #on_release: |btn| status <- btn ~ select btn {
+                    `Left => "Left released",
+                    `Right => "Right released",
+                    `Middle => "Middle released"
+                },
                 #on_enter: |e| status <- e ~ "Mouse entered",
                 #on_exit: |e| status <- e ~ "Mouse exited",
                 #on_move: |pos| position <- pos ~ "[pos.x], [pos.y]",

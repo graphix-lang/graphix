@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::chart;
 use gui::column;
+mod icon;
 
 let dark_bg = color(#r: 0.1, #g: 0.1, #b: 0.15)$;
 
@@ -68,6 +69,7 @@ let col = column(
 );
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Candlestick",
     #size: &{width: 900.0, height: 650.0},
     #theme: &`CatppuccinMocha,

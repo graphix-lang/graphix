@@ -3,6 +3,7 @@ use gui::text;
 use gui::text_input;
 use gui::qr_code;
 use gui::column;
+mod icon;
 
 let url = "https://graphix.dev";
 
@@ -22,4 +23,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"QR Code", &col)]
+[&window(#icon: &icon::icon, #title: &"QR Code", &col)]

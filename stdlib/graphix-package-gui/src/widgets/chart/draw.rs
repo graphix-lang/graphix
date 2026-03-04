@@ -959,22 +959,45 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                         .unwrap_or(PALETTE[i % PALETTE.len()]);
                                     let color_by_z = style.color_by_z.unwrap_or(false);
 
-                                    let x_vals: Vec<f64> =
-                                        grid.0.iter().map(|row| row[0].0).collect();
+                                    let x_vals: Vec<f64> = grid
+                                        .0
+                                        .iter()
+                                        .filter(|row| !row.is_empty())
+                                        .map(|row| row[0].0)
+                                        .collect();
                                     let y_vals: Vec<f64> =
                                         grid.0[0].iter().map(|pt| pt.1).collect();
 
+                                    // Build a flat z grid indexed by (row, col) for
+                                    // O(1) lookup. SurfaceSeries::xoz calls us with
+                                    // the exact x/y values we provide, so binary
+                                    // search on those sorted vecs finds the index.
+                                    let ncols = y_vals.len();
+                                    let z_grid: Vec<f64> = grid
+                                        .0
+                                        .iter()
+                                        .filter(|row| !row.is_empty())
+                                        .flat_map(|row| row.iter().map(|&(_, _, z)| z))
+                                        .collect();
                                     let z_lookup = |x: f64, y: f64| -> f64 {
-                                        for row in grid.0.iter() {
-                                            for &(gx, gy, gz) in row.iter() {
-                                                if (gx - x).abs() < 1e-10
-                                                    && (gy - y).abs() < 1e-10
-                                                {
-                                                    return gz;
-                                                }
-                                            }
-                                        }
-                                        0.0
+                                        let ri = x_vals
+                                            .binary_search_by(|v| {
+                                                v.partial_cmp(&x).unwrap_or(
+                                                    std::cmp::Ordering::Equal,
+                                                )
+                                            })
+                                            .unwrap_or(0);
+                                        let ci = y_vals
+                                            .binary_search_by(|v| {
+                                                v.partial_cmp(&y).unwrap_or(
+                                                    std::cmp::Ordering::Equal,
+                                                )
+                                            })
+                                            .unwrap_or(0);
+                                        z_grid
+                                            .get(ri * ncols + ci)
+                                            .copied()
+                                            .unwrap_or(0.0)
                                     };
                                     if color_by_z {
                                         let z_color = |z: &f64| {

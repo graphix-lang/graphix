@@ -1,7 +1,8 @@
 use gui;
 use gui::text;
-use gui::svg;
+use gui::image;
 use gui::column;
+mod icon;
 
 let svg_content = r'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
   <circle cx="100" cy="100" r="80" fill="#4a9eff" opacity="0.8"/>
@@ -10,6 +11,7 @@ let svg_content = r'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200
 </svg>';
 
 [&window(
+    #icon: &icon::icon,
     #title: &"SVG Widget",
     &column(
         #spacing: &15.0,
@@ -19,11 +21,11 @@ let svg_content = r'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200
         #height: &`Fill,
         &[
             text(#size: &24.0, &"SVG Demo"),
-            svg(
+            image(
                 #width: &`Fixed(300.0),
                 #height: &`Fixed(300.0),
                 #content_fit: &`Contain,
-                &svg_content
+                &`Svg(svg_content)
             )
         ]
     )

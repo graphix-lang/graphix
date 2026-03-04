@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::text_editor;
 use gui::column;
+mod icon;
 
 let content = "";
 
@@ -22,4 +23,4 @@ let col = column(
     ]
 );
 
-[&window(#title: &"Text Editor", &col)]
+[&window(#icon: &icon::icon, #title: &"Text Editor", &col)]

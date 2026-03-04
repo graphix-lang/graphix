@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::table;
 use gui::column;
+mod icon;
 
 let cols = &[
     table_column(#width: &`Fixed(200.0), &text(&"Name")),
@@ -25,4 +26,4 @@ let layout = column(
     ]
 );
 
-[&window(#title: &"Table Widget", &layout)]
+[&window(#icon: &icon::icon, #title: &"Table Widget", &layout)]

@@ -3,6 +3,7 @@ use gui::text;
 use gui::scrollable;
 use gui::column;
 use gui::rule;
+mod icon;
 
 let col = column(
     #spacing: &10.0,
@@ -28,6 +29,7 @@ let col = column(
 );
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Scrollable",
     #size: &{ width: 400.0, height: 300.0 },
     &scrollable(

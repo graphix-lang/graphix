@@ -23,6 +23,9 @@ let menu = |
   items: &Array<MenuItem>
 | -> MenuGroup { label, items };
 
+let context_menu = |items: &Array<MenuItem>, child: &Widget|
+    -> Widget `ContextMenu({ child, items });
+
 let bar = |
   #width: &Length = &`Shrink,
   menus: &Array<MenuGroup>

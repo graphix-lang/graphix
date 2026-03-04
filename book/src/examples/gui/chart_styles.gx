@@ -2,6 +2,7 @@ use gui;
 use gui::text;
 use gui::chart;
 use gui::column;
+mod icon;
 
 let clock = time::timer(duration:0.5s, true);
 let x = 0.;
@@ -73,6 +74,7 @@ let col = column(
 );
 
 [&window(
+    #icon: &icon::icon,
     #title: &"Chart Styles",
     #size: &{width: 900.0, height: 700.0},
     #theme: &`CatppuccinMocha,

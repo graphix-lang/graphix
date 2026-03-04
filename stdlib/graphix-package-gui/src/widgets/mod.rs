@@ -61,6 +61,8 @@ pub(crate) mod canvas;
 pub(crate) mod chart;
 pub(crate) mod combo_box;
 pub(crate) mod container;
+pub(crate) mod context_menu;
+pub(crate) mod context_menu_widget;
 pub(crate) mod grid;
 pub(crate) mod iced_keyboard_area;
 pub(crate) mod image;
@@ -78,7 +80,6 @@ pub(crate) mod scrollable;
 pub(crate) mod slider;
 pub(crate) mod space;
 pub(crate) mod stack;
-pub(crate) mod svg;
 pub(crate) mod table;
 pub(crate) mod text;
 pub(crate) mod text_editor;
@@ -335,8 +336,8 @@ pub(crate) fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X>
             "KeyboardArea" => keyboard_area::KeyboardAreaW::compile(gx, v).await,
             "MouseArea" => mouse_area::MouseAreaW::compile(gx, v).await,
             "Image" => image::ImageW::compile(gx, v).await,
-            "Svg" => svg::SvgW::compile(gx, v).await,
             "Canvas" => canvas::CanvasW::compile(gx, v).await,
+            "ContextMenu" => context_menu::ContextMenuW::compile(gx, v).await,
             "Chart" => chart::ChartW::compile(gx, v).await,
             "Markdown" => markdown::MarkdownW::compile(gx, v).await,
             "MenuBar" => menu_bar::MenuBarW::compile(gx, v).await,
