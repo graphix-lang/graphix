@@ -28,7 +28,12 @@ use gui::mouse_area;\n\
 use gui::canvas;\n\
 use gui::chart;\n\
 use gui::image;\n\
-use gui::svg";
+use gui::svg;\n\
+use gui::grid;\n\
+use gui::qr_code;\n\
+use gui::markdown;\n\
+use gui::table;\n\
+use gui::menu";
 
 /// Helper: compile a simple widget expression.
 /// Wraps the code in standard imports + `let result = <expr>`.
@@ -448,6 +453,115 @@ async fn image_renders() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn svg_renders() -> Result<()> {
     let h = harness(r#"svg(&"/dev/null")"#).await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Grid ───────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn grid_renders() -> Result<()> {
+    let h = harness(r#"grid(#columns: &`Fixed(2), &[text(&"A"), text(&"B")])"#).await?;
+    view!(h);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn grid_with_params() -> Result<()> {
+    let h = harness(
+        "grid(\
+            #columns: &`Fluid(100.0),\
+            #spacing: &10.0,\
+            #width: &400.0,\
+            #height: &`AspectRatio(0.5),\
+            &[text(&\"One\"), text(&\"Two\"), text(&\"Three\")])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+// ── QR Code ────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn qr_code_renders() -> Result<()> {
+    let h = harness(r#"qr_code(&"hello")"#).await?;
+    view!(h);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn qr_code_with_cell_size() -> Result<()> {
+    let h = harness(r#"qr_code(#cell_size: &4.0, &"test data")"#).await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Markdown ───────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn markdown_renders() -> Result<()> {
+    let h = harness(r##"markdown(&"# Hello\n**bold**")"##).await?;
+    view!(h);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn markdown_with_params() -> Result<()> {
+    let h = harness(
+        "markdown(\
+            #on_link: |url| println(url),\
+            #text_size: &18.0,\
+            #spacing: &10.0,\
+            &\"Some *markdown* text\")",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Table ──────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn table_renders() -> Result<()> {
+    let h = harness(
+        "table(\
+            &[table_column(&text(&\"Name\")), table_column(&text(&\"Value\"))],\
+            &[[text(&\"a\"), text(&\"1\")]])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn table_with_params() -> Result<()> {
+    let h = harness(
+        "table(\
+            #padding: &8.0,\
+            #separator: &1.0,\
+            &[table_column(#halign: &`Right, &text(&\"Col\"))],\
+            &[[text(&\"val\")]])",
+    )
+    .await?;
+    view!(h);
+    Ok(())
+}
+
+// ── Menu Bar ───────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn menu_bar_renders() -> Result<()> {
+    let h = harness(
+        "menu::bar(&[\
+            menu::menu(&\"File\", &[\
+                menu::action(#on_click: |_| null, &\"New\"),\
+                menu::divider(),\
+                menu::action(&\"Quit\")\
+            ])\
+        ])",
+    )
+    .await?;
     view!(h);
     Ok(())
 }

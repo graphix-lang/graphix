@@ -1,0 +1,14 @@
+let table_column = |
+  #width: &Length = &`Shrink,
+  #halign: &HAlign = &`Left,
+  #valign: &VAlign = &`Top,
+  header: &Widget
+| -> TableColumn { header, width, halign, valign };
+
+let table = |
+  #width: &Length = &`Shrink,
+  #padding: &[f64, null] = &null,
+  #separator: &[f64, null] = &null,
+  columns: &Array<TableColumn>,
+  rows: &Array<Array<Widget>>
+| -> Widget `Table({ columns, rows, width, padding, separator })

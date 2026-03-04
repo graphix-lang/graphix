@@ -28,7 +28,7 @@ let col = column(
             &[
                 chart::bar(
                     #label: "Product A",
-                    #color: {r: 0.2, g: 0.5, b: 0.8, a: 1.0},
+                    #color: color(#r: 0.2, #g: 0.5, #b: 0.8)$,
                     &data
                 )
             ]

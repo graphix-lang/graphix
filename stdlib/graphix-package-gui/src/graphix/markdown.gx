@@ -1,0 +1,7 @@
+let markdown = |
+  #on_link: fn(string) -> Any = |_| null,
+  #spacing: &[f64, null] = &null,
+  #text_size: &[f64, null] = &null,
+  #width: &Length = &`Fill,
+  content: &string
+| -> Widget `Markdown({ content, on_link: &on_link, spacing, text_size, width })

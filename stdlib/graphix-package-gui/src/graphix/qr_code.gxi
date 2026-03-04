@@ -1,0 +1,9 @@
+type QrCode = {
+  data: &string,
+  cell_size: &[f64, null]
+};
+
+val qr_code: fn(
+  ?#cell_size: &[f64, null],
+  &string
+) -> Widget

@@ -6,17 +6,18 @@ use gui::toggler;
 use gui::slider;
 use gui::column;
 
-let my_palette = {
-  background: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
-  text:       { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
-  primary:    { r: 0.4, g: 0.6, b: 1.0, a: 1.0 },
-  success:    { r: 0.3, g: 0.8, b: 0.4, a: 1.0 },
-  danger:     { r: 1.0, g: 0.3, b: 0.3, a: 1.0 },
-  warning:    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 }
-};
-
 let enabled = true;
-let volume = 50.0;
+let br = 0.0;
+let cv = |base| min(1.0, base + br);
+
+let my_palette = {
+  background: color(#r: cv(0.1), #g: cv(0.1), #b: cv(0.15))$,
+  text:       color(#r: cv(0.9), #g: cv(0.9), #b: cv(0.95))$,
+  primary:    color(#r: cv(0.4), #g: cv(0.6), #b: cv(1.0))$,
+  success:    color(#r: cv(0.3), #g: cv(0.8), #b: cv(0.4))$,
+  danger:     color(#r: cv(1.0), #g: cv(0.3), #b: cv(0.3))$,
+  warning:    color(#r: cv(1.0), #g: cv(0.8), #b: cv(0.2))$
+};
 
 let col = column(
   #spacing: &15.0,
@@ -26,8 +27,8 @@ let col = column(
     text(#size: &24.0, &"Custom Palette"),
     button(#padding: &`All(10.0), &text(&"Primary Button")),
     toggler(#label: &"Enabled", #on_toggle: |v| enabled <- v, &enabled),
-    slider(#min: &0.0, #max: &100.0, #on_change: |v| volume <- v, &volume),
-    text(&"Volume: [volume]")
+    slider(#min: &0.0, #max: &0.5, #step: &0.05, #on_change: |v| br <- v, &br),
+    text(&"Brightness: [br]")
   ]
 );
 

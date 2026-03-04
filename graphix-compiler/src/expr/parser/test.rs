@@ -1281,6 +1281,10 @@ fn parse_prop0(s: &str) -> anyhow::Result<Type> {
 
 #[test]
 fn prop0() {
-    let s = "type T = Array<Box<i64>>";
+    let s = r#"
+        let invalid_color = |name: string, v: f64|
+          -> Error<`InvalidColor(string)>
+          error(`InvalidColor("[name] must be in \[0, 1\], got [v]"))
+    "#;
     dbg!(parse_one(s).unwrap());
 }

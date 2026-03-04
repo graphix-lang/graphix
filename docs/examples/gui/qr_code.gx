@@ -1,0 +1,25 @@
+use gui;
+use gui::text;
+use gui::text_input;
+use gui::qr_code;
+use gui::column;
+
+let url = "https://graphix.dev";
+
+let col = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"QR Code Demo"),
+        text_input(
+            #placeholder: &"Enter text...",
+            #on_input: |v| url <- v,
+            &url
+        ),
+        qr_code(#cell_size: &4.0, &url)
+    ]
+);
+
+[&window(#title: &"QR Code", &col)]

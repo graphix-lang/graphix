@@ -18,6 +18,7 @@ mod widgets_test;
 
 const TEST_REGISTER: &[RegisterFn] = &[
     <graphix_package_core::P as graphix_package::Package<NoExt>>::register,
+    <graphix_package_str::P as graphix_package::Package<NoExt>>::register,
     <crate::P as graphix_package::Package<NoExt>>::register,
 ];
 

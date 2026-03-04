@@ -7,12 +7,16 @@ type Widget = [
   `Column(column::Column),
   `ComboBox(combo_box::ComboBox),
   `Container(container::Container),
+  `Grid(grid::Grid),
   `HorizontalRule(rule::HorizontalRule),
   `Image(image::Image),
   `KeyboardArea(keyboard_area::KeyboardArea),
+  `Markdown(markdown::Markdown),
+  `MenuBar(menu::MenuBar),
   `MouseArea(mouse_area::MouseArea),
   `PickList(pick_list::PickList),
   `ProgressBar(progress_bar::ProgressBar),
+  `QrCode(qr_code::QrCode),
   `Radio(radio::Radio),
   `Row(row::Row),
   `Scrollable(scrollable::Scrollable),
@@ -20,6 +24,7 @@ type Widget = [
   `Space(space::Space),
   `Stack(stack::Stack),
   `Svg(svg::Svg),
+  `Table(table::Table),
   `Text(text::Text),
   `TextEditor(text_editor::TextEditor),
   `TextInput(text_input::TextInput),
@@ -34,7 +39,10 @@ type Padding = [`All(f64), `Axis({x: f64, y: f64}), `Each({top: f64, right: f64,
 type Size = { width: f64, height: f64 };
 type HAlign = [`Left, `Center, `Right];
 type VAlign = [`Top, `Center, `Bottom];
-type Color = { r: f64, g: f64, b: f64, a: f64 };
+type Color;
+
+/// Create a color with components in [0, 1]
+val color: fn(?#r: f64, ?#g: f64, ?#b: f64, ?#a: f64) -> [Color, Error<`InvalidColor(string)>];
 type FontFamily = [`SansSerif, `Serif, `Monospace, `Name(string)];
 type FontWeight = [
   `Thin, `ExtraLight, `Light, `Normal, `Medium,
@@ -120,4 +128,9 @@ mod image;
 mod svg;
 mod canvas;
 mod chart;
-mod clipboard
+mod clipboard;
+mod grid;
+mod markdown;
+mod menu;
+mod qr_code;
+mod table

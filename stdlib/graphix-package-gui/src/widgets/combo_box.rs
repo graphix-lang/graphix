@@ -32,14 +32,8 @@ impl<X: GXExt> ComboBoxW<X> {
             gx.compile_ref(selected),
             gx.compile_ref(width),
         }?;
-        let callable = match on_select.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("combo_box on_select callable")?,
-            ),
-            None => None,
-        };
+        let callable =
+            compile_callable!(gx, on_select, "combo_box on_select");
         let options_tref: TRef<X, StringVec> =
             TRef::new(options).context("combo_box tref options")?;
         let state = combo_box::State::new(
@@ -83,13 +77,7 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
             .context("combo_box update placeholder")?
             .is_some();
         changed |= self.width.update(id, v).context("combo_box update width")?.is_some();
-        if id == self.on_select.id {
-            self.on_select.last = Some(v.clone());
-            self.on_select_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("combo_box on_select callable recompile")?,
-            );
-        }
+        update_callable!(self, rt, id, v, on_select, on_select_callable, "combo_box on_select recompile");
         Ok(changed)
     }
 

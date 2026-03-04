@@ -35,12 +35,7 @@ impl<X: GXExt> MouseAreaW<X> {
             gx.compile_ref(on_press),
             gx.compile_ref(on_release),
         }?;
-        let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(super::EmptyW),
-            Some(v) => {
-                compile(gx.clone(), v.clone()).await.context("mouse_area child")?
-            }
-        };
+        let compiled_child = compile_child!(gx, child_ref, "mouse_area child");
         let on_press_callable = compile_callable!(gx, on_press, "mouse_area on_press");
         let on_release_callable =
             compile_callable!(gx, on_release, "mouse_area on_release");
@@ -73,59 +68,12 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        if id == self.child_ref.id {
-            self.child_ref.last = Some(v.clone());
-            self.child = rt
-                .block_on(compile(self.gx.clone(), v.clone()))
-                .context("mouse_area child recompile")?;
-            changed = true;
-        }
-        changed |= self.child.handle_update(rt, id, v)?;
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_press,
-            on_press_callable,
-            "mouse_area on_press"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_release,
-            on_release_callable,
-            "mouse_area on_release"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_enter,
-            on_enter_callable,
-            "mouse_area on_enter"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_exit,
-            on_exit_callable,
-            "mouse_area on_exit"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_move,
-            on_move_callable,
-            "mouse_area on_move"
-        );
+        update_child!(self, rt, id, v, changed, child_ref, child, "mouse_area child recompile");
+        update_callable!(self, rt, id, v, on_press, on_press_callable, "mouse_area on_press recompile");
+        update_callable!(self, rt, id, v, on_release, on_release_callable, "mouse_area on_release recompile");
+        update_callable!(self, rt, id, v, on_enter, on_enter_callable, "mouse_area on_enter recompile");
+        update_callable!(self, rt, id, v, on_exit, on_exit_callable, "mouse_area on_exit recompile");
+        update_callable!(self, rt, id, v, on_move, on_move_callable, "mouse_area on_move recompile");
         Ok(changed)
     }
 

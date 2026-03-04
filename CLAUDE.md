@@ -733,3 +733,4 @@ select x {
 - Functional update: `{s with field: new_val}` — copies struct with changes.
 - `select` must be exhaustive (cover all cases) with no dead arms.
 - `never()` returns a value that never arrives — used to stop reactive loops.
+- you must escape square brackets in string literals "[name] must be between \[0, 1\]"

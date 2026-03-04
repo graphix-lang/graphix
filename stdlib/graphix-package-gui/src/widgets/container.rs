@@ -31,10 +31,7 @@ impl<X: GXExt> ContainerW<X> {
             gx.compile_ref(valign),
             gx.compile_ref(width),
         }?;
-        let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(super::EmptyW),
-            Some(v) => compile(gx.clone(), v.clone()).await.context("container child")?,
-        };
+        let compiled_child = compile_child!(gx, child_ref, "container child");
         Ok(Box::new(Self {
             gx: gx.clone(),
             padding: TRef::new(padding).context("container tref padding")?,
@@ -65,14 +62,7 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
             self.halign.update(id, v).context("container update halign")?.is_some();
         changed |=
             self.valign.update(id, v).context("container update valign")?.is_some();
-        if id == self.child_ref.id {
-            self.child_ref.last = Some(v.clone());
-            self.child = rt
-                .block_on(compile(self.gx.clone(), v.clone()))
-                .context("container child recompile")?;
-            changed = true;
-        }
-        changed |= self.child.handle_update(rt, id, v)?;
+        update_child!(self, rt, id, v, changed, child_ref, child, "container child recompile");
         Ok(changed)
     }
 

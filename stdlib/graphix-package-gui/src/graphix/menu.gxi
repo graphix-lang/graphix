@@ -1,0 +1,44 @@
+/// A keyboard shortcut combining modifier keys with a character key.
+type Shortcut;
+
+/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S").
+/// Returns an error for invalid keys.
+val shortcut: fn(
+  ?#ctrl: bool,
+  ?#shift: bool,
+  ?#alt: bool,
+  ?#logo: bool,
+  string
+) -> [Shortcut, Error<`InvalidKey(string)>];
+
+type MenuAction = {
+  label: &string,
+  shortcut: &[Shortcut, null],
+  on_click: &fn(null) -> Any,
+  disabled: &bool
+};
+
+type MenuItem = [`Action(MenuAction), `Divider];
+
+type MenuGroup = {
+  label: &string,
+  items: &Array<MenuItem>
+};
+
+type MenuBar = {
+  menus: &Array<MenuGroup>,
+  width: &Length
+};
+
+val action: fn(
+  ?#on_click: fn(null) -> Any,
+  ?#shortcut: &[Shortcut, null],
+  ?#disabled: &bool,
+  &string
+) -> MenuItem;
+
+val divider: fn() -> MenuItem;
+
+val menu: fn(&string, &Array<MenuItem>) -> MenuGroup;
+
+val bar: fn(?#width: &Length, &Array<MenuGroup>) -> Widget

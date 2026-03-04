@@ -1,0 +1,29 @@
+use str;
+
+type Shortcut = {alt: bool, ctrl: bool, key: string, logo: bool, shift: bool};
+
+let shortcut = |#ctrl = false, #shift = false, #alt = false, #logo = false, key: string|
+    -> [Shortcut, Error<`InvalidKey(string)>]
+    select str::len(key) {
+        1 => {alt, ctrl, key, logo, shift},
+        _ => error(`InvalidKey("shortcut key must be exactly one character, got: [key]"))
+    };
+
+let action = |
+  #on_click: fn(null) -> Any = |_| null,
+  #shortcut: &[Shortcut, null] = &null,
+  #disabled: &bool = &false,
+  label: &string
+| -> MenuItem `Action({ label, shortcut, on_click: &on_click, disabled });
+
+let divider = || -> MenuItem `Divider;
+
+let menu = |
+  label: &string,
+  items: &Array<MenuItem>
+| -> MenuGroup { label, items };
+
+let bar = |
+  #width: &Length = &`Shrink,
+  menus: &Array<MenuGroup>
+| -> Widget `MenuBar({ menus, width })

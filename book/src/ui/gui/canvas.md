@@ -98,7 +98,7 @@ A straight line between two points with a given color and stroke width.
 
 ```graphix
 `Line({ from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0},
-        color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, width: 2.0 })
+        color: color(#r: 1.0)$, width: 2.0 })
 ```
 
 ### Circle
@@ -107,7 +107,7 @@ A circle defined by center and radius. Either or both of `fill` and `stroke` can
 
 ```graphix
 `Circle({ center: {x: 100.0, y: 100.0}, radius: 40.0,
-          fill: {r: 0.2, g: 0.6, b: 1.0, a: 1.0}, stroke: null })
+          fill: color(#r: 0.2, #g: 0.6, #b: 1.0)$, stroke: null })
 ```
 
 ### Rect
@@ -116,7 +116,7 @@ An axis-aligned rectangle defined by its top-left corner and size.
 
 ```graphix
 `Rect({ top_left: {x: 10.0, y: 10.0}, size: {width: 80.0, height: 60.0},
-        fill: {r: 0.0, g: 0.8, b: 0.4, a: 1.0}, stroke: null })
+        fill: color(#g: 0.8, #b: 0.4)$, stroke: null })
 ```
 
 ### RoundedRect
@@ -126,7 +126,7 @@ Like `Rect` but with rounded corners. The `radius` field controls the corner rou
 ```graphix
 `RoundedRect({ top_left: {x: 10.0, y: 10.0}, size: {width: 80.0, height: 60.0},
                radius: 8.0,
-               fill: null, stroke: {color: {r: 1.0, g: 1.0, b: 1.0, a: 1.0}, width: 2.0} })
+               fill: null, stroke: {color: color(#r: 1.0, #g: 1.0, #b: 1.0)$, width: 2.0} })
 ```
 
 ### Arc
@@ -136,7 +136,7 @@ A circular arc defined by center, radius, and start/end angles in radians. Arcs 
 ```graphix
 `Arc({ center: {x: 100.0, y: 100.0}, radius: 50.0,
        start_angle: 0.0, end_angle: 3.14159,
-       stroke: {color: {r: 1.0, g: 0.5, b: 0.0, a: 1.0}, width: 2.0} })
+       stroke: {color: color(#r: 1.0, #g: 0.5)$, width: 2.0} })
 ```
 
 ### Ellipse
@@ -146,7 +146,7 @@ An ellipse with independent x and y radii, a rotation angle, and start/end angle
 ```graphix
 `Ellipse({ center: {x: 150.0, y: 100.0}, radii: {x: 60.0, y: 30.0},
            rotation: 0.5, start_angle: 0.0, end_angle: 6.283,
-           fill: {r: 0.8, g: 0.2, b: 0.8, a: 0.5}, stroke: null })
+           fill: color(#r: 0.8, #g: 0.2, #b: 0.8, #a: 0.5)$, stroke: null })
 ```
 
 ### BezierCurve
@@ -157,7 +157,7 @@ A cubic Bezier curve defined by start, two control points, and end. Drawn as a s
 `BezierCurve({ from: {x: 0.0, y: 100.0},
                control_a: {x: 50.0, y: 0.0}, control_b: {x: 150.0, y: 200.0},
                to: {x: 200.0, y: 100.0},
-               color: {r: 0.0, g: 1.0, b: 1.0, a: 1.0}, width: 2.0 })
+               color: color(#g: 1.0, #b: 1.0)$, width: 2.0 })
 ```
 
 ### QuadraticCurve
@@ -168,7 +168,7 @@ A quadratic Bezier curve with one control point. Drawn as a stroked line.
 `QuadraticCurve({ from: {x: 0.0, y: 100.0},
                   control: {x: 100.0, y: 0.0},
                   to: {x: 200.0, y: 100.0},
-                  color: {r: 1.0, g: 1.0, b: 0.0, a: 1.0}, width: 2.0 })
+                  color: color(#r: 1.0, #g: 1.0)$, width: 2.0 })
 ```
 
 ### Text
@@ -177,7 +177,7 @@ A text label placed at a specific position on the canvas.
 
 ```graphix
 `Text({ content: "Hello", position: {x: 50.0, y: 50.0},
-        color: {r: 1.0, g: 1.0, b: 1.0, a: 1.0}, size: 16.0 })
+        color: color(#r: 1.0, #g: 1.0, #b: 1.0)$, size: 16.0 })
 ```
 
 ### Path
@@ -199,7 +199,7 @@ An arbitrary path built from `PathSegment` values. Supports fill, stroke, or bot
     `LineTo({x: 100.0, y: 0.0}),
     `Close(null)
   ],
-  fill: {r: 0.5, g: 0.0, b: 0.5, a: 0.8},
+  fill: color(#r: 0.5, #b: 0.5, #a: 0.8)$,
   stroke: null
 })
 ```

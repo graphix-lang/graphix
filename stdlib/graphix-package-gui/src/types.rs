@@ -101,7 +101,15 @@ pub(crate) struct ColorV(pub Color);
 impl FromValue for ColorV {
     fn from_value(v: Value) -> Result<Self> {
         let [(_, a), (_, b), (_, g), (_, r)] = v.cast_to::<[(ArcStr, f64); 4]>()?;
-        Ok(Self(Color::from_rgba(r as f32, g as f32, b as f32, a as f32)))
+        let [r, g, b, a] = [r as f32, g as f32, b as f32, a as f32];
+        if !(0.0..=1.0).contains(&r)
+            || !(0.0..=1.0).contains(&g)
+            || !(0.0..=1.0).contains(&b)
+            || !(0.0..=1.0).contains(&a)
+        {
+            bail!("color components must be in [0, 1], got r={r} g={g} b={b} a={a}");
+        }
+        Ok(Self(Color::from_rgba(r, g, b, a)))
     }
 }
 
@@ -584,6 +592,99 @@ impl FromValue for ImageSourceV {
                 }
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GridColumnsV {
+    Fixed(usize),
+    Fluid(f32),
+}
+
+impl FromValue for GridColumnsV {
+    fn from_value(v: Value) -> Result<Self> {
+        match v {
+            v => match v.cast_to::<(ArcStr, Value)>()? {
+                (s, v) if &*s == "Fixed" => {
+                    let n = v.cast_to::<i64>()? as usize;
+                    Ok(Self::Fixed(n))
+                }
+                (s, v) if &*s == "Fluid" => {
+                    let n = v.cast_to::<f64>()? as f32;
+                    Ok(Self::Fluid(n))
+                }
+                (s, _) => bail!("invalid grid columns {s}"),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GridSizingV(pub iced_widget::grid::Sizing);
+
+impl FromValue for GridSizingV {
+    fn from_value(v: Value) -> Result<Self> {
+        match v.cast_to::<(ArcStr, Value)>()? {
+            (s, v) if &*s == "AspectRatio" => {
+                let r = v.cast_to::<f64>()? as f32;
+                Ok(Self(iced_widget::grid::Sizing::AspectRatio(r)))
+            }
+            (s, v) if &*s == "EvenlyDistribute" => {
+                let l = LengthV::from_value(v)?;
+                Ok(Self(iced_widget::grid::Sizing::EvenlyDistribute(l.0)))
+            }
+            (s, _) => bail!("invalid grid sizing {s}"),
+        }
+    }
+}
+
+/// Parsed shortcut from the Graphix `Shortcut` struct.
+#[derive(Clone, Debug)]
+pub(crate) struct ShortcutV {
+    pub display: String,
+    pub key: iced_core::keyboard::Key,
+    pub modifiers: iced_core::keyboard::Modifiers,
+}
+
+impl FromValue for ShortcutV {
+    fn from_value(v: Value) -> Result<Self> {
+        let [(_, alt), (_, ctrl), (_, key), (_, logo), (_, shift)] =
+            v.cast_to::<[(ArcStr, Value); 5]>()?;
+        let alt = alt.cast_to::<bool>()?;
+        let ctrl = ctrl.cast_to::<bool>()?;
+        let key_str = key.cast_to::<ArcStr>()?;
+        let logo = logo.cast_to::<bool>()?;
+        let shift = shift.cast_to::<bool>()?;
+        let mut display = String::new();
+        if ctrl {
+            display.push_str("Ctrl+");
+        }
+        if alt {
+            display.push_str("Alt+");
+        }
+        if shift {
+            display.push_str("Shift+");
+        }
+        if logo {
+            display.push_str("Super+");
+        }
+        display.push_str(&key_str.to_uppercase());
+        let mut modifiers = iced_core::keyboard::Modifiers::empty();
+        if ctrl {
+            modifiers |= iced_core::keyboard::Modifiers::CTRL;
+        }
+        if alt {
+            modifiers |= iced_core::keyboard::Modifiers::ALT;
+        }
+        if shift {
+            modifiers |= iced_core::keyboard::Modifiers::SHIFT;
+        }
+        if logo {
+            modifiers |= iced_core::keyboard::Modifiers::LOGO;
+        }
+        let iced_key =
+            iced_core::keyboard::Key::Character(key_str.to_lowercase().into());
+        Ok(Self { display, key: iced_key, modifiers })
     }
 }
 

@@ -1,3 +1,19 @@
+type Color = { r: f64, g: f64, b: f64, a: f64 };
+
+let invalid_color = |name: string, v: f64|
+  -> Error<`InvalidColor(string)>
+  error(`InvalidColor("[name] must be in \[0, 1\], got [v]"));
+
+let color = |#r: f64 = 0.0, #g: f64 = 0.0, #b: f64 = 0.0, #a: f64 = 1.0|
+  -> [Color, Error<`InvalidColor(string)>]
+  select true {
+    _ if r < 0.0 || r > 1.0 => invalid_color("r", r),
+    _ if g < 0.0 || g > 1.0 => invalid_color("g", g),
+    _ if b < 0.0 || b > 1.0 => invalid_color("b", b),
+    _ if a < 0.0 || a > 1.0 => invalid_color("a", a),
+    _ => { r, g, b, a }
+  };
+
 let window = |
   #title: &string = &"Graphix",
   #size: &Size = &{ width: 800.0, height: 600.0 },

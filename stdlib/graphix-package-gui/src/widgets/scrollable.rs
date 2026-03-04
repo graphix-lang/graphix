@@ -30,20 +30,9 @@ impl<X: GXExt> ScrollableW<X> {
             gx.compile_ref(on_scroll),
             gx.compile_ref(width),
         }?;
-        let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(super::EmptyW),
-            Some(v) => {
-                compile(gx.clone(), v.clone()).await.context("scrollable child")?
-            }
-        };
-        let on_scroll_callable = match on_scroll.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("scrollable on_scroll callable")?,
-            ),
-            None => None,
-        };
+        let compiled_child = compile_child!(gx, child_ref, "scrollable child");
+        let on_scroll_callable =
+            compile_callable!(gx, on_scroll, "scrollable on_scroll");
         Ok(Box::new(Self {
             gx: gx.clone(),
             child_ref,
@@ -73,21 +62,8 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
         changed |= self.width.update(id, v).context("scrollable update width")?.is_some();
         changed |=
             self.height.update(id, v).context("scrollable update height")?.is_some();
-        if id == self.child_ref.id {
-            self.child_ref.last = Some(v.clone());
-            self.child = rt
-                .block_on(compile(self.gx.clone(), v.clone()))
-                .context("scrollable child recompile")?;
-            changed = true;
-        }
-        changed |= self.child.handle_update(rt, id, v)?;
-        if id == self.on_scroll.id {
-            self.on_scroll.last = Some(v.clone());
-            self.on_scroll_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("scrollable on_scroll callable recompile")?,
-            );
-        }
+        update_child!(self, rt, id, v, changed, child_ref, child, "scrollable child recompile");
+        update_callable!(self, rt, id, v, on_scroll, on_scroll_callable, "scrollable on_scroll recompile");
         Ok(changed)
     }
 

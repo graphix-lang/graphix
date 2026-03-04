@@ -29,6 +29,7 @@ graphix-compiler = { version = "0.4.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.4.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.4.0", path = "../../graphix-package" }
 graphix-package-core = { version = "0.4.0", path = "../graphix-package-core" }
+graphix-package-str = { version = "0.4.0", path = "../graphix-package-str" }
 graphix-rt = { version = "0.4.0", path = "../../graphix-rt" }
 iced_core = { workspace = true }
 iced_renderer = { workspace = true }

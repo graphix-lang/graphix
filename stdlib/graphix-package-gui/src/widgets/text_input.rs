@@ -51,22 +51,10 @@ impl<X: GXExt> TextInputW<X> {
             gx.compile_ref(value),
             gx.compile_ref(width),
         }?;
-        let on_input_callable = match on_input.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("text_input on_input callable")?,
-            ),
-            None => None,
-        };
-        let on_submit_callable = match on_submit.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("text_input on_submit callable")?,
-            ),
-            None => None,
-        };
+        let on_input_callable =
+            compile_callable!(gx, on_input, "text_input on_input");
+        let on_submit_callable =
+            compile_callable!(gx, on_submit, "text_input on_submit");
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("text_input tref disabled")?,
@@ -111,20 +99,8 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
             self.padding.update(id, v).context("text_input update padding")?.is_some();
         changed |= self.size.update(id, v).context("text_input update size")?.is_some();
         changed |= self.font.update(id, v).context("text_input update font")?.is_some();
-        if id == self.on_input.id {
-            self.on_input.last = Some(v.clone());
-            self.on_input_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("text_input on_input callable recompile")?,
-            );
-        }
-        if id == self.on_submit.id {
-            self.on_submit.last = Some(v.clone());
-            self.on_submit_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("text_input on_submit callable recompile")?,
-            );
-        }
+        update_callable!(self, rt, id, v, on_input, on_input_callable, "text_input on_input recompile");
+        update_callable!(self, rt, id, v, on_submit, on_submit_callable, "text_input on_submit recompile");
         Ok(changed)
     }
 

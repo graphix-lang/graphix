@@ -93,7 +93,7 @@ iced_core = "0.14"
 iced_renderer = { version = "0.14", features = ["wgpu", "wgpu-bare"] }
 iced_runtime = "0.14"
 iced_wgpu = "0.14"
-iced_widget = { version = "0.14", features = ["canvas", "image", "svg"] }
+iced_widget = { version = "0.14", features = ["canvas", "image", "markdown", "qr_code", "svg"] }
 
 [workspace]
 resolver = "2"

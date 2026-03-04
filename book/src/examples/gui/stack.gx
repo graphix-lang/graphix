@@ -22,7 +22,7 @@ use gui::column;
                         #height: &`Fill,
                         #halign: &`Center,
                         #valign: &`Center,
-                        &text(#size: &64.0, #color: &{r: 0.3, g: 0.3, b: 0.3, a: 1.0}, &"Background")
+                        &text(#size: &64.0, #color: &color(#r: 0.3, #g: 0.3, #b: 0.3)$, &"Background")
                     ),
                     container(
                         #width: &`Fill,

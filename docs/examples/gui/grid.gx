@@ -1,0 +1,37 @@
+use gui;
+use gui::text;
+use gui::grid;
+use gui::container;
+use gui::column;
+
+let item = |label| container(
+    #width: &`Fill,
+    #halign: &`Center,
+    #valign: &`Center,
+    #padding: &`All(20.0),
+    &text(#size: &16.0, &label)
+);
+
+let col = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Grid Demo"),
+        grid(
+            #columns: &`Fixed(3),
+            #spacing: &10.0,
+            #width: &800.0,
+            &[
+                item("One"),
+                item("Two"),
+                item("Three"),
+                item("Four"),
+                item("Five"),
+                item("Six")
+            ]
+        )
+    ]
+);
+
+[&window(#title: &"Grid Widget", &col)]

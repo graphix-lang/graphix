@@ -1,0 +1,18 @@
+type GridColumns = [`Fixed(i64), `Fluid(f64)];
+type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
+
+type Grid = {
+  children: &Array<Widget>,
+  spacing: &f64,
+  columns: &GridColumns,
+  width: &[f64, null],
+  height: &GridHeight
+};
+
+val grid: fn(
+  ?#spacing: &f64,
+  ?#columns: &GridColumns,
+  ?#width: &[f64, null],
+  ?#height: &GridHeight,
+  &Array<Widget>
+) -> Widget

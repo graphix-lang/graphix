@@ -194,7 +194,7 @@ impl ChartState {
                 if let (Some(base_yaw), Some(base_pitch)) =
                     (self.drag_yaw, self.drag_pitch)
                 {
-                    self.yaw_offset = base_yaw + (dx as f64) * 0.01;
+                    self.yaw_offset = base_yaw - (dx as f64) * 0.01;
                     self.pitch_offset = base_pitch + (dy as f64) * 0.01;
                 }
             }

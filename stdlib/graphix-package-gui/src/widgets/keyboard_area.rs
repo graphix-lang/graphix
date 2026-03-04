@@ -28,12 +28,7 @@ impl<X: GXExt> KeyboardAreaW<X> {
             gx.compile_ref(on_key_press),
             gx.compile_ref(on_key_release),
         }?;
-        let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(super::EmptyW),
-            Some(v) => {
-                compile(gx.clone(), v.clone()).await.context("keyboard_area child")?
-            }
-        };
+        let compiled_child = compile_child!(gx, child_ref, "keyboard_area child");
         let on_key_press_callable =
             compile_callable!(gx, on_key_press, "keyboard_area on_key_press");
         let on_key_release_callable =
@@ -92,32 +87,9 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        if id == self.child_ref.id {
-            self.child_ref.last = Some(v.clone());
-            self.child = rt
-                .block_on(compile(self.gx.clone(), v.clone()))
-                .context("keyboard_area child recompile")?;
-            changed = true;
-        }
-        changed |= self.child.handle_update(rt, id, v)?;
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_key_press,
-            on_key_press_callable,
-            "keyboard_area on_key_press"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_key_release,
-            on_key_release_callable,
-            "keyboard_area on_key_release"
-        );
+        update_child!(self, rt, id, v, changed, child_ref, child, "keyboard_area child recompile");
+        update_callable!(self, rt, id, v, on_key_press, on_key_press_callable, "keyboard_area on_key_press recompile");
+        update_callable!(self, rt, id, v, on_key_release, on_key_release_callable, "keyboard_area on_key_release recompile");
         Ok(changed)
     }
 

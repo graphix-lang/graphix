@@ -35,14 +35,8 @@ impl<X: GXExt> RadioW<X> {
             gx.compile_ref(value),
             gx.compile_ref(width),
         }?;
-        let callable = match on_select.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("radio on_select callable")?,
-            ),
-            None => None,
-        };
+        let callable =
+            compile_callable!(gx, on_select, "radio on_select");
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("radio tref disabled")?,
@@ -80,13 +74,7 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
         changed |= self.width.update(id, v).context("radio update width")?.is_some();
         changed |= self.size.update(id, v).context("radio update size")?.is_some();
         changed |= self.spacing.update(id, v).context("radio update spacing")?.is_some();
-        if id == self.on_select.id {
-            self.on_select.last = Some(v.clone());
-            self.on_select_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("radio on_select callable recompile")?,
-            );
-        }
+        update_callable!(self, rt, id, v, on_select, on_select_callable, "radio on_select recompile");
         Ok(changed)
     }
 

@@ -1,0 +1,7 @@
+let grid = |
+  #spacing: &f64 = &0.0,
+  #columns: &GridColumns = &`Fixed(3),
+  #width: &[f64, null] = &null,
+  #height: &GridHeight = &`AspectRatio(1.0),
+  children: &Array<Widget>
+| -> Widget `Grid({ children, spacing, columns, width, height })

@@ -10,7 +10,7 @@ use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
 /// Compile an optional callable ref during widget construction.
 macro_rules! compile_callable {
-    ($gx:expr, $ref:ident, $label:literal) => {
+    ($gx:expr, $ref:ident, $label:expr) => {
         match $ref.last.as_ref() {
             Some(v) => Some($gx.compile_callable(v.clone()).await.context($label)?),
             None => None,
@@ -20,29 +20,58 @@ macro_rules! compile_callable {
 
 /// Recompile a callable ref inside `handle_update`.
 macro_rules! update_callable {
-    ($self:ident, $rt:ident, $id:ident, $v:ident, $field:ident, $callable:ident, $label:literal) => {
+    ($self:ident, $rt:ident, $id:ident, $v:ident, $field:ident, $callable:ident, $label:expr) => {
         if $id == $self.$field.id {
             $self.$field.last = Some($v.clone());
             $self.$callable = Some(
                 $rt.block_on($self.gx.compile_callable($v.clone()))
-                    .context(concat!($label, " recompile"))?,
+                    .context($label)?,
             );
         }
+    };
+}
+
+/// Compile a child widget ref during widget construction.
+macro_rules! compile_child {
+    ($gx:expr, $ref:ident, $label:expr) => {
+        match $ref.last.as_ref() {
+            None => Box::new(super::EmptyW) as GuiW<X>,
+            Some(v) => compile($gx.clone(), v.clone()).await.context($label)?,
+        }
+    };
+}
+
+/// Recompile a child widget ref inside `handle_update`.
+/// Sets `$changed = true` when the child is recompiled or updated.
+macro_rules! update_child {
+    ($self:ident, $rt:ident, $id:ident, $v:ident, $changed:ident, $ref:ident, $child:ident, $label:expr) => {
+        if $id == $self.$ref.id {
+            $self.$ref.last = Some($v.clone());
+            $self.$child = $rt
+                .block_on(compile($self.gx.clone(), $v.clone()))
+                .context($label)?;
+            $changed = true;
+        }
+        $changed |= $self.$child.handle_update($rt, $id, $v)?;
     };
 }
 
 pub(crate) mod button;
 pub(crate) mod canvas;
 pub(crate) mod chart;
-pub(crate) mod checkbox;
 pub(crate) mod combo_box;
 pub(crate) mod container;
+pub(crate) mod grid;
 pub(crate) mod iced_keyboard_area;
 pub(crate) mod image;
 pub(crate) mod keyboard_area;
+pub(crate) mod markdown;
+pub(crate) mod menu_bar;
+pub(crate) mod menu_bar_widget;
 pub(crate) mod mouse_area;
 pub(crate) mod pick_list;
 pub(crate) mod progress_bar;
+pub(crate) mod qr_code;
 pub(crate) mod radio;
 pub(crate) mod rule;
 pub(crate) mod scrollable;
@@ -50,12 +79,12 @@ pub(crate) mod slider;
 pub(crate) mod space;
 pub(crate) mod stack;
 pub(crate) mod svg;
+pub(crate) mod table;
 pub(crate) mod text;
 pub(crate) mod text_editor;
 pub(crate) mod text_input;
-pub(crate) mod toggler;
+pub(crate) mod toggle;
 pub(crate) mod tooltip;
-pub(crate) mod vertical_slider;
 
 /// Concrete iced renderer type used throughout the GUI package.
 /// Must match iced_widget's default Renderer parameter.
@@ -279,45 +308,41 @@ flex_widget!(
 /// avoid infinite-size futures from recursive async calls.
 pub(crate) fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     Box::pin(async move {
-        match source.cast_to::<(ArcStr, Value)>()? {
-            (s, v) if &s == "Text" => text::TextW::compile(gx, v).await,
-            (s, v) if &s == "Column" => ColumnW::compile(gx, v).await,
-            (s, v) if &s == "Row" => RowW::compile(gx, v).await,
-            (s, v) if &s == "Container" => container::ContainerW::compile(gx, v).await,
-            (s, v) if &s == "Button" => button::ButtonW::compile(gx, v).await,
-            (s, v) if &s == "Space" => space::SpaceW::compile(gx, v).await,
-            (s, v) if &s == "TextInput" => text_input::TextInputW::compile(gx, v).await,
-            (s, v) if &s == "Checkbox" => checkbox::CheckboxW::compile(gx, v).await,
-            (s, v) if &s == "Toggler" => toggler::TogglerW::compile(gx, v).await,
-            (s, v) if &s == "Slider" => slider::SliderW::compile(gx, v).await,
-            (s, v) if &s == "ProgressBar" => {
-                progress_bar::ProgressBarW::compile(gx, v).await
-            }
-            (s, v) if &s == "Scrollable" => scrollable::ScrollableW::compile(gx, v).await,
-            (s, v) if &s == "HorizontalRule" => {
-                rule::HorizontalRuleW::compile(gx, v).await
-            }
-            (s, v) if &s == "VerticalRule" => rule::VerticalRuleW::compile(gx, v).await,
-            (s, v) if &s == "Tooltip" => tooltip::TooltipW::compile(gx, v).await,
-            (s, v) if &s == "PickList" => pick_list::PickListW::compile(gx, v).await,
-            (s, v) if &s == "Stack" => stack::StackW::compile(gx, v).await,
-            (s, v) if &s == "Radio" => radio::RadioW::compile(gx, v).await,
-            (s, v) if &s == "VerticalSlider" => {
-                vertical_slider::VerticalSliderW::compile(gx, v).await
-            }
-            (s, v) if &s == "ComboBox" => combo_box::ComboBoxW::compile(gx, v).await,
-            (s, v) if &s == "TextEditor" => {
-                text_editor::TextEditorW::compile(gx, v).await
-            }
-            (s, v) if &s == "KeyboardArea" => {
-                keyboard_area::KeyboardAreaW::compile(gx, v).await
-            }
-            (s, v) if &s == "MouseArea" => mouse_area::MouseAreaW::compile(gx, v).await,
-            (s, v) if &s == "Image" => image::ImageW::compile(gx, v).await,
-            (s, v) if &s == "Svg" => svg::SvgW::compile(gx, v).await,
-            (s, v) if &s == "Canvas" => canvas::CanvasW::compile(gx, v).await,
-            (s, v) if &s == "Chart" => chart::ChartW::compile(gx, v).await,
-            (s, v) => bail!("invalid gui widget type `{s}({v})"),
+        let (s, v) = source.cast_to::<(ArcStr, Value)>()?;
+        match s.as_str() {
+            "Text" => text::TextW::compile(gx, v).await,
+            "Column" => ColumnW::compile(gx, v).await,
+            "Row" => RowW::compile(gx, v).await,
+            "Container" => container::ContainerW::compile(gx, v).await,
+            "Grid" => grid::GridW::compile(gx, v).await,
+            "Button" => button::ButtonW::compile(gx, v).await,
+            "Space" => space::SpaceW::compile(gx, v).await,
+            "TextInput" => text_input::TextInputW::compile(gx, v).await,
+            "Checkbox" => toggle::CheckboxW::compile(gx, v).await,
+            "Toggler" => toggle::TogglerW::compile(gx, v).await,
+            "Slider" => slider::SliderW::compile(gx, v).await,
+            "ProgressBar" => progress_bar::ProgressBarW::compile(gx, v).await,
+            "Scrollable" => scrollable::ScrollableW::compile(gx, v).await,
+            "HorizontalRule" => rule::HorizontalRuleW::compile(gx, v).await,
+            "VerticalRule" => rule::VerticalRuleW::compile(gx, v).await,
+            "Tooltip" => tooltip::TooltipW::compile(gx, v).await,
+            "PickList" => pick_list::PickListW::compile(gx, v).await,
+            "Stack" => stack::StackW::compile(gx, v).await,
+            "Radio" => radio::RadioW::compile(gx, v).await,
+            "VerticalSlider" => slider::VerticalSliderW::compile(gx, v).await,
+            "ComboBox" => combo_box::ComboBoxW::compile(gx, v).await,
+            "TextEditor" => text_editor::TextEditorW::compile(gx, v).await,
+            "KeyboardArea" => keyboard_area::KeyboardAreaW::compile(gx, v).await,
+            "MouseArea" => mouse_area::MouseAreaW::compile(gx, v).await,
+            "Image" => image::ImageW::compile(gx, v).await,
+            "Svg" => svg::SvgW::compile(gx, v).await,
+            "Canvas" => canvas::CanvasW::compile(gx, v).await,
+            "Chart" => chart::ChartW::compile(gx, v).await,
+            "Markdown" => markdown::MarkdownW::compile(gx, v).await,
+            "MenuBar" => menu_bar::MenuBarW::compile(gx, v).await,
+            "QrCode" => qr_code::QrCodeW::compile(gx, v).await,
+            "Table" => table::TableW::compile(gx, v).await,
+            _ => bail!("invalid gui widget type `{s}({v})"),
         }
     })
 }

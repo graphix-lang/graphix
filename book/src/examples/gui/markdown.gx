@@ -1,0 +1,35 @@
+use gui;
+use gui::text;
+use gui::markdown;
+use gui::column;
+
+let content = r'# Markdown Demo
+
+This is **bold** and this is *italic*.
+
+- First item
+- Second item
+- Third item
+
+Here is a [link](https://graphix.dev) you can click.
+
+```
+let x = 42
+```
+';
+
+let col = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Markdown Widget"),
+        markdown(
+            #on_link: |url| println("Clicked: [url]"),
+            #text_size: &16.0,
+            &content
+        )
+    ]
+);
+
+[&window(#title: &"Markdown", &col)]

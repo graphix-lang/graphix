@@ -32,18 +32,8 @@ impl<X: GXExt> ButtonW<X> {
             gx.compile_ref(padding),
             gx.compile_ref(width),
         }?;
-        let compiled_child: GuiW<X> = match child_ref.last.as_ref() {
-            None => Box::new(super::EmptyW),
-            Some(v) => compile(gx.clone(), v.clone()).await.context("button child")?,
-        };
-        let callable = match on_press.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("button on_press callable")?,
-            ),
-            None => None,
-        };
+        let compiled_child = compile_child!(gx, child_ref, "button child");
+        let callable = compile_callable!(gx, on_press, "button on_press");
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("button tref disabled")?,
@@ -71,21 +61,8 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         changed |= self.width.update(id, v).context("button update width")?.is_some();
         changed |= self.height.update(id, v).context("button update height")?.is_some();
         changed |= self.padding.update(id, v).context("button update padding")?.is_some();
-        if id == self.on_press.id {
-            self.on_press.last = Some(v.clone());
-            self.on_press_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("button on_press callable recompile")?,
-            );
-        }
-        if id == self.child_ref.id {
-            self.child_ref.last = Some(v.clone());
-            self.child = rt
-                .block_on(compile(self.gx.clone(), v.clone()))
-                .context("button child recompile")?;
-            changed = true;
-        }
-        changed |= self.child.handle_update(rt, id, v)?;
+        update_callable!(self, rt, id, v, on_press, on_press_callable, "button on_press recompile");
+        update_child!(self, rt, id, v, changed, child_ref, child, "button child recompile");
         Ok(changed)
     }
 

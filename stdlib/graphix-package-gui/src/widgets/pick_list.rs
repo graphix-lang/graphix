@@ -33,14 +33,8 @@ impl<X: GXExt> PickListW<X> {
             gx.compile_ref(selected),
             gx.compile_ref(width),
         }?;
-        let callable = match on_select.last.as_ref() {
-            Some(v) => Some(
-                gx.compile_callable(v.clone())
-                    .await
-                    .context("pick_list on_select callable")?,
-            ),
-            None => None,
-        };
+        let callable =
+            compile_callable!(gx, on_select, "pick_list on_select");
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("pick_list tref disabled")?,
@@ -77,13 +71,7 @@ impl<X: GXExt> GuiWidget<X> for PickListW<X> {
         changed |= self.width.update(id, v).context("pick_list update width")?.is_some();
         changed |=
             self.padding.update(id, v).context("pick_list update padding")?.is_some();
-        if id == self.on_select.id {
-            self.on_select.last = Some(v.clone());
-            self.on_select_callable = Some(
-                rt.block_on(self.gx.compile_callable(v.clone()))
-                    .context("pick_list on_select callable recompile")?,
-            );
-        }
+        update_callable!(self, rt, id, v, on_select, on_select_callable, "pick_list on_select recompile");
         Ok(changed)
     }
 

@@ -99,7 +99,7 @@ Rather than constructing `Dataset` variants directly, use these convenience func
 ### `chart::line`
 
 ```graphix
-chart::line(#label: "Price", #color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}, &data)
+chart::line(#label: "Price", #color: color(#r: 1.0)$, &data)
 ```
 
 Points connected by straight line segments. Good for time series and trends.

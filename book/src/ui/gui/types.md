@@ -96,18 +96,14 @@ container(
 
 ### Color
 
-RGBA color with floating-point components in the range 0.0 to 1.0:
+RGBA color with floating-point components in the range 0.0 to 1.0. Color is an abstract type — use the `color` constructor to create values. Components default to 0.0 except alpha which defaults to 1.0. Out-of-range values return an `InvalidColor` error.
 
 ```graphix
-type Color = { r: f64, g: f64, b: f64, a: f64 };
-```
+// Solid red ($ swallows errors with a warning)
+let red = color(#r: 1.0)$
 
-```graphix
-// Solid red
-let red = { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }
-
-// Semi-transparent blue
-let blue_50 = { r: 0.0, g: 0.0, b: 1.0, a: 0.5 }
+// Semi-transparent blue (? propagates errors)
+let blue_50 = color(#b: 1.0, #a: 0.5)?
 ```
 
 Colors are used in custom themes and per-widget style overrides. See the [theming](theming.md) page for details.

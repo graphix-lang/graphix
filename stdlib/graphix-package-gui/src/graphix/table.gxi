@@ -1,0 +1,29 @@
+type TableColumn = {
+  header: &Widget,
+  width: &Length,
+  halign: &HAlign,
+  valign: &VAlign
+};
+
+type Table = {
+  columns: &Array<TableColumn>,
+  rows: &Array<Array<Widget>>,
+  width: &Length,
+  padding: &[f64, null],
+  separator: &[f64, null]
+};
+
+val table_column: fn(
+  ?#width: &Length,
+  ?#halign: &HAlign,
+  ?#valign: &VAlign,
+  &Widget
+) -> TableColumn;
+
+val table: fn(
+  ?#width: &Length,
+  ?#padding: &[f64, null],
+  ?#separator: &[f64, null],
+  &Array<TableColumn>,
+  &Array<Array<Widget>>
+) -> Widget

@@ -1,0 +1,4 @@
+let qr_code = |
+  #cell_size: &[f64, null] = &null,
+  data: &string
+| -> Widget `QrCode({ data, cell_size })

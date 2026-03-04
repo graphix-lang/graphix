@@ -1,0 +1,63 @@
+use gui;
+use gui::text;
+use gui::menu;
+use gui::column;
+
+let file_menu = menu::menu(
+    &"File",
+    &[
+        menu::action(
+            #on_click: |v| println(v ~ "New file"),
+            #shortcut: &menu::shortcut(#ctrl: true, "N")$,
+            &"New"
+        ),
+        menu::action(
+            #on_click: |v| println(v ~ "Open file"),
+            #shortcut: &menu::shortcut(#ctrl: true, "O")$,
+            &"Open"
+        ),
+        menu::divider(),
+        menu::action(
+            #on_click: |v| println(v ~ "Quit"),
+            #shortcut: &menu::shortcut(#ctrl: true, "Q")$,
+            &"Quit"
+        )
+    ]
+);
+
+let edit_menu = menu::menu(
+    &"Edit",
+    &[
+        menu::action(
+            #on_click: |v| println(v ~ "Undo"),
+            #shortcut: &menu::shortcut(#ctrl: true, "Z")$,
+            &"Undo"
+        ),
+        menu::action(
+            #on_click: |v| println(v ~ "Redo"),
+            #shortcut: &menu::shortcut(#ctrl: true, #shift: true, "Z")$,
+            &"Redo"
+        ),
+        menu::divider(),
+        menu::action(
+            #on_click: |v| println(v ~ "Copy"),
+            #shortcut: &menu::shortcut(#ctrl: true, "C")$,
+            &"Copy"
+        ),
+        menu::action(
+            #on_click: |v| println(v ~ "Paste"),
+            #shortcut: &menu::shortcut(#ctrl: true, "V")$,
+            &"Paste"
+        )
+    ]
+);
+
+let layout = column(
+    #width: &`Fill,
+    &[
+        menu::bar(#width: &`Fill, &[file_menu, edit_menu]),
+        text(#size: &18.0, &"Application content goes here")
+    ]
+);
+
+[&window(#title: &"Menu Bar", &layout)]

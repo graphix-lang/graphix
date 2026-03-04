@@ -1,0 +1,28 @@
+use gui;
+use gui::text;
+use gui::table;
+use gui::column;
+
+let cols = &[
+    table_column(#width: &`Fixed(200.0), &text(&"Name")),
+    table_column(#width: &`Fixed(100.0), #halign: &`Right, &text(&"Price")),
+    table_column(#width: &`Fixed(80.0), #halign: &`Center, &text(&"Qty"))
+];
+
+let rows = &[
+    [text(&"Apples"), text(&"$1.20"), text(&"5")],
+    [text(&"Bananas"), text(&"$0.50"), text(&"12")],
+    [text(&"Cherries"), text(&"$3.00"), text(&"2")]
+];
+
+let layout = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Table Demo"),
+        table(#padding: &8.0, #separator: &1.0, cols, rows)
+    ]
+);
+
+[&window(#title: &"Table Widget", &layout)]

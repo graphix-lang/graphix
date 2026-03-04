@@ -11,7 +11,7 @@ use gui::column;
     &[
       text(&"Default text"),
       text(#size: &32.0, &"Large text"),
-      text(#color: &{ r: 1.0, g: 0.2, b: 0.2, a: 1.0 }, &"Red text"),
+      text(#color: &color(#r: 1.0, #g: 0.2, #b: 0.2)$, &"Red text"),
       text(
         #font: &{ family: `Monospace, weight: `Bold, style: `Normal },
         &"Bold monospace"),

@@ -1,7 +1,8 @@
 use iced_core::Color;
 use iced_widget::{
-    button, checkbox, combo_box, container, overlay::menu, pick_list, progress_bar,
-    radio, rule, scrollable, slider, svg, text_editor, text_input, toggler,
+    button, checkbox, combo_box, container, markdown, overlay::menu, pick_list,
+    progress_bar, qr_code, radio, rule, scrollable, slider, svg, table, text_editor,
+    text_input, toggler,
 };
 use triomphe::Arc;
 
@@ -788,6 +789,39 @@ impl svg::Catalog for GraphixTheme {
 
     fn style(&self, class: &Self::Class<'_>, status: svg::Status) -> svg::Style {
         class(self, status)
+    }
+}
+
+// table: delegate to inner theme
+impl table::Catalog for GraphixTheme {
+    type Class<'a> = table::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| table::default(&theme.inner))
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> table::Style {
+        class(self)
+    }
+}
+
+// qr_code: delegate to inner theme
+impl qr_code::Catalog for GraphixTheme {
+    type Class<'a> = qr_code::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| qr_code::default(&theme.inner))
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> qr_code::Style {
+        class(self)
+    }
+}
+
+// markdown: supertrait of container + scrollable + text + rule + checkbox + table
+impl markdown::Catalog for GraphixTheme {
+    fn code_block<'a>() -> <Self as container::Catalog>::Class<'a> {
+        Box::new(|theme| container::dark(&theme.inner))
     }
 }
 

@@ -10,42 +10,42 @@ use gui::column;
 use gui::rule;
 
 let palette = {
-  background: { r: 0.12, g: 0.12, b: 0.18, a: 1.0 },
-  text:       { r: 0.85, g: 0.85, b: 0.9, a: 1.0 },
-  primary:    { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
-  success:    { r: 0.2, g: 0.8, b: 0.5, a: 1.0 },
-  danger:     { r: 0.95, g: 0.25, b: 0.35, a: 1.0 },
-  warning:    { r: 1.0, g: 0.7, b: 0.1, a: 1.0 }
+  background: color(#r: 0.12, #g: 0.12, #b: 0.18)$,
+  text:       color(#r: 0.85, #g: 0.85, #b: 0.9)$,
+  primary:    color(#r: 0.55, #g: 0.35, #b: 0.95)$,
+  success:    color(#r: 0.2, #g: 0.8, #b: 0.5)$,
+  danger:     color(#r: 0.95, #g: 0.25, #b: 0.35)$,
+  warning:    color(#r: 1.0, #g: 0.7, #b: 0.1)$
 };
 
 let theme = `Custom(stylesheet(
   #palette: palette,
   #button: button_style(
-    #background: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
-    #text_color: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+    #background: color(#r: 0.55, #g: 0.35, #b: 0.95)$,
+    #text_color: color(#r: 1.0, #g: 1.0, #b: 1.0)$,
     #border_radius: 12.0
   ),
   #text_input: text_input_style(
-    #background: { r: 0.16, g: 0.16, b: 0.24, a: 1.0 },
-    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.5 },
+    #background: color(#r: 0.16, #g: 0.16, #b: 0.24)$,
+    #border_color: color(#r: 0.55, #g: 0.35, #b: 0.95, #a: 0.5)$,
     #border_radius: 8.0,
     #border_width: 2.0,
-    #value_color: { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
-    #placeholder_color: { r: 0.5, g: 0.5, b: 0.6, a: 1.0 }
+    #value_color: color(#r: 0.9, #g: 0.9, #b: 0.95)$,
+    #placeholder_color: color(#r: 0.5, #g: 0.5, #b: 0.6)$
   ),
   #slider: slider_style(
-    #rail_color: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
-    #rail_fill_color: { r: 0.55, g: 0.35, b: 0.95, a: 1.0 },
-    #handle_color: { r: 0.7, g: 0.55, b: 1.0, a: 1.0 },
+    #rail_color: color(#r: 0.3, #g: 0.3, #b: 0.4)$,
+    #rail_fill_color: color(#r: 0.55, #g: 0.35, #b: 0.95)$,
+    #handle_color: color(#r: 0.7, #g: 0.55, #b: 1.0)$,
     #handle_radius: 8.0
   ),
   #toggler: toggler_style(
-    #background: { r: 0.3, g: 0.3, b: 0.4, a: 1.0 },
-    #foreground: { r: 0.85, g: 0.85, b: 0.9, a: 1.0 }
+    #background: color(#r: 0.3, #g: 0.3, #b: 0.4)$,
+    #foreground: color(#r: 0.85, #g: 0.85, #b: 0.9)$
   ),
   #container: container_style(
-    #background: { r: 0.15, g: 0.15, b: 0.22, a: 1.0 },
-    #border_color: { r: 0.55, g: 0.35, b: 0.95, a: 0.3 },
+    #background: color(#r: 0.15, #g: 0.15, #b: 0.22)$,
+    #border_color: color(#r: 0.55, #g: 0.35, #b: 0.95, #a: 0.3)$,
     #border_width: 1.0,
     #border_radius: 10.0
   )
