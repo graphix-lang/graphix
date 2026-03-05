@@ -329,11 +329,16 @@ Used with the chart `#projection` parameter for 3D charts:
 {{#include ../../examples/gui/chart_bar.gx}}
 ```
 
+![Bar Chart](./media/chart_bar.png)
+
 ### Candlestick
 
 ```graphix
 {{#include ../../examples/gui/chart_candlestick.gx}}
 ```
+
+![Candle Chart](./media/chart_candlestick.png)
+
 
 ### Error Bars
 
@@ -341,11 +346,15 @@ Used with the chart `#projection` parameter for 3D charts:
 {{#include ../../examples/gui/chart_error_bar.gx}}
 ```
 
+![Chart With Error Bars](./media/chart_error_bars.png)
+
 ### Pie Chart
 
 ```graphix
 {{#include ../../examples/gui/chart_pie.gx}}
 ```
+
+![Pie Chart](./media/chart_pie.png)
 
 ### 3D Surface
 
@@ -353,11 +362,15 @@ Used with the chart `#projection` parameter for 3D charts:
 {{#include ../../examples/gui/chart_3d.gx}}
 ```
 
+![3d Chart](./media/chart_3d.png)
+
 ### Styling
 
 ```graphix
 {{#include ../../examples/gui/chart_styles.gx}}
 ```
+
+![Chart Styles](./media/chart_styles.png)
 
 ## See Also
 

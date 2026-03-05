@@ -5,7 +5,7 @@ use gui::qr_code;
 use gui::column;
 mod icon;
 
-let url = "https://graphix.dev";
+let url = "https://graphix-lang.github.io/graphix";
 
 let col = column(
     #spacing: &20.0,

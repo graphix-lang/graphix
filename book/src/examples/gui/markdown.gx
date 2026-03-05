@@ -1,5 +1,6 @@
 use gui;
 use gui::text;
+use gui::text_editor;
 use gui::markdown;
 use gui::column;
 mod icon;
@@ -10,13 +11,9 @@ This is **bold** and this is *italic*.
 
 - First item
 - Second item
-- Third item
+- Fifth item
 
 Here is a [link](https://graphix.dev) you can click.
-
-```
-let x = 42
-```
 ';
 
 let col = column(
@@ -28,6 +25,11 @@ let col = column(
         markdown(
             #on_link: |url| println("Clicked: [url]"),
             #text_size: &16.0,
+            &content
+        ),
+        text_editor(
+            #on_edit: |v| content <- v,
+            #height: &200.0,
             &content
         )
     ]

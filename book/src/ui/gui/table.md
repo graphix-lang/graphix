@@ -51,6 +51,8 @@ val table: fn(
 {{#include ../../examples/gui/table.gx}}
 ```
 
+![Table](./media/table.png)
+
 ## See Also
 
 - [column](column.md) -- for simple vertical layouts

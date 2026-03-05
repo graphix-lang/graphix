@@ -33,6 +33,8 @@ val grid: fn(
 {{#include ../../examples/gui/grid.gx}}
 ```
 
+![Grid](./media/grid.png)
+
 ## See Also
 
 - [column](column.md) -- single-column vertical layout

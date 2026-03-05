@@ -12,6 +12,7 @@ let col = column(
     #width: &`Fill,
     &[
         text(#size: &24.0, &"Pick List Demo"),
+        text(&"Selected: [language]"),
         pick_list(
             #selected: &language,
             #on_select: |v| language <- v,

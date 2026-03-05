@@ -99,11 +99,15 @@ The menu closes when an item is clicked, when the user clicks outside it, or whe
 {{#include ../../examples/gui/menu_bar.gx}}
 ```
 
+![Menu Bar](./media/menu_bar.png)
+
 ### Context Menu
 
 ```graphix
 {{#include ../../examples/gui/context_menu.gx}}
 ```
+
+![Context Menu](./media/context_menu.png)
 
 ## See Also
 

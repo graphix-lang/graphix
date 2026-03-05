@@ -24,6 +24,8 @@ val qr_code: fn(
 {{#include ../../examples/gui/qr_code.gx}}
 ```
 
+![QR Code](./media/qr_code.png)
+
 ## See Also
 
 - [text](text.md) -- for displaying text alongside a QR code

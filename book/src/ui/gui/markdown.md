@@ -30,6 +30,8 @@ val markdown: fn(
 {{#include ../../examples/gui/markdown.gx}}
 ```
 
+![Markdown Widget](./media/markdown.gif)
+
 ## See Also
 
 - [text](text.md) -- for plain text display
