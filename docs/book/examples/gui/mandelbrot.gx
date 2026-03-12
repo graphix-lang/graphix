@@ -1,0 +1,66 @@
+use gui;
+use gui::canvas;
+use array;
+use time;
+
+let start = cast<f64>(time::now(once(null)))$;
+let w = 100;
+let h = 75;
+let max_iter = 64;
+let scale = 6.0;
+
+let xmin = -2.5;
+let xmax = 1.0;
+let ymin = -1.3125;
+let ymax = 1.3125;
+let dx = (xmax - xmin) / cast<f64>(w)$;
+let dy = (ymax - ymin) / cast<f64>(h)$;
+
+let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
+    select i {
+        0 => 0,
+        _ if zr * zr + zi * zi > 4.0 => i,
+        _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
+    };
+
+let color_for = |n: i64| select n {
+    0 => color(#r: 0.0, #g: 0.0, #b: 0.0)$,
+    _ => {
+        let t = cast<f64>(max_iter - n)$ / cast<f64>(max_iter)$;
+        color(
+            #r: 9.0 * (1.0 - t) * t * t * t,
+            #g: 15.0 * (1.0 - t) * (1.0 - t) * t * t,
+            #b: 8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t
+        )$
+    }
+};
+
+let shapes = array::init(w * h, |idx| {
+    let px = idx % w;
+    let py = idx / w;
+    let cr = xmin + cast<f64>(px)$ * dx;
+    let ci = ymin + cast<f64>(py)$ * dy;
+    let n = iterate(0.0, 0.0, cr, ci, max_iter);
+    `Rect({
+        top_left: {x: cast<f64>(px)$ * scale, y: cast<f64>(py)$ * scale},
+        size: {width: scale, height: scale},
+        fill: color_for(n),
+        stroke: null
+    })
+});
+
+let finish = cast<f64>(time::now(shapes))$;
+let elapsed = (finish - start);
+println("rendered [w * h] pixels in [elapsed]s");
+
+[&window(
+    #title: &"Mandelbrot Set",
+    #theme: &`CatppuccinMocha,
+    #size: &{width: 620.0, height: 470.0},
+    &canvas(
+        #width: &`Fill,
+        #height: &`Fill,
+        #background: &color(#r: 0.0, #g: 0.0, #b: 0.0)$,
+        &shapes
+    )
+)]

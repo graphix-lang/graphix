@@ -1,0 +1,21 @@
+/// An opaque handle to a temporary directory. The directory is
+/// automatically deleted when there are no remaining references
+/// to the TempDir value.
+type T;
+
+/// Get the filesystem path of a TempDir as a string.
+val path: fn(T) -> string;
+
+/// Create a temporary directory and return a tempdir::T handle.
+/// The directory will be cleaned up when the tempdir::T value is
+/// no longer referenced.
+///
+/// if `in` is specified, the temporary directory will be created as a child of `in`
+///
+/// if `name` is specified, the temporary directory will have either a prefix of name
+/// or a suffix of name.
+val create: fn(
+    ?#in:[null, string],
+    ?#name:[null, `Prefix(string), `Suffix(string)],
+    Any
+) -> Result<T, `IOError(string)>;

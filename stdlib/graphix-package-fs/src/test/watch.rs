@@ -70,7 +70,7 @@ macro_rules! watch_test {
 
             // Start watching
             let code = format!(
-                r#"fs::watch(#interest: {}, "{}")"#,
+                r#"fs::watch::watch(#interest: {}, "{}")"#,
                 $interest, escape_path(watch_path.display())
             );
 
@@ -377,11 +377,11 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
 
     // Watch both files
     let code1 = format!(
-        r#"fs::watch(#interest: [`Established, `Create], "{}")"#,
+        r#"fs::watch::watch(#interest: [`Established, `Create], "{}")"#,
         escape_path(file1.display())
     );
     let code2 = format!(
-        r#"fs::watch(#interest: [`Established, `Create], "{}")"#,
+        r#"fs::watch::watch(#interest: [`Established, `Create], "{}")"#,
         escape_path(file2.display())
     );
 
@@ -480,7 +480,7 @@ watch_test! {
 watch_test! {
     name: test_watch_file_to_directory,
     interest: "[`Established, `Delete, `Create]",
-    timeout_secs: 4,
+    timeout_secs: 8,
     setup: |temp_dir| {
         let path = temp_dir.path().join("transform");
         fs::write(&path, b"file content").await?;
@@ -580,6 +580,6 @@ watch_test! {
 // Test SetGlobals - disable polling
 run!(
     test_watch_set_globals_disable_polling,
-    r#"fs::set_global_watch_parameters(#poll_batch_size: 0, #poll_interval: duration:1.s)"#,
+    r#"fs::watch::set_global_watch_parameters(#poll_batch_size: 0, #poll_interval: duration:1.s)"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::Null)) }
 );

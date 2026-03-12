@@ -5,6 +5,138 @@ The `fs` module provides functions for reading, writing, and watching files and 
 ## Interface
 
 ```graphix
+type FileType = [
+    `Dir,
+    `File,
+    `Symlink,
+    `SymlinkDir,
+    `BlockDev,
+    `CharDev,
+    `Fifo,
+    `Socket,
+    null
+];
+
+/// Filesystem metadata. Not all kind fields are possible on all platforms.
+/// permissions will only be set on unix platforms, windows will only
+/// expose the ReadOnly flag.
+type Metadata = {
+    accessed: [datetime, null],
+    created: [datetime, null],
+    modified: [datetime, null],
+    kind: FileType,
+    len: u64,
+    permissions: [u32, `ReadOnly(bool)]
+};
+
+/// a directory entry
+type DirEntry = {
+    path: string,
+    file_name: string,
+    depth: i64,
+    kind: FileType
+};
+
+mod watch;
+mod tempdir;
+
+/// Read the specified file into memory as a utf8 string and return it, or an
+/// error if,
+/// - path is not a file
+/// - path is not valid utf8
+/// - an OS specific error occurs while trying to read path
+///
+/// The file will be read again each time path updates, even if path did not change.
+/// Reads are queued and executed in the order they are initiated. For example, if we
+/// read_all on path0 and path1, the read of path0 will complete before the read of path1
+/// begins. Results are always returned in the same order the reads were queued.
+val read_all: fn(string) -> Result<string, `IOError(string)>;
+
+/// Read the specified file into memory as a bytes and return it, or an
+/// error if,
+/// - path is not a file
+/// - an OS specific error occurs while trying to read path
+///
+/// The file will be read again each time path updates, even if path did not change.
+/// Reads are queued and executed in the order they are initiated. For example, if we
+/// read_all_bin on path0 and path1, the read of path0 will complete before the read of
+/// path1 begins. Results are always returned in the same order the reads were queued.
+val read_all_bin: fn(string) -> Result<bytes, `IOError(string)>;
+
+/// Write data to path. If path does not exist it will be created. If path exists it
+/// will be truncated and it's contents will be replaced with data.
+///
+/// A write will occur whenever either path or data updates, even if they did not change.
+/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
+/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
+/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
+/// were queued.
+val write_all: fn(#path: string, string) -> Result<null, `IOError(string)>;
+
+/// Write data to path. If path does not exist it will be created. If path exists it
+/// will be truncated and it's contents will be replaced with data.
+///
+/// A write will occur whenever either path or data updates, even if they did not change.
+/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
+/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
+/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
+/// were queued.
+val write_all_bin: fn(#path: string, bytes) -> Result<null, `IOError(string)>;
+
+/// join parts to path using the OS specific path separator
+val join_path: fn(string, @args: [string, Array<string>]) -> string;
+
+/// if path is a file then return path
+/// otherwise return an IOError. Check again every time path updates.
+val is_file: fn(string) -> Result<string, `IOError(string)>;
+
+/// if path is a directory then return path, otherwise return an IOError.
+/// check again every time path updates.
+val is_dir: fn(string) -> Result<string, `IOError(string)>;
+
+/// Return the metadata for a filesystem object, or an error. Check again every
+/// time an argument updates.
+val metadata: fn(?#follow_symlinks: bool, string) -> Result<Metadata, `IOError(string)>;
+
+/// readdir reads a directory and returns an array of directory entries.
+/// By default it will read only immediate children, however it can be
+/// configured to search at greater depth.
+///
+/// depth appears in several places, The root path is depth 0, immediate children
+/// are depth 1, and so on.
+///
+/// - min_depth: controls the minimum search depth. default 1.
+/// - max_depth: controls the maximum search depth. default 1.
+/// - contents_first: directory contents will be arranged
+///   before the directory itself. default false.
+/// - follow_symlinks: if true, follow symlinks when traversing, default false.
+/// - follow_root_symlink: if the root path is a symlink follow it. default true.
+/// - same_filesystem: don't traverse across filesystem boundaries. default false.
+val readdir: fn(
+    ?#max_depth: i64,
+    ?#min_depth: i64,
+    ?#contents_first: bool,
+    ?#follow_symlinks: bool,
+    ?#follow_root_symlink: bool,
+    ?#same_filesystem: bool,
+    string
+) -> Result<Array<DirEntry>, `IOError(string)>;
+
+/// create a directory. If all is true (default false) create all intermediate
+/// directories as well.
+val create_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
+
+/// remove a directory. If all is true (default false) then recursively remove
+/// the contents as well. If all is false fail if the directory is not empty.
+val remove_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
+
+/// remove a file
+val remove_file: fn(string) -> Result<null, `IOError(string)>;
+```
+
+## fs::watch
+
+```graphix
 /// The type of file system events you are interested in.
 /// The short names, e.g. `Access mean ANY kind of access event.
 /// The longer names e.g. `AccessOpen mean a more specific subset
@@ -58,38 +190,6 @@ type WatchEvent = {
     event: Interest
 };
 
-type FileType = [
-    `Dir,
-    `File,
-    `Symlink,
-    `SymlinkDir,
-    `BlockDev,
-    `CharDev,
-    `Fifo,
-    `Socket,
-    null
-];
-
-/// Filesystem metadata. Not all kind fields are possible on all platforms.
-/// permissions will only be set on unix platforms, windows will only
-/// expose the ReadOnly flag.
-type Metadata = {
-    accessed: [datetime, null],
-    created: [datetime, null],
-    modified: [datetime, null],
-    kind: FileType,
-    len: u64,
-    permissions: [u32, `ReadOnly(bool)]
-};
-
-/// a directory entry
-type DirEntry = {
-    path: string,
-    file_name: string,
-    depth: i64,
-    kind: FileType
-};
-
 /// Set global parameters for all watches.
 ///
 /// poll_interval: How often to poll a batch, set this to 0 to disable polling. default 1 second.
@@ -134,111 +234,30 @@ val watch: fn(?#interest: Array<Interest>, string) -> Result<string, `WatchError
 /// Filesystem watches are a limited operating system resource, like file
 /// descriptors, or handles.
 val watch_full: fn(?#interest: Array<Interest>, string) -> Result<WatchEvent, `WatchError(string)>;
+```
 
-/// Read the specified file into memory as a utf8 string and return it, or an
-/// error if,
-/// - path is not a file
-/// - path is not valid utf8
-/// - an OS specific error occurs while trying to read path
-///
-/// The file will be read again each time path updates, even if path did not change.
-/// Reads are queued and executed in the order they are initiated. For example, if we
-/// read_all on path0 and path1, the read of path0 will complete before the read of path1
-/// begins. Results are always returned in the same order the reads were queued.
-val read_all: fn(string) -> Result<string, `IOError(string)>;
+## fs::tempdir
 
-/// Read the specified file into memory as a bytes and return it, or an
-/// error if,
-/// - path is not a file
-/// - an OS specific error occurs while trying to read path
-///
-/// The file will be read again each time path updates, even if path did not change.
-/// Reads are queued and executed in the order they are initiated. For example, if we
-/// read_all_bin on path0 and path1, the read of path0 will complete before the read of
-/// path1 begins. Results are always returned in the same order the reads were queued.
-val read_all_bin: fn(string) -> Result<bytes, `IOError(string)>;
+```graphix
+/// An opaque handle to a temporary directory. The directory is
+/// automatically deleted when there are no remaining references
+/// to the TempDir value.
+type T;
 
-/// Write data to path. If path does not exist it will be created. If path exists it
-/// will be truncated and it's contents will be replaced with data.
-///
-/// A write will occur whenever either path or data updates, even if they did not change.
-/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
-/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
-/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
-/// were queued.
-val write_all: fn(#path: string, string) -> Result<null, `IOError(string)>;
+/// Get the filesystem path of a TempDir as a string.
+val path: fn(T) -> string;
 
-/// Write data to path. If path does not exist it will be created. If path exists it
-/// will be truncated and it's contents will be replaced with data.
-///
-/// A write will occur whenever either path or data updates, even if they did not change.
-/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
-/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
-/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
-/// were queued.
-val write_all_bin: fn(#path: string, bytes) -> Result<null, `IOError(string)>;
-
-/// Every time trigger updates, create and return a randomly generated
-/// temporary directory, and remove any previous temporary directories.
-/// return an error if the temporary directory can't be created.
+/// Create a temporary directory and return a tempdir::T handle.
+/// The directory will be cleaned up when the tempdir::T value is
+/// no longer referenced.
 ///
 /// if `in` is specified, the temporary directory will be created as a child of `in`
 ///
 /// if `name` is specified, the temporary directory will have either a prefix of name
 /// or a suffix of name.
-val tempdir: fn(
+val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
     Any
-) -> Result<string, `IOError(string)>;
-
-/// join parts to path using the OS specific path separator
-val join_path: fn(string, @args: [string, Array<string>]) -> string;
-
-/// if path is a file then return path
-/// otherwise return an IOError. Check again every time path updates.
-val is_file: fn(string) -> Result<string, `IOError(string)>;
-
-/// if path is a directory then return path, otherwise return an IOError.
-/// check again every time path updates.
-val is_dir: fn(string) -> Result<string, `IOError(string)>;
-
-/// Return the metadata for a filesystem object, or an error. Check again every
-/// time an argument updates.
-val metadata: fn(?#follow_symlinks: bool, string) -> Result<Metadata, `IOError(string)>;
-
-/// readdir reads a directory and returns an array of directory entries.
-/// By default it will read only immediate children, however it can be
-/// configured to search at greater depth.
-///
-/// depth appears in several places, The root path is depth 0, immediate children
-/// are depth 1, and so on.
-///
-/// - min_depth: controls the minimum search depth. default 1.
-/// - max_depth: controls the maximum search depth. default 1.
-/// - contents_first: directory contents will be arranged
-///   before the directory itself. default false.
-/// - follow_symlinks: if true, follow symlinks when traversing, default false.
-/// - follow_root_symlink: if the root path is a symlink follow it. default true.
-/// - same_filesystem: don't traverse across filesystem boundaries. default false.
-val readdir: fn(
-    ?#max_depth: i64,
-    ?#min_depth: i64,
-    ?#contents_first: bool,
-    ?#follow_symlinks: bool,
-    ?#follow_root_symlink: bool,
-    ?#same_filesystem: bool,
-    string
-) -> Result<Array<DirEntry>, `IOError(string)>;
-
-/// create a directory. If all is true (default false) create all intermediate
-/// directories as well.
-val create_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
-
-/// remove a directory. If all is true (default false) then recursively remove
-/// the contents as well. If all is false fail if the directory is not empty.
-val remove_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
-
-/// remove a file
-val remove_file: fn(string) -> Result<null, `IOError(string)>;
+) -> Result<T, `IOError(string)>;
 ```

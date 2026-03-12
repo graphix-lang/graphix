@@ -8,14 +8,14 @@ use graphix_compiler::errf;
 use graphix_package_core::{
     deftype, CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
-use netidx_value::Value;
-use parking_lot::Mutex;
+use netidx_value::{abstract_type::AbstractWrapper, Abstract, Value};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,
-    fmt,
+    cmp::Ordering,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::LazyLock,
 };
 use tempfile::TempDir;
 
@@ -25,27 +25,78 @@ pub(crate) mod metadata;
 pub(crate) mod watch;
 
 #[derive(Debug)]
+struct TempDirValue {
+    path: ArcStr,
+    _dir: TempDir,
+}
+
+impl PartialEq for TempDirValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl Eq for TempDirValue {}
+
+impl PartialOrd for TempDirValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TempDirValue {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.path.cmp(&other.path)
+    }
+}
+
+impl Hash for TempDirValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.path.hash(state)
+    }
+}
+
+impl netidx_core::pack::Pack for TempDirValue {
+    fn encoded_len(&self) -> usize {
+        0
+    }
+
+    fn encode(
+        &self,
+        _buf: &mut impl bytes::BufMut,
+    ) -> Result<(), netidx_core::pack::PackError> {
+        Err(netidx_core::pack::PackError::Application(0))
+    }
+
+    fn decode(
+        _buf: &mut impl bytes::Buf,
+    ) -> Result<Self, netidx_core::pack::PackError> {
+        Err(netidx_core::pack::PackError::Application(0))
+    }
+}
+
+static TEMPDIR_WRAPPER: LazyLock<AbstractWrapper<TempDirValue>> = LazyLock::new(|| {
+    let id = uuid::Uuid::from_bytes([
+        0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12,
+        0x34, 0x56, 0x78,
+    ]);
+    Abstract::register::<TempDirValue>(id).expect("failed to register TempDirValue")
+});
+
+#[derive(Debug)]
 enum Name {
     Prefix(ArcStr),
     Suffix(ArcStr),
 }
 
+#[derive(Debug)]
 pub(crate) struct TempDirArgs {
     dir: Option<ArcStr>,
     name: Option<Name>,
-    t: Arc<Mutex<Option<TempDir>>>,
-}
-
-impl fmt::Debug for TempDirArgs {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{{ dir: {:?}, name: {:?} }}", self.dir, self.name)
-    }
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct GxTempDirEv {
-    current: Arc<Mutex<Option<TempDir>>>,
-}
+pub(crate) struct GxTempDirEv;
 
 impl EvalCachedAsync for GxTempDirEv {
     const NAME: &str = "fs_tempdir";
@@ -71,7 +122,7 @@ impl EvalCachedAsync for GxTempDirEv {
                     _ => None,
                 });
             let _ = cached.get::<Value>(2)?;
-            Some(TempDirArgs { dir, name, t: self.current.clone() })
+            Some(TempDirArgs { dir, name })
         }
     }
 
@@ -97,8 +148,8 @@ impl EvalCachedAsync for GxTempDirEv {
                     use std::fmt::Write;
                     let mut buf = CompactString::new("");
                     write!(buf, "{}", td.path().display()).unwrap();
-                    *args.t.lock() = Some(td);
-                    Value::String(ArcStr::from(buf.as_str()))
+                    let path = ArcStr::from(buf.as_str());
+                    TEMPDIR_WRAPPER.wrap(TempDirValue { path, _dir: td })
                 }
             }
         }
@@ -106,6 +157,27 @@ impl EvalCachedAsync for GxTempDirEv {
 }
 
 pub(crate) type GxTempDir = CachedArgsAsync<GxTempDirEv>;
+
+#[derive(Debug, Default)]
+pub(crate) struct TempDirPathEv;
+
+impl EvalCached for TempDirPathEv {
+    const NAME: &str = "fs_tempdir_path";
+    deftype!("fn(string) -> string");
+
+    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+        let v = from.0.first()?.as_ref()?;
+        match v {
+            Value::Abstract(a) => {
+                let td = a.downcast_ref::<TempDirValue>()?;
+                Some(Value::String(td.path.clone()))
+            }
+            _ => None,
+        }
+    }
+}
+
+pub(crate) type TempDirPath = CachedArgs<TempDirPathEv>;
 
 pub(crate) fn convert_path(path: &Path) -> ArcStr {
     thread_local! {
@@ -164,6 +236,7 @@ mod test;
 graphix_derive::defpackage! {
     builtins => [
         GxTempDir,
+        TempDirPath,
         JoinPath,
         metadata::IsFile,
         metadata::IsDir,
