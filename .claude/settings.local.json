@@ -86,7 +86,8 @@
       "Bash(cd /home/eric/proj/netidx && rustc --version)",
       "Bash(cat << 'EOF' | rustc --edition 2024 -\nuse std::time::Duration;\nfn main\\(\\) {\n    let d = Duration::from_secs\\(10\\);\n    let _ = d.checked_div_f32\\(2.0\\);\n    let _ = d.checked_div_f64\\(2.0\\);\n}\nEOF)",
       "Bash(cat << 'EOF' | rustc --edition 2024 -\nuse std::time::Duration;\nfn main\\(\\) {\n    let d = Duration::from_secs\\(10\\);\n    let _ = d.checked_mul_f32\\(2.0\\);\n    let _ = d.checked_mul_f64\\(2.0\\);\n}\nEOF)",
-      "Bash(for f:*)"
+      "Bash(for f:*)",
+      "Bash(for i:*)"
     ],
     "deny": [],
     "ask": []

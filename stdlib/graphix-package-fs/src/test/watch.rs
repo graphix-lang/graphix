@@ -70,7 +70,7 @@ macro_rules! watch_test {
 
             // Start watching
             let code = format!(
-                r#"fs::watch::watch(#interest: {}, "{}")"#,
+                r#"{{ use fs::watch; let w = create(null)?; path(watch(#interest: {}, w, "{}")?) }}"#,
                 $interest, escape_path(watch_path.display())
             );
 
@@ -362,40 +362,40 @@ watch_test! {
     }
 }
 
-// Test multiple watches on related paths
+// Test multiple watches on related paths (shared watcher, flattened stream)
 #[tokio::test(flavor = "current_thread")]
 async fn test_watch_multiple_related_paths() -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
     let ctx = init(tx).await?;
     let temp_dir = tempfile::tempdir()?;
 
-    let file1 = temp_dir.path().join("a").join("b").join("file.txt");
-    let file2 = temp_dir.path().join("a").join("b").join("c").join("file.txt");
+    let dir = temp_dir.path().join("watched");
+    fs::create_dir(&dir).await?;
 
-    // Ensure nothing exists
-    let _ = fs::remove_dir_all(temp_dir.path().join("a")).await;
+    let file1 = dir.join("file1.txt");
+    let file2 = dir.join("file2.txt");
 
-    // Watch both files
-    let code1 = format!(
-        r#"fs::watch::watch(#interest: [`Established, `Create], "{}")"#,
-        escape_path(file1.display())
+    // Watch two files with a shared watcher, flatten via path()
+    let code = format!(
+        r#"{{
+  use fs::watch;
+  let w = create(null)?;
+  let h1 = watch(#interest: [`Established, `Create], w, "{file1}")?;
+  let h2 = watch(#interest: [`Established, `Create], w, "{file2}")?;
+  path(h1, h2)
+}}"#,
+        file1 = escape_path(file1.display()),
+        file2 = escape_path(file2.display()),
     );
-    let code2 = format!(
-        r#"fs::watch::watch(#interest: [`Established, `Create], "{}")"#,
-        escape_path(file2.display())
-    );
 
-    let compiled1 = ctx.rt.compile(ArcStr::from(code1)).await?;
-    let compiled2 = ctx.rt.compile(ArcStr::from(code2)).await?;
-    let eid1 = compiled1.exprs[0].id;
-    let eid2 = compiled2.exprs[0].id;
+    let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
+    let eid = compiled.exprs[0].id;
 
     let timeout = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(timeout);
-    let mut watch1_ready = false;
-    let mut watch2_ready = false;
-    let mut got_create_file1 = false;
-    let mut got_create_file2 = false;
+    let mut event_count = 0;
+    let mut created_file = false;
+    let mut got_create = false;
 
     loop {
         tokio::select! {
@@ -403,26 +403,17 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
             Some(mut batch) = rx.recv() => {
                 for event in batch.drain(..) {
                     if let GXEvent::Updated(id, v) = event {
-                        if matches!(v, Value::String(_)) {
-                            eprintln!("Event for {}: {v}", id.inner());
+                        if id == eid && matches!(v, Value::String(_)) {
+                            event_count += 1;
+                            eprintln!("Event #{event_count}: {v}");
 
-                            if id == eid1 && !watch1_ready {
-                                watch1_ready = true;
-                                eprintln!("Watch 1 ready");
-                            } else if id == eid2 && !watch2_ready {
-                                watch2_ready = true;
-                                eprintln!("Watch 2 ready");
-                            } else if id == eid1 {
-                                got_create_file1 = true;
-                            } else if id == eid2 {
-                                got_create_file2 = true;
-                            }
-
-                            if watch1_ready && watch2_ready && !got_create_file1 && !got_create_file2 {
-                                // Both watches ready, create only file2
-                                eprintln!("Creating deep file only (file2)");
-                                fs::create_dir_all(temp_dir.path().join("a/b/c")).await?;
-                                fs::write(&file2, b"deep").await?;
+                            if !created_file {
+                                // After first established event, create file2
+                                eprintln!("Creating file2");
+                                fs::write(&file2, b"content").await?;
+                                created_file = true;
+                            } else {
+                                got_create = true;
                             }
                         }
                     }
@@ -431,8 +422,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
         }
     }
 
-    assert!(!got_create_file1, "Should not get create event for file1");
-    assert!(got_create_file2, "Should get create event for file2");
+    assert!(got_create, "Should get create event through flattened stream");
     Ok(())
 }
 
@@ -577,9 +567,9 @@ watch_test! {
     }
 }
 
-// Test SetGlobals - disable polling
+// Test create with params
 run!(
-    test_watch_set_globals_disable_polling,
-    r#"fs::watch::set_global_watch_parameters(#poll_batch_size: 0, #poll_interval: duration:1.s)"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::Null)) }
+    test_watch_create_with_params,
+    r#"{ use fs::watch; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }
 );

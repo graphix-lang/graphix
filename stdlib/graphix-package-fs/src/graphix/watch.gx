@@ -1,6 +1,6 @@
-let set_global_watch_parameters = |
-    #poll_interval = null,
-    #poll_batch_size = null
-| 'fs_set_global_watch_parameters;
-let watch = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch;
-let watch_full = |#interest = [`Established, `Create, `Modify, `Delete], path| 'fs_watch_full;
+type Watcher = string;
+type Watch = string;
+let create = |#poll_interval = null, #poll_batch_size = null, trigger| 'fs_watch_create;
+let watch = |#interest = [`Established, `Create, `Modify, `Delete], watcher, path| 'fs_watch_watch;
+let path = |@args| 'fs_watch_path;
+let events = |@args| 'fs_watch_events;

@@ -599,9 +599,10 @@ parameters and constraints.
 **rand**: `rand`, `pick`, `shuffle`
 
 **fs**: `read_all`, `read_all_bin`, `write_all`, `write_all_bin`,
-`watch`, `watch_full`, `readdir`, `metadata`, `is_file`, `is_dir`,
-`tempdir`, `join_path`, `create_dir`, `remove_dir`, `remove_file`,
-`set_global_watch_parameters`
+`readdir`, `metadata`, `is_file`, `is_dir`,
+`tempdir`, `join_path`, `create_dir`, `remove_dir`, `remove_file`
+
+**fs::watch**: `create`, `watch`, `path`, `events`
 
 ### GUI Patterns (iced-based)
 

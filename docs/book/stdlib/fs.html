@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a86ec69e.js";
+            window.path_to_searchindex_js = "../searchindex-c4dc9903.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-963d53c3.js"></script>
@@ -359,18 +359,26 @@ type WatchEvent = {
     event: Interest
 };
 
-/// Set global parameters for all watches.
+/// An opaque handle to a filesystem watcher. Cleaned up when
+/// no remaining references exist.
+type Watcher;
+
+/// An opaque handle to a single watch. Use path() and events()
+/// to extract values from watch events.
+type Watch;
+
+/// Create a filesystem watcher.
 ///
-/// poll_interval: How often to poll a batch, set this to 0 to disable polling. default 1 second.
-/// poll_batch_size: How many files to poll per batch, must be positive, default 100
-val set_global_watch_parameters: fn(
+/// poll_interval: How often to poll a batch, must be &gt;= 100ms. default 1s.
+/// poll_batch_size: How many files to poll per batch, must be &gt;= 0. default 100.
+val create: fn(
     ?#poll_interval:[duration, null],
-    ?#poll_batch_size:[i64, null]
-) -&gt; Result&lt;null, `WatchError(string)&gt;;
+    ?#poll_batch_size:[i64, null],
+    Any
+) -&gt; Result&lt;Watcher, `WatchError(string)&gt;;
 
-/// Watch the specified path for events matching #interest. Return the canonical
-/// path of the filesystem object involved in the event, or an error if the
-/// watch could not be established. watch updates when,
+/// Watch path for events matching #interest using the given watcher.
+/// watch updates when,
 /// - an event occurs that matches interest
 /// - an error occurs when trying to establish the watch
 ///
@@ -384,25 +392,20 @@ val set_global_watch_parameters: fn(
 ///
 /// Filesystem watches are a limited operating system resource, like file
 /// descriptors, or handles.
-val watch: fn(?#interest: Array&lt;Interest&gt;, string) -&gt; Result&lt;string, `WatchError(string)&gt;;
+val watch: fn(?#interest: Array&lt;Interest&gt;, Watcher, string)
+    -&gt; Result&lt;Watch, `WatchError(string)&gt;;
 
-/// Watch the specified path for events matching #interest. Return the full event
-/// describing what happened, or an error if the watch could not be established.
-/// watch_full updates when
-/// - an event occurs that matches interest
-/// - an error occurs when trying to establish the watch
-///
-/// If you wish to know when the watch is established, you must express interest
-/// in the `Established event (which is in the default set). If you do so, you will
-/// also get a new established event if you change the interest or the path.
-///
-/// If path is a directory the watch will report events about immediate children.
-/// If the watch could not be established establishement will be retried every
-/// time path updates
-///
-/// Filesystem watches are a limited operating system resource, like file
-/// descriptors, or handles.
-val watch_full: fn(?#interest: Array&lt;Interest&gt;, string) -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
+/// The path of the filesystem object involved in the most recent
+/// watch event. Updates reactively when new events arrive.
+/// Accepts a single Watch, an Array of Watches, or a Map with Watch values.
+/// When given a collection, flattens to a single stream — fires when
+/// any watch in the collection fires.
+val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;]) -&gt; Result&lt;string, `WatchError(string)&gt;;
+
+/// The full watch event including all paths and the event type.
+/// Updates reactively when new events arrive.
+/// Same collection handling as path().
+val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;]) -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
 </code></pre>
 <h2 id="fstempdir"><a class="header" href="#fstempdir">fs::tempdir</a></h2>
 <pre><code class="language-graphix">/// An opaque handle to a temporary directory. The directory is

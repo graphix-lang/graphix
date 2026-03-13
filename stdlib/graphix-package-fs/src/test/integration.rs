@@ -24,9 +24,12 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
     {dir: temp_path, file: write_result ~ file_path}
   };
 
-  let watch_stream = fs::watch::watch(#interest: [`Established, `Modify], paths.dir);
-  let established = once(watch_stream);
-  let modify_event = skip(#n:1, watch_stream);
+  use fs::watch;
+  let w = create(null)?;
+  let handle = watch(#interest: [`Established, `Modify], w, paths.dir)?;
+  let watch_path = path(handle);
+  let established = once(watch_path);
+  let modify_event = skip(#n:1, watch_path);
   let write_done = fs::write_all(#path: established ~ paths.file, "modified by write_all");
   let content = fs::read_all(write_done ~ paths.file);
 
