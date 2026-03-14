@@ -21,6 +21,7 @@ use tempfile::TempDir;
 
 pub(crate) mod dir;
 pub(crate) mod file;
+pub(crate) mod handle;
 pub(crate) mod metadata;
 pub(crate) mod watch;
 
@@ -250,6 +251,15 @@ graphix_derive::defpackage! {
         file::WriteAll,
         file::WriteAllBin,
         file::RemoveFile,
+        handle::FileOpen,
+        handle::FileRead,
+        handle::FileReadExact,
+        handle::FileWrite,
+        handle::FileWriteExact,
+        handle::FileSeek,
+        handle::FileFstat,
+        handle::FileFlush,
+        handle::FileTruncate,
         dir::ReadDir,
         dir::CreateDir,
         dir::RemoveDir,

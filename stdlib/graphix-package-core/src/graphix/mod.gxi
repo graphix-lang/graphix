@@ -135,3 +135,6 @@ val println: fn(?#dest:Log, 'a) -> _;
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
 val throttle: fn(?#rate:duration, 'a) -> 'a;
+
+
+mod buffer;

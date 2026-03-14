@@ -1,0 +1,20 @@
+/// Convert bytes to a UTF-8 string.
+val to_string: fn(bytes) -> Result<string, `EncodingError(string)>;
+
+/// Convert bytes to a UTF-8 string, replacing invalid sequences.
+val to_string_lossy: fn(bytes) -> string;
+
+/// Convert a string to its UTF-8 bytes.
+val from_string: fn(string) -> bytes;
+
+/// Concatenate bytes values.
+val concat: fn(@args: [bytes, Array<bytes>]) -> bytes;
+
+/// Convert bytes to an Array<u8>.
+val to_array: fn(bytes) -> Array<u8>;
+
+/// Convert an Array<u8> to bytes.
+val from_array: fn(Array<u8>) -> bytes;
+
+/// Return the length of a bytes value.
+val len: fn(bytes) -> u64;

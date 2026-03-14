@@ -32,6 +32,7 @@ type DirEntry = {
 
 mod watch;
 mod tempdir;
+mod file;
 
 /// Read the specified file into memory as a utf8 string and return it, or an
 /// error if,

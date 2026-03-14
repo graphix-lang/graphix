@@ -1,0 +1,10 @@
+type File = string;
+let open = |mode, path| 'fs_file_open;
+let read = |n, file| 'fs_file_read;
+let read_exact = |n, file| 'fs_file_read_exact;
+let write = |data, file| 'fs_file_write;
+let write_exact = |data, file| 'fs_file_write_exact;
+let seek = |pos, file| 'fs_file_seek;
+let fstat = |file| 'fs_file_fstat;
+let flush = |file| 'fs_file_flush;
+let truncate = |len, file| 'fs_file_truncate

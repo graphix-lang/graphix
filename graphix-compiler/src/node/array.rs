@@ -8,7 +8,7 @@ use crate::{
 use anyhow::Result;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx_value::{Typ, ValArray, Value};
+use netidx_value::{PBytes, Typ, ValArray, Value};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
@@ -36,6 +36,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
         let i = Cached::new(compile(ctx, flags, i.clone(), scope, top_id)?);
         let etyp = match &source.node.typ() {
             Type::Array(et) => (**et).clone(),
+            Type::Primitive(p) if *p == Typ::Bytes => Type::Primitive(Typ::U8.into()),
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([etyp.clone(), ERR.clone()]));
@@ -67,13 +68,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
                     Some(err!(ERR_TAG, "array index out of bounds"))
                 }
             }
-            Some(Value::Array(elts)) if i < 0 => {
+            Some(Value::Array(elts)) => {
                 let len = elts.len();
                 let i = len as i64 + i;
                 if i > 0 {
                     Some(elts[i as usize].clone())
                 } else {
                     Some(err!(ERR_TAG, "array index out of bounds"))
+                }
+            }
+            Some(Value::Bytes(b)) if i >= 0 => {
+                let i = i as usize;
+                if i < b.len() {
+                    Some(Value::U8(b[i]))
+                } else {
+                    Some(err!(ERR_TAG, "index out of bounds"))
+                }
+            }
+            Some(Value::Bytes(b)) => {
+                let i = b.len() as i64 + i;
+                if i >= 0 {
+                    Some(Value::U8(b[i as usize]))
+                } else {
+                    Some(err!(ERR_TAG, "index out of bounds"))
                 }
             }
             None => None,
@@ -84,9 +101,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source.node, self.source.node.typecheck(ctx))?;
         wrap!(self.i.node, self.i.node.typecheck(ctx))?;
-        let at = Type::Array(Arc::new(self.etyp.clone()));
-        wrap!(self, at.check_contains(&ctx.env, self.source.node.typ()))?;
         let int = Type::Primitive(Typ::integer());
+        let bytes_typ = Type::Primitive(Typ::Bytes.into());
+        let source_typ = self.source.node.typ();
+        if bytes_typ.contains_with_flags(BitFlags::empty(), &ctx.env, source_typ)? {
+            let byte = Type::Primitive(Typ::U8.into());
+            wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
+        } else {
+            // if we don't already know it's a bytes, assume it will be an array
+            let at = Type::Array(Arc::new(self.etyp.clone()));
+            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
+        }
         wrap!(self.i.node, int.check_contains(&ctx.env, self.i.node.typ()))
     }
 
@@ -195,6 +220,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
                     Err(e) => Some(errf!(ERR_TAG, "{e:?}")),
                 },
             },
+            Some(Value::Bytes(b)) => match (start, end) {
+                (None, None) => Some(Value::Bytes(b.clone())),
+                (Some(i), Some(j)) if i <= j && j <= b.len() => {
+                    Some(Value::Bytes(PBytes::new(b.slice(i..j))))
+                }
+                (Some(i), None) if i <= b.len() => {
+                    Some(Value::Bytes(PBytes::new(b.slice(i..))))
+                }
+                (None, Some(j)) if j <= b.len() => {
+                    Some(Value::Bytes(PBytes::new(b.slice(..j))))
+                }
+                _ => Some(err!(ERR_TAG, "slice out of bounds")),
+            },
             Some(_) => Some(err!(ERR_TAG, "expected array")),
             None => None,
         }
@@ -203,10 +241,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source.node, self.source.node.typecheck(ctx))?;
         let it = Type::Primitive(Typ::integer());
-        wrap!(
-            self.source.node,
-            self.typ.check_contains(&ctx.env, &self.source.node.typ())
-        )?;
+        let bytes_typ = Type::Primitive(Typ::Bytes.into());
+        let source_typ = self.source.node.typ();
+        if !bytes_typ.contains_with_flags(BitFlags::empty(), &ctx.env, source_typ)? {
+            // if we don't already know it's bytes, assume it will be an array
+            let at = Type::Array(Arc::new(Type::empty_tvar()));
+            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
+        }
         if let Some(start) = self.start.as_mut() {
             wrap!(start.node, start.node.typecheck(ctx))?;
             wrap!(start.node, it.check_contains(&ctx.env, &start.node.typ()))?;

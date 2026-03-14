@@ -95,6 +95,34 @@ pub(crate) fn convert_filetype(typ: FileType) -> Value {
     }
 }
 
+pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
+    let accessed: Option<DateTime<Utc>> = m.accessed().ok().map(|ts| ts.into());
+    let created: Option<DateTime<Utc>> = m.created().ok().map(|ts| ts.into());
+    let modified: Option<DateTime<Utc>> = m.modified().ok().map(|ts| ts.into());
+    let kind = convert_filetype(m.file_type());
+    let len = m.len();
+    let permissions = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Value::U32(m.mode())
+        }
+        #[cfg(windows)]
+        {
+            Value::from((literal!("ReadOnly"), m.permissions().readonly()))
+        }
+    };
+    let r: [(ArcStr, Value); 6] = [
+        (literal!("accessed"), accessed.into()),
+        (literal!("created"), created.into()),
+        (literal!("kind"), kind),
+        (literal!("len"), len.into()),
+        (literal!("modified"), modified.into()),
+        (literal!("permissions"), permissions),
+    ];
+    r.into()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct MetadataEv;
 
@@ -116,39 +144,7 @@ impl EvalCachedAsync for MetadataEv {
             };
             match md {
                 Err(e) => errf!("IOError", "could not stat {e:?}"),
-                Ok(m) => {
-                    let accessed: Option<DateTime<Utc>> =
-                        m.accessed().ok().map(|ts| ts.into());
-                    let created: Option<DateTime<Utc>> =
-                        m.created().ok().map(|ts| ts.into());
-                    let modified: Option<DateTime<Utc>> =
-                        m.modified().ok().map(|ts| ts.into());
-                    let kind = convert_filetype(m.file_type());
-                    let len = m.len();
-                    let permissions = {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::MetadataExt;
-                            Value::U32(m.mode())
-                        }
-                        #[cfg(windows)]
-                        {
-                            Value::from((
-                                literal!("ReadOnly"),
-                                m.permissions().readonly(),
-                            ))
-                        }
-                    };
-                    let r: [(ArcStr, Value); 6] = [
-                        (literal!("accessed"), accessed.into()),
-                        (literal!("created"), created.into()),
-                        (literal!("kind"), kind),
-                        (literal!("len"), len.into()),
-                        (literal!("modified"), modified.into()),
-                        (literal!("permissions"), permissions),
-                    ];
-                    r.into()
-                }
+                Ok(m) => convert_metadata(m),
             }
         }
     }

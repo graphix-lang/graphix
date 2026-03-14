@@ -118,6 +118,24 @@ run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
     _ => false,
 });
 
+const ARRAY_SLICE_NON_ARRAY: &str = r#"
+  ("foo")[..]
+"#;
+
+run!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, |v: Result<&Value>| match v {
+    Err(_) => true,
+    _ => false,
+});
+
+const ARRAY_INDEX_NON_ARRAY: &str = r#"
+  ("foo")[0]
+"#;
+
+run!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, |v: Result<&Value>| match v {
+    Err(_) => true,
+    _ => false,
+});
+
 const ARRAY_MATCH0: &str = r#"
 {
   let a = [0, 1, 2, 3, 4, 5, 6];

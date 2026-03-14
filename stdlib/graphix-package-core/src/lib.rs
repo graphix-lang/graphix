@@ -30,6 +30,8 @@ use std::{
 use tokio::time::Instant;
 use triomphe::Arc as TArc;
 
+pub(crate) mod buffer;
+
 // ── Shared macros ──────────────────────────────────────────────────
 
 #[macro_export]
@@ -2029,5 +2031,12 @@ graphix_derive::defpackage! {
         Log,
         Print,
         Println,
+        buffer::BytesToString,
+        buffer::BytesToStringLossy,
+        buffer::BytesFromString,
+        buffer::BytesConcat,
+        buffer::BytesToArray,
+        buffer::BytesFromArray,
+        buffer::BytesLen,
     ],
 }

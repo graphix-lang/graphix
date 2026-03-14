@@ -6,6 +6,7 @@ pub use testing::escape_path;
 use tokio::sync::mpsc;
 
 mod dir_ops;
+mod file_handle;
 mod integration;
 mod metadata;
 mod read;
