@@ -69,9 +69,7 @@ impl netidx_core::pack::Pack for TempDirValue {
         Err(netidx_core::pack::PackError::Application(0))
     }
 
-    fn decode(
-        _buf: &mut impl bytes::Buf,
-    ) -> Result<Self, netidx_core::pack::PackError> {
+    fn decode(_buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
         Err(netidx_core::pack::PackError::Application(0))
     }
 }
