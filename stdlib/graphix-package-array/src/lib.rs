@@ -847,11 +847,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
         let i_typ = Type::Primitive(Typ::I64.into());
-        let (_, node) =
-            genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
+        let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
         let ft = self.mftyp.clone();
         let fnode = genn::reference(ctx, self.fid, Type::Fn(ft.clone()), self.top_id);
-        let mut node = genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
+        let mut node =
+            genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
         let r = node.typecheck(ctx);
         node.delete(ctx);
         r
