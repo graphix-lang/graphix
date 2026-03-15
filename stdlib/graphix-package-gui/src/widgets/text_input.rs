@@ -51,10 +51,8 @@ impl<X: GXExt> TextInputW<X> {
             gx.compile_ref(value),
             gx.compile_ref(width),
         }?;
-        let on_input_callable =
-            compile_callable!(gx, on_input, "text_input on_input");
-        let on_submit_callable =
-            compile_callable!(gx, on_submit, "text_input on_submit");
+        let on_input_callable = compile_callable!(gx, on_input, "text_input on_input");
+        let on_submit_callable = compile_callable!(gx, on_submit, "text_input on_submit");
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("text_input tref disabled")?,
@@ -99,8 +97,24 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
             self.padding.update(id, v).context("text_input update padding")?.is_some();
         changed |= self.size.update(id, v).context("text_input update size")?.is_some();
         changed |= self.font.update(id, v).context("text_input update font")?.is_some();
-        update_callable!(self, rt, id, v, on_input, on_input_callable, "text_input on_input recompile");
-        update_callable!(self, rt, id, v, on_submit, on_submit_callable, "text_input on_submit recompile");
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_input,
+            on_input_callable,
+            "text_input on_input recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_submit,
+            on_submit_callable,
+            "text_input on_submit recompile"
+        );
         Ok(changed)
     }
 

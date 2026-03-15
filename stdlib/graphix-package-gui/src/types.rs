@@ -625,11 +625,7 @@ fn decode_svg_icon(data: &[u8]) -> Result<Option<winit::window::Icon>> {
         .context("failed to allocate pixmap for SVG icon")?;
     let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
-    Ok(Some(winit::window::Icon::from_rgba(
-        pixmap.data().to_vec(),
-        size,
-        size,
-    )?))
+    Ok(Some(winit::window::Icon::from_rgba(pixmap.data().to_vec(), size, size)?))
 }
 
 impl FromValue for ImageSourceV {
@@ -753,8 +749,7 @@ impl FromValue for ShortcutV {
         if logo {
             modifiers |= iced_core::keyboard::Modifiers::LOGO;
         }
-        let iced_key =
-            iced_core::keyboard::Key::Character(key_str.to_lowercase().into());
+        let iced_key = iced_core::keyboard::Key::Character(key_str.to_lowercase().into());
         Ok(Self { display, key: iced_key, modifiers })
     }
 }

@@ -982,16 +982,14 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                     let z_lookup = |x: f64, y: f64| -> f64 {
                                         let ri = x_vals
                                             .binary_search_by(|v| {
-                                                v.partial_cmp(&x).unwrap_or(
-                                                    std::cmp::Ordering::Equal,
-                                                )
+                                                v.partial_cmp(&x)
+                                                    .unwrap_or(std::cmp::Ordering::Equal)
                                             })
                                             .unwrap_or(0);
                                         let ci = y_vals
                                             .binary_search_by(|v| {
-                                                v.partial_cmp(&y).unwrap_or(
-                                                    std::cmp::Ordering::Equal,
-                                                )
+                                                v.partial_cmp(&y)
+                                                    .unwrap_or(std::cmp::Ordering::Equal)
                                             })
                                             .unwrap_or(0);
                                         z_grid

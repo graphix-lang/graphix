@@ -62,7 +62,16 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
             self.halign.update(id, v).context("container update halign")?.is_some();
         changed |=
             self.valign.update(id, v).context("container update valign")?.is_some();
-        update_child!(self, rt, id, v, changed, child_ref, child, "container child recompile");
+        update_child!(
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
+            "container child recompile"
+        );
         Ok(changed)
     }
 

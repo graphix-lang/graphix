@@ -25,10 +25,7 @@ impl<'a> OwnedContextMenu<'a> {
         child: Element<'a, Message, GraphixTheme, Renderer>,
         items: Vec<MenuItemDesc>,
     ) -> Self {
-        Self {
-            child,
-            desc: MenuGroupDesc { label: String::new(), items },
-        }
+        Self { child, desc: MenuGroupDesc { label: String::new(), items } }
     }
 }
 
@@ -59,11 +56,7 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.child.as_widget_mut().layout(
-            &mut tree.children[0],
-            renderer,
-            limits,
-        )
+        self.child.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
     }
 
     fn draw(
@@ -193,9 +186,7 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
     }
 }
 
-impl<'a> From<OwnedContextMenu<'a>>
-    for Element<'a, Message, GraphixTheme, Renderer>
-{
+impl<'a> From<OwnedContextMenu<'a>> for Element<'a, Message, GraphixTheme, Renderer> {
     fn from(w: OwnedContextMenu<'a>) -> Self {
         Self::new(w)
     }

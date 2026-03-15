@@ -53,7 +53,16 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
         changed |=
             self.position.update(id, v).context("tooltip update position")?.is_some();
         changed |= self.gap.update(id, v).context("tooltip update gap")?.is_some();
-        update_child!(self, rt, id, v, changed, child_ref, child, "tooltip child recompile");
+        update_child!(
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
+            "tooltip child recompile"
+        );
         update_child!(self, rt, id, v, changed, tip_ref, tip, "tooltip tip recompile");
         Ok(changed)
     }

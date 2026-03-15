@@ -24,8 +24,7 @@ macro_rules! update_callable {
         if $id == $self.$field.id {
             $self.$field.last = Some($v.clone());
             $self.$callable = Some(
-                $rt.block_on($self.gx.compile_callable($v.clone()))
-                    .context($label)?,
+                $rt.block_on($self.gx.compile_callable($v.clone())).context($label)?,
             );
         }
     };
@@ -47,9 +46,8 @@ macro_rules! update_child {
     ($self:ident, $rt:ident, $id:ident, $v:ident, $changed:ident, $ref:ident, $child:ident, $label:expr) => {
         if $id == $self.$ref.id {
             $self.$ref.last = Some($v.clone());
-            $self.$child = $rt
-                .block_on(compile($self.gx.clone(), $v.clone()))
-                .context($label)?;
+            $self.$child =
+                $rt.block_on(compile($self.gx.clone(), $v.clone())).context($label)?;
             $changed = true;
         }
         $changed |= $self.$child.handle_update($rt, $id, $v)?;
@@ -136,8 +134,7 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
 pub type GuiW<X> = Box<dyn GuiWidget<X>>;
 
 /// Future type for widget compilation (avoids infinite-size async fn).
-pub type CompileFut<X> =
-    Pin<Box<dyn Future<Output = Result<GuiW<X>>> + Send + 'static>>;
+pub type CompileFut<X> = Pin<Box<dyn Future<Output = Result<GuiW<X>>> + Send + 'static>>;
 
 /// Empty widget placeholder.
 pub struct EmptyW;

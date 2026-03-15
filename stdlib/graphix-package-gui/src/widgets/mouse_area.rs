@@ -72,12 +72,61 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        update_child!(self, rt, id, v, changed, child_ref, child, "mouse_area child recompile");
-        update_callable!(self, rt, id, v, on_press, on_press_callable, "mouse_area on_press recompile");
-        update_callable!(self, rt, id, v, on_release, on_release_callable, "mouse_area on_release recompile");
-        update_callable!(self, rt, id, v, on_enter, on_enter_callable, "mouse_area on_enter recompile");
-        update_callable!(self, rt, id, v, on_exit, on_exit_callable, "mouse_area on_exit recompile");
-        update_callable!(self, rt, id, v, on_move, on_move_callable, "mouse_area on_move recompile");
+        update_child!(
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
+            "mouse_area child recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_press,
+            on_press_callable,
+            "mouse_area on_press recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_release,
+            on_release_callable,
+            "mouse_area on_release recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_enter,
+            on_enter_callable,
+            "mouse_area on_enter recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_exit,
+            on_exit_callable,
+            "mouse_area on_exit recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_move,
+            on_move_callable,
+            "mouse_area on_move recompile"
+        );
         Ok(changed)
     }
 
@@ -93,15 +142,33 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         let mut ma = widget::MouseArea::new(self.child.view());
         if let Some(c) = &self.on_press_callable {
             let id = c.id();
-            ma = ma.on_press(Message::Call(id, ValArray::from_iter([mouse_button_value("Left")])));
-            ma = ma.on_right_press(Message::Call(id, ValArray::from_iter([mouse_button_value("Right")])));
-            ma = ma.on_middle_press(Message::Call(id, ValArray::from_iter([mouse_button_value("Middle")])));
+            ma = ma.on_press(Message::Call(
+                id,
+                ValArray::from_iter([mouse_button_value("Left")]),
+            ));
+            ma = ma.on_right_press(Message::Call(
+                id,
+                ValArray::from_iter([mouse_button_value("Right")]),
+            ));
+            ma = ma.on_middle_press(Message::Call(
+                id,
+                ValArray::from_iter([mouse_button_value("Middle")]),
+            ));
         }
         if let Some(c) = &self.on_release_callable {
             let id = c.id();
-            ma = ma.on_release(Message::Call(id, ValArray::from_iter([mouse_button_value("Left")])));
-            ma = ma.on_right_release(Message::Call(id, ValArray::from_iter([mouse_button_value("Right")])));
-            ma = ma.on_middle_release(Message::Call(id, ValArray::from_iter([mouse_button_value("Middle")])));
+            ma = ma.on_release(Message::Call(
+                id,
+                ValArray::from_iter([mouse_button_value("Left")]),
+            ));
+            ma = ma.on_right_release(Message::Call(
+                id,
+                ValArray::from_iter([mouse_button_value("Right")]),
+            ));
+            ma = ma.on_middle_release(Message::Call(
+                id,
+                ValArray::from_iter([mouse_button_value("Middle")]),
+            ));
         }
         if let Some(c) = &self.on_enter_callable {
             ma = ma.on_enter(Message::Call(c.id(), ValArray::from_iter([Value::Null])));

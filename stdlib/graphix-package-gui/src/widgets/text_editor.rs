@@ -43,8 +43,7 @@ impl<X: GXExt> TextEditorW<X> {
                 gx.compile_ref(size),
                 gx.compile_ref(width),
             }?;
-        let on_edit_callable =
-            compile_callable!(gx, on_edit, "text_editor on_edit");
+        let on_edit_callable = compile_callable!(gx, on_edit, "text_editor on_edit");
         let content_tref: TRef<X, String> =
             TRef::new(content).context("text_editor tref content")?;
         let initial_text = content_tref.t.as_deref().unwrap_or("");
@@ -101,7 +100,15 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
             self.padding.update(id, v).context("text_editor update padding")?.is_some();
         changed |= self.font.update(id, v).context("text_editor update font")?.is_some();
         changed |= self.size.update(id, v).context("text_editor update size")?.is_some();
-        update_callable!(self, rt, id, v, on_edit, on_edit_callable, "text_editor on_edit recompile");
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_edit,
+            on_edit_callable,
+            "text_editor on_edit recompile"
+        );
         Ok(changed)
     }
 

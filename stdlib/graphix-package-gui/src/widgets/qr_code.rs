@@ -23,13 +23,14 @@ impl<X: GXExt> QrCodeW<X> {
             gx.compile_ref(data),
         }?;
         let data = TRef::new(data).context("qr_code tref data")?;
-        let qr_data = data.t.as_deref().and_then(|s| match widget::qr_code::Data::new(s) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                error!("qr_code: failed to encode data: {e}");
-                None
-            }
-        });
+        let qr_data =
+            data.t.as_deref().and_then(|s| match widget::qr_code::Data::new(s) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    error!("qr_code: failed to encode data: {e}");
+                    None
+                }
+            });
         Ok(Box::new(Self {
             data,
             cell_size: TRef::new(cell_size).context("qr_code tref cell_size")?,
@@ -49,15 +50,15 @@ impl<X: GXExt> super::GuiWidget<X> for QrCodeW<X> {
         changed |=
             self.cell_size.update(id, v).context("qr_code update cell_size")?.is_some();
         if let Some(_) = self.data.update(id, v).context("qr_code update data")? {
-            self.qr_data = self.data.t.as_deref().and_then(
-                |s| match widget::qr_code::Data::new(s) {
+            self.qr_data = self.data.t.as_deref().and_then(|s| {
+                match widget::qr_code::Data::new(s) {
                     Ok(d) => Some(d),
                     Err(e) => {
                         error!("qr_code: failed to encode data: {e}");
                         None
                     }
-                },
-            );
+                }
+            });
             changed = true;
         }
         Ok(changed)

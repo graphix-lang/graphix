@@ -87,9 +87,34 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        update_child!(self, rt, id, v, changed, child_ref, child, "keyboard_area child recompile");
-        update_callable!(self, rt, id, v, on_key_press, on_key_press_callable, "keyboard_area on_key_press recompile");
-        update_callable!(self, rt, id, v, on_key_release, on_key_release_callable, "keyboard_area on_key_release recompile");
+        update_child!(
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
+            "keyboard_area child recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_key_press,
+            on_key_press_callable,
+            "keyboard_area on_key_press recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_key_release,
+            on_key_release_callable,
+            "keyboard_area on_key_release recompile"
+        );
         Ok(changed)
     }
 

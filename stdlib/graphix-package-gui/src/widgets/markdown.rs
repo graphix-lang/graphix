@@ -66,14 +66,17 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
         }
         changed |=
             self.spacing.update(id, v).context("markdown update spacing")?.is_some();
-        changed |= self
-            .text_size
-            .update(id, v)
-            .context("markdown update text_size")?
-            .is_some();
+        changed |=
+            self.text_size.update(id, v).context("markdown update text_size")?.is_some();
         changed |= self.width.update(id, v).context("markdown update width")?.is_some();
         update_callable!(
-            self, rt, id, v, on_link, on_link_callable, "markdown on_link recompile"
+            self,
+            rt,
+            id,
+            v,
+            on_link,
+            on_link_callable,
+            "markdown on_link recompile"
         );
         Ok(changed)
     }

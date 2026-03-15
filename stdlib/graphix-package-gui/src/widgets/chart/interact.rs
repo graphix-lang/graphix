@@ -500,7 +500,8 @@ fn find_nearest_point<X: GXExt>(
                         continue;
                     }
                     let start = style.start_angle.unwrap_or(0.0);
-                    let angle = ((dy.atan2(dx) as f64).to_degrees() - start).rem_euclid(360.0);
+                    let angle =
+                        ((dy.atan2(dx) as f64).to_degrees() - start).rem_euclid(360.0);
                     let mut cumulative = 0.0;
                     for (cat, val) in bd.0.iter() {
                         let slice_angle = (*val / total) * 360.0;

@@ -1,7 +1,7 @@
 use iced_core::{
-    alignment, keyboard, layout, mouse, overlay, renderer, touch, widget,
-    Clipboard, Element, Event, Layout, Length, Padding, Point, Rectangle, Shell, Size,
-    Vector, Widget,
+    alignment, keyboard, layout, mouse, overlay, renderer, touch, widget, Clipboard,
+    Element, Event, Layout, Length, Padding, Point, Rectangle, Shell, Size, Vector,
+    Widget,
 };
 
 use super::{Message, Renderer};
@@ -42,12 +42,7 @@ pub(crate) struct MenuOverlay<'a> {
     pub open: Option<&'a mut bool>,
 }
 
-const ITEM_PADDING: Padding = Padding {
-    top: 6.0,
-    right: 20.0,
-    bottom: 6.0,
-    left: 20.0,
-};
+const ITEM_PADDING: Padding = Padding { top: 6.0, right: 20.0, bottom: 6.0, left: 20.0 };
 const DIVIDER_HEIGHT: f32 = 9.0;
 const MIN_ITEM_WIDTH: f32 = 180.0;
 
@@ -106,11 +101,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
         <Renderer as renderer::Renderer>::fill_quad(
             renderer,
             renderer::Quad {
-                bounds: Rectangle {
-                    x: bounds.x + 2.0,
-                    y: bounds.y + 2.0,
-                    ..bounds
-                },
+                bounds: Rectangle { x: bounds.x + 2.0, y: bounds.y + 2.0, ..bounds },
                 border: Default::default(),
                 shadow: Default::default(),
                 snap: true,
@@ -167,9 +158,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                         palette.text
                     };
                     let text_bounds = Size::new(
-                        item_bounds.width
-                            - ITEM_PADDING.left
-                            - ITEM_PADDING.right,
+                        item_bounds.width - ITEM_PADDING.left - ITEM_PADDING.right,
                         item_bounds.height,
                     );
                     <Renderer as iced_core::text::Renderer>::fill_text(
@@ -205,8 +194,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                                 content: sc.display.as_str().into(),
                                 bounds: text_bounds,
                                 size: text_size,
-                                line_height:
-                                    iced_core::text::LineHeight::default(),
+                                line_height: iced_core::text::LineHeight::default(),
                                 font: iced_core::Font::DEFAULT,
                                 align_x: alignment::Horizontal::Right.into(),
                                 align_y: alignment::Vertical::Center,
@@ -214,8 +202,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                                 wrapping: iced_core::text::Wrapping::None,
                             },
                             Point::new(
-                                item_bounds.x + item_bounds.width
-                                    - ITEM_PADDING.right,
+                                item_bounds.x + item_bounds.width - ITEM_PADDING.right,
                                 item_bounds.center_y(),
                             ),
                             dimmed,
@@ -261,9 +248,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
         shell: &mut Shell<'_, Message>,
     ) {
         match event {
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key, modifiers, ..
-            }) => {
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 for item in &self.menu.items {
                     if let MenuItemDesc::Action {
                         shortcut: Some(sc),
@@ -285,8 +270,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                for (item, child_layout) in
-                    self.menu.items.iter().zip(layout.children())
+                for (item, child_layout) in self.menu.items.iter().zip(layout.children())
                 {
                     if cursor.is_over(child_layout.bounds()) {
                         if let MenuItemDesc::Action {
@@ -361,8 +345,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
             *child = layout::Node::new(Size::new(s.width, max_height))
                 .move_to(child.bounds().position());
         }
-        let bar_width =
-            if self.width == Length::Fill { max.width } else { total_width };
+        let bar_width = if self.width == Length::Fill { max.width } else { total_width };
         layout::Node::with_children(Size::new(bar_width, max_height), children)
     }
 
@@ -492,9 +475,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
                     shell.capture_event();
                 }
             }
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key, modifiers, ..
-            }) => {
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 for menu in &self.descs {
                     for item in &menu.items {
                         if let MenuItemDesc::Action {
@@ -535,8 +516,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
             return None;
         }
         let label_bounds = layout.children().nth(idx)?.bounds();
-        let position =
-            Point::new(label_bounds.x, label_bounds.y + label_bounds.height);
+        let position = Point::new(label_bounds.x, label_bounds.y + label_bounds.height);
         Some(overlay::Element::new(Box::new(MenuOverlay {
             menu: &self.descs[idx],
             position,
@@ -545,9 +525,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
     }
 }
 
-impl From<OwnedMenuBar>
-    for Element<'_, Message, GraphixTheme, Renderer>
-{
+impl From<OwnedMenuBar> for Element<'_, Message, GraphixTheme, Renderer> {
     fn from(w: OwnedMenuBar) -> Self {
         Self::new(w)
     }

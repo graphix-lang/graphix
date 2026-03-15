@@ -19,12 +19,12 @@ use types::SizeV;
 use winit::{event_loop::EventLoopProxy, window::WindowId};
 
 mod clipboard;
+pub mod convert;
 mod event_loop;
 pub mod render;
 pub mod theme;
 pub mod types;
 pub mod widgets;
-pub mod convert;
 pub mod window;
 
 #[cfg(test)]

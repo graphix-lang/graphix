@@ -61,8 +61,25 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         changed |= self.width.update(id, v).context("button update width")?.is_some();
         changed |= self.height.update(id, v).context("button update height")?.is_some();
         changed |= self.padding.update(id, v).context("button update padding")?.is_some();
-        update_callable!(self, rt, id, v, on_press, on_press_callable, "button on_press recompile");
-        update_child!(self, rt, id, v, changed, child_ref, child, "button child recompile");
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_press,
+            on_press_callable,
+            "button on_press recompile"
+        );
+        update_child!(
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
+            "button child recompile"
+        );
         Ok(changed)
     }
 

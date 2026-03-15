@@ -141,18 +141,14 @@ impl<X: GXExt> MenuBarW<X> {
 /// Convert a compiled `MenuItemKind` into the descriptor needed by the iced widget.
 pub(crate) fn menu_item_desc<X: GXExt>(item: &MenuItemKind<X>) -> MenuItemDesc {
     match item {
-        MenuItemKind::Action {
-            label,
-            shortcut,
-            on_click_callable,
-            disabled,
-            ..
-        } => MenuItemDesc::Action {
-            label: label.t.as_deref().unwrap_or("").to_string(),
-            shortcut: shortcut.t.as_ref().and_then(|o| o.clone()),
-            callable_id: on_click_callable.as_ref().map(|c| c.id()),
-            disabled: disabled.t.unwrap_or(false),
-        },
+        MenuItemKind::Action { label, shortcut, on_click_callable, disabled, .. } => {
+            MenuItemDesc::Action {
+                label: label.t.as_deref().unwrap_or("").to_string(),
+                shortcut: shortcut.t.as_ref().and_then(|o| o.clone()),
+                callable_id: on_click_callable.as_ref().map(|c| c.id()),
+                disabled: disabled.t.unwrap_or(false),
+            }
+        }
         MenuItemKind::Divider => MenuItemDesc::Divider,
     }
 }

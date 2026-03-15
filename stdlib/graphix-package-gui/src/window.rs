@@ -43,10 +43,8 @@ impl<X: GXExt> ResolvedWindow<X> {
             Some(v) => compile(gx.clone(), v.clone()).await.context("window content")?,
         };
         let icon = TRef::new(icon).context("window tref icon")?;
-        let decoded_icon = icon
-            .t
-            .as_ref()
-            .and_then(|s: &ImageSourceV| match s.decode_icon() {
+        let decoded_icon =
+            icon.t.as_ref().and_then(|s: &ImageSourceV| match s.decode_icon() {
                 Ok(i) => i,
                 Err(e) => {
                     log::warn!("failed to decode window icon: {e}");
@@ -179,15 +177,14 @@ impl<X: GXExt> TrackedWindow<X> {
             changed = true;
         }
         if self.icon.update(id, v).context("window update icon")?.is_some() {
-            self.decoded_icon = self.icon.t.as_ref().and_then(
-                |s: &ImageSourceV| match s.decode_icon() {
+            self.decoded_icon =
+                self.icon.t.as_ref().and_then(|s: &ImageSourceV| match s.decode_icon() {
                     Ok(i) => i,
                     Err(e) => {
                         log::warn!("failed to decode window icon: {e}");
                         None
                     }
-                },
-            );
+                });
             self.window.set_window_icon(self.decoded_icon.clone());
             changed = true;
         }

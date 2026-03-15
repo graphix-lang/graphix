@@ -50,7 +50,13 @@ impl<X: GXExt> GuiWidget<X> for ContextMenuW<X> {
     ) -> Result<bool> {
         let mut changed = false;
         update_child!(
-            self, rt, id, v, changed, child_ref, child,
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
             "context_menu child recompile"
         );
         if id == self.items_ref.id {

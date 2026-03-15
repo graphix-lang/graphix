@@ -31,8 +31,7 @@ impl<X: GXExt> ScrollableW<X> {
             gx.compile_ref(width),
         }?;
         let compiled_child = compile_child!(gx, child_ref, "scrollable child");
-        let on_scroll_callable =
-            compile_callable!(gx, on_scroll, "scrollable on_scroll");
+        let on_scroll_callable = compile_callable!(gx, on_scroll, "scrollable on_scroll");
         Ok(Box::new(Self {
             gx: gx.clone(),
             child_ref,
@@ -62,8 +61,25 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
         changed |= self.width.update(id, v).context("scrollable update width")?.is_some();
         changed |=
             self.height.update(id, v).context("scrollable update height")?.is_some();
-        update_child!(self, rt, id, v, changed, child_ref, child, "scrollable child recompile");
-        update_callable!(self, rt, id, v, on_scroll, on_scroll_callable, "scrollable on_scroll recompile");
+        update_child!(
+            self,
+            rt,
+            id,
+            v,
+            changed,
+            child_ref,
+            child,
+            "scrollable child recompile"
+        );
+        update_callable!(
+            self,
+            rt,
+            id,
+            v,
+            on_scroll,
+            on_scroll_callable,
+            "scrollable on_scroll recompile"
+        );
         Ok(changed)
     }
 

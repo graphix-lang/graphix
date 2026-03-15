@@ -45,7 +45,9 @@ async fn compile_columns<X: GXExt>(
         }?;
         let header = match header_ref.last.as_ref() {
             None => Box::new(super::EmptyW) as GuiW<X>,
-            Some(v) => compile(gx.clone(), v.clone()).await.context("table column header")?,
+            Some(v) => {
+                compile(gx.clone(), v.clone()).await.context("table column header")?
+            }
         };
         cols.push(CompiledColumn {
             header_ref,
@@ -58,10 +60,7 @@ async fn compile_columns<X: GXExt>(
     Ok(cols)
 }
 
-async fn compile_rows<X: GXExt>(
-    gx: &GXHandle<X>,
-    v: Value,
-) -> Result<Vec<Vec<GuiW<X>>>> {
+async fn compile_rows<X: GXExt>(gx: &GXHandle<X>, v: Value) -> Result<Vec<Vec<GuiW<X>>>> {
     let rows = v.cast_to::<SmallVec<[Value; 8]>>()?;
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
