@@ -1,4 +1,7 @@
-use crate::{env::Env, typ::{RefHist, Type}};
+use crate::{
+    env::Env,
+    typ::{RefHist, Type},
+};
 use anyhow::Result;
 use enumflags2::BitFlags;
 use fxhash::FxHashMap;

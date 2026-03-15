@@ -547,9 +547,8 @@ impl Type {
             Type::TVar(tv) => match known.get(&tv.name) {
                 Some(t) => t.clone(),
                 None => {
-                    let fresh = renamed
-                        .entry(tv.name.clone())
-                        .or_insert_with(TVar::default);
+                    let fresh =
+                        renamed.entry(tv.name.clone()).or_insert_with(TVar::default);
                     Type::TVar(fresh.clone())
                 }
             },
@@ -563,20 +562,25 @@ impl Type {
                     params.iter().map(|t| t.replace_tvars_int(known, renamed)),
                 ),
             },
-            Type::Error(t0) => Type::Error(Arc::new(t0.replace_tvars_int(known, renamed))),
-            Type::Array(t0) => Type::Array(Arc::new(t0.replace_tvars_int(known, renamed))),
+            Type::Error(t0) => {
+                Type::Error(Arc::new(t0.replace_tvars_int(known, renamed)))
+            }
+            Type::Array(t0) => {
+                Type::Array(Arc::new(t0.replace_tvars_int(known, renamed)))
+            }
             Type::Map { key, value } => {
                 let key = Arc::new(key.replace_tvars_int(known, renamed));
                 let value = Arc::new(value.replace_tvars_int(known, renamed));
                 Type::Map { key, value }
             }
-            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.replace_tvars_int(known, renamed))),
+            Type::ByRef(t0) => {
+                Type::ByRef(Arc::new(t0.replace_tvars_int(known, renamed)))
+            }
             Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
                 ts.iter().map(|t| t.replace_tvars_int(known, renamed)),
             )),
             Type::Struct(ts) => Type::Struct(Arc::from_iter(
-                ts.iter()
-                    .map(|(n, t)| (n.clone(), t.replace_tvars_int(known, renamed))),
+                ts.iter().map(|(n, t)| (n.clone(), t.replace_tvars_int(known, renamed))),
             )),
             Type::Variant(tag, ts) => Type::Variant(
                 tag.clone(),

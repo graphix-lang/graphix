@@ -1,4 +1,9 @@
-use crate::{env::Env, errf, typ::{RefHist, Type}, AbstractTypeRegistry, CAST_ERR_TAG};
+use crate::{
+    env::Env,
+    errf,
+    typ::{RefHist, Type},
+    AbstractTypeRegistry, CAST_ERR_TAG,
+};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use fxhash::FxHashSet;
@@ -10,7 +15,11 @@ use std::iter;
 use triomphe::Arc;
 
 impl Type {
-    fn check_cast_int(&self, env: &Env, hist: &mut RefHist<FxHashSet<Option<usize>>>) -> Result<()> {
+    fn check_cast_int(
+        &self,
+        env: &Env,
+        hist: &mut RefHist<FxHashSet<Option<usize>>>,
+    ) -> Result<()> {
         match self {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),

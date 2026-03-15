@@ -1,4 +1,8 @@
-use crate::{env::{Env, TypeDef}, expr::ModPath, format_with_flags, PrintFlag, PRINT_FLAGS};
+use crate::{
+    env::{Env, TypeDef},
+    expr::ModPath,
+    format_with_flags, PrintFlag, PRINT_FLAGS,
+};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
@@ -243,7 +247,10 @@ impl Type {
     /// remove the outer error type and return the inner payload, fail if self
     /// isn't an error or contains non error types
     pub fn strip_error(&self, env: &Env) -> Option<Self> {
-        self.strip_error_int(env, &mut RefHist::<FxHashSet<Option<usize>>>::new(LPooled::take()))
+        self.strip_error_int(
+            env,
+            &mut RefHist::<FxHashSet<Option<usize>>>::new(LPooled::take()),
+        )
     }
 
     pub fn is_bot(&self) -> bool {
