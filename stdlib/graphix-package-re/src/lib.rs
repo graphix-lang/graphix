@@ -5,6 +5,7 @@
 use anyhow::Result;
 use arcstr::{literal, ArcStr};
 use graphix_compiler::errf;
+use graphix_compiler::{ExecCtx, Rt, UserEvent};
 use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
@@ -28,11 +29,11 @@ struct IsMatchEv {
     re: Option<Regex>,
 }
 
-impl EvalCached for IsMatchEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsMatchEv {
     const NAME: &str = "re_is_match";
     deftype!("fn(#pat:string, string) -> Result<bool, `ReError(string)>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
             if let Err(e) = maybe_compile(s, &mut self.re) {
                 return Some(errf!(TAG, "{e:?}"));
@@ -54,11 +55,11 @@ struct FindEv {
     re: Option<Regex>,
 }
 
-impl EvalCached for FindEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for FindEv {
     const NAME: &str = "re_find";
     deftype!("fn(#pat:string, string) -> Result<Array<string>, `ReError(string)>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
             if let Err(e) = maybe_compile(s, &mut self.re) {
                 return Some(errf!(TAG, "{e:?}"));
@@ -83,11 +84,11 @@ struct CapturesEv {
     re: Option<Regex>,
 }
 
-impl EvalCached for CapturesEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for CapturesEv {
     const NAME: &str = "re_captures";
     deftype!("fn(#pat:string, string) -> Result<Array<Array<Option<string>>>, `ReError(string)>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
             if let Err(e) = maybe_compile(s, &mut self.re) {
                 return Some(errf!(TAG, "{e:?}"));
@@ -116,11 +117,11 @@ struct SplitEv {
     re: Option<Regex>,
 }
 
-impl EvalCached for SplitEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitEv {
     const NAME: &str = "re_split";
     deftype!("fn(#pat:string, string) -> Result<Array<string>, `ReError(string)>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
             if let Err(e) = maybe_compile(s, &mut self.re) {
                 return Some(errf!(TAG, "{e:?}"));
@@ -144,13 +145,13 @@ struct SplitNEv {
     lim: Option<usize>,
 }
 
-impl EvalCached for SplitNEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitNEv {
     const NAME: &str = "re_splitn";
     deftype!(
         "fn(#pat:string, #limit:i64, string) -> Result<Array<string>, `ReError(string)>"
     );
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
             if let Err(e) = maybe_compile(s, &mut self.re) {
                 return Some(errf!(TAG, "{e:?}"));

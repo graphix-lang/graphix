@@ -164,11 +164,11 @@ type Fold<R, E> = FoldQ<R, E, FoldImpl>;
 #[derive(Debug, Default)]
 struct ConcatEv(SmallVec<[Value; 32]>);
 
-impl EvalCached for ConcatEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const NAME: &str = "array_concat";
     deftype!("fn(Array<'a>, @args: Array<'a>) -> Array<'a>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
         for v in from.0.iter() {
             match v {
@@ -196,11 +196,11 @@ type Concat = CachedArgs<ConcatEv>;
 #[derive(Debug, Default)]
 struct PushBackEv(SmallVec<[Value; 32]>);
 
-impl EvalCached for PushBackEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const NAME: &str = "array_push_back";
     deftype!("fn(Array<'a>, @args: 'a) -> Array<'a>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
         match &from.0[..] {
             [Some(Value::Array(a)), tl @ ..] => {
@@ -229,11 +229,11 @@ type PushBack = CachedArgs<PushBackEv>;
 #[derive(Debug, Default)]
 struct PushFrontEv(SmallVec<[Value; 32]>);
 
-impl EvalCached for PushFrontEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const NAME: &str = "array_push_front";
     deftype!("fn(Array<'a>, @args: 'a) -> Array<'a>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
         match &from.0[..] {
             [Some(Value::Array(a)), tl @ ..] => {
@@ -262,11 +262,11 @@ type PushFront = CachedArgs<PushFrontEv>;
 #[derive(Debug, Default)]
 struct WindowEv(SmallVec<[Value; 32]>);
 
-impl EvalCached for WindowEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const NAME: &str = "array_window";
     deftype!("fn(#n:i64, Array<'a>, @args: 'a) -> Array<'a>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
         match &from.0[..] {
             [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..] => {
@@ -316,11 +316,11 @@ type Window = CachedArgs<WindowEv>;
 #[derive(Debug, Default)]
 struct LenEv;
 
-impl EvalCached for LenEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "array_len";
     deftype!("fn(Array<'a>) -> i64");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
             Some(Value::Array(a)) => Some(Value::I64(a.len() as i64)),
             Some(_) | None => None,
@@ -333,11 +333,11 @@ type Len = CachedArgs<LenEv>;
 #[derive(Debug, Default)]
 struct FlattenEv(SmallVec<[Value; 32]>);
 
-impl EvalCached for FlattenEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const NAME: &str = "array_flatten";
     deftype!("fn(Array<Array<'a>>) -> Array<'a>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
             Some(Value::Array(a)) => {
                 for v in a.iter() {
@@ -359,11 +359,11 @@ type Flatten = CachedArgs<FlattenEv>;
 #[derive(Debug, Default)]
 struct SortEv(SmallVec<[Value; 32]>);
 
-impl EvalCached for SortEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const NAME: &str = "array_sort";
     deftype!("fn(?#dir:Direction, ?#numeric:bool, Array<'a>) -> Array<'a>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fn cn(v: &Value) -> Value {
             v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
         }
@@ -401,11 +401,11 @@ type Sort = CachedArgs<SortEv>;
 #[derive(Debug, Default)]
 struct EnumerateEv;
 
-impl EvalCached for EnumerateEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const NAME: &str = "array_enumerate";
     deftype!("fn(Array<'a>) -> Array<(i64, 'a)>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::Array(a)) = &from.0[0] {
             let a = ValArray::from_iter_exact(
                 a.iter().enumerate().map(|(i, v)| (i, v.clone()).into()),
@@ -421,11 +421,11 @@ type Enumerate = CachedArgs<EnumerateEv>;
 #[derive(Debug, Default)]
 struct ZipEv;
 
-impl EvalCached for ZipEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const NAME: &str = "array_zip";
     deftype!("fn(Array<'a>, Array<'b>) -> Array<('a, 'b)>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
             [Some(Value::Array(a0)), Some(Value::Array(a1))] => {
                 Some(Value::Array(ValArray::from_iter_exact(
@@ -445,11 +445,11 @@ struct UnzipEv {
     t1: Vec<Value>,
 }
 
-impl EvalCached for UnzipEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const NAME: &str = "array_unzip";
     deftype!("fn(Array<('a, 'b)>) -> (Array<'a>, Array<'b>)");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
             [Some(Value::Array(a))] => {
                 for v in a {

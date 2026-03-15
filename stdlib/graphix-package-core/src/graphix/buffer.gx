@@ -4,4 +4,6 @@ let from_string = |s| 'core_bytes_from_string;
 let concat = |@args| 'core_bytes_concat;
 let to_array = |b| 'core_bytes_to_array;
 let from_array = |a| 'core_bytes_from_array;
-let len = |b| 'core_bytes_len
+let len = |b| 'core_bytes_len;
+let encode = |spec| 'core_buffer_encode;
+let decode = |buf, spec| 'core_buffer_decode

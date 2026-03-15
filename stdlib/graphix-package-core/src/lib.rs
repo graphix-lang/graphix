@@ -134,20 +134,26 @@ impl CachedVals {
     }
 }
 
-pub trait EvalCached: Debug + Default + Send + Sync + 'static {
+pub type ByRefChain = immutable_chunkmap::map::MapS<BindId, BindId>;
+
+pub trait EvalCached<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
     const TYP: LazyLock<FnType>;
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value>;
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
+
+    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>, _from: &mut [Node<R, E>]) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
-pub struct CachedArgs<T: EvalCached> {
+pub struct CachedArgs<T> {
     cached: CachedVals,
     t: T,
 }
 
-impl<R: Rt, E: UserEvent, T: EvalCached> BuiltIn<R, E> for CachedArgs<T> {
+impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
     const TYP: LazyLock<FnType> = T::TYP;
 
@@ -163,7 +169,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached> BuiltIn<R, E> for CachedArgs<T> {
     }
 }
 
-impl<R: Rt, E: UserEvent, T: EvalCached> Apply<R, E> for CachedArgs<T> {
+impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -171,10 +177,18 @@ impl<R: Rt, E: UserEvent, T: EvalCached> Apply<R, E> for CachedArgs<T> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if self.cached.update(ctx, from, event) {
-            self.t.eval(&self.cached)
+            self.t.eval(ctx, &self.cached)
         } else {
             None
         }
+    }
+
+    fn typecheck(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+    ) -> Result<()> {
+        self.t.typecheck(ctx, from)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -1009,11 +1023,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
 #[derive(Debug, Default)]
 struct AllEv;
 
-impl EvalCached for AllEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const NAME: &str = "core_all";
     deftype!("fn(@args: Any) -> Any");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
             [] => None,
             [hd, tl @ ..] => match hd {
@@ -1043,11 +1057,11 @@ fn add_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 #[derive(Debug, Default)]
 struct SumEv;
 
-impl EvalCached for SumEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
     deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => add_vals(res, v.clone()),
@@ -1068,11 +1082,11 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
     }
 }
 
-impl EvalCached for ProductEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const NAME: &str = "core_product";
     deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => prod_vals(res, v.clone()),
@@ -1093,11 +1107,11 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
     }
 }
 
-impl EvalCached for DivideEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const NAME: &str = "core_divide";
     deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => div_vals(res, v.clone()),
@@ -1110,11 +1124,11 @@ type Divide = CachedArgs<DivideEv>;
 #[derive(Debug, Default)]
 struct MinEv;
 
-impl EvalCached for MinEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const NAME: &str = "core_min";
     deftype!("fn('a, @args:'a) -> 'a");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -1136,11 +1150,11 @@ type Min = CachedArgs<MinEv>;
 #[derive(Debug, Default)]
 struct MaxEv;
 
-impl EvalCached for MaxEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
     deftype!("fn('a, @args: 'a) -> 'a");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -1162,11 +1176,11 @@ type Max = CachedArgs<MaxEv>;
 #[derive(Debug, Default)]
 struct AndEv;
 
-impl EvalCached for AndEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const NAME: &str = "core_and";
     deftype!("fn(@args: bool) -> bool");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
         for v in from.flat_iter() {
             match v {
@@ -1186,11 +1200,11 @@ type And = CachedArgs<AndEv>;
 #[derive(Debug, Default)]
 struct OrEv;
 
-impl EvalCached for OrEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const NAME: &str = "core_or";
     deftype!("fn(@args: bool) -> bool");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
         for v in from.flat_iter() {
             match v {
@@ -1649,13 +1663,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
 #[derive(Debug, Default)]
 struct MeanEv;
 
-impl EvalCached for MeanEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const NAME: &str = "core_mean";
     deftype!(
         "fn([Number, Array<Number>], @args: [Number, Array<Number>]) -> Result<f64, `MeanError(string)>"
     );
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
         let mut total = 0.;
         let mut samples = 0;
@@ -2038,5 +2052,7 @@ graphix_derive::defpackage! {
         buffer::BytesToArray,
         buffer::BytesFromArray,
         buffer::BytesLen,
+        buffer::BufferEncode,
+        buffer::BufferDecode,
     ],
 }

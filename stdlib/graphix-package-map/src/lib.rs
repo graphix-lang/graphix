@@ -106,11 +106,11 @@ type Fold<R, E> = FoldQ<R, E, FoldImpl>;
 #[derive(Debug, Default)]
 struct LenEv;
 
-impl EvalCached for LenEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "map_len";
     deftype!("fn(Map<'a, 'b>) -> i64");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
             Some(Value::Map(m)) => Some(Value::I64(m.len() as i64)),
             Some(_) | None => None,
@@ -123,11 +123,11 @@ type Len = CachedArgs<LenEv>;
 #[derive(Debug, Default)]
 struct GetEv;
 
-impl EvalCached for GetEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const NAME: &str = "map_get";
     deftype!("fn(Map<'a, 'b>, 'a) -> Option<'b>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Map(m)), Some(key)) => {
                 Some(m.get(key).cloned().unwrap_or(Value::Null))
@@ -142,11 +142,11 @@ type Get = CachedArgs<GetEv>;
 #[derive(Debug, Default)]
 struct InsertEv;
 
-impl EvalCached for InsertEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const NAME: &str = "map_insert";
     deftype!("fn(Map<'a, 'b>, 'a, 'b) -> Map<'a, 'b>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
             (Some(Value::Map(m)), Some(key), Some(value)) => {
                 Some(Value::Map(m.insert(key.clone(), value.clone()).0))
@@ -161,11 +161,11 @@ type Insert = CachedArgs<InsertEv>;
 #[derive(Debug, Default)]
 struct RemoveEv;
 
-impl EvalCached for RemoveEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const NAME: &str = "map_remove";
     deftype!("fn(Map<'a, 'b>, 'a) -> Map<'a, 'b>");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Map(m)), Some(key)) => Some(Value::Map(m.remove(key).0)),
             _ => None,

@@ -4,7 +4,7 @@
 )]
 use arcstr::ArcStr;
 use compact_str::CompactString;
-use graphix_compiler::errf;
+use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{
     deftype, CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
@@ -160,11 +160,11 @@ pub(crate) type GxTempDir = CachedArgsAsync<GxTempDirEv>;
 #[derive(Debug, Default)]
 pub(crate) struct TempDirPathEv;
 
-impl EvalCached for TempDirPathEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const NAME: &str = "fs_tempdir_path";
     deftype!("fn(string) -> string");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0.first()?.as_ref()?;
         match v {
             Value::Abstract(a) => {
@@ -193,11 +193,11 @@ pub(crate) fn convert_path(path: &Path) -> ArcStr {
 #[derive(Debug, Default)]
 pub(crate) struct JoinPathEv;
 
-impl EvalCached for JoinPathEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const NAME: &str = "fs_join_path";
     deftype!("fn(string, @args: [string, Array<string>]) -> string");
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
         for part in from.0.iter() {
             match part {
