@@ -1221,6 +1221,146 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
 
 type Or = CachedArgs<OrEv>;
 
+// ── Bitwise operations ──────────────────────────────────────────
+
+macro_rules! int_binop {
+    ($from:expr, $op:tt) => {
+        match (&$from.0[0], &$from.0[1]) {
+            (Some(Value::U8(l)), Some(Value::U8(r))) => Some(Value::U8(l $op r)),
+            (Some(Value::I8(l)), Some(Value::I8(r))) => Some(Value::I8(l $op r)),
+            (Some(Value::U16(l)), Some(Value::U16(r))) => Some(Value::U16(l $op r)),
+            (Some(Value::I16(l)), Some(Value::I16(r))) => Some(Value::I16(l $op r)),
+            (Some(Value::U32(l)), Some(Value::U32(r))) => Some(Value::U32(l $op r)),
+            (Some(Value::V32(l)), Some(Value::V32(r))) => Some(Value::V32(l $op r)),
+            (Some(Value::I32(l)), Some(Value::I32(r))) => Some(Value::I32(l $op r)),
+            (Some(Value::Z32(l)), Some(Value::Z32(r))) => Some(Value::Z32(l $op r)),
+            (Some(Value::U64(l)), Some(Value::U64(r))) => Some(Value::U64(l $op r)),
+            (Some(Value::V64(l)), Some(Value::V64(r))) => Some(Value::V64(l $op r)),
+            (Some(Value::I64(l)), Some(Value::I64(r))) => Some(Value::I64(l $op r)),
+            (Some(Value::Z64(l)), Some(Value::Z64(r))) => Some(Value::Z64(l $op r)),
+            _ => None,
+        }
+    };
+}
+
+macro_rules! int_shift {
+    ($from:expr, $method:ident) => {
+        match (&$from.0[0], &$from.0[1]) {
+            (Some(Value::U8(l)), Some(Value::U8(r))) => Some(Value::U8(l.$method(*r as u32))),
+            (Some(Value::I8(l)), Some(Value::I8(r))) => Some(Value::I8(l.$method(*r as u32))),
+            (Some(Value::U16(l)), Some(Value::U16(r))) => Some(Value::U16(l.$method(*r as u32))),
+            (Some(Value::I16(l)), Some(Value::I16(r))) => Some(Value::I16(l.$method(*r as u32))),
+            (Some(Value::U32(l)), Some(Value::U32(r))) => Some(Value::U32(l.$method(*r as u32))),
+            (Some(Value::V32(l)), Some(Value::V32(r))) => Some(Value::V32(l.$method(*r as u32))),
+            (Some(Value::I32(l)), Some(Value::I32(r))) => Some(Value::I32(l.$method(*r as u32))),
+            (Some(Value::Z32(l)), Some(Value::Z32(r))) => Some(Value::Z32(l.$method(*r as u32))),
+            (Some(Value::U64(l)), Some(Value::U64(r))) => Some(Value::U64(l.$method(*r as u32))),
+            (Some(Value::V64(l)), Some(Value::V64(r))) => Some(Value::V64(l.$method(*r as u32))),
+            (Some(Value::I64(l)), Some(Value::I64(r))) => Some(Value::I64(l.$method(*r as u32))),
+            (Some(Value::Z64(l)), Some(Value::Z64(r))) => Some(Value::Z64(l.$method(*r as u32))),
+            _ => None,
+        }
+    };
+}
+
+#[derive(Debug, Default)]
+struct BitAndEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
+    const NAME: &str = "core_bit_and";
+    deftype!("fn<'a: Int>('a, 'a) -> 'a");
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        int_binop!(from, &)
+    }
+}
+
+type BitAnd = CachedArgs<BitAndEv>;
+
+#[derive(Debug, Default)]
+struct BitOrEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
+    const NAME: &str = "core_bit_or";
+    deftype!("fn<'a: Int>('a, 'a) -> 'a");
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        int_binop!(from, |)
+    }
+}
+
+type BitOr = CachedArgs<BitOrEv>;
+
+#[derive(Debug, Default)]
+struct BitXorEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
+    const NAME: &str = "core_bit_xor";
+    deftype!("fn<'a: Int>('a, 'a) -> 'a");
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        int_binop!(from, ^)
+    }
+}
+
+type BitXor = CachedArgs<BitXorEv>;
+
+#[derive(Debug, Default)]
+struct BitNotEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
+    const NAME: &str = "core_bit_not";
+    deftype!("fn<'a: Int>('a) -> 'a");
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match &from.0[0] {
+            Some(Value::U8(v)) => Some(Value::U8(!v)),
+            Some(Value::I8(v)) => Some(Value::I8(!v)),
+            Some(Value::U16(v)) => Some(Value::U16(!v)),
+            Some(Value::I16(v)) => Some(Value::I16(!v)),
+            Some(Value::U32(v)) => Some(Value::U32(!v)),
+            Some(Value::V32(v)) => Some(Value::V32(!v)),
+            Some(Value::I32(v)) => Some(Value::I32(!v)),
+            Some(Value::Z32(v)) => Some(Value::Z32(!v)),
+            Some(Value::U64(v)) => Some(Value::U64(!v)),
+            Some(Value::V64(v)) => Some(Value::V64(!v)),
+            Some(Value::I64(v)) => Some(Value::I64(!v)),
+            Some(Value::Z64(v)) => Some(Value::Z64(!v)),
+            _ => None,
+        }
+    }
+}
+
+type BitNot = CachedArgs<BitNotEv>;
+
+#[derive(Debug, Default)]
+struct ShlEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
+    const NAME: &str = "core_shl";
+    deftype!("fn<'a: Int>('a, 'a) -> 'a");
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        int_shift!(from, wrapping_shl)
+    }
+}
+
+type Shl = CachedArgs<ShlEv>;
+
+#[derive(Debug, Default)]
+struct ShrEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
+    const NAME: &str = "core_shr";
+    deftype!("fn<'a: Int>('a, 'a) -> 'a");
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        int_shift!(from, wrapping_shr)
+    }
+}
+
+type Shr = CachedArgs<ShrEv>;
+
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
     ready: bool,
@@ -2032,6 +2172,12 @@ graphix_derive::defpackage! {
         Max,
         And,
         Or,
+        BitAnd,
+        BitOr,
+        BitXor,
+        BitNot,
+        Shl,
+        Shr,
         Filter as Filter<GXRt<X>, X::UserEvent>,
         Queue,
         Hold,

@@ -85,6 +85,24 @@ val seq: fn(i64, i64) -> Result<i64, `SeqError(string)>;
 /// return true if any argument is true
 val or: fn(@args: bool) -> bool;
 
+/// bitwise AND
+val bit_and: fn<'a: Int>('a, 'a) -> 'a;
+
+/// bitwise OR
+val bit_or: fn<'a: Int>('a, 'a) -> 'a;
+
+/// bitwise XOR
+val bit_xor: fn<'a: Int>('a, 'a) -> 'a;
+
+/// bitwise complement
+val bit_not: fn<'a: Int>('a) -> 'a;
+
+/// shift left (wrapping)
+val shl: fn<'a: Int>('a, 'a) -> 'a;
+
+/// shift right (wrapping)
+val shr: fn<'a: Int>('a, 'a) -> 'a;
+
 /// return the product of all arguments
 val product: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number;
 

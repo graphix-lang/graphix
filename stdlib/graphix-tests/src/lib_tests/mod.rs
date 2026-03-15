@@ -1,4 +1,5 @@
 mod array;
+mod bitwise;
 mod buffer;
 mod core;
 mod map;
