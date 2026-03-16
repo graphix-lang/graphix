@@ -45,6 +45,32 @@ macro_rules! deftype {
     };
 }
 
+/// Implement `netidx_core::pack::Pack` as a non-serializable stub.
+/// Use this for abstract wrapper types that should never be encoded/decoded.
+#[macro_export]
+macro_rules! impl_no_pack {
+    ($t:ty) => {
+        impl ::netidx_core::pack::Pack for $t {
+            fn encoded_len(&self) -> usize {
+                0
+            }
+
+            fn encode(
+                &self,
+                _buf: &mut impl ::bytes::BufMut,
+            ) -> Result<(), ::netidx_core::pack::PackError> {
+                Err(::netidx_core::pack::PackError::Application(0))
+            }
+
+            fn decode(
+                _buf: &mut impl ::bytes::Buf,
+            ) -> Result<Self, ::netidx_core::pack::PackError> {
+                Err(::netidx_core::pack::PackError::Application(0))
+            }
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! arity1 {
     ($from:expr, $updates:expr) => {

@@ -50,22 +50,7 @@ impl Hash for FileValue {
     }
 }
 
-impl netidx_core::pack::Pack for FileValue {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(
-        &self,
-        _buf: &mut impl bytes::BufMut,
-    ) -> Result<(), netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
-    }
-
-    fn decode(_buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
-    }
-}
+graphix_package_core::impl_no_pack!(FileValue);
 
 static FILE_WRAPPER: LazyLock<AbstractWrapper<FileValue>> = LazyLock::new(|| {
     let id = uuid::Uuid::from_bytes([

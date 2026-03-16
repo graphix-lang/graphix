@@ -2,6 +2,8 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+pub(crate) mod tcp;
+
 use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
@@ -761,5 +763,15 @@ graphix_derive::defpackage! {
         ListTable,
         Publish as Publish<GXRt<X>, X::UserEvent>,
         PublishRpc as PublishRpc<GXRt<X>, X::UserEvent>,
+        tcp::TcpConnect,
+        tcp::TcpListen,
+        tcp::TcpAccept,
+        tcp::TcpRead,
+        tcp::TcpReadExact,
+        tcp::TcpWrite,
+        tcp::TcpWriteExact,
+        tcp::TcpShutdown,
+        tcp::TcpPeerAddr,
+        tcp::TcpLocalAddr,
     ],
 }

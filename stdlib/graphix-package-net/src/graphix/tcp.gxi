@@ -1,0 +1,41 @@
+/// An opaque handle to a TCP stream. The stream is closed when
+/// there are no remaining references to the TcpStream value.
+type TcpStream;
+
+/// An opaque handle to a TCP listener. The listener is closed when
+/// there are no remaining references to the TcpListener value.
+type TcpListener;
+
+/// Connect to a TCP server at the given address (host:port).
+val connect: fn(string) -> Result<TcpStream, `TCPError(string)>;
+
+/// Bind a TCP listener to the given address (host:port).
+val listen: fn(string) -> Result<TcpListener, `TCPError(string)>;
+
+/// Accept a new connection from the listener. The second argument
+/// is a trigger — each time it updates, a new accept is performed.
+val accept: fn(TcpListener, Any) -> Result<TcpStream, `TCPError(string)>;
+
+/// Read up to n bytes from the stream. May return fewer bytes than
+/// requested if fewer are available.
+val read: fn(TcpStream, u64) -> Result<bytes, `TCPError(string)>;
+
+/// Read exactly n bytes from the stream. Returns fewer bytes only
+/// if the connection is closed before n bytes have been read.
+val read_exact: fn(TcpStream, u64) -> Result<bytes, `TCPError(string)>;
+
+/// Write bytes to the stream. Returns the number of bytes written,
+/// which may be less than the full length of data.
+val write: fn(TcpStream, bytes) -> Result<u64, `TCPError(string)>;
+
+/// Write all bytes to the stream, looping until complete.
+val write_exact: fn(TcpStream, bytes) -> Result<null, `TCPError(string)>;
+
+/// Shutdown the write half of the stream.
+val shutdown: fn(TcpStream) -> Result<null, `TCPError(string)>;
+
+/// Get the remote address of the connected peer.
+val peer_addr: fn(TcpStream) -> Result<string, `TCPError(string)>;
+
+/// Get the local address of the stream.
+val local_addr: fn(TcpStream) -> Result<string, `TCPError(string)>;

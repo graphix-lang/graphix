@@ -178,22 +178,7 @@ impl Hash for WatcherValue {
     }
 }
 
-impl netidx_core::pack::Pack for WatcherValue {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(
-        &self,
-        _buf: &mut impl bytes::BufMut,
-    ) -> Result<(), netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
-    }
-
-    fn decode(_buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
-    }
-}
+graphix_package_core::impl_no_pack!(WatcherValue);
 
 impl WatcherValue {
     fn add(
@@ -249,23 +234,7 @@ impl Hash for WatchValue {
 }
 
 // CR estokes: We do this a lot, and we're probably going to do it a lot more,
-// lets add a macro to core that implements a null Pack
-impl netidx_core::pack::Pack for WatchValue {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(
-        &self,
-        _buf: &mut impl bytes::BufMut,
-    ) -> Result<(), netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
-    }
-
-    fn decode(_buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
-    }
-}
+graphix_package_core::impl_no_pack!(WatchValue);
 
 static WATCH_VALUE_WRAPPER: LazyLock<AbstractWrapper<WatchValue>> = LazyLock::new(|| {
     let id = uuid::Uuid::from_bytes([

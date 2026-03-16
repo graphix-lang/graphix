@@ -19,6 +19,7 @@ krb5_iov = ["netidx/krb5_iov"]
 [dependencies]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
+bytes = { workspace = true }
 compact_str = { workspace = true }
 fxhash = { workspace = true }
 graphix-compiler = { version = "0.6.0", path = "../../graphix-compiler" }
@@ -34,3 +35,4 @@ netidx = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+uuid = { workspace = true }
