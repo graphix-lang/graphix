@@ -1,0 +1,85 @@
+type Method = [`GET, `POST, `PUT, `DELETE, `PATCH, `HEAD, `OPTIONS];
+
+type Response = {
+    body: string,
+    headers: Array<(string, string)>,
+    status: u16,
+    url: string
+};
+
+type BinResponse = {
+    body: bytes,
+    headers: Array<(string, string)>,
+    status: u16,
+    url: string
+};
+
+type Request = {
+    body: [string, null],
+    headers: Array<(string, string)>,
+    method: string,
+    path: string,
+    query: [string, null]
+};
+
+/// An opaque handle to an HTTP client. The client manages a connection
+/// pool and can be reused across requests.
+type Client;
+
+/// An opaque handle to a running HTTP server. The server stops when
+/// there are no remaining references to the Server value.
+type Server;
+
+/// Create a configured HTTP client.
+val client: fn(
+    ?#timeout: [duration, null],
+    ?#default_headers: Array<(string, string)>,
+    ?#redirect_limit: u32,
+    ?#ca_cert: [bytes, null],
+    Any
+) -> Result<Client, `HTTPError(string)>;
+
+/// Get or create a shared default HTTP client.
+val default_client: fn(Any) -> Result<Client, `HTTPError(string)>;
+
+/// Make an HTTP request and return a text response.
+val request: fn(
+    ?#method: Method,
+    ?#headers: Array<(string, string)>,
+    ?#body: [string, null],
+    ?#timeout: [duration, null],
+    Client,
+    string
+) -> Result<Response, `HTTPError(string)>;
+
+/// Make an HTTP request and return a binary response.
+val request_bin: fn(
+    ?#method: Method,
+    ?#headers: Array<(string, string)>,
+    ?#body: [bytes, null],
+    ?#timeout: [duration, null],
+    Client,
+    string
+) -> Result<BinResponse, `HTTPError(string)>;
+
+/// Convenience: GET request with text response.
+val get: fn(Client, string) -> Result<Response, `HTTPError(string)>;
+
+/// Convenience: GET request with binary response.
+val get_bin: fn(Client, string) -> Result<BinResponse, `HTTPError(string)>;
+
+/// Return the bound address of a running server as a string (e.g. "127.0.0.1:8080").
+/// Useful when the server was started with port 0 to let the OS pick a port.
+val server_addr: fn(Server) -> string;
+
+/// Start an HTTP server. The handler is called for each incoming request
+/// and must return a Response. The server runs until the Server handle
+/// is dropped. When both cert and key are provided (as PEM-encoded bytes),
+/// the server uses TLS.
+val serve: fn(
+    #addr: string,
+    ?#cert: [bytes, null],
+    ?#key: [bytes, null],
+    ?#max_connections: i64,
+    #handler: fn(Request) -> Response throws 'e
+) -> Result<Server, `HTTPError(string)> throws 'e;

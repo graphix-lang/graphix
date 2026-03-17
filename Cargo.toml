@@ -54,6 +54,12 @@ ratatui = { version = "0.30", features = ["widget-calendar"] }
 reedline = "0.45"
 regex = "1"
 reqwest = "0.13"
+rustls = "0.23"
+rustls-pemfile = "2.2"
+tokio-rustls = "0.26"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 rust_decimal = { version = "1", features = [
     "serde-with-float",
     "serde-with-str",

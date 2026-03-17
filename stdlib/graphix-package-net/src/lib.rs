@@ -2,6 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+pub(crate) mod http;
 pub(crate) mod tcp;
 
 use anyhow::{anyhow, bail, Result};
@@ -773,5 +774,11 @@ graphix_derive::defpackage! {
         tcp::TcpShutdown,
         tcp::TcpPeerAddr,
         tcp::TcpLocalAddr,
+        http::HttpClient,
+        http::HttpDefaultClient,
+        http::HttpServerAddr,
+        http::HttpRequest,
+        http::HttpRequestBin,
+        http::HttpServe as http::HttpServe<GXRt<X>, X::UserEvent>,
     ],
 }

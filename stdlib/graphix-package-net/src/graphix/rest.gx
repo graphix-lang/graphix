@@ -1,0 +1,46 @@
+let add_auth = |bearer, base| select bearer {
+    string as b => array::concat(base, [("authorization", "Bearer [b]")]),
+    null as _ => base
+};
+
+let get = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
+    http::request(
+        #headers: array::concat(add_auth(bearer, [("accept", "application/json")]), headers),
+        client,
+        url
+    );
+
+let post = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
+    http::request(
+        #method: `POST,
+        #headers: array::concat(add_auth(bearer, [("content-type", "application/json"), ("accept", "application/json")]), headers),
+        #body: body,
+        client,
+        url
+    );
+
+let put = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
+    http::request(
+        #method: `PUT,
+        #headers: array::concat(add_auth(bearer, [("content-type", "application/json"), ("accept", "application/json")]), headers),
+        #body: body,
+        client,
+        url
+    );
+
+let delete = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
+    http::request(
+        #method: `DELETE,
+        #headers: array::concat(add_auth(bearer, [("accept", "application/json")]), headers),
+        client,
+        url
+    );
+
+let patch = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
+    http::request(
+        #method: `PATCH,
+        #headers: array::concat(add_auth(bearer, [("content-type", "application/json"), ("accept", "application/json")]), headers),
+        #body: body,
+        client,
+        url
+    )

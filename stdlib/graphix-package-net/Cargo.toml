@@ -21,13 +21,23 @@ anyhow = { workspace = true }
 arcstr = { workspace = true }
 bytes = { workspace = true }
 compact_str = { workspace = true }
+futures = { workspace = true }
 fxhash = { workspace = true }
 graphix-compiler = { version = "0.6.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.6.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.6.0", path = "../../graphix-package" }
 graphix-package-core = { version = "0.6.0", path = "../graphix-package-core" }
 graphix-package-time = { version = "0.6.0", path = "../graphix-package-time" }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+log = { workspace = true }
 graphix-rt = { version = "0.6.0", path = "../../graphix-rt" }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
+poolshark = { workspace = true }
 netidx-core = { workspace = true }
 netidx-protocols = { workspace = true }
 netidx-value = { workspace = true }

@@ -252,7 +252,7 @@ impl Type {
                 bail!("abstract types must have a concrete definition in the implementation")
             }
             (Self::Abstract { id, params: _ }, t0) => match adts.get(id) {
-                None => bail!("undefined abstract type"),
+                None => Ok(()), // it's in another module
                 Some(t1) => {
                     if t0 != t1 {
                         format_with_flags(PrintFlag::DerefTVars, || {

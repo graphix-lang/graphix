@@ -2,6 +2,8 @@ type Table = { rows: Array<string>, columns: Array<(string, v64)> };
 type ArgSpec = { name: string, doc: string, default: Any };
 
 mod tcp;
+mod http;
+mod rest;
 
 /// write the value to the specified path
 val write: fn(string, Any) -> Result<_, `WriteError(string)>;

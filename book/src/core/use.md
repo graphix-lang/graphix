@@ -38,6 +38,17 @@ Caused by:
     at line: 5, column: 1 map not defined
 ```
 
+Use paths are always absolute — they are resolved from the root of the
+module tree, not relative to the current module. For example, if you are
+inside the `net::rest` module and want to use the `net::http` module, you
+must write `use net::http`, not `use http`.
+
+```graphix
+// inside net::rest
+use net::http;     // correct — absolute path
+// use http;       // wrong — would look for a top-level "http" module
+```
+
 Use shadows earlier declarations in it's scope. Consider,
 
 ```graphix

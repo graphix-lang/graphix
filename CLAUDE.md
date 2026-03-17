@@ -743,3 +743,5 @@ select x {
 - `never()` returns a value that never arrives — used to stop reactive loops.
 - you must escape square brackets in string literals "[name] must be between \[0, 1\]"
 - literal syntax for non i64, f64, string literals, is typ:value, e.g. u8:100, f32:3.14
+- `use` paths are always absolute, not relative to the current module.
+  Inside `net::rest`, write `use net::http`, not `use http`.
