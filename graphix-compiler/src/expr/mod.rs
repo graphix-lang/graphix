@@ -360,12 +360,18 @@ impl Origin {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Expr {
     pub id: ExprId,
     pub ori: Arc<Origin>,
     pub pos: SourcePosition,
     pub kind: ExprKind,
+}
+
+impl fmt::Debug for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.kind)
+    }
 }
 
 impl fmt::Display for Expr {

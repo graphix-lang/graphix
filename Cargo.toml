@@ -48,7 +48,7 @@ netidx-protocols = { version = "0.31.0", path = "../netidx/netidx-protocols" }
 netidx-value = { version = "0.31.6", path = "../netidx/netidx-value" }
 netidx = { version = "0.31.0", default-features = false, path = "../netidx/netidx" }
 parking_lot = "0.12.1"
-poolshark = { version = "0.2.6" }
+poolshark = { version = "0.2.7" }
 rand = "0.10"
 ratatui = { version = "0.30", features = ["widget-calendar"] }
 reedline = "0.45"
@@ -89,6 +89,7 @@ toml = { version = "1" }
 toml_edit = { version = "0.25" }
 triomphe = { version = "0.1" }
 uuid = "1"
+webpki-roots = "0.26"
 walkdir = "2.5"
 which = "8"
 arboard = "3"

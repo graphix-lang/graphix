@@ -39,3 +39,6 @@ val peer_addr: fn(TcpStream) -> Result<string, `TCPError(string)>;
 
 /// Get the local address of the stream.
 val local_addr: fn(TcpStream) -> Result<string, `TCPError(string)>;
+
+/// Get the local address that the listener is bound to.
+val listener_addr: fn(TcpListener) -> Result<string, `TCPError(string)>;

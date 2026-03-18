@@ -8,3 +8,4 @@ mod net;
 #[path = "str.rs"]
 mod str_tests;
 mod tcp;
+mod tls;

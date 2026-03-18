@@ -42,26 +42,17 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
             }
             SigKind::TypeDef(td) => {
                 let typ = td.typ.scope_refs(&scope.lexical);
-                // Always bind to env (for external callers to see)
+                let params = Arc::from_iter(td.params.iter().map(|(tv, ty)| match ty {
+                    None => (tv.clone(), None),
+                    Some(ty) => (tv.clone(), Some(ty.scope_refs(&scope.lexical))),
+                }));
                 env.deftype(
                     &scope.lexical,
                     &td.name,
-                    td.params.clone(),
+                    params,
                     typ.clone(),
                     si.doc.0.clone(),
                 )?;
-                // Only bind concrete types to mod_env. Abstract types are not
-                // bound to mod_env so the implementation can provide the
-                // concrete definition via its own type statement.
-                if !matches!(typ, Type::Abstract { .. }) {
-                    mod_env.deftype(
-                        &scope.lexical,
-                        &td.name,
-                        td.params.clone(),
-                        typ,
-                        si.doc.0.clone(),
-                    )?;
-                }
             }
         }
     }
@@ -71,10 +62,10 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
 // copy the exported signature of all the exported inner modules in this sig to
 // the global env
 fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
+    let mut buf: LPooled<String> = LPooled::take();
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
             use std::fmt::Write;
-            let mut buf: LPooled<String> = LPooled::take();
             let scope = scope.append(name);
             env.modules.insert_cow(scope.lexical.clone());
             macro_rules! copy_sig {
@@ -164,15 +155,19 @@ fn check_sig<R: Rt, E: UserEvent>(
                     }
                     abstract_types.insert(*id, td.typ.clone());
                 }
-                _ if td != &sig_td => {
-                    bail!(
-                        "signature mismatch in {}, expected {}, found {}",
-                        td.name,
-                        sig_td,
-                        td
-                    )
+                _ => {
+                    if sig_td.name != td.name
+                        || sig_td.params != td.params
+                        || sig_td.typ != td.typ.scope_refs(&scope.lexical)
+                    {
+                        bail!(
+                            "signature mismatch in {}, expected {}, found {}",
+                            td.name,
+                            sig_td,
+                            td
+                        )
+                    }
                 }
-                _ => (),
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::{
     expr::{
         parser, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
         ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
-        StructExpr, StructWithExpr, StructurePattern, TryCatchExpr,
+        StructExpr, StructWithExpr, StructurePattern, TryCatchExpr, TypeDefExpr,
     },
     format_with_flags, PrintFlag,
 };
@@ -11,7 +11,8 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::FxHashMap;
+use indexmap::IndexSet;
 use log::info;
 use netidx::{
     path::Path,
@@ -20,7 +21,7 @@ use netidx::{
 };
 use netidx_value::Value;
 use poolshark::local::LPooled;
-use std::{path::PathBuf, pin::Pin, str::FromStr, time::Duration};
+use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr, time::Duration};
 use tokio::{join, task, time::Instant, try_join};
 use triomphe::Arc;
 
@@ -194,15 +195,57 @@ async fn resolve_from_netidx(
 // add modules that are only mentioned in the interface to the implementation
 // keep their relative location and order intact
 fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
-    let mut in_sig: LPooled<FxHashSet<&ArcStr>> = LPooled::take();
-    let mut after_bind: LPooled<FxHashMap<&ArcStr, &ArcStr>> = LPooled::take();
-    let mut after_td: LPooled<FxHashMap<&ArcStr, &ArcStr>> = LPooled::take();
-    let mut after_mod: LPooled<FxHashMap<&ArcStr, &ArcStr>> = LPooled::take();
-    let mut after_use: LPooled<FxHashMap<&ModPath, &ArcStr>> = LPooled::take();
-    let mut first: Option<&ArcStr> = None;
+    #[derive(Clone, Copy)]
+    enum Item<'a> {
+        Module(&'a ArcStr),
+        TypeDef(&'a TypeDefExpr),
+    }
+    impl<'a> PartialEq for Item<'a> {
+        fn eq(&self, other: &Self) -> bool {
+            match (self, other) {
+                (Self::Module(a), Self::Module(b)) => a == b,
+                (Self::TypeDef(a), Self::TypeDef(b)) => a.name == b.name,
+                (_, _) => false,
+            }
+        }
+    }
+    impl<'a> Eq for Item<'a> {}
+    impl<'a> Hash for Item<'a> {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            match self {
+                Self::Module(m) => {
+                    0u8.hash(state);
+                    m.hash(state);
+                }
+                Self::TypeDef(td) => {
+                    1u8.hash(state);
+                    td.name.hash(state);
+                }
+            }
+        }
+    }
+    impl<'a> Item<'a> {
+        fn synth(self) -> Expr {
+            match self {
+                Item::Module(name) => ExprKind::Module {
+                    name: name.clone(),
+                    value: ModuleKind::Unresolved { from_interface: true },
+                }
+                .to_expr_nopos(),
+                Item::TypeDef(td) => ExprKind::TypeDef(td.clone()).to_expr_nopos(),
+            }
+        }
+    }
+    let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
+    let mut after_bind: LPooled<FxHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_td: LPooled<FxHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_mod: LPooled<FxHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_use: LPooled<FxHashMap<&ModPath, Item>> = LPooled::take();
+    let mut first: Option<Item> = None;
     let mut last: Option<&SigItem> = None;
-    for si in &*sig.items {
-        if let SigKind::Module(name) = &si.kind {
+    macro_rules! push {
+        ($kind:ident, $name:expr) => {{
+            let name = Item::$kind($name);
             in_sig.insert(name);
             match last {
                 None => first = Some(name),
@@ -215,12 +258,23 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     };
                 }
             }
+        }};
+    }
+    for si in &*sig.items {
+        if let SigKind::Module(name) = &si.kind {
+            push!(Module, name)
+        }
+        if let SigKind::TypeDef(td) = &si.kind {
+            push!(TypeDef, td)
         }
         last = Some(si);
     }
     for e in &*exprs {
         if let ExprKind::Module { name, .. } = &e.kind {
-            in_sig.remove(&name);
+            in_sig.shift_remove(&Item::Module(name));
+        }
+        if let ExprKind::TypeDef(td) = &e.kind {
+            in_sig.shift_remove(&Item::TypeDef(td));
         }
     }
     if in_sig.is_empty() {
@@ -231,48 +285,47 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         drop(after_use);
         return exprs;
     }
-    let synth = |name: &ArcStr| {
-        ExprKind::Module {
-            name: name.clone(),
-            value: ModuleKind::Unresolved { from_interface: true },
-        }
-        .to_expr_nopos()
-    };
     let mut res: LPooled<Vec<Expr>> = LPooled::take();
     if let Some(name) = first.take() {
-        res.push(synth(name));
+        if in_sig.shift_remove(&name) {
+            res.push(name.synth());
+        }
     }
     let mut iter = exprs.iter();
     loop {
         match res.last().map(|e| &e.kind) {
             Some(ExprKind::Bind(v)) => match &v.pattern {
                 StructurePattern::Bind(n) => {
-                    if let Some(name) = after_bind.remove(n) {
-                        in_sig.remove(name);
-                        res.push(synth(name));
+                    if let Some(name) = after_bind.remove(n)
+                        && in_sig.shift_remove(&name)
+                    {
+                        res.push(name.synth());
                         continue;
                     }
                 }
                 _ => (),
             },
             Some(ExprKind::TypeDef(td)) => {
-                if let Some(name) = after_td.remove(&td.name) {
-                    in_sig.remove(name);
-                    res.push(synth(name));
+                if let Some(name) = after_td.remove(&td.name)
+                    && in_sig.shift_remove(&name)
+                {
+                    res.push(name.synth());
                     continue;
                 }
             }
             Some(ExprKind::Module { name, .. }) => {
-                if let Some(name) = after_mod.remove(name) {
-                    in_sig.remove(name);
-                    res.push(synth(name));
+                if let Some(name) = after_mod.remove(name)
+                    && in_sig.shift_remove(&name)
+                {
+                    res.push(name.synth());
                     continue;
                 }
             }
             Some(ExprKind::Use { name }) => {
-                if let Some(name) = after_use.remove(name) {
-                    in_sig.remove(name);
-                    res.push(synth(name));
+                if let Some(name) = after_use.remove(name)
+                    && in_sig.shift_remove(&name)
+                {
+                    res.push(name.synth());
                     continue;
                 }
             }
@@ -283,8 +336,8 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             Some(e) => res.push(e.clone()),
         }
     }
-    for name in in_sig.drain() {
-        res.push(synth(name));
+    for name in in_sig.drain(..) {
+        res.push(name.synth());
     }
     Arc::from_iter(res.drain(..))
 }

@@ -6,19 +6,95 @@ use netidx_value::{abstract_type::AbstractWrapper, Abstract, PBytes, Value};
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
+    pin::Pin,
     sync::{Arc, LazyLock},
+    task::{Context, Poll},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
 
+// ── StreamInner ───────────────────────────────────────────────
+
+pub(crate) enum StreamInner {
+    Plain(TcpStream),
+    Tls(tokio_rustls::TlsStream<TcpStream>),
+}
+
+impl StreamInner {
+    pub(crate) fn tcp_ref(&self) -> &TcpStream {
+        match self {
+            StreamInner::Plain(s) => s,
+            StreamInner::Tls(s) => {
+                let (tcp, _) = s.get_ref();
+                tcp
+            }
+        }
+    }
+}
+
+impl AsyncRead for StreamInner {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            StreamInner::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            StreamInner::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for StreamInner {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            StreamInner::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            StreamInner::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            StreamInner::Plain(s) => Pin::new(s).poll_flush(cx),
+            StreamInner::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            StreamInner::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            StreamInner::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
 // ── Abstract TcpStreamValue ────────────────────────────────────
 
 #[derive(Debug, Clone)]
-struct TcpStreamValue {
-    stream: Arc<Mutex<TcpStream>>,
+pub(crate) struct TcpStreamValue {
+    pub(crate) stream: Arc<Mutex<Option<StreamInner>>>,
+}
+
+impl std::fmt::Debug for StreamInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamInner::Plain(s) => f.debug_tuple("Plain").field(s).finish(),
+            StreamInner::Tls(_) => f.debug_tuple("Tls").finish(),
+        }
+    }
 }
 
 impl PartialEq for TcpStreamValue {
@@ -49,20 +125,41 @@ impl Hash for TcpStreamValue {
 
 graphix_package_core::impl_no_pack!(TcpStreamValue);
 
-static STREAM_WRAPPER: LazyLock<AbstractWrapper<TcpStreamValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x0c, 0x4d, 0x1e, 0x2f, 0x30, 0x41, 0x52, 0x63,
-        0x74, 0x85, 0x96,
-    ]);
-    Abstract::register::<TcpStreamValue>(id).expect("failed to register TcpStreamValue")
-});
+pub(crate) static STREAM_WRAPPER: LazyLock<AbstractWrapper<TcpStreamValue>> =
+    LazyLock::new(|| {
+        let id = uuid::Uuid::from_bytes([
+            0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x0c, 0x4d, 0x1e, 0x2f, 0x30, 0x41, 0x52,
+            0x63, 0x74, 0x85, 0x96,
+        ]);
+        Abstract::register::<TcpStreamValue>(id)
+            .expect("failed to register TcpStreamValue")
+    });
 
-fn get_stream(cached: &CachedVals, idx: usize) -> Option<Arc<Mutex<TcpStream>>> {
+pub(crate) fn wrap_plain(stream: TcpStream) -> Value {
+    STREAM_WRAPPER.wrap(TcpStreamValue {
+        stream: Arc::new(Mutex::new(Some(StreamInner::Plain(stream)))),
+    })
+}
+
+pub(crate) fn get_stream(
+    cached: &CachedVals,
+    idx: usize,
+) -> Option<Arc<Mutex<Option<StreamInner>>>> {
     match cached.0.get(idx)?.as_ref()? {
         Value::Abstract(a) => {
             let sv = a.downcast_ref::<TcpStreamValue>()?;
             Some(sv.stream.clone())
         }
+        _ => None,
+    }
+}
+
+pub(crate) fn get_stream_value(
+    cached: &CachedVals,
+    idx: usize,
+) -> Option<TcpStreamValue> {
+    match cached.0.get(idx)?.as_ref()? {
+        Value::Abstract(a) => a.downcast_ref::<TcpStreamValue>().cloned(),
         _ => None,
     }
 }
@@ -122,6 +219,10 @@ fn get_listener(cached: &CachedVals, idx: usize) -> Option<Arc<TcpListener>> {
     }
 }
 
+fn get_listener_addr(cached: &CachedVals, idx: usize) -> Option<Arc<TcpListener>> {
+    get_listener(cached, idx)
+}
+
 // ── TcpConnect ─────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
@@ -139,9 +240,7 @@ impl EvalCachedAsync for TcpConnectEv {
     fn eval(addr: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match TcpStream::connect(&*addr).await {
-                Ok(stream) => STREAM_WRAPPER.wrap(TcpStreamValue {
-                    stream: Arc::new(Mutex::new(stream)),
-                }),
+                Ok(stream) => wrap_plain(stream),
                 Err(e) => errf!("TCPError", "connect to {addr} failed: {e}"),
             }
         }
@@ -196,9 +295,7 @@ impl EvalCachedAsync for TcpAcceptEv {
     fn eval(listener: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match listener.accept().await {
-                Ok((stream, _addr)) => STREAM_WRAPPER.wrap(TcpStreamValue {
-                    stream: Arc::new(Mutex::new(stream)),
-                }),
+                Ok((stream, _addr)) => wrap_plain(stream),
                 Err(e) => errf!("TCPError", "accept failed: {e}"),
             }
         }
@@ -215,7 +312,7 @@ pub(crate) struct TcpReadEv;
 impl EvalCachedAsync for TcpReadEv {
     const NAME: &str = "net_tcp_read";
     deftype!("fn(string, u64) -> Result<bytes, `TCPError(string)>");
-    type Args = (Arc<Mutex<TcpStream>>, u64);
+    type Args = (Arc<Mutex<Option<StreamInner>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
@@ -223,7 +320,11 @@ impl EvalCachedAsync for TcpReadEv {
 
     fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut s = stream.lock().await;
+            let mut guard = stream.lock().await;
+            let s = match guard.as_mut() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
             let mut buf = vec![0u8; n as usize];
             match s.read(&mut buf).await {
                 Ok(n) => {
@@ -246,7 +347,7 @@ pub(crate) struct TcpReadExactEv;
 impl EvalCachedAsync for TcpReadExactEv {
     const NAME: &str = "net_tcp_read_exact";
     deftype!("fn(string, u64) -> Result<bytes, `TCPError(string)>");
-    type Args = (Arc<Mutex<TcpStream>>, u64);
+    type Args = (Arc<Mutex<Option<StreamInner>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
@@ -254,7 +355,11 @@ impl EvalCachedAsync for TcpReadExactEv {
 
     fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut s = stream.lock().await;
+            let mut guard = stream.lock().await;
+            let s = match guard.as_mut() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
             let mut buf = vec![0u8; n as usize];
             let mut pos = 0;
             while pos < buf.len() {
@@ -280,7 +385,7 @@ pub(crate) struct TcpWriteEv;
 impl EvalCachedAsync for TcpWriteEv {
     const NAME: &str = "net_tcp_write";
     deftype!("fn(string, bytes) -> Result<u64, `TCPError(string)>");
-    type Args = (Arc<Mutex<TcpStream>>, Bytes);
+    type Args = (Arc<Mutex<Option<StreamInner>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<Bytes>(1)?))
@@ -288,7 +393,11 @@ impl EvalCachedAsync for TcpWriteEv {
 
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut s = stream.lock().await;
+            let mut guard = stream.lock().await;
+            let s = match guard.as_mut() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
             match s.write(&data).await {
                 Ok(n) => Value::U64(n as u64),
                 Err(e) => errf!("TCPError", "write failed: {e}"),
@@ -307,7 +416,7 @@ pub(crate) struct TcpWriteExactEv;
 impl EvalCachedAsync for TcpWriteExactEv {
     const NAME: &str = "net_tcp_write_exact";
     deftype!("fn(string, bytes) -> Result<null, `TCPError(string)>");
-    type Args = (Arc<Mutex<TcpStream>>, Bytes);
+    type Args = (Arc<Mutex<Option<StreamInner>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<Bytes>(1)?))
@@ -315,7 +424,11 @@ impl EvalCachedAsync for TcpWriteExactEv {
 
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut s = stream.lock().await;
+            let mut guard = stream.lock().await;
+            let s = match guard.as_mut() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
             match s.write_all(&data).await {
                 Ok(()) => Value::Null,
                 Err(e) => errf!("TCPError", "write_exact failed: {e}"),
@@ -334,7 +447,7 @@ pub(crate) struct TcpShutdownEv;
 impl EvalCachedAsync for TcpShutdownEv {
     const NAME: &str = "net_tcp_shutdown";
     deftype!("fn(string) -> Result<null, `TCPError(string)>");
-    type Args = Arc<Mutex<TcpStream>>;
+    type Args = Arc<Mutex<Option<StreamInner>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -342,7 +455,11 @@ impl EvalCachedAsync for TcpShutdownEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut s = stream.lock().await;
+            let mut guard = stream.lock().await;
+            let s = match guard.as_mut() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
             match s.shutdown().await {
                 Ok(()) => Value::Null,
                 Err(e) => errf!("TCPError", "shutdown failed: {e}"),
@@ -361,7 +478,7 @@ pub(crate) struct TcpPeerAddrEv;
 impl EvalCachedAsync for TcpPeerAddrEv {
     const NAME: &str = "net_tcp_peer_addr";
     deftype!("fn(string) -> Result<string, `TCPError(string)>");
-    type Args = Arc<Mutex<TcpStream>>;
+    type Args = Arc<Mutex<Option<StreamInner>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -369,8 +486,12 @@ impl EvalCachedAsync for TcpPeerAddrEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let s = stream.lock().await;
-            match s.peer_addr() {
+            let guard = stream.lock().await;
+            let s = match guard.as_ref() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
+            match s.tcp_ref().peer_addr() {
                 Ok(addr) => Value::String(ArcStr::from(addr.to_string().as_str())),
                 Err(e) => errf!("TCPError", "peer_addr failed: {e}"),
             }
@@ -388,7 +509,7 @@ pub(crate) struct TcpLocalAddrEv;
 impl EvalCachedAsync for TcpLocalAddrEv {
     const NAME: &str = "net_tcp_local_addr";
     deftype!("fn(string) -> Result<string, `TCPError(string)>");
-    type Args = Arc<Mutex<TcpStream>>;
+    type Args = Arc<Mutex<Option<StreamInner>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -396,8 +517,12 @@ impl EvalCachedAsync for TcpLocalAddrEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let s = stream.lock().await;
-            match s.local_addr() {
+            let guard = stream.lock().await;
+            let s = match guard.as_ref() {
+                Some(s) => s,
+                None => return errf!("TCPError", "stream unavailable"),
+            };
+            match s.tcp_ref().local_addr() {
                 Ok(addr) => Value::String(ArcStr::from(addr.to_string().as_str())),
                 Err(e) => errf!("TCPError", "local_addr failed: {e}"),
             }
@@ -406,3 +531,29 @@ impl EvalCachedAsync for TcpLocalAddrEv {
 }
 
 pub(crate) type TcpLocalAddr = CachedArgsAsync<TcpLocalAddrEv>;
+
+// ── TcpListenerAddr ────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+pub(crate) struct TcpListenerAddrEv;
+
+impl EvalCachedAsync for TcpListenerAddrEv {
+    const NAME: &str = "net_tcp_listener_addr";
+    deftype!("fn(string) -> Result<string, `TCPError(string)>");
+    type Args = Arc<TcpListener>;
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        get_listener_addr(cached, 0)
+    }
+
+    fn eval(listener: Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match listener.local_addr() {
+                Ok(addr) => Value::String(ArcStr::from(addr.to_string().as_str())),
+                Err(e) => errf!("TCPError", "listener_addr failed: {e}"),
+            }
+        }
+    }
+}
+
+pub(crate) type TcpListenerAddr = CachedArgsAsync<TcpListenerAddrEv>;

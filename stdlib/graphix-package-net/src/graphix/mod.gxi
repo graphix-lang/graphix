@@ -4,6 +4,7 @@ type ArgSpec = { name: string, doc: string, default: Any };
 mod tcp;
 mod http;
 mod rest;
+mod tls;
 
 /// write the value to the specified path
 val write: fn(string, Any) -> Result<_, `WriteError(string)>;

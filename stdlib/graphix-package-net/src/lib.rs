@@ -4,6 +4,7 @@
 )]
 pub(crate) mod http;
 pub(crate) mod tcp;
+pub(crate) mod tls;
 
 use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
@@ -774,6 +775,9 @@ graphix_derive::defpackage! {
         tcp::TcpShutdown,
         tcp::TcpPeerAddr,
         tcp::TcpLocalAddr,
+        tcp::TcpListenerAddr,
+        tls::TlsConnect,
+        tls::TlsAccept,
         http::HttpClient,
         http::HttpDefaultClient,
         http::HttpServerAddr,

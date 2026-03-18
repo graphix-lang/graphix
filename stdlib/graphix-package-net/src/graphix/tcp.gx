@@ -9,4 +9,5 @@ let write = |stream, data| 'net_tcp_write;
 let write_exact = |stream, data| 'net_tcp_write_exact;
 let shutdown = |stream| 'net_tcp_shutdown;
 let peer_addr = |stream| 'net_tcp_peer_addr;
-let local_addr = |stream| 'net_tcp_local_addr
+let local_addr = |stream| 'net_tcp_local_addr;
+let listener_addr = |listener| 'net_tcp_listener_addr

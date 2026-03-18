@@ -396,7 +396,7 @@ impl Env {
 
     pub fn use_in_scope(&mut self, scope: &Scope, name: &ModPath) -> Result<()> {
         match self.canonical_modpath(&scope.lexical, name) {
-            None => bail!("use {name}: no such module {name}"),
+            None => bail!("use {name}: no such module {name} in scope {}", scope.lexical),
             Some(_) => {
                 let used = self.used.get_or_default_cow(scope.lexical.clone());
                 Ok(Arc::make_mut(used).push(name.clone()))
