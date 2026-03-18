@@ -90,7 +90,7 @@ The shell only prints values from expressions that are considered "output expres
 
 - **Bindings**: `let x = 42` defines a variable but doesn't output
 - **Lambdas**: `|x| x + 1` defines a function but doesn't output
-- **Use statements**: `use stdlib::time` imports a module but doesn't output
+- **Use statements**: `use sys::time` imports a module but doesn't output
 - **Connect operations**: `x <- y` schedules updates but doesn't output
 - **Module definitions**: `mod m { ... }` defines a module but doesn't output
 - **Type definitions**: `type Point = {x: f64, y: f64}` defines a type but doesn't output
@@ -98,7 +98,7 @@ The shell only prints values from expressions that are considered "output expres
 Everything else **is** considered an output expression:
 - Values: `42`, `"hello"`, `true`
 - Arithmetic: `2 + 2`
-- Function calls: `time::now()`
+- Function calls: `sys::time::now()`
 - Variable references: `x`
 - Struct/variant/tuple construction: `{x: 10, y: 20}`
 - Blocks with output expressions as their last value
@@ -113,7 +113,7 @@ For example:
 
 ```graphix
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count <- timer ~ (count + 1);
 count
 ```
@@ -166,7 +166,7 @@ mode and will render the output expression as a tui. For example,
 
 ```graphix
 〉let count = 0
-〉count <- time::timer(1, true) ~ count + 1
+〉count <- sys::time::timer(1, true) ~ count + 1
 〉tui::text::text(&"count is [count]")
 ```
 
@@ -397,7 +397,7 @@ Create an `init.gx` file in your init directory to:
 Example `~/.local/share/graphix/init.gx`:
 ```graphix
 // Commonly used stdlib modules
-use time;
+use sys::time;
 use str;
 use array;
 

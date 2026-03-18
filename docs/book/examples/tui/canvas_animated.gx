@@ -1,7 +1,7 @@
 use tui;
 use tui::canvas;
 
-let clock = time::timer(duration:0.1s, true);
+let clock = sys::time::timer(duration:0.1s, true);
 let x = 0.0;
 x <- {
     let new_x = (clock ~ x) + 0.1;

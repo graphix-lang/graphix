@@ -169,7 +169,7 @@ and it's output is connected to the call site itself. All the local
 variables are unique and invisible to the outside, and the types are
 resolved at compile time for each call site. Consider,</p>
 <pre><code class="language-graphix">let f = |x, y| x + y + y;
-let n = cast&lt;i64&gt;(net::subscribe("/hev/stats/power")$)$;
+let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")$)$;
 f(n, 1)
 </code></pre>
 <p>Here there is one call site for <code>f</code>, this builds a graph at the call
@@ -180,7 +180,7 @@ which causes <code>x + y + y</code> to update which causes the call site to
 return <code>x + y + y</code>, which causes the program to print <code>x + y + y</code></p>
 <p>Lets transform this program into something closer to the actual graph
 that is executed,</p>
-<pre><code class="language-graphix">let n = cast&lt;i64&gt;(net::subscribe("/hev/stats/power")?)?;
+<pre><code class="language-graphix">let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")?)?;
 n + 1 + 1
 </code></pre>
 <p>Here we've essentially inlined out <code>f</code> so that we can see the
@@ -271,7 +271,7 @@ queued, it still remembers to allow that many through when they
 arrive.</p>
 <p>Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.</p>
-<pre><code class="language-graphix">let f = |path| net::subscribe(path)$;
+<pre><code class="language-graphix">let f = |path| sys::net::subscribe(path)$;
 let path = "/local/baz0";
 path &lt;- "/local/baz1";
 path &lt;- "/local/baz2";
@@ -287,7 +287,7 @@ f(path)
 <pre><code>$ graphix text.gx
 "baz2"
 </code></pre>
-<p>This is because every time the argument to <code>net::subscribe</code> updates it
+<p>This is because every time the argument to <code>sys::net::subscribe</code> updates it
 drops the previous subscription and starts a new one. This is useful,
 for example, if the user is typing this path into a UI element, they
 probably only care about the most recent one.</p>
@@ -300,7 +300,7 @@ moving on to the next one. We can use queue to achieve this.</p>
 <pre><code class="language-graphix">let f = |path| {
   let clock = "";
   let path = queue(#clock, path);
-  let res = net::subscribe(path)$;
+  let res = sys::net::subscribe(path)$;
   clock &lt;- uniq(res ~ path);
   res
 };

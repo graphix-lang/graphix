@@ -199,7 +199,7 @@ val image: fn(
 <p>The <code>image</code> widget accepts an <code>ImageSource</code> union with three variants:</p>
 <ul>
 <li><strong>string</strong> -- A file path to a PNG, JPEG, BMP, GIF, or other supported image format. The path is relative to the working directory.</li>
-<li><strong><code>`Bytes(bytes)</code></strong> -- Raw image file bytes (e.g. the contents of a PNG file loaded with <code>fs::read</code>). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the <code>bytes:&lt;base64&gt;</code> syntax.</li>
+<li><strong><code>`Bytes(bytes)</code></strong> -- Raw image file bytes (e.g. the contents of a PNG file loaded with <code>sys::fs::read_all_bin</code>). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the <code>bytes:&lt;base64&gt;</code> syntax.</li>
 <li><strong><code>`Rgba({width, height, pixels})</code></strong> -- A raw RGBA pixel buffer. The <code>width</code> and <code>height</code> fields specify the image dimensions, and <code>pixels</code> is a <code>bytes</code> value containing <code>width * height * 4</code> bytes (one byte each for red, green, blue, and alpha per pixel, in row-major order).</li>
 </ul>
 <p>The <code>svg</code> widget accepts a string that is either a file path to an <code>.svg</code> file or inline SVG XML content.</p>

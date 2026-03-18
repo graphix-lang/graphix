@@ -12,7 +12,7 @@ const DYNAMIC_MODULE0: &str = r#"
         let cfg = \[1, 2, 3, 4, 5\];
         let hidden = 42
     ";
-    net::publish("/local/foo", source)?;
+    sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
@@ -20,7 +20,7 @@ const DYNAMIC_MODULE0: &str = r#"
             val sub: fn(i64) -> i64;
             val cfg: Array<i64>
         };
-        source cast<string>(net::subscribe("/local/foo")$)$
+        source cast<string>(sys::net::subscribe("/local/foo")$)$
     };
     select status {
         error as e => never(dbg(e)),
@@ -42,7 +42,7 @@ const DYNAMIC_MODULE1: &str = r#"
         let cfg = \[1, 2, 3, 4, 5\];
         let hidden = 42
     ";
-    net::publish("/local/foo", source)?;
+    sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
@@ -50,7 +50,7 @@ const DYNAMIC_MODULE1: &str = r#"
             val sub: fn(i64) -> i64;
             val cfg: Array<i64>
         };
-        source cast<string>(net::subscribe("/local/foo"))
+        source cast<string>(sys::net::subscribe("/local/foo"))
     };
     select status {
         error as e => dbg(e),
@@ -67,13 +67,13 @@ run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
 const DYNAMIC_MODULE2: &str = r#"
 {
     let source = "let add = 'a: Number |x: 'a| -> 'a x + x";
-    net::publish("/local/foo", source)?;
+    sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
             val add: fn<'a: Number>('a) -> 'a
         };
-        source cast<string>(net::subscribe("/local/foo"))
+        source cast<string>(sys::net::subscribe("/local/foo"))
     };
     select status {
         error as e => dbg(e),
@@ -94,14 +94,14 @@ const DYNAMIC_MODULE3: &str = r#"
         let bar = never();
         select foo { x => bar <- dbg(x) }
     ";
-    net::publish("/local/test", source)?;
+    sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
         sandbox whitelist [core];
         sig {
             val foo: string;
             val bar: string
         };
-        source cast<string>(net::subscribe("/local/test"))
+        source cast<string>(sys::net::subscribe("/local/test"))
     };
     select status {
         error as e => dbg(e),
@@ -125,7 +125,7 @@ const DYNAMIC_MODULE4: &str = r#"
         let bar = never();
         select foo { x => bar <- dbg(x) }
     ";
-    net::publish("/local/test", source)?;
+    sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
         sandbox whitelist [core];
         sig {
@@ -133,7 +133,7 @@ const DYNAMIC_MODULE4: &str = r#"
             val bar: string;
             val baz: string
         };
-        source cast<string>(net::subscribe("/local/test"))
+        source cast<string>(sys::net::subscribe("/local/test"))
     };
     select status {
         error as e => dbg(e),
@@ -156,16 +156,16 @@ const DYNAMIC_MODULE5: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        net::subscribe(\"/local/test\")
+        sys::net::subscribe(\"/local/test\")
     ";
-    net::publish("/local/test", source)?;
+    sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
         sandbox whitelist [core];
         sig {
             val foo: string;
             val bar: string
         };
-        source cast<string>(net::subscribe("/local/test"))
+        source cast<string>(sys::net::subscribe("/local/test"))
     };
     select status {
         error as e => dbg(e),
@@ -187,16 +187,16 @@ const DYNAMIC_MODULE6: &str = r#"
     let source = "
         let foo = never();
         let bar = never(); select foo { x => bar <- dbg(x) };
-        net::subscribe(\"/local/test\")
+        sys::net::subscribe(\"/local/test\")
     ";
-    net::publish("/local/test", source)?;
+    sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
-        sandbox blacklist [net::publish];
+        sandbox blacklist [sys::net::publish];
         sig {
             val foo: string;
             val bar: string
         };
-        source cast<string>(net::subscribe("/local/test"))
+        source cast<string>(sys::net::subscribe("/local/test"))
     };
     select status {
         error as e => dbg(e),
@@ -219,16 +219,16 @@ const DYNAMIC_MODULE7: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        net::publish(\"/local/test\", 42)
+        sys::net::publish(\"/local/test\", 42)
     ";
-    net::publish("/local/test", source)?;
+    sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
-        sandbox blacklist [net::publish];
+        sandbox blacklist [sys::net::publish];
         sig {
             val foo: string;
             val bar: string
         };
-        source cast<string>(net::subscribe("/local/test"))
+        source cast<string>(sys::net::subscribe("/local/test"))
     };
     select status {
         error as e => dbg(e),
@@ -251,16 +251,16 @@ const DYNAMIC_MODULE8: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        net::subscribe(\"/local/test\")
+        sys::net::subscribe(\"/local/test\")
     ";
-    net::publish("/local/test", source)?;
+    sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
-        sandbox whitelist [core, net::subscribe];
+        sandbox whitelist [core, sys::net::subscribe];
         sig {
             val foo: string;
             val bar: string
         };
-        source cast<string>(net::subscribe("/local/test"))
+        source cast<string>(sys::net::subscribe("/local/test"))
     };
     select status {
         error as e => dbg(e),

@@ -20,8 +20,9 @@ This is a Rust workspace with these main crates:
 
 The standard library is split into individual packages under `stdlib/`:
 - **graphix-package-core**: Core builtins and types
-- **graphix-package-array**, **-map**, **-str**, **-re**, **-rand**, **-time**: Data structure and utility packages
-- **graphix-package-fs**, **-net**: Filesystem and network packages
+- **graphix-package-array**, **-map**, **-str**, **-re**, **-rand**: Data structure and utility packages
+- **graphix-package-sys**: System-level I/O (unified streams, filesystem, TCP, TLS, netidx, timers)
+- **graphix-package-http**: HTTP client/server and REST helpers
 - **graphix-package-tui**: Terminal UI widgets (ratatui-based)
 - **graphix-package-gui**: Graphical UI widgets (iced-based)
 - **graphix-tests**: Language feature and stdlib integration tests (separate crate to avoid circular dev-deps)
@@ -462,7 +463,7 @@ text_input(#on_input: |v| name <- v, &name)
 ```
 
 ```graphix
-let clock = time::timer(duration:1.s, true)
+let clock = sys::time::timer(duration:1.s, true)
 let counter = 0
 counter <- clock ~ counter + 1 // increment on each tick
 
@@ -592,17 +593,29 @@ parameters and constraints.
 **map**: `map`, `filter`, `filter_map`, `fold`, `len`, `get`, `insert`,
 `remove`, `iter`, `iterq`
 
-**time**: `timer(timeout, repeat)`
-
 **re**: `is_match`, `find`, `captures`, `split`, `splitn`
 
 **rand**: `rand`, `pick`, `shuffle`
 
-**fs**: `read_all`, `read_all_bin`, `write_all`, `write_all_bin`,
+**sys::time**: `timer(timeout, repeat)`, `now()`
+
+**sys::io**: `read`, `write`, `read_exact`, `write_exact`, `flush`
+
+**sys::fs**: `read_all`, `read_all_bin`, `write_all`, `write_all_bin`,
 `readdir`, `metadata`, `is_file`, `is_dir`,
 `tempdir`, `join_path`, `create_dir`, `remove_dir`, `remove_file`
 
-**fs::watch**: `create`, `watch`, `path`, `events`
+**sys::fs::watch**: `create`, `watch`, `path`, `events`
+
+**sys::tcp**: TCP socket operations
+
+**sys::tls**: TLS socket operations
+
+**sys::net**: Netidx `subscribe`, `publish`
+
+**http**: HTTP client/server operations
+
+**http::rest**: REST API helpers
 
 ### GUI Patterns (iced-based)
 
@@ -706,7 +719,7 @@ input_handler(
 
 ```graphix
 // timer-driven update
-let clock = time::timer(duration:1.s, true)
+let clock = sys::time::timer(duration:1.s, true)
 let count = 0
 count <- clock ~ count + 1
 
@@ -744,4 +757,6 @@ select x {
 - you must escape square brackets in string literals "[name] must be between \[0, 1\]"
 - literal syntax for non i64, f64, string literals, is typ:value, e.g. u8:100, f32:3.14
 - `use` paths are always absolute, not relative to the current module.
-  Inside `net::rest`, write `use net::http`, not `use http`.
+  Inside `sys::net`, write `use sys::time`, not `use time`.
+- A submodule can reference bindings from its parent, but only if the
+  `mod` declaration comes after those bindings in the parent's `.gxi`.

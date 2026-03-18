@@ -87,7 +87,7 @@ run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
 
 const SKIP_ALL: &str = r#"
 {
-  let timeout = time::timer(1, false) ~ 0;
+  let timeout = sys::time::timer(1, false) ~ 0;
   any(skip(#n: 5, array::iter([1, 2, 3])), timeout)
 }
 "#;
@@ -116,7 +116,7 @@ run!(take, TAKE, |v: Result<&Value>| {
 
 const TAKE_ZERO: &str = r#"
 {
-  let timeout = time::timer(1, false) ~ 0;
+  let timeout = sys::time::timer(1, false) ~ 0;
   any(take(#n: 0, array::iter([1, 2, 3])), timeout)
 }
 "#;
@@ -294,11 +294,11 @@ run!(filter1, FILTER1, |v: Result<&Value>| {
 const QUEUE: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8];
-  array::map(a, |v| net::publish("/local/[v]", v));
+  array::map(a, |v| sys::net::publish("/local/[v]", v));
   let v = array::iter(a);
   let clock: Any = once(v);
   let q = queue(#clock, v);
-  let out = net::subscribe("/local/[q]")?;
+  let out = sys::net::subscribe("/local/[q]")?;
   clock <- out;
   array::group(out, |n, _| n == 8)
 }
@@ -507,7 +507,7 @@ run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
-  let clock = time::timer(0.5, false) ~ 1;
+  let clock = sys::time::timer(0.5, false) ~ 1;
   let values = [100, 200, 300];
   // Only the last value should be held when clock fires
   hold(#clock, array::iter(values))
@@ -519,7 +519,7 @@ run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     _ => false,
 });
 
-const NOW: &str = r#"time::now(null)"#;
+const NOW: &str = r#"sys::time::now(null)"#;
 
 run!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,

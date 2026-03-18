@@ -228,7 +228,7 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <ul>
 <li><strong>Bindings</strong>: <code>let x = 42</code> defines a variable but doesn't output</li>
 <li><strong>Lambdas</strong>: <code>|x| x + 1</code> defines a function but doesn't output</li>
-<li><strong>Use statements</strong>: <code>use stdlib::time</code> imports a module but doesn't output</li>
+<li><strong>Use statements</strong>: <code>use sys::time</code> imports a module but doesn't output</li>
 <li><strong>Connect operations</strong>: <code>x &lt;- y</code> schedules updates but doesn't output</li>
 <li><strong>Module definitions</strong>: <code>mod m { ... }</code> defines a module but doesn't output</li>
 <li><strong>Type definitions</strong>: <code>type Point = {x: f64, y: f64}</code> defines a type but doesn't output</li>
@@ -237,7 +237,7 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <ul>
 <li>Values: <code>42</code>, <code>"hello"</code>, <code>true</code></li>
 <li>Arithmetic: <code>2 + 2</code></li>
-<li>Function calls: <code>time::now()</code></li>
+<li>Function calls: <code>sys::time::now()</code></li>
 <li>Variable references: <code>x</code></li>
 <li>Struct/variant/tuple construction: <code>{x: 10, y: 20}</code></li>
 <li>Blocks with output expressions as their last value</li>
@@ -247,7 +247,7 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <p>Graphix programs are reactive dataflow graphs. When you run an expression that produces output, that output can update over time as upstream values change. The shell keeps the program running to display these updates.</p>
 <p>For example:</p>
 <pre><code class="language-graphix">let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 count
 </code></pre>
@@ -284,7 +284,7 @@ output expression that the shell will print.</p>
 printing the expression to stdout the Graphix shell will switch to TUI
 mode and will render the output expression as a tui. For example,</p>
 <pre><code class="language-graphix">〉let count = 0
-〉count &lt;- time::timer(1, true) ~ count + 1
+〉count &lt;- sys::time::timer(1, true) ~ count + 1
 〉tui::text::text(&amp;"count is [count]")
 </code></pre>
 <p>won't print the expression returned by <code>tui::text::text(&amp;"count is [count]")</code> to stdout, it will build a tui,</p>
@@ -453,7 +453,7 @@ GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 </ul>
 <p>Example <code>~/.local/share/graphix/init.gx</code>:</p>
 <pre><code class="language-graphix">// Commonly used stdlib modules
-use time;
+use sys::time;
 use str;
 use array;
 

@@ -163,7 +163,7 @@ use tui;
 use tui::text;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count <- timer ~ (count + 1);
 
 text(&"Count: [count]")
@@ -172,7 +172,7 @@ text(&"Count: [count]")
 This program demonstrates Graphix's reactive nature:
 
 - We start with `count = 0`
-- `time::timer(duration:1.s, true)` creates a timer that fires every second
+- `sys::time::timer(duration:1.s, true)` creates a timer that fires every second
 - The `~` operator samples the right side when the left side updates
 - `count <- ...` schedules an update to `count` for the next cycle
 - Every second, `count` increments and the text automatically updates
@@ -196,7 +196,7 @@ If you want to see the reactive behavior without the TUI, try this simpler versi
 
 ```graphix
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count <- timer ~ (count + 1);
 "Count: [count]"
 ```

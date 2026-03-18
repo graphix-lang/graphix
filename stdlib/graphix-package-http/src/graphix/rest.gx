@@ -1,5 +1,3 @@
-let request = |#method = `GET, #headers = [], #body = null, #timeout = null, client, url| 'http_request;
-
 let add_auth = |bearer, base| select bearer {
     string as b => array::concat(base, [("authorization", "Bearer [b]")]),
     null as _ => base

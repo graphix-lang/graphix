@@ -1,0 +1,31 @@
+# sys::tcp
+
+```graphix
+/// An opaque handle to a TCP listener.
+type TcpListener;
+
+/// Connect to a TCP server at the given address (host:port).
+val connect: fn(string) -> Result<io::Stream<`Tcp>, `TCPError(string)>;
+
+/// Bind a TCP listener to the given address (host:port).
+val listen: fn(string) -> Result<TcpListener, `TCPError(string)>;
+
+/// Accept a new connection from the listener. The second argument
+/// is a trigger — each time it updates, a new accept is performed.
+val accept: fn(TcpListener, Any) -> Result<io::Stream<`Tcp>, `TCPError(string)>;
+
+/// Shutdown the write half of the stream. Works on both plain TCP
+/// and TLS-upgraded streams.
+val shutdown: fn(io::Stream<[`Tcp, `Tls]>) -> Result<null, `TCPError(string)>;
+
+/// Get the remote address of the connected peer. Works on both
+/// plain TCP and TLS-upgraded streams.
+val peer_addr: fn(io::Stream<[`Tcp, `Tls]>) -> Result<string, `TCPError(string)>;
+
+/// Get the local address of the stream. Works on both plain TCP
+/// and TLS-upgraded streams.
+val local_addr: fn(io::Stream<[`Tcp, `Tls]>) -> Result<string, `TCPError(string)>;
+
+/// Get the local address that the listener is bound to.
+val listener_addr: fn(TcpListener) -> Result<string, `TCPError(string)>;
+```

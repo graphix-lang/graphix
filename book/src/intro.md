@@ -26,7 +26,7 @@ from a normal programming language. However a more complex example
 such as,
 
 ```graphix
-let x = cast<i64>(net::subscribe("/foo")?)?;
+let x = cast<i64>(sys::net::subscribe("/foo")?)?;
 print(x * 10)
 ```
 
@@ -38,11 +38,11 @@ compiles to a graph like
                                                    │
                                                    ▼
                                          
-const("/foo") ──> net::subscribe ──> cast<i64> ──> * ──> print
+const("/foo") ──> sys::net::subscribe ──> cast<i64> ──> * ──> print
                                          
 ```
 
-Unlike the first example, the value of `net::subscribe` isn't a
+Unlike the first example, the value of `sys::net::subscribe` isn't a
 constant, it can change if the value published in netidx changes. If
 that happens the new value will flow through the graph and will be
 printed again. If the published value of "/foo" is initially 10, and

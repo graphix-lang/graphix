@@ -6,7 +6,7 @@ closure is called. For example,
 
 ```graphix
 let f = {
-  let v = cast<i64>(net::subscribe("/local/foo")$)$;
+  let v = cast<i64>(sys::net::subscribe("/local/foo")$)$;
   |n| v + n
 };
 f(2)

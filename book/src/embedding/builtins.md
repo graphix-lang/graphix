@@ -31,13 +31,13 @@ it means that the argument to `once` updated, and `once` has not
 already seen an update. Consider the example program,
 
 ```graphix
-let clock = time::timer(1, true);
+let clock = sys::time::timer(1, true);
 println(once(clock))
 ```
 
 We expect this example to print the datetime exactly one time. Lets
-dig in to how that actually works. The clock created by `time::timer`
-will tick once per second forever. The `time::timer` built-in will
+dig in to how that actually works. The clock created by `sys::time::timer`
+will tick once per second forever. The `sys::time::timer` built-in will
 call `set_timer` in the
 [`Rt`](https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html),
 which is part of the
@@ -47,9 +47,9 @@ register that this toplevel node (`let clock = ...`) depends on the
 timer event. When the timer event happens the approximate sequence of
 events is,
 
-- let clock = time::timer(1, true), update called on toplevel node (Bind)
-    - time::timer(1, true), bind calls update on its rhs
-    - time::timer checks events to see if it should update, returns Some(DateTime(..))
+- let clock = sys::time::timer(1, true), update called on toplevel node (Bind)
+    - sys::time::timer(1, true), bind calls update on its rhs
+    - sys::time::timer checks events to see if it should update, returns Some(DateTime(..))
     - bind sets the id of clock in events to Value::DateTime(..)
     - Rt checks for nodes that depend on `clock` schedules println(..)
 - println(once(clock)), update called on toplevel node (CallSite)

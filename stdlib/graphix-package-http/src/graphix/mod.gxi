@@ -25,8 +25,6 @@ type Request = {
 type Client;
 type Server;
 
-mod rest;
-
 /// Create a configured HTTP client.
 val client: fn(
     ?#timeout: [duration, null],
@@ -76,3 +74,5 @@ val serve: fn(
     ?#max_connections: i64,
     #handler: fn(Request) -> Response throws 'e
 ) -> Result<Server, `HTTPError(string)> throws 'e;
+
+mod rest;

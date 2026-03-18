@@ -4,7 +4,7 @@ use tui::text;
 use tui::layout;
 
 let counter = 0;
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 counter <- clock ~ (counter + 1);
 
 let content = text(&"Counter: [counter]");

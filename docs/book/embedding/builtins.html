@@ -181,12 +181,12 @@ something only when the node being updated has "updated". The meaning
 of that is specific to what the node does, but in the case of <code>once</code>
 it means that the argument to <code>once</code> updated, and <code>once</code> has not
 already seen an update. Consider the example program,</p>
-<pre><code class="language-graphix">let clock = time::timer(1, true);
+<pre><code class="language-graphix">let clock = sys::time::timer(1, true);
 println(once(clock))
 </code></pre>
 <p>We expect this example to print the datetime exactly one time. Lets
-dig in to how that actually works. The clock created by <code>time::timer</code>
-will tick once per second forever. The <code>time::timer</code> built-in will
+dig in to how that actually works. The clock created by <code>sys::time::timer</code>
+will tick once per second forever. The <code>sys::time::timer</code> built-in will
 call <code>set_timer</code> in the
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html"><code>Rt</code></a>,
 which is part of the
@@ -196,10 +196,10 @@ register that this toplevel node (<code>let clock = ...</code>) depends on the
 timer event. When the timer event happens the approximate sequence of
 events is,</p>
 <ul>
-<li>let clock = time::timer(1, true), update called on toplevel node (Bind)
+<li>let clock = sys::time::timer(1, true), update called on toplevel node (Bind)
 <ul>
-<li>time::timer(1, true), bind calls update on its rhs</li>
-<li>time::timer checks events to see if it should update, returns Some(DateTime(..))</li>
+<li>sys::time::timer(1, true), bind calls update on its rhs</li>
+<li>sys::time::timer checks events to see if it should update, returns Some(DateTime(..))</li>
 <li>bind sets the id of clock in events to Value::DateTime(..)</li>
 <li>Rt checks for nodes that depend on <code>clock</code> schedules println(..)</li>
 </ul>

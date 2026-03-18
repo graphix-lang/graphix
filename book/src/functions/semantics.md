@@ -18,7 +18,7 @@ resolved at compile time for each call site. Consider,
 
 ```graphix
 let f = |x, y| x + y + y;
-let n = cast<i64>(net::subscribe("/hev/stats/power")$)$;
+let n = cast<i64>(sys::net::subscribe("/hev/stats/power")$)$;
 f(n, 1)
 ```
 
@@ -33,7 +33,7 @@ Lets transform this program into something closer to the actual graph
 that is executed,
 
 ```graphix
-let n = cast<i64>(net::subscribe("/hev/stats/power")?)?;
+let n = cast<i64>(sys::net::subscribe("/hev/stats/power")?)?;
 n + 1 + 1
 ```
 
@@ -156,7 +156,7 @@ Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.
 
 ```graphix
-let f = |path| net::subscribe(path)$;
+let f = |path| sys::net::subscribe(path)$;
 let path = "/local/baz0";
 path <- "/local/baz1";
 path <- "/local/baz2";
@@ -178,7 +178,7 @@ $ graphix text.gx
 "baz2"
 ```
 
-This is because every time the argument to `net::subscribe` updates it
+This is because every time the argument to `sys::net::subscribe` updates it
 drops the previous subscription and starts a new one. This is useful,
 for example, if the user is typing this path into a UI element, they
 probably only care about the most recent one. 
@@ -195,7 +195,7 @@ moving on to the next one. We can use queue to achieve this.
 let f = |path| {
   let clock = "";
   let path = queue(#clock, path);
-  let res = net::subscribe(path)$;
+  let res = sys::net::subscribe(path)$;
   clock <- uniq(res ~ path);
   res
 };

@@ -261,7 +261,7 @@ want to exit the REPL press ctrl-d.</p>
 use tui::text;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 
 text(&amp;"Count: [count]")
@@ -269,7 +269,7 @@ text(&amp;"Count: [count]")
 <p>This program demonstrates Graphix's reactive nature:</p>
 <ul>
 <li>We start with <code>count = 0</code></li>
-<li><code>time::timer(duration:1.s, true)</code> creates a timer that fires every second</li>
+<li><code>sys::time::timer(duration:1.s, true)</code> creates a timer that fires every second</li>
 <li>The <code>~</code> operator samples the right side when the left side updates</li>
 <li><code>count &lt;- ...</code> schedules an update to <code>count</code> for the next cycle</li>
 <li>Every second, <code>count</code> increments and the text automatically updates</li>
@@ -284,7 +284,7 @@ text(&amp;"Count: [count]")
 <h2 id="a-simpler-example"><a class="header" href="#a-simpler-example">A Simpler Example</a></h2>
 <p>If you want to see the reactive behavior without the TUI, try this simpler version (<code>counter.gx</code>):</p>
 <pre><code class="language-graphix">let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 "Count: [count]"
 </code></pre>

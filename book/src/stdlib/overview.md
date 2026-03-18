@@ -9,8 +9,7 @@ functions. The `core` module is always imported with an implicit use statement.
 - `str` functions for manipulating strings
 - `re` regular expressions
 - `rand` random number generator
-- `time` timers and time functions
-- `net` netidx functions
-- `fs` file manipulation
+- `sys` system-level I/O, filesystem, networking, and timers
+- `http` HTTP client/server and REST helpers
 
 The standard library is a work in progress.

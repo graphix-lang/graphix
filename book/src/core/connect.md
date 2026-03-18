@@ -8,7 +8,7 @@ right side to flow to the name on the left side. Consider,
 
 ```graphix
 let x = "off"
-x <- time::timer(duration:1.0s, false) ~ "on"
+x <- sys::time::timer(duration:1.0s, false) ~ "on"
 print(x)
 ```
 
@@ -22,7 +22,7 @@ const("off") ────────────────> "x" ────�
                                  ▲
                                  │
                                  │
-           time::timer ──> sample
+           sys::time::timer ──> sample
                             ▲
                             │
                             │

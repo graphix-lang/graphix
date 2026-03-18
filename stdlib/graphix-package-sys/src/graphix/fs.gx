@@ -1,0 +1,23 @@
+let read_all = |path| 'sys_fs_read_all;
+let read_all_bin = |path| 'sys_fs_read_all_bin;
+let write_all = |#path, data| 'sys_fs_write_all;
+let write_all_bin = |#path, data| 'sys_fs_write_all_bin;
+let is_file = |path| 'sys_fs_is_file;
+let is_dir = |path| 'sys_fs_is_dir;
+let metadata = |#follow_symlinks = true, path| 'sys_fs_metadata;
+let readdir = |
+    #max_depth = 1,
+    #min_depth = 1,
+    #contents_first = false,
+    #follow_symlinks = false,
+    #follow_root_symlink = true,
+    #same_filesystem = false,
+    path
+| 'sys_fs_readdir;
+let create_dir = |#all = false, path| 'sys_fs_create_dir;
+let remove_dir = |#all = false, path| 'sys_fs_remove_dir;
+let remove_file = |path| 'sys_fs_remove_file;
+let open = |mode, path| 'sys_fs_open;
+let seek = |stream, pos| 'sys_fs_seek;
+let fstat = |stream| 'sys_fs_fstat;
+let truncate = |stream, len| 'sys_fs_truncate

@@ -363,7 +363,7 @@ table(
 use tui::table;
 use tui::text;
 
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 
 let cpu_val = 5;
 cpu_val &lt;- {

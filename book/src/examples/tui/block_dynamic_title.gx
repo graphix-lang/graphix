@@ -3,7 +3,7 @@ use tui::block;
 use tui::paragraph;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count <- timer ~ (count + 1);
 
 let content = paragraph(&"Content here");

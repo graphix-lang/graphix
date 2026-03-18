@@ -17,7 +17,7 @@ let colors = [
    `LightMagenta,
    `LightCyan
 ];
-let clock = time::timer(1, true);
+let clock = sys::time::timer(1, true);
 let style = tui::style(#fg: rand::pick(clock ~ colors));
 let hello = span(#style, "Hello");
 let style = tui::style(#fg: rand::pick(clock ~ colors));

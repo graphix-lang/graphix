@@ -194,7 +194,7 @@ use tui::text;
 use tui::layout;
 
 let counter = 0;
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 counter &lt;- clock ~ (counter + 1);
 
 let content = text(&amp;"Counter: [counter]");
@@ -283,7 +283,7 @@ use tui::gauge;
 use tui::text;
 
 // Subscribe to live data
-let temperature = cast&lt;f64&gt;(net::subscribe("/sensors/temperature")?)?;
+let temperature = cast&lt;f64&gt;(sys::net::subscribe("/sensors/temperature")?)?;
 
 // Will display updates automatically when data changes
 gauge(

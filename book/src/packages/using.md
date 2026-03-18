@@ -6,22 +6,22 @@ operations rebuild the `graphix` binary to include the new set of packages.
 ## Using an Installed Package
 
 Once installed, a package is available as a Graphix module with the same name
-as the package. For example, the `net` package provides netidx networking
-functions:
+as the package. For example, the `sys` package provides netidx networking
+functions under `sys::net`:
 
 ```graphix
-use net;
-net::subscribe("/some/netidx/path")
+use sys::net;
+subscribe("/some/netidx/path")
 ```
 
 Or access it without `use`:
 
 ```graphix
-net::subscribe("/some/netidx/path")
+sys::net::subscribe("/some/netidx/path")
 ```
 
-The standard library packages (`core`, `str`, `array`, `map`, `time`, `net`,
-`re`, `rand`, `fs`, `tui`) are pre-installed and available by default.
+The standard library packages (`core`, `str`, `array`, `map`, `sys`, `http`,
+`re`, `rand`, `tui`) are pre-installed and available by default.
 
 ## Searching for Packages
 

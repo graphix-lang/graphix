@@ -414,7 +414,7 @@ use gui::slider;
 mod icon;
 
 let rate = 0.;
-let clock = time::timer(1. - rate, true);
+let clock = sys::time::timer(1. - rate, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 
@@ -586,7 +586,7 @@ use gui::chart;
 use gui::column;
 mod icon;
 
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 
@@ -719,7 +719,7 @@ use gui::chart;
 use gui::column;
 mod icon;
 
-let clock = time::timer(duration:0.5s, true);
+let clock = sys::time::timer(duration:0.5s, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 

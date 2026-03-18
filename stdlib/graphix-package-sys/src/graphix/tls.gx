@@ -1,0 +1,2 @@
+let connect = |#ca_cert = null, hostname, stream| 'sys_tls_connect;
+let accept = |#cert, #key, stream| 'sys_tls_accept

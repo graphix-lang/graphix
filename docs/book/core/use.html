@@ -157,8 +157,8 @@
                     <main>
                         <h1 id="use"><a class="header" href="#use">Use</a></h1>
 <p>Use allows you to bring names in modules into your current scope so they can be used without prefixing.</p>
-<pre><code class="language-graphix">net::subscribe(...); // call subscribe in the net module
-use net;
+<pre><code class="language-graphix">sys::net::subscribe(...); // call subscribe in the sys::net module
+use sys::net;
 subscribe(...) // same function
 </code></pre>
 <p>Use is valid anywhere expressions are valid</p>
@@ -184,12 +184,14 @@ Caused by:
 </code></pre>
 <p>Use paths are always absolute — they are resolved from the root of the
 module tree, not relative to the current module. For example, if you are
-inside the <code>net::rest</code> module and want to use the <code>net::http</code> module, you
-must write <code>use net::http</code>, not <code>use http</code>.</p>
-<pre><code class="language-graphix">// inside net::rest
-use net::http;     // correct — absolute path
-// use http;       // wrong — would look for a top-level "http" module
+inside the <code>sys::net</code> module and want to use the <code>sys::time</code> module, you
+must write <code>use sys::time</code>, not <code>use time</code>.</p>
+<pre><code class="language-graphix">// inside sys::net
+use sys::time;     // correct — absolute path
 </code></pre>
+<p>A submodule can reference bindings from its parent directly, but
+only if the <code>mod</code> declaration comes after those bindings in the
+parent's interface file.</p>
 <p>Use shadows earlier declarations in it's scope. Consider,</p>
 <pre><code class="language-graphix">let map = |a, f| "hello you called map!";
 let list = {

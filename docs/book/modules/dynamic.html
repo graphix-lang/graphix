@@ -171,7 +171,7 @@ let source = "
     let cfg = \[1, 2, 3, 4, 5\];
     let hidden = 42
 ";
-net::publish(path, source)$;
+sys::net::publish(path, source)$;
 
 // now load the module
 let status = mod foo dynamic {
@@ -181,7 +181,7 @@ let status = mod foo dynamic {
         val sub: fn(i64) -&gt; i64;
         val cfg: Array&lt;i64&gt;
     };
-    source cast&lt;string&gt;(net::subscribe(path)$)$
+    source cast&lt;string&gt;(sys::net::subscribe(path)$)$
 };
 select status {
     error as e =&gt; never(dbg(e)),

@@ -162,7 +162,7 @@ cycle in the graph. Connect is the only graph operator in Graphix, it allows you
 to connect one part of the graph to another by name, causing the output of the
 right side to flow to the name on the left side. Consider,</p>
 <pre><code class="language-graphix">let x = "off"
-x &lt;- time::timer(duration:1.0s, false) ~ "on"
+x &lt;- sys::time::timer(duration:1.0s, false) ~ "on"
 print(x)
 </code></pre>
 <p>This program will first print <code>off</code>, and after 1 second it will print <code>on</code>. Note
@@ -173,7 +173,7 @@ graph we created looks like,</p>
                                  ▲
                                  │
                                  │
-           time::timer ──&gt; sample
+           sys::time::timer ──&gt; sample
                             ▲
                             │
                             │

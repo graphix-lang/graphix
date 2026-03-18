@@ -1,0 +1,6 @@
+type Watcher = string;
+type Watch = string;
+let create = |#poll_interval = null, #poll_batch_size = null, trigger| 'sys_watch_create;
+let watch = |#interest = [`Established, `Create, `Modify, `Delete], watcher, path| 'sys_watch_watch;
+let path = |@args| 'sys_watch_path;
+let events = |@args| 'sys_watch_events;

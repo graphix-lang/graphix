@@ -2,7 +2,7 @@ use tui;
 use tui::sparkline;
 
 let data: Array<f64> = [];
-let new_value = net::subscribe("/local/metrics/cpu")?;
+let new_value = sys::net::subscribe("/local/metrics/cpu")?;
 
 data <- array::window(
     #n: 60,

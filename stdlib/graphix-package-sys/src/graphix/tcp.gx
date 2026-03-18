@@ -1,0 +1,8 @@
+type TcpListener = string;
+let connect = |addr| 'sys_tcp_connect;
+let listen = |addr| 'sys_tcp_listen;
+let accept = |listener, trigger| 'sys_tcp_accept;
+let shutdown = |stream| 'sys_tcp_shutdown;
+let peer_addr = |stream| 'sys_tcp_peer_addr;
+let local_addr = |stream| 'sys_tcp_local_addr;
+let listener_addr = |listener| 'sys_tcp_listener_addr

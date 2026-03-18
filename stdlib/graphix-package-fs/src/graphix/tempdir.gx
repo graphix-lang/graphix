@@ -1,3 +1,0 @@
-type T = string;
-let path = |td| 'fs_tempdir_path;
-let create = |#in = null, #name = null, trigger| 'fs_tempdir;

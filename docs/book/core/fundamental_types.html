@@ -315,7 +315,7 @@ it.</p>
 <p>The <code>Any</code> type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
 is not used very often, as it provides very few guarantees, however it has it's
-place. For example, <code>Any</code> is the type returned by <code>net::subscribe</code>, indicating
+place. For example, <code>Any</code> is the type returned by <code>sys::net::subscribe</code>, indicating
 that any valid netidx value can come from the network. Usually the first thing
 you do with an <code>Any</code> type is call <code>cast</code> to turn it into the type you expect (or
 an error), or use a <code>select</code> expression to match it's type (more on select later).</p>

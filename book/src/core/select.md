@@ -41,8 +41,8 @@ Consider we want to select from a value of type `[Array<i64>, i64, null]`,
 
 ```graphix
 let x: [Array<i64>, i64, null] = null;
-x <- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x <- time::timer(duration:2.s, false) ~ 7;
+x <- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x <- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array<i64> as a => array::fold(a, 0, |s, x| s + x),
   i64 as n => n,
@@ -68,8 +68,8 @@ goes both ways, a match case that could never match is also an error.
 
 ```graphix
 let x: [Array<i64>, i64, null] = null;
-x <- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x <- time::timer(duration:2.s, false) ~ 7;
+x <- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x <- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array<i64> as a => array::fold(a, 0, |s, x| s + x),
   i64 as n => n,
@@ -102,8 +102,8 @@ range of a type.
 
 ```graphix
 let x: [Array<i64>, i64, null] = null;
-x <- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x <- time::timer(duration:2.s, false) ~ 7;
+x <- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x <- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array<i64> as a => array::fold(a, 0, |s, x| s + x),
   i64 as n if n > 10 => n,

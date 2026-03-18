@@ -1,0 +1,6 @@
+type Stream<'a: [`File, `Tcp, `Tls]> = string;
+let read = |stream, n| 'sys_io_read;
+let read_exact = |stream, n| 'sys_io_read_exact;
+let write = |stream, data| 'sys_io_write;
+let write_exact = |stream, data| 'sys_io_write_exact;
+let flush = |stream| 'sys_io_flush

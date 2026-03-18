@@ -3,7 +3,7 @@ use tui::chart;
 use tui::text;
 
 let data: Array<(f64, f64)> = {
-    let clock = time::timer(duration:0.5s, true);
+    let clock = sys::time::timer(duration:0.5s, true);
     let x = 0.0;
     x <- (clock ~ x) + 1.0;
     let y = rand::rand(#clock, #start: f64:0., #end: f64:100.);

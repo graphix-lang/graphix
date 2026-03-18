@@ -160,16 +160,16 @@
 operations rebuild the <code>graphix</code> binary to include the new set of packages.</p>
 <h2 id="using-an-installed-package"><a class="header" href="#using-an-installed-package">Using an Installed Package</a></h2>
 <p>Once installed, a package is available as a Graphix module with the same name
-as the package. For example, the <code>net</code> package provides netidx networking
-functions:</p>
-<pre><code class="language-graphix">use net;
-net::subscribe("/some/netidx/path")
+as the package. For example, the <code>sys</code> package provides netidx networking
+functions under <code>sys::net</code>:</p>
+<pre><code class="language-graphix">use sys::net;
+subscribe("/some/netidx/path")
 </code></pre>
 <p>Or access it without <code>use</code>:</p>
-<pre><code class="language-graphix">net::subscribe("/some/netidx/path")
+<pre><code class="language-graphix">sys::net::subscribe("/some/netidx/path")
 </code></pre>
-<p>The standard library packages (<code>core</code>, <code>str</code>, <code>array</code>, <code>map</code>, <code>time</code>, <code>net</code>,
-<code>re</code>, <code>rand</code>, <code>fs</code>, <code>tui</code>) are pre-installed and available by default.</p>
+<p>The standard library packages (<code>core</code>, <code>str</code>, <code>array</code>, <code>map</code>, <code>sys</code>, <code>http</code>,
+<code>re</code>, <code>rand</code>, <code>tui</code>) are pre-installed and available by default.</p>
 <h2 id="searching-for-packages"><a class="header" href="#searching-for-packages">Searching for Packages</a></h2>
 <p>Search crates.io for packages matching a query:</p>
 <pre><code>graphix package search http

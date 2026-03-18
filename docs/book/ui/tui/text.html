@@ -210,7 +210,7 @@ text(&amp;[
 use tui::text;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 
 let colors = [`Red, `Green, `Yellow, `Blue, `Magenta, `Cyan];

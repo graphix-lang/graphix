@@ -327,14 +327,14 @@ run!(
             let make = |x: i64| -> T x;
             let double = |t: T| -> i64 t + t
         ";
-        net::publish("/local/dyn_test", source)?;
+        sys::net::publish("/local/dyn_test", source)?;
         let status = mod dyn dynamic {
             sandbox whitelist [core];
             sig {
                 type T;
                 val make: fn(i64) -> T;
                 val double: fn(T) -> i64             };
-            source cast<string>(net::subscribe("/local/dyn_test")$)$
+            source cast<string>(sys::net::subscribe("/local/dyn_test")$)$
         };
         let result = select status {
             error as e => never(dbg(e)),

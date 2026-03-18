@@ -186,8 +186,8 @@ they will be unsubscribed and unpublished until it is selected again).</p>
 <h2 id="matching-types"><a class="header" href="#matching-types">Matching Types</a></h2>
 <p>Consider we want to select from a value of type <code>[Array&lt;i64&gt;, i64, null]</code>,</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
-x &lt;- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x &lt;- time::timer(duration:2.s, false) ~ 7;
+x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array&lt;i64&gt; as a =&gt; array::fold(a, 0, |s, x| s + x),
   i64 as n =&gt; n,
@@ -207,8 +207,8 @@ Caused by:
 types that we did match, and checking that it contains the argument type. This
 goes both ways, a match case that could never match is also an error.</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
-x &lt;- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x &lt;- time::timer(duration:2.s, false) ~ 7;
+x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array&lt;i64&gt; as a =&gt; array::fold(a, 0, |s, x| s + x),
   i64 as n =&gt; n,
@@ -234,8 +234,8 @@ subtract from the argument type set. You are required to match without a guard
 at some point. No analysis is done to determine if your guard covers the entire
 range of a type.</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
-x &lt;- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x &lt;- time::timer(duration:2.s, false) ~ 7;
+x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array&lt;i64&gt; as a =&gt; array::fold(a, 0, |s, x| s + x),
   i64 as n if n &gt; 10 =&gt; n,

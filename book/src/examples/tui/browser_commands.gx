@@ -17,7 +17,7 @@ let run_command = |c: string, path: string|
             "w " => {
                 let v = str::sub(#start:2, #len:str::len(c) - 2, c)?;
                 let v = str::parse(v)?;
-                net::write(path, v)?
+                sys::net::write(path, v)?
             },
             s => error("invalid command [s]")?
         }

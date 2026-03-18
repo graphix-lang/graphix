@@ -7,7 +7,7 @@ use gui::slider;
 mod icon;
 
 let rate = 0.;
-let clock = time::timer(1. - rate, true);
+let clock = sys::time::timer(1. - rate, true);
 let x = 0.;
 x <- clock ~ x + 1.;
 

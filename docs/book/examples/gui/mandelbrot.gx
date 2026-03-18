@@ -1,9 +1,9 @@
 use gui;
 use gui::canvas;
 use array;
-use time;
+use sys::time;
 
-let start = cast<f64>(time::now(once(null)))$;
+let start = cast<f64>(sys::time::now(once(null)))$;
 let w = 100;
 let h = 75;
 let max_iter = 64;
@@ -49,7 +49,7 @@ let shapes = array::init(w * h, |idx| {
     })
 });
 
-let finish = cast<f64>(time::now(shapes))$;
+let finish = cast<f64>(sys::time::now(shapes))$;
 let elapsed = (finish - start);
 println("rendered [w * h] pixels in [elapsed]s");
 

@@ -4,7 +4,7 @@ use tui::block;
 use tui::text;
 
 let data = {
-    let clock = time::timer(duration:0.3s, true);
+    let clock = sys::time::timer(duration:0.3s, true);
     let v = rand::rand(#clock, #start:0., #end:100.);
     let d = [];
     let color = select v {

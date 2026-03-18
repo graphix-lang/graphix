@@ -50,7 +50,7 @@ Both widgets share the same labeled arguments:
 The `image` widget accepts an `ImageSource` union with three variants:
 
 - **string** -- A file path to a PNG, JPEG, BMP, GIF, or other supported image format. The path is relative to the working directory.
-- **`` `Bytes(bytes) ``** -- Raw image file bytes (e.g. the contents of a PNG file loaded with `fs::read`). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the `bytes:<base64>` syntax.
+- **`` `Bytes(bytes) ``** -- Raw image file bytes (e.g. the contents of a PNG file loaded with `sys::fs::read_all_bin`). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the `bytes:<base64>` syntax.
 - **`` `Rgba({width, height, pixels}) ``** -- A raw RGBA pixel buffer. The `width` and `height` fields specify the image dimensions, and `pixels` is a `bytes` value containing `width * height * 4` bytes (one byte each for red, green, blue, and alpha per pixel, in row-major order).
 
 The `svg` widget accepts a string that is either a file path to an `.svg` file or inline SVG XML content.

@@ -175,7 +175,7 @@ const(2) ──&gt; + &lt;── const(2)
 <p>The semantics of simple examples like this aren't noticibly different
 from a normal programming language. However a more complex example
 such as,</p>
-<pre><code class="language-graphix">let x = cast&lt;i64&gt;(net::subscribe("/foo")?)?;
+<pre><code class="language-graphix">let x = cast&lt;i64&gt;(sys::net::subscribe("/foo")?)?;
 print(x * 10)
 </code></pre>
 <p>compiles to a graph like</p>
@@ -184,10 +184,10 @@ print(x * 10)
                                                    │
                                                    ▼
                                          
-const("/foo") ──&gt; net::subscribe ──&gt; cast&lt;i64&gt; ──&gt; * ──&gt; print
+const("/foo") ──&gt; sys::net::subscribe ──&gt; cast&lt;i64&gt; ──&gt; * ──&gt; print
                                          
 </code></pre>
-<p>Unlike the first example, the value of <code>net::subscribe</code> isn't a
+<p>Unlike the first example, the value of <code>sys::net::subscribe</code> isn't a
 constant, it can change if the value published in netidx changes. If
 that happens the new value will flow through the graph and will be
 printed again. If the published value of "/foo" is initially 10, and
@@ -351,7 +351,7 @@ want to exit the REPL press ctrl-d.</p>
 use tui::text;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 
 text(&amp;"Count: [count]")
@@ -359,7 +359,7 @@ text(&amp;"Count: [count]")
 <p>This program demonstrates Graphix's reactive nature:</p>
 <ul>
 <li>We start with <code>count = 0</code></li>
-<li><code>time::timer(duration:1.s, true)</code> creates a timer that fires every second</li>
+<li><code>sys::time::timer(duration:1.s, true)</code> creates a timer that fires every second</li>
 <li>The <code>~</code> operator samples the right side when the left side updates</li>
 <li><code>count &lt;- ...</code> schedules an update to <code>count</code> for the next cycle</li>
 <li>Every second, <code>count</code> increments and the text automatically updates</li>
@@ -374,7 +374,7 @@ text(&amp;"Count: [count]")
 <h2 id="a-simpler-example"><a class="header" href="#a-simpler-example">A Simpler Example</a></h2>
 <p>If you want to see the reactive behavior without the TUI, try this simpler version (<code>counter.gx</code>):</p>
 <pre><code class="language-graphix">let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 "Count: [count]"
 </code></pre>
@@ -622,7 +622,7 @@ it.</p>
 <p>The <code>Any</code> type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
 is not used very often, as it provides very few guarantees, however it has it's
-place. For example, <code>Any</code> is the type returned by <code>net::subscribe</code>, indicating
+place. For example, <code>Any</code> is the type returned by <code>sys::net::subscribe</code>, indicating
 that any valid netidx value can come from the network. Usually the first thing
 you do with an <code>Any</code> type is call <code>cast</code> to turn it into the type you expect (or
 an error), or use a <code>select</code> expression to match it's type (more on select later).</p>
@@ -1053,7 +1053,7 @@ cycle in the graph. Connect is the only graph operator in Graphix, it allows you
 to connect one part of the graph to another by name, causing the output of the
 right side to flow to the name on the left side. Consider,</p>
 <pre><code class="language-graphix">let x = "off"
-x &lt;- time::timer(duration:1.0s, false) ~ "on"
+x &lt;- sys::time::timer(duration:1.0s, false) ~ "on"
 print(x)
 </code></pre>
 <p>This program will first print <code>off</code>, and after 1 second it will print <code>on</code>. Note
@@ -1064,7 +1064,7 @@ graph we created looks like,</p>
                                  ▲
                                  │
                                  │
-           time::timer ──&gt; sample
+           sys::time::timer ──&gt; sample
                             ▲
                             │
                             │
@@ -1152,8 +1152,8 @@ valid, and they are just expressions. They will become very important
 when we introduce lambda expressions.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="use"><a class="header" href="#use">Use</a></h1>
 <p>Use allows you to bring names in modules into your current scope so they can be used without prefixing.</p>
-<pre><code class="language-graphix">net::subscribe(...); // call subscribe in the net module
-use net;
+<pre><code class="language-graphix">sys::net::subscribe(...); // call subscribe in the sys::net module
+use sys::net;
 subscribe(...) // same function
 </code></pre>
 <p>Use is valid anywhere expressions are valid</p>
@@ -1179,12 +1179,14 @@ Caused by:
 </code></pre>
 <p>Use paths are always absolute — they are resolved from the root of the
 module tree, not relative to the current module. For example, if you are
-inside the <code>net::rest</code> module and want to use the <code>net::http</code> module, you
-must write <code>use net::http</code>, not <code>use http</code>.</p>
-<pre><code class="language-graphix">// inside net::rest
-use net::http;     // correct — absolute path
-// use http;       // wrong — would look for a top-level "http" module
+inside the <code>sys::net</code> module and want to use the <code>sys::time</code> module, you
+must write <code>use sys::time</code>, not <code>use time</code>.</p>
+<pre><code class="language-graphix">// inside sys::net
+use sys::time;     // correct — absolute path
 </code></pre>
+<p>A submodule can reference bindings from its parent directly, but
+only if the <code>mod</code> declaration comes after those bindings in the
+parent's interface file.</p>
 <p>Use shadows earlier declarations in it's scope. Consider,</p>
 <pre><code class="language-graphix">let map = |a, f| "hello you called map!";
 let list = {
@@ -1228,8 +1230,8 @@ they will be unsubscribed and unpublished until it is selected again).</p>
 <h2 id="matching-types"><a class="header" href="#matching-types">Matching Types</a></h2>
 <p>Consider we want to select from a value of type <code>[Array&lt;i64&gt;, i64, null]</code>,</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
-x &lt;- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x &lt;- time::timer(duration:2.s, false) ~ 7;
+x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array&lt;i64&gt; as a =&gt; array::fold(a, 0, |s, x| s + x),
   i64 as n =&gt; n,
@@ -1249,8 +1251,8 @@ Caused by:
 types that we did match, and checking that it contains the argument type. This
 goes both ways, a match case that could never match is also an error.</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
-x &lt;- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x &lt;- time::timer(duration:2.s, false) ~ 7;
+x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array&lt;i64&gt; as a =&gt; array::fold(a, 0, |s, x| s + x),
   i64 as n =&gt; n,
@@ -1276,8 +1278,8 @@ subtract from the argument type set. You are required to match without a guard
 at some point. No analysis is done to determine if your guard covers the entire
 range of a type.</p>
 <pre><code class="language-graphix">let x: [Array&lt;i64&gt;, i64, null] = null;
-x &lt;- time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
-x &lt;- time::timer(duration:2.s, false) ~ 7;
+x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
+x &lt;- sys::time::timer(duration:2.s, false) ~ 7;
 select x {
   Array&lt;i64&gt; as a =&gt; array::fold(a, 0, |s, x| s + x),
   i64 as n if n &gt; 10 =&gt; n,
@@ -1649,7 +1651,7 @@ f(g, 42) // valid call
 are captured by the function definition, and remain valid no matter where the
 closure is called. For example,</p>
 <pre><code class="language-graphix">let f = {
-  let v = cast&lt;i64&gt;(net::subscribe("/local/foo")$)$;
+  let v = cast&lt;i64&gt;(sys::net::subscribe("/local/foo")$)$;
   |n| v + n
 };
 f(2)
@@ -1855,7 +1857,7 @@ and it's output is connected to the call site itself. All the local
 variables are unique and invisible to the outside, and the types are
 resolved at compile time for each call site. Consider,</p>
 <pre><code class="language-graphix">let f = |x, y| x + y + y;
-let n = cast&lt;i64&gt;(net::subscribe("/hev/stats/power")$)$;
+let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")$)$;
 f(n, 1)
 </code></pre>
 <p>Here there is one call site for <code>f</code>, this builds a graph at the call
@@ -1866,7 +1868,7 @@ which causes <code>x + y + y</code> to update which causes the call site to
 return <code>x + y + y</code>, which causes the program to print <code>x + y + y</code></p>
 <p>Lets transform this program into something closer to the actual graph
 that is executed,</p>
-<pre><code class="language-graphix">let n = cast&lt;i64&gt;(net::subscribe("/hev/stats/power")?)?;
+<pre><code class="language-graphix">let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")?)?;
 n + 1 + 1
 </code></pre>
 <p>Here we've essentially inlined out <code>f</code> so that we can see the
@@ -1957,7 +1959,7 @@ queued, it still remembers to allow that many through when they
 arrive.</p>
 <p>Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.</p>
-<pre><code class="language-graphix">let f = |path| net::subscribe(path)$;
+<pre><code class="language-graphix">let f = |path| sys::net::subscribe(path)$;
 let path = "/local/baz0";
 path &lt;- "/local/baz1";
 path &lt;- "/local/baz2";
@@ -1973,7 +1975,7 @@ f(path)
 <pre><code>$ graphix text.gx
 "baz2"
 </code></pre>
-<p>This is because every time the argument to <code>net::subscribe</code> updates it
+<p>This is because every time the argument to <code>sys::net::subscribe</code> updates it
 drops the previous subscription and starts a new one. This is useful,
 for example, if the user is typing this path into a UI element, they
 probably only care about the most recent one.</p>
@@ -1986,7 +1988,7 @@ moving on to the next one. We can use queue to achieve this.</p>
 <pre><code class="language-graphix">let f = |path| {
   let clock = "";
   let path = queue(#clock, path);
-  let res = net::subscribe(path)$;
+  let res = sys::net::subscribe(path)$;
   clock &lt;- uniq(res ~ path);
   res
 };
@@ -2838,7 +2840,7 @@ let source = "
     let cfg = \[1, 2, 3, 4, 5\];
     let hidden = 42
 ";
-net::publish(path, source)$;
+sys::net::publish(path, source)$;
 
 // now load the module
 let status = mod foo dynamic {
@@ -2848,7 +2850,7 @@ let status = mod foo dynamic {
         val sub: fn(i64) -&gt; i64;
         val cfg: Array&lt;i64&gt;
     };
-    source cast&lt;string&gt;(net::subscribe(path)$)$
+    source cast&lt;string&gt;(sys::net::subscribe(path)$)$
 };
 select status {
     error as e =&gt; never(dbg(e)),
@@ -2983,7 +2985,7 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <ul>
 <li><strong>Bindings</strong>: <code>let x = 42</code> defines a variable but doesn't output</li>
 <li><strong>Lambdas</strong>: <code>|x| x + 1</code> defines a function but doesn't output</li>
-<li><strong>Use statements</strong>: <code>use stdlib::time</code> imports a module but doesn't output</li>
+<li><strong>Use statements</strong>: <code>use sys::time</code> imports a module but doesn't output</li>
 <li><strong>Connect operations</strong>: <code>x &lt;- y</code> schedules updates but doesn't output</li>
 <li><strong>Module definitions</strong>: <code>mod m { ... }</code> defines a module but doesn't output</li>
 <li><strong>Type definitions</strong>: <code>type Point = {x: f64, y: f64}</code> defines a type but doesn't output</li>
@@ -2992,7 +2994,7 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <ul>
 <li>Values: <code>42</code>, <code>"hello"</code>, <code>true</code></li>
 <li>Arithmetic: <code>2 + 2</code></li>
-<li>Function calls: <code>time::now()</code></li>
+<li>Function calls: <code>sys::time::now()</code></li>
 <li>Variable references: <code>x</code></li>
 <li>Struct/variant/tuple construction: <code>{x: 10, y: 20}</code></li>
 <li>Blocks with output expressions as their last value</li>
@@ -3002,7 +3004,7 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <p>Graphix programs are reactive dataflow graphs. When you run an expression that produces output, that output can update over time as upstream values change. The shell keeps the program running to display these updates.</p>
 <p>For example:</p>
 <pre><code class="language-graphix">let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 count
 </code></pre>
@@ -3039,7 +3041,7 @@ output expression that the shell will print.</p>
 printing the expression to stdout the Graphix shell will switch to TUI
 mode and will render the output expression as a tui. For example,</p>
 <pre><code class="language-graphix">〉let count = 0
-〉count &lt;- time::timer(1, true) ~ count + 1
+〉count &lt;- sys::time::timer(1, true) ~ count + 1
 〉tui::text::text(&amp;"count is [count]")
 </code></pre>
 <p>won't print the expression returned by <code>tui::text::text(&amp;"count is [count]")</code> to stdout, it will build a tui,</p>
@@ -3208,7 +3210,7 @@ GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 </ul>
 <p>Example <code>~/.local/share/graphix/init.gx</code>:</p>
 <pre><code class="language-graphix">// Commonly used stdlib modules
-use time;
+use sys::time;
 use str;
 use array;
 
@@ -3291,9 +3293,8 @@ functions. The <code>core</code> module is always imported with an implicit use 
 <li><code>str</code> functions for manipulating strings</li>
 <li><code>re</code> regular expressions</li>
 <li><code>rand</code> random number generator</li>
-<li><code>time</code> timers and time functions</li>
-<li><code>net</code> netidx functions</li>
-<li><code>fs</code> file manipulation</li>
+<li><code>sys</code> system-level I/O, filesystem, networking, and timers</li>
+<li><code>http</code> HTTP client/server and REST helpers</li>
 </ul>
 <p>The standard library is a work in progress.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="core"><a class="header" href="#core">Core</a></h1>
@@ -3434,45 +3435,6 @@ val println: fn(?#dest:Log, 'a) -&gt; _;
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
 val throttle: fn(?#rate:duration, 'a) -&gt; 'a;
-</code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="net"><a class="header" href="#net">Net</a></h1>
-<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
-type ArgSpec = { name: string, doc: string, default: Any };
-
-/// write the value to the specified path
-val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
-
-/// subscribe to the specified path
-val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
-
-/// call the specified rpc
-val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
-
-/// Publish an rpc. When the rpc is called f will be called with the arguments
-/// sent by the caller, and whatever f returns will be sent back to the caller.
-/// If f does not return, the caller will hang waiting for a reply.
-val rpc: fn(
-    #path:string,
-    #doc:string,
-    #spec:Array&lt;ArgSpec&gt;,
-    #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
-) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
-
-/// list paths under the specified path. If #update is specified, then the list will
-/// be refreshed each time clock is triggered. If update is not specified, the list will
-/// be updated each second
-val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
-
-/// list the table under the specified path. If #update is specified, then the table
-/// will be refreshed each time clock is triggered. If update is not specified, the table
-/// will be updated each second
-val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
-
-/// Publish the specified value at the specified path. Whenever the value updates,
-/// the new value will be sent to subscribers. If #on_write is specified, then if
-/// subscribers write to the value on_write will be called with the written value.
-/// on_write need not return anything.
-val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="array-1"><a class="header" href="#array-1">Array</a></h1>
 <pre><code class="language-graphix">/// filter returns a new array containing only elements where f returned true
@@ -3737,20 +3699,6 @@ val split: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReErro
 /// return an error if #pat is invalid
 val splitn: fn(#pat: string, #limit: i64, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="time"><a class="header" href="#time">Time</a></h1>
-<pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
-/// before timeout expires, reset the timeout and continue waiting.
-val after_idle: fn([duration, Number], 'a) -&gt; 'a;
-
-/// timer will wait timeout and then update with the current time.
-/// If repeat is true, it will do this forever. If repeat is a number n,
-/// it will do this n times and then stop. If repeat is false, it will do
-/// this once.
-val timer: fn([duration, Number], [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
-
-/// return the current time each time trigger updates
-val now: fn(Any) -&gt; datetime;
-</code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="rand"><a class="header" href="#rand">Rand</a></h1>
 <pre><code class="language-graphix">/// generate a random number between #start and #end (exclusive)
 /// every time #clock updates. If start and end are not specified,
@@ -3765,10 +3713,55 @@ val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
 /// return a shuffled copy of a
 val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="fs---filesystem-operations"><a class="header" href="#fs---filesystem-operations">fs - Filesystem Operations</a></h1>
-<p>The <code>fs</code> module provides functions for reading, writing, and watching files and directories.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="sys"><a class="header" href="#sys">sys</a></h1>
+<p>The <code>sys</code> module provides access to operating system level functionality:
+files, sockets, timers, and the netidx publish/subscribe system. All I/O
+goes through a unified <code>Stream</code> type defined in <code>sys::io</code>, so the same
+<code>read</code>/<code>write</code> functions work on files, TCP connections, and TLS streams.</p>
+<div class="table-wrapper"><table><thead><tr><th>Module</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>sys::io</code></td><td>Unified <code>Stream</code> type and read/write/flush</td></tr>
+<tr><td><code>sys::fs</code></td><td>Open files, directory operations, filesystem watching</td></tr>
+<tr><td><code>sys::tcp</code></td><td>TCP connect, listen, accept</td></tr>
+<tr><td><code>sys::tls</code></td><td>Upgrade TCP streams to TLS</td></tr>
+<tr><td><code>sys::net</code></td><td>Netidx publish/subscribe and RPC</td></tr>
+<tr><td><code>sys::time</code></td><td>Timers and current time</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-graphix">/// join parts to path using the OS specific path separator
+val join_path: fn(string, @args: [string, Array&lt;string&gt;]) -&gt; string;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="sysio"><a class="header" href="#sysio">sys::io</a></h1>
+<p>The <code>sys::io</code> module provides a unified <code>Stream</code> type for all I/O
+operations. The phantom type parameter constrains which stream kind is
+accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, and </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;`.</p>
+<pre><code class="language-graphix">/// An opaque handle to an I/O stream.
+/// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS.
+type Stream&lt;'a: [`File, `Tcp, `Tls]&gt;;
+
+/// Read up to n bytes from the stream. May return fewer bytes than
+/// requested if fewer are available.
+val read: fn(Stream&lt;'a&gt;, u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+
+/// Read exactly n bytes from the stream. Returns fewer bytes only
+/// if EOF is reached before n bytes have been read.
+val read_exact: fn(Stream&lt;'a&gt;, u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+
+/// Write bytes to the stream. Returns the number of bytes written,
+/// which may be less than the full length of data.
+val write: fn(Stream&lt;'a&gt;, bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
+
+/// Write all bytes to the stream, looping until complete.
+val write_exact: fn(Stream&lt;'a&gt;, bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Flush any buffered writes.
+val flush: fn(Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="sysfs---filesystem-operations"><a class="header" href="#sysfs---filesystem-operations">sys::fs - Filesystem Operations</a></h1>
+<p>The <code>sys::fs</code> module provides functions for reading, writing, and watching files and directories.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type FileType = [
+<pre><code class="language-graphix">use sys::io;
+
+type FileType = [
     `Dir,
     `File,
     `Symlink,
@@ -3800,81 +3793,20 @@ type DirEntry = {
     kind: FileType
 };
 
+type Mode = [`Read, `Write, `Append, `ReadWrite, `Create, `CreateNew];
+type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
+
 mod watch;
 mod tempdir;
 
-/// Read the specified file into memory as a utf8 string and return it, or an
-/// error if,
-/// - path is not a file
-/// - path is not valid utf8
-/// - an OS specific error occurs while trying to read path
-///
-/// The file will be read again each time path updates, even if path did not change.
-/// Reads are queued and executed in the order they are initiated. For example, if we
-/// read_all on path0 and path1, the read of path0 will complete before the read of path1
-/// begins. Results are always returned in the same order the reads were queued.
 val read_all: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-
-/// Read the specified file into memory as a bytes and return it, or an
-/// error if,
-/// - path is not a file
-/// - an OS specific error occurs while trying to read path
-///
-/// The file will be read again each time path updates, even if path did not change.
-/// Reads are queued and executed in the order they are initiated. For example, if we
-/// read_all_bin on path0 and path1, the read of path0 will complete before the read of
-/// path1 begins. Results are always returned in the same order the reads were queued.
 val read_all_bin: fn(string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
-
-/// Write data to path. If path does not exist it will be created. If path exists it
-/// will be truncated and it's contents will be replaced with data.
-///
-/// A write will occur whenever either path or data updates, even if they did not change.
-/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
-/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
-/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
-/// were queued.
 val write_all: fn(#path: string, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// Write data to path. If path does not exist it will be created. If path exists it
-/// will be truncated and it's contents will be replaced with data.
-///
-/// A write will occur whenever either path or data updates, even if they did not change.
-/// Writes are queued and executed in the order they are initiated. For example, if "hello world"
-/// is queued to be written to "foo.txt" and then "bar.txt", the write to "foo.txt" will complete
-/// before the write to "bar.txt" begins. Results are always returned in the same order the writes
-/// were queued.
 val write_all_bin: fn(#path: string, bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// join parts to path using the OS specific path separator
-val join_path: fn(string, @args: [string, Array&lt;string&gt;]) -&gt; string;
-
-/// if path is a file then return path
-/// otherwise return an IOError. Check again every time path updates.
 val is_file: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-
-/// if path is a directory then return path, otherwise return an IOError.
-/// check again every time path updates.
 val is_dir: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-
-/// Return the metadata for a filesystem object, or an error. Check again every
-/// time an argument updates.
 val metadata: fn(?#follow_symlinks: bool, string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
-/// readdir reads a directory and returns an array of directory entries.
-/// By default it will read only immediate children, however it can be
-/// configured to search at greater depth.
-///
-/// depth appears in several places, The root path is depth 0, immediate children
-/// are depth 1, and so on.
-///
-/// - min_depth: controls the minimum search depth. default 1.
-/// - max_depth: controls the maximum search depth. default 1.
-/// - contents_first: directory contents will be arranged
-///   before the directory itself. default false.
-/// - follow_symlinks: if true, follow symlinks when traversing, default false.
-/// - follow_root_symlink: if the root path is a symlink follow it. default true.
-/// - same_filesystem: don't traverse across filesystem boundaries. default false.
 val readdir: fn(
     ?#max_depth: i64,
     ?#min_depth: i64,
@@ -3885,30 +3817,35 @@ val readdir: fn(
     string
 ) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
 
-/// create a directory. If all is true (default false) create all intermediate
-/// directories as well.
 val create_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// remove a directory. If all is true (default false) then recursively remove
-/// the contents as well. If all is false fail if the directory is not empty.
 val remove_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// remove a file
 val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
-</code></pre>
-<h2 id="fswatch"><a class="header" href="#fswatch">fs::watch</a></h2>
-<pre><code class="language-graphix">/// The type of file system events you are interested in.
-/// The short names, e.g. `Access mean ANY kind of access event.
-/// The longer names e.g. `AccessOpen mean a more specific subset
-/// of the short named class event. There are sometimes multiple
-/// levels of this. For example `Modify expresses interest in
-/// any modification, `ModifyRename expresses interest in any
-/// kind of rename operation, and `ModifyRenameTo expresses interest
-/// only on rename to.
+
+/// Open a file with the specified mode, returning an I/O stream.
 ///
-/// `Established is a special event that happens when the watch is
-/// successfully established
-type Interest = [
+/// Mode semantics:
+/// - `Read: must exist, read only
+/// - `Write: create or truncate, write only
+/// - `Append: create or append, write only
+/// - `ReadWrite: must exist, read and write
+/// - `Create: create or truncate, read and write
+/// - `CreateNew: must not exist, read and write
+val open: fn(Mode, string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
+
+/// Seek to a position in the file. Returns the new position.
+val seek: fn(io::Stream&lt;`File&gt;, SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
+
+/// Get metadata for the open file.
+val fstat: fn(io::Stream&lt;`File&gt;) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+
+/// Truncate or extend the file to the specified length.
+val truncate: fn(io::Stream&lt;`File&gt;, u64) -&gt; Result&lt;null, `IOError(string)&gt;;
+</code></pre>
+<p>Once a file is opened with <code>sys::fs::open</code>, use <code>sys::io::read</code>,
+<code>sys::io::write</code>, and <code>sys::io::flush</code> for I/O — these work on any
+stream kind.</p>
+<h2 id="sysfswatch"><a class="header" href="#sysfswatch">sys::fs::watch</a></h2>
+<pre><code class="language-graphix">type Interest = [
     `Established,
     `Any,
     `Access,
@@ -3950,76 +3887,253 @@ type WatchEvent = {
     event: Interest
 };
 
-/// An opaque handle to a filesystem watcher. Cleaned up when
-/// no remaining references exist.
 type Watcher;
-
-/// An opaque handle to a single watch. Use path() and events()
-/// to extract values from watch events.
 type Watch;
 
-/// Create a filesystem watcher.
-///
-/// poll_interval: How often to poll a batch, must be &gt;= 100ms. default 1s.
-/// poll_batch_size: How many files to poll per batch, must be &gt;= 0. default 100.
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
     Any
 ) -&gt; Result&lt;Watcher, `WatchError(string)&gt;;
 
-/// Watch path for events matching #interest using the given watcher.
-/// watch updates when,
-/// - an event occurs that matches interest
-/// - an error occurs when trying to establish the watch
-///
-/// If you wish to know when the watch is established, you must express interest
-/// in the `Established event (which is in the default set). If you do so, you will
-/// also get a new established event if you change the interest or the path.
-///
-/// If path is a directory the watch will report events about immediate children.
-/// If the watch could not be established establishement will be retried every
-/// time path updates
-///
-/// Filesystem watches are a limited operating system resource, like file
-/// descriptors, or handles.
 val watch: fn(?#interest: Array&lt;Interest&gt;, Watcher, string)
     -&gt; Result&lt;Watch, `WatchError(string)&gt;;
 
-/// The path of the filesystem object involved in the most recent
-/// watch event. Updates reactively when new events arrive.
-/// Accepts a single Watch, an Array of Watches, or a Map with Watch values.
-/// When given a collection, flattens to a single stream — fires when
-/// any watch in the collection fires.
-val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;]) -&gt; Result&lt;string, `WatchError(string)&gt;;
+val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
+    -&gt; Result&lt;string, `WatchError(string)&gt;;
 
-/// The full watch event including all paths and the event type.
-/// Updates reactively when new events arrive.
-/// Same collection handling as path().
-val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;]) -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
+val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
+    -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
 </code></pre>
-<h2 id="fstempdir"><a class="header" href="#fstempdir">fs::tempdir</a></h2>
-<pre><code class="language-graphix">/// An opaque handle to a temporary directory. The directory is
-/// automatically deleted when there are no remaining references
-/// to the TempDir value.
-type T;
+<h2 id="sysfstempdir"><a class="header" href="#sysfstempdir">sys::fs::tempdir</a></h2>
+<pre><code class="language-graphix">type T;
 
-/// Get the filesystem path of a TempDir as a string.
 val path: fn(T) -&gt; string;
 
-/// Create a temporary directory and return a tempdir::T handle.
-/// The directory will be cleaned up when the tempdir::T value is
-/// no longer referenced.
-///
-/// if `in` is specified, the temporary directory will be created as a child of `in`
-///
-/// if `name` is specified, the temporary directory will have either a prefix of name
-/// or a suffix of name.
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
     Any
 ) -&gt; Result&lt;T, `IOError(string)&gt;;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="systcp"><a class="header" href="#systcp">sys::tcp</a></h1>
+<pre><code class="language-graphix">/// An opaque handle to a TCP listener.
+type TcpListener;
+
+/// Connect to a TCP server at the given address (host:port).
+val connect: fn(string) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+
+/// Bind a TCP listener to the given address (host:port).
+val listen: fn(string) -&gt; Result&lt;TcpListener, `TCPError(string)&gt;;
+
+/// Accept a new connection from the listener. The second argument
+/// is a trigger — each time it updates, a new accept is performed.
+val accept: fn(TcpListener, Any) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+
+/// Shutdown the write half of the stream. Works on both plain TCP
+/// and TLS-upgraded streams.
+val shutdown: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;null, `TCPError(string)&gt;;
+
+/// Get the remote address of the connected peer. Works on both
+/// plain TCP and TLS-upgraded streams.
+val peer_addr: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+
+/// Get the local address of the stream. Works on both plain TCP
+/// and TLS-upgraded streams.
+val local_addr: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+
+/// Get the local address that the listener is bound to.
+val listener_addr: fn(TcpListener) -&gt; Result&lt;string, `TCPError(string)&gt;;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="systls"><a class="header" href="#systls">sys::tls</a></h1>
+<p>TLS upgrades for TCP streams. After upgrading, use <code>sys::io::read</code>/<code>write</code>
+as usual — the encryption is transparent.</p>
+<pre><code class="language-graphix">/// Upgrade a TCP stream to a TLS client connection. The hostname is
+/// used for SNI and certificate verification. When ca_cert is null,
+/// Mozilla root certificates are used; when provided, only that CA
+/// is trusted.
+val connect: fn(?#ca_cert:[bytes, null], string, io::Stream&lt;`Tcp&gt;)
+    -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
+
+/// Upgrade a TCP stream to a TLS server connection using the given
+/// PEM-encoded certificate chain and private key.
+val accept: fn(#cert:bytes, #key:bytes, io::Stream&lt;`Tcp&gt;)
+    -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
+<p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
+<a href="https://github.com/estokes/netidx">netidx</a>.</p>
+<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
+type ArgSpec = { name: string, doc: string, default: Any };
+
+/// write the value to the specified path
+val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+
+/// subscribe to the specified path
+val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+
+/// call the specified rpc
+val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+
+/// Publish an rpc. When the rpc is called f will be called with the arguments
+/// sent by the caller, and whatever f returns will be sent back to the caller.
+/// If f does not return, the caller will hang waiting for a reply.
+val rpc: fn(
+    #path:string,
+    #doc:string,
+    #spec:Array&lt;ArgSpec&gt;,
+    #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
+
+/// list paths under the specified path. If #update is specified, then the list will
+/// be refreshed each time clock is triggered. If update is not specified, the list will
+/// be updated each second
+val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+
+/// list the table under the specified path. If #update is specified, then the table
+/// will be refreshed each time clock is triggered. If update is not specified, the table
+/// will be updated each second
+val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+
+/// Publish the specified value at the specified path. Whenever the value updates,
+/// the new value will be sent to subscribers. If #on_write is specified, then if
+/// subscribers write to the value on_write will be called with the written value.
+/// on_write need not return anything.
+val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="systime---timers"><a class="header" href="#systime---timers">sys::time - Timers</a></h1>
+<pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
+/// before timeout expires, reset the timeout and continue waiting.
+val after_idle: fn([duration, Number], 'a) -&gt; 'a;
+
+/// timer will wait timeout and then update with the current time.
+/// If repeat is true, it will do this forever. If repeat is a number n,
+/// it will do this n times and then stop. If repeat is false, it will do
+/// this once.
+val timer: fn([duration, Number], [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
+
+/// return the current time each time trigger updates
+val now: fn(Any) -&gt; datetime;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="http---http-clientserver"><a class="header" href="#http---http-clientserver">http - HTTP Client/Server</a></h1>
+<p>The <code>http</code> module provides HTTP client and server functionality.</p>
+<h2 id="interface-1"><a class="header" href="#interface-1">Interface</a></h2>
+<pre><code class="language-graphix">type Method = [`GET, `POST, `PUT, `DELETE, `PATCH, `HEAD, `OPTIONS];
+
+type Response = {
+    body: string,
+    headers: Array&lt;(string, string)&gt;,
+    status: u16,
+    url: string
+};
+
+type BinResponse = {
+    body: bytes,
+    headers: Array&lt;(string, string)&gt;,
+    status: u16,
+    url: string
+};
+
+type Request = {
+    body: [string, null],
+    headers: Array&lt;(string, string)&gt;,
+    method: string,
+    path: string,
+    query: [string, null]
+};
+
+type Client;
+type Server;
+
+/// Create a configured HTTP client.
+val client: fn(
+    ?#timeout: [duration, null],
+    ?#default_headers: Array&lt;(string, string)&gt;,
+    ?#redirect_limit: u32,
+    ?#ca_cert: [bytes, null],
+    Any
+) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
+
+/// Get or create a shared default HTTP client.
+val default_client: fn(Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
+
+/// Make an HTTP request and return a text response.
+val request: fn(
+    ?#method: Method,
+    ?#headers: Array&lt;(string, string)&gt;,
+    ?#body: [string, null],
+    ?#timeout: [duration, null],
+    Client,
+    string
+) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+
+/// Make an HTTP request and return a binary response.
+val request_bin: fn(
+    ?#method: Method,
+    ?#headers: Array&lt;(string, string)&gt;,
+    ?#body: [bytes, null],
+    ?#timeout: [duration, null],
+    Client,
+    string
+) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
+
+/// Convenience: GET request with text response.
+val get: fn(Client, string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+
+/// Convenience: GET request with binary response.
+val get_bin: fn(Client, string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
+
+/// Return the bound address of a running server.
+val server_addr: fn(Server) -&gt; string;
+
+/// Start an HTTP server.
+val serve: fn(
+    #addr: string,
+    ?#cert: [bytes, null],
+    ?#key: [bytes, null],
+    ?#max_connections: i64,
+    #handler: fn(Request) -&gt; Response throws 'e
+) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
+</code></pre>
+<h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
+<p>Convenience functions for JSON REST APIs with optional bearer token authentication.</p>
+<pre><code class="language-graphix">val get: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array&lt;(string, string)&gt;,
+    Client,
+    string
+) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+
+val post: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array&lt;(string, string)&gt;,
+    #body: string,
+    Client,
+    string
+) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+
+val put: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array&lt;(string, string)&gt;,
+    #body: string,
+    Client,
+    string
+) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+
+val delete: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array&lt;(string, string)&gt;,
+    Client,
+    string
+) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+
+val patch: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array&lt;(string, string)&gt;,
+    #body: string,
+    Client,
+    string
+) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="building-uis-with-graphix"><a class="header" href="#building-uis-with-graphix">Building UIs With Graphix</a></h1>
 <p>Graphix excels at building user interfaces thanks to its reactive dataflow nature. Changes in data automatically propagate through the UI graph, updating only the components that need to change. This makes building complex, interactive applications surprisingly straightforward.</p>
@@ -4091,7 +4205,7 @@ use tui::text;
 use tui::layout;
 
 let counter = 0;
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 counter &lt;- clock ~ (counter + 1);
 
 let content = text(&amp;"Counter: [counter]");
@@ -4180,7 +4294,7 @@ use tui::gauge;
 use tui::text;
 
 // Subscribe to live data
-let temperature = cast&lt;f64&gt;(net::subscribe("/sensors/temperature")?)?;
+let temperature = cast&lt;f64&gt;(sys::net::subscribe("/sensors/temperature")?)?;
 
 // Will display updates automatically when data changes
 gauge(
@@ -4328,7 +4442,7 @@ tui::gauge::gauge(
 <p>See individual widget documentation for specific style parameters they accept.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
 <p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
-<h2 id="interface-1"><a class="header" href="#interface-1">Interface</a></h2>
+<h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
 <pre><code class="language-graphix">type Bar = {
   label: &amp;[Line, null],
   style: &amp;[Style, null],
@@ -4407,7 +4521,7 @@ use tui::barchart;
 use tui::block;
 use rand;
 
-let clock = time::timer(duration:0.7s, true);
+let clock = sys::time::timer(duration:0.7s, true);
 
 let group0 = [
     bar(#style: &amp;style(#fg: `Red), #label: &amp;line("CPU"), &amp;rand(#start:0, #end:100, #clock)),
@@ -4462,7 +4576,7 @@ bar_chart(&amp;[bar_group(bars)])
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-block-widget"><a class="header" href="#the-block-widget">The Block Widget</a></h1>
 <p>The <code>block</code> widget is a container that wraps other widgets with optional borders, titles, and styling. It's one of the most commonly used widgets for creating structured layouts and visually separating different sections of your TUI.</p>
-<h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
+<h2 id="interface-3"><a class="header" href="#interface-3">Interface</a></h2>
 <pre><code class="language-graphix">type Border = [
   `Top,
   `Right,
@@ -4568,7 +4682,7 @@ use tui::block;
 use tui::paragraph;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 
 let content = paragraph(&amp;"Content here");
@@ -4588,7 +4702,7 @@ block(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-browser-widget"><a class="header" href="#the-browser-widget">The Browser Widget</a></h1>
 <p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.</p>
-<h2 id="interface-3"><a class="header" href="#interface-3">Interface</a></h2>
+<h2 id="interface-4"><a class="header" href="#interface-4">Interface</a></h2>
 <pre><code class="language-graphix">type MoveCursor = [
     `Left(i64),
     `Right(i64),
@@ -4675,7 +4789,7 @@ input_handler(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-calendar-widget"><a class="header" href="#the-calendar-widget">The Calendar Widget</a></h1>
 <p>The <code>calendar</code> widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It's perfect for date pickers, event schedulers, and time-based visualizations.</p>
-<h2 id="interface-4"><a class="header" href="#interface-4">Interface</a></h2>
+<h2 id="interface-5"><a class="header" href="#interface-5">Interface</a></h2>
 <pre><code class="language-graphix">type Date = {
   year: i64,
   month: i64,
@@ -4781,7 +4895,7 @@ calendar(#events: &amp;events, &amp;date(2024, 5, 1))
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-canvas-widget"><a class="header" href="#the-canvas-widget">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.</p>
-<h2 id="interface-5"><a class="header" href="#interface-5">Interface</a></h2>
+<h2 id="interface-6"><a class="header" href="#interface-6">Interface</a></h2>
 <pre><code class="language-graphix">type CanvasLine = {
   color: Color,
   x1: f64,
@@ -4915,7 +5029,7 @@ canvas(
 <pre><code class="language-graphix">use tui;
 use tui::canvas;
 
-let clock = time::timer(duration:0.1s, true);
+let clock = sys::time::timer(duration:0.1s, true);
 let x = 0.0;
 x &lt;- {
     let new_x = (clock ~ x) + 0.1;
@@ -4951,7 +5065,7 @@ canvas(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-chart-widget"><a class="header" href="#the-chart-widget">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders line charts with multiple datasets, custom axes, labels, and styling. It's ideal for visualizing time series data, trends, sensor readings, and any numeric data relationships.</p>
-<h2 id="interface-6"><a class="header" href="#interface-6">Interface</a></h2>
+<h2 id="interface-7"><a class="header" href="#interface-7">Interface</a></h2>
 <pre><code class="language-graphix">type GraphType = [
   `Scatter,
   `Line,
@@ -5062,7 +5176,7 @@ use tui::chart;
 use tui::text;
 
 let data: Array&lt;(f64, f64)&gt; = {
-    let clock = time::timer(duration:0.5s, true);
+    let clock = sys::time::timer(duration:0.5s, true);
     let x = 0.0;
     x &lt;- (clock ~ x) + 1.0;
     let y = rand::rand(#clock, #start: f64:0., #end: f64:100.);
@@ -5147,7 +5261,7 @@ chart(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-text-widget"><a class="header" href="#the-text-widget">The Text Widget</a></h1>
 <p>The <code>text</code> widget renders styled text in the terminal. It's a fundamental building block for displaying formatted content with colors, modifiers, and multiple lines. Text is built from <code>Line</code> objects, which are in turn composed of <code>Span</code> objects.</p>
-<h2 id="interface-7"><a class="header" href="#interface-7">Interface</a></h2>
+<h2 id="interface-8"><a class="header" href="#interface-8">Interface</a></h2>
 <pre><code class="language-graphix">val text: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
@@ -5200,7 +5314,7 @@ text(&amp;[
 use tui::text;
 
 let count = 0;
-let timer = time::timer(duration:1.s, true);
+let timer = sys::time::timer(duration:1.s, true);
 count &lt;- timer ~ (count + 1);
 
 let colors = [`Red, `Green, `Yellow, `Blue, `Magenta, `Cyan];
@@ -5243,7 +5357,7 @@ text(&amp;[
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-paragraph-widget"><a class="header" href="#the-paragraph-widget">The Paragraph Widget</a></h1>
 <p>The <code>paragraph</code> widget displays multi-line text with automatic word wrapping and scrolling support. It's ideal for displaying long text content, logs, or any content that needs to flow across multiple lines.</p>
-<h2 id="interface-8"><a class="header" href="#interface-8">Interface</a></h2>
+<h2 id="interface-9"><a class="header" href="#interface-9">Interface</a></h2>
 <pre><code class="language-graphix">val paragraph: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
@@ -5314,7 +5428,7 @@ use tui::paragraph;
 use tui::text;
 
 let log_entries = [];
-let new_entry = net::subscribe("/local/logs/application")?;
+let new_entry = sys::net::subscribe("/local/logs/application")?;
 
 log_entries &lt;- array::window(
     #n: 100,
@@ -5352,7 +5466,7 @@ paragraph(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-gauge-widget"><a class="header" href="#the-gauge-widget">The Gauge Widget</a></h1>
 <p>The <code>gauge</code> widget displays a single value as a filled progress indicator, perfect for showing percentages, completion status, or resource usage. It provides a clear visual representation of how full or complete something is.</p>
-<h2 id="interface-9"><a class="header" href="#interface-9">Interface</a></h2>
+<h2 id="interface-10"><a class="header" href="#interface-10">Interface</a></h2>
 <pre><code class="language-graphix">val gauge: fn(
   ?#gauge_style: &amp;[Style, null],
   ?#label: &amp;[Span, null],
@@ -5387,7 +5501,7 @@ use tui::gauge;
 use tui::block;
 use tui::text;
 
-let clock = time::timer(duration:0.5s, true);
+let clock = sys::time::timer(duration:0.5s, true);
 let power = 0.0;
 power &lt;- min(1.0, (clock ~ power) + 0.01);
 
@@ -5440,7 +5554,7 @@ gauge(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It's more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
-<h2 id="interface-10"><a class="header" href="#interface-10">Interface</a></h2>
+<h2 id="interface-11"><a class="header" href="#interface-11">Interface</a></h2>
 <pre><code class="language-graphix">val line_gauge: fn(
   ?#filled_style: &amp;[Style, null],
   ?#filled_symbol: &amp;[string, null],
@@ -5479,7 +5593,7 @@ use tui::line_gauge;
 use tui::block;
 use tui::text;
 
-let clock = time::timer(duration:0.5s, true);
+let clock = sys::time::timer(duration:0.5s, true);
 let power = 0.0;
 power &lt;- min(1.0, (clock ~ power) + 0.01);
 
@@ -5794,7 +5908,7 @@ tui::input_handler::input_handler(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-layout-widget"><a class="header" href="#the-layout-widget">The Layout Widget</a></h1>
 <p>The <code>layout</code> widget arranges child widgets in horizontal or vertical layouts with flexible sizing constraints. It's the primary tool for organizing complex TUI interfaces and supports focus management for interactive applications.</p>
-<h2 id="interface-11"><a class="header" href="#interface-11">Interface</a></h2>
+<h2 id="interface-12"><a class="header" href="#interface-12">Interface</a></h2>
 <pre><code class="language-graphix">type Spacing = [
   `Space(i64),
   `Overlap(i64)
@@ -5956,7 +6070,7 @@ layout(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-list-widget"><a class="header" href="#the-list-widget">The List Widget</a></h1>
 <p>The <code>list</code> widget displays a scrollable, selectable list of items with keyboard navigation support. It's perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.</p>
-<h2 id="interface-12"><a class="header" href="#interface-12">Interface</a></h2>
+<h2 id="interface-13"><a class="header" href="#interface-13">Interface</a></h2>
 <pre><code class="language-graphix">val list: fn(
   ?#highlight_spacing: &amp;[HighlightSpacing, null],
   ?#highlight_style: &amp;[Style, null],
@@ -6083,7 +6197,7 @@ list(#selected: &amp;0, &amp;items)
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-scrollbar-widget"><a class="header" href="#the-scrollbar-widget">The Scrollbar Widget</a></h1>
 <p>The <code>scrollbar</code> widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.</p>
-<h2 id="interface-13"><a class="header" href="#interface-13">Interface</a></h2>
+<h2 id="interface-14"><a class="header" href="#interface-14">Interface</a></h2>
 <pre><code class="language-graphix">type ScrollbarOrientation = [
   `VerticalRight,
   `VerticalLeft,
@@ -6231,7 +6345,7 @@ scrollbar(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-sparkline-widget"><a class="header" href="#the-sparkline-widget">The Sparkline Widget</a></h1>
 <p>The <code>sparkline</code> widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.</p>
-<h2 id="interface-14"><a class="header" href="#interface-14">Interface</a></h2>
+<h2 id="interface-15"><a class="header" href="#interface-15">Interface</a></h2>
 <pre><code class="language-graphix">type RenderDirection = [
   `LeftToRight,
   `RightToLeft
@@ -6284,7 +6398,7 @@ use tui::block;
 use tui::text;
 
 let data = {
-    let clock = time::timer(duration:0.3s, true);
+    let clock = sys::time::timer(duration:0.3s, true);
     let v = rand::rand(#clock, #start:0., #end:100.);
     let d = [];
     let color = select v {
@@ -6343,7 +6457,7 @@ layout(
 use tui::sparkline;
 
 let data: Array&lt;f64&gt; = [];
-let new_value = net::subscribe("/local/metrics/cpu")?;
+let new_value = sys::net::subscribe("/local/metrics/cpu")?;
 
 data &lt;- array::window(
     #n: 60,
@@ -6376,7 +6490,7 @@ netidx publisher
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>The <code>table</code> widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It's ideal for data grids, process monitors, file listings, and any tabular data display.</p>
-<h2 id="interface-15"><a class="header" href="#interface-15">Interface</a></h2>
+<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
 <pre><code class="language-graphix">type Cell = {
   content: Line,
   style: [Style, null]
@@ -6582,7 +6696,7 @@ table(
 use tui::table;
 use tui::text;
 
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 
 let cpu_val = 5;
 cpu_val &lt;- {
@@ -6614,7 +6728,7 @@ table(#header: &amp;header, &amp;rows)
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-tabs-widget"><a class="header" href="#the-tabs-widget">The Tabs Widget</a></h1>
 <p>The <code>tabs</code> widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that's shown when the tab is selected.</p>
-<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
+<h2 id="interface-17"><a class="header" href="#interface-17">Interface</a></h2>
 <pre><code class="language-graphix">val tabs: fn(
   ?#divider: &amp;[Span, null],
   ?#highlight_style: &amp;[Style, null],
@@ -7380,7 +7494,7 @@ val slider_style: fn(
 <p>All builder functions accept the same labeled arguments as the corresponding struct fields, all optional, all defaulting to <code>null</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-text-widget-1"><a class="header" href="#the-text-widget-1">The Text Widget</a></h1>
 <p>The <code>text</code> widget displays a string with optional styling. It is the most basic display widget and the foundation for showing any textual content in a GUI application. Font size, color, font family, weight, style, sizing, and alignment are all configurable through labeled arguments.</p>
-<h2 id="interface-17"><a class="header" href="#interface-17">Interface</a></h2>
+<h2 id="interface-18"><a class="header" href="#interface-18">Interface</a></h2>
 <pre><code class="language-graphix">val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -7445,7 +7559,7 @@ mod icon;
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-button-widget"><a class="header" href="#the-button-widget">The Button Widget</a></h1>
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
-<h2 id="interface-18"><a class="header" href="#interface-18">Interface</a></h2>
+<h2 id="interface-19"><a class="header" href="#interface-19">Interface</a></h2>
 <pre><code class="language-graphix">val button: fn(
   ?#on_press: fn(null) -&gt; Any,
   ?#width: &amp;Length,
@@ -7507,7 +7621,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-text-input-widget"><a class="header" href="#the-text-input-widget">The Text Input Widget</a></h1>
 <p>A single-line text field for user input. The widget displays the current value via a reference and reports changes through callbacks. Supports placeholder text, password masking, and custom sizing.</p>
-<h2 id="interface-19"><a class="header" href="#interface-19">Interface</a></h2>
+<h2 id="interface-20"><a class="header" href="#interface-20">Interface</a></h2>
 <pre><code class="language-graphix">val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: fn(string) -&gt; Any,
@@ -7566,7 +7680,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-text-editor-widget"><a class="header" href="#the-text-editor-widget">The Text Editor Widget</a></h1>
 <p>A multi-line text editing area for longer-form content. Unlike <code>text_input</code>, which handles a single line, <code>text_editor</code> supports multiple lines of text with scrolling. It reports the full content string on every edit.</p>
-<h2 id="interface-20"><a class="header" href="#interface-20">Interface</a></h2>
+<h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
 <pre><code class="language-graphix">val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: fn(string) -&gt; Any,
@@ -7628,7 +7742,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-checkbox-widget"><a class="header" href="#the-checkbox-widget">The Checkbox Widget</a></h1>
 <p>A checkbox with an optional text label. Displays a checked or unchecked box and reports toggles through a callback. Useful for boolean settings and multi-select scenarios.</p>
-<h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
+<h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
 <pre><code class="language-graphix">val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: fn(bool) -&gt; Any,
@@ -7683,7 +7797,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-toggler-widget"><a class="header" href="#the-toggler-widget">The Toggler Widget</a></h1>
 <p>A toggle switch with an optional text label. Functionally identical to a checkbox but rendered as a sliding toggle, which is often a better visual fit for on/off settings like enabling features or connectivity options.</p>
-<h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
+<h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
 <pre><code class="language-graphix">val toggler: fn(
   ?#label: &amp;string,
   ?#on_toggle: fn(bool) -&gt; Any,
@@ -7736,7 +7850,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-radio-widget"><a class="header" href="#the-radio-widget">The Radio Widget</a></h1>
 <p>A radio button for single-select choices within a group. Each <code>radio</code> widget represents one option. When the currently selected value matches this radio's value, the button is filled. Clicking an unselected radio triggers the <code>#on_select</code> callback.</p>
-<h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
+<h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
 <pre><code class="language-graphix">val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;'a,
@@ -7800,7 +7914,7 @@ let col = column(
 <p>Graphix provides three related widgets for numeric values within a range: <code>slider</code> (horizontal), <code>vertical_slider</code>, and <code>progress_bar</code> (display-only).</p>
 <h2 id="slider"><a class="header" href="#slider">Slider</a></h2>
 <p>A horizontal slider that lets the user select a floating-point value by dragging a handle along a track.</p>
-<h3 id="interface-24"><a class="header" href="#interface-24">Interface</a></h3>
+<h3 id="interface-25"><a class="header" href="#interface-25">Interface</a></h3>
 <pre><code class="language-graphix">val slider: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
@@ -7827,7 +7941,7 @@ let col = column(
 </ul>
 <h2 id="vertical-slider"><a class="header" href="#vertical-slider">Vertical Slider</a></h2>
 <p>A vertical slider -- identical to <code>slider</code> but oriented top-to-bottom. Note the width and height types are swapped: <code>#width</code> is <code>&amp;[f64, null]</code> (fixed pixels) and <code>#height</code> is <code>&amp;Length</code> (layout-based).</p>
-<h3 id="interface-25"><a class="header" href="#interface-25">Interface</a></h3>
+<h3 id="interface-26"><a class="header" href="#interface-26">Interface</a></h3>
 <pre><code class="language-graphix">val vertical_slider: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
@@ -7848,7 +7962,7 @@ let col = column(
 </ul>
 <h2 id="progress-bar"><a class="header" href="#progress-bar">Progress Bar</a></h2>
 <p>A non-interactive horizontal bar that fills proportionally to a value within a range. Use it to display progress, levels, or any metric that the user should see but not control.</p>
-<h3 id="interface-26"><a class="header" href="#interface-26">Interface</a></h3>
+<h3 id="interface-27"><a class="header" href="#interface-27">Interface</a></h3>
 <pre><code class="language-graphix">val progress_bar: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
@@ -7937,7 +8051,7 @@ let value = 50.0;
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-pick-list-widget"><a class="header" href="#the-pick-list-widget">The Pick List Widget</a></h1>
 <p>A dropdown menu that lets the user select one option from a list of strings. Clicking the widget opens a dropdown; selecting an item closes it and triggers the callback.</p>
-<h2 id="interface-27"><a class="header" href="#interface-27">Interface</a></h2>
+<h2 id="interface-28"><a class="header" href="#interface-28">Interface</a></h2>
 <pre><code class="language-graphix">val pick_list: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: fn(string) -&gt; Any,
@@ -7993,7 +8107,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-combo-box-widget"><a class="header" href="#the-combo-box-widget">The Combo Box Widget</a></h1>
 <p>A searchable dropdown that combines a text input with a dropdown list. As the user types, the options are filtered to match. This is useful when the list of options is long and the user needs to find a specific item quickly.</p>
-<h2 id="interface-28"><a class="header" href="#interface-28">Interface</a></h2>
+<h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
 <pre><code class="language-graphix">val combo_box: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: fn(string) -&gt; Any,
@@ -8047,7 +8161,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-column-widget"><a class="header" href="#the-column-widget">The Column Widget</a></h1>
 <p>The <code>column</code> widget arranges child widgets vertically from top to bottom. It is one of the primary layout containers, along with <code>row</code>.</p>
-<h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
+<h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
 <pre><code class="language-graphix">val column: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
@@ -8102,7 +8216,7 @@ mod icon;
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-row-widget"><a class="header" href="#the-row-widget">The Row Widget</a></h1>
 <p>The <code>row</code> widget arranges child widgets horizontally from left to right. It is one of the primary layout containers, along with <code>column</code>.</p>
-<h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
+<h2 id="interface-31"><a class="header" href="#interface-31">Interface</a></h2>
 <pre><code class="language-graphix">val row: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
@@ -8168,7 +8282,7 @@ mod icon;
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-container-widget"><a class="header" href="#the-container-widget">The Container Widget</a></h1>
 <p>The <code>container</code> widget wraps a single child widget, providing padding and alignment control. Use it to position content within a fixed or flexible region.</p>
-<h2 id="interface-31"><a class="header" href="#interface-31">Interface</a></h2>
+<h2 id="interface-32"><a class="header" href="#interface-32">Interface</a></h2>
 <pre><code class="language-graphix">val container: fn(
   ?#padding: &amp;Padding,
   ?#width: &amp;Length,
@@ -8234,7 +8348,7 @@ mod icon;
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-scrollable-widget"><a class="header" href="#the-scrollable-widget">The Scrollable Widget</a></h1>
 <p>The <code>scrollable</code> widget wraps content that may exceed the available space, providing scroll bars to navigate. It supports vertical, horizontal, or bidirectional scrolling.</p>
-<h2 id="interface-32"><a class="header" href="#interface-32">Interface</a></h2>
+<h2 id="interface-33"><a class="header" href="#interface-33">Interface</a></h2>
 <pre><code class="language-graphix">val scrollable: fn(
   ?#direction: &amp;ScrollDirection,
   ?#on_scroll: fn({x: f64, y: f64}) -&gt; Any,
@@ -8301,7 +8415,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-stack-widget"><a class="header" href="#the-stack-widget">The Stack Widget</a></h1>
 <p>The <code>stack</code> widget layers children on top of each other. The first child is drawn at the bottom, and each subsequent child is drawn on top. This is useful for overlays, watermarks, or layered visual effects.</p>
-<h2 id="interface-33"><a class="header" href="#interface-33">Interface</a></h2>
+<h2 id="interface-34"><a class="header" href="#interface-34">Interface</a></h2>
 <pre><code class="language-graphix">val stack: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
@@ -8366,7 +8480,7 @@ mod icon;
 <p>Space and rules are layout utilities for controlling whitespace and adding visual dividers between widgets.</p>
 <h2 id="space"><a class="header" href="#space">Space</a></h2>
 <p>The <code>space</code> widget creates empty space with configurable dimensions. Use it to push widgets apart within a row or column.</p>
-<h3 id="interface-34"><a class="header" href="#interface-34">Interface</a></h3>
+<h3 id="interface-35"><a class="header" href="#interface-35">Interface</a></h3>
 <pre><code class="language-graphix">val space: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length
@@ -8414,7 +8528,7 @@ mod icon;
 <p><img src="ui/gui/./media/space.png" alt="Space Widget" /></p>
 <h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
 <p>Rules draw horizontal or vertical lines to visually separate content.</p>
-<h3 id="interface-35"><a class="header" href="#interface-35">Interface</a></h3>
+<h3 id="interface-36"><a class="header" href="#interface-36">Interface</a></h3>
 <pre><code class="language-graphix">val horizontal_rule: fn(?#height: &amp;f64) -&gt; Widget;
 val vertical_rule: fn(?#width: &amp;f64) -&gt; Widget;
 </code></pre>
@@ -8474,7 +8588,7 @@ mod icon;
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-canvas-widget-1"><a class="header" href="#the-canvas-widget-1">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level 2D drawing surface for custom graphics. You supply an array of shapes -- lines, circles, rectangles, arcs, curves, text labels, and arbitrary paths -- and the canvas renders them in order. This makes it suitable for diagrams, visualizations, procedural art, and anything that doesn't fit into the standard widget set.</p>
-<h2 id="interface-36"><a class="header" href="#interface-36">Interface</a></h2>
+<h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
 <pre><code class="language-graphix">type PathSegment = [
   `MoveTo({x: f64, y: f64}),
   `LineTo({x: f64, y: f64}),
@@ -8693,7 +8807,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-chart-widget-1"><a class="header" href="#the-chart-widget-1">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart (within the same mode — you cannot mix e.g. bar and pie).</p>
-<h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
+<h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
 <pre><code class="language-graphix">type SeriesStyle = {
   color: [Color, null],
   label: [string, null],
@@ -8950,7 +9064,7 @@ use gui::slider;
 mod icon;
 
 let rate = 0.;
-let clock = time::timer(1. - rate, true);
+let clock = sys::time::timer(1. - rate, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 
@@ -9122,7 +9236,7 @@ use gui::chart;
 use gui::column;
 mod icon;
 
-let clock = time::timer(duration:1.s, true);
+let clock = sys::time::timer(duration:1.s, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 
@@ -9255,7 +9369,7 @@ use gui::chart;
 use gui::column;
 mod icon;
 
-let clock = time::timer(duration:0.5s, true);
+let clock = sys::time::timer(duration:0.5s, true);
 let x = 0.;
 x &lt;- clock ~ x + 1.;
 
@@ -9339,7 +9453,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-image--svg-widgets"><a class="header" href="#the-image--svg-widgets">The Image &amp; SVG Widgets</a></h1>
 <p>The <code>image</code> widget displays raster images from files, raw bytes, or pixel buffers. The <code>svg</code> widget renders Scalable Vector Graphics from files or inline XML. Both support sizing and content fitting controls.</p>
-<h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
+<h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
 <h3 id="image"><a class="header" href="#image">image</a></h3>
 <pre><code class="language-graphix">type ImageSource = [
   string,
@@ -9381,7 +9495,7 @@ val image: fn(
 <p>The <code>image</code> widget accepts an <code>ImageSource</code> union with three variants:</p>
 <ul>
 <li><strong>string</strong> -- A file path to a PNG, JPEG, BMP, GIF, or other supported image format. The path is relative to the working directory.</li>
-<li><strong><code>`Bytes(bytes)</code></strong> -- Raw image file bytes (e.g. the contents of a PNG file loaded with <code>fs::read</code>). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the <code>bytes:&lt;base64&gt;</code> syntax.</li>
+<li><strong><code>`Bytes(bytes)</code></strong> -- Raw image file bytes (e.g. the contents of a PNG file loaded with <code>sys::fs::read_all_bin</code>). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the <code>bytes:&lt;base64&gt;</code> syntax.</li>
 <li><strong><code>`Rgba({width, height, pixels})</code></strong> -- A raw RGBA pixel buffer. The <code>width</code> and <code>height</code> fields specify the image dimensions, and <code>pixels</code> is a <code>bytes</code> value containing <code>width * height * 4</code> bytes (one byte each for red, green, blue, and alpha per pixel, in row-major order).</li>
 </ul>
 <p>The <code>svg</code> widget accepts a string that is either a file path to an <code>.svg</code> file or inline SVG XML content.</p>
@@ -9459,7 +9573,7 @@ let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-tooltip-widget"><a class="header" href="#the-tooltip-widget">The Tooltip Widget</a></h1>
 <p>The <code>tooltip</code> widget displays a popup hint when the user hovers over a child widget. The tooltip content is itself a widget, allowing rich formatted tips.</p>
-<h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
+<h2 id="interface-40"><a class="header" href="#interface-40">Interface</a></h2>
 <pre><code class="language-graphix">val tooltip: fn(
   #tip: &amp;Widget,
   ?#position: &amp;TooltipPosition,
@@ -9515,7 +9629,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-mouse-area-widget"><a class="header" href="#the-mouse-area-widget">The Mouse Area Widget</a></h1>
 <p>The <code>mouse_area</code> widget wraps a child and captures mouse events within its bounds. Use it to add click, hover, and movement tracking to any widget.</p>
-<h2 id="interface-40"><a class="header" href="#interface-40">Interface</a></h2>
+<h2 id="interface-41"><a class="header" href="#interface-41">Interface</a></h2>
 <pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
@@ -9593,7 +9707,7 @@ let position = "---";
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-keyboard-area-widget"><a class="header" href="#the-keyboard-area-widget">The Keyboard Area Widget</a></h1>
 <p>The <code>keyboard_area</code> widget wraps a child and captures keyboard events. Use it to build keyboard-driven interactions like shortcuts, navigation, or text handling.</p>
-<h2 id="interface-41"><a class="header" href="#interface-41">Interface</a></h2>
+<h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
 <pre><code class="language-graphix">type KeyEvent = {
   key: string,
   modifiers: { shift: bool, ctrl: bool, alt: bool, logo: bool },
@@ -9672,7 +9786,7 @@ let mod_name = "None";
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-clipboard-module"><a class="header" href="#the-clipboard-module">The Clipboard Module</a></h1>
 <p>The <code>clipboard</code> module provides functions for reading from and writing to the system clipboard. Unlike other GUI components, clipboard is a plain module of functions, not a widget constructor.</p>
-<h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
+<h2 id="interface-43"><a class="header" href="#interface-43">Interface</a></h2>
 <pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
@@ -9755,7 +9869,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-grid-widget"><a class="header" href="#the-grid-widget">The Grid Widget</a></h1>
 <p>A layout container that arranges child widgets in a grid with a fixed number of columns. Items wrap to the next row automatically.</p>
-<h2 id="interface-43"><a class="header" href="#interface-43">Interface</a></h2>
+<h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
 <pre><code class="language-graphix">type GridColumns = [`Fixed(i64), `Fluid(f64)];
 type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
 
@@ -9825,7 +9939,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-qr-code-widget"><a class="header" href="#the-qr-code-widget">The QR Code Widget</a></h1>
 <p>Encodes a string as a QR code image. The QR code updates reactively when the input string changes.</p>
-<h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
+<h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
 <pre><code class="language-graphix">val qr_code: fn(
   ?#cell_size: &amp;[f64, null],
   &amp;string
@@ -9873,7 +9987,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-markdown-widget"><a class="header" href="#the-markdown-widget">The Markdown Widget</a></h1>
 <p>Renders a markdown string as rich text with support for headings, bold, italic, lists, code blocks, and clickable links.</p>
-<h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
+<h2 id="interface-46"><a class="header" href="#interface-46">Interface</a></h2>
 <pre><code class="language-graphix">val markdown: fn(
   ?#on_link: fn(string) -&gt; Any,
   ?#spacing: &amp;[f64, null],
@@ -9939,7 +10053,7 @@ let col = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-table-widget-1"><a class="header" href="#the-table-widget-1">The Table Widget</a></h1>
 <p>Displays data in rows and columns with configurable headers, alignment, and separators. Tables are built from <code>TableColumn</code> definitions and a 2D array of row widgets.</p>
-<h2 id="interface-46"><a class="header" href="#interface-46">Interface</a></h2>
+<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
 <pre><code class="language-graphix">type TableColumn = {
   header: &amp;Widget,
   width: &amp;Length,
@@ -10018,7 +10132,7 @@ let layout = column(
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
-<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
+<h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
 <pre><code class="language-graphix">type Shortcut;
 
 val shortcut: fn(
@@ -10258,16 +10372,16 @@ that power the standard library are available for third-party packages.</p>
 operations rebuild the <code>graphix</code> binary to include the new set of packages.</p>
 <h2 id="using-an-installed-package"><a class="header" href="#using-an-installed-package">Using an Installed Package</a></h2>
 <p>Once installed, a package is available as a Graphix module with the same name
-as the package. For example, the <code>net</code> package provides netidx networking
-functions:</p>
-<pre><code class="language-graphix">use net;
-net::subscribe("/some/netidx/path")
+as the package. For example, the <code>sys</code> package provides netidx networking
+functions under <code>sys::net</code>:</p>
+<pre><code class="language-graphix">use sys::net;
+subscribe("/some/netidx/path")
 </code></pre>
 <p>Or access it without <code>use</code>:</p>
-<pre><code class="language-graphix">net::subscribe("/some/netidx/path")
+<pre><code class="language-graphix">sys::net::subscribe("/some/netidx/path")
 </code></pre>
-<p>The standard library packages (<code>core</code>, <code>str</code>, <code>array</code>, <code>map</code>, <code>time</code>, <code>net</code>,
-<code>re</code>, <code>rand</code>, <code>fs</code>, <code>tui</code>) are pre-installed and available by default.</p>
+<p>The standard library packages (<code>core</code>, <code>str</code>, <code>array</code>, <code>map</code>, <code>sys</code>, <code>http</code>,
+<code>re</code>, <code>rand</code>, <code>tui</code>) are pre-installed and available by default.</p>
 <h2 id="searching-for-packages"><a class="header" href="#searching-for-packages">Searching for Packages</a></h2>
 <p>Search crates.io for packages matching a query:</p>
 <pre><code>graphix package search http
@@ -10759,12 +10873,12 @@ something only when the node being updated has "updated". The meaning
 of that is specific to what the node does, but in the case of <code>once</code>
 it means that the argument to <code>once</code> updated, and <code>once</code> has not
 already seen an update. Consider the example program,</p>
-<pre><code class="language-graphix">let clock = time::timer(1, true);
+<pre><code class="language-graphix">let clock = sys::time::timer(1, true);
 println(once(clock))
 </code></pre>
 <p>We expect this example to print the datetime exactly one time. Lets
-dig in to how that actually works. The clock created by <code>time::timer</code>
-will tick once per second forever. The <code>time::timer</code> built-in will
+dig in to how that actually works. The clock created by <code>sys::time::timer</code>
+will tick once per second forever. The <code>sys::time::timer</code> built-in will
 call <code>set_timer</code> in the
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html"><code>Rt</code></a>,
 which is part of the
@@ -10774,10 +10888,10 @@ register that this toplevel node (<code>let clock = ...</code>) depends on the
 timer event. When the timer event happens the approximate sequence of
 events is,</p>
 <ul>
-<li>let clock = time::timer(1, true), update called on toplevel node (Bind)
+<li>let clock = sys::time::timer(1, true), update called on toplevel node (Bind)
 <ul>
-<li>time::timer(1, true), bind calls update on its rhs</li>
-<li>time::timer checks events to see if it should update, returns Some(DateTime(..))</li>
+<li>sys::time::timer(1, true), bind calls update on its rhs</li>
+<li>sys::time::timer checks events to see if it should update, returns Some(DateTime(..))</li>
 <li>bind sets the id of clock in events to Value::DateTime(..)</li>
 <li>Rt checks for nodes that depend on <code>clock</code> schedules println(..)</li>
 </ul>

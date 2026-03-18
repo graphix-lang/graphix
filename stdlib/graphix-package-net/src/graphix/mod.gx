@@ -1,7 +1,0 @@
-let write = |path, value| 'net_write;
-let subscribe = |path| 'net_subscribe;
-let call = |path, args| 'net_call;
-let rpc = |#path, #doc, #spec, #f| 'net_publish_rpc;
-let list = |#update = time::timer(1, true), path| 'net_list;
-let list_table = |#clock = time::timer(1, true), path| 'net_list_table;
-let publish = |#on_write = |v| never(v), path, v| 'net_publish

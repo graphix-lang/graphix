@@ -236,7 +236,7 @@ use tui::barchart;
 use tui::block;
 use rand;
 
-let clock = time::timer(duration:0.7s, true);
+let clock = sys::time::timer(duration:0.7s, true);
 
 let group0 = [
     bar(#style: &amp;style(#fg: `Red), #label: &amp;line("CPU"), &amp;rand(#start:0, #end:100, #clock)),
