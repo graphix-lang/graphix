@@ -42,14 +42,10 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
             }
             SigKind::TypeDef(td) => {
                 let typ = td.typ.scope_refs(&scope.lexical);
-                let params = Arc::from_iter(td.params.iter().map(|(tv, ty)| match ty {
-                    None => (tv.clone(), None),
-                    Some(ty) => (tv.clone(), Some(ty.scope_refs(&scope.lexical))),
-                }));
                 env.deftype(
                     &scope.lexical,
                     &td.name,
-                    params,
+                    td.params.clone(),
                     typ.clone(),
                     si.doc.0.clone(),
                 )?;

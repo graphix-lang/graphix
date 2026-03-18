@@ -1,0 +1,44 @@
+use array;
+
+/// GET with JSON Accept header and optional bearer auth.
+val get: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array<(string, string)>,
+    Client,
+    string
+) -> Result<Response, `HTTPError(string)>;
+
+/// POST with JSON Content-Type/Accept headers and optional bearer auth.
+val post: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array<(string, string)>,
+    #body: string,
+    Client,
+    string
+) -> Result<Response, `HTTPError(string)>;
+
+/// PUT with JSON Content-Type/Accept headers and optional bearer auth.
+val put: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array<(string, string)>,
+    #body: string,
+    Client,
+    string,
+) -> Result<Response, `HTTPError(string)>;
+
+/// DELETE with JSON Accept header and optional bearer auth.
+val delete: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array<(string, string)>,
+    Client,
+    string
+) -> Result<Response, `HTTPError(string)>;
+
+/// PATCH with JSON Content-Type/Accept headers and optional bearer auth.
+val patch: fn(
+    ?#bearer: [string, null],
+    ?#headers: Array<(string, string)>,
+    #body: string,
+    Client,
+    string,
+) -> Result<Response, `HTTPError(string)>;
