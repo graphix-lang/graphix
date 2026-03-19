@@ -8,8 +8,9 @@ use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
-use graphix_package_sys::{StreamKind, get_stream};
+use graphix_package_sys::{get_stream, StreamKind};
 use netidx_value::{PBytes, ValArray, Value};
+use poolshark::local::LPooled;
 use std::sync::Arc;
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::Mutex};
 
@@ -30,22 +31,24 @@ fn json_to_value(json: serde_json::Value) -> Value {
         }
         serde_json::Value::String(s) => Value::String(ArcStr::from(s.as_str())),
         serde_json::Value::Array(arr) => {
-            let vals: Vec<Value> = arr.into_iter().map(json_to_value).collect();
-            Value::Array(ValArray::from(vals))
+            let mut vals: LPooled<Vec<Value>> =
+                arr.into_iter().map(json_to_value).collect();
+            Value::Array(ValArray::from_iter_exact(vals.drain(..)))
         }
         serde_json::Value::Object(obj) => {
-            let mut pairs: Vec<(String, Value)> = obj
-                .into_iter()
-                .map(|(k, v)| (k, json_to_value(v)))
-                .collect();
+            let mut pairs: LPooled<Vec<(String, Value)>> =
+                obj.into_iter().map(|(k, v)| (k, json_to_value(v))).collect();
             pairs.sort_by(|a, b| a.0.cmp(&b.0));
-            let struct_vals: Vec<Value> = pairs
-                .into_iter()
+            let mut vals: LPooled<Vec<Value>> = pairs
+                .drain(..)
                 .map(|(k, v)| {
-                    Value::Array(ValArray::from([Value::String(ArcStr::from(k.as_str())), v]))
+                    Value::Array(ValArray::from([
+                        Value::String(ArcStr::from(k.as_str())),
+                        v,
+                    ]))
                 })
                 .collect();
-            Value::Array(ValArray::from(struct_vals))
+            Value::Array(ValArray::from_iter_exact(vals.drain(..)))
         }
     }
 }
@@ -110,9 +113,9 @@ fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         Value::Decimal(d) => Ok(serde_json::Value::String(d.to_string())),
         Value::String(s) => Ok(serde_json::Value::String(s.to_string())),
         Value::Bytes(b) => {
-            let arr: Vec<serde_json::Value> =
+            let mut arr: LPooled<Vec<serde_json::Value>> =
                 b.iter().map(|byte| serde_json::Value::from(*byte)).collect();
-            Ok(serde_json::Value::Array(arr))
+            Ok(serde_json::Value::Array(arr.drain(..).collect()))
         }
         Value::DateTime(dt) => Ok(serde_json::Value::String(dt.to_rfc3339())),
         Value::Duration(d) => Ok(serde_json::Value::from(d.as_secs_f64())),
@@ -128,9 +131,9 @@ fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
                 }
                 Ok(serde_json::Value::Object(map))
             } else {
-                let vals: Result<Vec<serde_json::Value>, String> =
-                    arr.iter().map(value_to_json).collect();
-                Ok(serde_json::Value::Array(vals?))
+                let mut vals: LPooled<Vec<serde_json::Value>> =
+                    arr.iter().map(value_to_json).collect::<Result<_, _>>()?;
+                Ok(serde_json::Value::Array(vals.drain(..).collect()))
             }
         }
         Value::Map(m) => {
@@ -149,7 +152,8 @@ fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
 
 #[derive(Debug)]
 enum ReadInput {
-    Data(Bytes),
+    Str(ArcStr),
+    Bytes(Bytes),
     Stream(Arc<Mutex<Option<StreamKind>>>),
 }
 
@@ -163,8 +167,8 @@ impl EvalCachedAsync for JsonReadEv {
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let v = cached.0.first()?.as_ref()?;
         match v {
-            Value::String(s) => Some(ReadInput::Data(Bytes::from(s.as_bytes().to_vec()))),
-            Value::Bytes(b) => Some(ReadInput::Data(Bytes::copy_from_slice(b))),
+            Value::String(s) => Some(ReadInput::Str(s.clone())),
+            Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
             Value::Abstract(_) => Some(ReadInput::Stream(get_stream(cached, 0)?)),
             _ => None,
         }
@@ -172,8 +176,19 @@ impl EvalCachedAsync for JsonReadEv {
 
     fn eval(input: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let data = match input {
-                ReadInput::Data(b) => b,
+            match input {
+                ReadInput::Str(s) => {
+                    match serde_json::from_str::<serde_json::Value>(&s) {
+                        Ok(json) => json_to_value(json),
+                        Err(e) => errf!("JsonErr", "{e}"),
+                    }
+                }
+                ReadInput::Bytes(b) => {
+                    match serde_json::from_slice::<serde_json::Value>(&b) {
+                        Ok(json) => json_to_value(json),
+                        Err(e) => errf!("JsonErr", "{e}"),
+                    }
+                }
                 ReadInput::Stream(stream) => {
                     let mut guard = stream.lock().await;
                     let s = match guard.as_mut() {
@@ -184,12 +199,11 @@ impl EvalCachedAsync for JsonReadEv {
                     if let Err(e) = s.read_to_end(&mut buf).await {
                         return errf!("IOErr", "read failed: {e}");
                     }
-                    Bytes::from(buf)
+                    match serde_json::from_slice::<serde_json::Value>(&buf) {
+                        Ok(json) => json_to_value(json),
+                        Err(e) => errf!("JsonErr", "{e}"),
+                    }
                 }
-            };
-            match serde_json::from_slice::<serde_json::Value>(&data) {
-                Ok(json) => json_to_value(json),
-                Err(e) => errf!("JsonErr", "{e}"),
             }
         }
     }
@@ -212,13 +226,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
             Ok(j) => j,
             Err(e) => return Some(errf!("JsonErr", "{e}")),
         };
-        let s = if pretty {
-            serde_json::to_string_pretty(&json)
+        let mut buf: LPooled<Vec<u8>> = LPooled::take();
+        let res = if pretty {
+            serde_json::to_writer_pretty(&mut *buf, &json)
         } else {
-            serde_json::to_string(&json)
+            serde_json::to_writer(&mut *buf, &json)
         };
-        Some(match s {
-            Ok(s) => Value::String(ArcStr::from(s.as_str())),
+        Some(match res {
+            Ok(()) => {
+                // serde_json always produces valid UTF-8
+                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+                Value::String(ArcStr::from(s))
+            }
             Err(e) => errf!("JsonErr", "{e}"),
         })
     }
@@ -241,13 +260,14 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
             Ok(j) => j,
             Err(e) => return Some(errf!("JsonErr", "{e}")),
         };
-        let b = if pretty {
-            serde_json::to_vec_pretty(&json)
+        let mut buf: LPooled<Vec<u8>> = LPooled::take();
+        let res = if pretty {
+            serde_json::to_writer_pretty(&mut *buf, &json)
         } else {
-            serde_json::to_vec(&json)
+            serde_json::to_writer(&mut *buf, &json)
         };
-        Some(match b {
-            Ok(b) => Value::Bytes(PBytes::new(Bytes::from(b))),
+        Some(match res {
+            Ok(()) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf))),
             Err(e) => errf!("JsonErr", "{e}"),
         })
     }

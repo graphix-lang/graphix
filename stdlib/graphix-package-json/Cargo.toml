@@ -28,6 +28,7 @@ graphix-package = { version = "0.6.0", path = "../../graphix-package" }
 graphix-package-core = { version = "0.6.0", path = "../graphix-package-core" }
 graphix-package-sys = { version = "0.6.0", path = "../graphix-package-sys" }
 graphix-rt = { version = "0.6.0", path = "../../graphix-rt" }
+poolshark = { workspace = true }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }

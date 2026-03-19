@@ -43,6 +43,58 @@ The project uses poolshark where possible to avoid allocations. If it isn't
 possible to avoid allocation using poolshark, then smallvec should be
 considered.
 
+### Poolshark Usage Guide
+
+Poolshark provides thread-local (`LPooled`) and global (`GPooled`) pooled
+collections. When a pooled collection is dropped, it is cleared and returned
+to the pool for reuse, avoiding heap allocation on the next `take()` or
+`collect()`.
+
+**`LPooled<Vec<T>>`** — thread-local pool. The collection is `Send`, but it
+returns to the pool of the thread that drops it, so it works best when
+created and dropped on the same thread.
+
+```rust
+use poolshark::local::LPooled;
+
+// Take an empty vec from the pool
+let mut v: LPooled<Vec<i64>> = LPooled::take();
+v.push(1);
+
+// Collect an iterator directly into a pooled vec
+let v: LPooled<Vec<i64>> = (0..10).collect();
+
+// Collect with turbofish when type inference needs help
+let v = items.iter().map(|x| x.val).collect::<LPooled<Vec<_>>>();
+
+// Fallible collect
+let v = items.iter().map(fallible_fn).collect::<Result<LPooled<Vec<_>>>>()?;
+
+// Drain into a final container, pooled vec returns to pool on drop
+let mut v: LPooled<Vec<Value>> = src.iter().map(convert).collect();
+let result = ValArray::from_iter_exact(v.drain(..));
+
+// Works with FxHashMap, FxHashSet too
+let mut seen: LPooled<FxHashSet<BindId>> = LPooled::take();
+```
+
+**`GPooled<Vec<T>>`** — global pool, `Send`. Use when the collection must
+cross thread/task boundaries (channels, spawn). Requires explicit pool sizing
+via `Pool::new(max_pool, max_elements)` or `GPooled::take()` with prior
+`set_size`.
+
+**When to use which:**
+- Temporary scratch collections (sort, dedup, intermediate results) → `LPooled`
+- Building a final `Arc<[T]>` or `ValArray` → `LPooled`, drain into `Arc::from_iter` / `ValArray::from_iter_exact`
+- Passing batches through channels → `GPooled`
+- Inside async functions across `.await` → `LPooled` works (it's Send), but
+  the vec returns to the pool of whichever thread drops it
+
+**When NOT to pool:**
+- The collection is consumed by a foreign API that needs an owned `Vec<T>`
+  (e.g. `serde_json::Value::Array(Vec<...>)`) — drain the LPooled into a
+  regular collect instead: `lpooled.drain(..).collect()`
+
 ## Building and Testing
 
 Build the workspace:
