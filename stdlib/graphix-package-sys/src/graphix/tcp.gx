@@ -1,4 +1,4 @@
-type TcpListener = string;
+type TcpListener;
 let connect = |addr: string| -> Result<io::Stream<`Tcp>, `TCPError(string)> 'sys_tcp_connect;
 let listen = |addr: string| -> Result<TcpListener, `TCPError(string)> 'sys_tcp_listen;
 let accept = |listener: TcpListener, trigger: Any| -> Result<io::Stream<`Tcp>, `TCPError(string)> 'sys_tcp_accept;

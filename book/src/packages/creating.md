@@ -38,7 +38,7 @@ declare the package:
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 
-// ... builtin implementations ...
+// ... builtin implementations (types are declared in .gx files) ...
 
 defpackage! {
     builtins => [
@@ -63,11 +63,12 @@ directory structure maps to the module hierarchy: `src/graphix/foo.gx` becomes
 the module `mylib::foo` (note you still need `mod foo` in mod.gx).
 
 The top-level module file is `src/graphix/mod.gx`. This is where you typically
-bind your builtins to Graphix names and re-export them:
+bind your builtins to Graphix names and re-export them. Builtin lambdas must
+have full type annotations on all arguments and the return type:
 
 ```graphix
-let my_builtin = |arg| 'mylib_my_builtin;
-let my_cached = |@args| 'mylib_my_cached;
+let my_builtin = |arg: Any| -> bool 'mylib_my_builtin;
+let my_cached = |@args: bool| -> bool 'mylib_my_cached;
 ```
 
 ### `src/graphix/mod.gxi` -- Interface File
@@ -102,7 +103,7 @@ For pure functions that just compute a result from their arguments, use
 `EvalCached`:
 
 ```rust
-use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
@@ -110,7 +111,6 @@ struct MyMinEv;
 
 impl EvalCached for MyMinEv {
     const NAME: &str = "mylib_min";
-    deftype!("fn('a, @args: 'a) -> 'a");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -148,7 +148,6 @@ use anyhow::Result;
 use graphix_compiler::{
     expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package_core::deftype;
 use netidx_value::Value;
 
 #[derive(Debug)]
@@ -158,7 +157,6 @@ struct MyOnce {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MyOnce {
     const NAME: &str = "mylib_once";
-    deftype!("fn('a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,

@@ -1,5 +1,5 @@
-type Watcher = string;
-type Watch = string;
+type Watcher;
+type Watch;
 let create = |
     #poll_interval: [duration, null] = null,
     #poll_batch_size: [i64, null] = null,

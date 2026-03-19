@@ -1,4 +1,4 @@
-type Stream<'a: [`File, `Tcp, `Tls]> = string;
+type Stream<'a: [`File, `Tcp, `Tls]>;
 let read = |stream: Stream<'a>, n: u64| -> Result<bytes, `IOError(string)> 'sys_io_read;
 let read_exact = |stream: Stream<'a>, n: u64| -> Result<bytes, `IOError(string)> 'sys_io_read_exact;
 let write = |stream: Stream<'a>, data: bytes| -> Result<u64, `IOError(string)> 'sys_io_write;

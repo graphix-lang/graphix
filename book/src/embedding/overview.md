@@ -21,7 +21,7 @@ evaluate changes to your arguments. For example, a function that finds the
 minimum value of all its arguments:
 
 ```rust
-use graphix_package_core::{deftype, CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
@@ -29,7 +29,6 @@ struct MinEv;
 
 impl EvalCached for MinEv {
     const NAME: &str = "core_min";
-    deftype!("fn('a, @args: 'a) -> 'a");
 
     fn eval(&mut self, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -53,10 +52,13 @@ Then register this built-in by listing it in your package's `defpackage!` macro,
 and bind it in your Graphix module:
 
 ```graphix
-let min = |@args| 'core_min
+let min = |a: 'a, @args: 'a| -> 'a 'core_min
 ```
 
-The special form function body `'core_min` references a built-in Rust function.
+The special form function body `'core_min` references a built-in Rust
+function. Builtin lambdas must have full type annotations on all
+arguments and the return type — this is how the compiler knows the
+function's signature.
 
 See [Writing Built in Functions](./builtins.md) for the full API details.
 

@@ -67,7 +67,6 @@ use anyhow::Result;
 use graphix_compiler::{
     expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package_core::deftype;
 use netidx_value::Value;
 
 #[derive(Debug)]
@@ -77,7 +76,6 @@ struct Once {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
-    deftype!("fn('a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -117,11 +115,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 ```
 
 The `BuiltIn` trait is for construction. It declares the built-in's
-name and its type (which we get to write out in Graphix syntax via the
-`deftype!` macro). The `init` method is called when the built-in is
-instantiated at a call site. It receives the execution context, the
-concrete function type, the lexical scope, the argument nodes, and the
-top-level expression id. In this case we don't care about any of that
+name. The function's type is declared in the `.gx` file where the
+builtin is bound — all arguments and the return type must be
+annotated. For example, `once` would be bound as:
+
+```graphix
+let once = |v: 'a| -> 'a 'core_once
+```
+
+The `init` method is called when the built-in is instantiated at a
+call site. It receives the execution context, the concrete function
+type, the lexical scope, the argument nodes, and the top-level
+expression id. In this case we don't care about any of that
 information, but it will be useful later.
 
 The most important method of `Apply` is `update`. `sleep` is expected to
@@ -146,7 +151,6 @@ use graphix_compiler::{
     typ::{FnType, Typ, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
 };
-use graphix_package_core::deftype;
 use netidx_value::Value;
 use smallvec::{smallvec, SmallVec};
 use std::collections::VecDeque;
@@ -164,7 +168,6 @@ pub(super) struct Group<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
-    deftype!("fn('a, fn(i64, 'a) -> bool throws 'e) -> Array<'a> throws 'e");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,

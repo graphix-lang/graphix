@@ -1,4 +1,4 @@
-type T = string;
+type T;
 let path = |td: T| -> string 'sys_tempdir_path;
 let create = |
     #in: [null, string] = null,

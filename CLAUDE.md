@@ -129,8 +129,10 @@ Types are structural - compatibility is based on structure, not names. Type infe
 
 Built-ins implement the `BuiltIn<R, E>` trait:
 - `NAME`: Function name constant
-- `TYP`: Lazy-initialized function type
 - `init()`: Returns initialization function
+
+The function's type is declared in the `.gx` file where the builtin is
+bound — all arguments and the return type must have type annotations.
 
 Register built-ins with `ExecCtx::register_builtin::<T>()`.
 

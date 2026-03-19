@@ -1,5 +1,5 @@
-type Client = string;
-type Server = string;
+type Client;
+type Server;
 let client = |#timeout: [duration, null] = null, #default_headers: Array<(string, string)> = [], #redirect_limit: u32 = u32:10, #ca_cert: [bytes, null] = null, trigger: Any| -> Result<Client, `HTTPError(string)> 'http_client;
 let default_client = |trigger: Any| -> Result<Client, `HTTPError(string)> 'http_default_client;
 let request = |#method: Method = `GET, #headers: Array<(string, string)> = [], #body: [string, null] = null, #timeout: [duration, null] = null, client: Client, url: string| -> Result<Response, `HTTPError(string)> 'http_request;
