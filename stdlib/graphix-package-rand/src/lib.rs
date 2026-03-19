@@ -6,7 +6,7 @@ use anyhow::Result;
 use graphix_compiler::{
     expr::ExprId, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package_core::{deftype, CachedVals};
+use graphix_package_core::{CachedVals};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use rand::{rng, seq::SliceRandom, RngExt};
@@ -19,7 +19,6 @@ struct Rand {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
     const NAME: &str = "rand";
-    deftype!("fn<'a: [Int, Float]>(?#start:'a, ?#end:'a, #clock:Any) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -74,7 +73,6 @@ struct Pick;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     const NAME: &str = "rand_pick";
-    deftype!("fn(Array<'a>) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -110,7 +108,6 @@ struct Shuffle(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     const NAME: &str = "rand_shuffle";
-    deftype!("fn(Array<'a>) -> Array<'a>");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,

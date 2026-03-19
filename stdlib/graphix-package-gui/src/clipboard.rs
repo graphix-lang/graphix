@@ -1,15 +1,14 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::{errf, typ::FnType};
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_compiler::errf;
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Value;
-use std::{fmt::Debug, marker::PhantomData, path::PathBuf, sync::LazyLock};
+use std::{fmt::Debug, marker::PhantomData, path::PathBuf};
 
 /// Trait for individual clipboard operations, parameterizing the generic
 /// [`ClipboardBuiltin`] wrapper.
 pub(crate) trait ClipboardOp: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
-    const TYP: LazyLock<FnType>;
     type Args: Debug + Send + Sync + 'static;
 
     fn prepare(cached: &CachedVals) -> Option<Self::Args>;
@@ -25,7 +24,6 @@ pub(crate) struct ClipboardBuiltin<Op: ClipboardOp>(PhantomData<Op>);
 
 impl<Op: ClipboardOp> EvalCachedAsync for ClipboardBuiltin<Op> {
     const NAME: &str = Op::NAME;
-    const TYP: LazyLock<FnType> = Op::TYP;
     type Args = Op::Args;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Op::Args> {
@@ -61,7 +59,6 @@ pub(crate) struct ReadTextOp;
 
 impl ClipboardOp for ReadTextOp {
     const NAME: &str = "gui_clipboard_read_text";
-    deftype!(r#"fn(Any) -> Result<string, `ClipboardError(string)>"#);
     type Args = ();
 
     fn prepare(cached: &CachedVals) -> Option<()> {
@@ -83,7 +80,6 @@ pub(crate) struct WriteTextOp;
 
 impl ClipboardOp for WriteTextOp {
     const NAME: &str = "gui_clipboard_write_text";
-    deftype!(r#"fn(string) -> Result<null, `ClipboardError(string)>"#);
     type Args = ArcStr;
 
     fn prepare(cached: &CachedVals) -> Option<ArcStr> {
@@ -107,9 +103,6 @@ pub(crate) struct ReadImageOp;
 
 impl ClipboardOp for ReadImageOp {
     const NAME: &str = "gui_clipboard_read_image";
-    deftype!(
-        r#"fn(Any) -> Result<{height: u32, pixels: bytes, width: u32}, `ClipboardError(string)>"#
-    );
     type Args = ();
 
     fn prepare(cached: &CachedVals) -> Option<()> {
@@ -141,9 +134,6 @@ pub(crate) struct WriteImageOp;
 
 impl ClipboardOp for WriteImageOp {
     const NAME: &str = "gui_clipboard_write_image";
-    deftype!(
-        r#"fn({height: u32, pixels: bytes, width: u32}) -> Result<null, `ClipboardError(string)>"#
-    );
     type Args = ImageArgs;
 
     fn prepare(cached: &CachedVals) -> Option<ImageArgs> {
@@ -172,7 +162,6 @@ pub(crate) struct ReadHtmlOp;
 
 impl ClipboardOp for ReadHtmlOp {
     const NAME: &str = "gui_clipboard_read_html";
-    deftype!(r#"fn(Any) -> Result<string, `ClipboardError(string)>"#);
     type Args = ();
 
     fn prepare(cached: &CachedVals) -> Option<()> {
@@ -200,9 +189,6 @@ pub(crate) struct WriteHtmlOp;
 
 impl ClipboardOp for WriteHtmlOp {
     const NAME: &str = "gui_clipboard_write_html";
-    deftype!(
-        r#"fn({alt_text: string, html: string}) -> Result<null, `ClipboardError(string)>"#
-    );
     type Args = HtmlArgs;
 
     fn prepare(cached: &CachedVals) -> Option<HtmlArgs> {
@@ -228,7 +214,6 @@ pub(crate) struct ReadFilesOp;
 
 impl ClipboardOp for ReadFilesOp {
     const NAME: &str = "gui_clipboard_read_files";
-    deftype!(r#"fn(Any) -> Result<Array<string>, `ClipboardError(string)>"#);
     type Args = ();
 
     fn prepare(cached: &CachedVals) -> Option<()> {
@@ -250,7 +235,6 @@ pub(crate) struct WriteFilesOp;
 
 impl ClipboardOp for WriteFilesOp {
     const NAME: &str = "gui_clipboard_write_files";
-    deftype!(r#"fn(Array<string>) -> Result<null, `ClipboardError(string)>"#);
     type Args = Vec<String>;
 
     fn prepare(cached: &CachedVals) -> Option<Vec<String>> {
@@ -275,7 +259,6 @@ pub(crate) struct ClearOp;
 
 impl ClipboardOp for ClearOp {
     const NAME: &str = "gui_clipboard_clear";
-    deftype!(r#"fn(Any) -> Result<null, `ClipboardError(string)>"#);
     type Args = ();
 
     fn prepare(cached: &CachedVals) -> Option<()> {

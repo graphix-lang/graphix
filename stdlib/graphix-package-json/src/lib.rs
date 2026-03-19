@@ -6,7 +6,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{
-    deftype, CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
 use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{PBytes, ValArray, Value};
@@ -158,9 +158,6 @@ struct JsonReadEv;
 
 impl EvalCachedAsync for JsonReadEv {
     const NAME: &str = "json_read";
-    deftype!(
-        "fn([string, bytes, string]) -> Result<PrimNoErr, [`JsonErr(string), `IOErr(string)]>"
-    );
     type Args = ReadInput;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -207,7 +204,6 @@ struct JsonWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const NAME: &str = "json_write_str";
-    deftype!("fn(?#pretty:bool, Any) -> Result<string, `JsonErr(string)>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -237,7 +233,6 @@ struct JsonWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const NAME: &str = "json_write_bytes";
-    deftype!("fn(?#pretty:bool, Any) -> Result<bytes, `JsonErr(string)>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -267,9 +262,6 @@ struct JsonWriteStreamEv;
 
 impl EvalCachedAsync for JsonWriteStreamEv {
     const NAME: &str = "json_write_stream";
-    deftype!(
-        "fn(?#pretty:bool, string, Any) -> Result<null, [`JsonErr(string), `IOErr(string)]>"
-    );
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, serde_json::Value);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

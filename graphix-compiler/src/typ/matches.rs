@@ -248,9 +248,7 @@ impl Type {
                 k0.sig_matches_int(env, k1, tvar_map, hist, adts)?;
                 v0.sig_matches_int(env, v1, tvar_map, hist, adts)
             }
-            (Self::Abstract { .. }, Self::Abstract { .. }) => {
-                bail!("abstract types must have a concrete definition in the implementation")
-            }
+            (Self::Abstract { .. }, Self::Abstract { .. }) => Ok(()),
             (Self::Abstract { id, params: _ }, t0) => match adts.get(id) {
                 None => Ok(()), // it's in another module
                 Some(t1) => {

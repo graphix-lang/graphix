@@ -1,5 +1,5 @@
-let is_match = |#pat, s| 're_is_match;
-let find = |#pat, s| 're_find;
-let captures = |#pat, s| 're_captures;
-let split = |#pat, s| 're_split;
-let splitn = |#pat, #limit, s| 're_splitn
+let is_match = |#pat: string, s: string| -> Result<bool, `ReError(string)> 're_is_match;
+let find = |#pat: string, s: string| -> Result<Array<string>, `ReError(string)> 're_find;
+let captures = |#pat: string, s: string| -> Result<Array<Array<Option<string>>>, `ReError(string)> 're_captures;
+let split = |#pat: string, s: string| -> Result<Array<string>, `ReError(string)> 're_split;
+let splitn = |#pat: string, #limit: i64, s: string| -> Result<Array<string>, `ReError(string)> 're_splitn

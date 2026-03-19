@@ -12,7 +12,7 @@ use graphix_compiler::{
     Event, ExecCtx, LambdaId, Node, Rt, Scope, UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
-    deftype, CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
 use graphix_rt::GXRt;
 use netidx_value::{
@@ -224,15 +224,6 @@ pub(crate) struct HttpClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
     const NAME: &str = "http_client";
-    deftype!(
-        r#"fn(
-            ?#timeout:[duration, null],
-            ?#default_headers:Array<(string, string)>,
-            ?#redirect_limit:u32,
-            ?#ca_cert:[bytes, null],
-            Any
-        ) -> Result<Client, `HTTPError(string)>"#
-    );
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
@@ -273,7 +264,6 @@ pub(crate) struct HttpDefaultClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
     const NAME: &str = "http_default_client";
-    deftype!("fn(Any) -> Result<Client, `HTTPError(string)>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         cached.0.get(0)?.as_ref()?;
@@ -290,7 +280,6 @@ pub(crate) struct HttpServerAddrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
     const NAME: &str = "http_server_addr";
-    deftype!("fn(Server) -> string");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.get(0)?.as_ref()?;
@@ -356,16 +345,6 @@ pub(crate) struct HttpRequestEv;
 
 impl EvalCachedAsync for HttpRequestEv {
     const NAME: &str = "http_request";
-    deftype!(
-        r#"fn(
-            ?#method:Method,
-            ?#headers:Array<(string, string)>,
-            ?#body:[string, null],
-            ?#timeout:[duration, null],
-            Client,
-            string
-        ) -> Result<Response, `HTTPError(string)>"#
-    );
     type Args = RequestArgs<ArcStr>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -407,16 +386,6 @@ pub(crate) struct HttpRequestBinEv;
 
 impl EvalCachedAsync for HttpRequestBinEv {
     const NAME: &str = "http_request_bin";
-    deftype!(
-        r#"fn(
-            ?#method:Method,
-            ?#headers:Array<(string, string)>,
-            ?#body:[bytes, null],
-            ?#timeout:[duration, null],
-            Client,
-            string
-        ) -> Result<BinResponse, `HTTPError(string)>"#
-    );
     type Args = RequestArgs<Bytes>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -714,15 +683,6 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     const NAME: &str = "http_serve";
-    deftype!(
-        r#"fn(
-            #addr:string,
-            ?#cert:[bytes, null],
-            ?#key:[bytes, null],
-            ?#max_connections:i64,
-            #handler:fn(Request) -> Response throws 'e
-        ) -> Result<Server, `HTTPError(string)> throws 'e"#
-    );
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,

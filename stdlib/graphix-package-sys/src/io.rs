@@ -1,7 +1,7 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::errf;
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{PBytes, Value};
 use std::sync::Arc;
 use tokio::{
@@ -18,7 +18,6 @@ pub(crate) struct IoReadEv;
 
 impl EvalCachedAsync for IoReadEv {
     const NAME: &str = "sys_io_read";
-    deftype!("fn(string, u64) -> Result<bytes, `IOError(string)>");
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -53,7 +52,6 @@ pub(crate) struct IoReadExactEv;
 
 impl EvalCachedAsync for IoReadExactEv {
     const NAME: &str = "sys_io_read_exact";
-    deftype!("fn(string, u64) -> Result<bytes, `IOError(string)>");
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -91,7 +89,6 @@ pub(crate) struct IoWriteEv;
 
 impl EvalCachedAsync for IoWriteEv {
     const NAME: &str = "sys_io_write";
-    deftype!("fn(string, bytes) -> Result<u64, `IOError(string)>");
     type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -122,7 +119,6 @@ pub(crate) struct IoWriteExactEv;
 
 impl EvalCachedAsync for IoWriteExactEv {
     const NAME: &str = "sys_io_write_exact";
-    deftype!("fn(string, bytes) -> Result<null, `IOError(string)>");
     type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -153,7 +149,6 @@ pub(crate) struct IoFlushEv;
 
 impl EvalCachedAsync for IoFlushEv {
     const NAME: &str = "sys_io_flush";
-    deftype!("fn(string) -> Result<null, `IOError(string)>");
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

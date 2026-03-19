@@ -1,7 +1,7 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::errf;
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::{
     io::SeekFrom,
@@ -21,10 +21,6 @@ pub(crate) struct FileOpenEv;
 
 impl EvalCachedAsync for FileOpenEv {
     const NAME: &str = "sys_fs_open";
-    deftype!(
-        r#"fn([`Read, `Write, `Append, `ReadWrite, `Create, `CreateNew], string)
-           -> Result<string, `IOError(string)>"#
-    );
     type Args = (ArcStr, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -72,10 +68,6 @@ pub(crate) struct FileSeekEv;
 
 impl EvalCachedAsync for FileSeekEv {
     const NAME: &str = "sys_fs_seek";
-    deftype!(
-        r#"fn(string, [`Start(u64), `End(i64), `Current(i64)])
-           -> Result<u64, `IOError(string)>"#
-    );
     type Args = (Arc<Mutex<Option<StreamKind>>>, SeekFrom);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -119,7 +111,6 @@ pub(crate) struct FileFstatEv;
 
 impl EvalCachedAsync for FileFstatEv {
     const NAME: &str = "sys_fs_fstat";
-    deftype!("fn(string) -> Result<Metadata, `IOError(string)>");
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -150,7 +141,6 @@ pub(crate) struct FileTruncateEv;
 
 impl EvalCachedAsync for FileTruncateEv {
     const NAME: &str = "sys_fs_truncate";
-    deftype!("fn(string, u64) -> Result<null, `IOError(string)>");
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -183,7 +173,6 @@ pub(crate) struct ReadAllOp;
 
 impl EvalCachedAsync for ReadAllOp {
     const NAME: &str = "sys_fs_read_all";
-    deftype!("fn(string) -> Result<string, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -207,7 +196,6 @@ pub(crate) struct ReadAllBinOp;
 
 impl EvalCachedAsync for ReadAllBinOp {
     const NAME: &str = "sys_fs_read_all_bin";
-    deftype!("fn(string) -> Result<bytes, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -231,7 +219,6 @@ pub(crate) struct WriteAllOp;
 
 impl EvalCachedAsync for WriteAllOp {
     const NAME: &str = "sys_fs_write_all";
-    deftype!("fn(#path:string, string) -> Result<null, `IOError(string)>");
     type Args = (ArcStr, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -255,7 +242,6 @@ pub(crate) struct WriteAllBinOp;
 
 impl EvalCachedAsync for WriteAllBinOp {
     const NAME: &str = "sys_fs_write_all_bin";
-    deftype!("fn(#path:string, bytes) -> Result<null, `IOError(string)>");
     type Args = (ArcStr, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -279,7 +265,6 @@ pub(crate) struct RemoveFileOp;
 
 impl EvalCachedAsync for RemoveFileOp {
     const NAME: &str = "sys_fs_remove_file";
-    deftype!("fn(string) -> Result<null, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

@@ -11,7 +11,7 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
-    deftype, CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
+    CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
 };
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value, utils::Either};
@@ -27,7 +27,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_map";
-    deftype!("fn(Array<'a>, fn('a) -> 'b throws 'e) -> Array<'b> throws 'e");
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
         Some(Value::Array(ValArray::from_iter_exact(
@@ -45,7 +44,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_filter";
-    deftype!("fn(Array<'a>, fn('a) -> bool throws 'e) -> Array<'a> throws 'e");
 
     fn finish(&mut self, slots: &[Slot<R, E>], a: &ValArray) -> Option<Value> {
         Some(Value::Array(ValArray::from_iter(slots.iter().zip(a.iter()).filter_map(
@@ -66,7 +64,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_flat_map";
-    deftype!("fn(Array<'a>, fn('a) -> ['b, Array<'b>] throws 'e) -> Array<'b> throws 'e");
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
         Some(Value::Array(ValArray::from_iter(slots.iter().flat_map(|s| {
@@ -87,7 +84,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_filter_map";
-    deftype!("fn(Array<'a>, fn('a) -> Option<'b> throws 'e) -> Array<'b> throws 'e");
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
         Some(Value::Array(ValArray::from_iter(slots.iter().filter_map(|s| {
@@ -108,7 +104,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_find";
-    deftype!("fn(Array<'a>, fn('a) -> bool throws 'e) -> Option<'a> throws 'e");
 
     fn finish(&mut self, slots: &[Slot<R, E>], a: &ValArray) -> Option<Value> {
         let r = slots
@@ -133,7 +128,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_find_map";
-    deftype!("fn(Array<'a>, fn('a) -> Option<'b> throws 'e) -> Option<'b> throws 'e");
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
         let r = slots
@@ -156,7 +150,6 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_fold";
-    deftype!("fn(Array<'a>, 'b, fn('b, 'a) -> 'b throws 'e) -> 'b throws 'e");
 }
 
 type Fold<R, E> = FoldQ<R, E, FoldImpl>;
@@ -166,7 +159,6 @@ struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const NAME: &str = "array_concat";
-    deftype!("fn(Array<'a>, @args: Array<'a>) -> Array<'a>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -198,7 +190,6 @@ struct PushBackEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const NAME: &str = "array_push_back";
-    deftype!("fn(Array<'a>, @args: 'a) -> Array<'a>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -231,7 +222,6 @@ struct PushFrontEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const NAME: &str = "array_push_front";
-    deftype!("fn(Array<'a>, @args: 'a) -> Array<'a>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -264,7 +254,6 @@ struct WindowEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const NAME: &str = "array_window";
-    deftype!("fn(#n:i64, Array<'a>, @args: 'a) -> Array<'a>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -318,7 +307,6 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "array_len";
-    deftype!("fn(Array<'a>) -> i64");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -335,7 +323,6 @@ struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const NAME: &str = "array_flatten";
-    deftype!("fn(Array<Array<'a>>) -> Array<'a>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -361,7 +348,6 @@ struct SortEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const NAME: &str = "array_sort";
-    deftype!("fn(?#dir:Direction, ?#numeric:bool, Array<'a>) -> Array<'a>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fn cn(v: &Value) -> Value {
@@ -403,7 +389,6 @@ struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const NAME: &str = "array_enumerate";
-    deftype!("fn(Array<'a>) -> Array<(i64, 'a)>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::Array(a)) = &from.0[0] {
@@ -423,7 +408,6 @@ struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const NAME: &str = "array_zip";
-    deftype!("fn(Array<'a>, Array<'b>) -> Array<('a, 'b)>");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -447,7 +431,6 @@ struct UnzipEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const NAME: &str = "array_unzip";
-    deftype!("fn(Array<('a, 'b)>) -> (Array<'a>, Array<'b>)");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -487,7 +470,6 @@ struct Group<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
-    deftype!("fn('a, fn(i64, 'a) -> bool throws 'e) -> Array<'a> throws 'e");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -606,7 +588,6 @@ struct Iter(BindId, ExprId);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "array_iter";
-    deftype!("fn(Array<'a>) -> 'a");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -657,7 +638,6 @@ struct IterQ {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "array_iterq";
-    deftype!("fn(#clock:Any, Array<'a>) -> 'a");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -724,7 +704,6 @@ struct Init<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
     const NAME: &str = "array_init";
-    deftype!("fn(i64, fn(i64) -> 'a throws 'e) -> Array<'a> throws 'e");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,

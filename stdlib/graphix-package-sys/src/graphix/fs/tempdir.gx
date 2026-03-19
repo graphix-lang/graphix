@@ -1,3 +1,7 @@
 type T = string;
-let path = |td| 'sys_tempdir_path;
-let create = |#in = null, #name = null, trigger| 'sys_tempdir;
+let path = |td: T| -> string 'sys_tempdir_path;
+let create = |
+    #in: [null, string] = null,
+    #name: [null, `Prefix(string), `Suffix(string)] = null,
+    trigger: Any
+| -> Result<T, `IOError(string)> 'sys_tempdir;

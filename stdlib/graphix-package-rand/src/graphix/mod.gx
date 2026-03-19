@@ -1,3 +1,3 @@
-let rand = |#start = 0.0, #end = 1.0, #clock| 'rand;
-let pick = |a| 'rand_pick;
-let shuffle = |a| 'rand_shuffle
+let rand = 'a: [Int, Float] |#start: 'a = 0.0, #end: 'a = 1.0, #clock: Any| -> 'a 'rand;
+let pick = |a: Array<'a>| -> 'a 'rand_pick;
+let shuffle = |a: Array<'a>| -> Array<'a> 'rand_shuffle

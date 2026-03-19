@@ -4,7 +4,7 @@ use chrono::Utc;
 use graphix_compiler::{
     err, expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package_core::{arity2, deftype, CachedVals};
+use graphix_package_core::{arity2, CachedVals};
 use netidx::{publisher::FromValue, subscriber::Value};
 use std::{ops::SubAssign, time::Duration};
 
@@ -17,7 +17,6 @@ pub(crate) struct AfterIdle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     const NAME: &str = "sys_time_after_idle";
-    deftype!("fn([duration, Number], 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -135,9 +134,6 @@ pub(crate) struct Timer {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     const NAME: &str = "sys_time_timer";
-    deftype!(
-        "fn([duration, Number], [bool, Number]) -> Result<datetime, `TimerError(string)>"
-    );
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -254,7 +250,6 @@ pub(crate) struct Now;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     const NAME: &str = "sys_time_now";
-    deftype!("fn(Any) -> datetime");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,

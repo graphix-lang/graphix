@@ -308,43 +308,48 @@ impl Lambda {
         let _scope = scope.clone();
         let env = ctx.env.clone();
         let _env = ctx.env.clone();
-        let typ = match &l.body {
-            Either::Left(_) => {
-                let args = Arc::from_iter(argspec.iter().map(|a| FnArgType {
-                    label: a.labeled.as_ref().and_then(|dv| {
-                        a.pattern.single_bind().map(|n| (n.clone(), dv.is_some()))
-                    }),
-                    typ: match a.constraint.as_ref() {
-                        Some(t) => t.clone(),
-                        None => Type::empty_tvar(),
-                    },
-                }));
-                let vargs = match vargs {
-                    Some(Some(t)) => Some(t.clone()),
-                    Some(None) => Some(Type::empty_tvar()),
-                    None => None,
-                };
-                let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
-                let explicit_throws = throws.is_some();
-                let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
-                Arc::new(FnType {
-                    constraints,
-                    args,
-                    vargs,
-                    rtype,
-                    throws,
-                    explicit_throws,
-                })
+        if let Either::Right(builtin) = &l.body {
+            if !ctx.builtins.contains_key(builtin.as_str()) {
+                bail!("unknown builtin function {builtin}")
             }
-            Either::Right(builtin) => match ctx.builtins.get(builtin.as_str()) {
-                None => bail!("unknown builtin function {builtin}"),
-                Some((styp, _)) => {
-                    if !ctx.builtins_allowed {
-                        bail!("defining builtins is not allowed in this context")
-                    }
-                    Arc::new(styp.scope_refs(&_original_scope.lexical))
+            if !ctx.builtins_allowed {
+                bail!("defining builtins is not allowed in this context")
+            }
+            for a in argspec.iter() {
+                if a.constraint.is_none() {
+                    bail!("builtin function {builtin} requires all arguments to have type annotations")
                 }
-            },
+            }
+            if rtype.is_none() {
+                bail!("builtin function {builtin} requires a return type annotation")
+            }
+        }
+        let typ = {
+            let args = Arc::from_iter(argspec.iter().map(|a| FnArgType {
+                label: a.labeled.as_ref().and_then(|dv| {
+                    a.pattern.single_bind().map(|n| (n.clone(), dv.is_some()))
+                }),
+                typ: match a.constraint.as_ref() {
+                    Some(t) => t.clone(),
+                    None => Type::empty_tvar(),
+                },
+            }));
+            let vargs = match vargs {
+                Some(Some(t)) => Some(t.clone()),
+                Some(None) => Some(Type::empty_tvar()),
+                None => None,
+            };
+            let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
+            let explicit_throws = throws.is_some();
+            let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
+            Arc::new(FnType {
+                constraints,
+                args,
+                vargs,
+                rtype,
+                throws,
+                explicit_throws,
+            })
         };
         typ.alias_tvars(&mut LPooled::take());
         let _typ = typ.clone();
@@ -381,7 +386,7 @@ impl Lambda {
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
-                    Some((_, init)) => {
+                    Some(init) => {
                         init(ctx, &_typ, &_scope, args, tid).and_then(|apply| {
                             let mut f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ: _typ.clone(), apply });

@@ -3,7 +3,7 @@ use std::fs::FileType;
 use arcstr::{literal, ArcStr};
 use chrono::{DateTime, Utc};
 use graphix_compiler::errf;
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
@@ -11,7 +11,6 @@ pub(crate) struct IsFileEv;
 
 impl EvalCachedAsync for IsFileEv {
     const NAME: &str = "sys_fs_is_file";
-    deftype!("fn(string) -> Result<string, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -36,7 +35,6 @@ pub(crate) struct IsDirEv;
 
 impl EvalCachedAsync for IsDirEv {
     const NAME: &str = "sys_fs_is_dir";
-    deftype!("fn(string) -> Result<string, `IOError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -128,7 +126,6 @@ pub(crate) struct MetadataEv;
 
 impl EvalCachedAsync for MetadataEv {
     const NAME: &str = "sys_fs_metadata";
-    deftype!("fn(?#follow_symlinks:bool, string) -> Result<Metadata, `IOError(string)>");
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

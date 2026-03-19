@@ -24,7 +24,6 @@ use std::{
     fmt::Debug,
     iter,
     marker::PhantomData,
-    sync::LazyLock,
     time::Duration,
 };
 use tokio::time::Instant;
@@ -33,17 +32,6 @@ use triomphe::Arc as TArc;
 pub(crate) mod buffer;
 
 // ── Shared macros ──────────────────────────────────────────────────
-
-#[macro_export]
-macro_rules! deftype {
-    ($s:literal) => {
-        const TYP: ::std::sync::LazyLock<graphix_compiler::typ::FnType> =
-            ::std::sync::LazyLock::new(|| {
-                graphix_compiler::expr::parser::parse_fn_type($s)
-                    .expect("failed to parse fn type {s}")
-            });
-    };
-}
 
 /// Implement `netidx_core::pack::Pack` as a non-serializable stub.
 /// Use this for abstract wrapper types that should never be encoded/decoded.
@@ -164,7 +152,6 @@ pub type ByRefChain = immutable_chunkmap::map::MapS<BindId, BindId>;
 
 pub trait EvalCached<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
-    const TYP: LazyLock<FnType>;
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
@@ -181,7 +168,6 @@ pub struct CachedArgs<T> {
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
-    const TYP: LazyLock<FnType> = T::TYP;
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -224,7 +210,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
-    const TYP: LazyLock<FnType>;
     type Args: Debug + Any + Send + Sync;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
@@ -243,7 +228,6 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<T> {
     const NAME: &str = T::NAME;
-    const TYP: LazyLock<FnType> = T::TYP;
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -387,7 +371,6 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     type Collection: MapCollection;
 
     const NAME: &str;
-    const TYP: LazyLock<FnType>;
 
     /// finish will be called when every lambda instance has produced
     /// a value for the updated array. Out contains the output of the
@@ -426,7 +409,6 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     const NAME: &str = T::NAME;
-    const TYP: LazyLock<FnType> = T::TYP;
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -583,7 +565,6 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     type Collection: MapCollection;
 
     const NAME: &str;
-    const TYP: LazyLock<FnType>;
 }
 
 #[derive(Debug)]
@@ -605,7 +586,6 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     const NAME: &str = T::NAME;
-    const TYP: LazyLock<FnType> = T::TYP;
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -807,7 +787,6 @@ struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const NAME: &str = "core_is_err";
-    deftype!("fn(Any) -> bool");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -841,7 +820,6 @@ struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "core_filter_err";
-    deftype!("fn(Result<'a, 'b>) -> Error<'b>");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -875,7 +853,6 @@ struct ToError;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const NAME: &str = "core_error";
-    deftype!("fn('a) -> Error<'a>");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -908,7 +885,6 @@ struct Once {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
-    deftype!("fn('a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -953,7 +929,6 @@ struct Take {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
-    deftype!("fn(#n:Any, 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1003,7 +978,6 @@ struct Skip {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
-    deftype!("fn(#n:Any, 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1051,7 +1025,6 @@ struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const NAME: &str = "core_all";
-    deftype!("fn(@args: Any) -> Any");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
@@ -1085,7 +1058,6 @@ struct SumEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
-    deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1110,7 +1082,6 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const NAME: &str = "core_product";
-    deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1135,7 +1106,6 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const NAME: &str = "core_divide";
-    deftype!("fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1152,7 +1122,6 @@ struct MinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const NAME: &str = "core_min";
-    deftype!("fn('a, @args:'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1178,7 +1147,6 @@ struct MaxEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
-    deftype!("fn('a, @args: 'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1204,7 +1172,6 @@ struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const NAME: &str = "core_and";
-    deftype!("fn(@args: bool) -> bool");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
@@ -1228,7 +1195,6 @@ struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const NAME: &str = "core_or";
-    deftype!("fn(@args: bool) -> bool");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
@@ -1294,7 +1260,6 @@ struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const NAME: &str = "core_bit_and";
-    deftype!("fn<'a: Int>('a, 'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, &)
@@ -1308,7 +1273,6 @@ struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const NAME: &str = "core_bit_or";
-    deftype!("fn<'a: Int>('a, 'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, |)
@@ -1322,7 +1286,6 @@ struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const NAME: &str = "core_bit_xor";
-    deftype!("fn<'a: Int>('a, 'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, ^)
@@ -1336,7 +1299,6 @@ struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const NAME: &str = "core_bit_not";
-    deftype!("fn<'a: Int>('a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -1364,7 +1326,6 @@ struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const NAME: &str = "core_shl";
-    deftype!("fn<'a: Int>('a, 'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shl)
@@ -1378,7 +1339,6 @@ struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const NAME: &str = "core_shr";
-    deftype!("fn<'a: Int>('a, 'a) -> 'a");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shr)
@@ -1400,7 +1360,6 @@ struct Filter<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "core_filter";
-    deftype!("fn('a, fn('a) -> bool throws 'e) -> 'a throws 'e");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1525,7 +1484,6 @@ struct Queue {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "core_queue";
-    deftype!("fn(#clock:Any, 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1586,7 +1544,6 @@ struct Hold {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "core_hold";
-    deftype!("fn(#clock:Any, 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1642,7 +1599,6 @@ struct Seq {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "core_seq";
-    deftype!("fn(i64, i64) -> Result<i64, `SeqError(string)>");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1703,7 +1659,6 @@ struct Throttle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "core_throttle";
-    deftype!("fn(?#rate:duration, 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1793,7 +1748,6 @@ struct Count {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
-    deftype!("fn(Any) -> i64");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1831,9 +1785,6 @@ struct MeanEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const NAME: &str = "core_mean";
-    deftype!(
-        "fn([Number, Array<Number>], @args: [Number, Array<Number>]) -> Result<f64, `MeanError(string)>"
-    );
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
@@ -1868,7 +1819,6 @@ struct Uniq(Option<Value>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
-    deftype!("fn('a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1908,7 +1858,6 @@ struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "core_never";
-    deftype!("fn(@args: Any) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1985,7 +1934,6 @@ struct Dbg {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "core_dbg";
-    deftype!("fn(?#dest:[`Stdout, `Stderr, Log], 'a) -> 'a");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2065,7 +2013,6 @@ struct Log {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "core_log";
-    deftype!("fn(?#dest:Log, 'a) -> _");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2120,7 +2067,6 @@ macro_rules! printfn {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const NAME: &str = $name;
-            deftype!("fn(?#dest:Log, 'a) -> _");
 
             fn init<'a, 'b, 'c>(
                 _ctx: &'a mut ExecCtx<R, E>,

@@ -125,9 +125,6 @@ fn check_sig<R: Rt, E: UserEvent>(
             };
             match &sig_td.typ {
                 Type::Abstract { id, params: _ } => {
-                    if let Type::Abstract { .. } = &td.typ {
-                        bail!("abstract types must have a concrete definition")
-                    }
                     for (tv0, con0) in td.params.iter() {
                         match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
                             Some((_, con1)) if con0 != con1 => {

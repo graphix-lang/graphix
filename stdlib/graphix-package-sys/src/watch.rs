@@ -11,7 +11,7 @@ use graphix_compiler::{
     errf, expr::ExprId, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, Node,
     Rt, Scope, UserEvent, CBATCH_POOL,
 };
-use graphix_package_core::{deftype, CachedVals};
+use graphix_package_core::{CachedVals};
 use netidx_value::{
     abstract_type::AbstractWrapper, Abstract, FromValue, ValArray, Value,
 };
@@ -253,13 +253,6 @@ pub(crate) struct CreateWatcher {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     const NAME: &str = "sys_watch_create";
-    deftype!(
-        r#"fn(
-            ?#poll_interval:[duration, null],
-            ?#poll_batch_size:[i64, null],
-            Any
-        ) -> Result<Watcher, `WatchError(string)>"#
-    );
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -342,9 +335,6 @@ pub(crate) struct WatchApply {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     const NAME: &str = "sys_watch_watch";
-    deftype!(
-        "fn(?#interest:Array<Interest>, Watcher, string) -> Result<Watch, `WatchError(string)>"
-    );
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -489,9 +479,6 @@ pub(crate) struct WatchPath {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     const NAME: &str = "sys_watch_path";
-    deftype!(
-        "fn(@args: [Watch, Array<Watch>, Map<'k, Watch>]) -> Result<string, `WatchError(string)>"
-    );
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -556,9 +543,6 @@ pub(crate) struct WatchEvents {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     const NAME: &str = "sys_watch_events";
-    deftype!(
-        "fn(@args: [Watch, Array<Watch>, Map<'k, Watch>]) -> Result<{paths: Array<string>, event: Interest}, `WatchError(string)>"
-    );
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,

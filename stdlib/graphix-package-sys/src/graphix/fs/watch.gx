@@ -1,6 +1,16 @@
 type Watcher = string;
 type Watch = string;
-let create = |#poll_interval = null, #poll_batch_size = null, trigger| 'sys_watch_create;
-let watch = |#interest = [`Established, `Create, `Modify, `Delete], watcher, path| 'sys_watch_watch;
-let path = |@args| 'sys_watch_path;
-let events = |@args| 'sys_watch_events;
+let create = |
+    #poll_interval: [duration, null] = null,
+    #poll_batch_size: [i64, null] = null,
+    trigger: Any
+| -> Result<Watcher, `WatchError(string)> 'sys_watch_create;
+let watch = |
+    #interest: Array<Interest> = [`Established, `Create, `Modify, `Delete],
+    watcher: Watcher,
+    path: string
+| -> Result<Watch, `WatchError(string)> 'sys_watch_watch;
+let path = |@args: [Watch, Array<Watch>, Map<'k, Watch>]|
+    -> Result<string, `WatchError(string)> 'sys_watch_path;
+let events = |@args: [Watch, Array<Watch>, Map<'k, Watch>]|
+    -> Result<WatchEvent, `WatchError(string)> 'sys_watch_events;

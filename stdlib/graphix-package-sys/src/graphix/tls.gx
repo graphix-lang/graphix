@@ -1,2 +1,4 @@
-let connect = |#ca_cert = null, hostname, stream| 'sys_tls_connect;
-let accept = |#cert, #key, stream| 'sys_tls_accept
+let connect = |#ca_cert: [bytes, null] = null, hostname: string, stream: io::Stream<`Tcp>|
+    -> Result<io::Stream<`Tls>, `TLSError(string)> 'sys_tls_connect;
+let accept = |#cert: bytes, #key: bytes, stream: io::Stream<`Tcp>|
+    -> Result<io::Stream<`Tls>, `TLSError(string)> 'sys_tls_accept

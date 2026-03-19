@@ -6,7 +6,7 @@ use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{
-    deftype, CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
 use graphix_rt::GXRt;
 use netidx_value::{abstract_type::AbstractWrapper, Abstract, Value};
@@ -257,12 +257,6 @@ pub(crate) struct GxTempDirEv;
 
 impl EvalCachedAsync for GxTempDirEv {
     const NAME: &str = "sys_tempdir";
-    deftype!(
-        r#"fn(?#in:[null, string],
-              ?#name:[null, `Prefix(string), `Suffix(string)],
-              Any)
-           -> Result<string, `IOError(string)>"#
-    );
     type Args = TempDirArgs;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -320,7 +314,6 @@ pub(crate) struct TempDirPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const NAME: &str = "sys_tempdir_path";
-    deftype!("fn(string) -> string");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0.first()?.as_ref()?;
@@ -353,7 +346,6 @@ pub(crate) struct JoinPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const NAME: &str = "sys_join_path";
-    deftype!("fn(string, @args: [string, Array<string>]) -> string");
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();

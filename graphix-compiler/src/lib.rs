@@ -407,7 +407,6 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
 /// graphix-derive crate
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
-    const TYP: LazyLock<FnType>;
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -720,7 +719,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
-    builtins: FxHashMap<&'static str, (FnType, BuiltInInitFn<R, E>)>,
+    builtins: FxHashMap<&'static str, BuiltInInitFn<R, E>>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
@@ -767,7 +766,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert((T::TYP.clone(), T::init));
+                e.insert(T::init);
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }

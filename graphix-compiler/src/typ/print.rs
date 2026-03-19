@@ -9,6 +9,7 @@ use std::fmt::{self, Write};
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Abstract { id, params } if params.is_empty() => write!(f, "abstract"),
             Self::Abstract { id, params: _ } => write!(f, "<abstract#{}>", id.0),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),

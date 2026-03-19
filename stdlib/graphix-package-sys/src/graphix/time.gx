@@ -1,3 +1,4 @@
-let after_idle = |timeout, v| 'sys_time_after_idle;
-let timer = |timeout, repeat| 'sys_time_timer;
-let now = |trigger| 'sys_time_now
+let after_idle = |timeout: [duration, Number], v: 'a| -> 'a 'sys_time_after_idle;
+let timer = |timeout: [duration, Number], repeat: [bool, Number]|
+    -> Result<datetime, `TimerError(string)> 'sys_time_timer;
+let now = |trigger: Any| -> datetime 'sys_time_now

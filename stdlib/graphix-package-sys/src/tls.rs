@@ -4,7 +4,7 @@ use crate::{
 };
 use bytes::Bytes;
 use graphix_compiler::errf;
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::sync::Arc;
 use tokio_rustls::{TlsConnector, TlsAcceptor};
@@ -16,7 +16,6 @@ pub(crate) struct TlsConnectEv;
 
 impl EvalCachedAsync for TlsConnectEv {
     const NAME: &str = "sys_tls_connect";
-    deftype!("fn(?#ca_cert:[bytes, null], string, string) -> Result<string, `TLSError(string)>");
     type Args = (Option<Bytes>, ArcStr, StreamValue);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -108,7 +107,6 @@ pub(crate) struct TlsAcceptEv;
 
 impl EvalCachedAsync for TlsAcceptEv {
     const NAME: &str = "sys_tls_accept";
-    deftype!("fn(#cert:bytes, #key:bytes, string) -> Result<string, `TLSError(string)>");
     type Args = (Bytes, Bytes, StreamValue);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

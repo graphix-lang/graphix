@@ -1,34 +1,34 @@
-let starts_with = |#pfx, s| 'str_starts_with;
-let ends_with = |#sfx, s| 'str_ends_with;
-let contains = |#part, s| 'str_contains;
-let strip_prefix = |#pfx, s| 'str_strip_prefix;
-let strip_suffix = |#sfx, s| 'str_strip_suffix;
-let trim = |s| 'str_trim;
-let trim_start = |s| 'str_trim_start;
-let trim_end = |s| 'str_trim_end;
-let replace = |#pat, #rep, s| 'str_replace;
-let dirname = |path| 'str_dirname;
-let basename = |path| 'str_basename;
-let join = |#sep, @args| 'str_join;
-let concat = |@args| 'str_concat;
+let starts_with = |#pfx: string, s: string| -> bool 'str_starts_with;
+let ends_with = |#sfx: string, s: string| -> bool 'str_ends_with;
+let contains = |#part: string, s: string| -> bool 'str_contains;
+let strip_prefix = |#pfx: string, s: string| -> Option<string> 'str_strip_prefix;
+let strip_suffix = |#sfx: string, s: string| -> Option<string> 'str_strip_suffix;
+let trim = |s: string| -> string 'str_trim;
+let trim_start = |s: string| -> string 'str_trim_start;
+let trim_end = |s: string| -> string 'str_trim_end;
+let replace = |#pat: string, #rep: string, s: string| -> string 'str_replace;
+let dirname = |path: string| -> Option<string> 'str_dirname;
+let basename = |path: string| -> Option<string> 'str_basename;
+let join = |#sep: string, @args: [string, Array<string>]| -> string 'str_join;
+let concat = |@args: [string, Array<string>]| -> string 'str_concat;
 let default_escape: Escape = {
     escape: "\\/\n\r\t\0",
     escape_char: "\\",
     tr: [("\n", "n"), ("\r", "r"), ("\t", "t"), ("\0", "0")]
 };
-let escape = |#esc = default_escape, s| 'str_escape;
-let unescape = |#esc = default_escape, s| 'str_unescape;
-let split = |#pat, s| 'str_split;
-let rsplit = |#pat, s| 'str_rsplit;
-let splitn = |#pat, #n, s| 'str_splitn;
-let rsplitn = |#pat, #n, s| 'str_rsplitn;
-let split_escaped = |#esc, #sep, s| 'str_split_escaped;
-let splitn_escaped = |#n, #esc, #sep, s| 'str_splitn_escaped;
-let split_once = |#pat, s| 'str_split_once;
-let rsplit_once = |#pat, s| 'str_rsplit_once;
-let to_lower = |s| 'str_to_lower;
-let to_upper = |s| 'str_to_upper;
-let sprintf = |fmt, @args| 'str_sprintf;
-let len = |s| 'str_len;
-let sub = |#start, #len, s| 'str_sub;
-let parse = |s| 'str_parse
+let escape = |#esc: Escape = default_escape, s: string| -> Result<string, `StringError(string)> 'str_escape;
+let unescape = |#esc: Escape = default_escape, s: string| -> Result<string, `StringError(string)> 'str_unescape;
+let split = |#pat: string, s: string| -> Array<string> 'str_split;
+let rsplit = |#pat: string, s: string| -> Array<string> 'str_rsplit;
+let splitn = |#pat: string, #n: i64, s: string| -> Result<Array<string>, `StringSplitError(string)> 'str_splitn;
+let rsplitn = |#pat: string, #n: i64, s: string| -> Result<Array<string>, `StringSplitError(string)> 'str_rsplitn;
+let split_escaped = |#esc: string, #sep: string, s: string| -> Result<Array<string>, `SplitEscError(string)> 'str_split_escaped;
+let splitn_escaped = |#n: i64, #esc: string, #sep: string, s: string| -> Result<Array<string>, `SplitNEscError(string)> 'str_splitn_escaped;
+let split_once = |#pat: string, s: string| -> Option<(string, string)> 'str_split_once;
+let rsplit_once = |#pat: string, s: string| -> Option<(string, string)> 'str_rsplit_once;
+let to_lower = |s: string| -> string 'str_to_lower;
+let to_upper = |s: string| -> string 'str_to_upper;
+let sprintf = |fmt: string, @args: Any| -> string 'str_sprintf;
+let len = |s: string| -> i64 'str_len;
+let sub = |#start: i64, #len: i64, s: string| -> Result<string, `SubError(string)> 'str_sub;
+let parse = |s: string| -> Result<PrimNoErr, Any> 'str_parse

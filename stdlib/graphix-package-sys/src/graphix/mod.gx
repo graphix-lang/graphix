@@ -1,1 +1,1 @@
-let join_path = |path, @args| 'sys_join_path;
+let join_path = |path: string, @args: [string, Array<string>]| -> string 'sys_join_path;

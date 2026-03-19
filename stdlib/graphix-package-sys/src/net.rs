@@ -5,7 +5,7 @@ use graphix_compiler::{
     err, errf, expr::ExprId, node::genn, typ::Type, Apply, BindId, BuiltIn, Event,
     ExecCtx, LambdaId, Node, Rt, Scope, UserEvent,
 };
-use graphix_package_core::{arity1, arity2, deftype, CachedVals};
+use graphix_package_core::{arity1, arity2, CachedVals};
 use netidx::{
     path::Path,
     publisher::Val,
@@ -40,7 +40,6 @@ pub(crate) struct Write {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     const NAME: &str = "sys_net_write";
-    deftype!("fn(string, Any) -> Result<_, `WriteError(string)>");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -155,7 +154,6 @@ pub(crate) struct Subscribe {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const NAME: &str = "sys_net_subscribe";
-    deftype!("fn(string) -> Result<Primitive, `SubscribeError(string)>");
 
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -240,7 +238,6 @@ pub(crate) struct RpcCall {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     const NAME: &str = "sys_net_call";
-    deftype!("fn(string, Array<(string, Any)>) -> Result<Primitive, `RpcError(string)>");
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -322,7 +319,6 @@ macro_rules! list {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin;
-            deftype!($typ);
 
             fn init<'a, 'b, 'c>(
                 ctx: &'a mut ExecCtx<R, E>,
@@ -419,9 +415,6 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     const NAME: &str = "sys_net_publish";
-    deftype!(
-        "fn(?#on_write:fn(Any) -> _ throws 'e, string, Any) -> Result<_, `PublishError(string)> throws 'e"
-    );
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -564,14 +557,6 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     const NAME: &str = "sys_net_publish_rpc";
-    deftype!(
-        r#"fn(
-            #path:string,
-            #doc:string,
-            #spec:Array<ArgSpec>,
-            #f:fn(Array<(string, Any)>) -> Any throws 'e
-        ) -> Result<_, `PublishRpcError(string)> throws 'e"#
-    );
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,

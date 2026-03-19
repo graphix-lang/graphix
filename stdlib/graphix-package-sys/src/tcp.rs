@@ -1,6 +1,6 @@
 use arcstr::ArcStr;
 use graphix_compiler::errf;
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{abstract_type::AbstractWrapper, Abstract, Value};
 use std::{
     cmp::Ordering,
@@ -76,7 +76,6 @@ pub(crate) struct TcpConnectEv;
 
 impl EvalCachedAsync for TcpConnectEv {
     const NAME: &str = "sys_tcp_connect";
-    deftype!("fn(string) -> Result<string, `TCPError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -102,7 +101,6 @@ pub(crate) struct TcpListenEv;
 
 impl EvalCachedAsync for TcpListenEv {
     const NAME: &str = "sys_tcp_listen";
-    deftype!("fn(string) -> Result<string, `TCPError(string)>");
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -130,7 +128,6 @@ pub(crate) struct TcpAcceptEv;
 
 impl EvalCachedAsync for TcpAcceptEv {
     const NAME: &str = "sys_tcp_accept";
-    deftype!("fn(string, Any) -> Result<string, `TCPError(string)>");
     type Args = Arc<TcpListener>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -157,7 +154,6 @@ pub(crate) struct TcpShutdownEv;
 
 impl EvalCachedAsync for TcpShutdownEv {
     const NAME: &str = "sys_tcp_shutdown";
-    deftype!("fn(string) -> Result<null, `TCPError(string)>");
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -189,7 +185,6 @@ pub(crate) struct TcpPeerAddrEv;
 
 impl EvalCachedAsync for TcpPeerAddrEv {
     const NAME: &str = "sys_tcp_peer_addr";
-    deftype!("fn(string) -> Result<string, `TCPError(string)>");
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -223,7 +218,6 @@ pub(crate) struct TcpLocalAddrEv;
 
 impl EvalCachedAsync for TcpLocalAddrEv {
     const NAME: &str = "sys_tcp_local_addr";
-    deftype!("fn(string) -> Result<string, `TCPError(string)>");
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -257,7 +251,6 @@ pub(crate) struct TcpListenerAddrEv;
 
 impl EvalCachedAsync for TcpListenerAddrEv {
     const NAME: &str = "sys_tcp_listener_addr";
-    deftype!("fn(string) -> Result<string, `TCPError(string)>");
     type Args = Arc<TcpListener>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

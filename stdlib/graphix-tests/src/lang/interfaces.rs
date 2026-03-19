@@ -364,10 +364,10 @@ run!(
     "#
 );
 
-// Error: implementation still declares abstract type (no concrete def)
+// Abstract type in implementation is allowed (type stays opaque)
 run!(
     abstract_type_still_abstract,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| v.map(|v| v == &Value::I64(0)).unwrap_or(false),
     "/test.gx" => r#"
         mod inner;
         let result = 0

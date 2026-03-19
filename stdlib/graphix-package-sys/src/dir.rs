@@ -2,7 +2,7 @@ use super::{convert_path, metadata::convert_filetype};
 use anyhow::Result;
 use arcstr::{literal, ArcStr};
 use graphix_compiler::errf;
-use graphix_package_core::{deftype, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::result;
@@ -44,17 +44,6 @@ pub(crate) struct ReadDirEv;
 
 impl EvalCachedAsync for ReadDirEv {
     const NAME: &str = "sys_fs_readdir";
-    deftype!(
-        r#"fn(
-            ?#max_depth:i64,
-            ?#min_depth:i64,
-            ?#contents_first:bool,
-            ?#follow_symlinks:bool,
-            ?#follow_root_symlink:bool,
-            ?#same_filesystem:bool,
-            string
-        ) -> Result<Array<DirEntry>, `IOError(string)>"#
-    );
     type Args = result::Result<ReadDirArgs, ArcStr>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -120,7 +109,6 @@ pub(crate) struct CreateDirOp;
 
 impl EvalCachedAsync for CreateDirOp {
     const NAME: &str = "sys_fs_create_dir";
-    deftype!("fn(?#all:bool, string) -> Result<null, `IOError(string)>");
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -149,7 +137,6 @@ pub(crate) struct RemoveDirOp;
 
 impl EvalCachedAsync for RemoveDirOp {
     const NAME: &str = "sys_fs_remove_dir";
-    deftype!("fn(?#all:bool, string) -> Result<null, `IOError(string)>");
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

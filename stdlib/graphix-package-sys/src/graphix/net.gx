@@ -1,7 +1,15 @@
-let write = |path, value| 'sys_net_write;
-let subscribe = |path| 'sys_net_subscribe;
-let call = |path, args| 'sys_net_call;
-let rpc = |#path, #doc, #spec, #f| 'sys_net_publish_rpc;
-let list = |#update = sys::time::timer(1, true), path| 'sys_net_list;
-let list_table = |#clock = sys::time::timer(1, true), path| 'sys_net_list_table;
-let publish = |#on_write = |v| never(v), path, v| 'sys_net_publish
+let write = |path: string, value: Any| -> Result<_, `WriteError(string)> 'sys_net_write;
+let subscribe = |path: string| -> Result<Primitive, `SubscribeError(string)> 'sys_net_subscribe;
+let call = |path: string, args: Array<(string, Any)>| -> Result<Primitive, `RpcError(string)> 'sys_net_call;
+let rpc = |
+    #path: string,
+    #doc: string,
+    #spec: Array<ArgSpec>,
+    #f: fn(Array<(string, Any)>) -> Any throws 'e
+| -> Result<_, `PublishRpcError(string)> throws 'e 'sys_net_publish_rpc;
+let list = |#update: Any = sys::time::timer(1, true), path: string|
+    -> Result<Array<string>, `ListError(string)> 'sys_net_list;
+let list_table = |#update: Any = sys::time::timer(1, true), path: string|
+    -> Result<Table, `ListError(string)> 'sys_net_list_table;
+let publish = |#on_write: fn(Any) -> _ throws 'e = |v| never(v), path: string, v: Any|
+    -> Result<_, `PublishError(string)> throws 'e 'sys_net_publish
