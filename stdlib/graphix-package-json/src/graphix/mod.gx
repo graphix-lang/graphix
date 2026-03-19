@@ -1,0 +1,4 @@
+let read = |input| 'json_read;
+let write_str = |#pretty = false, value| 'json_write_str;
+let write_bytes = |#pretty = false, value| 'json_write_bytes;
+let write_stream = |#pretty = false, stream, value| 'json_write_stream

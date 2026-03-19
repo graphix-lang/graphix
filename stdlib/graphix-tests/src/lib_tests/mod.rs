@@ -3,6 +3,7 @@ mod bitwise;
 mod buffer;
 mod core;
 mod http;
+mod json;
 mod map;
 mod net;
 #[path = "str.rs"]

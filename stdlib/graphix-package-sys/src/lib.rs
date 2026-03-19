@@ -38,7 +38,7 @@ pub(crate) mod watch;
 
 // ── StreamKind ─────────────────────────────────────────────────
 
-pub(crate) enum StreamKind {
+pub enum StreamKind {
     File(tokio::fs::File),
     Tcp(tokio::net::TcpStream),
     Tls(tokio_rustls::TlsStream<tokio::net::TcpStream>),
@@ -120,8 +120,8 @@ impl AsyncWrite for StreamKind {
 // ── StreamValue ────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub(crate) struct StreamValue {
-    pub(crate) inner: Arc<Mutex<Option<StreamKind>>>,
+pub struct StreamValue {
+    pub inner: Arc<Mutex<Option<StreamKind>>>,
 }
 
 impl PartialEq for StreamValue {
@@ -152,7 +152,7 @@ impl Hash for StreamValue {
 
 graphix_package_core::impl_no_pack!(StreamValue);
 
-pub(crate) static STREAM_WRAPPER: LazyLock<AbstractWrapper<StreamValue>> =
+pub static STREAM_WRAPPER: LazyLock<AbstractWrapper<StreamValue>> =
     LazyLock::new(|| {
         let id = uuid::Uuid::from_bytes([
             0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x0c, 0x4d, 0x1e, 0x2f, 0x30, 0x41, 0x52,
@@ -173,7 +173,7 @@ pub(crate) fn wrap_tcp(stream: tokio::net::TcpStream) -> Value {
     })
 }
 
-pub(crate) fn get_stream(
+pub fn get_stream(
     cached: &CachedVals,
     idx: usize,
 ) -> Option<Arc<Mutex<Option<StreamKind>>>> {
@@ -186,7 +186,7 @@ pub(crate) fn get_stream(
     }
 }
 
-pub(crate) fn get_stream_value(
+pub fn get_stream_value(
     cached: &CachedVals,
     idx: usize,
 ) -> Option<StreamValue> {

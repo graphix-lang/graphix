@@ -118,6 +118,7 @@ members = [
     "stdlib/graphix-package-str",
     "stdlib/graphix-package-sys",
     "stdlib/graphix-package-http",
+    "stdlib/graphix-package-json",
     "stdlib/graphix-package-tui",
     "stdlib/graphix-package-gui",
     "stdlib/graphix-tests"

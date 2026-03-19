@@ -1,0 +1,11 @@
+/// Parse JSON from a string, byte array, or I/O stream.
+val read: fn([string, bytes, sys::io::Stream<'a>]) -> Result<PrimNoErr, [`JsonErr(string), `IOErr(string)]>;
+
+/// Serialize a value to a JSON string.
+val write_str: fn(?#pretty: bool, Any) -> Result<string, `JsonErr(string)>;
+
+/// Serialize a value to JSON bytes.
+val write_bytes: fn(?#pretty: bool, Any) -> Result<bytes, `JsonErr(string)>;
+
+/// Serialize a value and write JSON to a stream.
+val write_stream: fn(?#pretty: bool, sys::io::Stream<'a>, Any) -> Result<null, [`JsonErr(string), `IOErr(string)]>;
