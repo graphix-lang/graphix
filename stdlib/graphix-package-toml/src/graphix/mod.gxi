@@ -1,0 +1,13 @@
+use sys::io;
+
+/// Parse TOML from a string, byte array, or I/O stream.
+val read: fn([string, bytes, Stream<'a>]) -> Result<PrimNoErr, [`TomlErr(string), `IOErr(string)]>;
+
+/// Serialize a value to a TOML string.
+val write_str: fn(?#pretty: bool, Any) -> Result<string, `TomlErr(string)>;
+
+/// Serialize a value to TOML bytes.
+val write_bytes: fn(?#pretty: bool, Any) -> Result<bytes, `TomlErr(string)>;
+
+/// Serialize a value and write TOML to a stream.
+val write_stream: fn(?#pretty: bool, Stream<'a>, Any) -> Result<null, [`TomlErr(string), `IOErr(string)]>;

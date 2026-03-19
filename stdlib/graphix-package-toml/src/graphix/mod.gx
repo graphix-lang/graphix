@@ -1,0 +1,4 @@
+let read = |input: [string, bytes, Stream<'a>]| -> Result<PrimNoErr, [`TomlErr(string), `IOErr(string)]> 'toml_read;
+let write_str = |#pretty: bool = false, value: Any| -> Result<string, `TomlErr(string)> 'toml_write_str;
+let write_bytes = |#pretty: bool = false, value: Any| -> Result<bytes, `TomlErr(string)> 'toml_write_bytes;
+let write_stream = |#pretty: bool = false, stream: Stream<'a>, value: Any| -> Result<null, [`TomlErr(string), `IOErr(string)]> 'toml_write_stream

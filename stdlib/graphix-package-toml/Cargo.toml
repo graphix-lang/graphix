@@ -1,0 +1,38 @@
+[package]
+name = "graphix-package-toml"
+version = "0.6.0"
+authors = ["Eric Stokes <letaris@gmail.com>"]
+edition = "2024"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, toml package"
+documentation = "https://docs.rs/graphix-package-toml"
+readme = "../../README.md"
+license = "MIT"
+categories = ["network-programming", "compilers", "gui"]
+exclude = ["../../book"]
+
+[features]
+default = []
+krb5_iov = ["netidx/krb5_iov"]
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+compact_str = { workspace = true }
+fxhash = { workspace = true }
+graphix-compiler = { version = "0.6.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.6.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.6.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.6.0", path = "../graphix-package-core" }
+graphix-package-sys = { version = "0.6.0", path = "../graphix-package-sys" }
+graphix-rt = { version = "0.6.0", path = "../../graphix-rt" }
+poolshark = { workspace = true }
+netidx-core = { workspace = true }
+netidx-value = { workspace = true }
+netidx = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+triomphe = { workspace = true }

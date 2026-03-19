@@ -23,6 +23,7 @@ The standard library is split into individual packages under `stdlib/`:
 - **graphix-package-array**, **-map**, **-str**, **-re**, **-rand**: Data structure and utility packages
 - **graphix-package-sys**: System-level I/O (unified streams, filesystem, TCP, TLS, netidx, timers)
 - **graphix-package-http**: HTTP client/server and REST helpers
+- **graphix-package-toml**: TOML serialization/deserialization
 - **graphix-package-tui**: Terminal UI widgets (ratatui-based)
 - **graphix-package-gui**: Graphical UI widgets (iced-based)
 - **graphix-tests**: Language feature and stdlib integration tests (separate crate to avoid circular dev-deps)

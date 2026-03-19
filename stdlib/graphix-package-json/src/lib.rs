@@ -6,7 +6,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
 use graphix_package_sys::{get_stream, StreamKind};
 use netidx_value::{PBytes, ValArray, Value};
@@ -51,32 +51,6 @@ fn json_to_value(json: serde_json::Value) -> Value {
             Value::Array(ValArray::from_iter_exact(vals.drain(..)))
         }
     }
-}
-
-/// Check if a Value is a struct-shaped array: non-empty, every element is
-/// a 2-element array with a string first element, keys sorted ascending.
-fn is_struct(arr: &ValArray) -> bool {
-    if arr.is_empty() {
-        return false;
-    }
-    let mut prev: Option<&ArcStr> = None;
-    for v in arr.iter() {
-        match v {
-            Value::Array(pair) if pair.len() == 2 => match &pair[0] {
-                Value::String(k) => {
-                    if let Some(p) = prev {
-                        if k <= p {
-                            return false;
-                        }
-                    }
-                    prev = Some(k);
-                }
-                _ => return false,
-            },
-            _ => return false,
-        }
-    }
-    true
 }
 
 fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
@@ -195,7 +169,7 @@ impl EvalCachedAsync for JsonReadEv {
                         Some(s) => s,
                         None => return errf!("IOErr", "stream unavailable"),
                     };
-                    let mut buf = Vec::new();
+                    let mut buf: LPooled<Vec<u8>> = LPooled::take();
                     if let Err(e) = s.read_to_end(&mut buf).await {
                         return errf!("IOErr", "read failed: {e}");
                     }

@@ -83,6 +83,34 @@ macro_rules! arity2 {
 
 pub mod testing;
 
+// ── Shared helpers ────────────────────────────────────────────────
+
+/// Check if a Value is a struct-shaped array: non-empty, every element is
+/// a 2-element array with a string first element, keys sorted ascending.
+pub fn is_struct(arr: &ValArray) -> bool {
+    if arr.is_empty() {
+        return false;
+    }
+    let mut prev: Option<&ArcStr> = None;
+    for v in arr.iter() {
+        match v {
+            Value::Array(pair) if pair.len() == 2 => match &pair[0] {
+                Value::String(k) => {
+                    if let Some(p) = prev {
+                        if k <= p {
+                            return false;
+                        }
+                    }
+                    prev = Some(k);
+                }
+                _ => return false,
+            },
+            _ => return false,
+        }
+    }
+    true
+}
+
 // ── Shared traits and structs ──────────────────────────────────────
 
 #[derive(Debug)]
