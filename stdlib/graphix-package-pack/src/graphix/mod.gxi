@@ -1,0 +1,10 @@
+use sys::io;
+
+/// Decode a value from packed binary bytes or stream.
+val read: fn([bytes, Stream<'a>]) -> Result<PrimNoErr, [`PackErr(string), `IOErr(string)]>;
+
+/// Encode a value to packed binary bytes.
+val write_bytes: fn(Any) -> Result<bytes, `PackErr(string)>;
+
+/// Encode a value and write to a stream.
+val write_stream: fn(Stream<'a>, Any) -> Result<null, [`PackErr(string), `IOErr(string)]>;

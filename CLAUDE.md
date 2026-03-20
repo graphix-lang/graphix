@@ -25,6 +25,7 @@ The standard library is split into individual packages under `stdlib/`:
 - **graphix-package-http**: HTTP client/server and REST helpers
 - **graphix-package-toml**: TOML serialization/deserialization
 - **graphix-package-xls**: Spreadsheet reading (xlsx, xls, ods, xlsb via calamine)
+- **graphix-package-pack**: Native binary serialization via netidx Pack format
 - **graphix-package-tui**: Terminal UI widgets (ratatui-based)
 - **graphix-package-gui**: Graphical UI widgets (iced-based)
 - **graphix-tests**: Language feature and stdlib integration tests (separate crate to avoid circular dev-deps)

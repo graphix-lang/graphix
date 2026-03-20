@@ -1,24 +1,3 @@
-let stylesheet = |
-  #palette: Palette,
-  #button: [ButtonStyle, null] = null,
-  #checkbox: [CheckboxStyle, null] = null,
-  #container: [ContainerStyle, null] = null,
-  #menu: [MenuStyle, null] = null,
-  #pick_list: [PickListStyle, null] = null,
-  #progress_bar: [ProgressBarStyle, null] = null,
-  #radio: [RadioStyle, null] = null,
-  #rule: [RuleStyle, null] = null,
-  #scrollable: [ScrollableStyle, null] = null,
-  #slider: [SliderStyle, null] = null,
-  #text_editor: [TextEditorStyle, null] = null,
-  #text_input: [TextInputStyle, null] = null,
-  #toggler: [TogglerStyle, null] = null
-| -> StyleSheet {
-  button, checkbox, container, menu, palette,
-  pick_list, progress_bar, radio, rule,
-  scrollable, slider, text_editor, text_input, toggler
-};
-
 let button_style = |
   #background: [Color, null] = null,
   #border_color: [Color, null] = null,
@@ -131,4 +110,25 @@ let toggler_style = |
   #foreground: [Color, null] = null,
   #foreground_border_color: [Color, null] = null,
   #text_color: [Color, null] = null
-| -> TogglerStyle { background, background_border_color, border_radius, foreground, foreground_border_color, text_color }
+| -> TogglerStyle { background, background_border_color, border_radius, foreground, foreground_border_color, text_color };
+
+let stylesheet = |
+  #palette: Palette,
+  #button: [ButtonStyle, null] = null,
+  #checkbox: [CheckboxStyle, null] = null,
+  #container: [ContainerStyle, null] = null,
+  #menu: [MenuStyle, null] = null,
+  #pick_list: [PickListStyle, null] = null,
+  #progress_bar: [ProgressBarStyle, null] = null,
+  #radio: [RadioStyle, null] = null,
+  #rule: [RuleStyle, null] = null,
+  #scrollable: [ScrollableStyle, null] = null,
+  #slider: [SliderStyle, null] = null,
+  #text_editor: [TextEditorStyle, null] = null,
+  #text_input: [TextInputStyle, null] = null,
+  #toggler: [TogglerStyle, null] = null
+| -> StyleSheet {
+  button, checkbox, container, menu, palette,
+  pick_list, progress_bar, radio, rule,
+  scrollable, slider, text_editor, text_input, toggler
+};

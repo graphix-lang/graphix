@@ -12,3 +12,4 @@ mod str_tests;
 mod tcp;
 mod tls;
 mod xls;
+mod pack;
