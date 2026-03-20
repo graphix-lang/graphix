@@ -115,7 +115,7 @@ enum Command {
 }
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version, about, trailing_var_arg = true)]
 struct Params {
     #[command(subcommand)]
     command: Option<Command>,
@@ -177,6 +177,9 @@ struct Params {
     /// always wins
     #[arg(short = 'W')]
     warn: Vec<RawFlag>,
+    /// arguments passed to the graphix program (everything after the filename)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    program_args: Vec<String>,
 }
 
 impl Params {
@@ -310,6 +313,9 @@ fn tokio_main(
             p.get_pub_sub(cfg).await?
         };
         let mut shell = ShellBuilder::<NoExt>::default();
+        let program_args: Vec<ArcStr> =
+            p.program_args.iter().map(|s| ArcStr::from(s.as_str())).collect();
+        shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
         if let Some(t) = p.publish_timeout {
             shell = shell.publish_timeout(Duration::from_secs(t));

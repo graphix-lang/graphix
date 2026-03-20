@@ -1,3 +1,4 @@
+mod args;
 mod array;
 mod bitwise;
 mod buffer;
@@ -9,6 +10,7 @@ mod map;
 mod net;
 #[path = "str.rs"]
 mod str_tests;
+mod sys;
 mod tcp;
 mod tls;
 mod xls;

@@ -1,0 +1,42 @@
+let positional = |#name: string, #help: [string, null] = null, #required: [bool, null] = null|
+    -> Arg {
+        name,
+        help,
+        required,
+        kind: `Positional,
+        short: null,
+        default: null,
+    };
+
+let option = |#name: string, #short: [string, null] = null, #help: [string, null] = null,
+              #default: [string, null] = null, #required: [bool, null] = null|
+    -> Arg {
+        name,
+        kind: `Option,
+        short,
+        help,
+        default,
+        required
+    };
+
+let flag = |#name: string, #short: [string, null] = null, #help: [string, null] = null|
+    -> Arg {
+        name,
+        kind: `Flag,
+        short,
+        help,
+        default: null,
+        required: null
+    };
+
+let command = |#name: string, #version: [string, null] = null, #about: [string, null] = null,
+               #subcommands: Array<Command> = [], args: Array<Arg>|
+    -> Command {
+        name,
+        version,
+        about,
+        args,
+        subcommands
+    };
+
+let parse = |cmd: Command| -> [ParseResult, Error<`ArgError(string)>] 'args_parse

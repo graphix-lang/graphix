@@ -88,7 +88,8 @@
       "Bash(cat << 'EOF' | rustc --edition 2024 -\nuse std::time::Duration;\nfn main\\(\\) {\n    let d = Duration::from_secs\\(10\\);\n    let _ = d.checked_mul_f32\\(2.0\\);\n    let _ = d.checked_mul_f64\\(2.0\\);\n}\nEOF)",
       "Bash(for f:*)",
       "Bash(for i:*)",
-      "Bash(openssl x509:*)"
+      "Bash(openssl x509:*)",
+      "Bash(grep -rn '?#' stdlib/*/src/graphix/*.gxi)"
     ],
     "deny": [],
     "ask": []
