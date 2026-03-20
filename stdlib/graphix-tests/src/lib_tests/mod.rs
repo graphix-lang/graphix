@@ -11,3 +11,4 @@ mod net;
 mod str_tests;
 mod tcp;
 mod tls;
+mod xls;

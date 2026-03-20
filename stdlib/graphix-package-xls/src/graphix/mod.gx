@@ -1,0 +1,2 @@
+let sheets = |input: [bytes, Stream<'a>]| -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]> 'xls_sheets;
+let read = |input: [bytes, Stream<'a>], sheet: string| -> Result<Array<Array<PrimNoErr>>, [`XlsErr(string), `IOErr(string)]> 'xls_read
