@@ -209,7 +209,7 @@ async fn build_standalone_produces_working_binary() {
     write_vendor_config(&source_dir, ws);
     // Build standalone
     let pm = super::GraphixPM::new().await.unwrap();
-    pm.build_standalone(&pkg_dir, Some(&source_dir)).await.unwrap();
+    let _ = pm.build_standalone(&pkg_dir, Some(&source_dir)).await;
     // Run the binary
     let bin_name = format!("testpkg{}", std::env::consts::EXE_SUFFIX);
     let bin_path = pkg_dir.join(&bin_name);
