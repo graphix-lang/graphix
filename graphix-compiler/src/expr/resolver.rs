@@ -199,12 +199,14 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     enum Item<'a> {
         Module(&'a ArcStr),
         TypeDef(&'a TypeDefExpr),
+        Use(&'a ModPath),
     }
     impl<'a> PartialEq for Item<'a> {
         fn eq(&self, other: &Self) -> bool {
             match (self, other) {
                 (Self::Module(a), Self::Module(b)) => a == b,
                 (Self::TypeDef(a), Self::TypeDef(b)) => a.name == b.name,
+                (Self::Use(a), Self::Use(b)) => a == b,
                 (_, _) => false,
             }
         }
@@ -221,6 +223,10 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     1u8.hash(state);
                     td.name.hash(state);
                 }
+                Self::Use(m) => {
+                    2u8.hash(state);
+                    m.hash(state);
+                }
             }
         }
     }
@@ -233,6 +239,7 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 }
                 .to_expr_nopos(),
                 Item::TypeDef(td) => ExprKind::TypeDef(td.clone()).to_expr_nopos(),
+                Item::Use(m) => ExprKind::Use { name: m.clone() }.to_expr_nopos(),
             }
         }
     }
@@ -261,11 +268,11 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         }};
     }
     for si in &*sig.items {
-        if let SigKind::Module(name) = &si.kind {
-            push!(Module, name)
-        }
-        if let SigKind::TypeDef(td) = &si.kind {
-            push!(TypeDef, td)
+        match &si.kind {
+            SigKind::Module(name) => push!(Module, name),
+            SigKind::TypeDef(td) => push!(TypeDef, td),
+            SigKind::Use(m) => push!(Use, m),
+            SigKind::Bind(_) => (),
         }
         last = Some(si);
     }
@@ -275,6 +282,9 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         }
         if let ExprKind::TypeDef(td) = &e.kind {
             in_sig.shift_remove(&Item::TypeDef(td));
+        }
+        if let ExprKind::Use { name } = &e.kind {
+            in_sig.shift_remove(&Item::Use(name));
         }
     }
     if in_sig.is_empty() {

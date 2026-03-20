@@ -20,7 +20,7 @@ bitflags = "2"
 bytes = { version = "1", features = ["serde"] }
 cargo_toml = "0.22.3"
 chrono = { version = "^0.4.24", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "string"] }
 cp_r = "0.5"
 combine = "4"
 compact_str = { version = "0.9", features = ["serde"] }
@@ -86,6 +86,8 @@ tokio = { version = "1", features = [
     "io-std",
 ] }
 toml = { version = "1" }
+calamine = { version = "0.34", features = ["dates"] }
+rust_xlsxwriter = "0.94"
 toml_edit = { version = "0.25" }
 triomphe = { version = "0.1" }
 uuid = "1"
@@ -117,11 +119,14 @@ members = [
     "stdlib/graphix-package-re",
     "stdlib/graphix-package-str",
     "stdlib/graphix-package-sys",
+    "stdlib/graphix-package-args",
     "stdlib/graphix-package-http",
     "stdlib/graphix-package-json",
     "stdlib/graphix-package-toml",
     "stdlib/graphix-package-tui",
     "stdlib/graphix-package-gui",
     "stdlib/graphix-package-db",
+    "stdlib/graphix-package-xls",
+    "stdlib/graphix-package-pack",
     "stdlib/graphix-tests"
 ]

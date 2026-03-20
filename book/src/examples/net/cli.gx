@@ -1,0 +1,23 @@
+use args;
+
+let cli = args::parse(
+    args::command(
+        #name: "example",
+        #version: "0.1.0",
+        #about: "An example CLI tool",
+        #subcommands: [
+            args::command(
+                #name: "serve",
+                [args::option(#name: "port", #short: "p", #default: "8080")]
+            )
+        ],
+        [
+            args::positional(#name: "file", #help: "Input file"),
+            args::option(#name: "count", #short: "n", #default: "1", #help: "Repeat count"),
+            args::flag(#name: "verbose", #short: "v", #help: "Verbose output")
+        ]
+    )
+)$;
+
+println("Command: [cli.command]");
+println("Values: [cli.values]");

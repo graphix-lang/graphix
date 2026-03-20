@@ -1,0 +1,2 @@
+use sys;
+println(sys::args());

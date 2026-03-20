@@ -24,6 +24,7 @@ pub(crate) fn register<X: GXExt>(
     graphix_package_str::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_map::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_sys::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_args::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_http::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_re::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_rand::P::register(ctx, modules, &mut root_mods)?;
@@ -75,6 +76,7 @@ pub(crate) async fn maybe_init_custom<X: GXExt>(
     try_pkg!(graphix_package_http::P);
     try_pkg!(graphix_package_re::P);
     try_pkg!(graphix_package_rand::P);
+    try_pkg!(graphix_package_args::P);
     try_pkg!(graphix_package_tui::P);
     #[cfg(feature = "gui")]
     try_pkg!(graphix_package_gui::P);

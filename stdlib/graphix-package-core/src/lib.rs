@@ -31,6 +31,12 @@ use triomphe::Arc as TArc;
 
 pub(crate) mod buffer;
 
+// ── Program arguments ─────────────────────────────────────────────
+
+/// Program arguments stored in LibState. Index 0 is the script filename.
+#[derive(Default)]
+pub struct ProgramArgs(pub Vec<ArcStr>);
+
 // ── Shared macros ──────────────────────────────────────────────────
 
 /// Implement `netidx_core::pack::Pack` as a non-serializable stub.
@@ -178,12 +184,18 @@ impl CachedVals {
 
 pub type ByRefChain = immutable_chunkmap::map::MapS<BindId, BindId>;
 
-pub trait EvalCached<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
+pub trait EvalCached<R: Rt, E: UserEvent>:
+    Debug + Default + Send + Sync + 'static
+{
     const NAME: &str;
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>, _from: &mut [Node<R, E>]) -> Result<()> {
+    fn typecheck(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -1276,18 +1288,42 @@ macro_rules! int_binop {
 macro_rules! int_shift {
     ($from:expr, $method:ident) => {
         match (&$from.0[0], &$from.0[1]) {
-            (Some(Value::U8(l)), Some(Value::U8(r))) => Some(Value::U8(l.$method(*r as u32))),
-            (Some(Value::I8(l)), Some(Value::I8(r))) => Some(Value::I8(l.$method(*r as u32))),
-            (Some(Value::U16(l)), Some(Value::U16(r))) => Some(Value::U16(l.$method(*r as u32))),
-            (Some(Value::I16(l)), Some(Value::I16(r))) => Some(Value::I16(l.$method(*r as u32))),
-            (Some(Value::U32(l)), Some(Value::U32(r))) => Some(Value::U32(l.$method(*r as u32))),
-            (Some(Value::V32(l)), Some(Value::V32(r))) => Some(Value::V32(l.$method(*r as u32))),
-            (Some(Value::I32(l)), Some(Value::I32(r))) => Some(Value::I32(l.$method(*r as u32))),
-            (Some(Value::Z32(l)), Some(Value::Z32(r))) => Some(Value::Z32(l.$method(*r as u32))),
-            (Some(Value::U64(l)), Some(Value::U64(r))) => Some(Value::U64(l.$method(*r as u32))),
-            (Some(Value::V64(l)), Some(Value::V64(r))) => Some(Value::V64(l.$method(*r as u32))),
-            (Some(Value::I64(l)), Some(Value::I64(r))) => Some(Value::I64(l.$method(*r as u32))),
-            (Some(Value::Z64(l)), Some(Value::Z64(r))) => Some(Value::Z64(l.$method(*r as u32))),
+            (Some(Value::U8(l)), Some(Value::U8(r))) => {
+                Some(Value::U8(l.$method(*r as u32)))
+            }
+            (Some(Value::I8(l)), Some(Value::I8(r))) => {
+                Some(Value::I8(l.$method(*r as u32)))
+            }
+            (Some(Value::U16(l)), Some(Value::U16(r))) => {
+                Some(Value::U16(l.$method(*r as u32)))
+            }
+            (Some(Value::I16(l)), Some(Value::I16(r))) => {
+                Some(Value::I16(l.$method(*r as u32)))
+            }
+            (Some(Value::U32(l)), Some(Value::U32(r))) => {
+                Some(Value::U32(l.$method(*r as u32)))
+            }
+            (Some(Value::V32(l)), Some(Value::V32(r))) => {
+                Some(Value::V32(l.$method(*r as u32)))
+            }
+            (Some(Value::I32(l)), Some(Value::I32(r))) => {
+                Some(Value::I32(l.$method(*r as u32)))
+            }
+            (Some(Value::Z32(l)), Some(Value::Z32(r))) => {
+                Some(Value::Z32(l.$method(*r as u32)))
+            }
+            (Some(Value::U64(l)), Some(Value::U64(r))) => {
+                Some(Value::U64(l.$method(*r as u32)))
+            }
+            (Some(Value::V64(l)), Some(Value::V64(r))) => {
+                Some(Value::V64(l.$method(*r as u32)))
+            }
+            (Some(Value::I64(l)), Some(Value::I64(r))) => {
+                Some(Value::I64(l.$method(*r as u32)))
+            }
+            (Some(Value::Z64(l)), Some(Value::Z64(r))) => {
+                Some(Value::Z64(l.$method(*r as u32)))
+            }
             _ => None,
         }
     };
