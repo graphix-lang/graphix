@@ -51,6 +51,7 @@ graphix-package-map = { version = "0.6.0", path = "../stdlib/graphix-package-map
 graphix-package-rand = { version = "0.6.0", path = "../stdlib/graphix-package-rand" }
 graphix-package-re = { version = "0.6.0", path = "../stdlib/graphix-package-re" }
 graphix-package-str = { version = "0.6.0", path = "../stdlib/graphix-package-str" }
+graphix-package-args = { version = "0.6.0", path = "../stdlib/graphix-package-args" }
 graphix-package-sys = { version = "0.6.0", path = "../stdlib/graphix-package-sys" }
 graphix-package-tui = { version = "0.6.0", path = "../stdlib/graphix-package-tui" }
 graphix-package-gui = { version = "0.6.0", path = "../stdlib/graphix-package-gui", optional = true }

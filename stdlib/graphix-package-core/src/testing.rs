@@ -26,8 +26,32 @@ pub type RegisterFn = fn(
 pub async fn init_with_resolvers(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[RegisterFn],
-    mut resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ModuleResolver>,
 ) -> Result<TestCtx> {
+    init_with_setup(sub, register, resolvers, |_| {}).await
+}
+
+pub async fn init(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[RegisterFn],
+) -> Result<TestCtx> {
+    init_with_setup(sub, register, vec![], |_| {}).await
+}
+
+pub async fn init_with_setup<F>(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[RegisterFn],
+    resolvers: Vec<ModuleResolver>,
+    setup: F,
+) -> Result<TestCtx>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecCtx<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
     let _ = env_logger::try_init();
     let env = netidx::InternalOnly::new().await?;
     let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new(
@@ -39,6 +63,7 @@ pub async fn init_with_resolvers(
     for f in register {
         f(&mut ctx, &mut modules, &mut root_mods)?;
     }
+    setup(&mut ctx);
     let mut parts = Vec::new();
     for name in &root_mods {
         if name == "core" {
@@ -48,23 +73,17 @@ pub async fn init_with_resolvers(
         }
     }
     let root = arcstr::ArcStr::from(parts.join(";\n"));
-    resolvers.insert(0, ModuleResolver::VFS(modules));
+    let mut all_resolvers = vec![ModuleResolver::VFS(modules)];
+    all_resolvers.extend(resolvers);
     Ok(TestCtx {
         internal_only: env,
         rt: GXConfig::builder(ctx, sub)
             .root(root)
-            .resolvers(resolvers)
+            .resolvers(all_resolvers)
             .build()?
             .start()
             .await?,
     })
-}
-
-pub async fn init(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
-) -> Result<TestCtx> {
-    init_with_resolvers(sub, register, vec![]).await
 }
 
 /// Evaluate a graphix expression and return its Value.
@@ -73,6 +92,22 @@ pub async fn init(
 /// waits for the first update, and returns the resulting value along
 /// with the test context (caller must shut it down).
 pub async fn eval(code: &str, register: &[RegisterFn]) -> Result<(Value, TestCtx)> {
+    eval_with_setup(code, register, |_| {}).await
+}
+
+pub async fn eval_with_setup<F>(
+    code: &str,
+    register: &[RegisterFn],
+    setup: F,
+) -> Result<(Value, TestCtx)>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecCtx<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
     let (tx, mut rx) = mpsc::channel(10);
     let gx_code = format!("let result = {code}");
     let tbl = fxhash::FxHashMap::from_iter([(
@@ -80,7 +115,7 @@ pub async fn eval(code: &str, register: &[RegisterFn]) -> Result<(Value, TestCtx
         arcstr::ArcStr::from(gx_code),
     )]);
     let resolver = ModuleResolver::VFS(tbl);
-    let ctx = init_with_resolvers(tx, register, vec![resolver]).await?;
+    let ctx = init_with_setup(tx, register, vec![resolver], setup).await?;
     let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let eid = compiled.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));

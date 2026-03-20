@@ -5,5 +5,8 @@ mod tls;
 mod time;
 mod net;
 
+/// the command line arguments. argv[0] is the script file.
+val args: fn() -> Array<string>;
+
 /// join parts to path using the OS specific path separator
 val join_path: fn(string, @args: [string, Array<string>]) -> string;

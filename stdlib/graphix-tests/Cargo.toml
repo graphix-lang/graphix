@@ -12,7 +12,9 @@ chrono = { workspace = true }
 fxhash = { workspace = true }
 graphix-compiler = { version = "0.6.0", path = "../../graphix-compiler" }
 graphix-package = { version = "0.6.0", path = "../../graphix-package" }
+graphix-package-args = { version = "0.6.0", path = "../graphix-package-args" }
 graphix-package-core = { version = "0.6.0", path = "../graphix-package-core" }
+immutable-chunkmap = { workspace = true }
 graphix-package-array = { version = "0.6.0", path = "../graphix-package-array" }
 graphix-package-http = { version = "0.6.0", path = "../graphix-package-http" }
 graphix-package-json = { version = "0.6.0", path = "../graphix-package-json" }

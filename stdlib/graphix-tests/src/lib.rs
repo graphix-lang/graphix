@@ -14,6 +14,7 @@ pub(crate) const TEST_REGISTER: &[graphix_package_core::testing::RegisterFn] = &
     <graphix_package_json::P as graphix_package::Package<graphix_rt::NoExt>>::register,
     <graphix_package_re::P as graphix_package::Package<graphix_rt::NoExt>>::register,
     <graphix_package_rand::P as graphix_package::Package<graphix_rt::NoExt>>::register,
+    <graphix_package_args::P as graphix_package::Package<graphix_rt::NoExt>>::register,
 ];
 
 #[cfg(test)]

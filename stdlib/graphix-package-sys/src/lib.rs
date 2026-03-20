@@ -4,12 +4,15 @@
 )]
 use arcstr::ArcStr;
 use compact_str::CompactString;
-use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
+use graphix_compiler::{
+    errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope,
+    UserEvent,
+};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
 };
 use graphix_rt::GXRt;
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, Value};
+use netidx_value::{abstract_type::AbstractWrapper, Abstract, ValArray, Value};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,
@@ -152,25 +155,22 @@ impl Hash for StreamValue {
 
 graphix_package_core::impl_no_pack!(StreamValue);
 
-pub static STREAM_WRAPPER: LazyLock<AbstractWrapper<StreamValue>> =
-    LazyLock::new(|| {
-        let id = uuid::Uuid::from_bytes([
-            0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x0c, 0x4d, 0x1e, 0x2f, 0x30, 0x41, 0x52,
-            0x63, 0x74, 0x85, 0x96,
-        ]);
-        Abstract::register::<StreamValue>(id).expect("failed to register StreamValue")
-    });
+pub static STREAM_WRAPPER: LazyLock<AbstractWrapper<StreamValue>> = LazyLock::new(|| {
+    let id = uuid::Uuid::from_bytes([
+        0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x0c, 0x4d, 0x1e, 0x2f, 0x30, 0x41, 0x52, 0x63,
+        0x74, 0x85, 0x96,
+    ]);
+    Abstract::register::<StreamValue>(id).expect("failed to register StreamValue")
+});
 
 pub(crate) fn wrap_file(file: tokio::fs::File) -> Value {
-    STREAM_WRAPPER.wrap(StreamValue {
-        inner: Arc::new(Mutex::new(Some(StreamKind::File(file)))),
-    })
+    STREAM_WRAPPER
+        .wrap(StreamValue { inner: Arc::new(Mutex::new(Some(StreamKind::File(file)))) })
 }
 
 pub(crate) fn wrap_tcp(stream: tokio::net::TcpStream) -> Value {
-    STREAM_WRAPPER.wrap(StreamValue {
-        inner: Arc::new(Mutex::new(Some(StreamKind::Tcp(stream)))),
-    })
+    STREAM_WRAPPER
+        .wrap(StreamValue { inner: Arc::new(Mutex::new(Some(StreamKind::Tcp(stream)))) })
 }
 
 pub fn get_stream(
@@ -186,10 +186,7 @@ pub fn get_stream(
     }
 }
 
-pub fn get_stream_value(
-    cached: &CachedVals,
-    idx: usize,
-) -> Option<StreamValue> {
+pub fn get_stream_value(cached: &CachedVals, idx: usize) -> Option<StreamValue> {
     match cached.0.get(idx)?.as_ref()? {
         Value::Abstract(a) => a.downcast_ref::<StreamValue>().cloned(),
         _ => None,
@@ -379,8 +376,55 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
 
 pub(crate) type JoinPath = CachedArgs<JoinPathEv>;
 
+// ── Args ──────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub(crate) struct Args {
+    fired: bool,
+}
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
+    const NAME: &str = "sys_args";
+
+    fn init<'a, 'b, 'c>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a FnType,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self { fired: false }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        if event.init && !self.fired {
+            self.fired = true;
+            let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
+            let arr: ValArray =
+                pargs.0.iter().map(|s| Value::String(s.clone())).collect();
+            Some(Value::Array(arr))
+        } else {
+            None
+        }
+    }
+
+    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.fired = false;
+    }
+}
+
 graphix_derive::defpackage! {
     builtins => [
+        Args,
         GxTempDir,
         TempDirPath,
         JoinPath,

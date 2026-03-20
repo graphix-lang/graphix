@@ -15,6 +15,7 @@ use graphix_compiler::{
     CFlag, ExecCtx, PrintFlag,
 };
 use graphix_package::MainThreadHandle;
+use graphix_package_core::ProgramArgs;
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use input::InputReader;
 use netidx::{
@@ -133,6 +134,9 @@ pub struct Shell<X: GXExt> {
     /// (default_flags | enable_flags) - disable_flags
     #[builder(default)]
     disable_flags: BitFlags<CFlag>,
+    /// program arguments to pass to the graphix script
+    #[builder(default)]
+    program_args: Vec<ArcStr>,
     #[builder(setter(skip), default)]
     _phantom: PhantomData<X>,
 }
@@ -146,6 +150,16 @@ impl<X: GXExt> Shell<X> {
         let subscriber = self.subscriber.clone();
         let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
             .context("creating graphix context")?;
+        let mut args = vec![];
+        if let Mode::Script(source) | Mode::Check(source) = &self.mode {
+            if let Source::File(p) = source {
+                args.push(ArcStr::from(p.display().to_string().as_str()));
+            }
+        }
+        args.extend(self.program_args.drain(..));
+        if !args.is_empty() {
+            ctx.libstate.set(ProgramArgs(args));
+        }
         let mut vfs_modules = FxHashMap::default();
         let result = deps::register::<X>(&mut ctx, &mut vfs_modules)
             .context("register package modules")?;

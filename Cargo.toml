@@ -20,7 +20,7 @@ bitflags = "2"
 bytes = { version = "1", features = ["serde"] }
 cargo_toml = "0.22.3"
 chrono = { version = "^0.4.24", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "string"] }
 cp_r = "0.5"
 combine = "4"
 compact_str = { version = "0.9", features = ["serde"] }
@@ -117,6 +117,7 @@ members = [
     "stdlib/graphix-package-re",
     "stdlib/graphix-package-str",
     "stdlib/graphix-package-sys",
+    "stdlib/graphix-package-args",
     "stdlib/graphix-package-http",
     "stdlib/graphix-package-json",
     "stdlib/graphix-package-tui",
