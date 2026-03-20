@@ -122,5 +122,6 @@ members = [
     "stdlib/graphix-package-toml",
     "stdlib/graphix-package-tui",
     "stdlib/graphix-package-gui",
+    "stdlib/graphix-package-db",
     "stdlib/graphix-tests"
 ]

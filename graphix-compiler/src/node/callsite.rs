@@ -44,6 +44,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 pub(crate) struct CallSite<R: Rt, E: UserEvent> {
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<FnType>,
+    pub(super) resolved_ftype: Option<FnType>,
     pub(super) rtype: Type,
     pub(super) fnode: Node<R, E>,
     pub(super) named_args: FxHashMap<ArcStr, (Option<Node<R, E>>, bool)>,
@@ -70,6 +71,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let site = Self {
             spec,
             ftype: None,
+            resolved_ftype: None,
             rtype: Type::empty_tvar(),
             named_args,
             args,
@@ -92,6 +94,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         event: &mut Event<E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
+        // Resolve TVars now — after all type checking has completed
+        if self.resolved_ftype.is_none() {
+            if let Some(ftype) = &self.ftype {
+                self.resolved_ftype = Some(ftype.resolve_tvars());
+            }
+        }
         let mut flags = flags;
         // we already warned about this
         flags.remove(CFlag::WarnUnhandled);
@@ -183,7 +191,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             keep
         });
-        let rf = (f.init)(&scope, ctx, &mut self.args, self.top_id, false)?;
+        let rf = (f.init)(&scope, ctx, &mut self.args, self.top_id, false, self.resolved_ftype.as_ref())?;
         self.function = Some((fv, rf));
         Ok(())
     }
@@ -235,6 +243,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             spec: _,
             rtype: _,
             ftype: _,
+            resolved_ftype: _,
             fnode,
             named_args: _,
             args,
@@ -257,6 +266,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             spec: _,
             rtype: _,
             ftype: _,
+            resolved_ftype: _,
             fnode,
             named_args: _,
             args,
@@ -395,6 +405,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             spec: _,
             rtype: _,
             ftype: _,
+            resolved_ftype: _,
             fnode,
             named_args: _,
             args,

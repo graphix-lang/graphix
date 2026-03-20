@@ -141,6 +141,22 @@ impl FnType {
         FnType { args, vargs, rtype, constraints, throws, explicit_throws }
     }
 
+    /// Deep-clone with all bound TVars replaced by their concrete types.
+    /// Constraints are emptied since all TVars are resolved.
+    pub fn resolve_tvars(&self) -> Self {
+        let Self { args, vargs, rtype, constraints: _, throws, explicit_throws } = self;
+        let args = Arc::from_iter(args.iter().map(|a| FnArgType {
+            label: a.label.clone(),
+            typ: a.typ.resolve_tvars(),
+        }));
+        let vargs = vargs.as_ref().map(|t| t.resolve_tvars());
+        let rtype = rtype.resolve_tvars();
+        let constraints = Arc::new(RwLock::new(LPooled::take()));
+        let throws = throws.resolve_tvars();
+        let explicit_throws = *explicit_throws;
+        FnType { args, vargs, rtype, constraints, throws, explicit_throws }
+    }
+
     pub fn unbind_tvars(&self) {
         let FnType { args, vargs, rtype, constraints, throws, explicit_throws: _ } = self;
         for arg in args.iter() {

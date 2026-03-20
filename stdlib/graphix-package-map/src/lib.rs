@@ -175,6 +175,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -228,6 +229,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,

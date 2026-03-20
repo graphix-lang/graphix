@@ -355,7 +355,7 @@ impl Lambda {
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
-        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, tid, tcerr| {
+        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, tid, tcerr, resolved_typ| {
             // restore the lexical environment to the state it was in
             // when the closure was created
             ctx.with_restored(_env.clone(), |ctx| match body.clone() {
@@ -387,7 +387,7 @@ impl Lambda {
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
                     Some(init) => {
-                        init(ctx, &_typ, &_scope, args, tid).and_then(|apply| {
+                        init(ctx, &_typ, resolved_typ, &_scope, args, tid).and_then(|apply| {
                             let mut f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ: _typ.clone(), apply });
                             if tcerr {
@@ -468,7 +468,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             },
         );
         let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);
-        let res = (def.init)(&def.scope, ctx, &mut faux_args, ExprId::new(), true)
+        let res = (def.init)(&def.scope, ctx, &mut faux_args, ExprId::new(), true, None)
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();

@@ -1,0 +1,49 @@
+/// An opaque handle to an embedded database.
+type Db;
+
+/// A typed view of a database tree (key-value namespace).
+type Tree<'k, 'v>;
+
+/// A reactive subscription to changes on a tree.
+type Subscription<'k, 'v>;
+
+mod cursor;
+
+/// Open or create an embedded database at the given path.
+val open: fn(string) -> Result<Db, `DbErr(string)>;
+
+/// Flush all pending writes to disk.
+val flush: fn(Db) -> Result<null, `DbErr(string)>;
+
+/// List the names of all trees in the database.
+val tree_names: fn(Db) -> Result<Array<string>, `DbErr(string)>;
+
+/// Drop a named tree from the database.
+val drop_tree: fn(Db, string) -> Result<bool, `DbErr(string)>;
+
+/// Open or create a named tree with typed keys and values.
+val tree: fn(Db, string) -> Result<Tree<'k, 'v>, `DbErr(string)>;
+
+/// Get a typed view of the database's default tree.
+val default: fn(Db) -> Tree<'k, 'v>;
+
+/// Get the value for a key, or null if not found.
+val get: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
+
+/// Insert a key-value pair. Returns the previous value, or null.
+val insert: fn(Tree<'k, 'v>, 'k, 'v) -> Result<['v, null], `DbErr(string)>;
+
+/// Remove a key. Returns the previous value, or null.
+val remove: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
+
+/// Check whether a key exists.
+val contains_key: fn(Tree<'k, 'v>, 'k) -> Result<bool, `DbErr(string)>;
+
+/// Subscribe to changes on a tree, optionally filtering by key prefix.
+val subscribe: fn(?#prefix: ['k, null], Tree<'k, 'v>) -> Subscription<'k, 'v>;
+
+/// Fires reactively when an insert occurs on the subscription.
+val on_insert: fn(Subscription<'k, 'v>) -> Result<{key: 'k, value: 'v}, `DbErr(string)>;
+
+/// Fires reactively when a remove occurs on the subscription.
+val on_remove: fn(Subscription<'k, 'v>) -> Result<{key: 'k}, `DbErr(string)>;

@@ -60,6 +60,7 @@ pub fn apply<R: Rt, E: UserEvent>(
         spec: NOP.clone(),
         rtype: ftype.rtype.clone(),
         ftype: Some(ftype),
+        resolved_ftype: None,
         named_args: HashMap::default(),
         args,
         scope,

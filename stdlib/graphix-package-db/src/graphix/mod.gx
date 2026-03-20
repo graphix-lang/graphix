@@ -1,0 +1,14 @@
+mod cursor;
+let open = |path: string| -> Result<Db, `DbErr(string)> 'db_open;
+let flush = |db: Db| -> Result<null, `DbErr(string)> 'db_flush;
+let tree_names = |db: Db| -> Result<Array<string>, `DbErr(string)> 'db_tree_names;
+let drop_tree = |db: Db, name: string| -> Result<bool, `DbErr(string)> 'db_drop_tree;
+let tree = |db: Db, name: string| -> Result<Tree<'k, 'v>, `DbErr(string)> 'db_tree;
+let default = |db: Db| -> Tree<'k, 'v> 'db_default;
+let get = |t: Tree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_get;
+let insert = |t: Tree<'k, 'v>, key: 'k, value: 'v| -> Result<['v, null], `DbErr(string)> 'db_insert;
+let remove = |t: Tree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_remove;
+let contains_key = |t: Tree<'k, 'v>, key: 'k| -> Result<bool, `DbErr(string)> 'db_contains_key;
+let subscribe = |#prefix: ['k, null] = null, t: Tree<'k, 'v>| -> Subscription<'k, 'v> 'db_subscribe;
+let on_insert = |sub: Subscription<'k, 'v>| -> Result<{key: 'k, value: 'v}, `DbErr(string)> 'db_on_insert;
+let on_remove = |sub: Subscription<'k, 'v>| -> Result<{key: 'k}, `DbErr(string)> 'db_on_remove

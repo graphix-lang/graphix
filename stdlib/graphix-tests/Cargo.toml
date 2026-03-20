@@ -21,9 +21,11 @@ graphix-package-map = { version = "0.6.0", path = "../graphix-package-map" }
 graphix-package-rand = { version = "0.6.0", path = "../graphix-package-rand" }
 graphix-package-re = { version = "0.6.0", path = "../graphix-package-re" }
 graphix-package-str = { version = "0.6.0", path = "../graphix-package-str" }
+graphix-package-db = { version = "0.6.0", path = "../graphix-package-db" }
 graphix-package-sys = { version = "0.6.0", path = "../graphix-package-sys" }
 graphix-rt = { version = "0.6.0", path = "../../graphix-rt" }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
 poolshark = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }

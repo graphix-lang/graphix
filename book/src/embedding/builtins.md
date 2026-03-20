@@ -80,6 +80,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -172,6 +173,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,

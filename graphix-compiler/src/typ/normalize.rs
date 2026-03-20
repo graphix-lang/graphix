@@ -1,4 +1,4 @@
-use crate::typ::Type;
+use crate::typ::{TVar, Type};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::publisher::Typ;
@@ -58,6 +58,50 @@ impl Type {
             [] => Type::Primitive(BitFlags::empty()),
             [t] => t.clone(),
             _ => Type::Set(Arc::from_iter(acc.drain(..))),
+        }
+    }
+
+    /// Deep-clone the type tree, replacing every bound TVar with its
+    /// concrete binding (recursively). Unbound TVars are kept as fresh
+    /// named TVars. This produces a snapshot that is independent of the
+    /// original TVar cells.
+    pub fn resolve_tvars(&self) -> Self {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) => self.clone(),
+            Type::Abstract { id, params } => Type::Abstract {
+                id: *id,
+                params: Arc::from_iter(params.iter().map(|t| t.resolve_tvars())),
+            },
+            Type::Ref { scope, name, params } => Type::Ref {
+                scope: scope.clone(),
+                name: name.clone(),
+                params: Arc::from_iter(params.iter().map(|t| t.resolve_tvars())),
+            },
+            Type::TVar(tv) => match tv.read().typ.read().as_ref() {
+                Some(t) => t.resolve_tvars(),
+                None => Type::TVar(TVar::empty_named(tv.name.clone())),
+            },
+            Type::Set(s) => {
+                Type::Set(Arc::from_iter(s.iter().map(|t| t.resolve_tvars())))
+            }
+            Type::Error(t) => Type::Error(Arc::new(t.resolve_tvars())),
+            Type::Array(t) => Type::Array(Arc::new(t.resolve_tvars())),
+            Type::Map { key, value } => Type::Map {
+                key: Arc::new(key.resolve_tvars()),
+                value: Arc::new(value.resolve_tvars()),
+            },
+            Type::ByRef(t) => Type::ByRef(Arc::new(t.resolve_tvars())),
+            Type::Tuple(t) => {
+                Type::Tuple(Arc::from_iter(t.iter().map(|t| t.resolve_tvars())))
+            }
+            Type::Struct(t) => Type::Struct(Arc::from_iter(
+                t.iter().map(|(n, t)| (n.clone(), t.resolve_tvars())),
+            )),
+            Type::Variant(tag, t) => Type::Variant(
+                tag.clone(),
+                Arc::from_iter(t.iter().map(|t| t.resolve_tvars())),
+            ),
+            Type::Fn(ft) => Type::Fn(Arc::new(ft.resolve_tvars())),
         }
     }
 

@@ -200,6 +200,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -260,6 +261,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -441,6 +443,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -618,6 +621,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -819,6 +823,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -852,6 +857,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -885,6 +891,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -917,6 +924,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -961,6 +969,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1010,6 +1019,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1392,6 +1402,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1516,6 +1527,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1576,6 +1588,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1631,6 +1644,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1691,6 +1705,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1780,6 +1795,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1851,6 +1867,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1890,6 +1907,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1966,6 +1984,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2045,6 +2064,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2099,6 +2119,7 @@ macro_rules! printfn {
             fn init<'a, 'b, 'c>(
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
+                _resolved_typ: Option<&'a FnType>,
                 _scope: &'b Scope,
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,

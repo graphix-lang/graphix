@@ -474,6 +474,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b graphix_compiler::Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -592,6 +593,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b graphix_compiler::Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -642,6 +644,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved_typ: Option<&'a FnType>,
         _scope: &'b graphix_compiler::Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -708,6 +711,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,

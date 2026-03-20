@@ -1,0 +1,2 @@
+let new = |#prefix: ['k, null] = null, t: Tree<'k, 'v>| -> Cursor<'k, 'v> 'db_cursor_new;
+let read = |c: Cursor<'k, 'v>, trigger: Any| -> Result<[('k, 'v), null], `DbErr(string)> 'db_cursor_read

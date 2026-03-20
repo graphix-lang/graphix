@@ -44,6 +44,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -158,6 +159,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -242,6 +244,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -323,6 +326,7 @@ macro_rules! list {
             fn init<'a, 'b, 'c>(
                 ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
+                _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
                 _scope: &'b Scope,
                 from: &'c [Node<R, E>],
                 top_id: ExprId,
@@ -419,6 +423,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -561,6 +566,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,

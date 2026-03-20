@@ -257,6 +257,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _fntyp: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         _args: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -339,6 +340,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -483,6 +485,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -547,6 +550,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,

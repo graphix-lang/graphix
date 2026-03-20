@@ -300,12 +300,13 @@ impl Refs {
 pub type Node<R, E> = Box<dyn Update<R, E>>;
 
 pub type InitFn<R, E> = sync::Arc<
-    dyn for<'a, 'b, 'c> Fn(
+    dyn for<'a, 'b, 'c, 'd> Fn(
             &'a Scope,
             &'b mut ExecCtx<R, E>,
             &'c mut [Node<R, E>],
             ExprId,
             bool,
+            Option<&'d FnType>,
         ) -> Result<Box<dyn Apply<R, E>>>
         + Send
         + Sync
@@ -397,6 +398,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
     &'a mut ExecCtx<R, E>,
     &'a FnType,
+    Option<&'a FnType>,
     &'b Scope,
     &'c [Node<R, E>],
     ExprId,
@@ -411,6 +413,7 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
