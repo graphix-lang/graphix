@@ -1,2 +1,2 @@
-use sys
-println(sys::args())
+use sys;
+println(sys::args());

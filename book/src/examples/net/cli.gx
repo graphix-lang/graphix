@@ -1,4 +1,4 @@
-use args
+use args;
 
 let cli = args::parse(
     args::command(
@@ -17,7 +17,7 @@ let cli = args::parse(
             args::flag(#name: "verbose", #short: "v", #help: "Verbose output")
         ]
     )
-)?
+)$;
 
-println("Command: [cli.command]")
-println("Values: [cli.values]")
+println("Command: [cli.command]");
+println("Values: [cli.values]");
