@@ -4,22 +4,20 @@
 )]
 use anyhow::Result;
 use arcstr::ArcStr;
-use enumflags2::BitFlags;
-use fxhash::FxHashSet;
 use futures::{channel::mpsc, SinkExt};
+use fxhash::FxHashSet;
 use graphix_compiler::{
-    errf, expr::ExprId,
+    errf,
+    expr::ExprId,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, Node,
-    Rt, Scope, UserEvent, CBATCH_POOL,
+    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope,
+    UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_core::pack::Pack;
-use netidx_value::{
-    abstract_type::AbstractWrapper, Abstract, ValArray, Value,
-};
-use poolshark::global::GPooled;
+use netidx_value::{abstract_type::AbstractWrapper, Abstract, ValArray, Value};
+use poolshark::{global::GPooled, local::LPooled};
 use std::{
     any::Any,
     cmp::Ordering,
@@ -53,11 +51,10 @@ fn decode_value(data: &[u8]) -> Option<Value> {
 //   Signed integers   → fixed-width big-endian with sign-bit XOR
 //   Everything else   → Pack encoding (works as keys, no ordering)
 
-fn encode_key(key_typ: BitFlags<Typ>, v: &Value) -> Option<GPooled<Vec<u8>>> {
+fn encode_key(key_typ: Option<Typ>, v: &Value) -> Option<GPooled<Vec<u8>>> {
     static POOL: LazyLock<poolshark::global::Pool<Vec<u8>>> =
         LazyLock::new(|| poolshark::global::Pool::new(64, 4096));
-    let single = key_typ.iter().next();
-    match single {
+    match key_typ {
         Some(Typ::String) => match v {
             Value::String(s) => {
                 let mut buf = POOL.take();
@@ -179,9 +176,8 @@ fn encode_key(key_typ: BitFlags<Typ>, v: &Value) -> Option<GPooled<Vec<u8>>> {
     }
 }
 
-fn decode_key(key_typ: BitFlags<Typ>, data: &[u8]) -> Option<Value> {
-    let single = key_typ.iter().next();
-    match single {
+fn decode_key(key_typ: Option<Typ>, data: &[u8]) -> Option<Value> {
+    match key_typ {
         Some(Typ::String) => {
             std::str::from_utf8(data).ok().map(|s| Value::String(ArcStr::from(s)))
         }
@@ -232,10 +228,7 @@ fn decode_key(key_typ: BitFlags<Typ>, data: &[u8]) -> Option<Value> {
 fn kv_struct(key: Value, value: Value) -> Value {
     Value::Array(ValArray::from([
         Value::Array(ValArray::from([Value::String(arcstr::literal!("key")), key])),
-        Value::Array(ValArray::from([
-            Value::String(arcstr::literal!("value")),
-            value,
-        ])),
+        Value::Array(ValArray::from([Value::String(arcstr::literal!("value")), value])),
     ]))
 }
 
@@ -248,12 +241,12 @@ fn key_struct(key: Value) -> Value {
 
 // ── Type extraction helpers ──────────────────────────────────────
 
-/// Extract a single-flag BitFlags<Typ> from a Type if it's a single
-/// primitive type suitable for raw key encoding.
-fn prim_flag(t: &Type) -> BitFlags<Typ> {
+/// Extract a single Typ from a Type if it's a single primitive type
+/// suitable for raw key encoding.
+fn prim_typ(t: &Type) -> Option<Typ> {
     match t {
-        Type::Primitive(flags) if flags.iter().count() == 1 => *flags,
-        _ => BitFlags::empty(),
+        Type::Primitive(flags) if flags.iter().count() == 1 => flags.iter().next(),
+        _ => None,
     }
 }
 
@@ -293,19 +286,16 @@ fn find_tree_params(t: &Type) -> Option<&[Type]> {
 }
 
 /// Extract key_typ from the resolved rtype of a Tree-producing function.
-fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> BitFlags<Typ> {
-    let Some(ft) = resolved_typ else { return BitFlags::empty() };
-    match find_tree_params(&ft.rtype) {
-        Some(params) => prim_flag(&params[0]),
-        None => BitFlags::empty(),
-    }
+fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Option<Typ> {
+    let ft = resolved_typ?;
+    find_tree_params(&ft.rtype).and_then(|params| prim_typ(&params[0]))
 }
 
 /// Extract key and value type display strings from a Tree-producing
 /// function's resolved rtype.
 fn extract_type_strings_from_rtype(resolved_typ: Option<&FnType>) -> (ArcStr, ArcStr) {
     let Some(ft) = resolved_typ else {
-        return (arcstr::literal!("?"), arcstr::literal!("?"))
+        return (arcstr::literal!("?"), arcstr::literal!("?"));
     };
     match find_tree_params(&ft.rtype) {
         Some(params) if params.len() >= 2 => (
@@ -376,7 +366,7 @@ fn get_db(cached: &CachedVals, idx: usize) -> Option<sled::Db> {
 #[derive(Debug)]
 struct TreeInner {
     tree: sled::Tree,
-    key_typ: BitFlags<Typ>,
+    key_typ: Option<Typ>,
 }
 
 // -- TreeValue --
@@ -432,7 +422,7 @@ fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Arc<TreeInner>> {
     }
 }
 
-fn wrap_tree(tree: sled::Tree, key_typ: BitFlags<Typ>) -> Value {
+fn wrap_tree(tree: sled::Tree, key_typ: Option<Typ>) -> Value {
     TREE_WRAPPER.wrap(TreeValue { inner: Arc::new(TreeInner { tree, key_typ }) })
 }
 
@@ -440,7 +430,7 @@ fn wrap_tree(tree: sled::Tree, key_typ: BitFlags<Typ>) -> Value {
 
 struct CursorInner {
     iter: parking_lot::Mutex<sled::Iter>,
-    key_typ: BitFlags<Typ>,
+    key_typ: Option<Typ>,
 }
 
 impl fmt::Debug for CursorInner {
@@ -528,8 +518,8 @@ graphix_package_core::impl_no_pack!(SubscriptionValue);
 static SUBSCRIPTION_WRAPPER: LazyLock<AbstractWrapper<SubscriptionValue>> =
     LazyLock::new(|| {
         let id = uuid::Uuid::from_bytes([
-            0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x4a, 0x3b, 0x4c, 0x5d, 0x6e, 0x7f,
-            0x80, 0xa1, 0xb2, 0xc3,
+            0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x4a, 0x3b, 0x4c, 0x5d, 0x6e, 0x7f, 0x80,
+            0xa1, 0xb2, 0xc3,
         ]);
         Abstract::register::<SubscriptionValue>(id)
             .expect("failed to register SubscriptionValue")
@@ -565,12 +555,10 @@ fn check_or_store_meta(
                 .map_err(|e| errf!("DbErr", "corrupt metadata: {e}"))?;
             let expected = format!("{key_str}\0{val_str}");
             if stored != expected {
+                // CR estokes: LPool this
                 let parts: Vec<&str> = stored.splitn(2, '\0').collect();
-                let (sk, sv) = if parts.len() == 2 {
-                    (parts[0], parts[1])
-                } else {
-                    (stored, "?")
-                };
+                let (sk, sv) =
+                    if parts.len() == 2 { (parts[0], parts[1]) } else { (stored, "?") };
                 Err(errf!("DbErr",
                     "tree '{tree_name}' has type Tree<{sk}, {sv}>, but was opened as Tree<{key_str}, {val_str}>"
                 ))
@@ -659,7 +647,7 @@ impl EvalCachedAsync for DbTreeNamesEv {
             match tokio::task::spawn_blocking(move || db.tree_names()).await {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
                 Ok(names) => {
-                    let vals: Vec<Value> = names
+                    let mut vals: LPooled<Vec<Value>> = names
                         .into_iter()
                         .filter_map(|ivec| {
                             std::str::from_utf8(&ivec)
@@ -667,7 +655,7 @@ impl EvalCachedAsync for DbTreeNamesEv {
                                 .map(|s| Value::String(ArcStr::from(s)))
                         })
                         .collect();
-                    Value::Array(ValArray::from_iter_exact(vals.into_iter()))
+                    Value::Array(ValArray::from_iter_exact(vals.drain(..)))
                 }
             }
         }
@@ -713,7 +701,7 @@ struct DbTree {
     id: BindId,
     top_id: ExprId,
     running: bool,
-    key_typ: BitFlags<Typ>,
+    key_typ: Option<Typ>,
     key_str: ArcStr,
     val_str: ArcStr,
 }
@@ -729,7 +717,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbTree {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
+        eprintln!("DbTree::init resolved_typ = {resolved_typ:?}");
         let key_typ = extract_key_typ_from_rtype(resolved_typ);
+        eprintln!("DbTree::init key_typ = {key_typ:?}");
         let (key_str, val_str) = extract_type_strings_from_rtype(resolved_typ);
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
@@ -772,7 +762,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbTree {
                     db.open_tree(name.as_bytes())
                         .map(|tree| wrap_tree(tree, key_typ))
                         .map_err(|e| errf!("DbErr", "{e}"))
-                }).await {
+                })
+                .await
+                {
                     Err(e) => (id, errf!("DbErr", "task panicked: {e}")),
                     Ok(Err(e)) => (id, e),
                     Ok(Ok(v)) => (id, v),
@@ -801,7 +793,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbTree {
 #[derive(Debug)]
 struct DbDefault {
     cached: CachedVals,
-    key_typ: BitFlags<Typ>,
+    key_typ: Option<Typ>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbDefault {
@@ -816,10 +808,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbDefault {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let key_typ = extract_key_typ_from_rtype(resolved_typ);
-        Ok(Box::new(DbDefault {
-            cached: CachedVals::new(from),
-            key_typ,
-        }))
+        Ok(Box::new(DbDefault { cached: CachedVals::new(from), key_typ }))
     }
 }
 
@@ -897,7 +886,11 @@ impl EvalCachedAsync for DbInsertEv {
 
     fn eval((tree, key, val): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            match tokio::task::spawn_blocking(move || tree.tree.insert(&*key, val.as_slice())).await {
+            match tokio::task::spawn_blocking(move || {
+                tree.tree.insert(&*key, val.as_slice())
+            })
+            .await
+            {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
                 Ok(Err(e)) => errf!("DbErr", "{e}"),
                 Ok(Ok(None)) => Value::Null,
@@ -963,7 +956,8 @@ impl EvalCachedAsync for DbContainsKeyEv {
 
     fn eval((tree, key): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            match tokio::task::spawn_blocking(move || tree.tree.contains_key(&*key)).await {
+            match tokio::task::spawn_blocking(move || tree.tree.contains_key(&*key)).await
+            {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
                 Ok(Err(e)) => errf!("DbErr", "{e}"),
                 Ok(Ok(exists)) => Value::Bool(exists),
@@ -978,188 +972,96 @@ type DbContainsKey = CachedArgsAsync<DbContainsKeyEv>;
 
 // -- DbCursorNew (with optional prefix) --
 
-#[derive(Debug)]
-struct DbCursorNew {
-    cached: CachedVals,
-    id: BindId,
-    top_id: ExprId,
-    running: bool,
-}
+#[derive(Debug, Default)]
+struct DbCursorNewEv;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbCursorNew {
+impl EvalCachedAsync for DbCursorNewEv {
     const NAME: &str = "db_cursor_new";
+    type Args = (Option<Value>, Arc<TreeInner>);
 
-    fn init<'a, 'b, 'c>(
-        ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(DbCursorNew {
-            cached: CachedVals::new(from),
-            id,
-            top_id,
-            running: false,
-        }))
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let prefix_val = match cached.0.get(0)?.as_ref()? {
+            Value::Null => None,
+            v => Some(v.clone()),
+        };
+        let tree = get_tree_inner(cached, 1)?;
+        Some((prefix_val, tree))
     }
-}
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbCursorNew {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        let result = event.variables.remove(&self.id).map(|v| {
-            self.running = false;
-            v
-        });
-        if self.cached.update(ctx, from, event) && !self.running {
-            // from[0] = optional prefix (null = no prefix), from[1] = tree
-            let prefix_val = match self.cached.0.get(0)?.as_ref()? {
-                Value::Null => None,
-                v => Some(v.clone()),
-            };
-            let tree = get_tree_inner(&self.cached, 1)?;
-            let key_typ = tree.key_typ;
-            let id = self.id;
-            self.running = true;
-            ctx.rt.spawn_var(async move {
-                match tokio::task::spawn_blocking(move || {
-                    let iter = match prefix_val {
-                        Some(ref pv) => match encode_key(key_typ, pv) {
-                            Some(encoded) => tree.tree.scan_prefix(&*encoded),
-                            None => tree.tree.iter(),
-                        },
+    fn eval((prefix_val, tree): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match tokio::task::spawn_blocking(move || {
+                let iter = match prefix_val {
+                    Some(ref pv) => match encode_key(tree.key_typ, pv) {
+                        Some(encoded) => tree.tree.scan_prefix(&*encoded),
                         None => tree.tree.iter(),
-                    };
-                    CURSOR_WRAPPER.wrap(CursorValue {
-                        inner: Arc::new(CursorInner {
-                            iter: parking_lot::Mutex::new(iter),
-                            key_typ,
-                        }),
-                    })
-                }).await {
-                    Err(e) => (id, errf!("DbErr", "task panicked: {e}")),
-                    Ok(v) => (id, v),
-                }
-            });
+                    },
+                    None => tree.tree.iter(),
+                };
+                CURSOR_WRAPPER.wrap(CursorValue {
+                    inner: Arc::new(CursorInner {
+                        iter: parking_lot::Mutex::new(iter),
+                        key_typ: tree.key_typ,
+                    }),
+                })
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(v) => v,
+            }
         }
-        result
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
-        self.running = false;
-        self.cached.clear();
-        let id = BindId::new();
-        ctx.rt.ref_var(id, self.top_id);
-        self.id = id;
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
     }
 }
+
+type DbCursorNew = CachedArgsAsync<DbCursorNewEv>;
 
 // -- DbCursorRead --
 
-#[derive(Debug)]
-struct DbCursorRead {
-    cursor: Option<CursorValue>,
-    id: BindId,
-    top_id: ExprId,
-    running: bool,
-}
+#[derive(Debug, Default)]
+struct DbCursorReadEv;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbCursorRead {
+impl EvalCachedAsync for DbCursorReadEv {
     const NAME: &str = "db_cursor_read";
+    type Args = Arc<CursorInner>;
 
-    fn init<'a, 'b, 'c>(
-        ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(DbCursorRead { cursor: None, id, top_id, running: false }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbCursorRead {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        // 1. Check for completed read from previous cycle
-        let result = event.variables.remove(&self.id).map(|v| {
-            self.running = false;
-            v
-        });
-        // 2. Update cursor input (arg 0)
-        if let Some(v) = from[0].update(ctx, event) {
-            self.cursor = match &v {
-                Value::Abstract(a) => a.downcast_ref::<CursorValue>().cloned(),
-                _ => None,
-            };
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        cached.0.get(1)?.as_ref()?;
+        match cached.0.get(0)?.as_ref()? {
+            Value::Abstract(a) => {
+                a.downcast_ref::<CursorValue>().map(|c| c.inner.clone())
+            }
+            _ => None,
         }
-        // 3. Check trigger (arg 1)
-        let triggered = from[1].update(ctx, event).is_some();
-        // 4. Spawn read if triggered and not already running
-        if triggered && !self.running {
-            if let Some(cursor) = &self.cursor {
-                self.running = true;
-                let inner = cursor.inner.clone();
-                let id = self.id;
-                ctx.rt.spawn_var(async move {
-                    match tokio::task::spawn_blocking(move || {
-                        let key_typ = inner.key_typ;
-                        inner.iter.lock().next().map(|r| r.map(|(k, v)| {
-                            let key = decode_key(key_typ, &k);
-                            let val = decode_value(&v);
-                            (key, val)
-                        }))
+    }
+
+    fn eval(inner: Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match tokio::task::spawn_blocking(move || {
+                let key_typ = inner.key_typ;
+                inner.iter.lock().next().map(|r| {
+                    r.map(|(k, v)| {
+                        let key = decode_key(key_typ, &k);
+                        let val = decode_value(&v);
+                        (key, val)
                     })
-                    .await
-                    {
-                        Ok(Some(Ok((Some(k), Some(v))))) => {
-                            (id, Value::Array(ValArray::from([k, v])))
-                        }
-                        Ok(Some(Ok(_))) => (id, errf!("DbErr", "failed to decode entry")),
-                        Ok(Some(Err(e))) => (id, errf!("DbErr", "{e}")),
-                        Ok(None) => (id, Value::Null),
-                        Err(e) => (id, errf!("DbErr", "task panicked: {e}")),
-                    }
-                });
+                })
+            })
+            .await
+            {
+                Ok(Some(Ok((Some(k), Some(v))))) => {
+                    Value::Array(ValArray::from([k, v]))
+                }
+                Ok(Some(Ok(_))) => errf!("DbErr", "failed to decode entry"),
+                Ok(Some(Err(e))) => errf!("DbErr", "{e}"),
+                Ok(None) => Value::Null,
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
             }
         }
-        // 5. Return completed result
-        result
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
-        self.cursor = None;
-        self.running = false;
-        let id = BindId::new();
-        ctx.rt.ref_var(id, self.top_id);
-        self.id = id;
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
     }
 }
+
+type DbCursorRead = CachedArgsAsync<DbCursorReadEv>;
 
 // ── Subscribe (with optional prefix) ──────────────────────────────
 
@@ -1226,10 +1128,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                                     _ => continue,
                                 }
                             }
-                            sled::Event::Remove { key } => match decode_key(key_typ, &key) {
-                                Some(k) => DbEvent::Remove { key: k },
-                                None => continue,
-                            },
+                            sled::Event::Remove { key } => {
+                                match decode_key(key_typ, &key) {
+                                    Some(k) => DbEvent::Remove { key: k },
+                                    None => continue,
+                                }
+                            }
                         };
                         let mut batch: GPooled<
                             Vec<(BindId, Box<dyn CustomBuiltinType>)>,
@@ -1240,9 +1144,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                         }
                     }
                 });
-                return Some(
-                    SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }),
-                );
+                return Some(SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }));
             }
         }
         None
@@ -1328,9 +1230,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnInsert {
             }
         }
         scan_db_events(&self.bind_ids, event, |se| match se {
-            DbEvent::Insert { key, value } => {
-                Some(kv_struct(key.clone(), value.clone()))
-            }
+            DbEvent::Insert { key, value } => Some(kv_struct(key.clone(), value.clone())),
             DbEvent::Remove { .. } => None,
         })
     }
