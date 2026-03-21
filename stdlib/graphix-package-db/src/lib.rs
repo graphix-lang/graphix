@@ -537,7 +537,7 @@ impl CustomBuiltinType for DbEvent {}
 
 // ── Tree metadata ─────────────────────────────────────────────────
 
-static META_TREE: &[u8] = b"__graphix_meta__";
+static META_TREE: &[u8] = b"$$__graphix_meta__$$";
 
 /// Check/store type metadata for a named tree. Returns Err on mismatch.
 fn check_or_store_meta(
@@ -574,6 +574,78 @@ fn check_or_store_meta(
         }
     }
 }
+
+// ── DbGetType ─────────────────────────────────────────────────────
+
+#[derive(Debug)]
+enum DbOrPath {
+    Db(sled::Db),
+    Path(ArcStr),
+}
+
+#[derive(Debug, Default)]
+struct DbGetTypeEv;
+
+impl EvalCachedAsync for DbGetTypeEv {
+    const NAME: &str = "db_get_type";
+    type Args = (DbOrPath, ArcStr);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let db_or_path = match cached.0.get(0)?.as_ref()? {
+            Value::Abstract(a) => {
+                let dv = a.downcast_ref::<DbValue>()?;
+                DbOrPath::Db((*dv.inner).clone())
+            }
+            Value::String(s) => DbOrPath::Path(s.clone()),
+            _ => return None,
+        };
+        let name = match cached.0.get(1)?.as_ref()? {
+            Value::Null => ArcStr::from(DEFAULT_TREE_META),
+            Value::String(s) => s.clone(),
+            _ => return None,
+        };
+        Some((db_or_path, name))
+    }
+
+    fn eval((db_or_path, name): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match tokio::task::spawn_blocking(move || {
+                let db = match db_or_path {
+                    DbOrPath::Db(db) => db,
+                    DbOrPath::Path(path) => {
+                        sled::open(&*path).map_err(|e| errf!("DbErr", "{e}"))?
+                    }
+                };
+                let meta =
+                    db.open_tree(META_TREE).map_err(|e| errf!("DbErr", "{e}"))?;
+                let meta_key = format!("type:{name}");
+                match meta.get(meta_key.as_bytes()) {
+                    Err(e) => Err(errf!("DbErr", "{e}")),
+                    Ok(None) => Ok(Value::Null),
+                    Ok(Some(stored)) => {
+                        let stored = std::str::from_utf8(&stored)
+                            .map_err(|e| errf!("DbErr", "corrupt metadata: {e}"))?;
+                        let mut parts = stored.splitn(2, '\0');
+                        let k = parts.next().unwrap_or("?");
+                        let v = parts.next().unwrap_or("?");
+                        Ok(Value::Array(ValArray::from([
+                            Value::String(ArcStr::from(k)),
+                            Value::String(ArcStr::from(v)),
+                        ])))
+                    }
+                }
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(Err(e)) => e,
+                Ok(Ok(v)) => v,
+            }
+        }
+    }
+}
+
+type DbGetType = CachedArgsAsync<DbGetTypeEv>;
 
 // ── EvalCachedAsync builtins ──────────────────────────────────────
 
@@ -756,6 +828,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbTree {
             self.running = true;
             ctx.rt.spawn_var(async move {
                 match tokio::task::spawn_blocking(move || {
+                    if &*name == DEFAULT_TREE_META
+                        || name.as_bytes() == META_TREE
+                    {
+                        return Err(errf!(
+                            "DbErr",
+                            "tree name '{name}' is reserved"
+                        ));
+                    }
                     if let Err(e) = check_or_store_meta(&db, &name, &key_str, &val_str) {
                         return Err(e);
                     }
@@ -790,25 +870,52 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbTree {
 
 // -- DbDefault --
 
+static DEFAULT_TREE_META: &str = "$$__graphix_default__$$";
+
+/// Type strings are concrete if they aren't fallback "?" and don't
+/// look like unresolved type variables (e.g. "'a").
+fn types_are_concrete(key_str: &str, val_str: &str) -> bool {
+    fn concrete(s: &str) -> bool {
+        s != "?" && !s.starts_with('\'')
+    }
+    concrete(key_str) && concrete(val_str)
+}
+
 #[derive(Debug)]
 struct DbDefault {
     cached: CachedVals,
+    id: BindId,
+    top_id: ExprId,
+    running: bool,
     key_typ: Option<Typ>,
+    key_str: ArcStr,
+    val_str: ArcStr,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbDefault {
     const NAME: &str = "db_default";
 
     fn init<'a, 'b, 'c>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
         resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
-        _top_id: ExprId,
+        top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let key_typ = extract_key_typ_from_rtype(resolved_typ);
-        Ok(Box::new(DbDefault { cached: CachedVals::new(from), key_typ }))
+        let (key_str, val_str) = extract_type_strings_from_rtype(resolved_typ);
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(DbDefault {
+            cached: CachedVals::new(from),
+            id,
+            top_id,
+            running: false,
+            key_typ,
+            key_str,
+            val_str,
+        }))
     }
 }
 
@@ -819,16 +926,53 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbDefault {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if self.cached.update(ctx, from, event) {
+        let result = event.variables.remove(&self.id).map(|v| {
+            self.running = false;
+            v
+        });
+        if self.cached.update(ctx, from, event) && !self.running {
             let db = get_db(&self.cached, 0)?;
-            Some(wrap_tree((*db).clone(), self.key_typ))
-        } else {
-            None
+            let key_typ = self.key_typ;
+            let key_str = self.key_str.clone();
+            let val_str = self.val_str.clone();
+            let id = self.id;
+            self.running = true;
+            ctx.rt.spawn_var(async move {
+                match tokio::task::spawn_blocking(move || {
+                    if types_are_concrete(&key_str, &val_str) {
+                        if let Err(e) = check_or_store_meta(
+                            &db,
+                            DEFAULT_TREE_META,
+                            &key_str,
+                            &val_str,
+                        ) {
+                            return Err(e);
+                        }
+                    }
+                    Ok(wrap_tree((*db).clone(), key_typ))
+                })
+                .await
+                {
+                    Err(e) => (id, errf!("DbErr", "task panicked: {e}")),
+                    Ok(Err(e)) => (id, e),
+                    Ok(Ok(v)) => (id, v),
+                }
+            });
         }
+        result
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        ctx.rt.unref_var(self.id, self.top_id);
+        self.running = false;
         self.cached.clear();
+        let id = BindId::new();
+        ctx.rt.ref_var(id, self.top_id);
+        self.id = id;
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        ctx.rt.unref_var(self.id, self.top_id);
     }
 }
 
@@ -905,6 +1049,65 @@ impl EvalCachedAsync for DbInsertEv {
 
 type DbInsert = CachedArgsAsync<DbInsertEv>;
 
+// -- DbInsertMany --
+
+#[derive(Debug, Default)]
+struct DbInsertManyEv;
+
+impl EvalCachedAsync for DbInsertManyEv {
+    const NAME: &str = "db_insert_many";
+    type Args = (Arc<TreeInner>, Vec<(GPooled<Vec<u8>>, GPooled<Vec<u8>>)>);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let tree = get_tree_inner(cached, 0)?;
+        let arr = match cached.0.get(1)?.as_ref()? {
+            Value::Array(a) => a,
+            _ => return None,
+        };
+        let mut pairs = Vec::with_capacity(arr.len());
+        for pair in arr.iter() {
+            match pair {
+                Value::Array(p) if p.len() == 2 => {
+                    let key = encode_key(tree.key_typ, &p[0])?;
+                    let val = encode_value(&p[1])?;
+                    pairs.push((key, val));
+                }
+                _ => return None,
+            }
+        }
+        Some((tree, pairs))
+    }
+
+    fn eval((tree, pairs): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match tokio::task::spawn_blocking(move || {
+                let mut results: LPooled<Vec<Value>> = LPooled::take();
+                for (key, val) in pairs.iter() {
+                    match tree.tree.insert(&**key, val.as_slice()) {
+                        Err(e) => return Err(errf!("DbErr", "{e}")),
+                        Ok(None) => results.push(Value::Null),
+                        Ok(Some(prev)) => match decode_value(&prev) {
+                            Some(v) => results.push(v),
+                            None => {
+                                return Err(errf!("DbErr", "failed to decode previous value"))
+                            }
+                        },
+                    }
+                }
+                Ok(Value::Array(ValArray::from_iter_exact(results.drain(..))))
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(Err(e)) => e,
+                Ok(Ok(v)) => v,
+            }
+        }
+    }
+}
+
+type DbInsertMany = CachedArgsAsync<DbInsertManyEv>;
+
 // -- DbRemove --
 
 #[derive(Debug, Default)]
@@ -967,6 +1170,110 @@ impl EvalCachedAsync for DbContainsKeyEv {
 }
 
 type DbContainsKey = CachedArgsAsync<DbContainsKeyEv>;
+
+// -- DbGetMany --
+
+#[derive(Debug, Default)]
+struct DbGetManyEv;
+
+impl EvalCachedAsync for DbGetManyEv {
+    const NAME: &str = "db_get_many";
+    type Args = (Arc<TreeInner>, Vec<GPooled<Vec<u8>>>);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let tree = get_tree_inner(cached, 0)?;
+        let arr = match cached.0.get(1)?.as_ref()? {
+            Value::Array(a) => a,
+            _ => return None,
+        };
+        let mut keys = Vec::with_capacity(arr.len());
+        for k in arr.iter() {
+            keys.push(encode_key(tree.key_typ, k)?);
+        }
+        Some((tree, keys))
+    }
+
+    fn eval((tree, keys): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match tokio::task::spawn_blocking(move || {
+                let mut results: LPooled<Vec<Value>> = LPooled::take();
+                for key in keys.iter() {
+                    match tree.tree.get(&**key) {
+                        Err(e) => return Err(errf!("DbErr", "{e}")),
+                        Ok(None) => results.push(Value::Null),
+                        Ok(Some(ivec)) => match decode_value(&ivec) {
+                            Some(v) => results.push(v),
+                            None => {
+                                return Err(errf!("DbErr", "failed to decode value"))
+                            }
+                        },
+                    }
+                }
+                Ok(Value::Array(ValArray::from_iter_exact(results.drain(..))))
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(Err(e)) => e,
+                Ok(Ok(v)) => v,
+            }
+        }
+    }
+}
+
+type DbGetMany = CachedArgsAsync<DbGetManyEv>;
+
+// -- DbRemoveMany --
+
+#[derive(Debug, Default)]
+struct DbRemoveManyEv;
+
+impl EvalCachedAsync for DbRemoveManyEv {
+    const NAME: &str = "db_remove_many";
+    type Args = (Arc<TreeInner>, Vec<GPooled<Vec<u8>>>);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let tree = get_tree_inner(cached, 0)?;
+        let arr = match cached.0.get(1)?.as_ref()? {
+            Value::Array(a) => a,
+            _ => return None,
+        };
+        let mut keys = Vec::with_capacity(arr.len());
+        for k in arr.iter() {
+            keys.push(encode_key(tree.key_typ, k)?);
+        }
+        Some((tree, keys))
+    }
+
+    fn eval((tree, keys): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            match tokio::task::spawn_blocking(move || {
+                let mut results: LPooled<Vec<Value>> = LPooled::take();
+                for key in keys.iter() {
+                    match tree.tree.remove(&**key) {
+                        Err(e) => return Err(errf!("DbErr", "{e}")),
+                        Ok(None) => results.push(Value::Null),
+                        Ok(Some(old)) => match decode_value(&old) {
+                            Some(v) => results.push(v),
+                            None => {
+                                return Err(errf!("DbErr", "failed to decode previous value"))
+                            }
+                        },
+                    }
+                }
+                Ok(Value::Array(ValArray::from_iter_exact(results.drain(..))))
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(Err(e)) => e,
+                Ok(Ok(v)) => v,
+            }
+        }
+    }
+}
+
+type DbRemoveMany = CachedArgsAsync<DbRemoveManyEv>;
 
 // ── Cursor ────────────────────────────────────────────────────────
 
@@ -1062,6 +1369,65 @@ impl EvalCachedAsync for DbCursorReadEv {
 }
 
 type DbCursorRead = CachedArgsAsync<DbCursorReadEv>;
+
+// -- DbCursorReadMany --
+
+#[derive(Debug, Default)]
+struct DbCursorReadManyEv;
+
+impl EvalCachedAsync for DbCursorReadManyEv {
+    const NAME: &str = "db_cursor_read_many";
+    type Args = (Arc<CursorInner>, i64);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let n = match cached.0.get(1)?.as_ref()? {
+            Value::I64(n) => *n,
+            _ => return None,
+        };
+        match cached.0.get(0)?.as_ref()? {
+            Value::Abstract(a) => {
+                a.downcast_ref::<CursorValue>().map(|c| (c.inner.clone(), n))
+            }
+            _ => None,
+        }
+    }
+
+    fn eval((inner, count): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            let n = count.max(0) as usize;
+            match tokio::task::spawn_blocking(move || {
+                let key_typ = inner.key_typ;
+                let mut results: LPooled<Vec<Value>> = LPooled::take();
+                let mut iter = inner.iter.lock();
+                for _ in 0..n {
+                    match iter.next() {
+                        None => break,
+                        Some(Err(e)) => return Err(errf!("DbErr", "{e}")),
+                        Some(Ok((k, v))) => {
+                            match (decode_key(key_typ, &k), decode_value(&v)) {
+                                (Some(k), Some(v)) => {
+                                    results.push(Value::Array(ValArray::from([k, v])));
+                                }
+                                _ => {
+                                    return Err(errf!("DbErr", "failed to decode entry"))
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Value::Array(ValArray::from_iter_exact(results.drain(..))))
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(Err(e)) => e,
+                Ok(Ok(v)) => v,
+            }
+        }
+    }
+}
+
+type DbCursorReadMany = CachedArgsAsync<DbCursorReadManyEv>;
 
 // ── Subscribe (with optional prefix) ──────────────────────────────
 
@@ -1323,6 +1689,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnRemove {
 
 graphix_derive::defpackage! {
     builtins => [
+        DbGetType,
         DbOpen,
         DbFlush,
         DbTreeNames,
@@ -1331,10 +1698,14 @@ graphix_derive::defpackage! {
         DbDefault,
         DbGet,
         DbInsert,
+        DbInsertMany,
         DbRemove,
         DbContainsKey,
+        DbGetMany,
+        DbRemoveMany,
         DbCursorNew,
         DbCursorRead,
+        DbCursorReadMany,
         DbSubscribe,
         DbOnInsert,
         DbOnRemove,

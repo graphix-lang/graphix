@@ -7,3 +7,6 @@ val new: fn(?#prefix: ['k, null], Tree<'k, 'v>) -> Cursor<'k, 'v>;
 /// Read the next entry from the cursor. Advances on each trigger.
 /// Returns a (key, value) tuple, or null when exhausted.
 val read: fn(Cursor<'k, 'v>, Any) -> Result<[('k, 'v), null], `DbErr(string)>;
+
+/// Read up to N entries from the cursor. Returns a shorter array when exhausted.
+val read_many: fn(Cursor<'k, 'v>, i64) -> Result<Array<('k, 'v)>, `DbErr(string)>;

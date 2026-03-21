@@ -9,6 +9,10 @@ type Subscription<'k, 'v>;
 
 mod cursor;
 
+/// Get the stored type metadata for a tree, or null if none.
+/// Accepts an open Db or a path string. Pass null for the default tree.
+val get_type: fn([Db, string], [string, null]) -> Result<[(string, string), null], `DbErr(string)>;
+
 /// Open or create an embedded database at the given path.
 val open: fn(string) -> Result<Db, `DbErr(string)>;
 
@@ -25,7 +29,7 @@ val drop_tree: fn(Db, string) -> Result<bool, `DbErr(string)>;
 val tree: fn(Db, string) -> Result<Tree<'k, 'v>, `DbErr(string)>;
 
 /// Get a typed view of the database's default tree.
-val default: fn(Db) -> Tree<'k, 'v>;
+val default: fn(Db) -> Result<Tree<'k, 'v>, `DbErr(string)>;
 
 /// Get the value for a key, or null if not found.
 val get: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
@@ -38,6 +42,15 @@ val remove: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
 
 /// Check whether a key exists.
 val contains_key: fn(Tree<'k, 'v>, 'k) -> Result<bool, `DbErr(string)>;
+
+/// Batch insert key-value pairs. Returns array of previous values (null for new keys).
+val insert_many: fn(Tree<'k, 'v>, Array<('k, 'v)>) -> Result<Array<['v, null]>, `DbErr(string)>;
+
+/// Batch get values for an array of keys. Returns values in input order, null for missing.
+val get_many: fn(Tree<'k, 'v>, Array<'k>) -> Result<Array<['v, null]>, `DbErr(string)>;
+
+/// Batch remove keys. Returns array of previous values, null for missing.
+val remove_many: fn(Tree<'k, 'v>, Array<'k>) -> Result<Array<['v, null]>, `DbErr(string)>;
 
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
 val subscribe: fn(?#prefix: ['k, null], Tree<'k, 'v>) -> Subscription<'k, 'v>;
