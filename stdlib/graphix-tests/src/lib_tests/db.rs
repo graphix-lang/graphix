@@ -36,7 +36,7 @@ run_with_tempdir!(
     name: db_insert_get,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let old = db::insert(t, "hello", 42)$;
         let result = db::get(t, old ~ "hello")?;
@@ -57,7 +57,7 @@ run_with_tempdir!(
     name: db_get_missing,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         db::get(t, "nonexistent")?
     }}"#,
     setup: |td| {
@@ -73,7 +73,7 @@ run_with_tempdir!(
     name: db_remove,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let old = db::insert(t, "key", 99)$;
         let result = db::remove(t, old ~ "key")?;
@@ -94,7 +94,7 @@ run_with_tempdir!(
     name: db_contains_key,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let old = db::insert(t, "exists", 1)$;
         let result = db::contains_key(t, old ~ "exists")?;
@@ -232,7 +232,7 @@ run_with_tempdir!(
     name: db_insert_many,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let first = db::insert(t, "a", 1)$;
         let pairs = first ~ [("a", 10), ("b", 20), ("c", 30)];
@@ -261,7 +261,7 @@ run_with_tempdir!(
     name: db_get_many,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let a = db::insert(t, "x", 10)$;
         let b = db::insert(t, a ~ "y", 20)$;
@@ -289,7 +289,7 @@ run_with_tempdir!(
     name: db_remove_many,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let a = db::insert(t, "p", 100)$;
         let b = db::insert(t, a ~ "q", 200)$;
@@ -317,7 +317,7 @@ run_with_tempdir!(
     name: db_cursor_read_many,
     code: r#"{{
         let db = db::open("{}")$;
-        let t = db::default(db)?;
+        let t = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let a = db::insert(t, "a", 1)$;
         let b = db::insert(t, a ~ "b", 2)$;
@@ -426,9 +426,9 @@ run_with_tempdir!(
     name: db_type_mismatch_default,
     code: r#"{{
         let db = db::open("{}")$;
-        let t1: db::Tree<string, i64> = db::default(db)?;
+        let t1: db::Tree<string, i64> = db::tree(db, null)?;
         let ins = db::insert(t1, "x", 1)$;
-        let t2: [db::Tree<i64, string>, Error<`DbErr(string)>] = db::default(ins ~ db);
+        let t2: [db::Tree<i64, string>, Error<`DbErr(string)>] = db::tree(ins ~ db, null);
         (is_err(t1), is_err(t2))
     }}"#,
     setup: |td| {
@@ -447,7 +447,7 @@ run_with_tempdir!(
     name: db_default_typed,
     code: r#"{{
         let db = db::open("{}")$;
-        let t: db::Tree<string, i64> = db::default(db)?;
+        let t: db::Tree<string, i64> = db::tree(db, null)?;
         let ty = db::get_type(db, t ~ null)?;
         let old = db::insert(t, "x", 42)$;
         let result = db::get(t, old ~ "x")?;

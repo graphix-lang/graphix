@@ -189,6 +189,10 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 {
     const NAME: &str;
 
+    fn init(_resolved_typ: Option<&FnType>) -> Self {
+        Self::default()
+    }
+
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
     fn typecheck(
@@ -212,12 +216,12 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
+        resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let t = CachedArgs::<T> { cached: CachedVals::new(from), t: T::default() };
+        let t = CachedArgs::<T> { cached: CachedVals::new(from), t: T::init(resolved_typ) };
         Ok(Box::new(t))
     }
 }
@@ -253,6 +257,10 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
     type Args: Debug + Any + Send + Sync;
 
+    fn init(_resolved_typ: Option<&FnType>) -> Self {
+        Self::default()
+    }
+
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send;
 }
@@ -273,7 +281,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
+        resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -286,7 +294,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             running: false,
-            t: T::default(),
+            t: T::init(resolved_typ),
         };
         Ok(Box::new(t))
     }
@@ -326,8 +334,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.delete(ctx);
+        self.running = false;
         let id = BindId::new();
         ctx.rt.ref_var(id, self.top_id);
+        self.id = id;
     }
 }
 

@@ -5,7 +5,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
 use futures::{channel::mpsc, SinkExt};
-use fxhash::FxHashSet;
 use graphix_compiler::{
     errf,
     expr::ExprId,
@@ -104,24 +103,16 @@ fn encode_key(key_typ: Option<Typ>, v: &Value) -> Option<GPooled<Vec<u8>>> {
             }
             _ => None,
         },
-        Some(Typ::U32) => match v {
-            Value::U32(n) => {
+        Some(Typ::U32 | Typ::V32) => match v {
+            Value::U32(n) | Value::V32(n) => {
                 let mut buf = POOL.take();
                 buf.extend_from_slice(&n.to_be_bytes());
                 Some(buf)
             }
             _ => None,
         },
-        Some(Typ::V32) => match v {
-            Value::V32(n) => {
-                let mut buf = POOL.take();
-                buf.extend_from_slice(&n.to_be_bytes());
-                Some(buf)
-            }
-            _ => None,
-        },
-        Some(Typ::I32) => match v {
-            Value::I32(n) => {
+        Some(Typ::I32 | Typ::Z32) => match v {
+            Value::I32(n) | Value::Z32(n) => {
                 let mut buf = POOL.take();
                 let raw = (*n as u32) ^ 0x8000_0000;
                 buf.extend_from_slice(&raw.to_be_bytes());
@@ -129,42 +120,16 @@ fn encode_key(key_typ: Option<Typ>, v: &Value) -> Option<GPooled<Vec<u8>>> {
             }
             _ => None,
         },
-        Some(Typ::Z32) => match v {
-            Value::Z32(n) => {
-                let mut buf = POOL.take();
-                let raw = (*n as u32) ^ 0x8000_0000;
-                buf.extend_from_slice(&raw.to_be_bytes());
-                Some(buf)
-            }
-            _ => None,
-        },
-        Some(Typ::U64) => match v {
-            Value::U64(n) => {
+        Some(Typ::U64 | Typ::V64) => match v {
+            Value::U64(n) | Value::V64(n) => {
                 let mut buf = POOL.take();
                 buf.extend_from_slice(&n.to_be_bytes());
                 Some(buf)
             }
             _ => None,
         },
-        Some(Typ::V64) => match v {
-            Value::V64(n) => {
-                let mut buf = POOL.take();
-                buf.extend_from_slice(&n.to_be_bytes());
-                Some(buf)
-            }
-            _ => None,
-        },
-        Some(Typ::I64) => match v {
-            Value::I64(n) => {
-                let mut buf = POOL.take();
-                let raw = (*n as u64) ^ 0x8000_0000_0000_0000;
-                buf.extend_from_slice(&raw.to_be_bytes());
-                Some(buf)
-            }
-            _ => None,
-        },
-        Some(Typ::Z64) => match v {
-            Value::Z64(n) => {
+        Some(Typ::I64 | Typ::Z64) => match v {
+            Value::I64(n) | Value::Z64(n) => {
                 let mut buf = POOL.take();
                 let raw = (*n as u64) ^ 0x8000_0000_0000_0000;
                 buf.extend_from_slice(&raw.to_be_bytes());
@@ -193,33 +158,23 @@ fn decode_key(key_typ: Option<Typ>, data: &[u8]) -> Option<Value> {
             let raw = u16::from_be_bytes([data[0], data[1]]);
             Some(Value::I16((raw ^ 0x8000) as i16))
         }
-        Some(Typ::U32) if data.len() == 4 => {
-            Some(Value::U32(u32::from_be_bytes(data[..4].try_into().ok()?)))
+        Some(Typ::U32 | Typ::V32) if data.len() == 4 => {
+            let n = u32::from_be_bytes(data[..4].try_into().ok()?);
+            Some(if key_typ == Some(Typ::V32) { Value::V32(n) } else { Value::U32(n) })
         }
-        Some(Typ::V32) if data.len() == 4 => {
-            Some(Value::V32(u32::from_be_bytes(data[..4].try_into().ok()?)))
-        }
-        Some(Typ::I32) if data.len() == 4 => {
+        Some(Typ::I32 | Typ::Z32) if data.len() == 4 => {
             let raw = u32::from_be_bytes(data[..4].try_into().ok()?);
-            Some(Value::I32((raw ^ 0x8000_0000) as i32))
+            let n = (raw ^ 0x8000_0000) as i32;
+            Some(if key_typ == Some(Typ::Z32) { Value::Z32(n) } else { Value::I32(n) })
         }
-        Some(Typ::Z32) if data.len() == 4 => {
-            let raw = u32::from_be_bytes(data[..4].try_into().ok()?);
-            Some(Value::Z32((raw ^ 0x8000_0000) as i32))
+        Some(Typ::U64 | Typ::V64) if data.len() == 8 => {
+            let n = u64::from_be_bytes(data[..8].try_into().ok()?);
+            Some(if key_typ == Some(Typ::V64) { Value::V64(n) } else { Value::U64(n) })
         }
-        Some(Typ::U64) if data.len() == 8 => {
-            Some(Value::U64(u64::from_be_bytes(data[..8].try_into().ok()?)))
-        }
-        Some(Typ::V64) if data.len() == 8 => {
-            Some(Value::V64(u64::from_be_bytes(data[..8].try_into().ok()?)))
-        }
-        Some(Typ::I64) if data.len() == 8 => {
+        Some(Typ::I64 | Typ::Z64) if data.len() == 8 => {
             let raw = u64::from_be_bytes(data[..8].try_into().ok()?);
-            Some(Value::I64((raw ^ 0x8000_0000_0000_0000) as i64))
-        }
-        Some(Typ::Z64) if data.len() == 8 => {
-            let raw = u64::from_be_bytes(data[..8].try_into().ok()?);
-            Some(Value::Z64((raw ^ 0x8000_0000_0000_0000) as i64))
+            let n = (raw ^ 0x8000_0000_0000_0000) as i64;
+            Some(if key_typ == Some(Typ::Z64) { Value::Z64(n) } else { Value::I64(n) })
         }
         _ => decode_value(data),
     }
@@ -539,6 +494,26 @@ impl CustomBuiltinType for DbEvent {}
 
 static META_TREE: &[u8] = b"$$__graphix_meta__$$";
 
+fn read_meta(
+    db: &sled::Db,
+    tree_name: &str,
+) -> std::result::Result<Option<(ArcStr, ArcStr)>, Value> {
+    let meta = db.open_tree(META_TREE).map_err(|e| errf!("DbErr", "{e}"))?;
+    let meta_key = format!("type:{tree_name}");
+    match meta.get(meta_key.as_bytes()) {
+        Err(e) => Err(errf!("DbErr", "{e}")),
+        Ok(None) => Ok(None),
+        Ok(Some(stored)) => {
+            let stored = std::str::from_utf8(&stored)
+                .map_err(|e| errf!("DbErr", "corrupt metadata: {e}"))?;
+            let mut parts = stored.splitn(2, '\0');
+            let k = parts.next().unwrap_or("?");
+            let v = parts.next().unwrap_or("?");
+            Ok(Some((ArcStr::from(k), ArcStr::from(v))))
+        }
+    }
+}
+
 /// Check/store type metadata for a named tree. Returns Err on mismatch.
 fn check_or_store_meta(
     db: &sled::Db,
@@ -546,19 +521,9 @@ fn check_or_store_meta(
     key_str: &str,
     val_str: &str,
 ) -> std::result::Result<(), Value> {
-    let meta = db.open_tree(META_TREE).map_err(|e| errf!("DbErr", "{e}"))?;
-    let meta_key = format!("type:{tree_name}");
-    match meta.get(meta_key.as_bytes()) {
-        Err(e) => Err(errf!("DbErr", "{e}")),
-        Ok(Some(stored)) => {
-            let stored = std::str::from_utf8(&stored)
-                .map_err(|e| errf!("DbErr", "corrupt metadata: {e}"))?;
-            let expected = format!("{key_str}\0{val_str}");
-            if stored != expected {
-                // CR estokes: LPool this
-                let parts: Vec<&str> = stored.splitn(2, '\0').collect();
-                let (sk, sv) =
-                    if parts.len() == 2 { (parts[0], parts[1]) } else { (stored, "?") };
+    match read_meta(db, tree_name)? {
+        Some((sk, sv)) => {
+            if &*sk != key_str || &*sv != val_str {
                 Err(errf!("DbErr",
                     "tree '{tree_name}' has type Tree<{sk}, {sv}>, but was opened as Tree<{key_str}, {val_str}>"
                 ))
@@ -566,7 +531,9 @@ fn check_or_store_meta(
                 Ok(())
             }
         }
-        Ok(None) => {
+        None => {
+            let meta = db.open_tree(META_TREE).map_err(|e| errf!("DbErr", "{e}"))?;
+            let meta_key = format!("type:{tree_name}");
             let meta_val = format!("{key_str}\0{val_str}");
             meta.insert(meta_key.as_bytes(), meta_val.as_bytes())
                 .map_err(|e| errf!("DbErr", "{e}"))?;
@@ -577,62 +544,29 @@ fn check_or_store_meta(
 
 // ── DbGetType ─────────────────────────────────────────────────────
 
-#[derive(Debug)]
-enum DbOrPath {
-    Db(sled::Db),
-    Path(ArcStr),
-}
-
 #[derive(Debug, Default)]
 struct DbGetTypeEv;
 
 impl EvalCachedAsync for DbGetTypeEv {
     const NAME: &str = "db_get_type";
-    type Args = (DbOrPath, ArcStr);
+    type Args = (sled::Db, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let db_or_path = match cached.0.get(0)?.as_ref()? {
-            Value::Abstract(a) => {
-                let dv = a.downcast_ref::<DbValue>()?;
-                DbOrPath::Db((*dv.inner).clone())
-            }
-            Value::String(s) => DbOrPath::Path(s.clone()),
-            _ => return None,
-        };
+        let db = get_db(cached, 0)?;
         let name = match cached.0.get(1)?.as_ref()? {
             Value::Null => ArcStr::from(DEFAULT_TREE_META),
             Value::String(s) => s.clone(),
             _ => return None,
         };
-        Some((db_or_path, name))
+        Some((db, name))
     }
 
-    fn eval((db_or_path, name): Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval((db, name): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            match tokio::task::spawn_blocking(move || {
-                let db = match db_or_path {
-                    DbOrPath::Db(db) => db,
-                    DbOrPath::Path(path) => {
-                        sled::open(&*path).map_err(|e| errf!("DbErr", "{e}"))?
-                    }
-                };
-                let meta =
-                    db.open_tree(META_TREE).map_err(|e| errf!("DbErr", "{e}"))?;
-                let meta_key = format!("type:{name}");
-                match meta.get(meta_key.as_bytes()) {
-                    Err(e) => Err(errf!("DbErr", "{e}")),
-                    Ok(None) => Ok(Value::Null),
-                    Ok(Some(stored)) => {
-                        let stored = std::str::from_utf8(&stored)
-                            .map_err(|e| errf!("DbErr", "corrupt metadata: {e}"))?;
-                        let mut parts = stored.splitn(2, '\0');
-                        let k = parts.next().unwrap_or("?");
-                        let v = parts.next().unwrap_or("?");
-                        Ok(Value::Array(ValArray::from([
-                            Value::String(ArcStr::from(k)),
-                            Value::String(ArcStr::from(v)),
-                        ])))
-                    }
+            match tokio::task::spawn_blocking(move || match read_meta(&db, &name)? {
+                None => Ok(Value::Null),
+                Some((k, v)) => {
+                    Ok(Value::Array(ValArray::from([Value::String(k), Value::String(v)])))
                 }
             })
             .await
@@ -765,111 +699,6 @@ impl EvalCachedAsync for DbDropTreeEv {
 
 type DbDropTree = CachedArgsAsync<DbDropTreeEv>;
 
-// ── DbTree — manual BuiltIn with type extraction ─────────────────
-
-#[derive(Debug)]
-struct DbTree {
-    cached: CachedVals,
-    id: BindId,
-    top_id: ExprId,
-    running: bool,
-    key_typ: Option<Typ>,
-    key_str: ArcStr,
-    val_str: ArcStr,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbTree {
-    const NAME: &str = "db_tree";
-
-    fn init<'a, 'b, 'c>(
-        ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        eprintln!("DbTree::init resolved_typ = {resolved_typ:?}");
-        let key_typ = extract_key_typ_from_rtype(resolved_typ);
-        eprintln!("DbTree::init key_typ = {key_typ:?}");
-        let (key_str, val_str) = extract_type_strings_from_rtype(resolved_typ);
-        let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(DbTree {
-            cached: CachedVals::new(from),
-            id,
-            top_id,
-            running: false,
-            key_typ,
-            key_str,
-            val_str,
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbTree {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        let result = event.variables.remove(&self.id).map(|v| {
-            self.running = false;
-            v
-        });
-        if self.cached.update(ctx, from, event) && !self.running {
-            let db = get_db(&self.cached, 0)?;
-            let name = self.cached.get::<ArcStr>(1)?;
-            let key_typ = self.key_typ;
-            let key_str = self.key_str.clone();
-            let val_str = self.val_str.clone();
-            let id = self.id;
-            self.running = true;
-            ctx.rt.spawn_var(async move {
-                match tokio::task::spawn_blocking(move || {
-                    if &*name == DEFAULT_TREE_META
-                        || name.as_bytes() == META_TREE
-                    {
-                        return Err(errf!(
-                            "DbErr",
-                            "tree name '{name}' is reserved"
-                        ));
-                    }
-                    if let Err(e) = check_or_store_meta(&db, &name, &key_str, &val_str) {
-                        return Err(e);
-                    }
-                    db.open_tree(name.as_bytes())
-                        .map(|tree| wrap_tree(tree, key_typ))
-                        .map_err(|e| errf!("DbErr", "{e}"))
-                })
-                .await
-                {
-                    Err(e) => (id, errf!("DbErr", "task panicked: {e}")),
-                    Ok(Err(e)) => (id, e),
-                    Ok(Ok(v)) => (id, v),
-                }
-            });
-        }
-        result
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
-        self.running = false;
-        self.cached.clear();
-        let id = BindId::new();
-        ctx.rt.ref_var(id, self.top_id);
-        self.id = id;
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
-    }
-}
-
-// -- DbDefault --
-
 static DEFAULT_TREE_META: &str = "$$__graphix_default__$$";
 
 /// Type strings are concrete if they aren't fallback "?" and don't
@@ -882,99 +711,78 @@ fn types_are_concrete(key_str: &str, val_str: &str) -> bool {
 }
 
 #[derive(Debug)]
-struct DbDefault {
-    cached: CachedVals,
-    id: BindId,
-    top_id: ExprId,
-    running: bool,
+struct DbTreeArgs {
+    db: sled::Db,
+    name: Option<ArcStr>,
     key_typ: Option<Typ>,
     key_str: ArcStr,
     val_str: ArcStr,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbDefault {
-    const NAME: &str = "db_default";
+#[derive(Debug, Default)]
+struct DbTreeEv {
+    key_typ: Option<Typ>,
+    key_str: ArcStr,
+    val_str: ArcStr,
+}
 
-    fn init<'a, 'b, 'c>(
-        ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
+impl EvalCachedAsync for DbTreeEv {
+    const NAME: &str = "db_tree";
+    type Args = DbTreeArgs;
+
+    fn init(resolved_typ: Option<&FnType>) -> Self {
         let key_typ = extract_key_typ_from_rtype(resolved_typ);
         let (key_str, val_str) = extract_type_strings_from_rtype(resolved_typ);
-        let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(DbDefault {
-            cached: CachedVals::new(from),
-            id,
-            top_id,
-            running: false,
-            key_typ,
-            key_str,
-            val_str,
-        }))
+        DbTreeEv { key_typ, key_str, val_str }
     }
-}
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbDefault {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        let result = event.variables.remove(&self.id).map(|v| {
-            self.running = false;
-            v
-        });
-        if self.cached.update(ctx, from, event) && !self.running {
-            let db = get_db(&self.cached, 0)?;
-            let key_typ = self.key_typ;
-            let key_str = self.key_str.clone();
-            let val_str = self.val_str.clone();
-            let id = self.id;
-            self.running = true;
-            ctx.rt.spawn_var(async move {
-                match tokio::task::spawn_blocking(move || {
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let db = get_db(cached, 0)?;
+        let name = match cached.0.get(1)?.as_ref()? {
+            Value::Null => None,
+            Value::String(s) => Some(s.clone()),
+            _ => return None,
+        };
+        Some(DbTreeArgs {
+            db,
+            name,
+            key_typ: self.key_typ,
+            key_str: self.key_str.clone(),
+            val_str: self.val_str.clone(),
+        })
+    }
+
+    fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            let DbTreeArgs { db, name, key_typ, key_str, val_str } = args;
+            match tokio::task::spawn_blocking(move || match name {
+                Some(name) => {
+                    if &*name == DEFAULT_TREE_META || name.as_bytes() == META_TREE {
+                        return Err(errf!("DbErr", "tree name '{name}' is reserved"));
+                    }
+                    check_or_store_meta(&db, &name, &key_str, &val_str)?;
+                    db.open_tree(name.as_bytes())
+                        .map(|tree| wrap_tree(tree, key_typ))
+                        .map_err(|e| errf!("DbErr", "{e}"))
+                }
+                None => {
                     if types_are_concrete(&key_str, &val_str) {
-                        if let Err(e) = check_or_store_meta(
-                            &db,
-                            DEFAULT_TREE_META,
-                            &key_str,
-                            &val_str,
-                        ) {
-                            return Err(e);
-                        }
+                        check_or_store_meta(&db, DEFAULT_TREE_META, &key_str, &val_str)?;
                     }
                     Ok(wrap_tree((*db).clone(), key_typ))
-                })
-                .await
-                {
-                    Err(e) => (id, errf!("DbErr", "task panicked: {e}")),
-                    Ok(Err(e)) => (id, e),
-                    Ok(Ok(v)) => (id, v),
                 }
-            });
+            })
+            .await
+            {
+                Err(e) => errf!("DbErr", "task panicked: {e}"),
+                Ok(Err(e)) => e,
+                Ok(Ok(v)) => v,
+            }
         }
-        result
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
-        self.running = false;
-        self.cached.clear();
-        let id = BindId::new();
-        ctx.rt.ref_var(id, self.top_id);
-        self.id = id;
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
     }
 }
+
+type DbTree = CachedArgsAsync<DbTreeEv>;
 
 // ── Key-encoding builtins ─────────────────────────────────────────
 
@@ -1089,7 +897,10 @@ impl EvalCachedAsync for DbInsertManyEv {
                         Ok(Some(prev)) => match decode_value(&prev) {
                             Some(v) => results.push(v),
                             None => {
-                                return Err(errf!("DbErr", "failed to decode previous value"))
+                                return Err(errf!(
+                                    "DbErr",
+                                    "failed to decode previous value"
+                                ))
                             }
                         },
                     }
@@ -1203,9 +1014,7 @@ impl EvalCachedAsync for DbGetManyEv {
                         Ok(None) => results.push(Value::Null),
                         Ok(Some(ivec)) => match decode_value(&ivec) {
                             Some(v) => results.push(v),
-                            None => {
-                                return Err(errf!("DbErr", "failed to decode value"))
-                            }
+                            None => return Err(errf!("DbErr", "failed to decode value")),
                         },
                     }
                 }
@@ -1256,7 +1065,10 @@ impl EvalCachedAsync for DbRemoveManyEv {
                         Ok(Some(old)) => match decode_value(&old) {
                             Some(v) => results.push(v),
                             None => {
-                                return Err(errf!("DbErr", "failed to decode previous value"))
+                                return Err(errf!(
+                                    "DbErr",
+                                    "failed to decode previous value"
+                                ))
                             }
                         },
                     }
@@ -1356,9 +1168,7 @@ impl EvalCachedAsync for DbCursorReadEv {
             })
             .await
             {
-                Ok(Some(Ok((Some(k), Some(v))))) => {
-                    Value::Array(ValArray::from([k, v]))
-                }
+                Ok(Some(Ok((Some(k), Some(v))))) => Value::Array(ValArray::from([k, v])),
                 Ok(Some(Ok(_))) => errf!("DbErr", "failed to decode entry"),
                 Ok(Some(Err(e))) => errf!("DbErr", "{e}"),
                 Ok(None) => Value::Null,
@@ -1468,50 +1278,47 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         if self.tree_val.is_none() || (prefix_val.is_none() && !tree_is_new) {
             return None;
         }
-        if let Some(Value::Abstract(ref a)) = self.tree_val {
-            if let Some(tv) = a.downcast_ref::<TreeValue>() {
-                let tree_inner = tv.inner.clone();
-                let key_typ = tree_inner.key_typ;
-                let prefix_bytes: Vec<u8> = match &prefix_val {
-                    Some(Value::Null) | None => vec![],
-                    Some(pv) => match encode_key(key_typ, pv) {
-                        Some(buf) => buf.to_vec(),
-                        None => vec![],
-                    },
-                };
-                let bind_id = BindId::new();
-                let (mut tx, rx) = mpsc::channel(10);
-                ctx.rt.watch(rx);
-                std::thread::spawn(move || {
-                    let subscriber = tree_inner.tree.watch_prefix(prefix_bytes);
-                    for event in subscriber {
-                        let db_event = match event {
-                            sled::Event::Insert { key, value } => {
-                                match (decode_key(key_typ, &key), decode_value(&value)) {
-                                    (Some(k), Some(v)) => {
-                                        DbEvent::Insert { key: k, value: v }
-                                    }
-                                    _ => continue,
+        if let Some(Value::Abstract(ref a)) = self.tree_val
+            && let Some(tv) = a.downcast_ref::<TreeValue>()
+        {
+            let tree_inner = tv.inner.clone();
+            let key_typ = tree_inner.key_typ;
+            let prefix_bytes = match &prefix_val {
+                Some(Value::Null) | None => poolshark::global::GPooled::orphan(vec![]),
+                Some(pv) => match encode_key(key_typ, pv) {
+                    Some(buf) => buf,
+                    None => poolshark::global::GPooled::orphan(vec![]),
+                },
+            };
+            let bind_id = BindId::new();
+            let (mut tx, rx) = mpsc::channel(10);
+            ctx.rt.watch(rx);
+            tokio::task::spawn(async move {
+                let mut subscriber = tree_inner.tree.watch_prefix(&*prefix_bytes);
+                while let Some(event) = (&mut subscriber).await {
+                    let db_event = match event {
+                        sled::Event::Insert { key, value } => {
+                            match (decode_key(key_typ, &key), decode_value(&value)) {
+                                (Some(k), Some(v)) => {
+                                    DbEvent::Insert { key: k, value: v }
                                 }
+                                _ => continue,
                             }
-                            sled::Event::Remove { key } => {
-                                match decode_key(key_typ, &key) {
-                                    Some(k) => DbEvent::Remove { key: k },
-                                    None => continue,
-                                }
-                            }
-                        };
-                        let mut batch: GPooled<
-                            Vec<(BindId, Box<dyn CustomBuiltinType>)>,
-                        > = CBATCH_POOL.take();
-                        batch.push((bind_id, Box::new(db_event)));
-                        if futures::executor::block_on(tx.send(batch)).is_err() {
-                            break;
                         }
+                        sled::Event::Remove { key } => match decode_key(key_typ, &key) {
+                            Some(k) => DbEvent::Remove { key: k },
+                            None => continue,
+                        },
+                    };
+                    let mut batch: GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>> =
+                        CBATCH_POOL.take();
+                    batch.push((bind_id, Box::new(db_event)));
+                    if tx.send(batch).await.is_err() {
+                        break;
                     }
-                });
-                return Some(SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }));
-            }
+                }
+            });
+            return Some(SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }));
         }
         None
     }
@@ -1531,18 +1338,14 @@ fn extract_sub_bind_id(v: &Value) -> Option<BindId> {
 }
 
 fn scan_db_events<E: UserEvent>(
-    bind_ids: &FxHashSet<BindId>,
+    bind_id: Option<BindId>,
     event: &mut Event<E>,
     convert: fn(&mut DbEvent) -> Option<Value>,
 ) -> Option<Value> {
-    for bid in bind_ids {
-        if let Some(mut cbt) = event.custom.remove(bid) {
-            if let Some(se) = (&mut *cbt as &mut dyn Any).downcast_mut::<DbEvent>() {
-                return convert(se);
-            }
-        }
-    }
-    None
+    let bid = bind_id?;
+    let mut cbt = event.custom.remove(&bid)?;
+    let se = (&mut *cbt as &mut dyn Any).downcast_mut::<DbEvent>()?;
+    convert(se)
 }
 
 // -- DbOnInsert --
@@ -1551,7 +1354,7 @@ fn scan_db_events<E: UserEvent>(
 struct DbOnInsert {
     top_id: ExprId,
     cached: CachedVals,
-    bind_ids: FxHashSet<BindId>,
+    bind_id: Option<BindId>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbOnInsert {
@@ -1568,7 +1371,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbOnInsert {
         Ok(Box::new(DbOnInsert {
             top_id,
             cached: CachedVals::new(from),
-            bind_ids: FxHashSet::default(),
+            bind_id: None,
         }))
     }
 }
@@ -1581,36 +1384,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnInsert {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if self.cached.update(ctx, from, event) {
-            for bid in self.bind_ids.drain() {
+            if let Some(bid) = self.bind_id.take() {
                 ctx.rt.unref_var(bid, self.top_id);
             }
-            for v in self.cached.0.iter() {
-                if let Some(v) = v {
-                    if let Some(bid) = extract_sub_bind_id(v) {
-                        self.bind_ids.insert(bid);
-                    }
-                }
+            let bid = extract_sub_bind_id(self.cached.0.first()?.as_ref()?);
+            if let Some(bid) = bid {
+                ctx.rt.ref_var(bid, self.top_id);
             }
-            for bid in &self.bind_ids {
-                ctx.rt.ref_var(*bid, self.top_id);
-            }
+            self.bind_id = bid;
         }
-        scan_db_events(&self.bind_ids, event, |se| match se {
+        scan_db_events(self.bind_id, event, |se| match se {
             DbEvent::Insert { key, value } => Some(kv_struct(key.clone(), value.clone())),
             DbEvent::Remove { .. } => None,
         })
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in self.bind_ids.drain() {
+        if let Some(bid) = self.bind_id.take() {
             ctx.rt.unref_var(bid, self.top_id);
         }
         self.cached.clear();
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in &self.bind_ids {
-            ctx.rt.unref_var(*bid, self.top_id);
+        if let Some(bid) = self.bind_id {
+            ctx.rt.unref_var(bid, self.top_id);
         }
     }
 }
@@ -1621,7 +1419,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnInsert {
 struct DbOnRemove {
     top_id: ExprId,
     cached: CachedVals,
-    bind_ids: FxHashSet<BindId>,
+    bind_id: Option<BindId>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbOnRemove {
@@ -1638,7 +1436,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbOnRemove {
         Ok(Box::new(DbOnRemove {
             top_id,
             cached: CachedVals::new(from),
-            bind_ids: FxHashSet::default(),
+            bind_id: None,
         }))
     }
 }
@@ -1651,36 +1449,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnRemove {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if self.cached.update(ctx, from, event) {
-            for bid in self.bind_ids.drain() {
+            if let Some(bid) = self.bind_id.take() {
                 ctx.rt.unref_var(bid, self.top_id);
             }
-            for v in self.cached.0.iter() {
-                if let Some(v) = v {
-                    if let Some(bid) = extract_sub_bind_id(v) {
-                        self.bind_ids.insert(bid);
-                    }
-                }
+            let bid = extract_sub_bind_id(self.cached.0.first()?.as_ref()?);
+            if let Some(bid) = bid {
+                ctx.rt.ref_var(bid, self.top_id);
             }
-            for bid in &self.bind_ids {
-                ctx.rt.ref_var(*bid, self.top_id);
-            }
+            self.bind_id = bid;
         }
-        scan_db_events(&self.bind_ids, event, |se| match se {
+        scan_db_events(self.bind_id, event, |se| match se {
             DbEvent::Remove { key } => Some(key_struct(key.clone())),
             DbEvent::Insert { .. } => None,
         })
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in self.bind_ids.drain() {
+        if let Some(bid) = self.bind_id.take() {
             ctx.rt.unref_var(bid, self.top_id);
         }
         self.cached.clear();
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in &self.bind_ids {
-            ctx.rt.unref_var(*bid, self.top_id);
+        if let Some(bid) = self.bind_id {
+            ctx.rt.unref_var(bid, self.top_id);
         }
     }
 }
@@ -1695,7 +1488,6 @@ graphix_derive::defpackage! {
         DbTreeNames,
         DbDropTree,
         DbTree,
-        DbDefault,
         DbGet,
         DbInsert,
         DbInsertMany,

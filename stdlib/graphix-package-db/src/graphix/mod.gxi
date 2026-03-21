@@ -10,8 +10,8 @@ type Subscription<'k, 'v>;
 mod cursor;
 
 /// Get the stored type metadata for a tree, or null if none.
-/// Accepts an open Db or a path string. Pass null for the default tree.
-val get_type: fn([Db, string], [string, null]) -> Result<[(string, string), null], `DbErr(string)>;
+/// Pass null for the default tree.
+val get_type: fn(Db, [string, null]) -> Result<[(string, string), null], `DbErr(string)>;
 
 /// Open or create an embedded database at the given path.
 val open: fn(string) -> Result<Db, `DbErr(string)>;
@@ -26,10 +26,8 @@ val tree_names: fn(Db) -> Result<Array<string>, `DbErr(string)>;
 val drop_tree: fn(Db, string) -> Result<bool, `DbErr(string)>;
 
 /// Open or create a named tree with typed keys and values.
-val tree: fn(Db, string) -> Result<Tree<'k, 'v>, `DbErr(string)>;
-
-/// Get a typed view of the database's default tree.
-val default: fn(Db) -> Result<Tree<'k, 'v>, `DbErr(string)>;
+/// Pass null for the default (unnamed) tree.
+val tree: fn(Db, [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
 
 /// Get the value for a key, or null if not found.
 val get: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
