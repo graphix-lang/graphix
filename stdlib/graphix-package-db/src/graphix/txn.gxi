@@ -22,6 +22,9 @@ val insert: fn(TxnTree<'k, 'v>, 'k, 'v) -> Result<['v, null], `DbErr(string)>;
 /// Remove a key within the transaction.
 val remove: fn(TxnTree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
 
+/// Atomically apply a batch of inserts and removes within the transaction.
+val batch: fn(TxnTree<'k, 'v>, Array<[`Insert('k, 'v), `Remove('k)]>) -> Result<null, `DbErr(string)>;
+
 /// Commit the transaction. All writes become visible atomically.
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error

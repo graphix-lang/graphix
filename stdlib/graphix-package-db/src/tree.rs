@@ -14,7 +14,7 @@ use poolshark::{global::GPooled, local::LPooled};
 use std::sync::Arc;
 
 use crate::encoding::{
-    decode_key, decode_value, encode_key, encode_value, ENCODE_MANY_POOL,
+    decode_key, decode_value, encode_key, encode_value, parse_batch_ops, ENCODE_MANY_POOL,
 };
 
 // ── Abstract types ────────────────────────────────────────────────
@@ -961,24 +961,7 @@ impl EvalCachedAsync for DbBatchEv {
             Value::Array(a) => a,
             _ => return None,
         };
-        let mut batch = sled::Batch::default();
-        for op in arr.iter() {
-            match op {
-                Value::Array(a) => match a.first() {
-                    Some(Value::String(tag)) if &**tag == "Insert" && a.len() == 3 => {
-                        let key = encode_key(tree.key_typ, &a[1])?;
-                        let val = encode_value(&a[2])?;
-                        batch.insert(key.as_slice(), val.as_slice());
-                    }
-                    Some(Value::String(tag)) if &**tag == "Remove" && a.len() == 2 => {
-                        let key = encode_key(tree.key_typ, &a[1])?;
-                        batch.remove(key.as_slice());
-                    }
-                    _ => return None,
-                },
-                _ => return None,
-            }
-        }
+        let batch = parse_batch_ops(tree.key_typ, arr)?;
         Some((tree, batch))
     }
 

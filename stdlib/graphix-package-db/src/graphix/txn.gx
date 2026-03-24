@@ -3,5 +3,6 @@ let tree = |txn: Txn, name: [string, null]| -> Result<TxnTree<'k, 'v>, `DbErr(st
 let get = |t: TxnTree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_txn_get;
 let insert = |t: TxnTree<'k, 'v>, key: 'k, value: 'v| -> Result<['v, null], `DbErr(string)> 'db_txn_insert;
 let remove = |t: TxnTree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_txn_remove;
+let batch = |t: TxnTree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>| -> Result<null, `DbErr(string)> 'db_txn_batch;
 let commit = |txn: Txn| -> Result<null, `DbErr(string)> 'db_txn_commit;
 let rollback = |txn: Txn| -> Result<null, `DbErr(string)> 'db_txn_rollback

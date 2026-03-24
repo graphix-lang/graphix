@@ -57,7 +57,7 @@ use tree::{
 use cursor::{DbCursorNew, DbCursorRead, DbCursorReadMany, DbCursorRange};
 use txn::{
     DbTxnBegin, DbTxnTree, DbTxnGet, DbTxnInsert, DbTxnRemove,
-    DbTxnCommit, DbTxnRollback,
+    DbTxnBatch, DbTxnCommit, DbTxnRollback,
 };
 use subscribe::{DbSubscribe, DbOnInsert, DbOnRemove};
 
@@ -106,6 +106,7 @@ graphix_derive::defpackage! {
         DbTxnGet,
         DbTxnInsert,
         DbTxnRemove,
+        DbTxnBatch,
         DbTxnCommit,
         DbTxnRollback,
     ],

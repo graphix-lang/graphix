@@ -875,6 +875,34 @@ run_with_tempdir!(
     }
 );
 
+// Txn batch: begin, open tree, batch insert+remove, commit, verify
+run_with_tempdir!(
+    name: db_txn_batch,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<string, i64> = db::tree(db, "txb")?;
+        let pre = db::insert(t, "a", 1)$;
+        let txn = db::txn::begin(pre ~ db)?;
+        let tt = db::txn::tree(txn, txn ~ "txb")?;
+        let batched = db::txn::batch(tt, tt ~ [`Insert("b", 2), `Insert("c", 3), `Remove("a")])?;
+        let committed = db::txn::commit(batched ~ txn)?;
+        let va = db::get(t, committed ~ "a")?;
+        let vb = db::get(t, va ~ "b")?;
+        let vc = db::get(t, vb ~ "c")?;
+        (va, vb, vc)
+    }}"#,
+    setup: |td| {
+        td.path().join("test_txn_batch.db")
+    },
+    expect: |v: Value| -> Result<()> {
+        let arr = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
+        assert!(matches!(&arr[0], Value::Null), "'a' should be removed, got: {:?}", arr[0]);
+        assert!(matches!(&arr[1], Value::I64(2)), "'b' should be 2, got: {:?}", arr[1]);
+        assert!(matches!(&arr[2], Value::I64(3)), "'c' should be 3, got: {:?}", arr[2]);
+        Ok(())
+    }
+);
+
 // Subscribe to a tree and verify on_insert fires
 run_with_tempdir!(
     name: db_subscribe_on_insert,

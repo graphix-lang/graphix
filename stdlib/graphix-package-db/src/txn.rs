@@ -1,4 +1,4 @@
-use crate::encoding::{decode_value, encode_key, encode_value};
+use crate::encoding::{decode_value, encode_key, encode_value, parse_batch_ops};
 use crate::tree::{
     check_or_store_meta, extract_key_typ_from_rtype, extract_type_strings_from_rtype,
     get_db, read_meta, types_are_concrete, DEFAULT_TREE_META, META_TREE,
@@ -29,6 +29,7 @@ enum TxnCommand {
     Get { tree_idx: usize, key: GPooled<Vec<u8>> },
     Insert { tree_idx: usize, key: GPooled<Vec<u8>>, value: GPooled<Vec<u8>> },
     Remove { tree_idx: usize, key: GPooled<Vec<u8>> },
+    Batch { tree_idx: usize, batch: sled::Batch },
     Commit,
     Rollback,
 }
@@ -163,6 +164,14 @@ impl TxnCtx<'_> {
         })
     }
 
+    fn apply_batch(&self, tree_idx: usize, batch: &sled::Batch) -> Result<Value> {
+        if tree_idx >= self.trees.len() {
+            bail!("invalid tree index");
+        }
+        self.trees[tree_idx].apply_batch(batch)?;
+        Ok(Value::Null)
+    }
+
     fn abort(&self) -> sled::transaction::ConflictableTransactionResult<(), ()> {
         self.aborted.set(true);
         sled::transaction::abort(())
@@ -194,6 +203,9 @@ impl TxnCtx<'_> {
                     self.insert(tree_idx, &key, &value)
                 }
                 TxnCommand::Remove { tree_idx, key } => self.remove(tree_idx, &key),
+                TxnCommand::Batch { tree_idx, ref batch } => {
+                    self.apply_batch(tree_idx, batch)
+                }
                 TxnCommand::Commit => {
                     *self.commit_reply.borrow_mut() = Some(reply);
                     return Ok(());
@@ -627,3 +639,32 @@ impl EvalCachedAsync for DbTxnRollbackEv {
 }
 
 pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
+
+// -- DbTxnBatch --
+
+#[derive(Debug, Default)]
+pub(crate) struct DbTxnBatchEv;
+
+impl EvalCachedAsync for DbTxnBatchEv {
+    const NAME: &str = "db_txn_batch";
+    type Args = (Arc<TxnTreeInner>, sled::Batch);
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        let tt = get_txn_tree(cached, 0)?;
+        let arr = match cached.0.get(1)?.as_ref()? {
+            Value::Array(a) => a,
+            _ => return None,
+        };
+        let batch = parse_batch_ops(tt.key_typ, arr)?;
+        Some((tt, batch))
+    }
+
+    fn eval((tt, batch): Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            let tree_idx = tt.tree_idx;
+            txn_send_recv(&tt.txn.cmd_tx, TxnCommand::Batch { tree_idx, batch }).await
+        }
+    }
+}
+
+pub(crate) type DbTxnBatch = CachedArgsAsync<DbTxnBatchEv>;

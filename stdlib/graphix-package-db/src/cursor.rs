@@ -1,3 +1,5 @@
+use crate::encoding::{decode_key, decode_value, encode_key};
+use crate::tree::{get_tree_inner, TreeInner};
 use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
@@ -5,9 +7,6 @@ use netidx::publisher::Typ;
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::{fmt, sync::Arc};
-
-use crate::encoding::{decode_key, decode_value, encode_key};
-use crate::tree::{get_tree_inner, TreeInner};
 
 // ── Cursor types ──────────────────────────────────────────────────
 

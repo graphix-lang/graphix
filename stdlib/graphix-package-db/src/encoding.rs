@@ -169,6 +169,28 @@ pub(crate) fn kv_struct(key: Value, value: Value) -> Value {
     ]))
 }
 
+pub(crate) fn parse_batch_ops(key_typ: Option<Typ>, arr: &ValArray) -> Option<sled::Batch> {
+    let mut batch = sled::Batch::default();
+    for op in arr.iter() {
+        match op {
+            Value::Array(a) => match a.first() {
+                Some(Value::String(tag)) if &**tag == "Insert" && a.len() == 3 => {
+                    let key = encode_key(key_typ, &a[1])?;
+                    let val = encode_value(&a[2])?;
+                    batch.insert(key.as_slice(), val.as_slice());
+                }
+                Some(Value::String(tag)) if &**tag == "Remove" && a.len() == 2 => {
+                    let key = encode_key(key_typ, &a[1])?;
+                    batch.remove(key.as_slice());
+                }
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    Some(batch)
+}
+
 pub(crate) fn key_struct(key: Value) -> Value {
     Value::Array(ValArray::from([Value::Array(ValArray::from([
         Value::String(arcstr::literal!("key")),
