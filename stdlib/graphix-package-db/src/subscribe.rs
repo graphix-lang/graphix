@@ -7,7 +7,10 @@ use graphix_compiler::{
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
 use netidx_value::{abstract_type::AbstractWrapper, Abstract, ValArray, Value};
-use poolshark::{global::GPooled, local::LPooled};
+use poolshark::{
+    global::{GPooled, Pool},
+    local::LPooled,
+};
 use std::{
     any::Any,
     cmp::Ordering,
@@ -73,8 +76,10 @@ enum DbEvent {
     Remove { key: Value },
 }
 
+static EVENT_POOL: LazyLock<Pool<Vec<DbEvent>>> = LazyLock::new(|| Pool::new(128, 4096));
+
 #[derive(Debug)]
-struct DbEvents(Vec<DbEvent>);
+struct DbEvents(GPooled<Vec<DbEvent>>);
 
 impl CustomBuiltinType for DbEvents {}
 
@@ -172,7 +177,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
             let jh = tokio::task::spawn(async move {
                 let mut subscriber = tree_inner.tree.watch_prefix(&*prefix_bytes);
                 while let Some(first) = (&mut subscriber).await {
-                    let mut events = Vec::new();
+                    let mut events = EVENT_POOL.take();
                     if let Some(ev) = decode_sled_event(key_typ, first) {
                         events.push(ev);
                     }
@@ -226,136 +231,83 @@ fn scan_db_events<E: UserEvent>(
     let bid = bind_id?;
     let cbt = event.custom.get(&bid)?;
     let events = (&**cbt as &dyn Any).downcast_ref::<DbEvents>()?;
-    let mut vals: LPooled<Vec<Value>> = LPooled::take();
-    for ev in &events.0 {
-        if let Some(v) = convert(ev) {
-            vals.push(v);
-        }
-    }
+    let mut vals: LPooled<Vec<Value>> = events.0.iter().filter_map(convert).collect();
     if vals.is_empty() {
         return None;
     }
     Some(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
 }
 
-// -- DbOnInsert --
+macro_rules! db_event_accessor {
+    ($name:ident, $builtin_name:expr, $convert:expr) => {
+        #[derive(Debug)]
+        pub(crate) struct $name {
+            top_id: ExprId,
+            cached: CachedVals,
+            bind_id: Option<BindId>,
+        }
 
-#[derive(Debug)]
-pub(crate) struct DbOnInsert {
-    top_id: ExprId,
-    cached: CachedVals,
-    bind_id: Option<BindId>,
-}
+        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+            const NAME: &str = $builtin_name;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbOnInsert {
-    const NAME: &str = "db_subscription_on_insert";
-
-    fn init<'a, 'b, 'c>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(DbOnInsert { top_id, cached: CachedVals::new(from), bind_id: None }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnInsert {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        if self.cached.update(ctx, from, event) {
-            if let Some(bid) = self.bind_id.take() {
-                ctx.rt.unref_var(bid, self.top_id);
+            fn init<'a, 'b, 'c>(
+                _ctx: &'a mut ExecCtx<R, E>,
+                _typ: &'a graphix_compiler::typ::FnType,
+                _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
+                _scope: &'b Scope,
+                from: &'c [Node<R, E>],
+                top_id: ExprId,
+            ) -> Result<Box<dyn Apply<R, E>>> {
+                Ok(Box::new($name {
+                    top_id,
+                    cached: CachedVals::new(from),
+                    bind_id: None,
+                }))
             }
-            let bid = extract_sub_bind_id(self.cached.0.first()?.as_ref()?);
-            if let Some(bid) = bid {
-                ctx.rt.ref_var(bid, self.top_id);
+        }
+
+        impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                from: &mut [Node<R, E>],
+                event: &mut Event<E>,
+            ) -> Option<Value> {
+                if self.cached.update(ctx, from, event) {
+                    if let Some(bid) = self.bind_id.take() {
+                        ctx.rt.unref_var(bid, self.top_id);
+                    }
+                    let bid = extract_sub_bind_id(self.cached.0.first()?.as_ref()?);
+                    if let Some(bid) = bid {
+                        ctx.rt.ref_var(bid, self.top_id);
+                    }
+                    self.bind_id = bid;
+                }
+                scan_db_events(self.bind_id, event, $convert)
             }
-            self.bind_id = bid;
-        }
-        scan_db_events(self.bind_id, event, |se| match se {
-            DbEvent::Insert { key, value } => Some(kv_struct(key.clone(), value.clone())),
-            DbEvent::Remove { .. } => None,
-        })
-    }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(bid) = self.bind_id.take() {
-            ctx.rt.unref_var(bid, self.top_id);
-        }
-        self.cached.clear();
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(bid) = self.bind_id {
-            ctx.rt.unref_var(bid, self.top_id);
-        }
-    }
-}
-
-// -- DbOnRemove --
-
-#[derive(Debug)]
-pub(crate) struct DbOnRemove {
-    top_id: ExprId,
-    cached: CachedVals,
-    bind_id: Option<BindId>,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbOnRemove {
-    const NAME: &str = "db_subscription_on_remove";
-
-    fn init<'a, 'b, 'c>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(DbOnRemove { top_id, cached: CachedVals::new(from), bind_id: None }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for DbOnRemove {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        if self.cached.update(ctx, from, event) {
-            if let Some(bid) = self.bind_id.take() {
-                ctx.rt.unref_var(bid, self.top_id);
+            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+                if let Some(bid) = self.bind_id.take() {
+                    ctx.rt.unref_var(bid, self.top_id);
+                }
+                self.cached.clear();
             }
-            let bid = extract_sub_bind_id(self.cached.0.first()?.as_ref()?);
-            if let Some(bid) = bid {
-                ctx.rt.ref_var(bid, self.top_id);
+
+            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+                if let Some(bid) = self.bind_id {
+                    ctx.rt.unref_var(bid, self.top_id);
+                }
             }
-            self.bind_id = bid;
         }
-        scan_db_events(self.bind_id, event, |se| match se {
-            DbEvent::Remove { key } => Some(key_struct(key.clone())),
-            DbEvent::Insert { .. } => None,
-        })
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(bid) = self.bind_id.take() {
-            ctx.rt.unref_var(bid, self.top_id);
-        }
-        self.cached.clear();
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(bid) = self.bind_id {
-            ctx.rt.unref_var(bid, self.top_id);
-        }
-    }
+    };
 }
+
+db_event_accessor!(DbOnInsert, "db_subscription_on_insert", |se| match se {
+    DbEvent::Insert { key, value } => Some(kv_struct(key.clone(), value.clone())),
+    DbEvent::Remove { .. } => None,
+});
+
+db_event_accessor!(DbOnRemove, "db_subscription_on_remove", |se| match se {
+    DbEvent::Remove { key } => Some(key_struct(key.clone())),
+    DbEvent::Insert { .. } => None,
+});
