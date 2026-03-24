@@ -1,0 +1,3 @@
+let new = |#prefix: ['k, null] = null, t: Tree<'k, 'v>| -> Subscription<'k, 'v> 'db_subscription_new;
+let on_insert = |sub: Subscription<'k, 'v>| -> Result<Array<{key: 'k, value: 'v}>, `DbErr(string)> 'db_subscription_on_insert;
+let on_remove = |sub: Subscription<'k, 'v>| -> Result<Array<{key: 'k}>, `DbErr(string)> 'db_subscription_on_remove

@@ -90,7 +90,11 @@
       "Bash(for i:*)",
       "Bash(openssl x509:*)",
       "Bash(grep -rn '?#' stdlib/*/src/graphix/*.gxi)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(rustdoc --json /dev/stdout -L /home/eric/proj/graphix-db/target/debug/deps)",
+      "Bash(RUSTFLAGS=\"-W warnings\" cargo check -p graphix-package-db)",
+      "Bash(rustup doc:*)",
+      "Bash(rustc:*)"
     ],
     "deny": [],
     "ask": []

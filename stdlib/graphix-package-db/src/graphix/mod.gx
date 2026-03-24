@@ -1,6 +1,8 @@
 mod cursor;
+mod txn;
 let open = |path: string| -> Result<Db, `DbErr(string)> 'db_open;
 let flush = |db: Db| -> Result<null, `DbErr(string)> 'db_flush;
+let generate_id = |db: Db| -> Result<u64, `DbErr(string)> 'db_generate_id;
 let tree_names = |db: Db| -> Result<Array<string>, `DbErr(string)> 'db_tree_names;
 let drop_tree = |db: Db, name: string| -> Result<bool, `DbErr(string)> 'db_drop_tree;
 let tree = |db: Db, name: [string, null]| -> Result<Tree<'k, 'v>, `DbErr(string)> 'db_tree;
@@ -9,9 +11,19 @@ let get = |t: Tree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_g
 let insert = |t: Tree<'k, 'v>, key: 'k, value: 'v| -> Result<['v, null], `DbErr(string)> 'db_insert;
 let remove = |t: Tree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_remove;
 let contains_key = |t: Tree<'k, 'v>, key: 'k| -> Result<bool, `DbErr(string)> 'db_contains_key;
-let insert_many = |t: Tree<'k, 'v>, pairs: Array<('k, 'v)>| -> Result<Array<['v, null]>, `DbErr(string)> 'db_insert_many;
 let get_many = |t: Tree<'k, 'v>, keys: Array<'k>| -> Result<Array<['v, null]>, `DbErr(string)> 'db_get_many;
-let remove_many = |t: Tree<'k, 'v>, keys: Array<'k>| -> Result<Array<['v, null]>, `DbErr(string)> 'db_remove_many;
-let subscribe = |#prefix: ['k, null] = null, t: Tree<'k, 'v>| -> Subscription<'k, 'v> 'db_subscribe;
-let on_insert = |sub: Subscription<'k, 'v>| -> Result<{key: 'k, value: 'v}, `DbErr(string)> 'db_on_insert;
-let on_remove = |sub: Subscription<'k, 'v>| -> Result<{key: 'k}, `DbErr(string)> 'db_on_remove
+let first = |t: Tree<'k, 'v>| -> Result<[('k, 'v), null], `DbErr(string)> 'db_first;
+let last = |t: Tree<'k, 'v>| -> Result<[('k, 'v), null], `DbErr(string)> 'db_last;
+let pop_min = |t: Tree<'k, 'v>| -> Result<[('k, 'v), null], `DbErr(string)> 'db_pop_min;
+let pop_max = |t: Tree<'k, 'v>| -> Result<[('k, 'v), null], `DbErr(string)> 'db_pop_max;
+let get_lt = |t: Tree<'k, 'v>, key: 'k| -> Result<[('k, 'v), null], `DbErr(string)> 'db_get_lt;
+let get_gt = |t: Tree<'k, 'v>, key: 'k| -> Result<[('k, 'v), null], `DbErr(string)> 'db_get_gt;
+let compare_and_swap = |t: Tree<'k, 'v>, key: 'k, old: ['v, null], new: ['v, null]| -> Result<[null, `Mismatch(['v, null])], `DbErr(string)> 'db_compare_and_swap;
+let batch = |t: Tree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>| -> Result<null, `DbErr(string)> 'db_batch;
+let len = |t: Tree<'k, 'v>| -> Result<u64, `DbErr(string)> 'db_len;
+let is_empty = |t: Tree<'k, 'v>| -> Result<bool, `DbErr(string)> 'db_is_empty;
+let size_on_disk = |db: Db| -> Result<u64, `DbErr(string)> 'db_size_on_disk;
+let was_recovered = |db: Db| -> Result<bool, `DbErr(string)> 'db_was_recovered;
+let checksum = |db: Db| -> Result<u32, `DbErr(string)> 'db_checksum;
+let export = |db: Db, path: string| -> Result<null, `DbErr(string)> 'db_export;
+let import = |db: Db, path: string| -> Result<null, `DbErr(string)> 'db_import;

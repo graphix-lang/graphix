@@ -30,6 +30,7 @@ graphix-package-core = { version = "0.6.0", path = "../graphix-package-core" }
 graphix-rt = { version = "0.6.0", path = "../../graphix-rt" }
 parking_lot = { workspace = true }
 netidx-core = { workspace = true }
+netidx-derive = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
 poolshark = { workspace = true }

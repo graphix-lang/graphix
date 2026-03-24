@@ -44,6 +44,7 @@ immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
 indexmap = "2"
 log = "0.4"
 netidx-core = { version = "0.31.0", path = "../netidx/netidx-core" }
+netidx-derive = { version = "0.31.0", path = "../netidx/netidx-derive" }
 netidx-protocols = { version = "0.31.0", path = "../netidx/netidx-protocols" }
 netidx-value = { version = "0.31.6", path = "../netidx/netidx-value" }
 netidx = { version = "0.31.0", default-features = false, path = "../netidx/netidx" }

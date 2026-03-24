@@ -1,0 +1,4 @@
+let new = |#prefix: ['k, null] = null, t: Tree<'k, 'v>| -> Cursor<'k, 'v> 'db_cursor_new;
+let read = |c: Cursor<'k, 'v>, trigger: Any| -> Result<[('k, 'v), null], `DbErr(string)> 'db_cursor_read;
+let read_many = |c: Cursor<'k, 'v>, n: i64| -> Result<Array<('k, 'v)>, `DbErr(string)> 'db_cursor_read_many;
+let range = |#start: [`Included('k), `Excluded('k), null] = null, #end: [`Included('k), `Excluded('k), null] = null, t: Tree<'k, 'v>| -> Cursor<'k, 'v> 'db_cursor_range

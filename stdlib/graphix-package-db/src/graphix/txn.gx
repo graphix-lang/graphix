@@ -1,0 +1,7 @@
+let begin = |db: Db| -> Result<Txn, `DbErr(string)> 'db_txn_begin;
+let tree = |txn: Txn, name: [string, null]| -> Result<TxnTree<'k, 'v>, `DbErr(string)> 'db_txn_tree;
+let get = |t: TxnTree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_txn_get;
+let insert = |t: TxnTree<'k, 'v>, key: 'k, value: 'v| -> Result<['v, null], `DbErr(string)> 'db_txn_insert;
+let remove = |t: TxnTree<'k, 'v>, key: 'k| -> Result<['v, null], `DbErr(string)> 'db_txn_remove;
+let commit = |txn: Txn| -> Result<null, `DbErr(string)> 'db_txn_commit;
+let rollback = |txn: Txn| -> Result<null, `DbErr(string)> 'db_txn_rollback
