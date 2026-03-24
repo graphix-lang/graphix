@@ -12,7 +12,6 @@ use netidx::publisher::Typ;
 use netidx_value::Value;
 use poolshark::global::{GPooled, Pool};
 use std::collections::hash_map::Entry;
-use std::iter::Peekable;
 use std::sync::LazyLock;
 use std::{
     cell::{Cell, RefCell},
@@ -115,7 +114,7 @@ async fn txn_send_recv(cmd_tx: &mpsc::Sender<TxnMsg>, cmd: TxnCommand) -> Value 
 
 struct TxnCtx<'a> {
     trees: &'a [sled::transaction::TransactionalTree],
-    rx: Peekable<mpsc::IntoIter<TxnMsg>>,
+    rx: mpsc::Receiver<TxnMsg>,
     commit_reply: &'a RefCell<Option<oneshot::Sender<Value>>>,
     aborted: &'a Cell<bool>,
     meta_idx: Option<usize>,
@@ -170,7 +169,7 @@ impl TxnCtx<'_> {
     }
 
     fn run(
-        mut self,
+        self,
         first_msg: TxnMsg,
     ) -> sled::transaction::ConflictableTransactionResult<(), ()> {
         if let Err(e) = self.write_meta() {
@@ -181,9 +180,9 @@ impl TxnCtx<'_> {
         loop {
             let (cmd, reply) = match pending.take() {
                 Some(msg) => msg,
-                None => match self.rx.next() {
-                    Some(msg) => msg,
-                    None => return self.abort(),
+                None => match self.rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => return self.abort(),
                 },
             };
             let res = match cmd {
@@ -225,14 +224,13 @@ fn run_transaction(
     trees: &[sled::Tree],
     meta_idx: Option<usize>,
     pending_meta: &FxHashMap<ArcStr, (ArcStr, ArcStr)>,
-    rx: Peekable<mpsc::IntoIter<TxnMsg>>,
+    rx: mpsc::Receiver<TxnMsg>,
     first_msg: TxnMsg,
 ) {
-    let state: RefCell<Option<(TxnMsg, Peekable<mpsc::IntoIter<TxnMsg>>)>> =
+    let state: RefCell<Option<(TxnMsg, mpsc::Receiver<TxnMsg>)>> =
         RefCell::new(Some((first_msg, rx)));
     let commit_reply: RefCell<Option<oneshot::Sender<Value>>> = RefCell::new(None);
     let aborted = Cell::new(false);
-
     let result = sled::transaction::Transactional::transaction(
         trees,
         |tx_trees: &Vec<sled::transaction::TransactionalTree>| {
@@ -277,7 +275,7 @@ struct BeginTxnCtx {
     trees: GPooled<Vec<sled::Tree>>,
     pending_meta: GPooled<FxHashMap<ArcStr, (ArcStr, ArcStr)>>,
     db: sled::Db,
-    rx: Peekable<mpsc::IntoIter<TxnMsg>>,
+    rx: mpsc::Receiver<TxnMsg>,
 }
 
 impl BeginTxnCtx {
@@ -341,44 +339,32 @@ impl BeginTxnCtx {
 
     fn run(mut self) {
         loop {
-            match self.rx.peek() {
-                None => return,
-                Some((TxnCommand::OpenTree { .. }, _)) => {
-                    if let Some((
-                        TxnCommand::OpenTree { name, key_typ_str, val_typ_str },
-                        reply,
-                    )) = self.rx.next()
-                    {
-                        let res = match self.open_tree(name, key_typ_str, val_typ_str) {
-                            Ok(tid) => Value::U64(tid as u64),
-                            Err(e) => errf!("DbErr", "{e:?}"),
-                        };
-                        let _ = reply.send(res);
-                    }
+            let Ok((msg, reply)) = self.rx.recv() else { return };
+            match msg {
+                TxnCommand::OpenTree { name, key_typ_str, val_typ_str } => {
+                    let res = match self.open_tree(name, key_typ_str, val_typ_str) {
+                        Ok(tid) => Value::U64(tid as u64),
+                        Err(e) => errf!("DbErr", "{e:?}"),
+                    };
+                    let _ = reply.send(res);
                 }
-                Some((TxnCommand::Commit, _)) => {
-                    if let Some((TxnCommand::Commit, reply)) = self.rx.next() {
-                        let res = match self.commit() {
-                            Ok(()) => Value::Null,
-                            Err(e) => errf!("DbErr", "{e:?}"),
-                        };
-                        let _ = reply.send(res);
-                        return;
-                    }
+                TxnCommand::Commit => {
+                    let res = match self.commit() {
+                        Ok(()) => Value::Null,
+                        Err(e) => errf!("DbErr", "{e:?}"),
+                    };
+                    let _ = reply.send(res);
+                    return;
                 }
-                Some((TxnCommand::Rollback, _)) => {
-                    if let Some((TxnCommand::Rollback, reply)) = self.rx.next() {
-                        let _ = reply.send(Value::Null);
-                        return;
-                    }
+                TxnCommand::Rollback => {
+                    let _ = reply.send(Value::Null);
+                    return;
                 }
                 // First data op transitions to phase 2
-                Some(_) => {
+                first_msg => {
                     if self.trees.is_empty() {
-                        if let Some((_, reply)) = self.rx.next() {
-                            let _ = reply
-                                .send(errf!("DbErr", "no trees opened in transaction"));
-                        }
+                        let _ =
+                            reply.send(errf!("DbErr", "no trees opened in transaction"));
                         return;
                     }
                     let meta_idx = if !self.pending_meta.is_empty() {
@@ -389,22 +375,19 @@ impl BeginTxnCtx {
                                 Some(idx)
                             }
                             Err(e) => {
-                                if let Some((_, reply)) = self.rx.next() {
-                                    let _ = reply.send(errf!("DbErr", "{e}"));
-                                }
+                                let _ = reply.send(errf!("DbErr", "{e}"));
                                 return;
                             }
                         }
                     } else {
                         None
                     };
-                    let first_msg = self.rx.next().unwrap();
                     run_transaction(
                         &self.trees,
                         meta_idx,
                         &self.pending_meta,
                         self.rx,
-                        first_msg,
+                        (first_msg, reply),
                     );
                     return;
                 }
@@ -417,7 +400,6 @@ impl BeginTxnCtx {
             LazyLock::new(|| Pool::new(64, 256));
         static PENDING: LazyLock<Pool<FxHashMap<ArcStr, (ArcStr, ArcStr)>>> =
             LazyLock::new(|| Pool::new(64, 256));
-        let rx = rx.into_iter().peekable();
         Self { db, rx, pending_meta: PENDING.take(), trees: TREES.take() }
     }
 }
