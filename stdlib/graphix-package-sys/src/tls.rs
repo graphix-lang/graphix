@@ -1,13 +1,11 @@
+use crate::{get_stream_value, StreamKind, StreamValue, STREAM_WRAPPER};
 use arcstr::ArcStr;
-use crate::{
-    StreamKind, StreamValue, get_stream_value, STREAM_WRAPPER,
-};
 use bytes::Bytes;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::sync::Arc;
-use tokio_rustls::{TlsConnector, TlsAcceptor};
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 // ── TlsConnect ────────────────────────────────────────────────
 
@@ -19,15 +17,17 @@ impl EvalCachedAsync for TlsConnectEv {
     type Args = (Option<Bytes>, ArcStr, StreamValue);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let ca_cert = cached.get::<Bytes>(0);
+        let ca_cert = match cached.0.first()? {
+            None => return None,
+            Some(Value::Null) => None,
+            Some(v) => v.clone().cast_to::<Bytes>().ok(),
+        };
         let hostname = cached.get::<ArcStr>(1)?;
         let sv = get_stream_value(cached, 2)?;
         Some((ca_cert, hostname, sv))
     }
 
-    fn eval(
-        (ca_cert, hostname, sv): Self::Args,
-    ) -> impl Future<Output = Value> + Send {
+    fn eval((ca_cert, hostname, sv): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let tcp = {
                 let mut guard = sv.inner.lock().await;
@@ -40,26 +40,20 @@ impl EvalCachedAsync for TlsConnectEv {
                     None => return errf!("TLSError", "stream unavailable"),
                 }
             };
-            let mut root_store =
-                rustls::RootCertStore::empty();
+            let mut root_store = rustls::RootCertStore::empty();
             match &ca_cert {
                 Some(pem) => {
-                    let certs: Vec<_> =
-                        match rustls_pemfile::certs(&mut &**pem).collect() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                *sv.inner.lock().await =
-                                    Some(StreamKind::Tcp(tcp));
-                                return errf!(
-                                    "TLSError",
-                                    "invalid ca_cert PEM: {e}"
-                                );
-                            }
-                        };
+                    let certs: Vec<_> = match rustls_pemfile::certs(&mut &**pem).collect()
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            *sv.inner.lock().await = Some(StreamKind::Tcp(tcp));
+                            return errf!("TLSError", "invalid ca_cert PEM: {e}");
+                        }
+                    };
                     for cert in certs {
                         if let Err(e) = root_store.add(cert) {
-                            *sv.inner.lock().await =
-                                Some(StreamKind::Tcp(tcp));
+                            *sv.inner.lock().await = Some(StreamKind::Tcp(tcp));
                             return errf!("TLSError", "invalid CA cert: {e}");
                         }
                     }
@@ -116,20 +110,15 @@ impl EvalCachedAsync for TlsAcceptEv {
         Some((cert, key, sv))
     }
 
-    fn eval(
-        (cert_pem, key_pem, sv): Self::Args,
-    ) -> impl Future<Output = Value> + Send {
+    fn eval((cert_pem, key_pem, sv): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let certs: Vec<_> = match rustls_pemfile::certs(&mut &*cert_pem).collect()
-            {
+            let certs: Vec<_> = match rustls_pemfile::certs(&mut &*cert_pem).collect() {
                 Ok(c) => c,
                 Err(e) => return errf!("TLSError", "invalid cert PEM: {e}"),
             };
             let key = match rustls_pemfile::private_key(&mut &*key_pem) {
                 Ok(Some(k)) => k,
-                Ok(None) => {
-                    return errf!("TLSError", "no private key found in key PEM")
-                }
+                Ok(None) => return errf!("TLSError", "no private key found in key PEM"),
                 Err(e) => return errf!("TLSError", "invalid key PEM: {e}"),
             };
             let config = match rustls::ServerConfig::builder()

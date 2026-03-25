@@ -1,4 +1,4 @@
-let read = |input: [string, bytes, Stream<'a>]| -> Result<PrimNoErr, [`JsonErr(string), `IOErr(string)]> 'json_read;
+let read = |input: [string, bytes, Stream<'a>]| -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> 'json_read;
 let write_str = |#pretty: bool = false, value: Any| -> Result<string, `JsonErr(string)> 'json_write_str;
 let write_bytes = |#pretty: bool = false, value: Any| -> Result<bytes, `JsonErr(string)> 'json_write_bytes;
 let write_stream = |#pretty: bool = false, stream: Stream<'a>, value: Any| -> Result<null, [`JsonErr(string), `IOErr(string)]> 'json_write_stream

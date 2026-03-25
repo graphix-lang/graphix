@@ -4,8 +4,14 @@
 )]
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::{errf, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync};
+use graphix_compiler::typ::Type;
+use graphix_compiler::{
+    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, UserEvent,
+};
+use graphix_package_core::{
+    extract_cast_type, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
+    EvalCachedAsync,
+};
 use graphix_package_sys::{get_stream, StreamKind};
 use netidx_core::pack::Pack;
 use netidx_value::{PBytes, Value};
@@ -24,11 +30,35 @@ enum ReadInput {
 // ── PackRead (async) ─────────────────────────────────────────
 
 #[derive(Debug, Default)]
-struct PackReadEv;
+struct PackReadEv {
+    cast_typ: Option<Type>,
+}
 
 impl EvalCachedAsync for PackReadEv {
     const NAME: &str = "pack_read";
     type Args = ReadInput;
+
+    fn init<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        _typ: &FnType,
+        resolved_typ: Option<&FnType>,
+        _scope: &Scope,
+        _from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
+        Self { cast_typ: extract_cast_type(resolved_typ) }
+    }
+
+    fn map_value<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        v: Value,
+    ) -> Option<Value> {
+        match &self.cast_typ {
+            Some(typ) => Some(typ.cast_value(&ctx.env, v)),
+            None => Some(errf!("PackErr", "no concrete return type found")),
+        }
+    }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let v = cached.0.first()?.as_ref()?;

@@ -4,8 +4,7 @@ use netidx::subscriber::Value;
 
 run!(toml_i64, r#"{
     let s = toml::write_str({value: 42})$;
-    let v = toml::read(s)$;
-    let obj = cast<{value: i64}>(v)?;
+    let obj: {value: i64} = toml::read(s)?;
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
@@ -13,8 +12,7 @@ run!(toml_i64, r#"{
 
 run!(toml_f64, r#"{
     let s = toml::write_str({value: 3.14})$;
-    let v = toml::read(s)$;
-    let obj = cast<{value: f64}>(v)?;
+    let obj: {value: f64} = toml::read(s)?;
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
@@ -22,8 +20,7 @@ run!(toml_f64, r#"{
 
 run!(toml_bool, r#"{
     let s = toml::write_str({value: true})$;
-    let v = toml::read(s)$;
-    let obj = cast<{value: bool}>(v)?;
+    let obj: {value: bool} = toml::read(s)?;
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
@@ -31,8 +28,7 @@ run!(toml_bool, r#"{
 
 run!(toml_string, r#"{
     let s = toml::write_str({value: "hello"})$;
-    let v = toml::read(s)$;
-    let obj = cast<{value: string}>(v)?;
+    let obj: {value: string} = toml::read(s)?;
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
@@ -42,8 +38,7 @@ run!(toml_struct, r#"{
     type Point = {x: i64, y: i64};
     let p: Point = {x: 10, y: 20};
     let s = toml::write_str(p)$;
-    let v = toml::read(s)$;
-    let p2 = cast<Point>(v)?;
+    let p2: Point = toml::read(s)?;
     p2.x + p2.y
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
@@ -54,8 +49,7 @@ run!(toml_nested_struct, r#"{
     type Outer = {count: i64, items: Array<Inner>};
     let data: Outer = {count: 2, items: [{label: "a", value: 1}, {label: "b", value: 2}]};
     let s = toml::write_str(data)$;
-    let v = toml::read(s)$;
-    let out = cast<Outer>(v)?;
+    let out: Outer = toml::read(s)?;
     let items = out.items;
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
@@ -64,8 +58,7 @@ run!(toml_nested_struct, r#"{
 
 run!(toml_array, r#"{
     let s = toml::write_str({items: [1, 2, 3]})$;
-    let v = toml::read(s)$;
-    let obj = cast<{items: Array<i64>}>(v)?;
+    let obj: {items: Array<i64>} = toml::read(s)?;
     let arr = obj.items;
     arr[0]$ + arr[1]$ + arr[2]$
 }"#, |v: Result<&Value>| {
@@ -80,14 +73,14 @@ run!(toml_stream_tcp, r#"{
     let server = sys::tcp::accept(listener, client)?;
     toml::write_stream(client, {name: "alice", age: 30})?;
     sys::tcp::shutdown(client)?;
-    let msg = cast<Msg>(toml::read(server)?)?;
+    let msg: Msg = toml::read(server)?;
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
 });
 
 run!(toml_invalid, r#"{
-    let r = toml::read("not valid toml \[\[\[");
+    let r: Result<i64, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]> = toml::read("not valid toml \[\[\[");
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))

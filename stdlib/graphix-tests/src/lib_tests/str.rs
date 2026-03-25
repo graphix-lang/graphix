@@ -347,9 +347,10 @@ run!(str_sub, STR_SUB, |v: Result<&Value>| {
     }
 });
 
-const STR_PARSE: &str = r#"
-  str::parse("42")
-"#;
+const STR_PARSE: &str = r#"{
+  let v: i64 = str::parse("42")?;
+  v
+}"#;
 
 run!(str_parse, STR_PARSE, |v: Result<&Value>| {
     match v {

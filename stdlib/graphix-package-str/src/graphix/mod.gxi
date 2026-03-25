@@ -101,4 +101,4 @@ val sub: fn(#start:i64, #len:i64, string) -> Result<string, `SubError(string)>;
 /// parse the specified string as a value. return the value on success or an
 /// error on failure. Note, if you feed the parser a well formed error then
 /// parse will also return an error
-val parse: fn(string) -> Result<PrimNoErr, Any>;
+val parse: fn(string) -> Result<'b, Any>;

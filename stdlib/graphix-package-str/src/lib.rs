@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use escaping::Escape;
 use graphix_compiler::{
-    err, errf, expr::ExprId, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    err, errf, expr::ExprId, typ::{FnType, Type}, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx::{path::Path, subscriber::Value};
@@ -732,22 +732,48 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
 type Sub = CachedArgs<SubEv>;
 
 #[derive(Debug, Default)]
-struct ParseEv;
+struct ParseEv {
+    cast_typ: Option<Type>,
+}
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     const NAME: &str = "str_parse";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
+    fn init(
+        _ctx: &mut ExecCtx<R, E>,
+        _typ: &FnType,
+        resolved_typ: Option<&FnType>,
+        _scope: &Scope,
+        _from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
+        let cast_typ = resolved_typ.and_then(|ft| match &ft.rtype {
+            Type::Ref { name, params, .. }
+                if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
+            {
+                let t = &params[0];
+                if format!("{t}").contains('\'') { None } else { Some(t.clone()) }
+            }
+            _ => None,
+        });
+        Self { cast_typ }
+    }
+
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        let raw = match &from.0[0] {
             Some(Value::String(s)) => match s.parse::<Value>() {
                 Ok(v) => match v {
-                    Value::Error(e) => Some(errf!(literal!("ParseError"), "{e}")),
-                    v => Some(v),
+                    Value::Error(e) => return Some(errf!(literal!("ParseError"), "{e}")),
+                    v => v,
                 },
-                Err(e) => Some(errf!(literal!("ParseError"), "{e:?}")),
+                Err(e) => return Some(errf!(literal!("ParseError"), "{e:?}")),
             },
-            _ => None,
-        }
+            _ => return None,
+        };
+        Some(match &self.cast_typ {
+            Some(typ) => typ.cast_value(&ctx.env, raw),
+            None => errf!("TypeError", "parse requires a concrete type annotation"),
+        })
     }
 }
 

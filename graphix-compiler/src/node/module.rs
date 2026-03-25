@@ -64,12 +64,21 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             use std::fmt::Write;
             let scope = scope.append(name);
             env.modules.insert_cow(scope.lexical.clone());
+            buf.clear();
+            write!(buf, "{}/", scope.lexical.0).unwrap();
+            for m in inner_env.modules.range::<ModPath, _>(&scope.lexical..) {
+                if m == &scope.lexical || m.starts_with(&*buf) {
+                    env.modules.insert_cow(m.clone());
+                } else {
+                    break;
+                }
+            }
             macro_rules! copy_sig {
                 ($kind:ident) => {
                     let iter = inner_env.$kind.range::<ModPath, _>(&scope.lexical..);
                     for (path, inner) in iter {
                         buf.clear();
-                        write!(buf, "{}/", scope.lexical).unwrap();
+                        write!(buf, "{}/", scope.lexical.0).unwrap();
                         if path == &scope.lexical || path.starts_with(&*buf) {
                             env.$kind.insert_cow(path.clone(), inner.clone());
                         }

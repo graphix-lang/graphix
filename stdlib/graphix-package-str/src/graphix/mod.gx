@@ -31,4 +31,4 @@ let to_upper = |s: string| -> string 'str_to_upper;
 let sprintf = |fmt: string, @args: Any| -> string 'str_sprintf;
 let len = |s: string| -> i64 'str_len;
 let sub = |#start: i64, #len: i64, s: string| -> Result<string, `SubError(string)> 'str_sub;
-let parse = |s: string| -> Result<PrimNoErr, Any> 'str_parse
+let parse = |s: string| -> Result<'b, Any> 'str_parse

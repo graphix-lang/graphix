@@ -14,6 +14,7 @@ use graphix_compiler::{
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
+use netidx::path::Path;
 use netidx::subscriber::Value;
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
@@ -30,6 +31,26 @@ use tokio::time::Instant;
 use triomphe::Arc as TArc;
 
 pub(crate) mod buffer;
+
+// ── Cast context for typed deserialization ────────────────────────
+
+/// Extract the success type from a resolved `Result<T, E>` return type.
+/// Returns `None` if `resolved_typ` is absent or `T` contains free tvars.
+pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
+    let ft = resolved_typ?;
+    let typ = match &ft.rtype {
+        Type::Ref { name, params, .. }
+            if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
+        {
+            params[0].clone()
+        }
+        _ => return None,
+    };
+    if format!("{typ}").contains('\'') {
+        return None;
+    }
+    Some(typ)
+}
 
 // ── Program arguments ─────────────────────────────────────────────
 
@@ -189,7 +210,14 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 {
     const NAME: &str;
 
-    fn init(_resolved_typ: Option<&FnType>) -> Self {
+    fn init(
+        _ctx: &mut ExecCtx<R, E>,
+        _typ: &FnType,
+        _resolved_typ: Option<&FnType>,
+        _scope: &Scope,
+        _from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
         Self::default()
     }
 
@@ -214,14 +242,17 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
 
     fn init<'a, 'b, 'c>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a graphix_compiler::typ::FnType,
         resolved_typ: Option<&'a FnType>,
-        _scope: &'b Scope,
+        scope: &'b Scope,
         from: &'c [Node<R, E>],
-        _top_id: ExprId,
+        top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let t = CachedArgs::<T> { cached: CachedVals::new(from), t: T::init(resolved_typ) };
+        let t = CachedArgs::<T> {
+            cached: CachedVals::new(from),
+            t: T::init(ctx, typ, resolved_typ, scope, from, top_id),
+        };
         Ok(Box::new(t))
     }
 }
@@ -257,8 +288,24 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
     type Args: Debug + Any + Send + Sync;
 
-    fn init(_resolved_typ: Option<&FnType>) -> Self {
+    fn init<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        _typ: &FnType,
+        _resolved_typ: Option<&FnType>,
+        _scope: &Scope,
+        _from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
         Self::default()
+    }
+
+    /// map the final value with access to self and ctx
+    fn map_value<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        v: Value,
+    ) -> Option<Value> {
+        Some(v)
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
@@ -280,9 +327,9 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        typ: &'a graphix_compiler::typ::FnType,
         resolved_typ: Option<&'a FnType>,
-        _scope: &'b Scope,
+        scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
@@ -294,7 +341,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             running: false,
-            t: T::init(resolved_typ),
+            t: T::init(ctx, typ, resolved_typ, scope, from, top_id),
         };
         Ok(Box::new(t))
     }
@@ -312,9 +359,9 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         {
             self.queued.push_back(args);
         }
-        let res = event.variables.remove(&self.id).map(|v| {
+        let res = event.variables.remove(&self.id).and_then(|v| {
             self.running = false;
-            v
+            self.t.map_value(ctx, v)
         });
         if !self.running
             && let Some(args) = self.queued.pop_front()

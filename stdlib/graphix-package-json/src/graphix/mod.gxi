@@ -1,7 +1,7 @@
 use sys::io;
 
 /// Parse JSON from a string, byte array, or I/O stream.
-val read: fn([string, bytes, Stream<'a>]) -> Result<PrimNoErr, [`JsonErr(string), `IOErr(string)]>;
+val read: fn([string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string.
 val write_str: fn(?#pretty: bool, Any) -> Result<string, `JsonErr(string)>;

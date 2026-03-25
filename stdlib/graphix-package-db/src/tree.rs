@@ -3,7 +3,9 @@ use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
 use graphix_compiler::{
     errf,
+    expr::ExprId,
     typ::{FnType, Type},
+    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::{path::Path, publisher::Typ};
@@ -424,7 +426,14 @@ impl EvalCachedAsync for DbTreeEv {
     const NAME: &str = "db_tree";
     type Args = DbTreeArgs;
 
-    fn init(resolved_typ: Option<&FnType>) -> Self {
+    fn init<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        _typ: &FnType,
+        resolved_typ: Option<&FnType>,
+        _scope: &Scope,
+        _from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
         let key_typ = extract_key_typ_from_rtype(resolved_typ);
         let (key_typ_str, val_typ_str) = extract_type_strings_from_rtype(resolved_typ);
         DbTreeEv { key_typ, key_typ_str, val_typ_str }
