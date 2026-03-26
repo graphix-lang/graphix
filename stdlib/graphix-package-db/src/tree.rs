@@ -28,7 +28,7 @@ pub struct DbValue {
     pub(crate) inner: Arc<sled::Db>,
 }
 
-impl_abstract_arc!(DbValue, pub(crate) static DB_WRAPPER = [
+graphix_package_core::impl_abstract_arc!(DbValue, pub(crate) static DB_WRAPPER = [
     0xd1, 0xe2, 0xf3, 0x04, 0x15, 0x26, 0x47, 0x38,
     0x49, 0x5a, 0x6b, 0x7c, 0x8d, 0x9e, 0xaf, 0xb0,
 ]);
@@ -58,7 +58,7 @@ pub struct TreeValue {
     pub(crate) inner: Arc<TreeInner>,
 }
 
-impl_abstract_arc!(TreeValue, pub(crate) static TREE_WRAPPER = [
+graphix_package_core::impl_abstract_arc!(TreeValue, pub(crate) static TREE_WRAPPER = [
     0xd2, 0xe3, 0xf4, 0x05, 0x16, 0x27, 0x48, 0x39,
     0x4a, 0x5b, 0x6c, 0x7d, 0x8e, 0x9f, 0xa0, 0xb1,
 ]);

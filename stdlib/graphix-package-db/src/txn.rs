@@ -52,7 +52,7 @@ struct TxnValue {
     inner: Arc<TxnInner>,
 }
 
-impl_abstract_arc!(TxnValue, static TXN_WRAPPER = [
+graphix_package_core::impl_abstract_arc!(TxnValue, static TXN_WRAPPER = [
     0xd5, 0xe6, 0xf7, 0x08, 0x19, 0x2a, 0x4b, 0x3c,
     0x4d, 0x5e, 0x6f, 0x70, 0x81, 0xa2, 0xb3, 0xc4,
 ]);
@@ -86,7 +86,7 @@ struct TxnTreeValue {
     inner: Arc<TxnTreeInner>,
 }
 
-impl_abstract_arc!(TxnTreeValue, static TXN_TREE_WRAPPER = [
+graphix_package_core::impl_abstract_arc!(TxnTreeValue, static TXN_TREE_WRAPPER = [
     0xd6, 0xe7, 0xf8, 0x09, 0x1a, 0x2b, 0x4c, 0x3d,
     0x4e, 0x5f, 0x60, 0x71, 0x82, 0xa3, 0xb4, 0xc5,
 ]);

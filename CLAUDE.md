@@ -817,3 +817,4 @@ select x {
   Inside `sys::net`, write `use sys::time`, not `use time`.
 - A submodule can reference bindings from its parent, but only if the
   `mod` declaration comes after those bindings in the parent's `.gxi`.
+- if you want to sequence the execution of a function, use ~ on it's arguments, not on the whole function. e.g. f(trigger ~ x) to prevent f from executing until trigger has happened.

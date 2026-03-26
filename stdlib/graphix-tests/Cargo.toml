@@ -27,6 +27,7 @@ graphix-package-db = { version = "0.6.0", path = "../graphix-package-db" }
 graphix-package-sys = { version = "0.6.0", path = "../graphix-package-sys" }
 graphix-package-xls = { version = "0.6.0", path = "../graphix-package-xls" }
 graphix-package-pack = { version = "0.6.0", path = "../graphix-package-pack" }
+graphix-package-sqlite = { version = "0.6.0", path = "../graphix-package-sqlite" }
 rust_xlsxwriter = { workspace = true }
 graphix-rt = { version = "0.6.0", path = "../../graphix-rt" }
 netidx = { workspace = true }

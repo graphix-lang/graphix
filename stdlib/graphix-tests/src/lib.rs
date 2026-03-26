@@ -19,6 +19,7 @@ pub(crate) const TEST_REGISTER: &[graphix_package_core::testing::RegisterFn] = &
     <graphix_package_xls::P as graphix_package::Package<graphix_rt::NoExt>>::register,
     <graphix_package_pack::P as graphix_package::Package<graphix_rt::NoExt>>::register,
     <graphix_package_args::P as graphix_package::Package<graphix_rt::NoExt>>::register,
+    <graphix_package_sqlite::P as graphix_package::Package<graphix_rt::NoExt>>::register,
 ];
 
 #[cfg(test)]

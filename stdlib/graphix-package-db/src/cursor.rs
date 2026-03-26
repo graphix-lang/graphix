@@ -26,7 +26,7 @@ pub(crate) struct CursorValue {
     inner: Arc<CursorInner>,
 }
 
-impl_abstract_arc!(CursorValue, static CURSOR_WRAPPER = [
+graphix_package_core::impl_abstract_arc!(CursorValue, static CURSOR_WRAPPER = [
     0xd3, 0xe4, 0xf5, 0x06, 0x17, 0x28, 0x49, 0x3a,
     0x4b, 0x5c, 0x6d, 0x7e, 0x8f, 0xa0, 0xb1, 0xc2,
 ]);

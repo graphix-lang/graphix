@@ -1,0 +1,8 @@
+let open = |path: string| -> Result<Connection, `SqliteError(string)> 'sqlite_open;
+let exec = |conn: Connection, sql: string, params: Array<SqlVal>| -> Result<u64, `SqliteError(string)> 'sqlite_exec;
+let exec_batch = |conn: Connection, sql: string| -> Result<null, `SqliteError(string)> 'sqlite_exec_batch;
+let query = |conn: Connection, sql: string, params: Array<SqlVal>| -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]> 'sqlite_query;
+let begin = |conn: Connection| -> Result<null, `SqliteError(string)> 'sqlite_begin;
+let commit = |conn: Connection| -> Result<null, `SqliteError(string)> 'sqlite_commit;
+let rollback = |conn: Connection| -> Result<null, `SqliteError(string)> 'sqlite_rollback;
+let close = |conn: Connection| -> Result<null, `SqliteError(string)> 'sqlite_close

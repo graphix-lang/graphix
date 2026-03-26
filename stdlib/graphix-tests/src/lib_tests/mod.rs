@@ -18,3 +18,4 @@ mod tls;
 mod xls;
 mod pack;
 mod typecheck;
+mod sqlite;

@@ -129,5 +129,6 @@ members = [
     "stdlib/graphix-package-db",
     "stdlib/graphix-package-xls",
     "stdlib/graphix-package-pack",
+    "stdlib/graphix-package-sqlite",
     "stdlib/graphix-tests"
 ]
