@@ -217,7 +217,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,

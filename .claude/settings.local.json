@@ -94,7 +94,10 @@
       "Bash(rustdoc --json /dev/stdout -L /home/eric/proj/graphix-db/target/debug/deps)",
       "Bash(RUSTFLAGS=\"-W warnings\" cargo check -p graphix-package-db)",
       "Bash(rustup doc:*)",
-      "Bash(rustc:*)"
+      "Bash(rustc:*)",
+      "Bash(while read:*)",
+      "Read(//home/eric/proj/graphix/**)",
+      "Bash(wait)"
     ],
     "deny": [],
     "ask": []

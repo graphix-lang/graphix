@@ -8,7 +8,8 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TypecheckPhase,
+    TypecheckResult, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
@@ -474,7 +475,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
         scope: &'b graphix_compiler::Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -564,8 +564,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
-        self.pred.typecheck(ctx)
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<TypecheckResult> {
+        self.pred.typecheck(ctx)?;
+        Ok(TypecheckResult::Done)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -593,7 +595,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b graphix_compiler::Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -644,7 +645,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b graphix_compiler::Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -711,7 +711,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -828,7 +827,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<TypecheckResult> {
         let i_typ = Type::Primitive(Typ::I64.into());
         let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
         let ft = self.mftyp.clone();
@@ -837,7 +837,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
         let r = node.typecheck(ctx);
         node.delete(ctx);
-        r
+        r?;
+        Ok(TypecheckResult::Done)
     }
 
     fn refs(&self, refs: &mut Refs) {

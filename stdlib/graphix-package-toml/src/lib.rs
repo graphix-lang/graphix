@@ -6,8 +6,9 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::typ::Type;
+use anyhow::{bail, Result};
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, UserEvent,
+    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -134,12 +135,29 @@ impl EvalCachedAsync for TomlReadEv {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
-        resolved_typ: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
-        _top_id: ExprId,
+        _top_id: graphix_compiler::expr::ExprId,
     ) -> Self {
-        Self { cast_typ: extract_cast_type(resolved_typ) }
+        Self { cast_typ: None }
+    }
+
+    fn typecheck<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::CallSite(resolved) => {
+                self.cast_typ = extract_cast_type(Some(resolved));
+                if self.cast_typ.is_none() {
+                    bail!("toml::read requires a concrete return type")
+                }
+                Ok(TypecheckResult::Done)
+            }
+        }
     }
 
     fn map_value<R: Rt, E: UserEvent>(

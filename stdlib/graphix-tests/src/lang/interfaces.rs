@@ -334,7 +334,7 @@ run!(
                 type T;
                 val make: fn(i64) -> T;
                 val double: fn(T) -> i64             };
-            source cast<string>(sys::net::subscribe("/local/dyn_test")$)$
+            source sys::net::subscribe("/local/dyn_test")?
         };
         let result = select status {
             error as e => never(dbg(e)),

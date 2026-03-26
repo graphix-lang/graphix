@@ -580,8 +580,8 @@ run_with_tempdir!(
     name: db_reserved_tree_name,
     code: r#"{{
         let db = db::open("{}")$;
-        let r1 = db::tree(db, "$$__graphix_default__$$");
-        let r2 = db::tree(db, r1 ~ "$$__graphix_meta__$$");
+        let r1: Result<db::Tree<string, string>, `DbErr(string)> = db::tree(db, "$$__graphix_default__$$");
+        let r2: Result<db::Tree<string, string>, `DbErr(string)> = db::tree(db, r1 ~ "$$__graphix_meta__$$");
         (is_err(r1), is_err(r2))
     }}"#,
     setup: |td| {

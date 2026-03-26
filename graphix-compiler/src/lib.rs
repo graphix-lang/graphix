@@ -299,14 +299,30 @@ impl Refs {
 
 pub type Node<R, E> = Box<dyn Update<R, E>>;
 
+/// Phase indicator for Apply::typecheck
+#[derive(Debug)]
+pub enum TypecheckPhase<'a> {
+    /// During Lambda::typecheck — faux args, building FnType
+    Lambda,
+    /// During deferred check or bind — resolved FnType available
+    CallSite(&'a FnType),
+}
+
+/// Result of Apply::typecheck indicating whether call-site checking is needed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypecheckResult {
+    /// No call-site phase needed (default for most builtins)
+    Done,
+    /// This builtin needs typecheck(CallSite) at each call site
+    NeedsCallSite,
+}
+
 pub type InitFn<R, E> = sync::Arc<
-    dyn for<'a, 'b, 'c, 'd> Fn(
+    dyn for<'a, 'b, 'c> Fn(
             &'a Scope,
             &'b mut ExecCtx<R, E>,
             &'c mut [Node<R, E>],
             ExprId,
-            bool,
-            Option<&'d FnType>,
         ) -> Result<Box<dyn Apply<R, E>>>
         + Send
         + Sync
@@ -331,14 +347,17 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         ()
     }
 
-    /// apply custom typechecking to the lambda, only needed for
-    /// builtins that take lambdas as arguments
+    /// apply custom typechecking. Phase indicates context:
+    /// - Lambda: during lambda body checking (faux args). Return NeedsCallSite
+    ///   to opt in to deferred call-site type checking.
+    /// - CallSite: during deferred check or bind (resolved FnType available)
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
+        _phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        Ok(TypecheckResult::Done)
     }
 
     /// return the lambdas type, builtins do not need to implement
@@ -352,6 +371,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
                 throws: Type::Bottom,
                 vargs: None,
                 explicit_throws: false,
+                ..Default::default()
             })
         });
         Arc::clone(&*EMPTY)
@@ -398,7 +418,6 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
     &'a mut ExecCtx<R, E>,
     &'a FnType,
-    Option<&'a FnType>,
     &'b Scope,
     &'c [Node<R, E>],
     ExprId,
@@ -413,7 +432,6 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
-        resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -736,6 +754,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub cached: FxHashMap<BindId, Value>,
     /// the runtime
     pub rt: R,
+    /// LambdaDefs indexed by LambdaId, for deferred type checking
+    pub lambda_defs: FxHashMap<LambdaId, Value>,
+    /// deferred type check closures, evaluated after all primary type checking
+    pub deferred_checks: Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -763,6 +785,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             tags: FxHashSet::default(),
             cached: HashMap::default(),
             rt: user,
+            lambda_defs: FxHashMap::default(),
+            deferred_checks: Vec::new(),
         })
     }
 
@@ -866,6 +890,13 @@ pub fn compile<R: Rt, E: UserEvent>(
     if let Err(e) = node.typecheck(ctx) {
         ctx.env = env;
         return Err(e);
+    }
+    // run deferred builtin type checks after all primary type checking completes
+    while let Some(check) = ctx.deferred_checks.pop() {
+        if let Err(e) = check(ctx) {
+            ctx.env = env;
+            return Err(e);
+        }
     }
     info!("typecheck time {:?}", st.elapsed());
     Ok(node)

@@ -298,7 +298,7 @@ const QUEUE: &str = r#"
   let v = array::iter(a);
   let clock: Any = once(v);
   let q = queue(#clock, v);
-  let out = sys::net::subscribe("/local/[q]")?;
+  let out: Primitive = sys::net::subscribe("/local/[q]")?;
   clock <- out;
   array::group(out, |n, _| n == 8)
 }

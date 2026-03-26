@@ -6,7 +6,10 @@ use crate::tree::{
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use fxhash::FxHashMap;
-use graphix_compiler::{errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, UserEvent};
+use graphix_compiler::{
+    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
+    UserEvent,
+};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_value::Value;
@@ -474,14 +477,32 @@ impl EvalCachedAsync for DbTxnTreeEv {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
-        resolved_typ: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        let key_typ = extract_key_typ_from_rtype(resolved_typ);
-        let (key_typ_str, val_typ_str) = extract_type_strings_from_rtype(resolved_typ);
-        DbTxnTreeEv { key_typ, key_typ_str, val_typ_str }
+        DbTxnTreeEv { key_typ: None, key_typ_str: arcstr::literal!("?"), val_typ_str: arcstr::literal!("?") }
+    }
+
+    fn typecheck<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::CallSite(resolved) => {
+                self.key_typ = extract_key_typ_from_rtype(Some(resolved));
+                let (k, v) = extract_type_strings_from_rtype(Some(resolved));
+                self.key_typ_str = k;
+                self.val_typ_str = v;
+                if self.key_typ.is_none() {
+                    bail!("db::tree requires concrete key and value types")
+                }
+                Ok(TypecheckResult::Done)
+            }
+        }
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

@@ -9,7 +9,7 @@ use compact_str::format_compact;
 use futures::{channel::mpsc, SinkExt};
 use graphix_compiler::{
     errf, expr::ExprId, node::genn, typ::Type, Apply, BindId, BuiltIn, CustomBuiltinType,
-    Event, ExecCtx, LambdaId, Node, Rt, Scope, UserEvent, CBATCH_POOL,
+    Event, ExecCtx, LambdaId, Node, Rt, Scope, TypecheckResult, UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
@@ -687,7 +687,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -860,8 +859,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        self.handler.typecheck(ctx)
+        _phase: graphix_compiler::TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        self.handler.typecheck(ctx)?;
+        Ok(TypecheckResult::Done)
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {

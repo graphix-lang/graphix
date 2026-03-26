@@ -293,6 +293,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                         )),
                         throws,
                         explicit_throws,
+                        ..Default::default()
                     }))
                 })
         ]

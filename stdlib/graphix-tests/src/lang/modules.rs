@@ -20,7 +20,7 @@ const DYNAMIC_MODULE0: &str = r#"
             val sub: fn(i64) -> i64;
             val cfg: Array<i64>
         };
-        source cast<string>(sys::net::subscribe("/local/foo")$)$
+        source sys::net::subscribe("/local/foo")?
     };
     select status {
         error as e => never(dbg(e)),
@@ -50,7 +50,7 @@ const DYNAMIC_MODULE1: &str = r#"
             val sub: fn(i64) -> i64;
             val cfg: Array<i64>
         };
-        source cast<string>(sys::net::subscribe("/local/foo"))
+        source sys::net::subscribe("/local/foo")?
     };
     select status {
         error as e => dbg(e),
@@ -73,7 +73,7 @@ const DYNAMIC_MODULE2: &str = r#"
         sig {
             val add: fn<'a: Number>('a) -> 'a
         };
-        source cast<string>(sys::net::subscribe("/local/foo"))
+        source sys::net::subscribe("/local/foo")?
     };
     select status {
         error as e => dbg(e),
@@ -101,7 +101,7 @@ const DYNAMIC_MODULE3: &str = r#"
             val foo: string;
             val bar: string
         };
-        source cast<string>(sys::net::subscribe("/local/test"))
+        source sys::net::subscribe("/local/test")?
     };
     select status {
         error as e => dbg(e),
@@ -133,7 +133,7 @@ const DYNAMIC_MODULE4: &str = r#"
             val bar: string;
             val baz: string
         };
-        source cast<string>(sys::net::subscribe("/local/test"))
+        source sys::net::subscribe("/local/test")?
     };
     select status {
         error as e => dbg(e),
@@ -156,7 +156,7 @@ const DYNAMIC_MODULE5: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        sys::net::subscribe(\"/local/test\")
+        sys::net::subscribe(\"/local/test\")$
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
@@ -165,7 +165,7 @@ const DYNAMIC_MODULE5: &str = r#"
             val foo: string;
             val bar: string
         };
-        source cast<string>(sys::net::subscribe("/local/test"))
+        source sys::net::subscribe("/local/test")?
     };
     select status {
         error as e => dbg(e),
@@ -187,7 +187,7 @@ const DYNAMIC_MODULE6: &str = r#"
     let source = "
         let foo = never();
         let bar = never(); select foo { x => bar <- dbg(x) };
-        sys::net::subscribe(\"/local/test\")
+        sys::net::subscribe(\"/local/test\")$
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
@@ -196,7 +196,7 @@ const DYNAMIC_MODULE6: &str = r#"
             val foo: string;
             val bar: string
         };
-        source cast<string>(sys::net::subscribe("/local/test"))
+        source sys::net::subscribe("/local/test")?
     };
     select status {
         error as e => dbg(e),
@@ -228,7 +228,7 @@ const DYNAMIC_MODULE7: &str = r#"
             val foo: string;
             val bar: string
         };
-        source cast<string>(sys::net::subscribe("/local/test"))
+        source sys::net::subscribe("/local/test")?
     };
     select status {
         error as e => dbg(e),
@@ -251,7 +251,7 @@ const DYNAMIC_MODULE8: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        sys::net::subscribe(\"/local/test\")
+        sys::net::subscribe(\"/local/test\")$
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
@@ -260,7 +260,7 @@ const DYNAMIC_MODULE8: &str = r#"
             val foo: string;
             val bar: string
         };
-        source cast<string>(sys::net::subscribe("/local/test"))
+        source sys::net::subscribe("/local/test")?
     };
     select status {
         error as e => dbg(e),

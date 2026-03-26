@@ -286,7 +286,12 @@ impl Type {
                         })?)
                 })?),
             (Self::Fn(f0), Self::Fn(f1)) => {
-                Ok(f0.as_ptr() == f1.as_ptr() || f0.contains_int(flags, env, hist, f1)?)
+                let same = f0.as_ptr() == f1.as_ptr();
+                let r = same || f0.contains_int(flags, env, hist, f1)?;
+                if r && !same && flags.contains(ContainsFlags::InitTVars) {
+                    f0.merge_lambda_ids(f1);
+                }
+                Ok(r)
             }
             (_, Self::Any)
             | (Self::Abstract { .. }, _)

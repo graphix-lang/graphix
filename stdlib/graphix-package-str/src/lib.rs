@@ -6,9 +6,10 @@ use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use escaping::Escape;
 use graphix_compiler::{
-    err, errf, expr::ExprId, typ::{FnType, Type}, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    err, errf, expr::ExprId, typ::{FnType, Type}, Apply, BuiltIn, Event, ExecCtx, Node, Rt,
+    Scope, TypecheckPhase, TypecheckResult, UserEvent,
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{extract_cast_type, CachedArgs, CachedVals, EvalCached};
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
@@ -369,7 +370,6 @@ macro_rules! escape_fn {
             fn init<'a, 'b, 'c>(
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
-                _resolved_typ: Option<&'a graphix_compiler::typ::FnType>,
                 _scope: &'b Scope,
                 from: &'c [Node<R, E>],
                 _top_id: ExprId,
@@ -742,21 +742,29 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     fn init(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
-        resolved_typ: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        let cast_typ = resolved_typ.and_then(|ft| match &ft.rtype {
-            Type::Ref { name, params, .. }
-                if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
-            {
-                let t = &params[0];
-                if format!("{t}").contains('\'') { None } else { Some(t.clone()) }
+        Self { cast_typ: None }
+    }
+
+    fn typecheck(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::CallSite(resolved) => {
+                self.cast_typ = extract_cast_type(Some(resolved));
+                if self.cast_typ.is_none() {
+                    bail!("str::parse requires a concrete return type")
+                }
+                Ok(TypecheckResult::Done)
             }
-            _ => None,
-        });
-        Self { cast_typ }
+        }
     }
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

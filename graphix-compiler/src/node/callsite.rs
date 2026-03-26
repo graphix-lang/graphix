@@ -1,13 +1,13 @@
 use super::{compiler::compile, Nop};
 use crate::{
     deref_typ,
-    expr::{Expr, ExprId},
+    expr::{ErrorContext, Expr, ExprId},
     node::lambda::LambdaDef,
     typ::{FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope,
+    TypecheckPhase, Update, UserEvent,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use fxhash::{FxHashMap, FxHashSet};
@@ -191,7 +191,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             keep
         });
-        let rf = (f.init)(&scope, ctx, &mut self.args, self.top_id, false, self.resolved_ftype.as_ref())?;
+        let mut rf = (f.init)(&scope, ctx, &mut self.args, self.top_id)?;
+        // Re-run both typecheck phases at bind time. The static type checking
+        // already happened (Lambda phase during Lambda::typecheck, CallSite
+        // phase via deferred checks). Here we re-run them on the runtime Apply
+        // instance to initialize runtime state: Lambda phase sets up GXLambda
+        // body type info for pretty printing, CallSite phase configures
+        // cast_typ on builtins that need type-directed deserialization.
+        let _ = rf.typecheck(ctx, &mut self.args, TypecheckPhase::Lambda);
+        if let Some(resolved) = &self.resolved_ftype {
+            let _ = rf.typecheck(ctx, &mut self.args, TypecheckPhase::CallSite(resolved));
+        }
         self.function = Some((fv, rf));
         Ok(())
     }
@@ -397,6 +407,52 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
+        // push deferred closure for builtin call-site type checking,
+        // but only if this function type has any associated lambda type checkers.
+        // lambda_ids may still accumulate after this point (late binding), so
+        // the check inside the closure handles the final set.
+        if ftype.id.is_some() || !ftype.lambda_ids.lock().is_empty() {
+            let lambda_ids = ftype.lambda_ids.clone();
+            let own_id = ftype.id;
+            // capture the CallSite's own ftype — its TVars are never unbound
+            // (they're fresh copies from reset_tvars, not the Lambda's originals).
+            // resolve_tvars at execution time follows the TVar binding chain.
+            let ftype_live = ftype.clone();
+            let spec = self.spec.clone();
+            ctx.deferred_checks.push(Box::new(move |ctx| {
+                let resolved = ftype_live.resolve_tvars();
+                let mut ids: LPooled<Vec<_>> = {
+                    let ids = lambda_ids.lock();
+                    let mut res: LPooled<Vec<_>> = LPooled::take();
+                    if let Some(id) = own_id
+                        && !ids.contains(&id)
+                    {
+                        res.push(id)
+                    }
+                    res.extend(ids.iter().cloned());
+                    res
+                };
+                for id in ids.drain(..) {
+                    let ldef_val = ctx.lambda_defs.get(&id).cloned();
+                    if let Some(val) = ldef_val {
+                        let ldef = val
+                            .downcast_ref::<LambdaDef<R, E>>()
+                            .expect("failed to unwrap lambda for deferred check");
+                        let mut check_guard = ldef.check.lock();
+                        if let Some(apply) = check_guard.as_mut() {
+                            apply
+                                .typecheck(
+                                    ctx,
+                                    &mut vec![],
+                                    TypecheckPhase::CallSite(&resolved),
+                                )
+                                .with_context(|| ErrorContext((*spec).clone()))?;
+                        }
+                    }
+                }
+                Ok(())
+            }));
+        }
         Ok(())
     }
 

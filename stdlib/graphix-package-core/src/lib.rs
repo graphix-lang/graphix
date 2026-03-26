@@ -10,7 +10,8 @@ use graphix_compiler::{
     expr::{Expr, ExprId},
     node::genn,
     typ::{FnType, TVal, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    TypecheckPhase, TypecheckResult, UserEvent,
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
@@ -213,7 +214,6 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     fn init(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
-        _resolved_typ: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
@@ -227,8 +227,9 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
+        _phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        Ok(TypecheckResult::Done)
     }
 }
 
@@ -244,14 +245,13 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
-        resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
-            t: T::init(ctx, typ, resolved_typ, scope, from, top_id),
+            t: T::init(ctx, typ, scope, from, top_id),
         };
         Ok(Box::new(t))
     }
@@ -275,8 +275,9 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        self.t.typecheck(ctx, from)
+        phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        self.t.typecheck(ctx, from, phase)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -291,7 +292,6 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
-        _resolved_typ: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
@@ -306,6 +306,15 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
         v: Value,
     ) -> Option<Value> {
         Some(v)
+    }
+
+    fn typecheck<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        Ok(TypecheckResult::Done)
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
@@ -328,7 +337,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
-        resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -341,7 +349,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             running: false,
-            t: T::init(ctx, typ, resolved_typ, scope, from, top_id),
+            t: T::init(ctx, typ, scope, from, top_id),
         };
         Ok(Box::new(t))
     }
@@ -371,6 +379,15 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             ctx.rt.spawn_var(async move { (id, T::eval(args).await) });
         }
         res
+    }
+
+    fn typecheck(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
+        self.t.typecheck(ctx, from, phase)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -512,7 +529,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -627,16 +643,17 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<TypecheckResult> {
         let (_, node) =
             genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
         let fargs = vec![node];
         let ft = self.mftyp.clone();
         let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
         let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
-        let r = node.typecheck(ctx);
+        node.typecheck(ctx)?;
         node.delete(ctx);
-        r
+        Ok(TypecheckResult::Done)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -690,7 +707,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -842,15 +858,16 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<TypecheckResult> {
         let mut n = genn::reference(ctx, self.initid, self.ityp.clone(), self.top_id);
         let x = genn::reference(ctx, BindId::new(), self.etyp.clone(), self.top_id);
         let fnode =
             genn::reference(ctx, self.fid, Type::Fn(self.mftype.clone()), self.top_id);
         n = genn::apply(fnode, self.scope.clone(), vec![n, x], &self.mftype, self.top_id);
-        let r = n.typecheck(ctx);
+        n.typecheck(ctx)?;
         n.delete(ctx);
-        r
+        Ok(TypecheckResult::Done)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -892,7 +909,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -926,7 +942,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -960,7 +975,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -993,7 +1007,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1038,7 +1051,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1088,7 +1100,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1495,7 +1506,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1580,8 +1590,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
-        self.pred.typecheck(ctx)
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<TypecheckResult> {
+        self.pred.typecheck(ctx)?;
+        Ok(TypecheckResult::Done)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1620,7 +1632,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1681,7 +1692,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1737,7 +1747,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1798,7 +1807,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1888,7 +1896,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1960,7 +1967,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2000,7 +2006,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2077,7 +2082,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2139,9 +2143,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-    ) -> Result<()> {
+        _phase: TypecheckPhase<'_>,
+    ) -> Result<TypecheckResult> {
         self.typ = from[1].typ().clone();
-        Ok(())
+        Ok(TypecheckResult::Done)
     }
 }
 
@@ -2157,7 +2162,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     fn init<'a, 'b, 'c>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
-        _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2212,7 +2216,6 @@ macro_rules! printfn {
             fn init<'a, 'b, 'c>(
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
-                _resolved_typ: Option<&'a FnType>,
                 _scope: &'b Scope,
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,

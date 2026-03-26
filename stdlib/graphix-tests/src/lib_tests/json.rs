@@ -136,3 +136,8 @@ run!(json_nested_struct_cast, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
 });
+
+// json::read without a concrete return type should be a compile-time error
+run!(json_no_concrete_type, r#"json::read("42")"#, |v: Result<&Value>| {
+    v.is_err()
+});
