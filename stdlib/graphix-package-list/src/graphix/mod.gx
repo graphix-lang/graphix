@@ -1,0 +1,32 @@
+type List<'a> = [`Cons('a, List<'a>), `Nil];
+
+let nil = || -> List<'a> 'list_nil;
+let cons = |x: 'a, l: List<'a>| -> List<'a> 'list_cons;
+let singleton = |x: 'a| -> List<'a> 'list_singleton;
+let head = |l: List<'a>| -> ['a, null] 'list_head;
+let tail = |l: List<'a>| -> [List<'a>, null] 'list_tail;
+let uncons = |l: List<'a>| -> [('a, List<'a>), null] 'list_uncons;
+let is_empty = |l: List<'a>| -> bool 'list_is_empty;
+let nth = |l: List<'a>, n: i64| -> ['a, null] 'list_nth;
+let len = |l: List<'a>| -> i64 'list_len;
+let reverse = |l: List<'a>| -> List<'a> 'list_reverse;
+let take = |n: i64, l: List<'a>| -> List<'a> 'list_take;
+let drop = |n: i64, l: List<'a>| -> List<'a> 'list_drop;
+let to_array = |l: List<'a>| -> Array<'a> 'list_to_array;
+let from_array = |a: Array<'a>| -> List<'a> 'list_from_array;
+let concat = |l: List<'a>, @args: List<'a>| -> List<'a> 'list_concat;
+let flatten = |l: List<List<'a>>| -> List<'a> 'list_flatten;
+let map = |l: List<'a>, f: fn('a) -> 'b throws 'e| -> List<'b> throws 'e 'list_map;
+let filter = |l: List<'a>, f: fn('a) -> bool throws 'e| -> List<'a> throws 'e 'list_filter;
+let filter_map = |l: List<'a>, f: fn('a) -> Option<'b> throws 'e| -> List<'b> throws 'e 'list_filter_map;
+let flat_map = |l: List<'a>, f: fn('a) -> ['b, List<'b>] throws 'e| -> List<'b> throws 'e 'list_flat_map;
+let fold = |l: List<'a>, init: 'b, f: fn('b, 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold;
+let find = |l: List<'a>, f: fn('a) -> bool throws 'e| -> Option<'a> throws 'e 'list_find;
+let find_map = |l: List<'a>, f: fn('a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'list_find_map;
+let sort = |#dir: Direction = `Ascending, #numeric: bool = false, l: List<'a>| -> List<'a> 'list_sort;
+let enumerate = |l: List<'a>| -> List<(i64, 'a)> 'list_enumerate;
+let zip = |l0: List<'a>, l1: List<'b>| -> List<('a, 'b)> 'list_zip;
+let unzip = |l: List<('a, 'b)>| -> (List<'a>, List<'b>) 'list_unzip;
+let init = |n: i64, f: fn(i64) -> 'a throws 'e| -> List<'a> throws 'e 'list_init;
+let iter = |l: List<'a>| -> 'a 'list_iter;
+let iterq = |#clock: Any, l: List<'a>| -> 'a 'list_iterq

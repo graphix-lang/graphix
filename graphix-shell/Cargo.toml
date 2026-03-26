@@ -47,6 +47,7 @@ graphix-package = { version = "0.6.0", path = "../graphix-package" }
 graphix-package-array = { version = "0.6.0", path = "../stdlib/graphix-package-array" }
 graphix-package-core = { version = "0.6.0", path = "../stdlib/graphix-package-core" }
 graphix-package-http = { version = "0.6.0", path = "../stdlib/graphix-package-http" }
+graphix-package-list = { version = "0.6.0", path = "../stdlib/graphix-package-list" }
 graphix-package-map = { version = "0.6.0", path = "../stdlib/graphix-package-map" }
 graphix-package-rand = { version = "0.6.0", path = "../stdlib/graphix-package-rand" }
 graphix-package-re = { version = "0.6.0", path = "../stdlib/graphix-package-re" }

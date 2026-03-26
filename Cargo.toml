@@ -115,6 +115,7 @@ members = [
     "graphix-package",
     "stdlib/graphix-package-core",
     "stdlib/graphix-package-array",
+    "stdlib/graphix-package-list",
     "stdlib/graphix-package-map",
     "stdlib/graphix-package-rand",
     "stdlib/graphix-package-re",
