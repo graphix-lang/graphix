@@ -3,7 +3,7 @@
 type List<'a>;
 
 /// Return an empty list.
-val nil: fn() -> List<'a>;
+val nil: fn(Any) -> List<'a>;
 
 /// Prepend an element to the front of a list. O(1).
 val cons: fn('a, List<'a>) -> List<'a>;

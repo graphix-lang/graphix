@@ -301,7 +301,8 @@ struct NilEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NilEv {
     const NAME: &str = "list_nil";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, _from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        from.0[0].as_ref()?;
         Some(make_nil())
     }
 }
