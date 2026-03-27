@@ -291,6 +291,31 @@ Some examples are code snippets that reference undefined variables and are meant
 - The project uses `triomphe::Arc` instead of `std::sync::Arc` for better performance
 - Pooling is used extensively (`poolshark`, `immutable-chunkmap`) to reduce allocations
 
+## Debugging the Compiler
+
+### Trace Facility
+
+The compiler has a built-in trace facility gated by a global `AtomicBool` (`TRACE` in `lib.rs`). Key tools:
+
+- `trace() -> bool`: check if tracing is active
+- `set_trace(bool)`: toggle tracing
+- `with_trace(enable, spec, f)`: enable tracing for the duration of `f`, prints the spec position and any errors
+- `tdbg!(expr)`: like `dbg!()` but only fires when `trace()` is true
+
+Usage in the compiler: `callsite.rs` has `if trace() { ... }` guards that print pre/post callsite FnTypes with deref'd TVars. Builtins like MapQ also print their resolved types via `format_with_flags(PrintFlag::DerefTVars, ...)`.
+
+The trace facility solves a critical problem: the compiler typechecks the entire stdlib on every compilation, which produces gigabytes of debug output if you just add `eprintln!`. To debug a specific expression, use `with_trace` to enable tracing only during that expression's compilation/typecheck, so only the relevant output appears.
+
+### Type Alias Expansion in Contains
+
+When `contains` encounters a `Type::Ref` (e.g. `Result<T, E>`), the Ref case at `contains.rs:56` expands both sides via `lookup_ref(env)` before recursing. This means TVar bindings established during `contains` store the **expanded** form (e.g. `[T, Error<E>]` instead of `Result<T, E>`). Code that inspects resolved types must handle both the `Type::Ref` form and the expanded `Type::Set` form — see `extract_cast_type` in `graphix-package-core/src/lib.rs` for an example.
+
+### Two-Phase Typecheck and Deferred Checks
+
+Builtins that need type information from their call site (e.g. `json::read` for type-directed deserialization) use a two-phase typecheck: return `NeedsCallSite` from `TypecheckPhase::Lambda`, then extract concrete types during `TypecheckPhase::CallSite(resolved)`. The compiler collects deferred check closures during `CallSite::typecheck` and processes them in a `while let Some(check) = ctx.deferred_checks.pop()` loop after primary typechecking. This loop processes cascaded checks automatically — a deferred check that pushes new deferred checks will have those processed in subsequent iterations.
+
+HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must return `NeedsCallSite` and handle the `CallSite(resolved)` phase to update their stored predicate types (`mftyp`, `etyp`) from the resolved FnType. This enables the deferred check cascade to propagate concrete types to inner predicates like `json::read`.
+
 ## Recent Changes
 
 ### GUI Package (Feb 2026)

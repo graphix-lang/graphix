@@ -45,6 +45,17 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
         {
             params[0].clone()
         }
+        // Handle the expanded form [T, Error<E>] — this occurs when the
+        // Result type alias was expanded during TVar binding in contains().
+        Type::Set(elements) if elements.len() == 2 => {
+            let mut success = None;
+            for elem in elements.iter() {
+                if !matches!(elem, Type::Error(_)) {
+                    success = Some(elem.clone());
+                }
+            }
+            success?
+        }
         _ => return None,
     };
     if format!("{typ}").contains('\'') {
@@ -630,13 +641,14 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                             Type::Fn(self.mftyp.clone()),
                             self.top_id,
                         );
-                        let pred = genn::apply(
+                        let mut pred = genn::apply(
                             fnode,
                             self.scope.clone(),
                             fargs,
                             &self.mftyp,
                             self.top_id,
                         );
+                        let _ = pred.typecheck(ctx);
                         self.slots.push(Slot { id, pred, cur: None });
                     }
                     (Some(a), true)
@@ -682,8 +694,18 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+        phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => (),
+            TypecheckPhase::CallSite(resolved) => {
+                self.mftyp = match &resolved.args[1].typ {
+                    Type::Fn(ft) => ft.clone(),
+                    t => bail!("expected a function not {t}"),
+                };
+                self.etyp = T::Collection::etyp(resolved)?;
+            }
+        }
         let (_, node) =
             genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
         let fargs = vec![node];
@@ -692,7 +714,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
         node.typecheck(ctx)?;
         node.delete(ctx);
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut Refs) {

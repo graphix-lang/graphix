@@ -1,6 +1,6 @@
 use crate::{
     env::Env,
-    format_with_flags,
+    format_with_flags, tdbg, trace,
     typ::{tvar::would_cycle_inner, AndAc, RefHist, Type},
     PrintFlag,
 };
@@ -23,7 +23,7 @@ pub enum ContainsFlags {
 
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
-        if self.contains(env, t)? {
+        if tdbg!(self.contains(env, t))? {
             Ok(())
         } else {
             format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
@@ -41,6 +41,9 @@ impl Type {
     ) -> Result<bool> {
         if (self as *const Type) == (t as *const Type) {
             return Ok(true);
+        }
+        if trace() {
+            format_with_flags(PrintFlag::DerefTVars, || eprintln!("{self} <> {t}"));
         }
         match (self, t) {
             (
@@ -267,6 +270,14 @@ impl Type {
             (Self::Set(s0), Self::Set(s1))
                 if s0.as_ptr().addr() == s1.as_ptr().addr() =>
             {
+                Ok(true)
+            }
+            (t0 @ Self::Set(_), t1 @ Self::Set(_)) if t0 == t1 => {
+                if flags.contains(ContainsFlags::InitTVars) {
+                    let mut known = LPooled::take();
+                    t0.alias_tvars(&mut known);
+                    t1.alias_tvars(&mut known);
+                }
                 Ok(true)
             }
             (t0, Self::Set(s)) => Ok(s
