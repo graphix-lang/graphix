@@ -264,6 +264,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     fn init(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        _resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
@@ -292,16 +293,17 @@ pub struct CachedArgs<T> {
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
-            t: T::init(ctx, typ, scope, from, top_id),
+            t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
     }
@@ -342,6 +344,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        _resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
@@ -384,9 +387,10 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<T> {
     const NAME: &str = T::NAME;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
-        typ: &'a graphix_compiler::typ::FnType,
+        typ: &'a FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -399,7 +403,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             running: false,
-            t: T::init(ctx, typ, scope, from, top_id),
+            t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
     }
@@ -576,27 +580,32 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     const NAME: &str = T::NAME;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _] => Ok(Box::new(Self {
-                scope: scope.append(&format_compact!("fn{}", LambdaId::new().inner())),
-                predid: BindId::new(),
-                top_id,
-                etyp: T::Collection::etyp(typ)?,
-                mftyp: match &typ.args[1].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                },
-                slots: vec![],
-                cur: Default::default(),
-                t: T::default(),
-            })),
+            [_, _] => {
+                let typ = resolved.unwrap_or(typ);
+                Ok(Box::new(Self {
+                    scope: scope
+                        .append(&format_compact!("fn{}", LambdaId::new().inner())),
+                    predid: BindId::new(),
+                    top_id,
+                    etyp: T::Collection::etyp(typ)?,
+                    mftyp: match &typ.args[1].typ {
+                        Type::Fn(ft) => ft.clone(),
+                        t => bail!("expected a function not {t}"),
+                    },
+                    slots: vec![],
+                    cur: Default::default(),
+                    t: T::default(),
+                }))
+            }
             _ => bail!("expected two arguments"),
         }
     }
@@ -641,14 +650,13 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                             Type::Fn(self.mftyp.clone()),
                             self.top_id,
                         );
-                        let mut pred = genn::apply(
+                        let pred = genn::apply(
                             fnode,
                             self.scope.clone(),
                             fargs,
                             &self.mftyp,
                             self.top_id,
                         );
-                        let _ = pred.typecheck(ctx);
                         self.slots.push(Slot { id, pred, cur: None });
                     }
                     (Some(a), true)
@@ -765,32 +773,36 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     const NAME: &str = T::NAME;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        typ: &'a graphix_compiler::typ::FnType,
+        typ: &'a FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _, _] => Ok(Box::new(Self {
-                top_id,
-                scope: scope.clone(),
-                binds: vec![],
-                nodes: vec![],
-                inits: vec![],
-                initids: vec![],
-                initid: BindId::new(),
-                fid: BindId::new(),
-                etyp: T::Collection::etyp(typ)?,
-                ityp: typ.args[1].typ.clone(),
-                mftype: match &typ.args[2].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                },
-                init: None,
-                t: PhantomData,
-            })),
+            [_, _, _] => {
+                let typ = resolved.unwrap_or(typ);
+                Ok(Box::new(Self {
+                    top_id,
+                    scope: scope.clone(),
+                    binds: vec![],
+                    nodes: vec![],
+                    inits: vec![],
+                    initids: vec![],
+                    initid: BindId::new(),
+                    fid: BindId::new(),
+                    etyp: T::Collection::etyp(typ)?,
+                    ityp: typ.args[1].typ.clone(),
+                    mftype: match &typ.args[2].typ {
+                        Type::Fn(ft) => ft.clone(),
+                        t => bail!("expected a function not {t}"),
+                    },
+                    init: None,
+                    t: PhantomData,
+                }))
+            }
             _ => bail!("expected three arguments"),
         }
     }
@@ -919,8 +931,19 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+        phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => (),
+            TypecheckPhase::CallSite(typ) => {
+                self.etyp = T::Collection::etyp(typ)?;
+                self.ityp = typ.args[1].typ.clone();
+                self.mftype = match &typ.args[2].typ {
+                    Type::Fn(ft) => ft.clone(),
+                    t => bail!("expected a function not {t}"),
+                };
+            }
+        }
         let mut n = genn::reference(ctx, self.initid, self.ityp.clone(), self.top_id);
         let x = genn::reference(ctx, BindId::new(), self.etyp.clone(), self.top_id);
         let fnode =
@@ -928,7 +951,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         n = genn::apply(fnode, self.scope.clone(), vec![n, x], &self.mftype, self.top_id);
         n.typecheck(ctx)?;
         n.delete(ctx);
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -967,9 +990,10 @@ struct IsErr;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const NAME: &str = "core_is_err";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1000,9 +1024,10 @@ struct FilterErr;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "core_filter_err";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1033,9 +1058,10 @@ struct ToError;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const NAME: &str = "core_error";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1065,9 +1091,10 @@ struct Once {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1109,9 +1136,10 @@ struct Take {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1158,9 +1186,10 @@ struct Skip {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1564,15 +1593,17 @@ struct Filter<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "core_filter";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
             [_, _] => {
+                let typ = resolved.unwrap_or(typ);
                 let (x, xn) =
                     genn::bind(ctx, &scope.lexical, "x", typ.args[0].typ.clone(), top_id);
                 let fid = BindId::new();
@@ -1654,7 +1685,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<TypecheckResult> {
         self.pred.typecheck(ctx)?;
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1690,9 +1721,10 @@ struct Queue {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "core_queue";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1750,9 +1782,10 @@ struct Hold {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "core_hold";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -1805,9 +1838,10 @@ struct Seq {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "core_seq";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1865,9 +1899,10 @@ struct Throttle {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "core_throttle";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -1954,9 +1989,10 @@ struct Count {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2025,9 +2061,10 @@ struct Uniq(Option<Value>);
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2064,9 +2101,10 @@ struct Never;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "core_never";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2140,9 +2178,10 @@ struct Dbg {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "core_dbg";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2220,9 +2259,10 @@ struct Log {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "core_log";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
+        _resolved: Option<&'d FnType>,
         scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -2274,9 +2314,10 @@ macro_rules! printfn {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const NAME: &str = $name;
 
-            fn init<'a, 'b, 'c>(
+            fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
+                _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,

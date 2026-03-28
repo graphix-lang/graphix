@@ -1,8 +1,8 @@
 use anyhow::Result;
 use futures::{channel::mpsc, SinkExt};
 use graphix_compiler::{
-    expr::ExprId, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, UserEvent, CBATCH_POOL,
+    expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx,
+    Node, Rt, Scope, UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
@@ -127,9 +127,10 @@ pub(crate) struct DbSubscribe {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
     const NAME: &str = "db_subscription_new";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -249,9 +250,10 @@ macro_rules! db_event_accessor {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
 
-            fn init<'a, 'b, 'c>(
+            fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
-                _typ: &'a graphix_compiler::typ::FnType,
+                _typ: &'a FnType,
+                _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
                 from: &'c [Node<R, E>],
                 top_id: ExprId,

@@ -8,8 +8,12 @@ use bytes::Bytes;
 use compact_str::format_compact;
 use futures::{channel::mpsc, SinkExt};
 use graphix_compiler::{
-    errf, expr::ExprId, node::genn, typ::Type, Apply, BindId, BuiltIn, CustomBuiltinType,
-    Event, ExecCtx, LambdaId, Node, Rt, Scope, TypecheckResult, UserEvent, CBATCH_POOL,
+    errf,
+    expr::ExprId,
+    node::genn,
+    typ::{FnType, Type},
+    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, LambdaId, Node, Rt, Scope,
+    TypecheckResult, UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
@@ -684,15 +688,17 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     const NAME: &str = "http_serve";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
             [_, _, _, _, _] => {
+                let typ = resolved.unwrap_or(typ);
                 let scope =
                     scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
                 let id = BindId::new();
@@ -788,9 +794,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 };
                 let bound_addr = match std_listener.local_addr() {
                     Ok(a) => a,
-                    Err(e) => {
-                        return Some(errf!("HTTPError", "local_addr failed: {e}"))
-                    }
+                    Err(e) => return Some(errf!("HTTPError", "local_addr failed: {e}")),
                 };
                 if let Err(e) = std_listener.set_nonblocking(true) {
                     return Some(errf!("HTTPError", "set_nonblocking failed: {e}"));
@@ -862,7 +866,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         _phase: graphix_compiler::TypecheckPhase<'_>,
     ) -> Result<TypecheckResult> {
         self.handler.typecheck(ctx)?;
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {

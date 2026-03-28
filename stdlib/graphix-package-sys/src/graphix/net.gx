@@ -11,5 +11,5 @@ let list = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Array<string>, `ListError(string)> 'sys_net_list;
 let list_table = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Table, `ListError(string)> 'sys_net_list_table;
-let publish = |#on_write: fn('a) -> _ throws 'e = |v| never(v), path: string, v: Any|
+let publish = |#on_write: fn('a) -> _ throws 'e = |v: Any| never(v), path: string, v: Any|
     -> Result<_, `PublishError(string)> throws 'e 'sys_net_publish

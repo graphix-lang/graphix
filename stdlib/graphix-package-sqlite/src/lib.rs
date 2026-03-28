@@ -9,7 +9,9 @@ use graphix_compiler::typ::{FnType, Type};
 use graphix_compiler::{
     ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult, UserEvent,
 };
-use graphix_package_core::{extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{
+    extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync,
+};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::{Arc, Mutex};
@@ -74,10 +76,7 @@ fn collect_params(params: &ValArray) -> LPooled<Vec<rusqlite::types::Value>> {
 
 // ── Helper: lock inside spawn_blocking ────────────────────────────
 
-async fn with_conn<F>(
-    conn_arc: Arc<Mutex<Option<rusqlite::Connection>>>,
-    f: F,
-) -> Value
+async fn with_conn<F>(conn_arc: Arc<Mutex<Option<rusqlite::Connection>>>, f: F) -> Value
 where
     F: FnOnce(&mut rusqlite::Connection) -> Value + Send + 'static,
 {
@@ -110,16 +109,13 @@ impl EvalCachedAsync for SqliteOpenEv {
 
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            match tokio::task::spawn_blocking(move || {
-                rusqlite::Connection::open(&*path)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || rusqlite::Connection::open(&*path))
+                .await
             {
                 Err(e) => errf!("SqliteError", "spawn_blocking failed: {e}"),
                 Ok(Err(e)) => errf!("SqliteError", "{e}"),
-                Ok(Ok(conn)) => CONNECTION_WRAPPER.wrap(ConnectionValue {
-                    inner: Arc::new(Mutex::new(Some(conn))),
-                }),
+                Ok(Ok(conn)) => CONNECTION_WRAPPER
+                    .wrap(ConnectionValue { inner: Arc::new(Mutex::new(Some(conn))) }),
             }
         }
     }
@@ -181,11 +177,9 @@ impl EvalCachedAsync for SqliteExecBatchEv {
 
     fn eval((conn_arc, sql): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            with_conn(conn_arc, move |conn| {
-                match conn.execute_batch(&sql) {
-                    Err(e) => errf!("SqliteError", "{e}"),
-                    Ok(()) => Value::Null,
-                }
+            with_conn(conn_arc, move |conn| match conn.execute_batch(&sql) {
+                Err(e) => errf!("SqliteError", "{e}"),
+                Ok(()) => Value::Null,
             })
             .await
         }
@@ -208,11 +202,12 @@ impl EvalCachedAsync for SqliteQueryEv {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: graphix_compiler::expr::ExprId,
     ) -> Self {
-        Self { cast_typ: None }
+        Self { cast_typ: extract_cast_type(resolved) }
     }
 
     fn typecheck<R: Rt, E: UserEvent>(
@@ -240,7 +235,10 @@ impl EvalCachedAsync for SqliteQueryEv {
     ) -> Option<Value> {
         match self.cast_typ.as_ref() {
             Some(typ) => Some(typ.cast_value(&ctx.env, v)),
-            None => Some(errf!("SqliteError", "sqlite::query requires a concrete return type")),
+            None => Some(errf!(
+                "SqliteError",
+                "sqlite::query requires a concrete return type"
+            )),
         }
     }
 
@@ -295,9 +293,9 @@ impl EvalCachedAsync for SqliteQueryEv {
                                     )
                                 })
                                 .collect();
-                            result_rows.push(Value::Array(
-                                ValArray::from_iter_exact(vals.drain(..)),
-                            ));
+                            result_rows.push(Value::Array(ValArray::from_iter_exact(
+                                vals.drain(..),
+                            )));
                         }
                     }
                 }
@@ -327,11 +325,9 @@ macro_rules! simple_sql_builtin {
 
             fn eval(conn_arc: Self::Args) -> impl Future<Output = Value> + Send {
                 async move {
-                    with_conn(conn_arc, |conn| {
-                        match conn.execute_batch($sql) {
-                            Err(e) => errf!("SqliteError", "{e}"),
-                            Ok(()) => Value::Null,
-                        }
+                    with_conn(conn_arc, |conn| match conn.execute_batch($sql) {
+                        Err(e) => errf!("SqliteError", "{e}"),
+                        Ok(()) => Value::Null,
                     })
                     .await
                 }

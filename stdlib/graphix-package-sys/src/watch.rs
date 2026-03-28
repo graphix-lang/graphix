@@ -8,10 +8,10 @@ use extended_notify::{
 use futures::{channel::mpsc, SinkExt, TryFutureExt};
 use fxhash::{FxHashMap, FxHashSet};
 use graphix_compiler::{
-    errf, expr::ExprId, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, Node,
-    Rt, Scope, UserEvent, CBATCH_POOL,
+    errf, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, CustomBuiltinType, Event,
+    ExecCtx, Node, Rt, Scope, UserEvent, CBATCH_POOL,
 };
-use graphix_package_core::{CachedVals};
+use graphix_package_core::CachedVals;
 use netidx_value::{
     abstract_type::AbstractWrapper, Abstract, FromValue, ValArray, Value,
 };
@@ -254,9 +254,10 @@ pub(crate) struct CreateWatcher {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     const NAME: &str = "sys_watch_create";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _fntyp: &'a graphix_compiler::typ::FnType,
+        _fntyp: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _args: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -336,9 +337,10 @@ pub(crate) struct WatchApply {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     const NAME: &str = "sys_watch_watch";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -480,9 +482,10 @@ pub(crate) struct WatchPath {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     const NAME: &str = "sys_watch_path";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -544,9 +547,10 @@ pub(crate) struct WatchEvents {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     const NAME: &str = "sys_watch_events";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,

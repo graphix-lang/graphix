@@ -726,9 +726,10 @@ struct ListIterBI(BindId, ExprId);
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
     const NAME: &str = "list_iter";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -776,9 +777,10 @@ struct ListIterQ {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
     const NAME: &str = "list_iterq";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -845,24 +847,29 @@ struct ListInit<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListInit<R, E> {
     const NAME: &str = "list_init";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _] => Ok(Box::new(Self {
-                scope: scope.append(&format_compact!("fn{}", LambdaId::new().inner())),
-                fid: BindId::new(),
-                top_id,
-                mftyp: match &typ.args[1].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                },
-                slots: vec![],
-            })),
+            [_, _] => {
+                let typ = resolved.unwrap_or(typ);
+                Ok(Box::new(Self {
+                    scope: scope
+                        .append(&format_compact!("fn{}", LambdaId::new().inner())),
+                    fid: BindId::new(),
+                    top_id,
+                    mftyp: match &typ.args[1].typ {
+                        Type::Fn(ft) => ft.clone(),
+                        t => bail!("expected a function not {t}"),
+                    },
+                    slots: vec![],
+                }))
+            }
             _ => bail!("expected two arguments"),
         }
     }
@@ -961,8 +968,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase,
+        phase: TypecheckPhase,
     ) -> anyhow::Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => (),
+            TypecheckPhase::CallSite(typ) => {
+                self.mftyp = match &typ.args[1].typ {
+                    Type::Fn(ft) => ft.clone(),
+                    t => bail!("expected a function not {t}"),
+                };
+            }
+        }
         let i_typ = Type::Primitive(Typ::I64.into());
         let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
         let ft = self.mftyp.clone();
@@ -972,7 +988,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         let r = node.typecheck(ctx);
         node.delete(ctx);
         r?;
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut Refs) {

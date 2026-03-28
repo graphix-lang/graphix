@@ -214,9 +214,10 @@ struct Parse {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     const NAME: &str = "args_parse";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,

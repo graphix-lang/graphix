@@ -8,8 +8,8 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TypecheckPhase,
-    TypecheckResult, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    TypecheckPhase, TypecheckResult, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
@@ -472,15 +472,17 @@ struct Group<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        resolved: Option<&'d FnType>,
         scope: &'b graphix_compiler::Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
             [_, _] => {
+                let typ = resolved.unwrap_or(typ);
                 let scope =
                     scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
                 let n_typ = Type::Primitive(Typ::I64.into());
@@ -567,7 +569,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<TypecheckResult> {
         self.pred.typecheck(ctx)?;
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -592,9 +594,10 @@ struct Iter(BindId, ExprId);
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "array_iter";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b graphix_compiler::Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -642,9 +645,10 @@ struct IterQ {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "array_iterq";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b graphix_compiler::Scope,
         _from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -708,24 +712,29 @@ struct Init<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
     const NAME: &str = "array_init";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        resolved: Option<&'c FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _] => Ok(Box::new(Self {
-                scope: scope.append(&format_compact!("fn{}", LambdaId::new().inner())),
-                fid: BindId::new(),
-                top_id,
-                mftyp: match &typ.args[1].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                },
-                slots: vec![],
-            })),
+            [_, _] => {
+                let typ = resolved.unwrap_or(typ);
+                Ok(Box::new(Self {
+                    scope: scope
+                        .append(&format_compact!("fn{}", LambdaId::new().inner())),
+                    fid: BindId::new(),
+                    top_id,
+                    mftyp: match &typ.args[1].typ {
+                        Type::Fn(ft) => ft.clone(),
+                        t => bail!("expected a function not {t}"),
+                    },
+                    slots: vec![],
+                }))
+            }
             _ => bail!("expected two arguments"),
         }
     }
@@ -827,8 +836,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+        phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<TypecheckResult> {
+        match phase {
+            TypecheckPhase::Lambda => (),
+            TypecheckPhase::CallSite(typ) => {
+                self.mftyp = match &typ.args[1].typ {
+                    Type::Fn(ft) => ft.clone(),
+                    t => bail!("expected a function not {t}"),
+                }
+            }
+        }
         let i_typ = Type::Primitive(Typ::I64.into());
         let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
         let ft = self.mftyp.clone();
@@ -838,7 +856,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         let r = node.typecheck(ctx);
         node.delete(ctx);
         r?;
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn refs(&self, refs: &mut Refs) {

@@ -1,11 +1,13 @@
 use super::{compiler::compile, Nop};
 use crate::{
     deref_typ,
-    expr::{ErrorContext, Expr, ExprId},
+    expr::{ErrorContext, Expr, ExprId, ExprKind},
+    format_with_flags,
     node::lambda::LambdaDef,
+    trace,
     typ::{FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope,
-    TypecheckPhase, Update, UserEvent,
+    with_trace, wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt,
+    Scope, TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -191,17 +193,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             keep
         });
-        let mut rf = (f.init)(&scope, ctx, &mut self.args, self.top_id)?;
-        // Re-run both typecheck phases at bind time. The static type checking
-        // already happened (Lambda phase during Lambda::typecheck, CallSite
-        // phase via deferred checks). Here we re-run them on the runtime Apply
-        // instance to initialize runtime state: Lambda phase sets up GXLambda
-        // body type info for pretty printing, CallSite phase configures
-        // cast_typ on builtins that need type-directed deserialization.
+        let mut rf = (f.init)(
+            &scope,
+            ctx,
+            &mut self.args,
+            self.resolved_ftype.as_ref(),
+            self.top_id,
+        )?;
         let _ = rf.typecheck(ctx, &mut self.args, TypecheckPhase::Lambda);
-        if let Some(resolved) = &self.resolved_ftype {
-            let _ = rf.typecheck(ctx, &mut self.args, TypecheckPhase::CallSite(resolved));
-        }
         self.function = Some((fv, rf));
         Ok(())
     }
@@ -419,38 +418,49 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // resolve_tvars at execution time follows the TVar binding chain.
             let ftype_live = ftype.clone();
             let spec = self.spec.clone();
+            let tr = trace();
             ctx.deferred_checks.push(Box::new(move |ctx| {
-                let resolved = ftype_live.resolve_tvars();
-                let mut ids: LPooled<Vec<_>> = {
-                    let ids = lambda_ids.lock();
-                    let mut res: LPooled<Vec<_>> = LPooled::take();
-                    if let Some(id) = own_id
-                        && !ids.contains(&id)
-                    {
-                        res.push(id)
+                with_trace(tr, &spec, || {
+                    let resolved = ftype_live.resolve_tvars();
+                    if trace() {
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            eprintln!("resolved: {resolved}")
+                        })
                     }
-                    res.extend(ids.iter().cloned());
-                    res
-                };
-                for id in ids.drain(..) {
-                    let ldef_val = ctx.lambda_defs.get(&id).cloned();
-                    if let Some(val) = ldef_val {
-                        let ldef = val
-                            .downcast_ref::<LambdaDef<R, E>>()
-                            .expect("failed to unwrap lambda for deferred check");
-                        let mut check_guard = ldef.check.lock();
-                        if let Some(apply) = check_guard.as_mut() {
-                            apply
-                                .typecheck(
-                                    ctx,
-                                    &mut vec![],
-                                    TypecheckPhase::CallSite(&resolved),
-                                )
-                                .with_context(|| ErrorContext((*spec).clone()))?;
+                    let mut ids: LPooled<Vec<_>> = {
+                        let ids = lambda_ids.lock();
+                        let mut res: LPooled<Vec<_>> = LPooled::take();
+                        if let Some(id) = own_id
+                            && !ids.contains(&id)
+                        {
+                            res.push(id)
+                        }
+                        res.extend(ids.iter().cloned());
+                        res
+                    };
+                    if trace() {
+                        eprintln!("{ids:?}");
+                    }
+                    for id in ids.drain(..) {
+                        let ldef_val = ctx.lambda_defs.get(&id).cloned();
+                        if let Some(val) = ldef_val {
+                            let ldef = val
+                                .downcast_ref::<LambdaDef<R, E>>()
+                                .expect("failed to unwrap lambda for deferred check");
+                            let mut check_guard = ldef.check.lock();
+                            if let Some(apply) = check_guard.as_mut() {
+                                apply
+                                    .typecheck(
+                                        ctx,
+                                        &mut vec![],
+                                        TypecheckPhase::CallSite(&resolved),
+                                    )
+                                    .with_context(|| ErrorContext((*spec).clone()))?;
+                            }
                         }
                     }
-                }
-                Ok(())
+                    Ok(())
+                })
             }));
         }
         Ok(())

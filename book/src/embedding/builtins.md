@@ -317,8 +317,60 @@ details of late binding, optional arguments, default args, etc. The
 Because we generated code, we have to hook into the `typecheck`
 compiler phase and make sure the type checker runs on it. This
 requires that we implement the `typecheck` method. In our case all we
-have to do is typecheck our generated call site. You can do powerful
-things with this hook however.
+have to do is typecheck our generated call site.
+
+#### Two-Phase Typecheck for Higher-Order Functions
+
+Higher-order builtins **must** return `TypecheckResult::NeedsCallSite`
+and handle the `TypecheckPhase::CallSite(resolved)` phase. This is
+required so that type information from the call site propagates
+through to the inner predicate function. Without this, if the user
+passes a builtin like `json::read` that requires a concrete return
+type, the type checker won't be able to verify or initialize it.
+
+The pattern is:
+
+```rust
+fn typecheck(
+    &mut self,
+    ctx: &mut ExecCtx<R, E>,
+    _from: &mut [Node<R, E>],
+    phase: TypecheckPhase<'_>,
+) -> anyhow::Result<TypecheckResult> {
+    // During CallSite phase, update stored types from the resolved FnType
+    if let TypecheckPhase::CallSite(resolved) = phase {
+        self.mftyp = match &resolved.args[PRED_INDEX].typ {
+            Type::Fn(ft) => ft.clone(),
+            t => bail!("expected a function not {t}"),
+        };
+        // Update any other stored types (element type, etc.)
+    }
+    // Create and typecheck the inner CallSite — this is critical
+    // because it pushes deferred checks that cascade type information
+    // to inner builtins (e.g. json::read getting its cast_typ set)
+    let (_, node) = genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
+    let ft = self.mftyp.clone();
+    let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
+    let mut node = genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
+    node.typecheck(ctx)?;
+    node.delete(ctx);
+    Ok(TypecheckResult::NeedsCallSite)
+}
+```
+
+The `NeedsCallSite` return value tells the compiler to store this
+builtin for deferred type checking. When the outer call site's
+deferred check runs, it calls `typecheck(CallSite(resolved))` with
+the fully resolved function type. The builtin updates its stored
+predicate type (`mftyp`) from the resolved type, then creates and
+typechecks an inner `CallSite` node. This inner typecheck pushes its
+own deferred checks, cascading type information to any inner builtins
+that need it.
+
+For builtins that store a persistent predicate node (like `filter` or
+`group`), the CallSite phase should rebuild the predicate node with
+the resolved types, since the original was built with unresolved type
+variables.
 
 ### BindIds and Refs
 

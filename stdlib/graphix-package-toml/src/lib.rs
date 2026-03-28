@@ -2,13 +2,14 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::typ::Type;
-use anyhow::{bail, Result};
 use graphix_compiler::{
-    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult, UserEvent,
+    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
+    UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -135,11 +136,12 @@ impl EvalCachedAsync for TomlReadEv {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: graphix_compiler::expr::ExprId,
     ) -> Self {
-        Self { cast_typ: None }
+        Self { cast_typ: extract_cast_type(resolved) }
     }
 
     fn typecheck<R: Rt, E: UserEvent>(

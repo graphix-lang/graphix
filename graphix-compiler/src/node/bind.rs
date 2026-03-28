@@ -1,13 +1,14 @@
 use super::pattern::StructPatternNode;
 use crate::{
     compiler::compile,
-    expr::{self, Expr, ExprId, ExprKind, ModPath},
-    format_with_flags,
+    expr::{self, Expr, ExprId, ExprKind, ModPath, Source},
+    format_with_flags, trace,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    with_trace, wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope,
+    Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
+use arcstr::literal;
 use enumflags2::BitFlags;
 use netidx_value::Value;
 use triomphe::Arc;
@@ -135,9 +136,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.node, self.node.typecheck(ctx))?;
-        wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
-        Ok(())
+        let tr = self.spec.pos.line == 4
+            && self.spec.pos.column == 1
+            && self.spec.ori.source == Source::Internal(literal!("test"));
+        with_trace(tr, &self.spec, || {
+            if trace() {
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    eprintln!("bind pre tc: {}", self.node.typ())
+                })
+            }
+            wrap!(self.node, self.node.typecheck(ctx))?;
+            if trace() {
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    eprintln!("bind post tc: {}", self.node.typ())
+                })
+            }
+            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+            if trace() {
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    eprintln!("bind post un: {}", self.node.typ())
+                })
+            }
+            Ok(())
+        })
     }
 }
 

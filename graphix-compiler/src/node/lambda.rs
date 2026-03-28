@@ -2,10 +2,12 @@ use super::{compiler::compile, Nop};
 use crate::{
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId},
+    format_with_flags,
     node::pattern::StructPatternNode,
+    trace,
     typ::{FnArgType, FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, TypecheckResult, Update, UserEvent,
+    wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, PrintFlag, Refs,
+    Rt, Scope, TypecheckPhase, TypecheckResult, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
@@ -115,12 +117,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             wrap!(arg, arg.typecheck(ctx))?;
             wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
         }
+        if trace() {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                eprintln!("gxbody pre tc: {}", self.body.typ());
+            });
+        }
         wrap!(self.body, self.body.typecheck(ctx))?;
+        if trace() {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                eprintln!("gxbody post tc: {}", self.body.typ());
+            });
+        }
         wrap!(self.body, self.typ.rtype.check_contains(&ctx.env, &self.body.typ()))?;
+        if trace() {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                eprintln!("gxbody post un: {}", self.body.typ());
+                eprintln!("gxrt post un: {}", self.typ.rtype);
+            });
+        }
         for (tv, tc) in self.typ.constraints.read().iter() {
             tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
         }
-        Ok(TypecheckResult::Done)
+        Ok(TypecheckResult::NeedsCallSite)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -368,7 +386,7 @@ impl Lambda {
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
-        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, tid| {
+        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, resolved, tid| {
             // restore the lexical environment to the state it was in
             // when the closure was created
             ctx.with_restored(_env.clone(), |ctx| match body.clone() {
@@ -391,11 +409,13 @@ impl Lambda {
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
-                    Some(init) => init(ctx, &_typ, &_scope, args, tid).map(|apply| {
-                        let f: Box<dyn Apply<R, E>> =
-                            Box::new(BuiltInLambda { typ: _typ.clone(), apply });
-                        f
-                    }),
+                    Some(init) => {
+                        init(ctx, &_typ, resolved, &_scope, args, tid).map(|apply| {
+                            let f: Box<dyn Apply<R, E>> =
+                                Box::new(BuiltInLambda { typ: _typ.clone(), apply });
+                            f
+                        })
+                    }
                 },
             })
         });
@@ -468,7 +488,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             },
         );
         let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);
-        let res = (def.init)(&def.scope, ctx, &mut faux_args, ExprId::new())
+        let res = (def.init)(&def.scope, ctx, &mut faux_args, None, ExprId::new())
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let tc_result = f

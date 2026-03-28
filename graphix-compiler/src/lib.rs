@@ -73,12 +73,16 @@ pub enum CFlag {
 static TRACE: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
-fn set_trace(b: bool) {
+pub fn set_trace(b: bool) {
     TRACE.store(b, Ordering::Relaxed)
 }
 
 #[allow(dead_code)]
-fn with_trace<F: FnOnce() -> Result<R>, R>(enable: bool, spec: &Expr, f: F) -> Result<R> {
+pub fn with_trace<F: FnOnce() -> Result<R>, R>(
+    enable: bool,
+    spec: &Expr,
+    f: F,
+) -> Result<R> {
     let set = if enable {
         eprintln!("trace enabled at {}, spec: {}", spec.pos, spec);
         let prev = trace();
@@ -102,7 +106,7 @@ fn with_trace<F: FnOnce() -> Result<R>, R>(enable: bool, spec: &Expr, f: F) -> R
 }
 
 #[allow(dead_code)]
-fn trace() -> bool {
+pub fn trace() -> bool {
     TRACE.load(Ordering::Relaxed)
 }
 
@@ -318,10 +322,11 @@ pub enum TypecheckResult {
 }
 
 pub type InitFn<R, E> = sync::Arc<
-    dyn for<'a, 'b, 'c> Fn(
+    dyn for<'a, 'b, 'c, 'd> Fn(
             &'a Scope,
             &'b mut ExecCtx<R, E>,
             &'c mut [Node<R, E>],
+            Option<&'d FnType>,
             ExprId,
         ) -> Result<Box<dyn Apply<R, E>>>
         + Send
@@ -415,9 +420,10 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
 }
 
-pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
+pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
     &'a mut ExecCtx<R, E>,
     &'a FnType,
+    Option<&'d FnType>,
     &'b Scope,
     &'c [Node<R, E>],
     ExprId,
@@ -429,9 +435,10 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c> fn(
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
         typ: &'a FnType,
+        resolved_type: Option<&'d FnType>,
         scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -757,7 +764,8 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// LambdaDefs indexed by LambdaId, for deferred type checking
     pub lambda_defs: FxHashMap<LambdaId, Value>,
     /// deferred type check closures, evaluated after all primary type checking
-    pub deferred_checks: Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
+    pub deferred_checks:
+        Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {

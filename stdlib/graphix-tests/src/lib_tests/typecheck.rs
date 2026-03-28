@@ -133,6 +133,73 @@ run!(
     |v: Result<&Value>| { matches!(v, Err(_)) }
 );
 
+// array::fold — FoldQ: json::read in fold closure, type must propagate
+run!(
+    hof_fold_json_read,
+    r#"{
+        let data = [
+            json::write_str(10)$,
+            json::write_str(20)$,
+            json::write_str(12)$,
+        ];
+        array::fold(data, 0, |acc, s| acc + json::read(s)$)
+    }"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
+);
+
+// array::init — Init: json::read in unannotated init closure,
+// type must propagate through Init's resolved mftyp
+// let results: Array<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
+//        array::init(1, |i| json::read(s));
+run!(
+    hof_init_json_read,
+    r#"{
+    let s = json::write_str(42)$;
+let results: Array<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
+    array::init(1, |i| json::read(s));
+    results[0]
+}"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
+);
+
+run!(
+    nested_json_read,
+    r#"{
+    let s = json::write_str(42)$;
+    let f = |i| json::read(s);
+let results: Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> =
+        f(0);
+    results
+}"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
+);
+
+// list::init — ListInit: json::read in unannotated init closure,
+// type must propagate through ListInit's resolved mftyp
+run!(
+    hof_list_init_json_read,
+    r#"{
+    use list;
+    let s = json::write_str(7)$;
+    let results: List<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
+        list::init(1, |i| json::read(s));
+    list::head(results)
+}"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }
+);
+
+// core::filter — Filter: json::read piped through filter,
+// type must propagate through Filter's resolved predicate type
+run!(
+    hof_filter_json_read,
+    r#"{
+    let s = json::write_str(42)$;
+    let v: i64 = filter(json::read(s)$, |x| x > 0);
+    v
+}"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
+);
+
 // ============================================================================
 // Subscribe type-aware casting
 // ============================================================================

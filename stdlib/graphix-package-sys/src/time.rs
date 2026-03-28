@@ -2,7 +2,8 @@ use anyhow::{bail, Result};
 use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
-    err, expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    err, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt,
+    Scope, UserEvent,
 };
 use graphix_package_core::{arity2, CachedVals};
 use netidx::{publisher::FromValue, subscriber::Value};
@@ -18,9 +19,10 @@ pub(crate) struct AfterIdle {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     const NAME: &str = "sys_time_after_idle";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -135,9 +137,10 @@ pub(crate) struct Timer {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     const NAME: &str = "sys_time_timer";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
@@ -251,9 +254,10 @@ pub(crate) struct Now;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     const NAME: &str = "sys_time_now";
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,

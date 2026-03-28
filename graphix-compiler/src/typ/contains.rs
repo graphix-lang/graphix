@@ -23,7 +23,7 @@ pub enum ContainsFlags {
 
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
-        if tdbg!(self.contains(env, t))? {
+        if self.contains(env, t)? {
             Ok(())
         } else {
             format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
@@ -41,9 +41,6 @@ impl Type {
     ) -> Result<bool> {
         if (self as *const Type) == (t as *const Type) {
             return Ok(true);
-        }
-        if trace() {
-            format_with_flags(PrintFlag::DerefTVars, || eprintln!("{self} <> {t}"));
         }
         match (self, t) {
             (

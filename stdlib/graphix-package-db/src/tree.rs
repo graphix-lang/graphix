@@ -429,11 +429,14 @@ impl EvalCachedAsync for DbTreeEv {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        DbTreeEv { key_typ: None, key_typ_str: arcstr::literal!("?"), val_typ_str: arcstr::literal!("?") }
+        let key_typ = extract_key_typ_from_rtype(resolved);
+        let (key_typ_str, val_typ_str) = extract_type_strings_from_rtype(resolved);
+        DbTreeEv { key_typ, key_typ_str, val_typ_str }
     }
 
     fn typecheck<R: Rt, E: UserEvent>(

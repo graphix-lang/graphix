@@ -7,8 +7,8 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use fxhash::FxHashMap;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
-    UserEvent,
+    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase,
+    TypecheckResult, UserEvent,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
@@ -477,11 +477,14 @@ impl EvalCachedAsync for DbTxnTreeEv {
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        DbTxnTreeEv { key_typ: None, key_typ_str: arcstr::literal!("?"), val_typ_str: arcstr::literal!("?") }
+        let key_typ = extract_key_typ_from_rtype(resolved);
+        let (key_typ_str, val_typ_str) = extract_type_strings_from_rtype(resolved);
+        DbTxnTreeEv { key_typ, key_typ_str, val_typ_str }
     }
 
     fn typecheck<R: Rt, E: UserEvent>(

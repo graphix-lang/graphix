@@ -6,8 +6,11 @@ use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use escaping::Escape;
 use graphix_compiler::{
-    err, errf, expr::ExprId, typ::{FnType, Type}, Apply, BuiltIn, Event, ExecCtx, Node, Rt,
-    Scope, TypecheckPhase, TypecheckResult, UserEvent,
+    err, errf,
+    expr::ExprId,
+    typ::{FnType, Type},
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
+    UserEvent,
 };
 use graphix_package_core::{extract_cast_type, CachedArgs, CachedVals, EvalCached};
 use netidx::{path::Path, subscriber::Value};
@@ -367,9 +370,10 @@ macro_rules! escape_fn {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
 
-            fn init<'a, 'b, 'c>(
+            fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
-                _typ: &'a graphix_compiler::typ::FnType,
+                _typ: &'a FnType,
+                _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
                 from: &'c [Node<R, E>],
                 _top_id: ExprId,
@@ -426,7 +430,11 @@ macro_rules! string_split {
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
             const NAME: &str = $builtin;
 
-            fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+            fn eval(
+                &mut self,
+                _ctx: &mut ExecCtx<R, E>,
+                from: &CachedVals,
+            ) -> Option<Value> {
                 for p in &from.0[..] {
                     if p.is_none() {
                         return None;
@@ -460,7 +468,11 @@ macro_rules! string_splitn {
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
             const NAME: &str = $builtin;
 
-            fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+            fn eval(
+                &mut self,
+                _ctx: &mut ExecCtx<R, E>,
+                from: &CachedVals,
+            ) -> Option<Value> {
                 static TAG: ArcStr = literal!("StringSplitError");
                 for p in &from.0[..] {
                     if p.is_none() {
@@ -473,7 +485,9 @@ macro_rules! string_splitn {
                 };
                 let n = match &from.0[1] {
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
-                    Some(v) => return Some(errf!(TAG, "splitn: {v} must be a number > 0")),
+                    Some(v) => {
+                        return Some(errf!(TAG, "splitn: {v} must be a number > 0"))
+                    }
                     None => return None,
                 };
                 match &from.0[2] {
@@ -742,11 +756,12 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     fn init(
         _ctx: &mut ExecCtx<R, E>,
         _typ: &FnType,
+        resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        Self { cast_typ: None }
+        Self { cast_typ: extract_cast_type(resolved) }
     }
 
     fn typecheck(
