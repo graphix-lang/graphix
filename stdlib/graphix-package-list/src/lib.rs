@@ -991,17 +991,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase,
+        _phase: TypecheckPhase,
     ) -> anyhow::Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => (),
-            TypecheckPhase::CallSite(typ) => {
-                self.mftyp = match &typ.args[1].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                };
-            }
-        }
         let i_typ = Type::Primitive(Typ::I64.into());
         let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
         let ft = self.mftyp.clone();

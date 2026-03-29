@@ -176,6 +176,24 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }
 );
 
+// nested array::map — json::read passed directly to inner map.
+// The inner callsite typechecks before the outer deferred check runs,
+// so the concrete return type never propagates to json::read.
+// This is a known limitation of the current single-pass deferred check
+// scheduling: by the time the outer CallSite phase fires, the inner
+// array::map's callsite has already been checked and won't re-schedule.
+run!(
+    hof_nested_map_json_read,
+    r#"{
+    let data = [[json::write_str(1)$, json::write_str(2)$], [json::write_str(3)$]];
+    let results: Array<Array<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>>> =
+        array::map(data, |x| array::map(x, json::read));
+    let row = results[0]$;
+    row[0]$
+}"#,
+    |v: Result<&Value>| { v.is_err() }
+);
+
 // core::filter — Filter: json::read piped through filter,
 // type must propagate through Filter's resolved predicate type
 run!(

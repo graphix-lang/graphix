@@ -1,14 +1,14 @@
 use super::{compiler::compile, Nop};
 use crate::{
     deref_typ,
-    expr::{ErrorContext, Expr, ExprId, Source},
+    expr::{ErrorContext, Expr, ExprId},
     node::lambda::LambdaDef,
     typ::{FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
     Scope, TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use fxhash::{FxHashMap, FxHashSet};
 use netidx::subscriber::Value;
@@ -421,12 +421,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
-        let tr = self.spec.ori.source == Source::Internal(literal!("test"))
-            && self.spec.pos.line == 3
-            && self.spec.pos.column == 19;
-        if tr {
-            eprintln!("ids: {}", ftype.lambda_ids.read().len())
-        }
         if !ftype.lambda_ids.read().is_empty() {
             let ftype = ftype.clone();
             let spec = self.spec.clone();
@@ -450,7 +444,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                             apply
                                 .typecheck(
                                     ctx,
-                                    &mut vec![],
+                                    &mut [],
                                     TypecheckPhase::CallSite(resolved),
                                 )
                                 .with_context(|| ErrorContext((*spec).clone()))?;
