@@ -9,6 +9,7 @@ use graphix_compiler::{
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
+    trace,
     typ::{FnType, TVal, Type},
     Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, UserEvent,
@@ -711,13 +712,17 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         called: Option<&Called>,
-        _from: &mut [Node<R, E>],
+        from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
+        let mftyp = match &from[1].typ() {
+            Type::Fn(ft) => ft.clone(),
+            t => bail!("expected a function not {t}"),
+        };
         let (_, node) =
             genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
         let fargs = vec![node];
-        let ft = self.mftyp.clone();
+        let ft = mftyp.clone();
         let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
         let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
         node.typecheck(called, ctx)?;

@@ -6,10 +6,10 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::typ::Type;
-use graphix_compiler::Called;
 use graphix_compiler::{
     errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
+use graphix_compiler::{format_with_flags, trace, Called, PrintFlag};
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
     EvalCachedAsync,
@@ -168,6 +168,11 @@ impl EvalCachedAsync for JsonReadEv {
         match phase {
             TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
+                if trace() {
+                    format_with_flags(PrintFlag::DerefTVars, || {
+                        eprintln!("json: {resolved}");
+                    })
+                }
                 self.cast_typ = extract_cast_type(Some(resolved));
                 if self.cast_typ.is_none() {
                     bail!("json read requires a concrete return type")

@@ -59,6 +59,7 @@ macro_rules! deref_typ {
             let mut typ = typ.cloned();
             let mut hist: poolshark::local::LPooled<fxhash::FxHashSet<usize>> = poolshark::local::LPooled::take();
             loop {
+                #[allow(unreachable_patterns)]
                 match &typ {
                     $($pat => break $body),+,
                     Some(rt @ Type::Ref { .. }) => {

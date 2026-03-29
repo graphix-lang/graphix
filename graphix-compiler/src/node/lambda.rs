@@ -1,16 +1,16 @@
 use super::{compiler::compile, Nop};
 use crate::{
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId},
+    expr::{self, Arg, ErrorContext, Expr, ExprId, Source},
     format_with_flags,
     node::pattern::StructPatternNode,
     trace,
     typ::{FnArgType, FnType, Type},
-    wrap, Apply, BindId, CFlag, Called, Event, ExecCtx, InitFn, LambdaId, Node,
-    PrintFlag, Refs, Rt, Scope, TypecheckPhase, Update, UserEvent,
+    with_trace, wrap, Apply, BindId, CFlag, Called, Event, ExecCtx, InitFn, LambdaId,
+    Node, PrintFlag, Refs, Rt, Scope, TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use arcstr::ArcStr;
+use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use fxhash::FxHashSet;
@@ -502,14 +502,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
-            let res = f
-                .typecheck(
-                    ctx,
-                    Some(&ftyp.lambda_ids),
-                    &mut faux_args,
-                    TypecheckPhase::Lambda,
-                )
-                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
+            let res = with_trace(
+                self.spec.pos.line == 3
+                    && self.spec.ori.source == Source::Internal(literal!("array")),
+                &self.spec,
+                || {
+                    f.typecheck(ctx, None, &mut faux_args, TypecheckPhase::Lambda)
+                        .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))
+                },
+            );
             if !needs_callsite {
                 f.delete(ctx)
             } else {
