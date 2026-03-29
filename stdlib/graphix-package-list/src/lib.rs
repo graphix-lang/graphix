@@ -9,7 +9,7 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
@@ -990,7 +990,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase,
     ) -> anyhow::Result<()> {
@@ -1009,7 +1008,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         let fnode = genn::reference(ctx, self.fid, Type::Fn(ft.clone()), self.top_id);
         let mut node =
             genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
-        let r = node.typecheck(called, ctx);
+        let r = node.typecheck(ctx);
         node.delete(ctx);
         r?;
         Ok(())

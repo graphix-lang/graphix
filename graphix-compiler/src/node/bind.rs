@@ -1,14 +1,13 @@
 use super::pattern::StructPatternNode;
 use crate::{
     compiler::compile,
-    expr::{self, Expr, ExprId, ExprKind, ModPath, Source},
-    format_with_flags, trace,
+    expr::{self, Expr, ExprId, ExprKind, ModPath},
+    format_with_flags,
     typ::Type,
-    with_trace, wrap, BindId, CFlag, Called, Event, ExecCtx, Node, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent,
+    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::{bail, Context, Result};
-use arcstr::literal;
 use enumflags2::BitFlags;
 use netidx_value::Value;
 use triomphe::Arc;
@@ -135,34 +134,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         &self.spec
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        let tr = self.spec.pos.line == 4
-            && self.spec.pos.column == 1
-            && self.spec.ori.source == Source::Internal(literal!("test"));
-        with_trace(tr, &self.spec, || {
-            if trace() {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    eprintln!("bind pre tc: {}", self.node.typ())
-                })
-            }
-            wrap!(self.node, self.node.typecheck(called, ctx))?;
-            if trace() {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    eprintln!("bind post tc: {}", self.node.typ())
-                })
-            }
-            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
-            if trace() {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    eprintln!("bind post un: {}", self.node.typ())
-                })
-            }
-            Ok(())
-        })
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.node, self.node.typecheck(ctx))?;
+        wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        Ok(())
     }
 }
 
@@ -221,11 +196,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &self.typ
     }
 
-    fn typecheck(
-        &mut self,
-        _called: Option<&Called>,
-        _ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 }
@@ -290,12 +261,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.child.refs(refs)
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.child, self.child.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck(ctx))?;
         let t = Type::ByRef(Arc::new(self.child.typ().clone()));
         wrap!(self, self.typ.check_contains(&ctx.env, &t))
     }
@@ -371,12 +338,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.child, self.child.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck(ctx))?;
         let typ = match self.child.typ() {
             Type::ByRef(t) => (**t).clone(),
             _ => bail!("expected reference"),

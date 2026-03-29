@@ -6,8 +6,8 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Rt, Scope,
-    TypecheckPhase, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Rt, Scope, TypecheckPhase,
+    UserEvent,
 };
 use graphix_package_core::{arity1, arity2, extract_cast_type, CachedVals};
 use netidx::{
@@ -239,7 +239,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
@@ -350,7 +349,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
@@ -630,13 +628,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         match phase {
             TypecheckPhase::Lambda => {
-                self.on_write.typecheck(called, ctx)?;
+                self.on_write.typecheck(ctx)?;
                 Ok(())
             }
             TypecheckPhase::CallSite(resolved) => {
@@ -948,13 +945,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         match phase {
             TypecheckPhase::Lambda => {
-                self.f.typecheck(called, ctx)?;
+                self.f.typecheck(ctx)?;
                 Ok(())
             }
             TypecheckPhase::CallSite(resolved) => {

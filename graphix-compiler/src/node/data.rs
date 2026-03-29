@@ -3,8 +3,8 @@ use crate::{
     deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
     typ::Type,
-    update_args, wrap, CFlag, Called, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope,
-    Update, UserEvent,
+    update_args, wrap, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
@@ -81,13 +81,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(called, ctx))?
+            wrap!(n.node, n.node.typecheck(ctx))?
         }
         match &self.typ {
             Type::Struct(typs) => {
@@ -227,12 +223,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter().for_each(|r| r.n.node.refs(refs))
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck(ctx))?;
         let fields = match &self.spec.kind {
             ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
                 replace.iter().map(|(n, _)| n.clone()).collect::<SmallVec<[ArcStr; 8]>>()
@@ -254,7 +246,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                         match r {
                             None => bail!("struct has no field named {n}"),
                             Some((i, typ)) => {
-                                wrap!(rep.n.node, rep.n.node.typecheck(called, ctx))?;
+                                wrap!(rep.n.node, rep.n.node.typecheck(ctx))?;
                                 wrap!(
                                     rep.n.node,
                                     typ.check_contains(&ctx.env, &rep.n.node.typ())
@@ -364,12 +356,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         &self.spec
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck(ctx))?;
         let etyp = deref_typ!("struct", ctx, self.source.typ(),
             Some(Type::Struct(flds)) => {
                 let typ = flds.iter().enumerate().find_map(|(i, (n, t))| {
@@ -449,13 +437,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(called, ctx))?
+            wrap!(n.node, n.node.typecheck(ctx))?
         }
         match &self.typ {
             Type::Tuple(typs) => {
@@ -541,13 +525,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(called, ctx))?
+            wrap!(n.node, n.node.typecheck(ctx))?
         }
         match &self.typ {
             Type::Variant(ttag, typs) => {
@@ -627,12 +607,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.sleep(ctx);
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck(ctx))?;
         let etyp = deref_typ!("tuple", ctx, self.source.typ(),
             Some(Type::Tuple(flds)) => Ok(flds[self.field].clone()),
             Some(Type::Error(t)) => {

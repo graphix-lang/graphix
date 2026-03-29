@@ -9,9 +9,8 @@ use graphix_compiler::{
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
-    trace,
     typ::{FnType, TVal, Type},
-    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, UserEvent,
 };
 use graphix_rt::GXRt;
@@ -278,7 +277,6 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
@@ -329,11 +327,10 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.t.typecheck(ctx, called, from, phase)
+        self.t.typecheck(ctx, from, phase)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -370,7 +367,6 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
@@ -446,11 +442,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.t.typecheck(ctx, called, from, phase)
+        self.t.typecheck(ctx, from, phase)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -711,7 +706,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
@@ -725,7 +719,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         let ft = mftyp.clone();
         let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
         let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
-        node.typecheck(called, ctx)?;
+        node.typecheck(ctx)?;
         node.delete(ctx);
         Ok(())
     }
@@ -936,7 +930,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
@@ -945,7 +938,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         let fnode =
             genn::reference(ctx, self.fid, Type::Fn(self.mftype.clone()), self.top_id);
         n = genn::apply(fnode, self.scope.clone(), vec![n, x], &self.mftype, self.top_id);
-        n.typecheck(called, ctx)?;
+        n.typecheck(ctx)?;
         n.delete(ctx);
         Ok(())
     }
@@ -1698,11 +1691,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
-        self.pred.typecheck(called, ctx)?;
+        self.pred.typecheck(ctx)?;
         Ok(())
     }
 
@@ -2269,7 +2261,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> Result<()> {

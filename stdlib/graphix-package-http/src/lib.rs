@@ -12,8 +12,8 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Called, CustomBuiltinType, Event, ExecCtx, LambdaId, Node,
-    Rt, Scope, UserEvent, CBATCH_POOL,
+    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, LambdaId, Node, Rt, Scope,
+    UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
@@ -868,11 +868,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: graphix_compiler::TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.handler.typecheck(called, ctx)?;
+        self.handler.typecheck(ctx)?;
         Ok(())
     }
 

@@ -2,8 +2,7 @@ use crate::{
     env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     typ::{TVal, TVar, Type},
-    BindId, CFlag, Called, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
-    CAST_ERR,
+    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent, CAST_ERR,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::{literal, ArcStr};
@@ -112,11 +111,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn typecheck(
-        &mut self,
-        _called: Option<&Called>,
-        _ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -163,12 +158,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        self.n.typecheck(called, ctx)
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck(ctx)
     }
 
     fn spec(&self) -> &Expr {
@@ -244,11 +235,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
         None
     }
 
-    fn typecheck(
-        &mut self,
-        _called: Option<&Called>,
-        _ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -303,11 +290,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         None
     }
 
-    fn typecheck(
-        &mut self,
-        _called: Option<&Called>,
-        _ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -370,11 +353,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         &self.typ
     }
 
-    fn typecheck(
-        &mut self,
-        _called: Option<&Called>,
-        _ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -441,17 +420,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         &self.children.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in &mut self.children {
             if self.module {
-                wrap!(n, n.typecheck(called, ctx))
-                    .with_context(|| self.spec.ori.clone())?
+                wrap!(n, n.typecheck(ctx)).with_context(|| self.spec.ori.clone())?
             } else {
-                wrap!(n, n.typecheck(called, ctx))?
+                wrap!(n, n.typecheck(ctx))?
             }
         }
         Ok(())
@@ -539,13 +513,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
-            wrap!(a.node, a.node.typecheck(called, ctx))?;
+            wrap!(a.node, a.node.typecheck(ctx))?;
             self.typs[i] = a.node.typ().with_deref(|t| match t {
                 None => Type::Any,
                 Some(t) => t.clone(),
@@ -609,12 +579,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.node.sleep(ctx);
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.node, self.node.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.node, self.node.typecheck(ctx))?;
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -693,12 +659,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.sleep(ctx);
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.rhs.node, self.rhs.node.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.rhs.node, self.rhs.node.typecheck(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind,
@@ -761,12 +723,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.refs(refs)
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        Ok(wrap!(self.n, self.n.typecheck(called, ctx))?)
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(wrap!(self.n, self.n.typecheck(ctx))?)
     }
 }
 
@@ -822,13 +780,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck(called, ctx))?
+            wrap!(n, n.typecheck(ctx))?
         }
         let rtyp = Type::Bottom;
         let rtyp = wrap!(
@@ -918,12 +872,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.refs(refs);
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.trigger, self.trigger.typecheck(called, ctx))?;
-        wrap!(self.arg.node, self.arg.node.typecheck(called, ctx))
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.trigger, self.trigger.typecheck(ctx))?;
+        wrap!(self.arg.node, self.arg.node.typecheck(ctx))
     }
 }

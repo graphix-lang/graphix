@@ -167,8 +167,6 @@ impl From<u64> for LambdaId {
     }
 }
 
-pub type Called = Arc<RwLock<FxHashSet<LambdaId>>>;
-
 atomic_id!(BindId);
 
 impl From<u64> for BindId {
@@ -352,7 +350,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
@@ -398,11 +395,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
 
     /// type check the node and it's children
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()>;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
     /// return the node type
     fn typ(&self) -> &Type;
@@ -894,7 +887,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     };
     info!("compile time {:?}", st.elapsed());
     let st = Instant::now();
-    if let Err(e) = node.typecheck(None, ctx) {
+    if let Err(e) = node.typecheck(ctx) {
         ctx.env = env;
         return Err(e);
     }

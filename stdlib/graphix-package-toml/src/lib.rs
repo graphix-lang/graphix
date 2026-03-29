@@ -6,10 +6,8 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
-use graphix_compiler::typ::Type;
-use graphix_compiler::Called;
 use graphix_compiler::{
-    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -148,7 +146,6 @@ impl EvalCachedAsync for TomlReadEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {

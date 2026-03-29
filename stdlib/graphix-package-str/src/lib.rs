@@ -9,7 +9,7 @@ use graphix_compiler::{
     err, errf,
     expr::ExprId,
     typ::{FnType, Type},
-    Apply, BuiltIn, Called, Event, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{extract_cast_type, CachedArgs, CachedVals, EvalCached};
 use netidx::{path::Path, subscriber::Value};
@@ -792,7 +792,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {

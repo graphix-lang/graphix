@@ -1,16 +1,14 @@
 use super::{compiler::compile, Nop};
 use crate::{
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId, Source},
-    format_with_flags,
+    expr::{self, Arg, ErrorContext, Expr, ExprId},
     node::pattern::StructPatternNode,
-    trace,
     typ::{FnArgType, FnType, Type},
-    with_trace, wrap, Apply, BindId, CFlag, Called, Event, ExecCtx, InitFn, LambdaId,
-    Node, PrintFlag, Refs, Rt, Scope, TypecheckPhase, Update, UserEvent,
+    wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
+    TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use fxhash::FxHashSet;
@@ -110,32 +108,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         args: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
-            wrap!(arg, arg.typecheck(called, ctx))?;
+            wrap!(arg, arg.typecheck(ctx))?;
             wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
         }
-        if trace() {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                eprintln!("gxbody pre tc: {}", self.body.typ());
-            });
-        }
-        wrap!(self.body, self.body.typecheck(called, ctx))?;
-        if trace() {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                eprintln!("gxbody post tc: {}", self.body.typ());
-            });
-        }
+        wrap!(self.body, self.body.typecheck(ctx))?;
         wrap!(self.body, self.typ.rtype.check_contains(&ctx.env, &self.body.typ()))?;
-        if trace() {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                eprintln!("gxbody post un: {}", self.body.typ());
-                eprintln!("gxrt post un: {}", self.typ.rtype);
-            });
-        }
         for (tv, tc) in self.typ.constraints.read().iter() {
             tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
         }
@@ -216,7 +197,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         args: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {
@@ -235,7 +215,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
                     )
                 }
                 for i in 0..args.len() {
-                    wrap!(args[i], args[i].typecheck(called, ctx))?;
+                    wrap!(args[i], args[i].typecheck(ctx))?;
                     let atyp = if i < self.typ.args.len() {
                         &self.typ.args[i].typ
                     } else {
@@ -248,7 +228,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
                 }
             }
         }
-        self.apply.typecheck(ctx, called, args, phase)
+        self.apply.typecheck(ctx, args, phase)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -461,11 +441,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck(
-        &mut self,
-        _called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let def = self
             .def
             .downcast_ref::<LambdaDef<R, E>>()
@@ -502,15 +478,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
-            let res = with_trace(
-                self.spec.pos.line == 3
-                    && self.spec.ori.source == Source::Internal(literal!("array")),
-                &self.spec,
-                || {
-                    f.typecheck(ctx, None, &mut faux_args, TypecheckPhase::Lambda)
-                        .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))
-                },
-            );
+            let res = f
+                .typecheck(ctx, &mut faux_args, TypecheckPhase::Lambda)
+                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
             if !needs_callsite {
                 f.delete(ctx)
             } else {

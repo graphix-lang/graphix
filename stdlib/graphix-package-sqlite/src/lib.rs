@@ -4,8 +4,8 @@
 )]
 use anyhow::bail;
 use arcstr::ArcStr;
+use graphix_compiler::errf;
 use graphix_compiler::typ::{FnType, Type};
-use graphix_compiler::{errf, Called};
 use graphix_compiler::{ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent};
 use graphix_package_core::{
     extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync,
@@ -215,7 +215,6 @@ impl EvalCachedAsync for SqliteQueryEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {

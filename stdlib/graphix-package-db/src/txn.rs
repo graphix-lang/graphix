@@ -6,7 +6,6 @@ use crate::tree::{
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use fxhash::FxHashMap;
-use graphix_compiler::Called;
 use graphix_compiler::{
     errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
@@ -492,7 +491,6 @@ impl EvalCachedAsync for DbTxnTreeEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {

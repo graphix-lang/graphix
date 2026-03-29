@@ -1,13 +1,11 @@
 use super::{compiler::compile, Nop};
 use crate::{
     deref_typ,
-    expr::{ErrorContext, Expr, ExprId, ExprKind, Source},
-    format_with_flags,
+    expr::{ErrorContext, Expr, ExprId, Source},
     node::lambda::LambdaDef,
-    trace,
     typ::{FnType, Type},
-    with_trace, wrap, Apply, BindId, CFlag, Called, Event, ExecCtx, LambdaId, Node,
-    PrintFlag, Refs, Rt, Scope, TypecheckPhase, Update, UserEvent,
+    wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
+    Scope, TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
@@ -200,7 +198,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        let _ = rf.typecheck(ctx, None, &mut self.args, TypecheckPhase::Lambda);
+        let _ = rf.typecheck(ctx, &mut self.args, TypecheckPhase::Lambda);
         self.function = Some((fv, rf));
         Ok(())
     }
@@ -301,12 +299,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self.spec
     }
 
-    fn typecheck(
-        &mut self,
-        called: Option<&Called>,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<()> {
-        wrap!(self.fnode, self.fnode.typecheck(called, ctx))?;
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.fnode, self.fnode.typecheck(ctx))?;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
             None => {
@@ -360,7 +354,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for (i, (n, arg)) in self.args.iter_mut().zip(ftype.args.iter()).enumerate() {
             // associate the fntype arg with the arg before typechecking the arg
             arg.typ.contains(&ctx.env, n.typ())?;
-            wrap!(n, n.typecheck(called, ctx))?;
+            wrap!(n, n.typecheck(ctx))?;
             wrap!(n, arg.typ.check_contains(&ctx.env, n.typ()))?;
             match deref_typ!("arg", ctx, n.typ(), Some(t) => Ok(Some(t.clone())), None => Ok(None))
             {
@@ -385,7 +379,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             for n in &mut self.args[ftype.args.len()..] {
                 // associate the fntype arg with the arg before typechecking the arg
                 typ.contains(&ctx.env, n.typ())?;
-                wrap!(n, n.typecheck(called, ctx))?;
+                wrap!(n, n.typecheck(ctx))?;
                 wrap!(n, typ.check_contains(&ctx.env, n.typ()))?
             }
         }
@@ -427,20 +421,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
-        if trace() {
-            eprintln!("callsite called: {}", called.is_some())
-        }
-        if let Some(called) = called
-            && !TArc::ptr_eq(called, &ftype.lambda_ids)
-        {
-            called.write().extend(ftype.lambda_ids.read().iter().copied());
-            if trace() {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    eprintln!("callsite typ: {ftype}")
-                });
-                eprintln!("callsite ids: {:?}", called.read())
-            }
-        }
         let tr = self.spec.ori.source == Source::Internal(literal!("test"))
             && self.spec.pos.line == 3
             && self.spec.pos.column == 19;
@@ -451,36 +431,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             let ftype = ftype.clone();
             let spec = self.spec.clone();
             ctx.deferred_checks.push(Box::new(move |ctx| {
-                with_trace(tr, &ExprKind::NoOp.to_expr_nopos(), || {
-                    let resolved = ftype.resolve_tvars();
-                    let mut ids: LPooled<Vec<_>> =
-                        ftype.lambda_ids.read().iter().copied().collect();
-                    for id in ids.drain(..) {
-                        let resolved = match hof_idmap.get(&id) {
-                            None => &resolved,
-                            Some(i) => match &resolved.args[*i].typ {
-                                Type::Fn(ft) => ft,
-                                t => bail!("unexpected resolved arg type {t}"),
-                            },
-                        };
-                        if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
-                            let ldef = val
-                                .downcast_ref::<LambdaDef<R, E>>()
-                                .expect("failed to unwrap lambda for deferred check");
-                            if let Some(apply) = &mut *ldef.check.lock() {
-                                apply
-                                    .typecheck(
-                                        ctx,
-                                        None,
-                                        &mut vec![],
-                                        TypecheckPhase::CallSite(resolved),
-                                    )
-                                    .with_context(|| ErrorContext((*spec).clone()))?;
-                            }
+                let resolved = ftype.resolve_tvars();
+                let mut ids: LPooled<Vec<_>> =
+                    ftype.lambda_ids.read().iter().copied().collect();
+                for id in ids.drain(..) {
+                    let resolved = match hof_idmap.get(&id) {
+                        None => &resolved,
+                        Some(i) => match &resolved.args[*i].typ {
+                            Type::Fn(ft) => ft,
+                            t => bail!("unexpected resolved arg type {t}"),
+                        },
+                    };
+                    if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
+                        let ldef = val
+                            .downcast_ref::<LambdaDef<R, E>>()
+                            .expect("failed to unwrap lambda for deferred check");
+                        if let Some(apply) = &mut *ldef.check.lock() {
+                            apply
+                                .typecheck(
+                                    ctx,
+                                    &mut vec![],
+                                    TypecheckPhase::CallSite(resolved),
+                                )
+                                .with_context(|| ErrorContext((*spec).clone()))?;
                         }
                     }
-                    Ok(())
-                })
+                }
+                Ok(())
             }));
         }
         Ok(())

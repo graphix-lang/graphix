@@ -5,7 +5,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     typ::{FnType, Type},
-    Called, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::{path::Path, publisher::Typ};
@@ -449,7 +449,6 @@ impl EvalCachedAsync for DbTreeEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
-        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
     ) -> Result<()> {

@@ -6,7 +6,7 @@ use crate::{
         ModPath,
     },
     typ::{contains::ContainsFlags, AbstractId, RefHist, TVar, Type},
-    Called,
+    LambdaId,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
@@ -36,7 +36,7 @@ pub struct FnType {
     pub throws: Type,
     pub explicit_throws: bool,
     /// accumulated set of all LambdaIds this type might represent (for late binding)
-    pub lambda_ids: Called,
+    pub lambda_ids: Arc<RwLock<FxHashSet<LambdaId>>>,
 }
 
 impl PartialEq for FnType {

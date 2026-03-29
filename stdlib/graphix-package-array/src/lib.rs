@@ -8,7 +8,7 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
@@ -576,11 +576,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
-        self.pred.typecheck(called, ctx)?;
+        self.pred.typecheck(ctx)?;
         Ok(())
     }
 
@@ -850,7 +849,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
@@ -860,7 +858,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         let fnode = genn::reference(ctx, self.fid, Type::Fn(ft.clone()), self.top_id);
         let mut node =
             genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
-        let r = node.typecheck(called, ctx);
+        let r = node.typecheck(ctx);
         node.delete(ctx);
         r?;
         Ok(())
