@@ -12,7 +12,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{StreamKind, get_stream, wrap_tcp};
+use crate::{get_stream, wrap_tcp, StreamKind};
 
 // ── Abstract TcpListenerValue ──────────────────────────────────
 
@@ -23,7 +23,7 @@ pub(crate) struct TcpListenerValue {
 
 impl PartialEq for TcpListenerValue {
     fn eq(&self, other: &Self) -> bool {
-        Arc::as_ptr(&self.listener) == Arc::as_ptr(&other.listener)
+        Arc::ptr_eq(&self.listener, &other.listener)
     }
 }
 
@@ -52,8 +52,8 @@ graphix_package_core::impl_no_pack!(TcpListenerValue);
 static LISTENER_WRAPPER: LazyLock<AbstractWrapper<TcpListenerValue>> =
     LazyLock::new(|| {
         let id = uuid::Uuid::from_bytes([
-            0xa6, 0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x4c, 0x0d, 0x1e, 0x2f, 0x30, 0x41,
-            0x52, 0x63, 0x74, 0x85,
+            0xa6, 0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x4c, 0x0d, 0x1e, 0x2f, 0x30, 0x41, 0x52,
+            0x63, 0x74, 0x85,
         ]);
         Abstract::register::<TcpListenerValue>(id)
             .expect("failed to register TcpListenerValue")
@@ -76,6 +76,7 @@ pub(crate) struct TcpConnectEv;
 
 impl EvalCachedAsync for TcpConnectEv {
     const NAME: &str = "sys_tcp_connect";
+    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -101,6 +102,7 @@ pub(crate) struct TcpListenEv;
 
 impl EvalCachedAsync for TcpListenEv {
     const NAME: &str = "sys_tcp_listen";
+    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -110,9 +112,8 @@ impl EvalCachedAsync for TcpListenEv {
     fn eval(addr: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match TcpListener::bind(&*addr).await {
-                Ok(listener) => LISTENER_WRAPPER.wrap(TcpListenerValue {
-                    listener: Arc::new(listener),
-                }),
+                Ok(listener) => LISTENER_WRAPPER
+                    .wrap(TcpListenerValue { listener: Arc::new(listener) }),
                 Err(e) => errf!("TCPError", "bind to {addr} failed: {e}"),
             }
         }
@@ -128,6 +129,7 @@ pub(crate) struct TcpAcceptEv;
 
 impl EvalCachedAsync for TcpAcceptEv {
     const NAME: &str = "sys_tcp_accept";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TcpListener>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -154,6 +156,7 @@ pub(crate) struct TcpShutdownEv;
 
 impl EvalCachedAsync for TcpShutdownEv {
     const NAME: &str = "sys_tcp_shutdown";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -185,6 +188,7 @@ pub(crate) struct TcpPeerAddrEv;
 
 impl EvalCachedAsync for TcpPeerAddrEv {
     const NAME: &str = "sys_tcp_peer_addr";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -218,6 +222,7 @@ pub(crate) struct TcpLocalAddrEv;
 
 impl EvalCachedAsync for TcpLocalAddrEv {
     const NAME: &str = "sys_tcp_local_addr";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -251,6 +256,7 @@ pub(crate) struct TcpListenerAddrEv;
 
 impl EvalCachedAsync for TcpListenerAddrEv {
     const NAME: &str = "sys_tcp_listener_addr";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TcpListener>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

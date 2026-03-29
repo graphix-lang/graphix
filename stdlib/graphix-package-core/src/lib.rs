@@ -10,8 +10,8 @@ use graphix_compiler::{
     expr::{Expr, ExprId},
     node::genn,
     typ::{FnType, TVal, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, TypecheckResult, UserEvent,
+    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    TypecheckPhase, UserEvent,
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
@@ -58,7 +58,7 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
         }
         _ => return None,
     };
-    if format!("{typ}").contains('\'') {
+    if typ.has_unbound() {
         return None;
     }
     Some(typ)
@@ -106,7 +106,7 @@ macro_rules! impl_abstract_arc {
     ($name:ident, $wrapper_vis:vis static $wrapper:ident = [$($uuid:expr),* $(,)?]) => {
         impl PartialEq for $name {
             fn eq(&self, other: &Self) -> bool {
-                std::sync::Arc::as_ptr(&self.inner) == std::sync::Arc::as_ptr(&other.inner)
+                std::sync::Arc::ptr_eq(&self.inner, &other.inner)
             }
         }
         impl Eq for $name {}
@@ -117,8 +117,7 @@ macro_rules! impl_abstract_arc {
         }
         impl Ord for $name {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                std::sync::Arc::as_ptr(&self.inner)
-                    .cmp(&std::sync::Arc::as_ptr(&other.inner))
+                std::sync::Arc::as_ptr(&self.inner).addr().cmp(&std::sync::Arc::as_ptr(&other.inner).addr())
             }
         }
         impl std::hash::Hash for $name {
@@ -260,6 +259,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + 'static
 {
     const NAME: &str;
+    const NEEDS_CALLSITE: bool;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -277,10 +277,11 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
-        Ok(TypecheckResult::Done)
+    ) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -292,6 +293,7 @@ pub struct CachedArgs<T> {
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
+    const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -326,10 +328,11 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
-        self.t.typecheck(ctx, from, phase)
+    ) -> Result<()> {
+        self.t.typecheck(ctx, called, from, phase)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -339,6 +342,8 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
+    const NEEDS_CALLSITE: bool;
+
     type Args: Debug + Any + Send + Sync;
 
     fn init<R: Rt, E: UserEvent>(
@@ -364,10 +369,11 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
-        Ok(TypecheckResult::Done)
+    ) -> Result<()> {
+        Ok(())
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
@@ -386,6 +392,7 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<T> {
     const NAME: &str = T::NAME;
+    const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -438,10 +445,11 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
-        self.t.typecheck(ctx, from, phase)
+    ) -> Result<()> {
+        self.t.typecheck(ctx, called, from, phase)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -579,6 +587,7 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     const NAME: &str = T::NAME;
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -701,28 +710,19 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
-    ) -> anyhow::Result<TypecheckResult> {
-        match phase {
-            TypecheckPhase::Lambda => (),
-            TypecheckPhase::CallSite(resolved) => {
-                self.mftyp = match &resolved.args[1].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                };
-                self.etyp = T::Collection::etyp(resolved)?;
-            }
-        }
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<()> {
         let (_, node) =
             genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
         let fargs = vec![node];
         let ft = self.mftyp.clone();
         let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
         let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
-        node.typecheck(ctx)?;
+        node.typecheck(called, ctx)?;
         node.delete(ctx);
-        Ok(TypecheckResult::NeedsCallSite)
+        Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -772,6 +772,7 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     const NAME: &str = T::NAME;
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -930,28 +931,18 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
-    ) -> anyhow::Result<TypecheckResult> {
-        match phase {
-            TypecheckPhase::Lambda => (),
-            TypecheckPhase::CallSite(typ) => {
-                self.etyp = T::Collection::etyp(typ)?;
-                self.ityp = typ.args[1].typ.clone();
-                self.mftype = match &typ.args[2].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                };
-            }
-        }
+        _phase: TypecheckPhase<'_>,
+    ) -> anyhow::Result<()> {
         let mut n = genn::reference(ctx, self.initid, self.ityp.clone(), self.top_id);
         let x = genn::reference(ctx, BindId::new(), self.etyp.clone(), self.top_id);
         let fnode =
             genn::reference(ctx, self.fid, Type::Fn(self.mftype.clone()), self.top_id);
         n = genn::apply(fnode, self.scope.clone(), vec![n, x], &self.mftype, self.top_id);
-        n.typecheck(ctx)?;
+        n.typecheck(called, ctx)?;
         n.delete(ctx);
-        Ok(TypecheckResult::NeedsCallSite)
+        Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -989,6 +980,7 @@ struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const NAME: &str = "core_is_err";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1023,6 +1015,7 @@ struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "core_filter_err";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1057,6 +1050,7 @@ struct ToError;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const NAME: &str = "core_error";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1090,6 +1084,7 @@ struct Once {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1135,6 +1130,7 @@ struct Take {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1185,6 +1181,7 @@ struct Skip {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1233,6 +1230,7 @@ struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const NAME: &str = "core_all";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
@@ -1266,6 +1264,7 @@ struct SumEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1290,6 +1289,7 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const NAME: &str = "core_product";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1314,6 +1314,7 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const NAME: &str = "core_divide";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1330,6 +1331,7 @@ struct MinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const NAME: &str = "core_min";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1355,6 +1357,7 @@ struct MaxEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1380,6 +1383,7 @@ struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const NAME: &str = "core_and";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
@@ -1403,6 +1407,7 @@ struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const NAME: &str = "core_or";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
@@ -1492,6 +1497,7 @@ struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const NAME: &str = "core_bit_and";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, &)
@@ -1505,6 +1511,7 @@ struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const NAME: &str = "core_bit_or";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, |)
@@ -1518,6 +1525,7 @@ struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const NAME: &str = "core_bit_xor";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, ^)
@@ -1531,6 +1539,7 @@ struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const NAME: &str = "core_bit_not";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -1558,6 +1567,7 @@ struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const NAME: &str = "core_shl";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shl)
@@ -1571,6 +1581,7 @@ struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const NAME: &str = "core_shr";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shr)
@@ -1592,6 +1603,7 @@ struct Filter<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "core_filter";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1681,11 +1693,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
-    ) -> anyhow::Result<TypecheckResult> {
-        self.pred.typecheck(ctx)?;
-        Ok(TypecheckResult::NeedsCallSite)
+    ) -> anyhow::Result<()> {
+        self.pred.typecheck(called, ctx)?;
+        Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1720,6 +1733,7 @@ struct Queue {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "core_queue";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1781,6 +1795,7 @@ struct Hold {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "core_hold";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1837,6 +1852,7 @@ struct Seq {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "core_seq";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1898,6 +1914,7 @@ struct Throttle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "core_throttle";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1988,6 +2005,7 @@ struct Count {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2026,6 +2044,7 @@ struct MeanEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const NAME: &str = "core_mean";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
@@ -2060,6 +2079,7 @@ struct Uniq(Option<Value>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2100,6 +2120,7 @@ struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "core_never";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2177,6 +2198,7 @@ struct Dbg {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "core_dbg";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2242,11 +2264,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         self.typ = from[1].typ().clone();
-        Ok(TypecheckResult::Done)
+        Ok(())
     }
 }
 
@@ -2258,6 +2281,7 @@ struct Log {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "core_log";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2313,6 +2337,7 @@ macro_rules! printfn {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const NAME: &str = $name;
+            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

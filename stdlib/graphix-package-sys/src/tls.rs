@@ -14,6 +14,7 @@ pub(crate) struct TlsConnectEv;
 
 impl EvalCachedAsync for TlsConnectEv {
     const NAME: &str = "sys_tls_connect";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Option<Bytes>, ArcStr, StreamValue);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -101,6 +102,7 @@ pub(crate) struct TlsAcceptEv;
 
 impl EvalCachedAsync for TlsAcceptEv {
     const NAME: &str = "sys_tls_accept";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Bytes, Bytes, StreamValue);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

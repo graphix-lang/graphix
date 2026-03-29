@@ -5,8 +5,8 @@ use crate::{
     expr::{self, Expr, ExprId, ModPath},
     format_with_flags,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap, BindId, CFlag, Called, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope,
+    Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
@@ -118,11 +118,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
         self.handler.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
         for n in self.nodes.iter_mut() {
-            wrap!(n, n.typecheck(ctx))?
+            wrap!(n, n.typecheck(called, ctx))?
         }
-        wrap!(self.handler, self.handler.typecheck(ctx))
+        wrap!(self.handler, self.handler.typecheck(called, ctx))
     }
 
     fn spec(&self) -> &Expr {
@@ -236,7 +240,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
         fn fix_echain_typ<R: Rt, E: UserEvent>(
             ctx: &ExecCtx<R, E>,
             etyp: &Type,
@@ -277,7 +285,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 }
             )
         }
-        wrap!(self.n, self.n.typecheck(ctx))?;
+        wrap!(self.n, self.n.typecheck(called, ctx))?;
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -361,8 +369,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck(ctx))?;
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
+        wrap!(self.n, self.n.typecheck(called, ctx))?;
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             format_with_flags(PrintFlag::DerefTVars, || {

@@ -40,6 +40,7 @@ pub(crate) struct DbCursorNewEv;
 
 impl EvalCachedAsync for DbCursorNewEv {
     const NAME: &str = "db_cursor_new";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Option<Value>, Arc<TreeInner>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -86,6 +87,7 @@ pub(crate) struct DbCursorReadEv;
 
 impl EvalCachedAsync for DbCursorReadEv {
     const NAME: &str = "db_cursor_read";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<CursorInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -131,6 +133,7 @@ pub(crate) struct DbCursorReadManyEv;
 
 impl EvalCachedAsync for DbCursorReadManyEv {
     const NAME: &str = "db_cursor_read_many";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<CursorInner>, i64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -214,6 +217,7 @@ pub(crate) struct DbCursorRangeEv;
 
 impl EvalCachedAsync for DbCursorRangeEv {
     const NAME: &str = "db_cursor_range";
+    const NEEDS_CALLSITE: bool = false;
     type Args = RangeArgs;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

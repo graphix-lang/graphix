@@ -4,8 +4,8 @@ use crate::{
     format_with_flags,
     node::pattern::PatternNode,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap, BindId, CFlag, Called, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope,
+    Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use compact_str::format_compact;
@@ -176,8 +176,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.arg.node.typecheck(ctx)?;
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
+        self.arg.node.typecheck(called, ctx)?;
         let mut rtype = Type::Primitive(BitFlags::empty());
         let mut mtype = Type::Primitive(BitFlags::empty());
         let mut itype = Type::Primitive(BitFlags::empty());
@@ -185,7 +189,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let mut saw_false = false;
         for (pat, n) in self.arms.iter_mut() {
             match &mut pat.guard {
-                Some(guard) => guard.node.typecheck(ctx)?,
+                Some(guard) => guard.node.typecheck(called, ctx)?,
                 None => {
                     if !pat.structure_predicate.is_refutable() {
                         mtype = mtype.union(&ctx.env, &pat.type_predicate)?
@@ -217,7 +221,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         for (pat, n) in self.arms.iter_mut() {
             // make sure tvars are aliased properly even if itype was Any
             self.arg.node.typ().contains(&ctx.env, &pat.type_predicate)?;
-            wrap!(n.node, n.node.typecheck(ctx))?;
+            wrap!(n.node, n.node.typecheck(called, ctx))?;
         }
         let mut atype = self.arg.node.typ().clone().normalize();
         for (pat, _) in self.arms.iter() {

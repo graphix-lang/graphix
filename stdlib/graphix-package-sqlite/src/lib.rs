@@ -4,11 +4,9 @@
 )]
 use anyhow::bail;
 use arcstr::ArcStr;
-use graphix_compiler::errf;
 use graphix_compiler::typ::{FnType, Type};
-use graphix_compiler::{
-    ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult, UserEvent,
-};
+use graphix_compiler::{errf, Called};
+use graphix_compiler::{ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent};
 use graphix_package_core::{
     extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync,
 };
@@ -101,6 +99,7 @@ struct SqliteOpenEv;
 
 impl EvalCachedAsync for SqliteOpenEv {
     const NAME: &str = "sqlite_open";
+    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -130,6 +129,7 @@ struct SqliteExecEv;
 
 impl EvalCachedAsync for SqliteExecEv {
     const NAME: &str = "sqlite_exec";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -167,6 +167,7 @@ struct SqliteExecBatchEv;
 
 impl EvalCachedAsync for SqliteExecBatchEv {
     const NAME: &str = "sqlite_exec_batch";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -197,6 +198,7 @@ struct SqliteQueryEv {
 
 impl EvalCachedAsync for SqliteQueryEv {
     const NAME: &str = "sqlite_query";
+    const NEEDS_CALLSITE: bool = true;
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
 
     fn init<R: Rt, E: UserEvent>(
@@ -213,17 +215,18 @@ impl EvalCachedAsync for SqliteQueryEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> anyhow::Result<TypecheckResult> {
+    ) -> anyhow::Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
                 self.cast_typ = extract_cast_type(Some(resolved));
                 if self.cast_typ.is_none() {
                     bail!("sqlite::query requires a concrete return type annotation")
                 }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -317,6 +320,7 @@ macro_rules! simple_sql_builtin {
 
         impl EvalCachedAsync for $ev_name {
             const NAME: &str = $builtin_name;
+            const NEEDS_CALLSITE: bool = false;
             type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -349,6 +353,7 @@ struct SqliteCloseEv;
 
 impl EvalCachedAsync for SqliteCloseEv {
     const NAME: &str = "sqlite_close";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

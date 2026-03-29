@@ -2,15 +2,14 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::Result;
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::typ::Type;
+use graphix_compiler::Called;
 use graphix_compiler::{
-    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
-    UserEvent,
+    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
-use graphix_compiler::{format_with_flags, trace, PrintFlag};
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
     EvalCachedAsync,
@@ -145,6 +144,7 @@ struct JsonReadEv {
 
 impl EvalCachedAsync for JsonReadEv {
     const NAME: &str = "json_read";
+    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
 
     fn init<R: Rt, E: UserEvent>(
@@ -155,32 +155,21 @@ impl EvalCachedAsync for JsonReadEv {
         _from: &[Node<R, E>],
         _top_id: graphix_compiler::expr::ExprId,
     ) -> Self {
-        format_with_flags(PrintFlag::DerefTVars, || match resolved {
-            None => eprintln!("json: None"),
-            Some(resolved) => eprintln!("json: {resolved}"),
-        });
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
-                if trace() {
-                    format_with_flags(PrintFlag::DerefTVars, || {
-                        eprintln!("json typecheck: {resolved}")
-                    });
-                }
                 self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("json::read requires a concrete return type")
-                }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -250,6 +239,7 @@ struct JsonWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const NAME: &str = "json_write_str";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -284,6 +274,7 @@ struct JsonWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const NAME: &str = "json_write_bytes";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -314,6 +305,7 @@ struct JsonWriteStreamEv;
 
 impl EvalCachedAsync for JsonWriteStreamEv {
     const NAME: &str = "json_write_stream";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, serde_json::Value);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

@@ -3,7 +3,8 @@ use crate::{
     expr::{Expr, ExprId},
     node::{compiler::compile, Cached},
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    update_args, wrap, CFlag, Called, Event, ExecCtx, Node, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -92,9 +93,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.vals.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
         for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck(called, ctx))?
         }
         let ktype = self
             .keys
@@ -162,9 +167,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source.node, self.source.node.typecheck(ctx))?;
-        wrap!(self.key.node, self.key.node.typecheck(ctx))?;
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck(called, ctx))?;
+        wrap!(self.key.node, self.key.node.typecheck(called, ctx))?;
         let mt = Type::Map {
             key: Arc::new(self.key.node.typ().clone()),
             value: Arc::new(self.vtyp.clone()),

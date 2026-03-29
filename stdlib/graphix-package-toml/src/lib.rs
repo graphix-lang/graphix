@@ -7,9 +7,9 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::typ::Type;
+use graphix_compiler::Called;
 use graphix_compiler::{
-    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
-    UserEvent,
+    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -131,6 +131,7 @@ struct TomlReadEv {
 
 impl EvalCachedAsync for TomlReadEv {
     const NAME: &str = "toml_read";
+    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
 
     fn init<R: Rt, E: UserEvent>(
@@ -147,17 +148,18 @@ impl EvalCachedAsync for TomlReadEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
                 self.cast_typ = extract_cast_type(Some(resolved));
                 if self.cast_typ.is_none() {
                     bail!("toml::read requires a concrete return type")
                 }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -233,6 +235,7 @@ struct TomlWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
     const NAME: &str = "toml_write_str";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -262,6 +265,7 @@ struct TomlWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
     const NAME: &str = "toml_write_bytes";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -291,6 +295,7 @@ struct TomlWriteStreamEv;
 
 impl EvalCachedAsync for TomlWriteStreamEv {
     const NAME: &str = "toml_write_stream";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, toml::Value);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

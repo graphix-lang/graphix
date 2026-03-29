@@ -316,7 +316,7 @@ impl Type {
                 }
             }
             (Type::TVar(tv0), Type::TVar(tv1)) => {
-                if tv0.read().typ.as_ptr() == tv1.read().typ.as_ptr() {
+                if Arc::ptr_eq(&tv0.read().typ, &tv1.read().typ) {
                     return Ok(Type::Primitive(BitFlags::empty()));
                 }
                 Ok(match (&*tv0.read().typ.read(), &*tv1.read().typ.read()) {

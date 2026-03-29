@@ -5,7 +5,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     typ::{FnType, Type},
-    ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult, UserEvent,
+    Called, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::{path::Path, publisher::Typ};
@@ -226,6 +226,7 @@ pub(crate) struct DbGetTypeEv;
 
 impl EvalCachedAsync for DbGetTypeEv {
     const NAME: &str = "db_get_type";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (sled::Db, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -269,6 +270,7 @@ pub(crate) struct DbOpenEv;
 
 impl EvalCachedAsync for DbOpenEv {
     const NAME: &str = "db_open";
+    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -295,6 +297,7 @@ pub(crate) struct DbFlushEv;
 
 impl EvalCachedAsync for DbFlushEv {
     const NAME: &str = "db_flush";
+    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -321,6 +324,7 @@ pub(crate) struct DbGenerateIdEv;
 
 impl EvalCachedAsync for DbGenerateIdEv {
     const NAME: &str = "db_generate_id";
+    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -347,6 +351,7 @@ pub(crate) struct DbTreeNamesEv;
 
 impl EvalCachedAsync for DbTreeNamesEv {
     const NAME: &str = "db_tree_names";
+    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -382,6 +387,7 @@ pub(crate) struct DbDropTreeEv;
 
 impl EvalCachedAsync for DbDropTreeEv {
     const NAME: &str = "db_drop_tree";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (sled::Db, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -424,6 +430,7 @@ pub(crate) struct DbTreeEv {
 
 impl EvalCachedAsync for DbTreeEv {
     const NAME: &str = "db_tree";
+    const NEEDS_CALLSITE: bool = true;
     type Args = DbTreeArgs;
 
     fn init<R: Rt, E: UserEvent>(
@@ -442,11 +449,12 @@ impl EvalCachedAsync for DbTreeEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
                 self.key_typ = extract_key_typ_from_rtype(Some(resolved));
                 let (k, v) = extract_type_strings_from_rtype(Some(resolved));
@@ -455,7 +463,7 @@ impl EvalCachedAsync for DbTreeEv {
                 if self.key_typ.is_none() {
                     bail!("db::tree requires concrete key and value types")
                 }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -528,6 +536,7 @@ pub(crate) struct DbGetEv;
 
 impl EvalCachedAsync for DbGetEv {
     const NAME: &str = "db_get";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -561,6 +570,7 @@ pub(crate) struct DbInsertEv;
 
 impl EvalCachedAsync for DbInsertEv {
     const NAME: &str = "db_insert";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -599,6 +609,7 @@ pub(crate) struct DbRemoveEv;
 
 impl EvalCachedAsync for DbRemoveEv {
     const NAME: &str = "db_remove";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -632,6 +643,7 @@ pub(crate) struct DbContainsKeyEv;
 
 impl EvalCachedAsync for DbContainsKeyEv {
     const NAME: &str = "db_contains_key";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -662,6 +674,7 @@ pub(crate) struct DbGetManyEv;
 
 impl EvalCachedAsync for DbGetManyEv {
     const NAME: &str = "db_get_many";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<GPooled<Vec<u8>>>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -730,6 +743,7 @@ pub(crate) struct DbFirstEv;
 
 impl EvalCachedAsync for DbFirstEv {
     const NAME: &str = "db_first";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TreeInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -760,6 +774,7 @@ pub(crate) struct DbLastEv;
 
 impl EvalCachedAsync for DbLastEv {
     const NAME: &str = "db_last";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TreeInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -790,6 +805,7 @@ pub(crate) struct DbPopMinEv;
 
 impl EvalCachedAsync for DbPopMinEv {
     const NAME: &str = "db_pop_min";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TreeInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -820,6 +836,7 @@ pub(crate) struct DbPopMaxEv;
 
 impl EvalCachedAsync for DbPopMaxEv {
     const NAME: &str = "db_pop_max";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TreeInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -850,6 +867,7 @@ pub(crate) struct DbGetLtEv;
 
 impl EvalCachedAsync for DbGetLtEv {
     const NAME: &str = "db_get_lt";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -883,6 +901,7 @@ pub(crate) struct DbGetGtEv;
 
 impl EvalCachedAsync for DbGetGtEv {
     const NAME: &str = "db_get_gt";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -918,6 +937,7 @@ pub(crate) struct DbCompareAndSwapEv;
 
 impl EvalCachedAsync for DbCompareAndSwapEv {
     const NAME: &str = "db_compare_and_swap";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (
         Arc<TreeInner>,
         GPooled<Vec<u8>>,
@@ -983,6 +1003,7 @@ pub(crate) struct DbBatchEv;
 
 impl EvalCachedAsync for DbBatchEv {
     const NAME: &str = "db_batch";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TreeInner>, sled::Batch);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1018,6 +1039,7 @@ pub(crate) struct DbLenEv;
 
 impl EvalCachedAsync for DbLenEv {
     const NAME: &str = "db_len";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TreeInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1043,6 +1065,7 @@ pub(crate) struct DbIsEmptyEv;
 
 impl EvalCachedAsync for DbIsEmptyEv {
     const NAME: &str = "db_is_empty";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TreeInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1070,6 +1093,7 @@ pub(crate) struct DbSizeOnDiskEv;
 
 impl EvalCachedAsync for DbSizeOnDiskEv {
     const NAME: &str = "db_size_on_disk";
+    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1096,6 +1120,7 @@ pub(crate) struct DbWasRecoveredEv;
 
 impl EvalCachedAsync for DbWasRecoveredEv {
     const NAME: &str = "db_was_recovered";
+    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1121,6 +1146,7 @@ pub(crate) struct DbChecksumEv;
 
 impl EvalCachedAsync for DbChecksumEv {
     const NAME: &str = "db_checksum";
+    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1161,6 +1187,7 @@ pub(crate) struct DbExportEv;
 
 impl EvalCachedAsync for DbExportEv {
     const NAME: &str = "db_export";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (sled::Db, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -1212,6 +1239,7 @@ pub(crate) struct DbImportEv;
 
 impl EvalCachedAsync for DbImportEv {
     const NAME: &str = "db_import";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (sled::Db, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

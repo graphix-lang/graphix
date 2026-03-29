@@ -27,16 +27,14 @@ fn data_to_value(cell: &Data) -> Value {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
             None => Value::F64(edt.as_f64()),
         },
-        Data::DateTimeIso(s) => {
-            match chrono::DateTime::parse_from_rfc3339(s) {
-                Ok(dt) => Value::DateTime(TArc::new(dt.with_timezone(&chrono::Utc))),
-                Err(_) => match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                {
-                    Ok(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
-                    Err(_) => Value::String(ArcStr::from(s.as_str())),
-                },
-            }
-        }
+        Data::DateTimeIso(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(dt) => Value::DateTime(TArc::new(dt.with_timezone(&chrono::Utc))),
+            Err(_) => match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+            {
+                Ok(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
+                Err(_) => Value::String(ArcStr::from(s.as_str())),
+            },
+        },
         Data::DurationIso(s) => Value::String(ArcStr::from(s.as_str())),
         Data::Empty => Value::Null,
         Data::Error(e) => Value::String(ArcStr::from(format!("{e:?}").as_str())),
@@ -51,10 +49,8 @@ fn parse_sheets<RS: std::io::Read + std::io::Seek + Clone>(rs: RS) -> Value {
         Err(e) => return errf!("XlsErr", "{e}"),
     };
     let names = wb.sheet_names();
-    let mut vals: LPooled<Vec<Value>> = names
-        .iter()
-        .map(|n| Value::String(ArcStr::from(n.as_str())))
-        .collect();
+    let mut vals: LPooled<Vec<Value>> =
+        names.iter().map(|n| Value::String(ArcStr::from(n.as_str()))).collect();
     Value::Array(ValArray::from_iter_exact(vals.drain(..)))
 }
 
@@ -90,6 +86,7 @@ struct XlsSheetsEv;
 
 impl EvalCachedAsync for XlsSheetsEv {
     const NAME: &str = "xls_sheets";
+    const NEEDS_CALLSITE: bool = false;
     type Args = ReadInput;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -134,6 +131,7 @@ struct XlsReadEv;
 
 impl EvalCachedAsync for XlsReadEv {
     const NAME: &str = "xls_read";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (ReadInput, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

@@ -6,9 +6,9 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::typ::Type;
+use graphix_compiler::Called;
 use graphix_compiler::{
-    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, TypecheckResult,
-    UserEvent,
+    errf, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -38,6 +38,7 @@ struct PackReadEv {
 
 impl EvalCachedAsync for PackReadEv {
     const NAME: &str = "pack_read";
+    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
 
     fn init<R: Rt, E: UserEvent>(
@@ -54,17 +55,18 @@ impl EvalCachedAsync for PackReadEv {
     fn typecheck<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
                 self.cast_typ = extract_cast_type(Some(resolved));
                 if self.cast_typ.is_none() {
                     bail!("pack::read requires a concrete return type")
                 }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -125,6 +127,7 @@ struct PackWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
     const NAME: &str = "pack_write_bytes";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.first()?.as_ref()?;
@@ -146,6 +149,7 @@ struct PackWriteStreamEv;
 
 impl EvalCachedAsync for PackWriteStreamEv {
     const NAME: &str = "pack_write_stream";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Vec<u8>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

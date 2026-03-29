@@ -9,8 +9,8 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, TypecheckResult, UserEvent,
+    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapCollection, MapFn, MapQ, Slot,
@@ -300,6 +300,7 @@ struct NilEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NilEv {
     const NAME: &str = "list_nil";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.0[0].as_ref()?;
@@ -314,6 +315,7 @@ struct ConsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConsEv {
     const NAME: &str = "list_cons";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let head = from.0[0].as_ref()?;
@@ -329,6 +331,7 @@ struct SingletonEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SingletonEv {
     const NAME: &str = "list_singleton";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0[0].as_ref()?;
@@ -343,6 +346,7 @@ struct HeadEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HeadEv {
     const NAME: &str = "list_head";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -360,6 +364,7 @@ struct TailEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TailEv {
     const NAME: &str = "list_tail";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -377,6 +382,7 @@ struct UnconsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnconsEv {
     const NAME: &str = "list_uncons";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -396,6 +402,7 @@ struct IsEmptyEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsEmptyEv {
     const NAME: &str = "list_is_empty";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -410,6 +417,7 @@ struct NthEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NthEv {
     const NAME: &str = "list_nth";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -441,6 +449,7 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "list_len";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -455,6 +464,7 @@ struct ReverseEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReverseEv {
     const NAME: &str = "list_reverse";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -476,6 +486,7 @@ struct TakeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TakeEv {
     const NAME: &str = "list_take";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let n = match from.0[0].as_ref()? {
@@ -497,6 +508,7 @@ struct DropEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DropEv {
     const NAME: &str = "list_drop";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let n = match from.0[0].as_ref()? {
@@ -525,6 +537,7 @@ struct ToArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayEv {
     const NAME: &str = "list_to_array";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -542,6 +555,7 @@ struct FromArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
     const NAME: &str = "list_from_array";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match from.0[0].as_ref()? {
@@ -558,6 +572,7 @@ struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const NAME: &str = "list_concat";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         // Collect all lists into a flat buffer, then build from back.
@@ -588,6 +603,7 @@ struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const NAME: &str = "list_flatten";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -609,6 +625,7 @@ struct SortEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const NAME: &str = "list_sort";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fn cn(v: &Value) -> Value {
@@ -652,6 +669,7 @@ struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const NAME: &str = "list_enumerate";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -671,6 +689,7 @@ struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const NAME: &str = "list_zip";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let l0 = from.0[0].as_ref()?;
@@ -696,6 +715,7 @@ struct UnzipEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const NAME: &str = "list_unzip";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -725,6 +745,7 @@ struct ListIterBI(BindId, ExprId);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
     const NAME: &str = "list_iter";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -776,6 +797,7 @@ struct ListIterQ {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
     const NAME: &str = "list_iterq";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -846,6 +868,7 @@ struct ListInit<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListInit<R, E> {
     const NAME: &str = "list_init";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -967,9 +990,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase,
-    ) -> anyhow::Result<TypecheckResult> {
+    ) -> anyhow::Result<()> {
         match phase {
             TypecheckPhase::Lambda => (),
             TypecheckPhase::CallSite(typ) => {
@@ -985,10 +1009,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         let fnode = genn::reference(ctx, self.fid, Type::Fn(ft.clone()), self.top_id);
         let mut node =
             genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
-        let r = node.typecheck(ctx);
+        let r = node.typecheck(called, ctx);
         node.delete(ctx);
         r?;
-        Ok(TypecheckResult::NeedsCallSite)
+        Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {

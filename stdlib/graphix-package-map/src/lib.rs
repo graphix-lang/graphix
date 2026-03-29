@@ -101,6 +101,7 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "map_len";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -117,6 +118,7 @@ struct GetEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const NAME: &str = "map_get";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -135,6 +137,7 @@ struct InsertEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const NAME: &str = "map_insert";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
@@ -153,6 +156,7 @@ struct RemoveEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const NAME: &str = "map_remove";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -172,6 +176,7 @@ struct Iter {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "map_iter";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -226,6 +231,7 @@ struct IterQ {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "map_iterq";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,

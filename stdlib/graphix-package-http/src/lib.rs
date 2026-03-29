@@ -12,8 +12,8 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, LambdaId, Node, Rt, Scope,
-    TypecheckResult, UserEvent, CBATCH_POOL,
+    Apply, BindId, BuiltIn, Called, CustomBuiltinType, Event, ExecCtx, LambdaId, Node,
+    Rt, Scope, UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
@@ -44,7 +44,7 @@ struct ClientValue {
 
 impl PartialEq for ClientValue {
     fn eq(&self, other: &Self) -> bool {
-        Arc::as_ptr(&self.client) == Arc::as_ptr(&other.client)
+        Arc::ptr_eq(&self.client, &other.client)
     }
 }
 
@@ -109,7 +109,7 @@ struct ServerValue {
 
 impl PartialEq for ServerValue {
     fn eq(&self, other: &Self) -> bool {
-        Arc::as_ptr(&self.handle) == Arc::as_ptr(&other.handle)
+        Arc::ptr_eq(&self.handle, &other.handle)
     }
 }
 
@@ -228,6 +228,7 @@ pub(crate) struct HttpClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
     const NAME: &str = "http_client";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
@@ -268,6 +269,7 @@ pub(crate) struct HttpDefaultClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
     const NAME: &str = "http_default_client";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         cached.0.get(0)?.as_ref()?;
@@ -284,6 +286,7 @@ pub(crate) struct HttpServerAddrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
     const NAME: &str = "http_server_addr";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.get(0)?.as_ref()?;
@@ -349,6 +352,7 @@ pub(crate) struct HttpRequestEv;
 
 impl EvalCachedAsync for HttpRequestEv {
     const NAME: &str = "http_request";
+    const NEEDS_CALLSITE: bool = false;
     type Args = RequestArgs<ArcStr>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -390,6 +394,7 @@ pub(crate) struct HttpRequestBinEv;
 
 impl EvalCachedAsync for HttpRequestBinEv {
     const NAME: &str = "http_request_bin";
+    const NEEDS_CALLSITE: bool = false;
     type Args = RequestArgs<Bytes>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -687,6 +692,7 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     const NAME: &str = "http_serve";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -862,11 +868,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: graphix_compiler::TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
-        self.handler.typecheck(ctx)?;
-        Ok(TypecheckResult::NeedsCallSite)
+    ) -> Result<()> {
+        self.handler.typecheck(called, ctx)?;
+        Ok(())
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {

@@ -167,6 +167,8 @@ impl From<u64> for LambdaId {
     }
 }
 
+pub type Called = Arc<RwLock<FxHashSet<LambdaId>>>;
+
 atomic_id!(BindId);
 
 impl From<u64> for BindId {
@@ -312,15 +314,6 @@ pub enum TypecheckPhase<'a> {
     CallSite(&'a FnType),
 }
 
-/// Result of Apply::typecheck indicating whether call-site checking is needed
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypecheckResult {
-    /// No call-site phase needed (default for most builtins)
-    Done,
-    /// This builtin needs typecheck(CallSite) at each call site
-    NeedsCallSite,
-}
-
 pub type InitFn<R, E> = sync::Arc<
     dyn for<'a, 'b, 'c, 'd> Fn(
             &'a Scope,
@@ -359,10 +352,11 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
-        Ok(TypecheckResult::Done)
+    ) -> Result<()> {
+        Ok(())
     }
 
     /// return the lambdas type, builtins do not need to implement
@@ -404,7 +398,11 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
 
     /// type check the node and it's children
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()>;
 
     /// return the node type
     fn typ(&self) -> &Type;
@@ -434,6 +432,7 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
 /// graphix-derive crate
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
+    const NEEDS_CALLSITE: bool;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -747,7 +746,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
-    builtins: FxHashMap<&'static str, BuiltInInitFn<R, E>>,
+    builtins: FxHashMap<&'static str, (BuiltInInitFn<R, E>, bool)>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
@@ -801,7 +800,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert(T::init);
+                e.insert((T::init, T::NEEDS_CALLSITE));
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
@@ -895,7 +894,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     };
     info!("compile time {:?}", st.elapsed());
     let st = Instant::now();
-    if let Err(e) = node.typecheck(ctx) {
+    if let Err(e) = node.typecheck(None, ctx) {
         ctx.env = env;
         return Err(e);
     }

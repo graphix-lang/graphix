@@ -154,7 +154,7 @@ struct WatcherValue {
 
 impl PartialEq for WatcherValue {
     fn eq(&self, other: &Self) -> bool {
-        Arc::as_ptr(&self.idmap) == Arc::as_ptr(&other.idmap)
+        Arc::ptr_eq(&self.idmap, &other.idmap)
     }
 }
 
@@ -253,6 +253,7 @@ pub(crate) struct CreateWatcher {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     const NAME: &str = "sys_watch_create";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -336,6 +337,7 @@ pub(crate) struct WatchApply {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     const NAME: &str = "sys_watch_watch";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -481,6 +483,7 @@ pub(crate) struct WatchPath {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     const NAME: &str = "sys_watch_path";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -546,6 +549,7 @@ pub(crate) struct WatchEvents {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     const NAME: &str = "sys_watch_events";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

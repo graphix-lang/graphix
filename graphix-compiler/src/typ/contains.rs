@@ -1,6 +1,6 @@
 use crate::{
     env::Env,
-    format_with_flags, tdbg, trace,
+    format_with_flags,
     typ::{tvar::would_cycle_inner, AndAc, RefHist, Type},
     PrintFlag,
 };
@@ -136,11 +136,7 @@ impl Type {
                 e.contains_int(flags, env, hist, &Type::Any)
             }
             (Self::Error(e0), Self::Error(e1)) => e0.contains_int(flags, env, hist, e1),
-            (Self::Tuple(t0), Self::Tuple(t1))
-                if t0.as_ptr().addr() == t1.as_ptr().addr() =>
-            {
-                Ok(true)
-            }
+            (Self::Tuple(t0), Self::Tuple(t1)) if Arc::ptr_eq(t0, t1) => Ok(true),
             (Self::Tuple(t0), Self::Tuple(t1)) => Ok(t0.len() == t1.len()
                 && t0
                     .iter()
@@ -148,11 +144,7 @@ impl Type {
                     .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            (Self::Struct(t0), Self::Struct(t1))
-                if t0.as_ptr().addr() == t1.as_ptr().addr() =>
-            {
-                Ok(true)
-            }
+            (Self::Struct(t0), Self::Struct(t1)) if Arc::ptr_eq(t0, t1) => Ok(true),
             (Self::Struct(t0), Self::Struct(t1)) => {
                 Ok(t0.len() == t1.len() && {
                     // struct types are always sorted by field name
@@ -166,8 +158,7 @@ impl Type {
                 })
             }
             (Self::Variant(tg0, t0), Self::Variant(tg1, t1))
-                if tg0.as_ptr() == tg1.as_ptr()
-                    && t0.as_ptr().addr() == t1.as_ptr().addr() =>
+                if tg0.as_ptr() == tg1.as_ptr() && Arc::ptr_eq(t0, t1) =>
             {
                 Ok(true)
             }
@@ -264,11 +255,7 @@ impl Type {
                 }
                 Ok(true)
             }
-            (Self::Set(s0), Self::Set(s1))
-                if s0.as_ptr().addr() == s1.as_ptr().addr() =>
-            {
-                Ok(true)
-            }
+            (Self::Set(s0), Self::Set(s1)) if Arc::ptr_eq(s0, s1) => Ok(true),
             (t0 @ Self::Set(_), t1 @ Self::Set(_)) if t0 == t1 => {
                 if flags.contains(ContainsFlags::InitTVars) {
                     let mut known = LPooled::take();
@@ -294,7 +281,7 @@ impl Type {
                         })?)
                 })?),
             (Self::Fn(f0), Self::Fn(f1)) => {
-                let same = f0.as_ptr() == f1.as_ptr();
+                let same = Arc::ptr_eq(f0, f1);
                 let r = same || f0.contains_int(flags, env, hist, f1)?;
                 if r && !same && flags.contains(ContainsFlags::InitTVars) {
                     f0.merge_lambda_ids(f1);

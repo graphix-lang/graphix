@@ -8,7 +8,8 @@ use crate::{
     },
     node::{bind::Bind, Nop},
     typ::{AbstractId, Type},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    wrap, BindId, CFlag, Called, Event, ExecCtx, Node, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
@@ -292,7 +293,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 .map(|e| compile(ctx, self.flags, e.clone(), &self.scope, self.top_id))
                 .collect::<Result<Vec<_>>>()?;
             for n in &mut nodes {
-                n.typecheck(ctx)?
+                n.typecheck(None, ctx)?
             }
             Ok(nodes)
         });
@@ -424,8 +425,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck(
+        &mut self,
+        called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, self.source.typecheck(called, ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))
     }

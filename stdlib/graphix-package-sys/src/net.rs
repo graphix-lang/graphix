@@ -6,10 +6,10 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Rt, Scope, TypecheckPhase,
-    TypecheckResult, UserEvent,
+    Apply, BindId, BuiltIn, Called, Event, ExecCtx, LambdaId, Node, Rt, Scope,
+    TypecheckPhase, UserEvent,
 };
-use graphix_package_core::{arity1, arity2, CachedVals};
+use graphix_package_core::{arity1, arity2, extract_cast_type, CachedVals};
 use netidx::{
     path::Path,
     publisher::{Typ, Val},
@@ -48,6 +48,7 @@ pub(crate) struct Write {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     const NAME: &str = "sys_net_write";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -164,6 +165,7 @@ pub(crate) struct Subscribe {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const NAME: &str = "sys_net_subscribe";
+    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -237,17 +239,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
                 self.cast_typ = extract_cast_type(Some(resolved));
                 if self.cast_typ.is_none() {
                     bail!("sys::net::subscribe requires a concrete return type")
                 }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -276,6 +279,7 @@ pub(crate) struct RpcCall {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     const NAME: &str = "sys_net_call";
+    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -346,11 +350,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        _called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
-            TypecheckPhase::Lambda => Ok(TypecheckResult::NeedsCallSite),
+            TypecheckPhase::Lambda => Ok(()),
             TypecheckPhase::CallSite(resolved) => {
                 self.cast_typ = extract_cast_type(Some(resolved));
                 if self.cast_typ.is_none() {
@@ -370,7 +375,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                     }
                     None => bail!("sys::net::call args type not available"),
                 }
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }
@@ -399,6 +404,7 @@ macro_rules! list {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin;
+            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 ctx: &'a mut ExecCtx<R, E>,
@@ -484,7 +490,7 @@ list!(
     "fn(?#update:Any, string) -> Result<Table, `ListError(string)>"
 );
 
-fn extract_cast_type(resolved: Option<&FnType>) -> Option<Type> {
+fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     let resolved = resolved?;
     resolved.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
@@ -512,6 +518,7 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     const NAME: &str = "sys_net_publish";
+    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -547,7 +554,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                     pid,
                     x,
                     on_write,
-                    cast_typ: extract_cast_type(resolved),
+                    cast_typ: extract_publish_cast_type(resolved),
                 }))
             }
             _ => bail!("expected three arguments"),
@@ -623,20 +630,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
             TypecheckPhase::Lambda => {
-                self.on_write.typecheck(ctx)?;
-                Ok(TypecheckResult::NeedsCallSite)
+                self.on_write.typecheck(called, ctx)?;
+                Ok(())
             }
             TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("on_write requires a concrete type")
-                }
-                Ok(TypecheckResult::Done)
+                self.cast_typ = extract_publish_cast_type(Some(resolved));
+                Ok(())
             }
         }
     }
@@ -779,6 +784,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     const NAME: &str = "sys_net_publish_rpc";
+    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -942,17 +948,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         _from: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match phase {
             TypecheckPhase::Lambda => {
-                self.f.typecheck(ctx)?;
-                Ok(TypecheckResult::NeedsCallSite)
+                self.f.typecheck(called, ctx)?;
+                Ok(())
             }
             TypecheckPhase::CallSite(resolved) => {
                 self.validate_spec(ctx, resolved)?;
-                Ok(TypecheckResult::Done)
+                Ok(())
             }
         }
     }

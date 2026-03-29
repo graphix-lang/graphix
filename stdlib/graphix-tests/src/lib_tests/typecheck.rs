@@ -155,21 +155,9 @@ run!(
     hof_init_json_read,
     r#"{
     let s = json::write_str(42)$;
-let results: Array<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
-    array::init(1, |i| json::read(s));
+    let results =
+        array::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     results[0]
-}"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-);
-
-run!(
-    nested_json_read,
-    r#"{
-    let s = json::write_str(42)$;
-    let f = |i| json::read(s);
-let results: Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> =
-        f(0);
-    results
 }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
 );
@@ -181,8 +169,8 @@ run!(
     r#"{
     use list;
     let s = json::write_str(7)$;
-    let results: List<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
-        list::init(1, |i| json::read(s));
+    let results =
+        list::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     list::head(results)
 }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }

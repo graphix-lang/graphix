@@ -6,8 +6,8 @@ use crate::{
     node::pattern::StructPatternNode,
     trace,
     typ::{FnArgType, FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, PrintFlag, Refs,
-    Rt, Scope, TypecheckPhase, TypecheckResult, Update, UserEvent,
+    wrap, Apply, BindId, CFlag, Called, Event, ExecCtx, InitFn, LambdaId, Node,
+    PrintFlag, Refs, Rt, Scope, TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
@@ -27,7 +27,7 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
     pub init: InitFn<R, E>,
-    /// faux Apply for deferred type checking at call sites
+    pub needs_callsite: bool,
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
 }
 
@@ -110,11 +110,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         args: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
-            wrap!(arg, arg.typecheck(ctx))?;
+            wrap!(arg, arg.typecheck(called, ctx))?;
             wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
         }
         if trace() {
@@ -122,7 +123,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 eprintln!("gxbody pre tc: {}", self.body.typ());
             });
         }
-        wrap!(self.body, self.body.typecheck(ctx))?;
+        wrap!(self.body, self.body.typecheck(called, ctx))?;
         if trace() {
             format_with_flags(PrintFlag::DerefTVars, || {
                 eprintln!("gxbody post tc: {}", self.body.typ());
@@ -138,7 +139,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         for (tv, tc) in self.typ.constraints.read().iter() {
             tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
         }
-        Ok(TypecheckResult::NeedsCallSite)
+        Ok(())
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -215,10 +216,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     fn typecheck(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        called: Option<&Called>,
         args: &mut [Node<R, E>],
         phase: TypecheckPhase<'_>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<()> {
         match &phase {
+            TypecheckPhase::CallSite(_) => (),
             TypecheckPhase::Lambda => {
                 if args.len() < self.typ.args.len()
                     || (args.len() > self.typ.args.len() && self.typ.vargs.is_none())
@@ -232,7 +235,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
                     )
                 }
                 for i in 0..args.len() {
-                    wrap!(args[i], args[i].typecheck(ctx))?;
+                    wrap!(args[i], args[i].typecheck(called, ctx))?;
                     let atyp = if i < self.typ.args.len() {
                         &self.typ.args[i].typ
                     } else {
@@ -244,11 +247,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
                     tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
                 }
             }
-            TypecheckPhase::CallSite(_) => {
-                // skip arity/type checks — only delegate to inner apply
-            }
         }
-        self.apply.typecheck(ctx, args, phase)
+        self.apply.typecheck(ctx, called, args, phase)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -337,8 +337,11 @@ impl Lambda {
         let _scope = scope.clone();
         let env = ctx.env.clone();
         let _env = ctx.env.clone();
+        let mut needs_callsite = false;
         if let Either::Right(builtin) = &l.body {
-            if !ctx.builtins.contains_key(builtin.as_str()) {
+            if let Some((_, nc)) = ctx.builtins.get(builtin.as_str()) {
+                needs_callsite = *nc;
+            } else {
                 bail!("unknown builtin function {builtin}")
             }
             if !ctx.builtins_allowed {
@@ -378,11 +381,13 @@ impl Lambda {
                 rtype,
                 throws,
                 explicit_throws,
-                id: Some(id),
-                lambda_ids: Arc::new(Mutex::new(FxHashSet::default())),
+                lambda_ids: Arc::new(RwLock::new(FxHashSet::default())),
             })
         };
         typ.alias_tvars(&mut LPooled::take());
+        if needs_callsite {
+            typ.lambda_ids.write().insert(id);
+        }
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
@@ -409,13 +414,12 @@ impl Lambda {
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
-                    Some(init) => {
-                        init(ctx, &_typ, resolved, &_scope, args, tid).map(|apply| {
+                    Some((init, _)) => init(ctx, &_typ, resolved, &_scope, args, tid)
+                        .map(|apply| {
                             let f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ: _typ.clone(), apply });
                             f
-                        })
-                    }
+                        }),
                 },
             })
         });
@@ -426,6 +430,7 @@ impl Lambda {
             argspec,
             init,
             scope: original_scope,
+            needs_callsite,
             check: Mutex::new(None),
         });
         ctx.lambda_defs.insert(id, def.clone());
@@ -456,11 +461,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck(
+        &mut self,
+        _called: Option<&Called>,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<()> {
         let def = self
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
+        let needs_callsite = def.needs_callsite;
         let mut faux_args: LPooled<Vec<Node<R, E>>> = def
             .argspec
             .iter()
@@ -491,21 +501,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         let res = (def.init)(&def.scope, ctx, &mut faux_args, None, ExprId::new())
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
-            let tc_result = f
-                .typecheck(ctx, &mut faux_args, TypecheckPhase::Lambda)
-                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))?;
             let ftyp = f.typ().clone();
-            match tc_result {
-                TypecheckResult::Done => f.delete(ctx),
-                TypecheckResult::NeedsCallSite => {
-                    // keep the faux Apply for deferred call-site type checking
-                    let def = self
-                        .def
-                        .downcast_ref::<LambdaDef<R, E>>()
-                        .expect("failed to unwrap lambda");
-                    *def.check.lock() = Some(f);
-                }
+            let res = f
+                .typecheck(
+                    ctx,
+                    Some(&ftyp.lambda_ids),
+                    &mut faux_args,
+                    TypecheckPhase::Lambda,
+                )
+                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
+            if !needs_callsite {
+                f.delete(ctx)
+            } else {
+                let def = self
+                    .def
+                    .downcast_ref::<LambdaDef<R, E>>()
+                    .expect("failed to unwrap lambda");
+                *def.check.lock() = Some(f);
             }
+            res?;
             let inferred_throws = ctx.env.by_id[&faux_id]
                 .typ
                 .with_deref(|t| t.cloned())

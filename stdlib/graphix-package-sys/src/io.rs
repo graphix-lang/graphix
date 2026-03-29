@@ -9,7 +9,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{StreamKind, get_stream};
+use crate::{get_stream, StreamKind};
 
 // ── IoRead ─────────────────────────────────────────────────────
 
@@ -18,6 +18,7 @@ pub(crate) struct IoReadEv;
 
 impl EvalCachedAsync for IoReadEv {
     const NAME: &str = "sys_io_read";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -52,6 +53,7 @@ pub(crate) struct IoReadExactEv;
 
 impl EvalCachedAsync for IoReadExactEv {
     const NAME: &str = "sys_io_read_exact";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -89,6 +91,7 @@ pub(crate) struct IoWriteEv;
 
 impl EvalCachedAsync for IoWriteEv {
     const NAME: &str = "sys_io_write";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -119,6 +122,7 @@ pub(crate) struct IoWriteExactEv;
 
 impl EvalCachedAsync for IoWriteExactEv {
     const NAME: &str = "sys_io_write_exact";
+    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -149,6 +153,7 @@ pub(crate) struct IoFlushEv;
 
 impl EvalCachedAsync for IoFlushEv {
     const NAME: &str = "sys_io_flush";
+    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

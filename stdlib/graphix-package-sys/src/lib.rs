@@ -129,7 +129,7 @@ pub struct StreamValue {
 
 impl PartialEq for StreamValue {
     fn eq(&self, other: &Self) -> bool {
-        Arc::as_ptr(&self.inner) == Arc::as_ptr(&other.inner)
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -254,6 +254,7 @@ pub(crate) struct GxTempDirEv;
 
 impl EvalCachedAsync for GxTempDirEv {
     const NAME: &str = "sys_tempdir";
+    const NEEDS_CALLSITE: bool = false;
     type Args = TempDirArgs;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -311,6 +312,7 @@ pub(crate) struct TempDirPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const NAME: &str = "sys_tempdir_path";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0.first()?.as_ref()?;
@@ -343,6 +345,7 @@ pub(crate) struct JoinPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const NAME: &str = "sys_join_path";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -385,6 +388,7 @@ pub(crate) struct Args {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     const NAME: &str = "sys_args";
+    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
