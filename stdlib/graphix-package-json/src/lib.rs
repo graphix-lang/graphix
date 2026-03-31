@@ -57,7 +57,7 @@ fn json_to_value(json: serde_json::Value) -> Value {
     }
 }
 
-fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
+pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
     match value {
         Value::Null => Ok(serde_json::Value::Null),
         Value::Bool(b) => Ok(serde_json::Value::Bool(*b)),

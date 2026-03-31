@@ -12,11 +12,12 @@ struct ExampleBuiltin;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
+    const NEEDS_CALLSITE: bool = false;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
+        _resolved_typ: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
@@ -46,6 +47,7 @@ struct ExampleCachedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ExampleCachedEv {
     const NAME: &str = "{{name}}_example_cached";
+    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));

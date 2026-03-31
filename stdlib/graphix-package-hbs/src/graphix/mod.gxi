@@ -1,0 +1,4 @@
+/// Render a Handlebars template with the given data context.
+/// Use #partials to register named partial templates (as a struct or map).
+/// Use #strict to error on missing variables instead of rendering empty strings.
+val render: fn(?#strict: bool, ?#partials: 'a, string, 'b) -> Result<string, `HbsErr(string)>;

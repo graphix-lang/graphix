@@ -12,6 +12,7 @@ mod net;
 #[path = "str.rs"]
 mod str_tests;
 mod db;
+mod dirs;
 mod sys;
 mod tcp;
 mod tls;
@@ -20,3 +21,4 @@ mod pack;
 mod typecheck;
 mod list;
 mod sqlite;
+mod hbs;

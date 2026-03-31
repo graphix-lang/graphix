@@ -2,12 +2,12 @@ use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
 use graphix_compiler::{
-    err, errf,
+    deref_typ, err, errf,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Rt, Scope, TypecheckPhase,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
+    TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{arity1, arity2, extract_cast_type, CachedVals};
 use netidx::{
@@ -360,18 +360,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                     bail!("sys::net::call requires a concrete return type")
                 }
                 // validate args type: must be a struct or null
-                let args_typ = resolved
-                    .args
-                    .get(1)
-                    .map(|a| a.typ.lookup_ref(&ctx.env))
-                    .transpose()?;
-                match args_typ.as_ref() {
-                    Some(Type::Struct(_)) | Some(Type::Any) => (),
-                    Some(t) if is_null_type(t) => (),
-                    Some(t) => {
-                        bail!("sys::net::call args must be a struct or null, got {t}")
-                    }
-                    None => bail!("sys::net::call args type not available"),
+                if let Some(args_arg) = resolved.args.get(1) {
+                    deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
+                        Some(Type::Struct(_)) => Ok(()),
+                        Some(Type::Any) => Ok(()),
+                        Some(t @ Type::Primitive(_)) => {
+                            if is_null_type(t) { Ok(()) }
+                            else { bail!("sys::net::call args must be a struct or null") }
+                        }
+                    )?;
                 }
                 Ok(())
             }
@@ -688,52 +685,58 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         resolved: &FnType,
     ) -> Result<()> {
         // validate spec: must be a struct of RpcArg fields, or null (no args)
-        let spec_typ =
-            resolved.args.get(2).map(|a| a.typ.lookup_ref(&ctx.env)).transpose()?;
-        let spec_is_null = spec_typ.as_ref().map_or(false, |t| is_null_type(t));
-        let spec_fields = match spec_typ.as_ref() {
-            Some(t) if is_null_type(t) => triomphe::Arc::from_iter([]),
-            Some(Type::Struct(fields)) => fields.clone(),
-            Some(t) => bail!("rpc #spec must be a struct or null, got {t}"),
-            None => bail!("rpc #spec type not available"),
+        let (spec_is_null, spec_fields) = if let Some(spec_arg) = resolved.args.get(2) {
+            deref_typ!("struct or null", ctx, &spec_arg.typ,
+                Some(Type::Struct(fields)) => Ok((false, fields.clone())),
+                Some(t @ Type::Primitive(_)) => {
+                    if is_null_type(t) { Ok((true, TArc::from_iter([]))) }
+                    else { bail!("rpc #spec must be a struct or null") }
+                }
+            )?
+        } else {
+            bail!("rpc #spec type not available")
         };
         // validate each spec field is {default: T, doc: string}
         for (name, field_typ) in spec_fields.iter() {
-            let resolved_field = field_typ.lookup_ref(&ctx.env)?;
-            match &resolved_field {
-                Type::Struct(inner) if inner.len() == 2 => {
-                    let has_default = inner.iter().any(|(n, _)| n.as_str() == "default");
-                    let has_doc = inner.iter().any(|(n, _)| n.as_str() == "doc");
-                    if !has_default || !has_doc {
+            deref_typ!("RpcArg {{default: 'a, doc: string}}", ctx, field_typ,
+                Some(Type::Struct(inner)) => {
+                    if inner.len() == 2 {
+                        let has_default = inner.iter().any(|(n, _)| n.as_str() == "default");
+                        let has_doc = inner.iter().any(|(n, _)| n.as_str() == "doc");
+                        if has_default && has_doc { Ok(()) }
+                        else { bail!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}") }
+                    } else {
                         bail!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}")
                     }
                 }
-                _ => bail!(
-                    "rpc #spec field '{name}' must be RpcArg<'a>, got {resolved_field}"
-                ),
-            }
+            )?;
         }
         // validate callback arg
-        let cb_arg_typ = resolved.args.get(3).and_then(|a| match &a.typ {
-            Type::Fn(cb_ft) if !cb_ft.args.is_empty() => Some(cb_ft.args[0].typ.clone()),
-            _ => None,
-        });
-        let cb_arg_typ = match cb_arg_typ {
-            Some(t) => t.lookup_ref(&ctx.env)?,
-            None => bail!("rpc #f must be a function with an argument"),
+        let cb_fn = if let Some(f_arg) = resolved.args.get(3) {
+            deref_typ!("fn", ctx, &f_arg.typ,
+                Some(Type::Fn(ft)) => Ok(ft.clone())
+            )?
+        } else {
+            bail!("rpc #f must be a function with an argument")
         };
+        if cb_fn.args.is_empty() {
+            bail!("rpc #f must be a function with an argument")
+        }
+        let cb_arg_typ = &cb_fn.args[0].typ;
         // if spec is null, callback arg must also be null
         if spec_is_null {
-            if !is_null_type(&cb_arg_typ) {
-                bail!("rpc #f argument must be null when #spec is null, got {cb_arg_typ}")
-            }
-            self.cast_typ = Some(cb_arg_typ);
+            deref_typ!("null", ctx, cb_arg_typ,
+                Some(t @ Type::Primitive(_)) => {
+                    if is_null_type(t) { Ok(()) }
+                    else { bail!("rpc #f argument must be null when #spec is null") }
+                }
+            )?;
+            self.cast_typ = Some(cb_arg_typ.clone());
             return Ok(());
         }
-        let cb_fields = match &cb_arg_typ {
-            Type::Struct(fields) => fields,
-            t => bail!("rpc #f argument must be a struct, got {t}"),
-        };
+        let cb_fields = deref_typ!("struct", ctx, cb_arg_typ,
+            Some(Type::Struct(fields)) => Ok(fields.clone())
+        )?;
         // verify same fields and matching types.
         // the length check catches extra fields in either direction,
         // and the name check below catches mismatched names.
@@ -745,36 +748,43 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             )
         }
         for (spec_name, spec_field_typ) in spec_fields.iter() {
-            let resolved_field = spec_field_typ.lookup_ref(&ctx.env)?;
             // extract the value type T from {default: T, doc: string}
-            let value_typ = match &resolved_field {
-                Type::Struct(inner) => inner
-                    .iter()
-                    .find(|(n, _)| n.as_str() == "default")
-                    .map(|(_, t)| t.clone()),
-                _ => None,
-            };
-            let value_typ = match value_typ {
-                Some(t) => t,
-                None => bail!("rpc #spec field '{spec_name}' missing 'default'"),
-            };
+            let value_typ = deref_typ!(
+                "{{default: 'a, doc: string}}", ctx, spec_field_typ,
+                Some(Type::Struct(inner)) => {
+                    match inner.iter().find(|(n, _)| n.as_str() == "default") {
+                        Some((_, t)) => Ok(t.clone()),
+                        None => bail!("rpc #spec field '{spec_name}' missing 'default'"),
+                    }
+                }
+            )?;
             let cb_field = cb_fields.iter().find(|(n, _)| n == spec_name);
             match cb_field {
                 None => bail!("rpc #f argument missing field '{spec_name}'"),
                 Some((_, cb_typ)) => {
-                    let cb_resolved = cb_typ.lookup_ref(&ctx.env)?;
-                    // the callback arg type must contain the default type
-                    if !cb_resolved.contains(&ctx.env, &value_typ)? {
-                        bail!(
-                            "rpc field '{spec_name}' type mismatch: \
-                             #f argument type {cb_resolved} does not contain \
-                             #spec default type {value_typ}"
-                        )
-                    }
+                    let check = |t: &Type| -> Result<()> {
+                        if !t.contains(&ctx.env, &value_typ)? {
+                            bail!(
+                                "rpc field '{spec_name}' type mismatch: \
+                                 #f argument type {t} does not contain \
+                                 #spec default type {value_typ}"
+                            )
+                        }
+                        Ok(())
+                    };
+                    deref_typ!("type", ctx, cb_typ,
+                        Some(Type::Any | Type::Bottom) => Ok(()),
+                        Some(t @ (
+                            Type::Primitive(_) | Type::Fn(_) | Type::Set(_)
+                            | Type::Error(_) | Type::Array(_) | Type::ByRef(_)
+                            | Type::Tuple(_) | Type::Struct(_) | Type::Variant(_, _)
+                            | Type::Map { .. } | Type::Abstract { .. }
+                        )) => check(t)
+                    )?;
                 }
             }
         }
-        self.cast_typ = Some(cb_arg_typ);
+        self.cast_typ = Some(cb_arg_typ.clone());
         Ok(())
     }
 }

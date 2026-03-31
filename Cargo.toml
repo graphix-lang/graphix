@@ -7,7 +7,8 @@ debug = false
 [profile.dev]
 opt-level = "z"
 lto = "thin"
-debug = true
+debug = false
+split-debuginfo = "unpacked"
 
 [workspace.dependencies]
 syn = "2"
@@ -131,5 +132,6 @@ members = [
     "stdlib/graphix-package-xls",
     "stdlib/graphix-package-pack",
     "stdlib/graphix-package-sqlite",
+    "stdlib/graphix-package-hbs",
     "stdlib/graphix-tests"
 ]

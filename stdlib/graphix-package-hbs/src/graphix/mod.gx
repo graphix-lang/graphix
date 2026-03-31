@@ -1,0 +1,2 @@
+let render = |#strict: bool = false, #partials: 'a = null, template: string, data: 'b|
+    -> Result<string, `HbsErr(string)> 'hbs_render

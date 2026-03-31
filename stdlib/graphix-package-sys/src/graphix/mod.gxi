@@ -4,6 +4,7 @@ mod tcp;
 mod tls;
 mod time;
 mod net;
+mod dirs;
 
 /// the command line arguments. argv[0] is the script file.
 val args: fn() -> Array<string>;

@@ -1,0 +1,56 @@
+/// the user's home directory
+val home_dir: fn() -> [string, null];
+
+/// the application cache directory
+val cache_dir: fn() -> [string, null];
+
+/// the application configuration directory (e.g. ~/.config on Linux)
+val config_dir: fn() -> [string, null];
+
+/// the local application configuration directory
+val config_local_dir: fn() -> [string, null];
+
+/// the application data directory
+val data_dir: fn() -> [string, null];
+
+/// the local application data directory
+val data_local_dir: fn() -> [string, null];
+
+/// the executables directory (Linux only, null on other platforms)
+val executable_dir: fn() -> [string, null];
+
+/// the application preference directory
+val preference_dir: fn() -> [string, null];
+
+/// the runtime directory (Linux only, null on other platforms)
+val runtime_dir: fn() -> [string, null];
+
+/// the state directory (Linux only, null on other platforms)
+val state_dir: fn() -> [string, null];
+
+/// the user's audio/music directory
+val audio_dir: fn() -> [string, null];
+
+/// the user's desktop directory
+val desktop_dir: fn() -> [string, null];
+
+/// the user's documents directory
+val document_dir: fn() -> [string, null];
+
+/// the user's downloads directory
+val download_dir: fn() -> [string, null];
+
+/// the fonts directory
+val font_dir: fn() -> [string, null];
+
+/// the user's pictures directory
+val picture_dir: fn() -> [string, null];
+
+/// the public share directory
+val public_dir: fn() -> [string, null];
+
+/// the templates directory
+val template_dir: fn() -> [string, null];
+
+/// the user's video directory
+val video_dir: fn() -> [string, null];

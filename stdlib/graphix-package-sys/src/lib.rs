@@ -30,6 +30,7 @@ use tokio::{
 };
 
 pub(crate) mod dir;
+pub(crate) mod dirs_mod;
 pub(crate) mod fs;
 pub(crate) mod io;
 pub(crate) mod metadata;
@@ -476,5 +477,24 @@ graphix_derive::defpackage! {
         time::AfterIdle,
         time::Timer,
         time::Now,
+        dirs_mod::HomeDir,
+        dirs_mod::CacheDir,
+        dirs_mod::ConfigDir,
+        dirs_mod::ConfigLocalDir,
+        dirs_mod::DataDir,
+        dirs_mod::DataLocalDir,
+        dirs_mod::ExecutableDir,
+        dirs_mod::PreferenceDir,
+        dirs_mod::RuntimeDir,
+        dirs_mod::StateDir,
+        dirs_mod::AudioDir,
+        dirs_mod::DesktopDir,
+        dirs_mod::DocumentDir,
+        dirs_mod::DownloadDir,
+        dirs_mod::FontDir,
+        dirs_mod::PictureDir,
+        dirs_mod::PublicDir,
+        dirs_mod::TemplateDir,
+        dirs_mod::VideoDir,
     ],
 }
