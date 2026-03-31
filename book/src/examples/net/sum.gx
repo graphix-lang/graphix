@@ -1,8 +1,11 @@
-let table = sys::net::list_table("/local/bench")$;
+use sys;
+
+let table = net::list_table("/local/bench")$;
 let columns = array::filter(table.columns, |c| c.0 != "sum");
 let table = uniq({ table with columns });
 array::map(table.rows, |row| {
-  let sum = array::fold(table.columns, v64:0,
-    |acc, c| acc + cast<v64>(sys::net::subscribe("[row]/[c.0]")$)$);
-  sys::net::publish("[row]/sum", sum)
+  let sum = array::fold(table.columns, v64:0, |acc, c|
+    acc + net::subscribe("[row]/[c.0]")$
+  )$;
+  net::publish("[row]/sum", sum)
 })

@@ -94,13 +94,16 @@ let browser = |
         let name = select str::basename(row) { null as _ => "", s => s };
         select mode {
             `List => {
-                let v = throttle(#rate, net::subscribe("[row]"));
+                let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
+                    throttle(#rate, net::subscribe("[row]"));
                 [name, "[any(uniq(row) ~ "#SUB", v)]"]
             },
             `Table => {
                 let a = array::map(visible_columns, |col| {
                     let path = "[row]/[col]";
-                    "[any(uniq(path) ~ "#SUB", throttle(#rate, net::subscribe(path)))]"
+                    let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
+                        throttle(#rate, net::subscribe(path));
+                    "[any(uniq(path) ~ "#SUB", v)]"
                 });
                 array::push_front(a, name)
             }
