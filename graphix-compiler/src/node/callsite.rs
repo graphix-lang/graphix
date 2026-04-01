@@ -1,4 +1,4 @@
-use super::{compiler::compile, Nop};
+use super::{bind::Ref, compiler::compile, Nop, NOP};
 use crate::{
     deref_typ,
     expr::{ErrorContext, Expr, ExprId},
@@ -16,28 +16,47 @@ use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, mem};
 use triomphe::Arc as TArc;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ArgKey {
+    Positional(usize),
+    Named(ArcStr),
+}
+
+#[derive(Debug)]
+pub(crate) struct Arg<R: Rt, E: UserEvent> {
+    pub id: BindId,
+    pub node: Option<Node<R, E>>,
+    pub is_default: bool,
+}
+
 fn compile_apply_args<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
-) -> Result<(Vec<Node<R, E>>, FxHashMap<ArcStr, (Option<Node<R, E>>, bool)>)> {
-    let mut named: FxHashMap<ArcStr, (Option<Node<R, E>>, bool)> = FxHashMap::default();
-    let mut nodes: Vec<Node<R, E>> = vec![];
+) -> Result<FxHashMap<ArgKey, Arg<R, E>>> {
+    let mut res = FxHashMap::default();
+    let mut pos = 0;
     for (name, expr) in args.iter() {
-        let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
+        let node = Some(compile(ctx, flags, expr.clone(), scope, top_id)?);
         match name {
-            None => nodes.push(n),
-            Some(k) => match named.entry(k.clone()) {
+            None => {
+                res.insert(
+                    ArgKey::Positional(pos),
+                    Arg { id: BindId::new(), node, is_default: false },
+                );
+                pos += 1;
+            }
+            Some(k) => match res.entry(ArgKey::Named(k.clone())) {
                 Entry::Occupied(_) => bail!("duplicate named argument {k}"),
                 Entry::Vacant(e) => {
-                    e.insert((Some(n), false));
+                    e.insert(Arg { id: BindId::new(), node, is_default: false });
                 }
             },
         }
     }
-    Ok((nodes, named))
+    Ok(res)
 }
 
 #[derive(Debug)]
@@ -47,8 +66,8 @@ pub(crate) struct CallSite<R: Rt, E: UserEvent> {
     pub(super) resolved_ftype: Option<FnType>,
     pub(super) rtype: Type,
     pub(super) fnode: Node<R, E>,
-    pub(super) named_args: FxHashMap<ArcStr, (Option<Node<R, E>>, bool)>,
-    pub(super) args: Vec<Node<R, E>>,
+    pub(super) args: FxHashMap<ArgKey, Arg<R, E>>,
+    pub(super) arg_refs: Vec<Node<R, E>>,
     pub(super) function: Option<(Value, Box<dyn Apply<R, E>>)>,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
@@ -67,21 +86,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ) -> Result<Node<R, E>> {
         let fnode = compile(ctx, flags, (**f).clone(), scope, top_id)?;
         let spec = TArc::new(spec);
-        let (args, named_args) = compile_apply_args(ctx, flags, scope, top_id, args)?;
+        let args = compile_apply_args(ctx, flags, scope, top_id, args)?;
         let site = Self {
             spec,
             ftype: None,
             resolved_ftype: None,
             rtype: Type::empty_tvar(),
-            named_args,
-            args,
             fnode,
+            args,
+            arg_refs: Vec::new(),
             function: None,
             flags,
             top_id,
             scope: scope.clone(),
         };
         Ok(Box::new(site))
+    }
+
+    fn make_ref(&self, id: BindId, typ: Type) -> Node<R, E> {
+        Box::new(Ref { spec: NOP.clone(), typ, id, top_id: self.top_id })
     }
 
     fn bind(
@@ -128,77 +151,119 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }};
         }
-        let ftype = match &self.function {
-            Some((_, f)) => &f.typ(),
-            None => match self.ftype.as_ref() {
-                Some(ftype) => ftype,
-                None => {
-                    let ftype = &*f.typ;
-                    self.ftype = Some(ftype.clone());
-                    for (i, arg) in ftype.args.iter().enumerate() {
-                        if let Some((name, default)) = &arg.label {
-                            match self.named_args.get_mut(name) {
-                                None if !*default => {
-                                    bail!("BUG: in bind missing required argument {name}")
-                                }
-                                None => {
-                                    self.args.insert(i, Nop::new(arg.typ.clone()));
-                                    self.named_args.insert(name.clone(), (None, true));
-                                }
-                                Some((n, _)) => {
-                                    if let Some(n) = n.take() {
-                                        self.args.insert(i, n)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ftype
-                }
-            },
-        };
-        for arg in ftype.args.iter() {
-            if let Some((name, _)) = &arg.label {
-                let (n, is_default) = self.named_args.get_mut(name).unwrap();
-                if *is_default {
-                    let mut n = self.args.remove(0);
+        // Clean up previous binding
+        if let Some((_, mut old_f)) = self.function.take() {
+            old_f.delete(ctx);
+        }
+        for mut n in self.arg_refs.drain(..) {
+            n.delete(ctx);
+        }
+        // Remove and delete default args from previous bind
+        self.args.retain(|_, arg| {
+            if arg.is_default {
+                if let Some(mut n) = arg.node.take() {
                     n.delete(ctx);
-                } else {
-                    *n = Some(self.args.remove(0));
+                }
+                false
+            } else {
+                true
+            }
+        });
+        // Build arg_refs in function-signature order
+        let mut pos_idx = 0;
+        for (i, farg) in f.typ.args.iter().enumerate() {
+            if let Some((name, default)) = &farg.label {
+                match self.args.get(&ArgKey::Named(name.clone())) {
+                    Some(arg) => {
+                        let typ = arg
+                            .node
+                            .as_ref()
+                            .map(|n| n.typ().clone())
+                            .unwrap_or_else(|| farg.typ.clone());
+                        self.arg_refs.push(self.make_ref(arg.id, typ));
+                    }
+                    None if *default => {
+                        let id = BindId::new();
+                        let default_node = compile_default!(i, f);
+                        let typ = default_node.typ().clone();
+                        self.args.insert(
+                            ArgKey::Named(name.clone()),
+                            Arg { id, node: Some(default_node), is_default: true },
+                        );
+                        self.arg_refs.push(self.make_ref(id, typ));
+                    }
+                    None => bail!("BUG: in bind missing required argument {name}"),
+                }
+            } else {
+                // Positional argument - find the pos_idx'th positional arg
+                let key = loop {
+                    let candidate = ArgKey::Positional(pos_idx);
+                    pos_idx += 1;
+                    if self.args.contains_key(&candidate) {
+                        break candidate;
+                    }
+                    if pos_idx > self.args.len() + f.typ.args.len() {
+                        bail!("missing required positional argument {i}")
+                    }
+                };
+                let arg = &self.args[&key];
+                let typ = arg
+                    .node
+                    .as_ref()
+                    .map(|n| n.typ().clone())
+                    .unwrap_or_else(|| farg.typ.clone());
+                self.arg_refs.push(self.make_ref(arg.id, typ));
+            }
+        }
+        // Handle vargs - remaining positional args
+        if f.typ.vargs.is_some() {
+            loop {
+                let key = ArgKey::Positional(pos_idx);
+                pos_idx += 1;
+                match self.args.get(&key) {
+                    Some(arg) => {
+                        let typ = arg
+                            .node
+                            .as_ref()
+                            .map(|n| n.typ().clone())
+                            .unwrap_or_else(|| Type::Bottom);
+                        self.arg_refs.push(self.make_ref(arg.id, typ));
+                    }
+                    None => break,
                 }
             }
         }
-        let mut labeled: LPooled<FxHashSet<ArcStr>> = LPooled::take();
-        for (i, arg) in f.typ.args.iter().enumerate() {
-            if let Some((name, _)) = &arg.label {
-                labeled.insert(name.clone());
-                match self.named_args.entry(name.clone()) {
-                    Entry::Occupied(mut e) => match e.get_mut().0.take() {
-                        Some(n) => self.args.insert(i, n),
-                        None => self.args.insert(i, compile_default!(i, f)),
-                    },
-                    Entry::Vacant(e) => {
-                        e.insert((None, true));
-                        self.args.insert(i, compile_default!(i, f))
+        // Ensure all arg values are available for the init cycle.
+        // Defaults need to be updated for the first time (with init=true
+        // since Constant only fires on init); existing args may not have
+        // changed this cycle but their cached values must be visible to
+        // the newly bound function body.
+        let prev_init = mem::replace(&mut event.init, true);
+        for arg in self.args.values_mut() {
+            if arg.is_default {
+                if let Some(ref mut node) = arg.node {
+                    if let Some(v) = node.update(ctx, event) {
+                        ctx.cached.insert(arg.id, v.clone());
+                        event.variables.insert(arg.id, v);
+                        set.push(arg.id);
                     }
                 }
+            } else if let Entry::Vacant(e) = event.variables.entry(arg.id) {
+                if let Some(v) = ctx.cached.get(&arg.id) {
+                    e.insert(v.clone());
+                    set.push(arg.id);
+                }
             }
         }
-        self.named_args.retain(|name, (n, _)| {
-            let keep = labeled.contains(name);
-            if !keep && let Some(n) = n {
-                n.delete(ctx)
-            }
-            keep
-        });
+        event.init = prev_init;
         let mut rf = (f.init)(
             &scope,
             ctx,
-            &mut self.args,
+            &mut self.arg_refs,
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        let _ = rf.typecheck(ctx, &mut self.args, TypecheckPhase::Lambda);
+        let _ = rf.typecheck(ctx, &mut self.arg_refs, TypecheckPhase::Lambda);
         self.function = Some((fv, rf));
         Ok(())
     }
@@ -207,6 +272,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
+        // Update all arg nodes every cycle, publishing values via bind IDs
+        for arg in self.args.values_mut() {
+            if let Some(ref mut node) = arg.node {
+                if let Some(v) = node.update(ctx, event) {
+                    ctx.cached.insert(arg.id, v.clone());
+                    event.variables.insert(arg.id, v);
+                    set.push(arg.id);
+                }
+            }
+        }
         let bound = match (&self.function, self.fnode.update(ctx, event)) {
             (_, None) => false,
             (Some((fv, _)), Some(v)) if fv == &v => false,
@@ -221,8 +296,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             },
         };
         match &mut self.function {
-            None => None,
-            Some((_, f)) if !bound => f.update(ctx, &mut self.args, event),
+            None => {
+                for id in set.drain(..) {
+                    event.variables.remove(&id);
+                }
+                None
+            }
+            Some((_, f)) if !bound => {
+                let res = f.update(ctx, &mut self.arg_refs, event);
+                for id in set.drain(..) {
+                    event.variables.remove(&id);
+                }
+                res
+            }
             Some((_, f)) => {
                 let init = mem::replace(&mut event.init, true);
                 let mut refs = Refs::default();
@@ -235,7 +321,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         }
                     }
                 });
-                let res = f.update(ctx, &mut self.args, event);
+                let res = f.update(ctx, &mut self.arg_refs, event);
                 event.init = init;
                 for id in set.drain(..) {
                     event.variables.remove(&id);
@@ -246,48 +332,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let Self {
-            spec: _,
-            rtype: _,
-            ftype: _,
-            resolved_ftype: _,
-            fnode,
-            named_args: _,
-            args,
-            function,
-            flags: _,
-            top_id: _,
-            scope: _,
-        } = self;
-        if let Some((_, f)) = function {
+        if let Some((_, mut f)) = self.function.take() {
             f.delete(ctx)
         }
-        fnode.delete(ctx);
-        for n in args {
-            n.delete(ctx)
+        self.fnode.delete(ctx);
+        for arg in self.args.values_mut() {
+            if let Some(ref mut n) = arg.node {
+                n.delete(ctx);
+            }
+        }
+        for n in &mut self.arg_refs {
+            n.delete(ctx);
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let Self {
-            spec: _,
-            rtype: _,
-            ftype: _,
-            resolved_ftype: _,
-            fnode,
-            named_args: _,
-            args,
-            function,
-            flags: _,
-            top_id: _,
-            scope: _,
-        } = self;
-        if let Some((_, f)) = function {
+        if let Some((_, f)) = &mut self.function {
             f.sleep(ctx)
         }
-        fnode.sleep(ctx);
-        for n in args {
-            n.sleep(ctx)
+        self.fnode.sleep(ctx);
+        for arg in self.args.values_mut() {
+            if let Some(ref mut n) = arg.node {
+                n.sleep(ctx);
+            }
+        }
+        for n in &mut self.arg_refs {
+            n.sleep(ctx);
         }
     }
 
@@ -311,76 +381,113 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ftype.alias_tvars(&mut LPooled::take());
                 self.ftype = Some(ftype.clone());
                 let ftype = self.ftype.as_ref().unwrap();
-                let args_len = self.args.len() + self.named_args.len();
-                if ftype.args.len() < args_len && ftype.vargs.is_none() {
+                if ftype.args.len() < self.args.len() && ftype.vargs.is_none() {
                     bail!(
                         "too many arguments, expected {}, received {}",
                         ftype.args.len(),
-                        args_len
+                        self.args.len()
                     )
                 }
                 let mut labeled: LPooled<FxHashSet<ArcStr>> = LPooled::take();
-                for (i, arg) in ftype.args.iter().enumerate() {
+                for arg in ftype.args.iter() {
                     if let Some((name, default)) = &arg.label {
                         labeled.insert(name.clone());
-                        match self.named_args.get_mut(name) {
+                        match self.args.get(&ArgKey::Named(name.clone())) {
                             None if !*default => {
                                 bail!("missing required argument {name}")
                             }
                             None => {
-                                self.args.insert(i, Nop::new(arg.typ.clone()));
-                                self.named_args.insert(name.clone(), (None, true));
+                                // Will be filled with default at bind time; insert placeholder
+                                self.args.insert(
+                                    ArgKey::Named(name.clone()),
+                                    Arg {
+                                        id: BindId::new(),
+                                        node: Some(Nop::new(arg.typ.clone())),
+                                        is_default: true,
+                                    },
+                                );
                             }
-                            Some((n, _)) => {
-                                if let Some(n) = n.take() {
-                                    self.args.insert(i, n)
-                                }
-                            }
+                            Some(_) => {}
                         }
                     }
-                    if i >= self.args.len() {
-                        bail!("missing required argument")
+                }
+                for key in self.args.keys() {
+                    if let ArgKey::Named(name) = key {
+                        if !labeled.contains(name) {
+                            bail!("unknown labeled argument {name}")
+                        }
                     }
                 }
-                for name in self.named_args.keys() {
-                    if !labeled.contains(name) {
-                        bail!("unknown labeled argument {name}")
-                    }
+                // Check we have enough positional args
+                let n_positional_required =
+                    ftype.args.iter().filter(|a| a.label.is_none()).count();
+                let n_positional_provided = self
+                    .args
+                    .keys()
+                    .filter(|k| matches!(k, ArgKey::Positional(_)))
+                    .count();
+                if n_positional_provided < n_positional_required {
+                    bail!("missing required argument")
                 }
                 ftype
             }
         };
         let mut hof_idmap: LPooled<FxHashMap<LambdaId, usize>> = LPooled::take();
-        for (i, (n, arg)) in self.args.iter_mut().zip(ftype.args.iter()).enumerate() {
-            // associate the fntype arg with the arg before typechecking the arg
-            arg.typ.contains(&ctx.env, n.typ())?;
-            wrap!(n, n.typecheck(ctx))?;
-            wrap!(n, arg.typ.check_contains(&ctx.env, n.typ()))?;
-            match deref_typ!("arg", ctx, n.typ(), Some(t) => Ok(Some(t.clone())), None => Ok(None))
-            {
-                Ok(Some(Type::Fn(ft))) => {
-                    if !TArc::ptr_eq(&ftype.lambda_ids, &ft.lambda_ids) {
-                        let ids = ft.lambda_ids.read();
-                        if ids.len() > 0 {
-                            let mut wids = ftype.lambda_ids.write();
-                            for id in ids.iter().copied() {
-                                hof_idmap.insert(id, i);
-                                wids.insert(id);
+        // Typecheck positional args in order
+        let mut pos_idx = 0;
+        for (i, farg) in ftype.args.iter().enumerate() {
+            let key = if let Some((name, _)) = &farg.label {
+                ArgKey::Named(name.clone())
+            } else {
+                let key = loop {
+                    let candidate = ArgKey::Positional(pos_idx);
+                    pos_idx += 1;
+                    if self.args.contains_key(&candidate) {
+                        break candidate;
+                    }
+                    bail!("missing required positional argument {i}")
+                };
+                key
+            };
+            if let Some(arg) = self.args.get_mut(&key) {
+                if let Some(ref mut n) = arg.node {
+                    farg.typ.contains(&ctx.env, n.typ())?;
+                    wrap!(n, n.typecheck(ctx))?;
+                    wrap!(n, farg.typ.check_contains(&ctx.env, n.typ()))?;
+                    match deref_typ!("arg", ctx, n.typ(), Some(t) => Ok(Some(t.clone())), None => Ok(None))
+                    {
+                        Ok(Some(Type::Fn(ft))) => {
+                            if !TArc::ptr_eq(&ftype.lambda_ids, &ft.lambda_ids) {
+                                let ids = ft.lambda_ids.read();
+                                if ids.len() > 0 {
+                                    let mut wids = ftype.lambda_ids.write();
+                                    for id in ids.iter().copied() {
+                                        hof_idmap.insert(id, i);
+                                        wids.insert(id);
+                                    }
+                                }
                             }
                         }
+                        Ok(None | Some(_)) | Err(_) => (),
                     }
                 }
-                Ok(None | Some(_)) | Err(_) => (),
             }
         }
-        if self.args.len() > ftype.args.len()
-            && let Some(typ) = &ftype.vargs
-        {
-            for n in &mut self.args[ftype.args.len()..] {
-                // associate the fntype arg with the arg before typechecking the arg
-                typ.contains(&ctx.env, n.typ())?;
-                wrap!(n, n.typecheck(ctx))?;
-                wrap!(n, typ.check_contains(&ctx.env, n.typ()))?
+        // Typecheck vargs
+        if let Some(typ) = &ftype.vargs {
+            loop {
+                let key = ArgKey::Positional(pos_idx);
+                pos_idx += 1;
+                match self.args.get_mut(&key) {
+                    Some(arg) => {
+                        if let Some(ref mut n) = arg.node {
+                            typ.contains(&ctx.env, n.typ())?;
+                            wrap!(n, n.typecheck(ctx))?;
+                            wrap!(n, typ.check_contains(&ctx.env, n.typ()))?;
+                        }
+                    }
+                    None => break,
+                }
             }
         }
         for (tv, tc) in ftype.constraints.read().iter() {
@@ -458,25 +565,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        let Self {
-            spec: _,
-            rtype: _,
-            ftype: _,
-            resolved_ftype: _,
-            fnode,
-            named_args: _,
-            args,
-            function,
-            flags: _,
-            top_id: _,
-            scope: _,
-        } = self;
-        if let Some((_, fun)) = function {
+        if let Some((_, fun)) = &self.function {
             fun.refs(refs)
         }
-        fnode.refs(refs);
-        for n in args {
-            n.refs(refs)
+        self.fnode.refs(refs);
+        for arg in self.args.values() {
+            refs.bound.insert(arg.id);
+            if let Some(ref n) = arg.node {
+                n.refs(refs);
+            }
+        }
+        for n in &self.arg_refs {
+            n.refs(refs);
         }
     }
 }

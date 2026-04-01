@@ -83,14 +83,13 @@ pub fn with_trace<F: FnOnce() -> Result<R>, R>(
     spec: &Expr,
     f: F,
 ) -> Result<R> {
-    let set = if enable {
+    let prev = trace();
+    set_trace(enable);
+    if !prev && enable {
         eprintln!("trace enabled at {}, spec: {}", spec.pos, spec);
-        let prev = trace();
-        set_trace(true);
-        !prev
-    } else {
-        false
-    };
+    } else if prev && !enable {
+        eprintln!("trace disabled at {}, spec: {}", spec.pos, spec);
+    }
     let r = match f() {
         Err(e) => {
             eprintln!("traced at {} failed with {e:?}", spec.pos);
@@ -98,10 +97,10 @@ pub fn with_trace<F: FnOnce() -> Result<R>, R>(
         }
         r => r,
     };
-    if set {
-        eprintln!("trace disabled at {}", spec.pos);
-        set_trace(false)
+    if prev && !enable {
+        eprintln!("trace reenabled")
     }
+    set_trace(prev);
     r
 }
 

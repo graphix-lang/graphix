@@ -282,3 +282,66 @@ run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
+
+// Regression test: callsite args must be updated every cycle, not just
+// when the function is bound. array::iter produces 10, 20, 30 across
+// the first 3 cycles then exhausts. The function binds on cycle 6
+// (when step reaches 5). By then the arg value (30) is only in cached,
+// not in event.variables. The fix ensures bind() populates cached values
+// so the function sees the last arg value.
+const ARG_UPDATE_BEFORE_BIND: &str = r#"
+{
+    let vals = array::iter([10, 20, 30]);
+    let step = 0;
+    step <- select step {
+        n if n < 5 => step + 1,
+        _ => never()
+    };
+    let f: fn(i64) -> i64 = never();
+    f <- select step {
+        5 => |i: i64| -> i64 i + 1,
+        _ => never()
+    };
+    f(vals)
+}
+"#;
+
+run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
+    Ok(Value::I64(31)) => true,
+    _ => false,
+});
+
+// Verify that arg changes propagate through the ArgRef proxy after the
+// function is already bound (steady-state !bound path).
+const ARG_UPDATE_AFTER_BIND: &str = r#"
+{
+    let x = 0;
+    x <- select x {
+        n if n < 3 => x + 1,
+        _ => never()
+    };
+    let f = |i: i64| i * 10;
+    array::group(f(x), |n, _| n == 4)
+}
+"#;
+
+run!(arg_update_after_bind, ARG_UPDATE_AFTER_BIND, |v: Result<&Value>| match v {
+    Ok(v) => match v.clone().cast_to::<[i64; 4]>() {
+        Ok([0, 10, 20, 30]) => true,
+        _ => false,
+    },
+    _ => false,
+});
+
+// Variadic args: extra positional args beyond the fixed signature
+const VARGS0: &str = r#"
+array::push([1, 2], 3, 4, 5)
+"#;
+
+run!(vargs0, VARGS0, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => match &a[..] {
+        [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] => true,
+        _ => false,
+    },
+    _ => false,
+});

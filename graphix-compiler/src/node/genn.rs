@@ -1,13 +1,17 @@
-use super::{bind::Ref, callsite::CallSite, Constant, Nop, NOP};
+use super::{
+    bind::Ref,
+    callsite::{Arg, ArgKey, CallSite},
+    Constant, Nop, NOP,
+};
 use crate::{
     expr::{ExprId, ModPath},
     typ::{FnType, Type},
     BindId, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use enumflags2::BitFlags;
+use fxhash::FxHashMap;
 use netidx::publisher::{Typ, Value};
 use poolshark::local::LPooled;
-use std::collections::HashMap;
 
 /// generate a no op with the specific type
 pub fn nop<R: Rt, E: UserEvent>(typ: Type) -> Node<R, E> {
@@ -56,13 +60,23 @@ pub fn apply<R: Rt, E: UserEvent>(
 ) -> Node<R, E> {
     let ftype = typ.reset_tvars();
     ftype.alias_tvars(&mut LPooled::take());
+    let args: FxHashMap<ArgKey, Arg<R, E>> = args
+        .into_iter()
+        .enumerate()
+        .map(|(i, node)| {
+            (
+                ArgKey::Positional(i),
+                Arg { id: BindId::new(), node: Some(node), is_default: false },
+            )
+        })
+        .collect();
     Box::new(CallSite {
         spec: NOP.clone(),
         rtype: ftype.rtype.clone(),
         ftype: Some(ftype),
         resolved_ftype: None,
-        named_args: HashMap::default(),
         args,
+        arg_refs: Vec::new(),
         scope,
         flags: BitFlags::empty(),
         fnode,

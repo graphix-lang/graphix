@@ -154,9 +154,15 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 #[macro_export]
 macro_rules! run {
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!($name, $pred, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, 30, "/test.gx" => format!("let result = {}", $code));
+    };
+    ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
+        $crate::run!(@impl $name, $pred, $timeout, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
+        $crate::run!(@impl $name, $pred, 30, $($path => $code),+);
+    };
+    (@impl $name:ident, $pred:expr, $timeout:expr, $($path:literal => $code:expr),+) => {
         #[tokio::test(flavor = "current_thread")]
         async fn $name() -> ::anyhow::Result<()> {
             let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
@@ -173,18 +179,27 @@ macro_rules! run {
                 Ok(e) => {
                     dbg!("compilation succeeded");
                     let eid = e.exprs[0].id;
+                    let timeout = ::tokio::time::sleep(
+                        ::std::time::Duration::from_secs($timeout),
+                    );
+                    ::tokio::pin!(timeout);
                     loop {
-                        match rx.recv().await {
-                            None => ::anyhow::bail!("runtime died"),
-                            Some(mut batch) => {
-                                for e in batch.drain(..) {
-                                    match e {
-                                        ::graphix_rt::GXEvent::Env(_) => (),
-                                        ::graphix_rt::GXEvent::Updated(id, v) => {
-                                            eprintln!("{v}");
-                                            assert_eq!(id, eid);
-                                            assert!($pred(Ok(&v)));
-                                            return Ok(());
+                        ::tokio::select! {
+                            _ = &mut timeout => ::anyhow::bail!(
+                                "timeout after {}s waiting for result", $timeout,
+                            ),
+                            batch = rx.recv() => match batch {
+                                None => ::anyhow::bail!("runtime died"),
+                                Some(mut batch) => {
+                                    for e in batch.drain(..) {
+                                        match e {
+                                            ::graphix_rt::GXEvent::Env(_) => (),
+                                            ::graphix_rt::GXEvent::Updated(id, v) => {
+                                                eprintln!("{v}");
+                                                assert_eq!(id, eid);
+                                                assert!($pred(Ok(&v)));
+                                                return Ok(());
+                                            }
                                         }
                                     }
                                 }

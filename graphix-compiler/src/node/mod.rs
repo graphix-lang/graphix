@@ -81,7 +81,7 @@ macro_rules! deref_typ {
     };
 }
 
-static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
+pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
     Arc::new(
         ExprKind::Constant(Value::String(literal!("nop"))).to_expr(Default::default()),
     )
