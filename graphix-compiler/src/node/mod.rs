@@ -74,7 +74,7 @@ macro_rules! deref_typ {
                     Some(t) => $crate::format_with_flags(PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
-                    None => anyhow::bail!("type must be known, annotations needed"),
+                    None => anyhow::bail!("type must be known, annotations needed")
                 }
             }
         })
