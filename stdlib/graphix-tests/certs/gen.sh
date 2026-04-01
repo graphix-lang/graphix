@@ -21,6 +21,7 @@ openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key \
   -CAcreateserial -out server.pem -days 730 -extfile <(cat <<EOF
 basicConstraints=critical, CA:FALSE
 keyUsage=nonRepudiation,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
 subjectAltName=IP:127.0.0.1
 EOF
 )

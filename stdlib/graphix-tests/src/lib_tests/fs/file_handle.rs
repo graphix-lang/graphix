@@ -47,7 +47,7 @@ run!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
 });
 
-// fstat after write
+// fstat after write (flush required — macOS doesn't update metadata until flush)
 const FSTAT_AFTER_WRITE: &str = r#"{
   use sys::fs;
 
@@ -55,7 +55,8 @@ const FSTAT_AFTER_WRITE: &str = r#"{
   let path = sys::join_path(sys::fs::tempdir::path(temp), "fstat.txt");
   let f = open(`Create, path)?;
   let written = sys::io::write_exact(f, buffer::from_string("12345"));
-  let md = fstat(written? ~ f)?;
+  let flushed = sys::io::flush(written? ~ f);
+  let md = fstat(flushed? ~ f)?;
   md.len == u64:5
 }"#;
 

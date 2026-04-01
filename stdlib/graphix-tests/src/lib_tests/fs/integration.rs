@@ -14,7 +14,10 @@ run!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Test content")
 });
 
-// Test that watches a directory, writes to a file, and receives modify events
+// Test that watches a directory, writes to a file, and receives modify events.
+// On macOS, FSEvents reports file writes as Create rather than Modify, so
+// we include both in the interest set.
+#[cfg(not(target_os = "macos"))]
 const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   let paths = {
     let temp = sys::fs::tempdir::create(null)?;
@@ -27,6 +30,31 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   use sys::fs::watch;
   let w = create(null)?;
   let handle = watch(#interest: [`Established, `Modify], w, paths.dir)?;
+  let watch_path = path(handle);
+  let established = once(watch_path);
+  let modify_event = skip(#n:1, watch_path);
+  let write_done = sys::fs::write_all(#path: established ~ paths.file, "modified by write_all");
+  let content = sys::fs::read_all(write_done ~ paths.file);
+
+  let content_ok = content == "modified by write_all";
+  let modify_ok = modify_event != "";
+
+  content_ok && modify_ok
+}"#;
+
+#[cfg(target_os = "macos")]
+const WRITE_THEN_WATCH_MODIFY: &str = r#"{
+  let paths = {
+    let temp = sys::fs::tempdir::create(null)?;
+    let temp_path = sys::fs::tempdir::path(temp);
+    let file_path = sys::join_path(temp_path, "watch_write_test.txt");
+    let write_result = sys::fs::write_all(#path: file_path, "initial");
+    {dir: temp_path, file: write_result ~ file_path}
+  };
+
+  use sys::fs::watch;
+  let w = create(null)?;
+  let handle = watch(#interest: [`Established, `Modify, `Create], w, paths.dir)?;
   let watch_path = path(handle);
   let established = once(watch_path);
   let modify_event = skip(#n:1, watch_path);

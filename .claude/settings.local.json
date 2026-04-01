@@ -99,7 +99,8 @@
       "Bash(timeout 30 /home/eric/proj/graphix-list/target/debug/graphix --check test_list_simple.gx)",
       "Bash(git rebase:*)",
       "Bash(git show:*)",
-      "Read(//home/eric/proj/netidx/netidx-value/src/**)"
+      "Read(//home/eric/proj/netidx/netidx-value/src/**)",
+      "Bash(bash gen.sh)"
     ],
     "deny": [],
     "ask": []
