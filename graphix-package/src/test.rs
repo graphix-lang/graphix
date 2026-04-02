@@ -151,7 +151,7 @@ fn write_vendor_config(dir: &Path, ws: &Path) {
         format!(
             "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n\
              [source.vendored-sources]\ndirectory = \"{}\"\n",
-            ws.join("vendor").display()
+            ws.join("vendor").display().to_string().replace('\\', "/")
         ),
     )
     .unwrap();
