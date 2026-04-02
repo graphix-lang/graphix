@@ -1,6 +1,8 @@
-type Stream<'a: [`File, `Tcp, `Tls]>;
 let read = |stream: Stream<'a>, n: u64| -> Result<bytes, `IOError(string)> 'sys_io_read;
 let read_exact = |stream: Stream<'a>, n: u64| -> Result<bytes, `IOError(string)> 'sys_io_read_exact;
 let write = |stream: Stream<'a>, data: bytes| -> Result<u64, `IOError(string)> 'sys_io_write;
 let write_exact = |stream: Stream<'a>, data: bytes| -> Result<null, `IOError(string)> 'sys_io_write_exact;
-let flush = |stream: Stream<'a>| -> Result<null, `IOError(string)> 'sys_io_flush
+let flush = |stream: Stream<'a>| -> Result<null, `IOError(string)> 'sys_io_flush;
+let stdin = |trigger: Any| -> Stream<`Stdio> 'sys_io_stdin;
+let stdout = |trigger: Any| -> Stream<`Stdio> 'sys_io_stdout;
+let stderr = |trigger: Any| -> Stream<`Stdio> 'sys_io_stderr

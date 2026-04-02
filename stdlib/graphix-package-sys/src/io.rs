@@ -9,7 +9,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{get_stream, StreamKind};
+use crate::{get_stream, StreamKind, StreamValue, STREAM_WRAPPER};
 
 // ── IoRead ─────────────────────────────────────────────────────
 
@@ -176,3 +176,69 @@ impl EvalCachedAsync for IoFlushEv {
 }
 
 pub(crate) type IoFlush = CachedArgsAsync<IoFlushEv>;
+
+// ── Stdio constructors ────────────────────────────────────────
+
+fn wrap_stream(kind: StreamKind) -> Value {
+    STREAM_WRAPPER.wrap(StreamValue { inner: Arc::new(Mutex::new(Some(kind))) })
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct IoStdinEv;
+
+impl EvalCachedAsync for IoStdinEv {
+    const NAME: &str = "sys_io_stdin";
+    const NEEDS_CALLSITE: bool = false;
+    type Args = ();
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        cached.0.get(0)?.as_ref()?;
+        Some(())
+    }
+
+    fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
+        async { wrap_stream(StreamKind::Stdin(tokio::io::stdin())) }
+    }
+}
+
+pub(crate) type IoStdin = CachedArgsAsync<IoStdinEv>;
+
+#[derive(Debug, Default)]
+pub(crate) struct IoStdoutEv;
+
+impl EvalCachedAsync for IoStdoutEv {
+    const NAME: &str = "sys_io_stdout";
+    const NEEDS_CALLSITE: bool = false;
+    type Args = ();
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        cached.0.get(0)?.as_ref()?;
+        Some(())
+    }
+
+    fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
+        async { wrap_stream(StreamKind::Stdout(tokio::io::stdout())) }
+    }
+}
+
+pub(crate) type IoStdout = CachedArgsAsync<IoStdoutEv>;
+
+#[derive(Debug, Default)]
+pub(crate) struct IoStderrEv;
+
+impl EvalCachedAsync for IoStderrEv {
+    const NAME: &str = "sys_io_stderr";
+    const NEEDS_CALLSITE: bool = false;
+    type Args = ();
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        cached.0.get(0)?.as_ref()?;
+        Some(())
+    }
+
+    fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
+        async { wrap_stream(StreamKind::Stderr(tokio::io::stderr())) }
+    }
+}
+
+pub(crate) type IoStderr = CachedArgsAsync<IoStderrEv>;

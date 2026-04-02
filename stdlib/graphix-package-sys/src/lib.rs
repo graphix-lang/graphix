@@ -46,6 +46,9 @@ pub enum StreamKind {
     File(tokio::fs::File),
     Tcp(tokio::net::TcpStream),
     Tls(tokio_rustls::TlsStream<tokio::net::TcpStream>),
+    Stdin(tokio::io::Stdin),
+    Stdout(tokio::io::Stdout),
+    Stderr(tokio::io::Stderr),
 }
 
 impl std::fmt::Debug for StreamKind {
@@ -54,6 +57,9 @@ impl std::fmt::Debug for StreamKind {
             StreamKind::File(_) => f.debug_tuple("File").finish(),
             StreamKind::Tcp(s) => f.debug_tuple("Tcp").field(s).finish(),
             StreamKind::Tls(_) => f.debug_tuple("Tls").finish(),
+            StreamKind::Stdin(_) => f.debug_tuple("Stdin").finish(),
+            StreamKind::Stdout(_) => f.debug_tuple("Stdout").finish(),
+            StreamKind::Stderr(_) => f.debug_tuple("Stderr").finish(),
         }
     }
 }
@@ -61,12 +67,12 @@ impl std::fmt::Debug for StreamKind {
 impl StreamKind {
     pub(crate) fn tcp_ref(&self) -> Option<&tokio::net::TcpStream> {
         match self {
-            StreamKind::File(_) => None,
             StreamKind::Tcp(s) => Some(s),
             StreamKind::Tls(s) => {
                 let (tcp, _) = s.get_ref();
                 Some(tcp)
             }
+            _ => None,
         }
     }
 }
@@ -81,6 +87,10 @@ impl AsyncRead for StreamKind {
             StreamKind::File(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Tls(s) => Pin::new(s).poll_read(cx, buf),
+            StreamKind::Stdin(s) => Pin::new(s).poll_read(cx, buf),
+            StreamKind::Stdout(_) | StreamKind::Stderr(_) => Poll::Ready(Err(
+                std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot read from stdout/stderr"),
+            )),
         }
     }
 }
@@ -95,6 +105,11 @@ impl AsyncWrite for StreamKind {
             StreamKind::File(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Tcp(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Tls(s) => Pin::new(s).poll_write(cx, buf),
+            StreamKind::Stdout(s) => Pin::new(s).poll_write(cx, buf),
+            StreamKind::Stderr(s) => Pin::new(s).poll_write(cx, buf),
+            StreamKind::Stdin(_) => Poll::Ready(Err(
+                std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot write to stdin"),
+            )),
         }
     }
 
@@ -106,6 +121,9 @@ impl AsyncWrite for StreamKind {
             StreamKind::File(s) => Pin::new(s).poll_flush(cx),
             StreamKind::Tcp(s) => Pin::new(s).poll_flush(cx),
             StreamKind::Tls(s) => Pin::new(s).poll_flush(cx),
+            StreamKind::Stdout(s) => Pin::new(s).poll_flush(cx),
+            StreamKind::Stderr(s) => Pin::new(s).poll_flush(cx),
+            StreamKind::Stdin(_) => Poll::Ready(Ok(())),
         }
     }
 
@@ -117,6 +135,9 @@ impl AsyncWrite for StreamKind {
             StreamKind::File(s) => Pin::new(s).poll_shutdown(cx),
             StreamKind::Tcp(s) => Pin::new(s).poll_shutdown(cx),
             StreamKind::Tls(s) => Pin::new(s).poll_shutdown(cx),
+            StreamKind::Stdout(s) => Pin::new(s).poll_shutdown(cx),
+            StreamKind::Stderr(s) => Pin::new(s).poll_shutdown(cx),
+            StreamKind::Stdin(_) => Poll::Ready(Ok(())),
         }
     }
 }
@@ -458,6 +479,9 @@ graphix_derive::defpackage! {
         io::IoWrite,
         io::IoWriteExact,
         io::IoFlush,
+        io::IoStdin,
+        io::IoStdout,
+        io::IoStderr,
         tcp::TcpConnect,
         tcp::TcpListen,
         tcp::TcpAccept,
