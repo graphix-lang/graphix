@@ -2,7 +2,9 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-const CERT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/certs");
+fn cert_dir() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
+}
 
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
@@ -23,9 +25,9 @@ run!(http_round_trip, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
 });
 
-run!(https_round_trip, format!(r#"{{
-    let cert = sys::fs::read_all_bin("{CERT_DIR}/server.pem")$;
-    let key = sys::fs::read_all_bin("{CERT_DIR}/server.key")$;
+run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
+    let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
+    let key = sys::fs::read_all_bin("{cd}/server.key")$;
     let handler = |req: http::Request| {{
         body: "hello [req.method]",
         headers: [],
@@ -39,10 +41,10 @@ run!(https_round_trip, format!(r#"{{
         #handler: handler
     )$;
     let addr = http::server_addr(server);
-    let ca = sys::fs::read_all_bin("{CERT_DIR}/ca.pem")$;
+    let ca = sys::fs::read_all_bin("{cd}/ca.pem")$;
     let client = http::client(#ca_cert: ca, server)$;
     let resp = http::request(client, "https://[addr]/")$;
     resp.body
-}}"#), |v: Result<&Value>| {
+}}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
 });
