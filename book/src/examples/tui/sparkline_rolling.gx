@@ -2,12 +2,12 @@ use tui;
 use tui::sparkline;
 
 let data: Array<f64> = [];
-let new_value = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
 
 data <- array::window(
     #n: 60,
     new_value ~ data,
-    cast<f64>(new_value)?
+    new_value
 );
 
 sparkline(#max: &100, &data)

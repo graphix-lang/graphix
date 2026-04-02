@@ -3,7 +3,7 @@ use tui::gauge;
 use tui::text;
 
 // Subscribe to live data
-let temperature = cast<f64>(sys::net::subscribe("/sensors/temperature")?)?;
+let temperature: f64 = sys::net::subscribe("/sensors/temperature")?;
 
 // Will display updates automatically when data changes
 gauge(

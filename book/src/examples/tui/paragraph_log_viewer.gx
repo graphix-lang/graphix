@@ -3,12 +3,12 @@ use tui::paragraph;
 use tui::text;
 
 let log_entries = [];
-let new_entry = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/logs/application")?;
 
 log_entries <- array::window(
     #n: 100,
     new_entry ~ log_entries,
-    line(cast<string>(new_entry)?)
+    line(new_entry)
 );
 
 paragraph(&log_entries)
