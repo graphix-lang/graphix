@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-8cbca0b5.js"></script>
+        <script src="../toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -254,6 +254,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
     fn init&lt;'a, 'b, 'c&gt;(
         _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
+        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
         _from: &amp;'c [Node&lt;R, E&gt;],
         _top_id: ExprId,
@@ -339,6 +340,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
     fn init&lt;'a, 'b, 'c&gt;(
         ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
         typ: &amp;'a FnType,
+        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         scope: &amp;'b Scope,
         from: &amp;'c [Node&lt;R, E&gt;],
         top_id: ExprId,
@@ -473,8 +475,55 @@ details of late binding, optional arguments, default args, etc. The
 <p>Because we generated code, we have to hook into the <code>typecheck</code>
 compiler phase and make sure the type checker runs on it. This
 requires that we implement the <code>typecheck</code> method. In our case all we
-have to do is typecheck our generated call site. You can do powerful
-things with this hook however.</p>
+have to do is typecheck our generated call site.</p>
+<h4 id="two-phase-typecheck-for-higher-order-functions"><a class="header" href="#two-phase-typecheck-for-higher-order-functions">Two-Phase Typecheck for Higher-Order Functions</a></h4>
+<p>Higher-order builtins <strong>must</strong> return <code>TypecheckResult::NeedsCallSite</code>
+and handle the <code>TypecheckPhase::CallSite(resolved)</code> phase. This is
+required so that type information from the call site propagates
+through to the inner predicate function. Without this, if the user
+passes a builtin like <code>json::read</code> that requires a concrete return
+type, the type checker won’t be able to verify or initialize it.</p>
+<p>The pattern is:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn typecheck(
+    &amp;mut self,
+    ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+    _from: &amp;mut [Node&lt;R, E&gt;],
+    phase: TypecheckPhase&lt;'_&gt;,
+) -&gt; anyhow::Result&lt;TypecheckResult&gt; {
+    // During CallSite phase, update stored types from the resolved FnType
+    if let TypecheckPhase::CallSite(resolved) = phase {
+        self.mftyp = match &amp;resolved.args[PRED_INDEX].typ {
+            Type::Fn(ft) =&gt; ft.clone(),
+            t =&gt; bail!("expected a function not {t}"),
+        };
+        // Update any other stored types (element type, etc.)
+    }
+    // Create and typecheck the inner CallSite — this is critical
+    // because it pushes deferred checks that cascade type information
+    // to inner builtins (e.g. json::read getting its cast_typ set)
+    let (_, node) = genn::bind(ctx, &amp;self.scope.lexical, "x", self.etyp.clone(), self.top_id);
+    let ft = self.mftyp.clone();
+    let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
+    let mut node = genn::apply(fnode, self.scope.clone(), vec![node], &amp;ft, self.top_id);
+    node.typecheck(ctx)?;
+    node.delete(ctx);
+    Ok(TypecheckResult::NeedsCallSite)
+}
+<span class="boring">}</span></code></pre>
+<p>The <code>NeedsCallSite</code> return value tells the compiler to store this
+builtin for deferred type checking. When the outer call site’s
+deferred check runs, it calls <code>typecheck(CallSite(resolved))</code> with
+the fully resolved function type. The builtin updates its stored
+predicate type (<code>mftyp</code>) from the resolved type, then creates and
+typechecks an inner <code>CallSite</code> node. This inner typecheck pushes its
+own deferred checks, cascading type information to any inner builtins
+that need it.</p>
+<p>For builtins that store a persistent predicate node (like <code>filter</code> or
+<code>group</code>), the CallSite phase should rebuild the predicate node with
+the resolved types, since the original was built with unresolved type
+variables.</p>
 <h3 id="bindids-and-refs"><a class="header" href="#bindids-and-refs">BindIds and Refs</a></h3>
 <p><code>BindId</code> is a very fundamental type in compiler guts. The
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html"><code>Event</code></a>

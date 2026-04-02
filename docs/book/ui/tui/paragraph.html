@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-8cbca0b5.js"></script>
+        <script src="../../toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -247,12 +247,12 @@ use tui::paragraph;
 use tui::text;
 
 let log_entries = [];
-let new_entry = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/logs/application")?;
 
 log_entries &lt;- array::window(
     #n: 100,
     new_entry ~ log_entries,
-    line(cast&lt;string&gt;(new_entry)?)
+    line(new_entry)
 );
 
 paragraph(&amp;log_entries)

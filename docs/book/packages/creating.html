@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-8cbca0b5.js"></script>
+        <script src="../toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -304,6 +304,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
     fn init&lt;'a, 'b, 'c&gt;(
         _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
+        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
         _from: &amp;'c [Node&lt;R, E&gt;],
         _top_id: ExprId,

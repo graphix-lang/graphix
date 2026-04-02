@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-8cbca0b5.js"></script>
+        <script src="../toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,19 +175,27 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-standard-library"><a class="header" href="#the-standard-library">The Standard Library</a></h1>
-<p>The Graphix standard library is split into several modules with different
-functions. The <code>core</code> module is always imported with an implicit use statement.</p>
+<p>The Graphix standard library is split into several packages. The <code>core</code>
+module is always imported with an implicit use statement.</p>
 <ul>
-<li><code>core</code> fundamental functions and types</li>
+<li><code>core</code> fundamental functions, types, bitwise operations, and binary encoding/decoding</li>
 <li><code>array</code> functions for manipulating arrays</li>
 <li><code>map</code> functions for manipulating maps</li>
 <li><code>str</code> functions for manipulating strings</li>
 <li><code>re</code> regular expressions</li>
 <li><code>rand</code> random number generator</li>
-<li><code>sys</code> system-level I/O, filesystem, networking, and timers</li>
+<li><code>sys</code> system-level I/O, filesystem, networking, timers, stdio, and directory paths</li>
 <li><code>http</code> HTTP client/server and REST helpers</li>
+<li><code>json</code> JSON serialization and type-directed deserialization</li>
+<li><code>toml</code> TOML serialization and type-directed deserialization</li>
+<li><code>pack</code> native binary serialization via the netidx Pack format</li>
+<li><code>xls</code> read xlsx, xls, ods, and xlsb spreadsheets</li>
+<li><code>sqlite</code> SQLite database access with type-directed query results</li>
+<li><code>db</code> embedded key-value database with transactions, cursors, and reactive subscriptions</li>
+<li><code>list</code> immutable singly-linked lists with structural sharing</li>
+<li><code>args</code> command-line argument parsing with subcommands</li>
+<li><code>hbs</code> handlebars template rendering</li>
 </ul>
-<p>The standard library is a work in progress.</p>
 
                     </main>
 

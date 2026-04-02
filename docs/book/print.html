@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8cbca0b5.js"></script>
+        <script src="toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -3360,19 +3360,27 @@ graphix -W error ./myapp
 <p>Understanding these concepts will help you work efficiently with Graphix, whether you’re experimenting in the REPL or building large applications.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-standard-library"><a class="header" href="#the-standard-library">The Standard Library</a></h1>
-<p>The Graphix standard library is split into several modules with different
-functions. The <code>core</code> module is always imported with an implicit use statement.</p>
+<p>The Graphix standard library is split into several packages. The <code>core</code>
+module is always imported with an implicit use statement.</p>
 <ul>
-<li><code>core</code> fundamental functions and types</li>
+<li><code>core</code> fundamental functions, types, bitwise operations, and binary encoding/decoding</li>
 <li><code>array</code> functions for manipulating arrays</li>
 <li><code>map</code> functions for manipulating maps</li>
 <li><code>str</code> functions for manipulating strings</li>
 <li><code>re</code> regular expressions</li>
 <li><code>rand</code> random number generator</li>
-<li><code>sys</code> system-level I/O, filesystem, networking, and timers</li>
+<li><code>sys</code> system-level I/O, filesystem, networking, timers, stdio, and directory paths</li>
 <li><code>http</code> HTTP client/server and REST helpers</li>
+<li><code>json</code> JSON serialization and type-directed deserialization</li>
+<li><code>toml</code> TOML serialization and type-directed deserialization</li>
+<li><code>pack</code> native binary serialization via the netidx Pack format</li>
+<li><code>xls</code> read xlsx, xls, ods, and xlsb spreadsheets</li>
+<li><code>sqlite</code> SQLite database access with type-directed query results</li>
+<li><code>db</code> embedded key-value database with transactions, cursors, and reactive subscriptions</li>
+<li><code>list</code> immutable singly-linked lists with structural sharing</li>
+<li><code>args</code> command-line argument parsing with subcommands</li>
+<li><code>hbs</code> handlebars template rendering</li>
 </ul>
-<p>The standard library is a work in progress.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="core"><a class="header" href="#core">Core</a></h1>
 <pre><code class="language-graphix">type Sint = [ i8, i16, i32, z32, i64, z64 ];
@@ -3512,6 +3520,88 @@ val println: fn(?#dest:Log, 'a) -&gt; _;
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
 val throttle: fn(?#rate:duration, 'a) -&gt; 'a;
+
+/// bitwise AND
+val bit_and: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+
+/// bitwise OR
+val bit_or: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+
+/// bitwise XOR
+val bit_xor: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+
+/// bitwise complement
+val bit_not: fn&lt;'a: Int&gt;('a) -&gt; 'a;
+
+/// shift left (wrapping)
+val shl: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+
+/// shift right (wrapping)
+val shr: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+</code></pre>
+<h2 id="corebuffer"><a class="header" href="#corebuffer">core::buffer</a></h2>
+<p>The <code>buffer</code> submodule provides functions for working with raw bytes:
+conversion between bytes and strings/arrays, concatenation, and a
+flexible binary encode/decode system with control over endianness and
+variable-length encoding.</p>
+<pre><code class="language-graphix">/// Convert bytes to a UTF-8 string.
+val to_string: fn(bytes) -&gt; Result&lt;string, `EncodingError(string)&gt;;
+
+/// Convert bytes to a UTF-8 string, replacing invalid sequences.
+val to_string_lossy: fn(bytes) -&gt; string;
+
+/// Convert a string to its UTF-8 bytes.
+val from_string: fn(string) -&gt; bytes;
+
+/// Concatenate bytes values.
+val concat: fn(@args: [bytes, Array&lt;bytes&gt;]) -&gt; bytes;
+
+/// Convert bytes to an Array&lt;u8&gt;.
+val to_array: fn(bytes) -&gt; Array&lt;u8&gt;;
+
+/// Convert an Array&lt;u8&gt; to bytes.
+val from_array: fn(Array&lt;u8&gt;) -&gt; bytes;
+
+/// Return the length of a bytes value.
+val len: fn(bytes) -&gt; u64;
+
+/// Spec for encoding values into bytes. Bare tags are
+/// big-endian (network byte order), LE suffix for little-endian.
+type Encode = [
+  `I8(i8), `U8(u8),
+  `I16(i16), `I16LE(i16), `U16(u16), `U16LE(u16),
+  `I32(i32), `I32LE(i32), `U32(u32), `U32LE(u32),
+  `I64(i64), `I64LE(i64), `U64(u64), `U64LE(u64),
+  `F32(f32), `F32LE(f32), `F64(f64), `F64LE(f64),
+  `Bytes(bytes),
+  `Pad(u64),
+  `Varint(u64),
+  `Zigzag(i64)
+];
+
+/// Spec for decoding bytes into refs. Bare tags are
+/// big-endian (network byte order), LE suffix for little-endian.
+/// Variable-length fields take a &amp;u64 for the length so that
+/// earlier decoded lengths can be resolved within the same call.
+type Decode = [
+  `I8(&amp;i8), `U8(&amp;u8),
+  `I16(&amp;i16), `I16LE(&amp;i16), `U16(&amp;u16), `U16LE(&amp;u16),
+  `I32(&amp;i32), `I32LE(&amp;i32), `U32(&amp;u32), `U32LE(&amp;u32),
+  `I64(&amp;i64), `I64LE(&amp;i64), `U64(&amp;u64), `U64LE(&amp;u64),
+  `F32(&amp;f32), `F32LE(&amp;f32), `F64(&amp;f64), `F64LE(&amp;f64),
+  `Bytes(&amp;u64, &amp;bytes),
+  `UTF8(&amp;u64, &amp;string),
+  `Skip(&amp;u64),
+  `Varint(&amp;u64),
+  `Zigzag(&amp;i64)
+];
+
+/// Encode values into bytes according to the spec.
+val encode: fn(Array&lt;Encode&gt;) -&gt; bytes;
+
+/// Decode bytes into refs according to the spec.
+/// Returns the remaining bytes after all fields are consumed.
+val decode: fn(bytes, Array&lt;Decode&gt;) -&gt; Result&lt;bytes, `DecodeError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="array-1"><a class="header" href="#array-1">Array</a></h1>
@@ -3800,33 +3890,39 @@ val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 <p>The <code>sys</code> module provides access to operating system level functionality:
 files, sockets, timers, and the netidx publish/subscribe system. All I/O
 goes through a unified <code>Stream</code> type defined in <code>sys::io</code>, so the same
-<code>read</code>/<code>write</code> functions work on files, TCP connections, and TLS streams.</p>
+<code>read</code>/<code>write</code> functions work on files, TCP connections, TLS streams,
+and stdio.</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Module</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td><code>sys::io</code></td><td>Unified <code>Stream</code> type and read/write/flush</td></tr>
+<tr><td><code>sys::io</code></td><td>Unified <code>Stream</code> type, read/write/flush, stdin/stdout/stderr</td></tr>
 <tr><td><code>sys::fs</code></td><td>Open files, directory operations, filesystem watching</td></tr>
 <tr><td><code>sys::tcp</code></td><td>TCP connect, listen, accept</td></tr>
 <tr><td><code>sys::tls</code></td><td>Upgrade TCP streams to TLS</td></tr>
 <tr><td><code>sys::net</code></td><td>Netidx publish/subscribe and RPC</td></tr>
 <tr><td><code>sys::time</code></td><td>Timers and current time</td></tr>
+<tr><td><code>sys::dirs</code></td><td>Platform-aware standard directory paths</td></tr>
 </tbody>
 </table>
 </div>
-<pre><code class="language-graphix">/// join parts to path using the OS specific path separator
+<pre><code class="language-graphix">/// the command line arguments. argv[0] is the script file.
+val args: fn() -&gt; Array&lt;string&gt;;
+
+/// join parts to path using the OS specific path separator
 val join_path: fn(string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysio"><a class="header" href="#sysio">sys::io</a></h1>
 <p>The <code>sys::io</code> module provides a unified <code>Stream</code> type for all I/O
 operations. The phantom type parameter constrains which stream kind is
-accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, and </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;`.</p>
+accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;<code>, and </code>stdin<code>/</code>stdout<code>/</code>stderr<code>return</code>Stream&lt;`Stdio&gt;`.</p>
 <pre><code class="language-graphix">/// An opaque handle to an I/O stream.
-/// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS.
-type Stream&lt;'a: [`File, `Tcp, `Tls]&gt;;
+/// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS,
+/// Stream&lt;`Stdio&gt; for stdin/stdout/stderr.
+type Stream&lt;'a: [`File, `Tcp, `Tls, `Stdio]&gt;;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
@@ -3845,6 +3941,15 @@ val write_exact: fn(Stream&lt;'a&gt;, bytes) -&gt; Result&lt;null, `IOError(stri
 
 /// Flush any buffered writes.
 val flush: fn(Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Return a handle to standard input.
+val stdin: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+
+/// Return a handle to standard output.
+val stdout: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+
+/// Return a handle to standard error.
+val stderr: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysfs---filesystem-operations"><a class="header" href="#sysfs---filesystem-operations">sys::fs - Filesystem Operations</a></h1>
@@ -4111,6 +4216,33 @@ val timer: fn([duration, Number], [bool, Number]) -&gt; Result&lt;datetime, `Tim
 val now: fn(Any) -&gt; datetime;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="sysdirs"><a class="header" href="#sysdirs">sys::dirs</a></h1>
+<p>The <code>sys::dirs</code> module provides platform-aware paths to standard
+directories (home, config, data, etc.). Functions return <code>null</code> on
+platforms where the directory does not apply.</p>
+<pre><code class="language-graphix">val home_dir: fn() -&gt; [string, null];
+val cache_dir: fn() -&gt; [string, null];
+val config_dir: fn() -&gt; [string, null];
+val config_local_dir: fn() -&gt; [string, null];
+val data_dir: fn() -&gt; [string, null];
+val data_local_dir: fn() -&gt; [string, null];
+val executable_dir: fn() -&gt; [string, null];
+val preference_dir: fn() -&gt; [string, null];
+val runtime_dir: fn() -&gt; [string, null];
+val state_dir: fn() -&gt; [string, null];
+val audio_dir: fn() -&gt; [string, null];
+val desktop_dir: fn() -&gt; [string, null];
+val document_dir: fn() -&gt; [string, null];
+val download_dir: fn() -&gt; [string, null];
+val font_dir: fn() -&gt; [string, null];
+val picture_dir: fn() -&gt; [string, null];
+val public_dir: fn() -&gt; [string, null];
+val template_dir: fn() -&gt; [string, null];
+val video_dir: fn() -&gt; [string, null];
+</code></pre>
+<p><code>executable_dir</code>, <code>runtime_dir</code>, and <code>state_dir</code> are Linux-only and
+return <code>null</code> on other platforms.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="http---http-clientserver"><a class="header" href="#http---http-clientserver">http - HTTP Client/Server</a></h1>
 <p>The <code>http</code> module provides HTTP client and server functionality.</p>
 <h2 id="interface-1"><a class="header" href="#interface-1">Interface</a></h2>
@@ -4230,6 +4362,520 @@ val patch: fn(
     Client,
     string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="json"><a class="header" href="#json">json</a></h1>
+<p>The <code>json</code> module provides JSON serialization and deserialization.
+<code>json::read</code> uses type-directed deserialization — the target type is
+inferred from the type annotation at the call site.</p>
+<pre><code class="language-graphix">use sys::io;
+
+/// Parse JSON from a string, byte array, or I/O stream.
+val read: fn([string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+
+/// Serialize a value to a JSON string.
+val write_str: fn(?#pretty: bool, Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+
+/// Serialize a value to JSON bytes.
+val write_bytes: fn(?#pretty: bool, Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+
+/// Serialize a value and write JSON to a stream.
+val write_stream: fn(?#pretty: bool, Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
+</code></pre>
+<h2 id="type-directed-deserialization"><a class="header" href="#type-directed-deserialization">Type-directed deserialization</a></h2>
+<p>The return type of <code>json::read</code> is determined by the type annotation on
+the binding. The compiler resolves the concrete type at compile time and
+generates the appropriate deserialization code.</p>
+<pre><code class="language-graphix">use json;
+
+let n: i64 = json::read("42")?;
+let s: string = json::read("\"hello\"")?;
+let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 30}")?;
+let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
+let maybe: [string, null] = json::read(data)?;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="toml"><a class="header" href="#toml">toml</a></h1>
+<p>The <code>toml</code> module provides TOML serialization and deserialization.
+Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization.</p>
+<pre><code class="language-graphix">use sys::io;
+
+/// Parse TOML from a string, byte array, or I/O stream.
+val read: fn([string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+
+/// Serialize a value to a TOML string.
+val write_str: fn(?#pretty: bool, Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+
+/// Serialize a value to TOML bytes.
+val write_bytes: fn(?#pretty: bool, Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+
+/// Serialize a value and write TOML to a stream.
+val write_stream: fn(?#pretty: bool, Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
+</code></pre>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<pre><code class="language-graphix">use toml;
+
+type Config = {
+    host: string,
+    port: i64,
+    debug: bool
+};
+
+let cfg: Config = toml::read(sys::fs::read_all("config.toml")?)?;
+let out = toml::write_str(#pretty: true, cfg)?;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="pack"><a class="header" href="#pack">pack</a></h1>
+<p>The <code>pack</code> module provides native binary serialization using the netidx
+Pack format. Like <code>json::read</code>, <code>pack::read</code> uses type-directed
+deserialization.</p>
+<pre><code class="language-graphix">use sys::io;
+
+/// Decode a value from packed binary bytes or stream.
+val read: fn([bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+
+/// Encode a value to packed binary bytes.
+val write_bytes: fn(Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
+
+/// Encode a value and write to a stream.
+val write_stream: fn(Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`PackErr(string), `IOErr(string)]&gt;;
+</code></pre>
+<p>The Pack format is a compact binary encoding native to netidx. It is
+more space-efficient than JSON or TOML and supports the full range of
+Graphix types including bytes, datetime, and duration.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="xls"><a class="header" href="#xls">xls</a></h1>
+<p>The <code>xls</code> module reads spreadsheet files in xlsx, xls, ods, and xlsb
+formats (via calamine). Data is returned as a 2D array of primitive
+values.</p>
+<pre><code class="language-graphix">use sys::io;
+
+/// List sheet names in a workbook.
+val sheets: fn([bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+
+/// Read a sheet by name as a 2D array of rows.
+val read: fn([bytes, Stream&lt;'a&gt;], string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+</code></pre>
+<h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
+<pre><code class="language-graphix">use xls;
+use sys;
+
+let data = sys::fs::read_all_bin("report.xlsx")?;
+let names = xls::sheets(data)?;
+let rows = xls::read(data, names[0]$)?;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="sqlite"><a class="header" href="#sqlite">sqlite</a></h1>
+<p>The <code>sqlite</code> module provides SQLite database access. <code>sqlite::query</code>
+uses type-directed deserialization — annotate the result type to
+control how rows are deserialized.</p>
+<pre><code class="language-graphix">/// A SQLite value: integer, float, string, bytes, or null.
+type SqlVal = [i64, f64, string, bytes, null];
+
+/// An opaque SQLite connection handle.
+type Connection;
+
+/// Open (or create) a SQLite database. Use ":memory:" for in-memory.
+val open: fn(string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
+
+/// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
+val exec: fn(Connection, string, Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
+
+/// Execute multiple semicolon-separated statements (no params). Good for schema setup.
+val exec_batch: fn(Connection, string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+
+/// Query rows, deserializing each into the annotated type.
+/// Annotate as Array&lt;{...}&gt; for typed structs, or Array&lt;Map&lt;string, SqlVal&gt;&gt; for raw maps.
+val query: fn(Connection, string, Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
+
+/// Begin a transaction.
+val begin: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+
+/// Commit the current transaction.
+val commit: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+
+/// Rollback the current transaction.
+val rollback: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+
+/// Close the connection explicitly (optional — connections close on drop).
+val close: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+</code></pre>
+<h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
+<p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
+Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> for raw access.</p>
+<pre><code class="language-graphix">use sqlite;
+
+let conn = sqlite::open(":memory:")?;
+sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+
+// typed struct results
+let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
+    sqlite::query(conn, "SELECT * FROM users", [])?;
+
+// raw map results
+let raw: Array&lt;Map&lt;string, SqlVal&gt;&gt; =
+    sqlite::query(conn, "SELECT * FROM users", [])?;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="db"><a class="header" href="#db">db</a></h1>
+<p>The <code>db</code> module provides an embedded key-value database (backed by sled)
+with ACID transactions, typed trees, cursors, and reactive subscriptions.</p>
+<p>Tree key and value types are tracked at both compile time and run time —
+if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
+<h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
+<pre><code class="language-graphix">/// An opaque handle to an embedded database.
+type Db;
+
+/// A typed view of a database tree (key-value namespace).
+type Tree&lt;'k, 'v&gt;;
+
+/// Open or create an embedded database at the given path.
+val open: fn(string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
+
+/// Open or create a named tree with typed keys and values.
+/// Pass null for the default (unnamed) tree.
+val tree: fn(Db, [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+
+/// Get the value for a key, or null if not found.
+val get: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+
+/// Insert a key-value pair. Returns the previous value, or null.
+val insert: fn(Tree&lt;'k, 'v&gt;, 'k, 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+
+/// Remove a key. Returns the previous value, or null.
+val remove: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+
+/// Check whether a key exists.
+val contains_key: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+
+/// Batch get values for an array of keys.
+val get_many: fn(Tree&lt;'k, 'v&gt;, Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
+
+/// Get the first (minimum key) entry, or null if empty.
+val first: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Get the last (maximum key) entry, or null if empty.
+val last: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Atomically remove and return the minimum-key entry.
+val pop_min: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Atomically remove and return the maximum-key entry.
+val pop_max: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Get the entry with the greatest key strictly less than the given key.
+val get_lt: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Get the entry with the smallest key strictly greater than the given key.
+val get_gt: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Atomic compare-and-swap.
+val compare_and_swap: fn(Tree&lt;'k, 'v&gt;, 'k, ['v, null], ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
+
+/// Atomically apply a batch of inserts and removes.
+val batch: fn(Tree&lt;'k, 'v&gt;, Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Number of entries in the tree (O(n) scan).
+val len: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+
+/// True if the tree has no entries.
+val is_empty: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+
+/// Get the stored type metadata for a tree, or null if none.
+val get_type: fn(Db, [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
+
+/// List the names of all trees in the database.
+val tree_names: fn(Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
+
+/// Drop a named tree from the database.
+val drop_tree: fn(Db, string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+
+/// Generate a monotonically increasing unique u64 ID.
+val generate_id: fn(Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+
+/// Flush all pending writes to disk.
+val flush: fn(Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Total size of the database on disk in bytes.
+val size_on_disk: fn(Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+
+/// True if the database was recovered after a crash.
+val was_recovered: fn(Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+
+/// CRC32 checksum of all keys and values (O(n)).
+val checksum: fn(Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
+
+/// Export all database contents to a file.
+val export: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Import previously exported data from a file. The database must be empty.
+val import: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+</code></pre>
+<h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
+<p>Cursors iterate over tree entries reactively, advancing on each trigger.</p>
+<pre><code class="language-graphix">/// A cursor for iterating over tree entries one at a time.
+type Cursor&lt;'k, 'v&gt;;
+
+/// Create a new cursor, optionally filtering by key prefix.
+val new: fn(?#prefix: ['k, null], Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
+
+/// Create a cursor over a key range.
+val range: fn(
+    ?#start: [`Included('k), `Excluded('k), null],
+    ?#end: [`Included('k), `Excluded('k), null],
+    Tree&lt;'k, 'v&gt;
+) -&gt; Cursor&lt;'k, 'v&gt;;
+
+/// Read the next entry. Returns (key, value) or null when exhausted.
+val read: fn(Cursor&lt;'k, 'v&gt;, Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+
+/// Read up to N entries at once.
+val read_many: fn(Cursor&lt;'k, 'v&gt;, i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
+</code></pre>
+<h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
+<p>Multi-tree ACID transactions. All trees must be opened before any data
+operations.</p>
+<pre><code class="language-graphix">/// An open transaction handle.
+type Txn;
+
+/// A tree view within a transaction.
+type TxnTree&lt;'k, 'v&gt;;
+
+/// Begin a multi-tree transaction.
+val begin: fn(Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
+
+/// Open a tree within the transaction.
+val tree: fn(Txn, [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+
+/// Get a value within the transaction.
+val get: fn(TxnTree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+
+/// Insert a key-value pair within the transaction.
+val insert: fn(TxnTree&lt;'k, 'v&gt;, 'k, 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+
+/// Remove a key within the transaction.
+val remove: fn(TxnTree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+
+/// Atomically apply a batch of inserts and removes within the transaction.
+val batch: fn(TxnTree&lt;'k, 'v&gt;, Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Commit the transaction atomically.
+val commit: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Abort the transaction.
+val rollback: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+</code></pre>
+<h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
+<p>Reactive subscriptions fire when entries are inserted or removed.</p>
+<pre><code class="language-graphix">/// A reactive subscription to changes on a tree.
+type Subscription&lt;'k, 'v&gt;;
+
+/// Subscribe to changes, optionally filtering by key prefix.
+val new: fn(?#prefix: ['k, null], Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
+
+/// Fires reactively when inserts occur.
+val on_insert: fn(Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
+
+/// Fires reactively when removes occur.
+val on_remove: fn(Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="list"><a class="header" href="#list">list</a></h1>
+<p>The <code>list</code> module provides immutable singly-linked lists with structural
+sharing. Two lists with a common tail share memory. Cons (prepend) is
+O(1); indexed access is O(n).</p>
+<pre><code class="language-graphix">/// The singly linked list type.
+type List&lt;'a&gt;;
+
+/// Return an empty list.
+val nil: fn(Any) -&gt; List&lt;'a&gt;;
+
+/// Prepend an element to the front of a list. O(1).
+val cons: fn('a, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Return a list containing a single element.
+val singleton: fn('a) -&gt; List&lt;'a&gt;;
+
+/// Return the first element, or null if empty.
+val head: fn(List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
+
+/// Return the list without its first element, or null if empty.
+val tail: fn(List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
+
+/// Return both the head and tail as a pair, or null if empty.
+val uncons: fn(List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
+
+/// Return true if the list is empty.
+val is_empty: fn(List&lt;'a&gt;) -&gt; bool;
+
+/// Return the element at position n (0-indexed), or null. O(n).
+val nth: fn(List&lt;'a&gt;, i64) -&gt; Option&lt;'a&gt;;
+
+/// Return the number of elements. O(n).
+val len: fn(List&lt;'a&gt;) -&gt; i64;
+
+/// Return the list in reverse order. O(n).
+val reverse: fn(List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Return the first n elements.
+val take: fn(i64, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Return the list without its first n elements.
+val drop: fn(i64, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Convert a list to an array.
+val to_array: fn(List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+
+/// Convert an array to a list.
+val from_array: fn(Array&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Concatenate two or more lists.
+val concat: fn(List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Flatten a list of lists into a single list.
+val flatten: fn(List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
+
+/// Apply f to each element.
+val map: fn(List&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+
+/// Keep elements where f returns true.
+val filter: fn(List&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+
+/// Keep non-null outputs of f.
+val filter_map: fn(List&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+
+/// Map and flatten: if f returns a list, inline its elements.
+val flat_map: fn(List&lt;'a&gt;, fn('a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+
+/// Left fold: f(f(f(init, a0), a1), ...).
+val fold: fn(List&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+
+/// Return the first element where f returns true, or null.
+val find: fn(List&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
+
+/// Return the first non-null output of f.
+val find_map: fn(List&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
+
+type Direction = [`Ascending, `Descending];
+
+/// Return a sorted copy of the list.
+val sort: fn(?#dir: Direction, ?#numeric: bool, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+
+/// Return a list of (index, element) pairs.
+val enumerate: fn(List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
+
+/// Zip two lists into a list of pairs.
+val zip: fn(List&lt;'a&gt;, List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
+
+/// Unzip a list of pairs into a pair of lists.
+val unzip: fn(List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
+
+/// Create a list of n elements where element i is f(i).
+val init: fn(i64, fn(i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+
+/// Produce an update for every element in the list.
+val iter: fn(List&lt;'a&gt;) -&gt; 'a;
+
+/// Produce an update for each element, gated by clock updates.
+val iterq: fn(#clock: Any, List&lt;'a&gt;) -&gt; 'a;
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="args"><a class="header" href="#args">args</a></h1>
+<p>The <code>args</code> module provides command-line argument parsing with support for
+positional arguments, options, flags, and subcommands.</p>
+<h2 id="interface-3"><a class="header" href="#interface-3">Interface</a></h2>
+<pre><code class="language-graphix">/// Argument kind
+type Kind = [`Positional, `Option, `Flag];
+
+/// Argument descriptor
+type Arg = {
+    name: string,
+    kind: Kind,
+    short: [string, null],
+    help: [string, null],
+    default: [string, null],
+    required: [bool, null]
+};
+
+/// Command descriptor (recursive for subcommands)
+type Command = {
+    name: string,
+    version: [string, null],
+    about: [string, null],
+    args: Array&lt;Arg&gt;,
+    subcommands: Array&lt;Command&gt;
+};
+
+/// Parse result
+type ParseResult = {
+    command: Array&lt;string&gt;,
+    values: Map&lt;string, [string, null]&gt;
+};
+
+/// Create a positional argument descriptor.
+val positional: fn(#name: string, ?#help: [string, null], ?#required: [bool, null]) -&gt; Arg;
+
+/// Create an option argument descriptor (--name value).
+val option: fn(#name: string, ?#short: [string, null], ?#help: [string, null], ?#default: [string, null], ?#required: [bool, null]) -&gt; Arg;
+
+/// Create a flag argument descriptor (--name, boolean).
+val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -&gt; Arg;
+
+/// Create a command descriptor.
+val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array&lt;Command&gt;, Array&lt;Arg&gt;) -&gt; Command;
+
+/// Parse command-line arguments against the spec.
+val parse: fn(Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
+</code></pre>
+<h2 id="example-2"><a class="header" href="#example-2">Example</a></h2>
+<pre><code class="language-graphix">use args;
+
+let cli = args::parse(
+    args::command(
+        #name: "example",
+        #version: "0.1.0",
+        #about: "An example CLI tool",
+        #subcommands: [
+            args::command(
+                #name: "serve",
+                [args::option(#name: "port", #short: "p", #default: "8080")]
+            )
+        ],
+        [
+            args::positional(#name: "file", #help: "Input file"),
+            args::option(#name: "count", #short: "n", #default: "1", #help: "Repeat count"),
+            args::flag(#name: "verbose", #short: "v", #help: "Verbose output")
+        ]
+    )
+)$;
+
+println("Command: [cli.command]");
+println("Values: [cli.values]");
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="hbs"><a class="header" href="#hbs">hbs</a></h1>
+<p>The <code>hbs</code> module provides <a href="https://handlebarsjs.com/">Handlebars</a> template
+rendering.</p>
+<pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
+/// Use #partials to register named partial templates (as a struct or map).
+/// Use #strict to error on missing variables instead of rendering empty strings.
+val render: fn(?#strict: bool, ?#partials: 'a, string, 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
+</code></pre>
+<h2 id="example-3"><a class="header" href="#example-3">Example</a></h2>
+<pre><code class="language-graphix">use hbs;
+
+let greeting = hbs::render(
+    "Hello, {{name}}! You have {{count}} messages.",
+    {name: "Alice", count: 5}
+)?;
+
+// with partials
+let page = hbs::render(
+    #partials: {header: "&lt;h1&gt;{{title}}&lt;/h1&gt;"},
+    "{{&gt; header}}{{body}}",
+    {title: "Welcome", body: "Content here"}
+)?;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="building-uis-with-graphix"><a class="header" href="#building-uis-with-graphix">Building UIs With Graphix</a></h1>
@@ -4392,7 +5038,7 @@ use tui::gauge;
 use tui::text;
 
 // Subscribe to live data
-let temperature = cast&lt;f64&gt;(sys::net::subscribe("/sensors/temperature")?)?;
+let temperature: f64 = sys::net::subscribe("/sensors/temperature")?;
 
 // Will display updates automatically when data changes
 gauge(
@@ -4542,7 +5188,7 @@ tui::gauge::gauge(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
 <p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It’s ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
-<h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
+<h2 id="interface-4"><a class="header" href="#interface-4">Interface</a></h2>
 <pre><code class="language-graphix">type Bar = {
   label: &amp;[Line, null],
   style: &amp;[Style, null],
@@ -4677,7 +5323,7 @@ bar_chart(&amp;[bar_group(bars)])
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-block-widget"><a class="header" href="#the-block-widget">The Block Widget</a></h1>
 <p>The <code>block</code> widget is a container that wraps other widgets with optional borders, titles, and styling. It’s one of the most commonly used widgets for creating structured layouts and visually separating different sections of your TUI.</p>
-<h2 id="interface-3"><a class="header" href="#interface-3">Interface</a></h2>
+<h2 id="interface-5"><a class="header" href="#interface-5">Interface</a></h2>
 <pre><code class="language-graphix">type Border = [
   `Top,
   `Right,
@@ -4804,7 +5450,7 @@ block(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-browser-widget"><a class="header" href="#the-browser-widget">The Browser Widget</a></h1>
 <p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.</p>
-<h2 id="interface-4"><a class="header" href="#interface-4">Interface</a></h2>
+<h2 id="interface-6"><a class="header" href="#interface-6">Interface</a></h2>
 <pre><code class="language-graphix">type MoveCursor = [
     `Left(i64),
     `Right(i64),
@@ -4892,7 +5538,7 @@ input_handler(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-calendar-widget"><a class="header" href="#the-calendar-widget">The Calendar Widget</a></h1>
 <p>The <code>calendar</code> widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It’s perfect for date pickers, event schedulers, and time-based visualizations.</p>
-<h2 id="interface-5"><a class="header" href="#interface-5">Interface</a></h2>
+<h2 id="interface-7"><a class="header" href="#interface-7">Interface</a></h2>
 <pre><code class="language-graphix">type Date = {
   year: i64,
   month: i64,
@@ -4999,7 +5645,7 @@ calendar(#events: &amp;events, &amp;date(2024, 5, 1))
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-canvas-widget"><a class="header" href="#the-canvas-widget">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.</p>
-<h2 id="interface-6"><a class="header" href="#interface-6">Interface</a></h2>
+<h2 id="interface-8"><a class="header" href="#interface-8">Interface</a></h2>
 <pre><code class="language-graphix">type CanvasLine = {
   color: Color,
   x1: f64,
@@ -5170,7 +5816,7 @@ canvas(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-chart-widget"><a class="header" href="#the-chart-widget">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders line charts with multiple datasets, custom axes, labels, and styling. It’s ideal for visualizing time series data, trends, sensor readings, and any numeric data relationships.</p>
-<h2 id="interface-7"><a class="header" href="#interface-7">Interface</a></h2>
+<h2 id="interface-9"><a class="header" href="#interface-9">Interface</a></h2>
 <pre><code class="language-graphix">type GraphType = [
   `Scatter,
   `Line,
@@ -5367,7 +6013,7 @@ chart(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-widget"><a class="header" href="#the-text-widget">The Text Widget</a></h1>
 <p>The <code>text</code> widget renders styled text in the terminal. It’s a fundamental building block for displaying formatted content with colors, modifiers, and multiple lines. Text is built from <code>Line</code> objects, which are in turn composed of <code>Span</code> objects.</p>
-<h2 id="interface-8"><a class="header" href="#interface-8">Interface</a></h2>
+<h2 id="interface-10"><a class="header" href="#interface-10">Interface</a></h2>
 <pre><code class="language-graphix">val text: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
@@ -5464,7 +6110,7 @@ text(&amp;[
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-paragraph-widget"><a class="header" href="#the-paragraph-widget">The Paragraph Widget</a></h1>
 <p>The <code>paragraph</code> widget displays multi-line text with automatic word wrapping and scrolling support. It’s ideal for displaying long text content, logs, or any content that needs to flow across multiple lines.</p>
-<h2 id="interface-9"><a class="header" href="#interface-9">Interface</a></h2>
+<h2 id="interface-11"><a class="header" href="#interface-11">Interface</a></h2>
 <pre><code class="language-graphix">val paragraph: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
@@ -5535,12 +6181,12 @@ use tui::paragraph;
 use tui::text;
 
 let log_entries = [];
-let new_entry = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/logs/application")?;
 
 log_entries &lt;- array::window(
     #n: 100,
     new_entry ~ log_entries,
-    line(cast&lt;string&gt;(new_entry)?)
+    line(new_entry)
 );
 
 paragraph(&amp;log_entries)
@@ -5574,7 +6220,7 @@ paragraph(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-gauge-widget"><a class="header" href="#the-gauge-widget">The Gauge Widget</a></h1>
 <p>The <code>gauge</code> widget displays a single value as a filled progress indicator, perfect for showing percentages, completion status, or resource usage. It provides a clear visual representation of how full or complete something is.</p>
-<h2 id="interface-10"><a class="header" href="#interface-10">Interface</a></h2>
+<h2 id="interface-12"><a class="header" href="#interface-12">Interface</a></h2>
 <pre><code class="language-graphix">val gauge: fn(
   ?#gauge_style: &amp;[Style, null],
   ?#label: &amp;[Span, null],
@@ -5663,7 +6309,7 @@ gauge(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It’s more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
-<h2 id="interface-11"><a class="header" href="#interface-11">Interface</a></h2>
+<h2 id="interface-13"><a class="header" href="#interface-13">Interface</a></h2>
 <pre><code class="language-graphix">val line_gauge: fn(
   ?#filled_style: &amp;[Style, null],
   ?#filled_symbol: &amp;[string, null],
@@ -6019,7 +6665,7 @@ tui::input_handler::input_handler(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-layout-widget"><a class="header" href="#the-layout-widget">The Layout Widget</a></h1>
 <p>The <code>layout</code> widget arranges child widgets in horizontal or vertical layouts with flexible sizing constraints. It’s the primary tool for organizing complex TUI interfaces and supports focus management for interactive applications.</p>
-<h2 id="interface-12"><a class="header" href="#interface-12">Interface</a></h2>
+<h2 id="interface-14"><a class="header" href="#interface-14">Interface</a></h2>
 <pre><code class="language-graphix">type Spacing = [
   `Space(i64),
   `Overlap(i64)
@@ -6182,7 +6828,7 @@ layout(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-list-widget"><a class="header" href="#the-list-widget">The List Widget</a></h1>
 <p>The <code>list</code> widget displays a scrollable, selectable list of items with keyboard navigation support. It’s perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.</p>
-<h2 id="interface-13"><a class="header" href="#interface-13">Interface</a></h2>
+<h2 id="interface-15"><a class="header" href="#interface-15">Interface</a></h2>
 <pre><code class="language-graphix">val list: fn(
   ?#highlight_spacing: &amp;[HighlightSpacing, null],
   ?#highlight_style: &amp;[Style, null],
@@ -6310,7 +6956,7 @@ list(#selected: &amp;0, &amp;items)
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-scrollbar-widget"><a class="header" href="#the-scrollbar-widget">The Scrollbar Widget</a></h1>
 <p>The <code>scrollbar</code> widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.</p>
-<h2 id="interface-14"><a class="header" href="#interface-14">Interface</a></h2>
+<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
 <pre><code class="language-graphix">type ScrollbarOrientation = [
   `VerticalRight,
   `VerticalLeft,
@@ -6459,7 +7105,7 @@ scrollbar(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-sparkline-widget"><a class="header" href="#the-sparkline-widget">The Sparkline Widget</a></h1>
 <p>The <code>sparkline</code> widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.</p>
-<h2 id="interface-15"><a class="header" href="#interface-15">Interface</a></h2>
+<h2 id="interface-17"><a class="header" href="#interface-17">Interface</a></h2>
 <pre><code class="language-graphix">type RenderDirection = [
   `LeftToRight,
   `RightToLeft
@@ -6571,12 +7217,12 @@ layout(
 use tui::sparkline;
 
 let data: Array&lt;f64&gt; = [];
-let new_value = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
 
 data &lt;- array::window(
     #n: 60,
     new_value ~ data,
-    cast&lt;f64&gt;(new_value)?
+    new_value
 );
 
 sparkline(#max: &amp;100, &amp;data)
@@ -6605,7 +7251,7 @@ netidx publisher
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>The <code>table</code> widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It’s ideal for data grids, process monitors, file listings, and any tabular data display.</p>
-<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
+<h2 id="interface-18"><a class="header" href="#interface-18">Interface</a></h2>
 <pre><code class="language-graphix">type Cell = {
   content: Line,
   style: [Style, null]
@@ -6844,7 +7490,7 @@ table(#header: &amp;header, &amp;rows)
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-tabs-widget"><a class="header" href="#the-tabs-widget">The Tabs Widget</a></h1>
 <p>The <code>tabs</code> widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that’s shown when the tab is selected.</p>
-<h2 id="interface-17"><a class="header" href="#interface-17">Interface</a></h2>
+<h2 id="interface-19"><a class="header" href="#interface-19">Interface</a></h2>
 <pre><code class="language-graphix">val tabs: fn(
   ?#divider: &amp;[Span, null],
   ?#highlight_style: &amp;[Style, null],
@@ -7620,7 +8266,7 @@ val slider_style: fn(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-widget-1"><a class="header" href="#the-text-widget-1">The Text Widget</a></h1>
 <p>The <code>text</code> widget displays a string with optional styling. It is the most basic display widget and the foundation for showing any textual content in a GUI application. Font size, color, font family, weight, style, sizing, and alignment are all configurable through labeled arguments.</p>
-<h2 id="interface-18"><a class="header" href="#interface-18">Interface</a></h2>
+<h2 id="interface-20"><a class="header" href="#interface-20">Interface</a></h2>
 <pre><code class="language-graphix">val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -7686,7 +8332,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-button-widget"><a class="header" href="#the-button-widget">The Button Widget</a></h1>
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
-<h2 id="interface-19"><a class="header" href="#interface-19">Interface</a></h2>
+<h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
 <pre><code class="language-graphix">val button: fn(
   ?#on_press: fn(null) -&gt; Any,
   ?#width: &amp;Length,
@@ -7749,7 +8395,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-input-widget"><a class="header" href="#the-text-input-widget">The Text Input Widget</a></h1>
 <p>A single-line text field for user input. The widget displays the current value via a reference and reports changes through callbacks. Supports placeholder text, password masking, and custom sizing.</p>
-<h2 id="interface-20"><a class="header" href="#interface-20">Interface</a></h2>
+<h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
 <pre><code class="language-graphix">val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: fn(string) -&gt; Any,
@@ -7809,7 +8455,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-editor-widget"><a class="header" href="#the-text-editor-widget">The Text Editor Widget</a></h1>
 <p>A multi-line text editing area for longer-form content. Unlike <code>text_input</code>, which handles a single line, <code>text_editor</code> supports multiple lines of text with scrolling. It reports the full content string on every edit.</p>
-<h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
+<h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
 <pre><code class="language-graphix">val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: fn(string) -&gt; Any,
@@ -7872,7 +8518,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-checkbox-widget"><a class="header" href="#the-checkbox-widget">The Checkbox Widget</a></h1>
 <p>A checkbox with an optional text label. Displays a checked or unchecked box and reports toggles through a callback. Useful for boolean settings and multi-select scenarios.</p>
-<h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
+<h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
 <pre><code class="language-graphix">val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: fn(bool) -&gt; Any,
@@ -7928,7 +8574,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-toggler-widget"><a class="header" href="#the-toggler-widget">The Toggler Widget</a></h1>
 <p>A toggle switch with an optional text label. Functionally identical to a checkbox but rendered as a sliding toggle, which is often a better visual fit for on/off settings like enabling features or connectivity options.</p>
-<h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
+<h2 id="interface-25"><a class="header" href="#interface-25">Interface</a></h2>
 <pre><code class="language-graphix">val toggler: fn(
   ?#label: &amp;string,
   ?#on_toggle: fn(bool) -&gt; Any,
@@ -7982,7 +8628,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-radio-widget"><a class="header" href="#the-radio-widget">The Radio Widget</a></h1>
 <p>A radio button for single-select choices within a group. Each <code>radio</code> widget represents one option. When the currently selected value matches this radio’s value, the button is filled. Clicking an unselected radio triggers the <code>#on_select</code> callback.</p>
-<h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
+<h2 id="interface-26"><a class="header" href="#interface-26">Interface</a></h2>
 <pre><code class="language-graphix">val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;'a,
@@ -8047,7 +8693,7 @@ let col = column(
 <p>Graphix provides three related widgets for numeric values within a range: <code>slider</code> (horizontal), <code>vertical_slider</code>, and <code>progress_bar</code> (display-only).</p>
 <h2 id="slider"><a class="header" href="#slider">Slider</a></h2>
 <p>A horizontal slider that lets the user select a floating-point value by dragging a handle along a track.</p>
-<h3 id="interface-25"><a class="header" href="#interface-25">Interface</a></h3>
+<h3 id="interface-27"><a class="header" href="#interface-27">Interface</a></h3>
 <pre><code class="language-graphix">val slider: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
@@ -8185,7 +8831,7 @@ let value = 50.0;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-pick-list-widget"><a class="header" href="#the-pick-list-widget">The Pick List Widget</a></h1>
 <p>A dropdown menu that lets the user select one option from a list of strings. Clicking the widget opens a dropdown; selecting an item closes it and triggers the callback.</p>
-<h2 id="interface-26"><a class="header" href="#interface-26">Interface</a></h2>
+<h2 id="interface-28"><a class="header" href="#interface-28">Interface</a></h2>
 <pre><code class="language-graphix">val pick_list: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: fn(string) -&gt; Any,
@@ -8242,7 +8888,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-combo-box-widget"><a class="header" href="#the-combo-box-widget">The Combo Box Widget</a></h1>
 <p>A searchable dropdown that combines a text input with a dropdown list. As the user types, the options are filtered to match. This is useful when the list of options is long and the user needs to find a specific item quickly.</p>
-<h2 id="interface-27"><a class="header" href="#interface-27">Interface</a></h2>
+<h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
 <pre><code class="language-graphix">val combo_box: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: fn(string) -&gt; Any,
@@ -8297,7 +8943,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-column-widget"><a class="header" href="#the-column-widget">The Column Widget</a></h1>
 <p>The <code>column</code> widget arranges child widgets vertically from top to bottom. It is one of the primary layout containers, along with <code>row</code>.</p>
-<h2 id="interface-28"><a class="header" href="#interface-28">Interface</a></h2>
+<h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
 <pre><code class="language-graphix">val column: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
@@ -8353,7 +8999,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-row-widget"><a class="header" href="#the-row-widget">The Row Widget</a></h1>
 <p>The <code>row</code> widget arranges child widgets horizontally from left to right. It is one of the primary layout containers, along with <code>column</code>.</p>
-<h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
+<h2 id="interface-31"><a class="header" href="#interface-31">Interface</a></h2>
 <pre><code class="language-graphix">val row: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
@@ -8420,7 +9066,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-container-widget"><a class="header" href="#the-container-widget">The Container Widget</a></h1>
 <p>The <code>container</code> widget wraps a single child widget, providing padding and alignment control. Use it to position content within a fixed or flexible region.</p>
-<h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
+<h2 id="interface-32"><a class="header" href="#interface-32">Interface</a></h2>
 <pre><code class="language-graphix">val container: fn(
   ?#padding: &amp;Padding,
   ?#width: &amp;Length,
@@ -8487,7 +9133,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-scrollable-widget"><a class="header" href="#the-scrollable-widget">The Scrollable Widget</a></h1>
 <p>The <code>scrollable</code> widget wraps content that may exceed the available space, providing scroll bars to navigate. It supports vertical, horizontal, or bidirectional scrolling.</p>
-<h2 id="interface-31"><a class="header" href="#interface-31">Interface</a></h2>
+<h2 id="interface-33"><a class="header" href="#interface-33">Interface</a></h2>
 <pre><code class="language-graphix">val scrollable: fn(
   ?#direction: &amp;ScrollDirection,
   ?#on_scroll: fn({x: f64, y: f64}) -&gt; Any,
@@ -8555,7 +9201,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-stack-widget"><a class="header" href="#the-stack-widget">The Stack Widget</a></h1>
 <p>The <code>stack</code> widget layers children on top of each other. The first child is drawn at the bottom, and each subsequent child is drawn on top. This is useful for overlays, watermarks, or layered visual effects.</p>
-<h2 id="interface-32"><a class="header" href="#interface-32">Interface</a></h2>
+<h2 id="interface-34"><a class="header" href="#interface-34">Interface</a></h2>
 <pre><code class="language-graphix">val stack: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
@@ -8621,7 +9267,7 @@ mod icon;
 <p>Space and rules are layout utilities for controlling whitespace and adding visual dividers between widgets.</p>
 <h2 id="space"><a class="header" href="#space">Space</a></h2>
 <p>The <code>space</code> widget creates empty space with configurable dimensions. Use it to push widgets apart within a row or column.</p>
-<h3 id="interface-33"><a class="header" href="#interface-33">Interface</a></h3>
+<h3 id="interface-35"><a class="header" href="#interface-35">Interface</a></h3>
 <pre><code class="language-graphix">val space: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length
@@ -8633,7 +9279,7 @@ mod icon;
 <li><strong>height</strong> — vertical size of the space</li>
 </ul>
 <p>A common pattern is <code>space(#width: &amp;</code>Fill)` to push items to opposite ends of a row.</p>
-<h3 id="example"><a class="header" href="#example">Example</a></h3>
+<h3 id="example-4"><a class="header" href="#example-4">Example</a></h3>
 <pre><code class="language-graphix">use gui;
 use gui::text;
 use gui::column;
@@ -8678,7 +9324,7 @@ val vertical_rule: fn(?#width: &amp;f64) -&gt; Widget;
 <li><strong>height</strong> (horizontal_rule) — thickness of the horizontal line in pixels</li>
 <li><strong>width</strong> (vertical_rule) — thickness of the vertical line in pixels</li>
 </ul>
-<h3 id="example-1"><a class="header" href="#example-1">Example</a></h3>
+<h3 id="example-1-1"><a class="header" href="#example-1-1">Example</a></h3>
 <pre><code class="language-graphix">use gui;
 use gui::text;
 use gui::column;
@@ -8730,7 +9376,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-canvas-widget-1"><a class="header" href="#the-canvas-widget-1">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level 2D drawing surface for custom graphics. You supply an array of shapes – lines, circles, rectangles, arcs, curves, text labels, and arbitrary paths – and the canvas renders them in order. This makes it suitable for diagrams, visualizations, procedural art, and anything that doesn’t fit into the standard widget set.</p>
-<h2 id="interface-34"><a class="header" href="#interface-34">Interface</a></h2>
+<h2 id="interface-36"><a class="header" href="#interface-36">Interface</a></h2>
 <pre><code class="language-graphix">type PathSegment = [
   `MoveTo({x: f64, y: f64}),
   `LineTo({x: f64, y: f64}),
@@ -8950,7 +9596,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-chart-widget-1"><a class="header" href="#the-chart-widget-1">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart (within the same mode — you cannot mix e.g. bar and pie).</p>
-<h2 id="interface-35"><a class="header" href="#interface-35">Interface</a></h2>
+<h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
 <pre><code class="language-graphix">type SeriesStyle = {
   color: [Color, null],
   label: [string, null],
@@ -9597,7 +10243,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-image--svg-widgets"><a class="header" href="#the-image--svg-widgets">The Image &amp; SVG Widgets</a></h1>
 <p>The <code>image</code> widget displays raster images from files, raw bytes, or pixel buffers. The <code>svg</code> widget renders Scalable Vector Graphics from files or inline XML. Both support sizing and content fitting controls.</p>
-<h2 id="interface-36"><a class="header" href="#interface-36">Interface</a></h2>
+<h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
 <h3 id="image"><a class="header" href="#image">image</a></h3>
 <pre><code class="language-graphix">type ImageSource = [
   string,
@@ -9718,7 +10364,7 @@ let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-tooltip-widget"><a class="header" href="#the-tooltip-widget">The Tooltip Widget</a></h1>
 <p>The <code>tooltip</code> widget displays a popup hint when the user hovers over a child widget. The tooltip content is itself a widget, allowing rich formatted tips.</p>
-<h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
+<h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
 <pre><code class="language-graphix">val tooltip: fn(
   #tip: &amp;Widget,
   ?#position: &amp;TooltipPosition,
@@ -9775,7 +10421,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-mouse-area-widget"><a class="header" href="#the-mouse-area-widget">The Mouse Area Widget</a></h1>
 <p>The <code>mouse_area</code> widget wraps a child and captures mouse events within its bounds. Use it to add click, hover, and movement tracking to any widget.</p>
-<h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
+<h2 id="interface-40"><a class="header" href="#interface-40">Interface</a></h2>
 <pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
@@ -9854,7 +10500,7 @@ let position = "---";
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-keyboard-area-widget"><a class="header" href="#the-keyboard-area-widget">The Keyboard Area Widget</a></h1>
 <p>The <code>keyboard_area</code> widget wraps a child and captures keyboard events. Use it to build keyboard-driven interactions like shortcuts, navigation, or text handling.</p>
-<h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
+<h2 id="interface-41"><a class="header" href="#interface-41">Interface</a></h2>
 <pre><code class="language-graphix">type KeyEvent = {
   key: string,
   modifiers: { shift: bool, ctrl: bool, alt: bool, logo: bool },
@@ -9934,7 +10580,7 @@ let mod_name = "None";
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-clipboard-module"><a class="header" href="#the-clipboard-module">The Clipboard Module</a></h1>
 <p>The <code>clipboard</code> module provides functions for reading from and writing to the system clipboard. Unlike other GUI components, clipboard is a plain module of functions, not a widget constructor.</p>
-<h2 id="interface-40"><a class="header" href="#interface-40">Interface</a></h2>
+<h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
 <pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
@@ -10018,7 +10664,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-grid-widget"><a class="header" href="#the-grid-widget">The Grid Widget</a></h1>
 <p>A layout container that arranges child widgets in a grid with a fixed number of columns. Items wrap to the next row automatically.</p>
-<h2 id="interface-41"><a class="header" href="#interface-41">Interface</a></h2>
+<h2 id="interface-43"><a class="header" href="#interface-43">Interface</a></h2>
 <pre><code class="language-graphix">type GridColumns = [`Fixed(i64), `Fluid(f64)];
 type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
 
@@ -10089,7 +10735,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-qr-code-widget"><a class="header" href="#the-qr-code-widget">The QR Code Widget</a></h1>
 <p>Encodes a string as a QR code image. The QR code updates reactively when the input string changes.</p>
-<h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
+<h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
 <pre><code class="language-graphix">val qr_code: fn(
   ?#cell_size: &amp;[f64, null],
   &amp;string
@@ -10138,7 +10784,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-markdown-widget"><a class="header" href="#the-markdown-widget">The Markdown Widget</a></h1>
 <p>Renders a markdown string as rich text with support for headings, bold, italic, lists, code blocks, and clickable links.</p>
-<h2 id="interface-43"><a class="header" href="#interface-43">Interface</a></h2>
+<h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
 <pre><code class="language-graphix">val markdown: fn(
   ?#on_link: fn(string) -&gt; Any,
   ?#spacing: &amp;[f64, null],
@@ -10205,7 +10851,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-table-widget-1"><a class="header" href="#the-table-widget-1">The Table Widget</a></h1>
 <p>Displays data in rows and columns with configurable headers, alignment, and separators. Tables are built from <code>TableColumn</code> definitions and a 2D array of row widgets.</p>
-<h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
+<h2 id="interface-46"><a class="header" href="#interface-46">Interface</a></h2>
 <pre><code class="language-graphix">type TableColumn = {
   header: &amp;Widget,
   width: &amp;Length,
@@ -10285,7 +10931,7 @@ let layout = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
-<h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
+<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
 <pre><code class="language-graphix">type Shortcut;
 
 val shortcut: fn(
@@ -10755,6 +11401,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
     fn init&lt;'a, 'b, 'c&gt;(
         _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
+        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
         _from: &amp;'c [Node&lt;R, E&gt;],
         _top_id: ExprId,
@@ -11092,6 +11739,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
     fn init&lt;'a, 'b, 'c&gt;(
         _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
+        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
         _from: &amp;'c [Node&lt;R, E&gt;],
         _top_id: ExprId,
@@ -11177,6 +11825,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
     fn init&lt;'a, 'b, 'c&gt;(
         ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
         typ: &amp;'a FnType,
+        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         scope: &amp;'b Scope,
         from: &amp;'c [Node&lt;R, E&gt;],
         top_id: ExprId,
@@ -11311,8 +11960,55 @@ details of late binding, optional arguments, default args, etc. The
 <p>Because we generated code, we have to hook into the <code>typecheck</code>
 compiler phase and make sure the type checker runs on it. This
 requires that we implement the <code>typecheck</code> method. In our case all we
-have to do is typecheck our generated call site. You can do powerful
-things with this hook however.</p>
+have to do is typecheck our generated call site.</p>
+<h4 id="two-phase-typecheck-for-higher-order-functions"><a class="header" href="#two-phase-typecheck-for-higher-order-functions">Two-Phase Typecheck for Higher-Order Functions</a></h4>
+<p>Higher-order builtins <strong>must</strong> return <code>TypecheckResult::NeedsCallSite</code>
+and handle the <code>TypecheckPhase::CallSite(resolved)</code> phase. This is
+required so that type information from the call site propagates
+through to the inner predicate function. Without this, if the user
+passes a builtin like <code>json::read</code> that requires a concrete return
+type, the type checker won’t be able to verify or initialize it.</p>
+<p>The pattern is:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn typecheck(
+    &amp;mut self,
+    ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+    _from: &amp;mut [Node&lt;R, E&gt;],
+    phase: TypecheckPhase&lt;'_&gt;,
+) -&gt; anyhow::Result&lt;TypecheckResult&gt; {
+    // During CallSite phase, update stored types from the resolved FnType
+    if let TypecheckPhase::CallSite(resolved) = phase {
+        self.mftyp = match &amp;resolved.args[PRED_INDEX].typ {
+            Type::Fn(ft) =&gt; ft.clone(),
+            t =&gt; bail!("expected a function not {t}"),
+        };
+        // Update any other stored types (element type, etc.)
+    }
+    // Create and typecheck the inner CallSite — this is critical
+    // because it pushes deferred checks that cascade type information
+    // to inner builtins (e.g. json::read getting its cast_typ set)
+    let (_, node) = genn::bind(ctx, &amp;self.scope.lexical, "x", self.etyp.clone(), self.top_id);
+    let ft = self.mftyp.clone();
+    let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
+    let mut node = genn::apply(fnode, self.scope.clone(), vec![node], &amp;ft, self.top_id);
+    node.typecheck(ctx)?;
+    node.delete(ctx);
+    Ok(TypecheckResult::NeedsCallSite)
+}
+<span class="boring">}</span></code></pre>
+<p>The <code>NeedsCallSite</code> return value tells the compiler to store this
+builtin for deferred type checking. When the outer call site’s
+deferred check runs, it calls <code>typecheck(CallSite(resolved))</code> with
+the fully resolved function type. The builtin updates its stored
+predicate type (<code>mftyp</code>) from the resolved type, then creates and
+typechecks an inner <code>CallSite</code> node. This inner typecheck pushes its
+own deferred checks, cascading type information to any inner builtins
+that need it.</p>
+<p>For builtins that store a persistent predicate node (like <code>filter</code> or
+<code>group</code>), the CallSite phase should rebuild the predicate node with
+the resolved types, since the original was built with unresolved type
+variables.</p>
 <h3 id="bindids-and-refs"><a class="header" href="#bindids-and-refs">BindIds and Refs</a></h3>
 <p><code>BindId</code> is a very fundamental type in compiler guts. The
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html"><code>Event</code></a>

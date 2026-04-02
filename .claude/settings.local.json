@@ -100,7 +100,8 @@
       "Bash(git rebase:*)",
       "Bash(git show:*)",
       "Read(//home/eric/proj/netidx/netidx-value/src/**)",
-      "Bash(bash gen.sh)"
+      "Bash(bash gen.sh)",
+      "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -10 {}')"
     ],
     "deny": [],
     "ask": []

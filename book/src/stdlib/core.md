@@ -138,4 +138,90 @@ val println: fn(?#dest:Log, 'a) -> _;
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
 val throttle: fn(?#rate:duration, 'a) -> 'a;
+
+/// bitwise AND
+val bit_and: fn<'a: Int>('a, 'a) -> 'a;
+
+/// bitwise OR
+val bit_or: fn<'a: Int>('a, 'a) -> 'a;
+
+/// bitwise XOR
+val bit_xor: fn<'a: Int>('a, 'a) -> 'a;
+
+/// bitwise complement
+val bit_not: fn<'a: Int>('a) -> 'a;
+
+/// shift left (wrapping)
+val shl: fn<'a: Int>('a, 'a) -> 'a;
+
+/// shift right (wrapping)
+val shr: fn<'a: Int>('a, 'a) -> 'a;
+```
+
+## core::buffer
+
+The `buffer` submodule provides functions for working with raw bytes:
+conversion between bytes and strings/arrays, concatenation, and a
+flexible binary encode/decode system with control over endianness and
+variable-length encoding.
+
+```graphix
+/// Convert bytes to a UTF-8 string.
+val to_string: fn(bytes) -> Result<string, `EncodingError(string)>;
+
+/// Convert bytes to a UTF-8 string, replacing invalid sequences.
+val to_string_lossy: fn(bytes) -> string;
+
+/// Convert a string to its UTF-8 bytes.
+val from_string: fn(string) -> bytes;
+
+/// Concatenate bytes values.
+val concat: fn(@args: [bytes, Array<bytes>]) -> bytes;
+
+/// Convert bytes to an Array<u8>.
+val to_array: fn(bytes) -> Array<u8>;
+
+/// Convert an Array<u8> to bytes.
+val from_array: fn(Array<u8>) -> bytes;
+
+/// Return the length of a bytes value.
+val len: fn(bytes) -> u64;
+
+/// Spec for encoding values into bytes. Bare tags are
+/// big-endian (network byte order), LE suffix for little-endian.
+type Encode = [
+  `I8(i8), `U8(u8),
+  `I16(i16), `I16LE(i16), `U16(u16), `U16LE(u16),
+  `I32(i32), `I32LE(i32), `U32(u32), `U32LE(u32),
+  `I64(i64), `I64LE(i64), `U64(u64), `U64LE(u64),
+  `F32(f32), `F32LE(f32), `F64(f64), `F64LE(f64),
+  `Bytes(bytes),
+  `Pad(u64),
+  `Varint(u64),
+  `Zigzag(i64)
+];
+
+/// Spec for decoding bytes into refs. Bare tags are
+/// big-endian (network byte order), LE suffix for little-endian.
+/// Variable-length fields take a &u64 for the length so that
+/// earlier decoded lengths can be resolved within the same call.
+type Decode = [
+  `I8(&i8), `U8(&u8),
+  `I16(&i16), `I16LE(&i16), `U16(&u16), `U16LE(&u16),
+  `I32(&i32), `I32LE(&i32), `U32(&u32), `U32LE(&u32),
+  `I64(&i64), `I64LE(&i64), `U64(&u64), `U64LE(&u64),
+  `F32(&f32), `F32LE(&f32), `F64(&f64), `F64LE(&f64),
+  `Bytes(&u64, &bytes),
+  `UTF8(&u64, &string),
+  `Skip(&u64),
+  `Varint(&u64),
+  `Zigzag(&i64)
+];
+
+/// Encode values into bytes according to the spec.
+val encode: fn(Array<Encode>) -> bytes;
+
+/// Decode bytes into refs according to the spec.
+/// Returns the remaining bytes after all fields are consumed.
+val decode: fn(bytes, Array<Decode>) -> Result<bytes, `DecodeError(string)>;
 ```

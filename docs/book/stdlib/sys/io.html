@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-8cbca0b5.js"></script>
+        <script src="../../toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,10 +177,11 @@
                         <h1 id="sysio"><a class="header" href="#sysio">sys::io</a></h1>
 <p>The <code>sys::io</code> module provides a unified <code>Stream</code> type for all I/O
 operations. The phantom type parameter constrains which stream kind is
-accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, and </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;`.</p>
+accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;<code>, and </code>stdin<code>/</code>stdout<code>/</code>stderr<code>return</code>Stream&lt;`Stdio&gt;`.</p>
 <pre><code class="language-graphix">/// An opaque handle to an I/O stream.
-/// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS.
-type Stream&lt;'a: [`File, `Tcp, `Tls]&gt;;
+/// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS,
+/// Stream&lt;`Stdio&gt; for stdin/stdout/stderr.
+type Stream&lt;'a: [`File, `Tcp, `Tls, `Stdio]&gt;;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
@@ -199,6 +200,15 @@ val write_exact: fn(Stream&lt;'a&gt;, bytes) -&gt; Result&lt;null, `IOError(stri
 
 /// Flush any buffered writes.
 val flush: fn(Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Return a handle to standard input.
+val stdin: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+
+/// Return a handle to standard output.
+val stdout: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+
+/// Return a handle to standard error.
+val stderr: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
 </code></pre>
 
                     </main>

@@ -1,0 +1,57 @@
+# args
+
+The `args` module provides command-line argument parsing with support for
+positional arguments, options, flags, and subcommands.
+
+## Interface
+
+```graphix
+/// Argument kind
+type Kind = [`Positional, `Option, `Flag];
+
+/// Argument descriptor
+type Arg = {
+    name: string,
+    kind: Kind,
+    short: [string, null],
+    help: [string, null],
+    default: [string, null],
+    required: [bool, null]
+};
+
+/// Command descriptor (recursive for subcommands)
+type Command = {
+    name: string,
+    version: [string, null],
+    about: [string, null],
+    args: Array<Arg>,
+    subcommands: Array<Command>
+};
+
+/// Parse result
+type ParseResult = {
+    command: Array<string>,
+    values: Map<string, [string, null]>
+};
+
+/// Create a positional argument descriptor.
+val positional: fn(#name: string, ?#help: [string, null], ?#required: [bool, null]) -> Arg;
+
+/// Create an option argument descriptor (--name value).
+val option: fn(#name: string, ?#short: [string, null], ?#help: [string, null], ?#default: [string, null], ?#required: [bool, null]) -> Arg;
+
+/// Create a flag argument descriptor (--name, boolean).
+val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -> Arg;
+
+/// Create a command descriptor.
+val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array<Command>, Array<Arg>) -> Command;
+
+/// Parse command-line arguments against the spec.
+val parse: fn(Command) -> [ParseResult, Error<`ArgError(string)>];
+```
+
+## Example
+
+```graphix
+{{#include ../examples/net/cli.gx}}
+```

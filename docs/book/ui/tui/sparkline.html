@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-4ac85b37.js";
+            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-8cbca0b5.js"></script>
+        <script src="../../toc-9c436f35.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -288,12 +288,12 @@ layout(
 use tui::sparkline;
 
 let data: Array&lt;f64&gt; = [];
-let new_value = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
 
 data &lt;- array::window(
     #n: 60,
     new_value ~ data,
-    cast&lt;f64&gt;(new_value)?
+    new_value
 );
 
 sparkline(#max: &amp;100, &amp;data)
