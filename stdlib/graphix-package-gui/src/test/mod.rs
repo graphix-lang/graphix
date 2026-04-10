@@ -13,12 +13,14 @@ use crate::widgets::{self, GuiW, Message};
 mod canvas_test;
 mod chart_test;
 mod clipboard_test;
+mod data_table_test;
 mod interaction_test;
 mod widgets_test;
 
 const TEST_REGISTER: &[RegisterFn] = &[
     <graphix_package_core::P as graphix_package::Package<NoExt>>::register,
     <graphix_package_str::P as graphix_package::Package<NoExt>>::register,
+    <graphix_package_sys::P as graphix_package::Package<NoExt>>::register,
     <crate::P as graphix_package::Package<NoExt>>::register,
 ];
 
@@ -71,8 +73,7 @@ impl GuiTestHarness {
 
         let rt_handle = tokio::runtime::Handle::current();
 
-        // Drain any additional updates that arrive during widget compilation
-        while rx.try_recv().is_ok() {}
+        let mut widget = widget;
 
         Ok(Self {
             _ctx: ctx,
@@ -161,6 +162,13 @@ impl GuiTestHarness {
     /// tree is in an inconsistent state.
     fn view(&self) -> crate::widgets::IcedElement<'_> {
         self.widget.view()
+    }
+
+    /// Get a DataTableSnapshot from the widget, if it is a data table.
+    fn dt_snapshot(&self) -> crate::widgets::DataTableSnapshot {
+        self.widget
+            .data_table_snapshot()
+            .expect("widget is not a DataTableW")
     }
 }
 

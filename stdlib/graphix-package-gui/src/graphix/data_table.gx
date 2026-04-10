@@ -1,0 +1,17 @@
+let data_table = |
+  #sort_mode: &SortMode = &`None,
+  #column_filter: &FilterSpec = &`All,
+  #column_types: &Map<string, ColumnSpec> = &{},
+  #row_filter: &FilterSpec = &`All,
+  #selection: &Array<string> = &[],
+  #show_row_name: &bool = &true,
+  #on_select: [fn(#path: string) -> Any, null] = null,
+  #on_activate: [fn(#path: string) -> Any, null] = null,
+  #on_header_click: [fn(#column: string) -> Any, null] = null,
+  #table: &sys::net::Table
+| -> Widget `DataTable({
+    column_filter, column_types,
+    on_activate: &on_activate,
+    on_header_click: &on_header_click, on_select: &on_select,
+    row_filter, selection, show_row_name, sort_mode, table
+});

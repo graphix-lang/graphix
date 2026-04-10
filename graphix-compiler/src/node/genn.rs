@@ -62,10 +62,15 @@ pub fn apply<R: Rt, E: UserEvent>(
     ftype.alias_tvars(&mut LPooled::take());
     let args: FxHashMap<ArgKey, Arg<R, E>> = args
         .into_iter()
+        .zip(typ.args.iter())
         .enumerate()
-        .map(|(i, node)| {
+        .map(|(i, (node, farg))| {
+            let key = match &farg.label {
+                Some((name, _)) => ArgKey::Named(name.clone()),
+                None => ArgKey::Positional(i),
+            };
             (
-                ArgKey::Positional(i),
+                key,
                 Arg { id: BindId::new(), node: Some(node), is_default: false },
             )
         })

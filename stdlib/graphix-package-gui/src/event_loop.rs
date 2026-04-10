@@ -363,6 +363,41 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
         for msg in self.messages.drain(..) {
             match msg {
                 Message::Nop => {}
+                Message::CellClick(row, col) => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_cell_click(row, col.clone());
+                    }
+                }
+                Message::CellEdit(row, col) => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_cell_edit(row, col.clone());
+                    }
+                }
+                Message::CellEditInput(text) => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_cell_edit_input(text.clone());
+                    }
+                }
+                Message::CellEditSubmit => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_cell_edit_submit();
+                    }
+                }
+                Message::CellEditCancel => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_cell_edit_cancel();
+                    }
+                }
+                Message::TableKey(action) => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_table_key(&action);
+                    }
+                }
+                Message::Scroll(v, h, vp_w, vp_h) => {
+                    for tw in self.windows.values_mut() {
+                        tw.content.handle_scroll(v, h, vp_w, vp_h);
+                    }
+                }
                 Message::Call(id, args) => {
                     if let Err(e) = self.gx.call(id, args) {
                         error!("failed to call: {e:?}");

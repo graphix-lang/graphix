@@ -56,6 +56,7 @@ macro_rules! update_child {
 
 pub mod button;
 pub mod canvas;
+pub mod data_table;
 pub mod chart;
 pub mod combo_box;
 pub mod container;
@@ -99,6 +100,36 @@ pub enum Message {
     Nop,
     Call(CallableId, ValArray),
     EditorAction(ExprId, iced_widget::text_editor::Action),
+    /// Virtual scroll position changed: (offset_x, offset_y, viewport_w, viewport_h)
+    /// All values in logical pixels.
+    Scroll(f32, f32, f32, f32),
+    /// A cell was clicked in a data table (row index, column name).
+    CellClick(usize, String),
+    /// A cell was clicked to begin editing (row index, column name).
+    CellEdit(usize, String),
+    /// Cell edit text changed (new text).
+    CellEditInput(String),
+    /// Cell edit submitted (Enter pressed).
+    CellEditSubmit,
+    /// Cell edit cancelled (Escape or click elsewhere).
+    CellEditCancel,
+    /// Keyboard navigation in a data table.
+    TableKey(TableKeyAction),
+}
+
+/// Keyboard actions for data table navigation.
+#[derive(Debug, Clone)]
+pub enum TableKeyAction {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// Enter: drill down (fire on_activate)
+    Enter,
+    /// Space: start editing selected cell
+    Space,
+    /// Escape: cancel editing
+    Escape,
 }
 
 /// Trait for GUI widgets. Unlike TUI widgets, GUI widgets are not
@@ -118,6 +149,39 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
 
+    /// Handle a keyboard navigation action. Returns true if redraw needed.
+    fn handle_table_key(&mut self, _action: &TableKeyAction) -> bool { false }
+
+    /// Begin editing a cell, update edit text, submit, or cancel.
+    fn handle_cell_edit(&mut self, _row: usize, _col: String) -> bool { false }
+    fn handle_cell_edit_input(&mut self, _text: String) -> bool { false }
+    fn handle_cell_edit_submit(&mut self) -> bool { false }
+    fn handle_cell_edit_cancel(&mut self) -> bool { false }
+
+    /// Process a cell click in a data table. Returns true if redraw needed.
+    fn handle_cell_click(&mut self, _row: usize, _col: String) -> bool {
+        false
+    }
+
+    /// Notify that the viewport size changed (e.g. window resize).
+    /// Returns true if visible content changed.
+    fn handle_viewport_resize(&mut self, _vp_w: f32, _vp_h: f32) -> bool {
+        false
+    }
+
+    /// Process a virtual scroll position change.
+    /// Returns true if the visible content changed and a redraw is needed.
+    fn handle_scroll(&mut self, _v: f32, _h: f32, _vp_w: f32, _vp_h: f32) -> bool {
+        false
+    }
+
+    /// Return a DataTableSnapshot if this widget is a data table.
+    /// Default returns None. Overridden by DataTableW.
+    #[cfg(test)]
+    fn data_table_snapshot(&self) -> Option<DataTableSnapshot> {
+        None
+    }
+
     /// Route a text editor action to the widget that owns the given
     /// content ref. Returns `Some((callable_id, value))` if the action
     /// was an edit and the result should be called back to graphix.
@@ -132,6 +196,17 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
 }
 
 pub type GuiW<X> = Box<dyn GuiWidget<X>>;
+
+/// Snapshot of data table state for test assertions.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataTableSnapshot {
+    pub col_names: Vec<String>,
+    pub row_basenames: Vec<String>,
+    pub grid: Vec<Vec<String>>,
+    pub is_value_mode: bool,
+    pub selection: Vec<String>,
+}
 
 /// Future type for widget compilation (avoids infinite-size async fn).
 pub type CompileFut<X> = Pin<Box<dyn Future<Output = Result<GuiW<X>>> + Send + 'static>>;
@@ -340,6 +415,7 @@ pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
             "MenuBar" => menu_bar::MenuBarW::compile(gx, v).await,
             "QrCode" => qr_code::QrCodeW::compile(gx, v).await,
             "Table" => table::TableW::compile(gx, v).await,
+            "DataTable" => data_table::DataTableW::compile(gx, v).await,
             _ => bail!("invalid gui widget type `{s}({v})"),
         }
     })

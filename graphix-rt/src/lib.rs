@@ -452,6 +452,7 @@ pub enum GXEvent {
 struct GXHandleInner<X: GXExt> {
     tx: tmpsc::UnboundedSender<ToGX<X>>,
     task: JoinHandle<()>,
+    subscriber: netidx::subscriber::Subscriber,
 }
 
 impl<X: GXExt> Drop for GXHandleInner<X> {
@@ -478,6 +479,11 @@ impl<X: GXExt> Clone for GXHandle<X> {
 }
 
 impl<X: GXExt> GXHandle<X> {
+    /// Get a clone of the netidx subscriber used by this runtime.
+    pub fn subscriber(&self) -> netidx::subscriber::Subscriber {
+        self.0.subscriber.clone()
+    }
+
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
         let (tx, rx) = oneshot::channel();
         self.0.tx.send(f(tx)).map_err(|_| anyhow!("runtime is dead"))?;
@@ -651,6 +657,7 @@ impl<X: GXExt> GXConfig<X> {
     /// library. To build a runtime with the full standard library and nothing
     /// else simply pass the output of `graphix_stdlib::register` to start.
     pub async fn start(self) -> Result<GXHandle<X>> {
+        let subscriber = self.ctx.rt.subscriber.clone();
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();
         let task = task::spawn(async move {
@@ -667,6 +674,6 @@ impl<X: GXExt> GXConfig<X> {
             };
         });
         init_rx.await??;
-        Ok(GXHandle(Arc::new(GXHandleInner { tx, task })))
+        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, subscriber })))
     }
 }

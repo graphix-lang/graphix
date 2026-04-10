@@ -1,0 +1,80 @@
+type SortDirection = [`Ascending, `Descending];
+type SortMode = [
+    `None,
+    `Disabled,
+    `Column({ name: string, direction: SortDirection }),
+    `External(Map<string, SortDirection>)
+];
+
+type FilterSpec = [
+    `All,
+    `None,
+    `Include(Array<string>),
+    `Exclude(Array<string>),
+    `IncludeMatch(Array<string>),
+    `ExcludeMatch(Array<string>),
+    `KeepRange({ start: i64, end: i64 }),
+    `DropRange({ start: i64, end: i64 })
+];
+
+
+type ColumnType = [
+    `Text({ on_edit: [fn(#path: string, #value: string) -> Any, null] }),
+    `Toggle({ on_edit: [fn(#path: string, #value: bool) -> Any, null] }),
+    `Combo({
+        choices: Array<{ id: string, label: string }>,
+        on_edit: [fn(#path: string, #value: string) -> Any, null]
+    }),
+    `Spin({
+        min: f64,
+        max: f64,
+        increment: f64,
+        on_edit: [fn(#path: string, #value: f64) -> Any, null]
+    }),
+    `Progress,
+    `Button({
+        on_click: [fn(#path: string, #value: Any) -> Any, null]
+    }),
+    `Sparkline({ history_seconds: f64 }),
+    `Hidden
+];
+
+type ColumnSpec = {
+    typ: ColumnType,
+    display_name: [string, null],
+    default_value: &[null, string, Map<string, Any>],
+    max_width: [f64, null]
+};
+
+type DataTable = {
+    column_filter: &FilterSpec,
+    column_types: &Map<string, ColumnSpec>,
+    on_activate: &[fn(#path: string) -> Any, null],
+    on_header_click: &[fn(#column: string) -> Any, null],
+    on_select: &[fn(#path: string) -> Any, null],
+    row_filter: &FilterSpec,
+    selection: &Array<string>,
+    show_row_name: &bool,
+    sort_mode: &SortMode,
+    table: &sys::net::Table
+};
+
+/// A data table that displays rows and columns of data.
+///
+/// Rows that are absolute netidx paths trigger live subscriptions.
+/// Rows that are not absolute paths are virtual — they display only
+/// default values from column_types.
+///
+/// Pass the result of `sys::net::list_table(path)` as the table parameter.
+val data_table: fn(
+    ?#sort_mode: &SortMode,
+    ?#column_filter: &FilterSpec,
+    ?#column_types: &Map<string, ColumnSpec>,
+    ?#row_filter: &FilterSpec,
+    ?#selection: &Array<string>,
+    ?#show_row_name: &bool,
+    ?#on_select: [fn(#path: string) -> Any, null],
+    ?#on_activate: [fn(#path: string) -> Any, null],
+    ?#on_header_click: [fn(#column: string) -> Any, null],
+    #table: &sys::net::Table
+) -> Widget;
