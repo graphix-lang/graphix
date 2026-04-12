@@ -113,6 +113,10 @@ pub enum Message {
     CellEditSubmit,
     /// Cell edit cancelled (Escape or click elsewhere).
     CellEditCancel,
+    /// Column resize drag started (col_meta index).
+    ColumnResizeStart(usize),
+    /// Column resize drag ended.
+    ColumnResizeEnd,
     /// Keyboard navigation in a data table.
     TableKey(TableKeyAction),
 }
@@ -172,6 +176,22 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Process a virtual scroll position change.
     /// Returns true if the visible content changed and a redraw is needed.
     fn handle_scroll(&mut self, _v: f32, _h: f32, _vp_w: f32, _vp_h: f32) -> bool {
+        false
+    }
+
+    /// Start a column resize drag. Returns true if a drag was started.
+    fn handle_column_resize_start(&mut self, _col_idx: usize, _cursor_x: f32) -> bool {
+        false
+    }
+
+    /// Update during a column resize drag. Returns Some((callable_id, new_width))
+    /// if an on_resize callback should be fired.
+    fn handle_mouse_move_resize(&mut self, _cursor_x: f32) -> Option<(CallableId, f64)> {
+        None
+    }
+
+    /// End a column resize drag. Returns true if a drag was ended.
+    fn handle_column_resize_end(&mut self) -> bool {
         false
     }
 

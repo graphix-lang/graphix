@@ -11,6 +11,7 @@ use arcstr::ArcStr;
 use fxhash::{FxHashMap, FxHashSet};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use iced_core::text::Paragraph as _;
 use iced_widget as widget;
 use log::warn;
 use netidx::{
@@ -34,7 +35,6 @@ const ROW_HEIGHT_ESTIMATE: f32 = 22.0;
 const ROW_BUFFER: usize = 50;
 const MIN_COL_WIDTH: f32 = 80.0;
 const DEFAULT_MAX_COL_WIDTH: f32 = 300.0;
-const CHAR_WIDTH_ESTIMATE: f32 = 8.5;
 const DEFAULT_VISIBLE_ROWS: usize = 30;
 const DEFAULT_VISIBLE_COLS: usize = 20;
 /// Max points kept per sparkline. When exceeded, adjacent pairs are
@@ -42,12 +42,102 @@ const DEFAULT_VISIBLE_COLS: usize = 20;
 /// mean) to halve the count. This bounds memory at ~8KB per sparkline.
 const MAX_SPARKLINE_POINTS: usize = 512;
 
+/// Horizontal padding inside each cell (left + right total: [3, 5] = 10px).
+const CELL_H_PADDING: f32 = 10.0;
+/// Width of the resize handle inside header cells.
+const RESIZE_HANDLE_WIDTH: f32 = 5.0;
+
+type Paragraph = <Renderer as iced_core::text::Renderer>::Paragraph;
+
+/// Measure the actual rendered width of text at the given font size.
+fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
+    let para = Paragraph::with_text(iced_core::Text {
+        content: text.into(),
+        bounds: iced_core::Size::new(f32::INFINITY, f32::INFINITY),
+        size: iced_core::Pixels(size),
+        line_height: iced_core::text::LineHeight::default(),
+        font,
+        align_x: iced_core::alignment::Horizontal::Left.into(),
+        align_y: iced_core::alignment::Vertical::Top,
+        shaping: iced_core::text::Shaping::Advanced,
+        wrapping: iced_core::text::Wrapping::None,
+    });
+    para.min_bounds().width
+}
+
+/// Compute the column width needed for a cell's text content.
 fn col_text_width(name: &str) -> f32 {
-    name.len() as f32 * CHAR_WIDTH_ESTIMATE + 16.0
+    measure_text(name, 13.0, iced_core::Font::DEFAULT)
+        + CELL_H_PADDING + RESIZE_HANDLE_WIDTH
+}
+
+/// Compute the column width needed for a header's text (bold, size 14).
+fn col_header_width(name: &str) -> f32 {
+    let bold = iced_core::Font {
+        weight: iced_core::font::Weight::Bold,
+        ..iced_core::Font::DEFAULT
+    };
+    measure_text(name, 14.0, bold)
+        + CELL_H_PADDING + RESIZE_HANDLE_WIDTH
 }
 
 fn col_min_width(name: &str, max_w: f32) -> f32 {
     col_text_width(name).max(MIN_COL_WIDTH).min(max_w)
+}
+
+/// Truncate text to fit within a pixel width, appending "..." if needed.
+/// Uses actual text measurement for accuracy.
+fn truncate_to_width(text: &str, max_px: f32) -> String {
+    let avail = max_px - CELL_H_PADDING - RESIZE_HANDLE_WIDTH;
+    if avail <= 0.0 || text.is_empty() {
+        return String::new();
+    }
+    let full_w = measure_text(text, 13.0, iced_core::Font::DEFAULT);
+    if full_w <= avail {
+        return text.to_string();
+    }
+    // Binary search for the longest prefix that fits with "..."
+    let ellipsis_w = measure_text("...", 13.0, iced_core::Font::DEFAULT);
+    let target = avail - ellipsis_w;
+    if target <= 0.0 {
+        return "...".to_string();
+    }
+    let mut lo = 0usize;
+    let mut hi = text.len();
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        // Snap to char boundary
+        let mid = if mid >= text.len() {
+            text.len()
+        } else {
+            let mut m = mid;
+            while m > 0 && !text.is_char_boundary(m) { m -= 1; }
+            m
+        };
+        if mid == 0 { break; }
+        let w = measure_text(&text[..mid], 13.0, iced_core::Font::DEFAULT);
+        if w <= target {
+            lo = mid;
+            if lo == hi { break; }
+        } else {
+            hi = mid - 1;
+            // Snap hi to char boundary
+            while hi > 0 && !text.is_char_boundary(hi) { hi -= 1; }
+        }
+    }
+    if lo == 0 {
+        "...".to_string()
+    } else {
+        while lo > 0 && !text.is_char_boundary(lo) { lo -= 1; }
+        format!("{}...", &text[..lo])
+    }
+}
+
+/// State for an active column resize drag.
+struct ResizeDrag {
+    col_name: String,
+    start_x: f32,
+    start_width: f32,
 }
 
 // ── Sort / filter / column types ───────────────────────────────────
@@ -107,8 +197,10 @@ struct ColumnSpec {
     display_name: Option<String>,
     /// Raw default_value ref bind ID — compiled separately into default_value_refs.
     default_value_bid: u64,
-    /// Max column width in pixels (None = use DEFAULT_MAX_COL_WIDTH).
-    max_width: Option<f32>,
+    /// Raw width ref bind ID — compiled separately into width_refs.
+    width_bid: u64,
+    /// Raw on_resize callback value — compiled separately into on_resize_callbacks.
+    on_resize_value: Option<Value>,
     callback_value: Option<Value>,
 }
 
@@ -354,24 +446,30 @@ fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
     };
     let mut map = FxHashMap::default();
     for (name, spec_val) in pairs {
-        // ColumnSpec struct: { default_value, display_name, max_width, typ } — alphabetical
-        // default_value is now a ref (bind ID as u64)
-        let (dv_bid, display_name, max_width, typ_val) =
-            match spec_val.cast_to::<[(ArcStr, Value); 4]>() {
-                Ok([(_, dv), (_, dn), (_, mw), (_, tv)]) => {
+        // ColumnSpec struct: { default_value, display_name, on_resize, typ, width } — alphabetical
+        let (dv_bid, display_name, on_resize_value, typ_val, width_bid) =
+            match spec_val.cast_to::<[(ArcStr, Value); 5]>() {
+                Ok([(_, dv), (_, dn), (_, or), (_, tv), (_, w)]) => {
                     let bid = dv.cast_to::<u64>().unwrap_or(0);
                     let display_name = match dn {
                         Value::Null => None,
                         Value::String(s) => Some(s.to_string()),
                         _ => None,
                     };
-                    let max_width = mw.cast_to::<f64>().ok().map(|v| v as f32);
-                    (bid, display_name, max_width, tv)
+                    let on_resize_val = match or {
+                        Value::Null => None,
+                        v => Some(v),
+                    };
+                    let width_bid = w.cast_to::<u64>().unwrap_or(0);
+                    (bid, display_name, on_resize_val, tv, width_bid)
                 }
-                Err(_) => (0, None, None, Value::Null),
+                Err(_) => (0, None, None, Value::Null, 0),
             };
         let (typ, callback_value) = parse_column_type(&typ_val);
-        map.insert(name, ColumnSpec { typ, display_name, default_value_bid: dv_bid, max_width, callback_value });
+        map.insert(name, ColumnSpec {
+            typ, display_name, default_value_bid: dv_bid,
+            width_bid, on_resize_value, callback_value,
+        });
     }
     map
 }
@@ -573,6 +671,18 @@ pub(crate) struct DataTableW<X: GXExt> {
     default_value_refs: FxHashMap<String, Ref<X>>,
     /// Parsed default values (updated when refs change)
     default_values: FxHashMap<String, DefaultValue>,
+    /// Compiled refs for per-column width
+    width_refs: FxHashMap<String, Ref<X>>,
+    /// Ref-controlled widths (from width refs)
+    ref_widths: FxHashMap<String, f32>,
+    /// User-controlled widths (free resize or auto-sized on first load)
+    user_widths: Mutex<FxHashMap<String, f32>>,
+    /// Compiled on_resize callables per column
+    on_resize_callbacks: FxHashMap<String, Callable<X>>,
+    /// Active resize drag state
+    resize_drag: Option<ResizeDrag>,
+    /// Last resize handle click: (col_meta_idx, timestamp) for double-click detection
+    last_resize_click: Option<(usize, Instant)>,
     mode: DisplayMode,
     col_names: Vec<String>,
     row_paths: Vec<Path>,
@@ -662,10 +772,13 @@ impl<X: GXExt> DataTableW<X> {
             .map(parse_filter_spec).unwrap_or(FilterSpec::All);
         let selection = selection_ref.last.as_ref()
             .map(parse_selection).unwrap_or_default();
-        // Compile per-column callbacks and default_value refs
+        // Compile per-column callbacks, default_value refs, width refs, on_resize
         let mut col_callbacks = FxHashMap::default();
         let mut default_value_refs = FxHashMap::default();
         let mut default_values = FxHashMap::default();
+        let mut width_refs = FxHashMap::default();
+        let mut ref_widths = FxHashMap::default();
+        let mut on_resize_callbacks = FxHashMap::default();
         for (name, spec) in &column_types_parsed {
             if let Some(cb_val) = &spec.callback_value {
                 if let Ok(callable) = gx.compile_callable(cb_val.clone()).await {
@@ -679,6 +792,19 @@ impl<X: GXExt> DataTableW<X> {
                         .unwrap_or(DefaultValue::None);
                     default_values.insert(name.clone(), dv);
                     default_value_refs.insert(name.clone(), r);
+                }
+            }
+            if spec.width_bid != 0 {
+                if let Ok(r) = gx.compile_ref(spec.width_bid).await {
+                    if let Some(w) = r.last.as_ref().and_then(|v| v.clone().cast_to::<f64>().ok()) {
+                        ref_widths.insert(name.clone(), w as f32);
+                    }
+                    width_refs.insert(name.clone(), r);
+                }
+            }
+            if let Some(cb_val) = &spec.on_resize_value {
+                if let Ok(callable) = gx.compile_callable(cb_val.clone()).await {
+                    on_resize_callbacks.insert(name.clone(), callable);
                 }
             }
         }
@@ -704,6 +830,12 @@ impl<X: GXExt> DataTableW<X> {
             col_callbacks,
             default_value_refs,
             default_values,
+            width_refs,
+            ref_widths,
+            user_widths: Mutex::new(FxHashMap::default()),
+            on_resize_callbacks,
+            resize_drag: None,
+            last_resize_click: None,
             mode: DisplayMode::Table,
             col_names: vec![], row_paths: vec![],
             cells, row_subs: vec![],
@@ -1149,10 +1281,15 @@ impl<X: GXExt> DataTableW<X> {
         )
     }
 
-    fn max_col_width_for(&self, col_name: &str) -> f32 {
-        self.column_types.get(col_name)
-            .and_then(|s| s.max_width)
-            .unwrap_or(DEFAULT_MAX_COL_WIDTH)
+    /// Returns the effective column width if explicitly set (by ref or user drag).
+    /// None means auto-size from content.
+    fn effective_col_width(&self, col_name: &str) -> Option<f32> {
+        // 1. User-set width (from drag resize)
+        if let Some(w) = self.user_widths.lock().get(col_name) {
+            return Some(*w);
+        }
+        // 2. Ref-controlled width
+        self.ref_widths.get(col_name).copied()
     }
 
     /// Compute how many data columns fit from first_col given actual cached widths
@@ -1237,10 +1374,116 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
+    /// Auto-fit all columns to their max content width (no cap).
+    /// Scans ALL rows, not just visible ones.
+    fn auto_fit_all_columns(&mut self) {
+        let grid = self.cells.grid.lock();
+        let show_name = self.show_row_name.t.unwrap_or(true);
+        let mut widths = self.user_widths.lock();
+        if show_name {
+            let mut w = col_header_width("name").max(MIN_COL_WIDTH);
+            for p in &self.row_paths {
+                let name = Path::basename(p).unwrap_or("");
+                w = w.max(col_text_width(name).max(MIN_COL_WIDTH));
+            }
+            widths.insert("name".into(), w);
+        }
+        match self.mode {
+            DisplayMode::Table => {
+                for (col_idx, col_name) in self.col_names.iter().enumerate() {
+                    // Skip columns with fixed ref width and no on_resize
+                    let is_fixed = self.ref_widths.contains_key(col_name)
+                        && !self.on_resize_callbacks.contains_key(col_name);
+                    if is_fixed { continue; }
+                    let display = self.column_types.get(col_name)
+                        .and_then(|s| s.display_name.as_deref())
+                        .unwrap_or(col_name);
+                    let mut w = col_header_width(display).max(MIN_COL_WIDTH);
+                    for row in grid.iter() {
+                        if col_idx < row.len() {
+                            w = w.max(col_text_width(&row[col_idx]).max(MIN_COL_WIDTH));
+                        }
+                    }
+                    widths.insert(col_name.clone(), w);
+                }
+            }
+            DisplayMode::Value => {
+                let mut w = col_header_width("value").max(MIN_COL_WIDTH);
+                for row in grid.iter() {
+                    if let Some(v) = row.first() {
+                        w = w.max(col_text_width(v).max(MIN_COL_WIDTH));
+                    }
+                }
+                widths.insert("value".into(), w);
+            }
+        }
+    }
+
     fn col_type_for(&self, col_name: &str) -> &ColumnType {
         self.column_types.get(col_name)
             .map(|s| &s.typ)
             .unwrap_or(&ColumnType::Text)
+    }
+
+    /// Start a column resize drag. `col_meta_idx` is the index in the
+    /// col_meta Vec (same as the ci passed to ColumnResizeStart).
+    /// `cursor_x` is the current mouse X position.
+    pub fn handle_column_resize_start(&mut self, col_meta_idx: usize, cursor_x: f32) -> bool {
+        let cache = self.cached_col_widths.lock();
+        // Build col_meta order from cache — we need the col name at this index
+        // The cache is populated in the same order as col_meta, but stored as a map.
+        // We can reconstruct the name from the col_names list.
+        drop(cache);
+        let show_name = self.show_row_name.t.unwrap_or(true);
+        let name = if show_name && col_meta_idx == 0 {
+            "name".to_string()
+        } else {
+            let data_idx = if show_name { col_meta_idx - 1 } else { col_meta_idx };
+            let (vis_start, vis_end) = self.display_col_range();
+            let abs_idx = vis_start + data_idx;
+            if abs_idx < self.col_names.len() {
+                self.col_names[abs_idx].clone()
+            } else {
+                return false;
+            }
+        };
+        let current_w = self.effective_col_width(&name)
+            .or_else(|| self.cached_col_widths.lock().get(&name).copied())
+            .unwrap_or(DEFAULT_MAX_COL_WIDTH);
+        self.resize_drag = Some(ResizeDrag {
+            col_name: name,
+            start_x: cursor_x,
+            start_width: current_w,
+        });
+        true
+    }
+
+    /// Update during a resize drag. Returns Some((callable_id, new_width)) if
+    /// the column has an on_resize callback that should be fired.
+    pub fn handle_mouse_move_resize(&mut self, cursor_x: f32) -> Option<(super::CallableId, f64)> {
+        let drag = self.resize_drag.as_ref()?;
+        let delta = cursor_x - drag.start_x;
+        let new_width = (drag.start_width + delta).max(MIN_COL_WIDTH);
+        let col_name = drag.col_name.clone();
+        // Update user_widths for immediate visual feedback
+        self.user_widths.lock().insert(col_name.clone(), new_width);
+        // If this column has an on_resize callback, return it for the caller to fire
+        self.on_resize_callbacks.get(&col_name)
+            .map(|c| (c.id(), new_width as f64))
+    }
+
+    /// End a resize drag.
+    pub fn handle_column_resize_end(&mut self) -> bool {
+        if self.resize_drag.take().is_some() {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a column resize drag is currently active.
+    pub fn is_column_resizing(&self) -> bool {
+        self.resize_drag.is_some()
     }
 }
 
@@ -1402,14 +1645,32 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if id == self.column_types_ref.id {
             self.column_types_ref.last = Some(v.clone());
             match v {
-                Value::Null => { self.column_types.clear(); self.col_callbacks.clear(); }
+                Value::Null => {
+                    self.column_types.clear();
+                    self.col_callbacks.clear();
+                    self.on_resize_callbacks.clear();
+                }
                 v => {
                     self.column_types = parse_column_specs(v);
                     self.col_callbacks.clear();
+                    self.on_resize_callbacks.clear();
                     for (name, spec) in &self.column_types {
                         if let Some(cb_val) = &spec.callback_value {
                             if let Ok(callable) = rt.block_on(self.gx.compile_callable(cb_val.clone())) {
                                 self.col_callbacks.insert(name.clone(), callable);
+                            }
+                        }
+                        if let Some(cb_val) = &spec.on_resize_value {
+                            if let Ok(callable) = rt.block_on(self.gx.compile_callable(cb_val.clone())) {
+                                self.on_resize_callbacks.insert(name.clone(), callable);
+                            }
+                        }
+                        if spec.width_bid != 0 {
+                            if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.width_bid)) {
+                                if let Some(w) = r.last.as_ref().and_then(|rv| rv.clone().cast_to::<f64>().ok()) {
+                                    self.ref_widths.insert(name.clone(), w as f32);
+                                }
+                                self.width_refs.insert(name.clone(), r);
                             }
                         }
                     }
@@ -1473,6 +1734,17 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             }
             drop(grid);
             self.push_defaults_to_sparklines();
+            changed = true;
+        }
+        // Check width ref updates
+        let width_col = self.width_refs.iter_mut()
+            .find(|(_, r)| id == r.id)
+            .map(|(name, r)| { r.last = Some(v.clone()); name.clone() });
+        if let Some(col_name) = width_col {
+            match v.clone().cast_to::<f64>() {
+                Ok(w) => { self.ref_widths.insert(col_name, w as f32); }
+                Err(_) => { self.ref_widths.remove(&col_name); }
+            }
             changed = true;
         }
         // Check if sort column data arrived and needs re-sort
@@ -1711,6 +1983,55 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         true
     }
 
+    fn handle_column_resize_start(&mut self, col_meta_idx: usize, cursor_x: f32) -> bool {
+        // Double-click detection: if same handle clicked within 400ms, auto-fit
+        let now = Instant::now();
+        let is_double = self.last_resize_click
+            .map(|(idx, t)| idx == col_meta_idx && now.duration_since(t).as_millis() < 400)
+            .unwrap_or(false);
+        self.last_resize_click = Some((col_meta_idx, now));
+        if is_double {
+            self.auto_fit_all_columns();
+            return true;
+        }
+        let show_name = self.show_row_name.t.unwrap_or(true);
+        let name = if show_name && col_meta_idx == 0 {
+            "name".to_string()
+        } else {
+            let data_idx = if show_name { col_meta_idx - 1 } else { col_meta_idx };
+            let (vis_start, _vis_end) = self.display_col_range();
+            let abs_idx = vis_start + data_idx;
+            if abs_idx < self.col_names.len() {
+                self.col_names[abs_idx].clone()
+            } else {
+                return false;
+            }
+        };
+        let current_w = self.effective_col_width(&name)
+            .or_else(|| self.cached_col_widths.lock().get(&name).copied())
+            .unwrap_or(DEFAULT_MAX_COL_WIDTH);
+        self.resize_drag = Some(ResizeDrag {
+            col_name: name,
+            start_x: cursor_x,
+            start_width: current_w,
+        });
+        true
+    }
+
+    fn handle_mouse_move_resize(&mut self, cursor_x: f32) -> Option<(super::CallableId, f64)> {
+        let drag = self.resize_drag.as_ref()?;
+        let delta = cursor_x - drag.start_x;
+        let new_width = (drag.start_width + delta).max(MIN_COL_WIDTH);
+        let col_name = drag.col_name.clone();
+        self.user_widths.lock().insert(col_name.clone(), new_width);
+        self.on_resize_callbacks.get(&col_name)
+            .map(|c| (c.id(), new_width as f64))
+    }
+
+    fn handle_column_resize_end(&mut self) -> bool {
+        self.resize_drag.take().is_some()
+    }
+
     fn view(&self) -> IcedElement<'_> {
         if self.row_paths.is_empty() {
             let msg = if self.table_ref.last.is_some() {
@@ -1737,44 +2058,68 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 .collect()
         };
         let name_col_offset = if show_row_name { 1 } else { 0 };
-        // Column metadata with widths computed from header + visible data
+        // Column metadata with widths.
+        // If effective_col_width returns Some, use it directly.
+        // Otherwise auto-size from content (up to DEFAULT_MAX_COL_WIDTH)
+        // and lock the result into user_widths.
         let mut col_meta: Vec<(String, f32)> = Vec::new();
         if show_row_name {
-            let max_w = self.max_col_width_for("name");
-            let mut w = col_min_width("name", max_w);
-            for row_idx in vis_row_start..vis_row_end {
-                if let Some(p) = self.row_paths.get(row_idx) {
-                    let name = Path::basename(p).unwrap_or("");
-                    w = w.max(col_min_width(name, max_w));
+            let w = match self.effective_col_width("name") {
+                Some(w) => w,
+                None => {
+                    let max_w = DEFAULT_MAX_COL_WIDTH;
+                    let mut w = col_min_width("name", max_w);
+                    for row_idx in vis_row_start..vis_row_end {
+                        if let Some(p) = self.row_paths.get(row_idx) {
+                            let name = Path::basename(p).unwrap_or("");
+                            w = w.max(col_min_width(name, max_w));
+                        }
+                    }
+                    w
                 }
-            }
+            };
             col_meta.push(("name".into(), w));
         }
         match self.mode {
             DisplayMode::Table => {
                 for i in vis_col_start..vis_col_end {
                     let name = &self.col_names[i];
-                    let max_w = self.max_col_width_for(name);
-                    let display = self.column_types.get(name)
-                        .and_then(|s| s.display_name.as_deref())
-                        .unwrap_or(name);
-                    let mut w = col_min_width(display, max_w);
-                    for row in &grid_snapshot {
-                        if i < row.len() {
-                            w = w.max(col_min_width(&row[i], max_w));
+                    let w = match self.effective_col_width(name) {
+                        Some(w) => w,
+                        None => {
+                            let max_w = DEFAULT_MAX_COL_WIDTH;
+                            let display = self.column_types.get(name)
+                                .and_then(|s| s.display_name.as_deref())
+                                .unwrap_or(name);
+                            // Header text (bold, 14pt) sets minimum
+                            let mut w = col_header_width(display)
+                                .max(MIN_COL_WIDTH).min(max_w);
+                            // Cell content may be wider
+                            for row in &grid_snapshot {
+                                if i < row.len() {
+                                    w = w.max(col_min_width(&row[i], max_w));
+                                }
+                            }
+                            w
                         }
-                    }
+                    };
                     col_meta.push((name.clone(), w));
                 }
             }
             DisplayMode::Value => {
-                let max_w = self.max_col_width_for("value");
-                let mut w = col_min_width("value", max_w);
-                for row in &grid_snapshot {
-                    if let Some(v) = row.first() {
-                        w = w.max(col_min_width(v, max_w));
+                let w = match self.effective_col_width("value") {
+                    Some(w) => w,
+                    None => {
+                        let max_w = DEFAULT_MAX_COL_WIDTH;
+                        let mut w = col_min_width("value", max_w);
+                        for row in &grid_snapshot {
+                            if let Some(v) = row.first() {
+                                w = w.max(col_min_width(v, max_w));
+                            }
+                        }
+                        w
                     }
-                }
+                };
                 col_meta.push(("value".into(), w));
             }
         }
@@ -1786,7 +2131,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 cache.insert(name.clone(), *w);
             }
         }
-        // Header row — add separator between name and data columns
+        // Header row — styled identically to data cells (same padding, borders)
         let mut header_row = Row::new().spacing(0);
         for (ci, (name, w)) in col_meta.iter().enumerate() {
             let is_data_col = ci >= name_col_offset;
@@ -1797,25 +2142,60 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             } else {
                 name.clone()
             };
-            let el: IcedElement<'_> = if is_data_col {
+            let is_fixed = self.ref_widths.contains_key(name)
+                && !self.on_resize_callbacks.contains_key(name);
+            let text_el: IcedElement<'_> = if is_data_col {
                 if let Some(cid) = on_header_click {
-                    widget::container(
-                        widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
-                            widget::text(header_text).size(14).font(bold),
-                        ).on_press(Message::Call(cid, ValArray::from_iter([
-                            // on_header_click still receives the netidx column name
-                            Value::String(ArcStr::from(name.as_str())),
-                        ]))),
-                    ).width(*w).padding(iced_core::Padding::from([2, 6])).into()
+                    widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
+                        widget::text(header_text).size(14).font(bold)
+                            .wrapping(iced_core::text::Wrapping::None),
+                    ).on_press(Message::Call(cid, ValArray::from_iter([
+                        Value::String(ArcStr::from(name.as_str())),
+                    ]))).into()
                 } else {
-                    widget::container(widget::text(header_text).size(14).font(bold))
-                        .width(*w).padding(iced_core::Padding::from([4, 6])).into()
+                    widget::text(header_text).size(14).font(bold)
+                        .wrapping(iced_core::text::Wrapping::None).into()
                 }
             } else {
-                widget::container(widget::text(header_text).size(14).font(bold))
-                    .width(*w).padding(iced_core::Padding::from([4, 6])).into()
+                widget::text(header_text).size(14).font(bold)
+                    .wrapping(iced_core::text::Wrapping::None).into()
             };
-            header_row = header_row.push(el);
+            // Use same styling as wrap_cell: same width, padding, border
+            let inner: IcedElement<'_> = if !is_fixed {
+                let handle: IcedElement<'_> =
+                    widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(
+                        widget::container(widget::Space::new())
+                            .width(RESIZE_HANDLE_WIDTH)
+                            .height(iced_core::Length::Fill)
+                    )
+                    .interaction(iced_core::mouse::Interaction::ResizingColumn)
+                    .on_press(Message::ColumnResizeStart(ci))
+                    .into();
+                Row::new()
+                    .push(text_el)
+                    .push(iced_widget::Space::new().width(iced_core::Length::Fill))
+                    .push(handle)
+                    .spacing(0)
+                    .into()
+            } else {
+                text_el
+            };
+            let cell: IcedElement<'_> = widget::container(inner)
+                .width(*w)
+                .height(iced_core::Length::Shrink)
+                .padding(iced_core::Padding::from([3, 5]))
+                .style(|theme: &GraphixTheme| {
+                    let p = theme.palette();
+                    widget::container::Style {
+                        border: iced_core::Border {
+                            color: iced_core::Color { a: 0.15, ..p.text },
+                            width: 0.5,
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                }).into();
+            header_row = header_row.push(cell);
         }
         // Data rows
         let _has_on_select = self.on_select.is_some();
@@ -1839,7 +2219,10 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                             self.selection.contains(&cell_path)
                         })
                         .unwrap_or(false);
-                    let inner: IcedElement<'_> = widget::text(name).size(13).into();
+                    let inner: IcedElement<'_> = widget::text(truncate_to_width(&name, *w))
+                        .size(13)
+                        .wrapping(iced_core::text::Wrapping::None)
+                        .into();
                     self.wrap_cell(inner, col_name, row_idx, *w, is_sel)
                 } else {
                     let data_col = vis_col_start + ci - name_col_offset;
@@ -1860,17 +2243,18 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             let row_el: IcedElement<'_> = row_w.into();
             body = body.push(row_el);
         }
-        // Assemble
         let grid_area: IcedElement<'_> = Col::new()
             .push(header_row)
-            .push(widget::rule::horizontal::<'_, GraphixTheme>(1))
             .push(body)
-            .width(iced_core::Length::Fill)
+            .width(iced_core::Length::Shrink)
             .height(iced_core::Length::Fill)
             .into();
         let need_vscroll = num_rows > self.rows_in_view;
         let total_data_cols = self.total_data_cols();
-        let need_hscroll = total_data_cols > self.cols_in_view;
+        // Check if all columns fit by summing actual widths
+        let total_col_width: f32 = col_meta.iter().map(|(_, w)| *w).sum();
+        let need_hscroll = total_data_cols > self.cols_in_view
+            || total_col_width > self.viewport_width;
         if !need_vscroll && !need_hscroll {
             return self.wrap_keyboard(grid_area);
         }
@@ -2035,10 +2419,13 @@ impl<X: GXExt> DataTableW<X> {
                     // Selected editable cell: click again to edit
                     let col_for_msg = col_name.to_string();
                     widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
-                        widget::text(text).size(13),
+                        widget::text(truncate_to_width(&text, w)).size(13)
+                            .wrapping(iced_core::text::Wrapping::None),
                     ).on_press(Message::CellEdit(row_idx, col_for_msg)).into()
                 } else {
-                    widget::text(text).size(13).into()
+                    widget::text(truncate_to_width(&text, w)).size(13)
+                        .wrapping(iced_core::text::Wrapping::None)
+                        .into()
                 }
             }
             ColumnType::Toggle => {

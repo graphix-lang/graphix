@@ -139,7 +139,3 @@ mod menu;
 mod qr_code;
 mod table;
 mod data_table
-
-// XCR estokes: The one thing that seems missing is context menus.
-// It seems like it would be pretty easy to use Overlay to Create
-// a widget that wraps any other widget and adds a context menu

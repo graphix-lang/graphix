@@ -109,6 +109,7 @@ iced_widget = { version = "0.14", features = ["canvas", "image", "markdown", "qr
 [workspace]
 resolver = "2"
 members = [
+    "graphix-lsp",
     "graphix-shell",
     "graphix-compiler",
     "graphix-rt",

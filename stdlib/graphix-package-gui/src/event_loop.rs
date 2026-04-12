@@ -388,6 +388,9 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         tw.content.handle_cell_edit_cancel();
                     }
                 }
+                Message::ColumnResizeStart(_) | Message::ColumnResizeEnd => {
+                    // Handled by the browser/host application, not the graphix event loop
+                }
                 Message::TableKey(action) => {
                     for tw in self.windows.values_mut() {
                         tw.content.handle_table_key(&action);
