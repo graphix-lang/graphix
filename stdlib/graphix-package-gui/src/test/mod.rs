@@ -147,11 +147,46 @@ impl GuiTestHarness {
         self.watch_names.get(name).and_then(|eid| self.watched.get(eid))
     }
 
-    /// Dispatch Call messages back into the runtime and drain resulting updates.
+    /// Dispatch iced Messages back through the runtime and widget,
+    /// mirroring `GuiHandler::about_to_wait` in src/event_loop.rs so
+    /// tests see the same effects as production. Drains resulting
+    /// reactive updates at the end.
     async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
         for msg in msgs {
-            if let Message::Call(id, args) = msg {
-                self.gx.call(*id, args.clone())?;
+            match msg {
+                Message::Nop => {}
+                Message::Call(id, args) => {
+                    self.gx.call(*id, args.clone())?;
+                }
+                Message::CellClick(row, col) => {
+                    self.widget.handle_cell_click(*row, col.clone());
+                }
+                Message::CellEdit(row, col) => {
+                    self.widget.handle_cell_edit(*row, col.clone());
+                }
+                Message::CellEditInput(text) => {
+                    self.widget.handle_cell_edit_input(text.clone());
+                }
+                Message::CellEditSubmit => {
+                    self.widget.handle_cell_edit_submit();
+                }
+                Message::CellEditCancel => {
+                    self.widget.handle_cell_edit_cancel();
+                }
+                Message::TableKey(action) => {
+                    self.widget.handle_table_key(action);
+                }
+                Message::Scroll(v, h, vp_w, vp_h) => {
+                    self.widget.handle_scroll(*v, *h, *vp_w, *vp_h);
+                }
+                // These are host-handled in production; tests that care
+                // invoke the widget handler methods directly.
+                Message::ColumnResizeStart(_) | Message::ColumnResizeEnd => {}
+                Message::EditorAction(id, action) => {
+                    if let Some((cid, v)) = self.widget.editor_action(*id, action) {
+                        self.gx.call(cid, ValArray::from_iter([v]))?;
+                    }
+                }
             }
         }
         self.drain().await?;
@@ -169,6 +204,53 @@ impl GuiTestHarness {
         self.widget
             .data_table_snapshot()
             .expect("widget is not a DataTableW")
+    }
+
+    /// Downcast the root widget to `DataTableW<NoExt>` for direct
+    /// access to test-only accessors. Panics if the widget is not a
+    /// data table — every test using this helper compiles a `data_table`
+    /// at the root of its graphix code.
+    fn dt(&self) -> &crate::widgets::data_table::DataTableW<NoExt> {
+        self.widget
+            .as_any()
+            .downcast_ref::<crate::widgets::data_table::DataTableW<NoExt>>()
+            .expect("widget is not a DataTableW")
+    }
+
+    /// Dispatch a callback through the runtime by its CallableId and
+    /// drain resulting reactive updates. Used by data_table tests to
+    /// invoke per-cell callbacks (on_edit/on_click/on_resize) without
+    /// going through pixel-layout: the widget itself fires the same
+    /// callable internally, so calling it through the bridge mirrors
+    /// the runtime's behavior.
+    async fn call_callback(
+        &mut self,
+        id: graphix_rt::CallableId,
+        args: ValArray,
+    ) -> Result<()> {
+        self.gx.call(id, args)?;
+        self.drain().await?;
+        Ok(())
+    }
+
+    /// Compile a graphix-defined function (lambda) by its module-qualified
+    /// name into a `CallableId`. Mirrors the existing `watch` lookup but
+    /// returns a callable rather than a tracked ref.
+    async fn compile_named_callable(
+        &mut self,
+        name: &str,
+    ) -> Result<graphix_rt::CallableId> {
+        let bid = find_bind_id(&self.compiled.env, name)
+            .with_context(|| format!("compile_named_callable: lookup {name}"))?;
+        let r = self.gx.compile_ref(bid).await
+            .with_context(|| format!("compile_named_callable: compile_ref {name}"))?;
+        let val = r.last.clone()
+            .with_context(|| format!("compile_named_callable: no value for {name}"))?;
+        let cb = self.gx.compile_callable(val).await
+            .with_context(|| format!("compile_named_callable: compile_callable {name}"))?;
+        // Hold the ref alive so the runtime keeps the binding tracked.
+        self._refs.push(r);
+        Ok(cb.id())
     }
 }
 

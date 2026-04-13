@@ -3,6 +3,7 @@ mod array;
 mod bitwise;
 mod buffer;
 mod core;
+mod math;
 mod fs;
 mod http;
 mod json;

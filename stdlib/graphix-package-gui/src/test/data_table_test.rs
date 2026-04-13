@@ -193,7 +193,7 @@ use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0"], columns: [("visible", v64:0), ("hidden", v64:0)] };
 let result = data_table(
     #column_types: &{
-        "hidden" => { typ: `Hidden, display_name: null, default_value: &null, max_width: null }
+        "hidden" => { typ: `Hidden, display_name: null, default_value: &null, on_resize: &null, width: &null }
     },
     #table: &tbl
 )
@@ -211,7 +211,7 @@ use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
 let result = data_table(
     #column_types: &{
-        "c0" => { typ: `Text({ on_edit: null }), display_name: null, default_value: &"DEF", max_width: null }
+        "c0" => { typ: `Text({ on_edit: null }), display_name: null, default_value: &"DEF", on_resize: &null, width: &null }
     },
     #table: &tbl
 )
@@ -228,13 +228,15 @@ async fn default_value_per_row() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let a = "val_a";
+let b = "val_b";
 let result = data_table(
     #column_types: &{
         "c0" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => "val_a", "r1" => "val_b" },
-            max_width: null
+            default_value: &{"r0" => &a, "r1" => &b },
+            on_resize: &null, width: &null
         }
     },
     #sort_mode: &`Disabled,
@@ -253,13 +255,15 @@ async fn virtual_column() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0", "r1"], columns: [("real", v64:0)] };
+let a = "calc_a";
+let b = "calc_b";
 let result = data_table(
     #column_types: &{
         "virtual" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => "calc_a", "r1" => "calc_b" },
-            max_width: null
+            default_value: &{"r0" => &a, "r1" => &b },
+            on_resize: &null, width: &null
         }
     },
     #sort_mode: &`Disabled,
@@ -333,10 +337,10 @@ let result = data_table(
     h.drain().await?;
 
     let clicked = h.get_watched("test::last_clicked");
-    assert!(
-        clicked.is_some() && *clicked.unwrap() != Value::String(arcstr::literal!("")),
-        "on_select should have fired, got: {:?}",
-        clicked
+    assert_eq!(
+        clicked,
+        Some(&Value::String(arcstr::literal!("r0/c0"))),
+        "on_select should have fired with the cell path",
     );
     Ok(())
 }
@@ -362,10 +366,11 @@ let result = data_table(
     h.drain().await?;
 
     let activated = h.get_watched("test::activated");
-    assert!(
-        activated.is_some() && *activated.unwrap() != Value::String(arcstr::literal!("")),
-        "on_activate should have fired, got: {:?}",
-        activated
+    // Name-column click sends the row path itself (not row/name).
+    assert_eq!(
+        activated,
+        Some(&Value::String(arcstr::literal!("r0"))),
+        "on_activate should have fired with the row path",
     );
     Ok(())
 }
@@ -387,16 +392,21 @@ let result = data_table(
     ).await?;
     let _ = h.inner.watch("test::clicked_col").await?;
     h.inner.drain().await?;
+    // Populate cached_col_widths.
+    let _ = h.view();
 
-    // Click in the header row area (top, in a data column)
-    let msgs = h.click(iced_core::Point::new(200.0, 10.0));
+    // Click on the c1 header: left side of the c1 cell (button text
+    // sits just past the container padding), header y is above row 0.
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
+    let p = iced_core::Point::new(bounds.x + 15.0, 10.0);
+    let msgs = h.click(p);
     h.inner.dispatch_calls(&msgs).await?;
 
     let col = h.inner.get_watched("test::clicked_col");
-    assert!(
-        col.is_some() && *col.unwrap() != Value::String(arcstr::literal!("")),
-        "on_header_click should have fired, got: {:?}",
-        col
+    assert_eq!(
+        col,
+        Some(&Value::String(arcstr::literal!("c1"))),
+        "on_header_click should have fired with the column name",
     );
     Ok(())
 }
@@ -408,14 +418,17 @@ async fn sort_by_virtual_column_ascending() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0", "r1", "r2"], columns: [("real", v64:0)] };
+let p0 = "3";
+let p1 = "1";
+let p2 = "2";
 let result = data_table(
     #sort_mode: &`Column({ name: "priority", direction: `Ascending }),
     #column_types: &{
         "priority" => {
             typ: `Text({ on_edit: null }),
             display_name: "Priority",
-            default_value: &{"r0" => "3", "r1" => "1", "r2" => "2" },
-            max_width: null
+            default_value: &{"r0" => &p0, "r1" => &p1, "r2" => &p2 },
+            on_resize: &null, width: &null
         }
     },
     #table: &tbl
@@ -433,14 +446,17 @@ async fn sort_by_virtual_column_descending() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0", "r1", "r2"], columns: [("real", v64:0)] };
+let s0 = "10";
+let s1 = "30";
+let s2 = "20";
 let result = data_table(
     #sort_mode: &`Column({ name: "score", direction: `Descending }),
     #column_types: &{
         "score" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => "10", "r1" => "30", "r2" => "20" },
-            max_width: null
+            default_value: &{"r0" => &s0, "r1" => &s1, "r2" => &s2 },
+            on_resize: &null, width: &null
         }
     },
     #table: &tbl
@@ -458,14 +474,17 @@ async fn sort_by_virtual_column_lexicographic() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let tbl = { rows: ["r0", "r1", "r2"], columns: [("data", v64:0)] };
+let l0 = "cherry";
+let l1 = "apple";
+let l2 = "banana";
 let result = data_table(
     #sort_mode: &`Column({ name: "label", direction: `Ascending }),
     #column_types: &{
         "label" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => "cherry", "r1" => "apple", "r2" => "banana" },
-            max_width: null
+            default_value: &{"r0" => &l0, "r1" => &l1, "r2" => &l2 },
+            on_resize: &null, width: &null
         }
     },
     #table: &tbl
@@ -513,4 +532,838 @@ fn sparkline_decimation() {
     for w in times.windows(2) {
         assert!(w[1] >= w[0], "times not monotonic");
     }
+}
+
+// ── Editable column callbacks ──────────────────────────────────────
+
+/// 1: Text column on_edit fires through cell-edit lifecycle (begin → input → submit).
+#[tokio::test(flavor = "current_thread")]
+async fn on_edit_text_column() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let edit = |#path: string, #value: string| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: edit }),
+            display_name: null,
+            default_value: &"old",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
+    h.widget.handle_cell_edit(0, "c0".to_string());
+    h.widget.handle_cell_edit_input("new".to_string());
+    h.widget.handle_cell_edit_submit();
+    h.drain().await?;
+    let log = h.get_watched("test::log");
+    assert_eq!(
+        log,
+        Some(&Value::String(arcstr::literal!("r0/c0=new"))),
+        "on_edit text submit should have fired with the new value",
+    );
+    Ok(())
+}
+
+/// 2: Cancelling a text edit must not fire the on_edit callback.
+#[tokio::test(flavor = "current_thread")]
+async fn on_edit_text_cancel() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let edit = |#path: string, #value: string| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: edit }),
+            display_name: null,
+            default_value: &"x",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
+    h.widget.handle_cell_edit(0, "c0".to_string());
+    h.widget.handle_cell_edit_input("never-applied".to_string());
+    h.widget.handle_cell_edit_cancel();
+    h.drain().await?;
+    let log = h.get_watched("test::log");
+    assert_eq!(
+        log,
+        Some(&Value::String(arcstr::literal!(""))),
+        "cancel must not invoke on_edit, got: {log:?}",
+    );
+    Ok(())
+}
+
+/// 3: Toggle column on_edit fires when the cell's iced Toggler is
+/// clicked. Drives the full pipeline: pixel click → Toggler::on_toggle
+/// closure → Message::Call → runtime dispatch → graphix log update.
+#[tokio::test(flavor = "current_thread")]
+async fn on_edit_toggle_column() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let toggled = |#path: string, #value: bool| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Toggle({ on_edit: toggled }),
+            display_name: null,
+            default_value: &"false",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code, iced_core::Size::new(500.0, 200.0),
+    ).await?;
+    let _ = h.inner.watch("test::log").await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    // Toggler sits at the left of the cell after the 5px container padding.
+    let p = iced_core::Point::new(bounds.x + 15.0, bounds.center().y);
+    let msgs = h.click(p);
+    expect_call_with_args(&msgs, |args| {
+        let v: Vec<_> = args.iter().collect();
+        matches!(v.as_slice(),
+            [Value::String(p), Value::Bool(true)]
+            if p == &arcstr::literal!("r0/c0"))
+    });
+    h.inner.dispatch_calls(&msgs).await?;
+    assert_eq!(
+        h.inner.get_watched("test::log"),
+        Some(&Value::String(arcstr::literal!("r0/c0=true"))),
+    );
+    Ok(())
+}
+
+/// 4: Combo column on_edit fires with the chosen choice **id** (not
+/// label) when a PickList option is selected. Drives the full pipeline:
+/// open-menu click → option click → Message::Call → runtime dispatch.
+#[tokio::test(flavor = "current_thread")]
+async fn on_edit_combo_column() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let pick = |#path: string, #value: string| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Combo({
+                choices: [{id: "a", label: "Alpha"}, {id: "b", label: "Bravo"}],
+                on_edit: pick
+            }),
+            display_name: null,
+            default_value: &"a",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code, iced_core::Size::new(500.0, 300.0),
+    ).await?;
+    let _ = h.inner.watch("test::log").await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    // Step 1: click the PickList to open the menu overlay. No Call yet.
+    let open_msgs = h.click(bounds.center());
+    assert!(
+        !open_msgs.iter().any(|m| matches!(m, Message::Call(_, _))),
+        "opening the pick list should not fire on_edit; got {open_msgs:?}",
+    );
+    // Step 2: click the "Bravo" option in the overlay.
+    // PickList's overlay opens below the cell; with the default text
+    // size (13) and menu padding, each option is ~22px tall. Click
+    // roughly in the middle of the second option.
+    let option_h = 22.0_f32;
+    let p = iced_core::Point::new(
+        bounds.center().x,
+        bounds.y + bounds.height + option_h * 1.5,
+    );
+    let pick_msgs = h.click(p);
+    expect_call_with_args(&pick_msgs, |args| {
+        let v: Vec<_> = args.iter().collect();
+        matches!(v.as_slice(),
+            [Value::String(p), Value::String(id)]
+            if p == &arcstr::literal!("r0/c0") && id == &arcstr::literal!("b"))
+    });
+    h.inner.dispatch_calls(&pick_msgs).await?;
+    assert_eq!(
+        h.inner.get_watched("test::log"),
+        Some(&Value::String(arcstr::literal!("r0/c0=b"))),
+    );
+    Ok(())
+}
+
+/// 5: Spin column on_edit fires with the new f64 value when the +
+/// button is clicked.
+#[tokio::test(flavor = "current_thread")]
+async fn on_edit_spin_column() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let bumped = |#path: string, #value: f64| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Spin({ min: 0.0, max: 10.0, increment: 1.0, on_edit: bumped }),
+            display_name: null,
+            default_value: &"5.0",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code, iced_core::Size::new(500.0, 200.0),
+    ).await?;
+    let _ = h.inner.watch("test::log").await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    // Spin cell is a left-aligned Row [−, label, +] (shrink-sized
+    // within the cell's 5px-padded content area). Scan from right to
+    // left so the first click that fires a Call lands on the + button
+    // (rightmost). This rules out a bug that swaps the + and - button
+    // wiring — a minus-click would never be the first hit.
+    let only_call = |msgs: &[Message]| -> Option<ValArray> {
+        msgs.iter().find_map(|m| match m {
+            Message::Call(_, args) => Some(args.clone()),
+            _ => None,
+        })
+    };
+    let mut hit_args: Option<ValArray> = None;
+    for offset in (10..=70).rev().step_by(2) {
+        let p = iced_core::Point::new(
+            bounds.x + offset as f32,
+            bounds.center().y,
+        );
+        let msgs = h.click(p);
+        if let Some(args) = only_call(&msgs) {
+            hit_args = Some(args);
+            // Dispatch so the runtime updates the graphix log.
+            h.inner.dispatch_calls(&msgs).await?;
+            break;
+        }
+    }
+    let args = hit_args.expect("no click position produced a Call on the spin cell");
+    // The rightmost button is the +. Verify it carries F64(6.0), not
+    // F64(4.0) — catches inc/dec swap bugs in render_cell.
+    let v: Vec<_> = args.iter().collect();
+    assert!(
+        matches!(v.as_slice(),
+            [Value::String(p), Value::F64(x)]
+            if p == &arcstr::literal!("r0/c0") && (*x - 6.0).abs() < 1e-9),
+        "rightmost spin button should be + (val 6.0), got args: {:?}", args,
+    );
+    assert_eq!(
+        h.inner.get_watched("test::log"),
+        Some(&Value::String(arcstr::literal!("r0/c0=6"))),
+    );
+    Ok(())
+}
+
+/// 6: Button column on_click fires with (path, label) when the cell's
+/// iced Button is clicked.
+#[tokio::test(flavor = "current_thread")]
+async fn on_click_button_column() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let pressed = |#path: string, #value: Any| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Button({ on_click: pressed }),
+            display_name: null,
+            default_value: &"Run",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code, iced_core::Size::new(500.0, 200.0),
+    ).await?;
+    let _ = h.inner.watch("test::log").await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    // Button text "Run" sits at the left after the 5px padding.
+    let p = iced_core::Point::new(bounds.x + 15.0, bounds.center().y);
+    let msgs = h.click(p);
+    expect_call_with_args(&msgs, |args| {
+        let v: Vec<_> = args.iter().collect();
+        matches!(v.as_slice(),
+            [Value::String(p), Value::String(label)]
+            if p == &arcstr::literal!("r0/c0") && label == &arcstr::literal!("Run"))
+    });
+    h.inner.dispatch_calls(&msgs).await?;
+    assert_eq!(
+        h.inner.get_watched("test::log"),
+        Some(&Value::String(arcstr::literal!("r0/c0=Run"))),
+    );
+    Ok(())
+}
+
+// ── Subscriptions and live updates ─────────────────────────────────
+
+/// 7: on_update fires when a subscribed cell receives a value over netidx.
+/// Test ctx has its own internal resolver, so publish/subscribe round-trips
+/// in-process. Skip `list_table` and pass a literal table with absolute paths.
+#[tokio::test(flavor = "current_thread")]
+async fn on_update_fires_for_subscribed_cell() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+sys::net::publish("/local/dt7/r0/c0", v64:42);
+let tbl = { rows: ["/local/dt7/r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #on_update: |#path: string, #value: Primitive| log <- "[path]=[value]",
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    // Multiple drains: subscribe + publisher discovery + initial update +
+    // callback dispatch is several reactive cycles.
+    for _ in 0..15 {
+        h.drain().await?;
+        if matches!(h.get_watched("test::log"), Some(Value::String(s)) if !s.is_empty()) {
+            break;
+        }
+    }
+    let log = h.get_watched("test::log");
+    assert!(
+        matches!(log, Some(Value::String(s))
+            if s.contains("/local/dt7/r0/c0") && s.contains("42")),
+        "on_update should have received published value, got: {log:?}",
+    );
+    Ok(())
+}
+
+// ── Default-value reactivity ───────────────────────────────────────
+
+/// 8: A per-row default value backed by a graphix variable updates the
+/// rendered cell when the variable changes. Drives the change via a
+/// direct `Ref::set` rather than a callable to keep the test focused on
+/// the per-row ref propagation path.
+#[tokio::test(flavor = "current_thread")]
+async fn default_value_per_row_ref_updates() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let a = "v1";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &{"r0" => &a},
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    assert_eq!(h.dt_snapshot().grid[0][0], "v1");
+    let bid = find_bind_id(&h.compiled.env, "test::a")?;
+    let mut a_ref = h.gx.compile_ref(bid).await?;
+    a_ref.set(Value::String(arcstr::literal!("v1b")))?;
+    for _ in 0..5 {
+        h.drain().await?;
+        if h.dt_snapshot().grid[0][0] == "v1b" { break; }
+    }
+    assert_eq!(h.dt_snapshot().grid[0][0], "v1b");
+    Ok(())
+}
+
+/// 9: A uniform string default propagates to every grid cell.
+#[tokio::test(flavor = "current_thread")]
+async fn default_value_uniform_string() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1", "r2"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &"UNI",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    for row in &snap.grid {
+        assert_eq!(row[0], "UNI");
+    }
+    Ok(())
+}
+
+// ── Width refs and resize ──────────────────────────────────────────
+
+/// 10: A column-width ref controls `dt_ref_width` for that column.
+#[tokio::test(flavor = "current_thread")]
+async fn column_width_ref_controlled() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let w = 120.0;
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &null,
+            on_resize: &null,
+            width: &w
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    assert_eq!(h.dt().dt_ref_width("c0"), Some(120.0));
+    Ok(())
+}
+
+/// 11: Dragging a column resize handle returns an `(on_resize_cb, new_width)`
+/// pair from `handle_mouse_move_resize`; firing the callable through the
+/// runtime updates a graphix-side log.
+#[tokio::test(flavor = "current_thread")]
+async fn on_resize_fires_on_drag() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = 0.0;
+let on_w = |new_w: f64| log <- new_w;
+let w = 100.0;
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &"x",
+            on_resize: &on_w,
+            width: &w
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
+    let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
+    h.widget.handle_column_resize_start(idx, 100.0);
+    let result = h.widget.handle_mouse_move_resize(180.0);
+    let (cb_id, new_w) = result.expect("on_resize callback returned");
+    h.widget.handle_column_resize_end();
+    h.call_callback(cb_id, ValArray::from_iter([Value::F64(new_w)])).await?;
+    let log = h.get_watched("test::log");
+    assert!(
+        matches!(log, Some(Value::F64(f)) if *f > 100.0),
+        "on_resize should have logged the new width, got: {log:?}",
+    );
+    Ok(())
+}
+
+// ── Filter and sort variants ───────────────────────────────────────
+
+/// 12: A regex IncludeMatch row filter keeps only rows matching the patterns.
+#[tokio::test(flavor = "current_thread")]
+async fn row_filter_regex_include() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["abc", "abd", "xyz"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #row_filter: &`IncludeMatch(["^ab"]),
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    assert_eq!(snap.row_basenames, vec!["abc", "abd"]);
+    Ok(())
+}
+
+/// 13: A regex ExcludeMatch row filter drops matching rows.
+#[tokio::test(flavor = "current_thread")]
+async fn row_filter_regex_exclude() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["abc", "xyz", "xab"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #row_filter: &`ExcludeMatch(["^x"]),
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    assert_eq!(snap.row_basenames, vec!["abc"]);
+    Ok(())
+}
+
+/// 14: External sort mode disables built-in sorting (graphix manages
+/// row order via filters).
+#[tokio::test(flavor = "current_thread")]
+async fn sort_external_preserves_order() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["zeta", "alpha", "mu"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #sort_mode: &`External({"c0" => `Ascending}),
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    assert_eq!(snap.row_basenames, vec!["zeta", "alpha", "mu"]);
+    Ok(())
+}
+
+/// 15: A Hidden column type is removed from the visible col_names even
+/// when other columns are present.
+#[tokio::test(flavor = "current_thread")]
+async fn hidden_column_absent() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0"], columns: [("a", v64:0), ("secret", v64:0), ("b", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "secret" => { typ: `Hidden, display_name: null, default_value: &null, on_resize: &null, width: &null }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    assert!(!snap.col_names.contains(&"secret".to_string()),
+        "hidden column must not appear in col_names, got: {:?}", snap.col_names);
+    assert_eq!(snap.col_names, vec!["a", "b"]);
+    Ok(())
+}
+
+// ── Sparkline accumulation and decimation ──────────────────────────
+
+/// 17: A Sparkline column accumulates published values arriving over
+/// the netidx subscription path. Uses three one-shot timers spaced by
+/// tens of milliseconds: a repeating timer would keep `drain()` spinning
+/// forever because batches would always arrive within its reset window.
+/// Each timer fires once, publishes a distinct counter value, and then
+/// stops producing events — so drain terminates after the last tick.
+#[tokio::test(flavor = "current_thread")]
+async fn sparkline_accumulates() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys; use sys::time;
+let c = 0;
+let t1 = time::timer(duration:20.ms, false);
+let t2 = time::timer(duration:80.ms, false);
+let t3 = time::timer(duration:150.ms, false);
+c <- t1 ~ 1;
+c <- t2 ~ 2;
+c <- t3 ~ 3;
+sys::net::publish("/local/dt17/r0/load", c);
+let tbl = { rows: ["/local/dt17/r0"], columns: [("load", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "load" => {
+            typ: `Sparkline({ history_seconds: 60.0 }),
+            display_name: null,
+            default_value: &null,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // Give the timers (last fires at 150ms) plus publisher/subscriber
+    // round-trips time to land. The cap here is wall-clock bounded: a
+    // few hundred ms even if all iterations run.
+    for _ in 0..8 {
+        h.drain().await?;
+        if h.dt().dt_sparkline_len("r0", "load").unwrap_or(0) >= 3 {
+            break;
+        }
+    }
+    let len = h.dt().dt_sparkline_len("r0", "load");
+    // Subscriber race conditions (resolver lookup + connection happen
+    // asynchronously) can sometimes cause the first one or two timer
+    // ticks to arrive before the subscriber is ready, so require only
+    // >= 2 here. The point is to demonstrate that subscription-driven
+    // accumulation flows through the sparkline history.
+    assert!(
+        len.unwrap_or(0) >= 2,
+        "sparkline should have accumulated >= 2 subscribed points, got: {len:?}",
+    );
+    Ok(())
+}
+
+/// 18: A Sparkline column whose default_value parses as f64 seeds the
+/// history with at least one initial point (via push_defaults_to_sparklines).
+#[tokio::test(flavor = "current_thread")]
+async fn sparkline_default_value_seeds_history() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0"], columns: [("anchor", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "spark" => {
+            typ: `Sparkline({ history_seconds: 60.0 }),
+            display_name: null,
+            default_value: &"7.5",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let len = h.dt().dt_sparkline_len("r0", "spark");
+    assert!(
+        len.unwrap_or(0) >= 1,
+        "default value should seed sparkline history, got: {len:?}",
+    );
+    Ok(())
+}
+
+/// 19: Decimation caps stored sparkline points at `MAX_SPARKLINE_POINTS`
+/// (currently 512) regardless of how many are pushed.
+#[tokio::test(flavor = "current_thread")]
+async fn sparkline_decimation_caps_length() -> Result<()> {
+    use std::time::{Duration, Instant};
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0"], columns: [("anchor", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "load" => {
+            typ: `Sparkline({ history_seconds: 60.0 }),
+            display_name: null,
+            default_value: &"0.0",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let dt_w = h.dt();
+    let base = Instant::now();
+    for i in 0..2000_u64 {
+        dt_w.dt_push_sparkline(
+            "r0", "load",
+            base + Duration::from_micros(i),
+            i as f64,
+        );
+    }
+    let len = dt_w.dt_sparkline_len("r0", "load").unwrap_or(0);
+    assert!(len <= 512, "decimation should cap len <= 512, got {len}");
+    // Push a smaller burst on top — must still respect the cap.
+    for i in 2000..2500_u64 {
+        dt_w.dt_push_sparkline(
+            "r0", "load",
+            base + Duration::from_micros(i),
+            i as f64,
+        );
+    }
+    let len = dt_w.dt_sparkline_len("r0", "load").unwrap_or(0);
+    assert!(len <= 512, "after second burst, len <= 512, got {len}");
+    Ok(())
+}
+
+/// 20: Decimation preserves the extreme values (min/max) of the input
+/// stream, demonstrating that the policy keeps the locally-most-deviant
+/// point of each merged pair.
+#[tokio::test(flavor = "current_thread")]
+async fn sparkline_decimation_preserves_extremes() -> Result<()> {
+    use std::time::{Duration, Instant};
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0"], columns: [("anchor", v64:0)] };
+let result = data_table(
+    #column_types: &{
+        "load" => {
+            typ: `Sparkline({ history_seconds: 60.0 }),
+            display_name: null,
+            default_value: &"0.0",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let dt_w = h.dt();
+    let base = Instant::now();
+    // Push a monotonic ramp, well beyond the cap so decimation runs.
+    for i in 0..1024_u64 {
+        dt_w.dt_push_sparkline(
+            "r0", "load",
+            base + Duration::from_micros(i),
+            i as f64,
+        );
+    }
+    let vals = dt_w.dt_sparkline_values("r0", "load")
+        .expect("sparkline values present");
+    let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    // The minimum should still be very close to 0 and the max close to
+    // 1023 — decimation keeps the more-deviant point of each pair.
+    assert!(min <= 1.0, "min should be near 0 after decimation, got {min}");
+    assert!(max >= 1022.0, "max should be near 1023 after decimation, got {max}");
+    Ok(())
+}
+
+// ── Coverage: keyboard nav, name-col isolation, double-click resize ─
+
+/// 21: Arrow keys move selection, Enter fires on_activate.
+///
+/// Plumbs selection through graphix — on_select writes to `sel`, which
+/// flows back into the widget's `#selection` ref. Without this, the
+/// widget's `selection` stays empty and each keystroke restarts from
+/// the default (row 0, first data col).
+#[tokio::test(flavor = "current_thread")]
+async fn keyboard_nav_arrows_and_enter() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let sel = [];
+let selected = "";
+let activated = "";
+let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0), ("c1", v64:0)] };
+let result = data_table(
+    #selection: &sel,
+    #on_select: |#path: string| {
+        sel <- [path];
+        selected <- path
+    },
+    #on_activate: |#path: string| activated <- path,
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code, iced_core::Size::new(500.0, 200.0),
+    ).await?;
+    let _ = h.watch("test::selected").await?;
+    let _ = h.watch("test::activated").await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    // KeyboardArea only processes key events when focused. Focus is
+    // granted by a mouse click inside its bounds.
+    let msgs = h.click(iced_core::Point::new(100.0, 40.0));
+    h.inner.dispatch_calls(&msgs).await?;
+
+    // handle_table_key starts at (row 0, cur_col=name_offset=1 → "c0").
+    // ArrowRight advances to column "c1".
+    let msgs = h.press_key(iced_core::keyboard::key::Named::ArrowRight);
+    h.inner.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::selected"),
+        Some(&Value::String(arcstr::literal!("r0/c1"))));
+
+    // ArrowDown moves to row 1, keeping col "c1".
+    let msgs = h.press_key(iced_core::keyboard::key::Named::ArrowDown);
+    h.inner.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::selected"),
+        Some(&Value::String(arcstr::literal!("r1/c1"))));
+
+    // Enter fires on_activate with the row path.
+    let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
+    h.inner.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::activated"),
+        Some(&Value::String(arcstr::literal!("r1"))));
+    Ok(())
+}
+
+/// 22: Clicking the name column fires on_activate but NOT on_select.
+#[tokio::test(flavor = "current_thread")]
+async fn name_click_activate_only() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let sel_log = "";
+let act_log = "";
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let result = data_table(
+    #on_select: |#path: string| sel_log <- path,
+    #on_activate: |#path: string| act_log <- path,
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::sel_log").await?;
+    let _ = h.watch("test::act_log").await?;
+    h.drain().await?;
+    h.widget.handle_cell_click(0, "name".to_string());
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::act_log"),
+        Some(&Value::String(arcstr::literal!("r0"))));
+    assert_eq!(h.get_watched("test::sel_log"),
+        Some(&Value::String(arcstr::literal!(""))),
+        "on_select must not fire for the name column");
+    Ok(())
+}
+
+/// 23: A second click on a resize handle within 400ms triggers
+/// auto-fit via `auto_fit_all_columns`, which writes to `user_widths`.
+#[tokio::test(flavor = "current_thread")]
+async fn resize_handle_double_click_autofits() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let long = "wider than MIN_COL_WIDTH default";
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &long,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.view();
+    let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
+    // Baseline: no user width yet (cell was auto-sized in view()).
+    assert_eq!(h.dt().dt_user_width("c0"), None);
+    // First call: starts a resize drag.
+    h.widget.handle_column_resize_start(idx, 100.0);
+    // Second call within 400ms on the same handle: triggers auto-fit.
+    h.widget.handle_column_resize_start(idx, 100.0);
+    let w = h.dt().dt_user_width("c0").expect("auto-fit writes user_widths");
+    // MIN_COL_WIDTH = 80; the long content must exceed it.
+    assert!(w > 80.0, "auto-fit width must exceed MIN_COL_WIDTH, got {w}");
+    Ok(())
 }

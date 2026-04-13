@@ -1,0 +1,66 @@
+// Trigonometric
+let sin = |x: f64| -> f64 'core_math_sin;
+let cos = |x: f64| -> f64 'core_math_cos;
+let tan = |x: f64| -> f64 'core_math_tan;
+let asin = |x: f64| -> f64 'core_math_asin;
+let acos = |x: f64| -> f64 'core_math_acos;
+let atan = |x: f64| -> f64 'core_math_atan;
+let atan2 = |y: f64, x: f64| -> f64 'core_math_atan2;
+
+// Hyperbolic
+let sinh = |x: f64| -> f64 'core_math_sinh;
+let cosh = |x: f64| -> f64 'core_math_cosh;
+let tanh = |x: f64| -> f64 'core_math_tanh;
+let asinh = |x: f64| -> f64 'core_math_asinh;
+let acosh = |x: f64| -> f64 'core_math_acosh;
+let atanh = |x: f64| -> f64 'core_math_atanh;
+
+// Exponential / logarithmic
+let exp = |x: f64| -> f64 'core_math_exp;
+let exp2 = |x: f64| -> f64 'core_math_exp2;
+let exp_m1 = |x: f64| -> f64 'core_math_exp_m1;
+let ln = |x: f64| -> f64 'core_math_ln;
+let ln_1p = |x: f64| -> f64 'core_math_ln_1p;
+let log2 = |x: f64| -> f64 'core_math_log2;
+let log10 = |x: f64| -> f64 'core_math_log10;
+let log = |x: f64, base: f64| -> f64 'core_math_log;
+
+// Power / root
+let pow = |x: f64, y: f64| -> f64 'core_math_pow;
+let sqrt = |x: f64| -> f64 'core_math_sqrt;
+let cbrt = |x: f64| -> f64 'core_math_cbrt;
+let hypot = |x: f64, y: f64| -> f64 'core_math_hypot;
+
+// Rounding / sign
+let floor = |x: f64| -> f64 'core_math_floor;
+let ceil = |x: f64| -> f64 'core_math_ceil;
+let round = |x: f64| -> f64 'core_math_round;
+let trunc = |x: f64| -> f64 'core_math_trunc;
+let fract = |x: f64| -> f64 'core_math_fract;
+let abs = |x: f64| -> f64 'core_math_abs;
+let signum = |x: f64| -> f64 'core_math_signum;
+let copysign = |x: f64, y: f64| -> f64 'core_math_copysign;
+
+// Comparison / clamp
+let min = |x: f64, y: f64| -> f64 'core_math_min;
+let max = |x: f64, y: f64| -> f64 'core_math_max;
+let clamp = |x: f64, lo: f64, hi: f64| -> f64 'core_math_clamp;
+
+// Predicates
+let is_nan = |x: f64| -> bool 'core_math_is_nan;
+let is_finite = |x: f64| -> bool 'core_math_is_finite;
+let is_infinite = |x: f64| -> bool 'core_math_is_infinite;
+
+// Conversion
+let to_degrees = |x: f64| -> f64 'core_math_to_degrees;
+let to_radians = |x: f64| -> f64 'core_math_to_radians;
+
+// Constants
+let pi: f64 = f64:3.141592653589793;
+let e: f64 = f64:2.718281828459045;
+let tau: f64 = f64:6.283185307179586;
+let sqrt_2: f64 = f64:1.4142135623730951;
+let ln_2: f64 = f64:0.6931471805599453;
+let ln_10: f64 = f64:2.302585092994046;
+let infinity: f64 = f64:1.0 / f64:0.0;
+let nan: f64 = f64:0.0 / f64:0.0

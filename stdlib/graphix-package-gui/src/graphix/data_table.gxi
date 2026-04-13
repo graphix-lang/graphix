@@ -42,7 +42,7 @@ type ColumnType = [
 type ColumnSpec = {
     typ: ColumnType,
     display_name: [string, null],
-    default_value: &[null, string, Map<string, Any>],
+    default_value: &[null, string, Map<string, &Any>],
     on_resize: &[fn(f64) -> Any, null],
     width: &[f64, null]
 };
@@ -53,6 +53,7 @@ type DataTable = {
     on_activate: &[fn(#path: string) -> Any, null],
     on_header_click: &[fn(#column: string) -> Any, null],
     on_select: &[fn(#path: string) -> Any, null],
+    on_update: &[fn(#path: string, #value: Primitive) -> Any, null],
     row_filter: &FilterSpec,
     selection: &Array<string>,
     show_row_name: &bool,
@@ -77,5 +78,6 @@ val data_table: fn(
     ?#on_select: [fn(#path: string) -> Any, null],
     ?#on_activate: [fn(#path: string) -> Any, null],
     ?#on_header_click: [fn(#column: string) -> Any, null],
+    ?#on_update: [fn(#path: string, #value: Primitive) -> Any, null],
     #table: &sys::net::Table
 ) -> Widget;

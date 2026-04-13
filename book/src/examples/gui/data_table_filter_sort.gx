@@ -1,0 +1,110 @@
+use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use sys;
+use sys::net;
+mod icon;
+
+// Publish 6 sensors across three environments; the sidebar controls
+// let the user pick a row filter mode and a sort direction live.
+sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
+sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
+sys::net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
+sys::net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
+sys::net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
+sys::net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
+sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
+sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
+sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
+
+let tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+
+// Filter controls: a regex pattern and whether it includes or excludes.
+let pattern = "";
+let mode: [`Include, `Exclude] = `Include;
+
+let row_filter: FilterSpec = `All;
+row_filter <- select str::len(pattern) {
+    n if n == 0 => `All,
+    _ => select mode {
+        `Include => `IncludeMatch([pattern]),
+        `Exclude => `ExcludeMatch([pattern])
+    }
+};
+
+// Sort controls: pick a column and direction.
+let sort_col: string = "name";
+let sort_dir: SortDirection = `Ascending;
+let sort_mode: SortMode = `None;
+sort_mode <- `Column({ name: sort_col, direction: sort_dir });
+
+let controls = row(
+    #spacing: &10.0,
+    #padding: &`All(10.0),
+    &[
+        text(&"Pattern:"),
+        text_input(
+            #on_input: |v: string| pattern <- v,
+            #placeholder: &"regex or empty",
+            #width: &`Fill,
+            &pattern
+        ),
+        pick_list(
+            #on_select: |choice: string| mode <- select choice {
+                "Include matches" => `Include,
+                _ => `Exclude
+            },
+            #selected: &select mode {
+                `Include => "Include matches",
+                `Exclude => "Exclude matches"
+            },
+            &["Include matches", "Exclude matches"]
+        ),
+        pick_list(
+            #on_select: |v: string| sort_col <- v,
+            #selected: &sort_col,
+            &["name", "env"]
+        ),
+        pick_list(
+            #on_select: |v: string| sort_dir <- select v {
+                "Ascending" => `Ascending,
+                _ => `Descending
+            },
+            #selected: &select sort_dir {
+                `Ascending => "Ascending",
+                `Descending => "Descending"
+            },
+            &["Ascending", "Descending"]
+        )
+    ]
+);
+
+let layout = column(
+    #spacing: &10.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &20.0, &"Interactive filter + sort"),
+        controls,
+        data_table(
+            #row_filter: &row_filter,
+            #sort_mode: &sort_mode,
+            #table: &tbl
+        )
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Filter & Sort",
+    #theme: &`CatppuccinMocha,
+    &layout
+)]

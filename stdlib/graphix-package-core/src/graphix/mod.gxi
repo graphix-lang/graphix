@@ -156,3 +156,4 @@ val throttle: fn(?#rate:duration, 'a) -> 'a;
 
 
 mod buffer;
+mod math;

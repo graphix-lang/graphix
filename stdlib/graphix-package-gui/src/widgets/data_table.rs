@@ -188,7 +188,7 @@ enum ColumnType {
 enum DefaultValue {
     None,
     Uniform(String),
-    PerRow(FxHashMap<String, String>),
+    PerRow(FxHashMap<ArcStr, String>),
 }
 
 /// Parsed column spec from the graphix Map<string, ColumnSpec>.
@@ -199,8 +199,10 @@ struct ColumnSpec {
     default_value_bid: u64,
     /// Raw width ref bind ID — compiled separately into width_refs.
     width_bid: u64,
-    /// Raw on_resize callback value — compiled separately into on_resize_callbacks.
-    on_resize_value: Option<Value>,
+    /// Raw on_resize ref bind ID — compiled separately. The .gxi types
+    /// the field as `&[fn(f64) -> Any, null]`, so the runtime value is
+    /// a u64 bid pointing at the callable (or null).
+    on_resize_bid: u64,
     callback_value: Option<Value>,
 }
 
@@ -424,19 +426,33 @@ fn value_to_display(v: &Value) -> String {
 
 fn parse_default_value(v: Value) -> DefaultValue {
     match &v {
-        Value::Null => DefaultValue::None,
-        Value::Map(_) => {
-            if let Ok(pairs) = v.cast_to::<Vec<(String, Value)>>() {
-                let map: FxHashMap<String, String> = pairs.into_iter()
-                    .map(|(k, v)| (k, value_to_display(&v)))
-                    .collect();
-                DefaultValue::PerRow(map)
-            } else {
-                DefaultValue::None
-            }
-        }
+        Value::Null | Value::Map(_) => DefaultValue::None,
         _ => DefaultValue::Uniform(value_to_display(&v)),
     }
+}
+
+async fn compile_per_row_defaults<X: GXExt>(
+    gx: &GXHandle<X>,
+    map_val: Value,
+) -> (DefaultValue, FxHashMap<ArcStr, Ref<X>>) {
+    let mut row_refs = FxHashMap::default();
+    let mut row_defaults = FxHashMap::default();
+    if let Ok(pairs) = map_val.cast_to::<Vec<(ArcStr, Value)>>() {
+        for (key, bid_val) in pairs {
+            if let Ok(bid) = bid_val.cast_to::<u64>() {
+                if bid != 0 {
+                    if let Ok(inner_ref) = gx.compile_ref(bid).await {
+                        let display = inner_ref.last.as_ref()
+                            .map(|v| value_to_display(v))
+                            .unwrap_or_default();
+                        row_defaults.insert(key.clone(), display);
+                        row_refs.insert(key, inner_ref);
+                    }
+                }
+            }
+        }
+    }
+    (DefaultValue::PerRow(row_defaults), row_refs)
 }
 
 fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
@@ -447,7 +463,7 @@ fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
     let mut map = FxHashMap::default();
     for (name, spec_val) in pairs {
         // ColumnSpec struct: { default_value, display_name, on_resize, typ, width } — alphabetical
-        let (dv_bid, display_name, on_resize_value, typ_val, width_bid) =
+        let (dv_bid, display_name, on_resize_bid, typ_val, width_bid) =
             match spec_val.cast_to::<[(ArcStr, Value); 5]>() {
                 Ok([(_, dv), (_, dn), (_, or), (_, tv), (_, w)]) => {
                     let bid = dv.cast_to::<u64>().unwrap_or(0);
@@ -456,19 +472,16 @@ fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
                         Value::String(s) => Some(s.to_string()),
                         _ => None,
                     };
-                    let on_resize_val = match or {
-                        Value::Null => None,
-                        v => Some(v),
-                    };
+                    let on_resize_bid = or.cast_to::<u64>().unwrap_or(0);
                     let width_bid = w.cast_to::<u64>().unwrap_or(0);
-                    (bid, display_name, on_resize_val, tv, width_bid)
+                    (bid, display_name, on_resize_bid, tv, width_bid)
                 }
-                Err(_) => (0, None, None, Value::Null, 0),
+                Err(_) => (0, None, 0, Value::Null, 0),
             };
         let (typ, callback_value) = parse_column_type(&typ_val);
         map.insert(name, ColumnSpec {
             typ, display_name, default_value_bid: dv_bid,
-            width_bid, on_resize_value, callback_value,
+            width_bid, on_resize_bid, callback_value,
         });
     }
     map
@@ -665,12 +678,17 @@ pub(crate) struct DataTableW<X: GXExt> {
     on_select: Option<Callable<X>>,
     on_header_click_ref: Ref<X>,
     on_header_click: Option<Callable<X>>,
+    on_update_ref: Ref<X>,
+    on_update: Option<Callable<X>>,
     /// Compiled callables for per-column on_edit/on_click
     col_callbacks: FxHashMap<String, Callable<X>>,
     /// Compiled refs for per-column default_value
     default_value_refs: FxHashMap<String, Ref<X>>,
     /// Parsed default values (updated when refs change)
     default_values: FxHashMap<String, DefaultValue>,
+    /// Per-column inner refs for Map<string, &Any> default values.
+    /// Outer key = column name, inner key = row name (ArcStr from graphix).
+    per_row_default_refs: FxHashMap<String, FxHashMap<ArcStr, Ref<X>>>,
     /// Compiled refs for per-column width
     width_refs: FxHashMap<String, Ref<X>>,
     /// Ref-controlled widths (from width refs)
@@ -679,6 +697,10 @@ pub(crate) struct DataTableW<X: GXExt> {
     user_widths: Mutex<FxHashMap<String, f32>>,
     /// Compiled on_resize callables per column
     on_resize_callbacks: FxHashMap<String, Callable<X>>,
+    /// Compiled refs for per-column on_resize. The .gxi types on_resize
+    /// as a `&` field, so the inner callable can change at runtime; we
+    /// recompile the callable when the ref's value updates.
+    on_resize_refs: FxHashMap<String, Ref<X>>,
     /// Active resize drag state
     resize_drag: Option<ResizeDrag>,
     /// Last resize handle click: (col_meta_idx, timestamp) for double-click detection
@@ -718,7 +740,7 @@ pub(crate) struct DataTableW<X: GXExt> {
 impl<X: GXExt> DataTableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         // Fields alphabetical: column_filter, column_types, on_activate,
-        // on_header_click, on_select, row_filter, selection,
+        // on_header_click, on_select, on_update, row_filter, selection,
         // show_row_name, sort_mode, table
         let [
             (_, column_filter_id),
@@ -726,13 +748,14 @@ impl<X: GXExt> DataTableW<X> {
             (_, on_activate_id),
             (_, on_header_click_id),
             (_, on_select_id),
+            (_, on_update_id),
             (_, row_filter_id),
             (_, selection_id),
             (_, show_row_name_id),
             (_, sort_mode_id),
             (_, table_id),
         ] = source
-            .cast_to::<[(ArcStr, u64); 10]>()
+            .cast_to::<[(ArcStr, u64); 11]>()
             .context("data_table flds")?;
         let (
             column_filter_ref,
@@ -740,6 +763,7 @@ impl<X: GXExt> DataTableW<X> {
             on_activate_ref,
             on_header_click_ref,
             on_select_ref,
+            on_update_ref,
             row_filter_ref,
             selection_ref,
             show_row_name_ref,
@@ -751,6 +775,7 @@ impl<X: GXExt> DataTableW<X> {
             gx.compile_ref(on_activate_id),
             gx.compile_ref(on_header_click_id),
             gx.compile_ref(on_select_id),
+            gx.compile_ref(on_update_id),
             gx.compile_ref(row_filter_id),
             gx.compile_ref(selection_id),
             gx.compile_ref(show_row_name_id),
@@ -760,6 +785,7 @@ impl<X: GXExt> DataTableW<X> {
         let on_activate = compile_callable_opt(&gx, &on_activate_ref).await?;
         let on_select = compile_callable_opt(&gx, &on_select_ref).await?;
         let on_header_click = compile_callable_opt(&gx, &on_header_click_ref).await?;
+        let on_update = compile_callable_opt(&gx, &on_update_ref).await?;
         let sort_mode = sort_mode_ref.last.as_ref()
             .map(parse_sort_mode).unwrap_or(SortMode::None);
         let column_filter = column_filter_ref.last.as_ref()
@@ -776,9 +802,12 @@ impl<X: GXExt> DataTableW<X> {
         let mut col_callbacks = FxHashMap::default();
         let mut default_value_refs = FxHashMap::default();
         let mut default_values = FxHashMap::default();
+        let mut per_row_default_refs: FxHashMap<String, FxHashMap<ArcStr, Ref<X>>> =
+            FxHashMap::default();
         let mut width_refs = FxHashMap::default();
         let mut ref_widths = FxHashMap::default();
         let mut on_resize_callbacks = FxHashMap::default();
+        let mut on_resize_refs = FxHashMap::default();
         for (name, spec) in &column_types_parsed {
             if let Some(cb_val) = &spec.callback_value {
                 if let Ok(callable) = gx.compile_callable(cb_val.clone()).await {
@@ -787,10 +816,23 @@ impl<X: GXExt> DataTableW<X> {
             }
             if spec.default_value_bid != 0 {
                 if let Ok(r) = gx.compile_ref(spec.default_value_bid).await {
-                    let dv = r.last.as_ref()
-                        .map(|v| parse_default_value(v.clone()))
-                        .unwrap_or(DefaultValue::None);
-                    default_values.insert(name.clone(), dv);
+                    match r.last.as_ref() {
+                        Some(Value::Map(_)) => {
+                            let (dv, row_refs) = compile_per_row_defaults(
+                                &gx, r.last.clone().unwrap()
+                            ).await;
+                            default_values.insert(name.clone(), dv);
+                            per_row_default_refs.insert(name.clone(), row_refs);
+                        }
+                        Some(v) => {
+                            default_values.insert(
+                                name.clone(), parse_default_value(v.clone())
+                            );
+                        }
+                        None => {
+                            default_values.insert(name.clone(), DefaultValue::None);
+                        }
+                    }
                     default_value_refs.insert(name.clone(), r);
                 }
             }
@@ -802,9 +844,12 @@ impl<X: GXExt> DataTableW<X> {
                     width_refs.insert(name.clone(), r);
                 }
             }
-            if let Some(cb_val) = &spec.on_resize_value {
-                if let Ok(callable) = gx.compile_callable(cb_val.clone()).await {
-                    on_resize_callbacks.insert(name.clone(), callable);
+            if spec.on_resize_bid != 0 {
+                if let Ok(r) = gx.compile_ref(spec.on_resize_bid).await {
+                    if let Ok(Some(c)) = compile_callable_opt(&gx, &r).await {
+                        on_resize_callbacks.insert(name.clone(), c);
+                    }
+                    on_resize_refs.insert(name.clone(), r);
                 }
             }
         }
@@ -827,13 +872,16 @@ impl<X: GXExt> DataTableW<X> {
             on_activate_ref, on_activate,
             on_select_ref, on_select,
             on_header_click_ref, on_header_click,
+            on_update_ref, on_update,
             col_callbacks,
             default_value_refs,
             default_values,
+            per_row_default_refs,
             width_refs,
             ref_widths,
             user_widths: Mutex::new(FxHashMap::default()),
             on_resize_callbacks,
+            on_resize_refs,
             resize_drag: None,
             last_resize_click: None,
             mode: DisplayMode::Table,
@@ -1050,6 +1098,8 @@ impl<X: GXExt> DataTableW<X> {
             return;
         }
         let cells = self.cells.clone();
+        let on_update_call = self.on_update.as_ref()
+            .map(|c| (self.gx.clone(), c.id()));
         match self.mode {
             DisplayMode::Table => {
                 let mut dvals = Vec::with_capacity(self.col_names.len());
@@ -1064,11 +1114,13 @@ impl<X: GXExt> DataTableW<X> {
                     };
                     let sparkline_key = (row_path.to_string(), col_name.to_string());
                     let cell_path = row_path.append(col_name);
+                    let cell_path_arc = ArcStr::from(&*cell_path);
                     let (tx, mut rx) = futures::channel::mpsc::channel(2);
                     let dval = self.subscriber.subscribe(cell_path);
                     dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
                     dvals.push(dval);
                     let cells = cells.clone();
+                    let on_update_call = on_update_call.clone();
                     self.rt.spawn(async move {
                         use futures::StreamExt;
                         while let Some(mut batch) = rx.next().await {
@@ -1102,6 +1154,12 @@ impl<X: GXExt> DataTableW<X> {
                                             }
                                         }
                                     }
+                                    if let Some((ref gx, cb_id)) = on_update_call {
+                                        let _ = gx.call(cb_id, ValArray::from_iter([
+                                            Value::String(cell_path_arc.clone()),
+                                            v,
+                                        ]));
+                                    }
                                 }
                             }
                         }
@@ -1112,6 +1170,7 @@ impl<X: GXExt> DataTableW<X> {
             DisplayMode::Value => {
                 let (tx, mut rx) = futures::channel::mpsc::channel(2);
                 let dval = self.subscriber.subscribe(row_path.clone());
+                let row_path_arc = ArcStr::from(&**row_path);
                 dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
                 let cells = cells.clone();
                 self.rt.spawn(async move {
@@ -1123,6 +1182,12 @@ impl<X: GXExt> DataTableW<X> {
                                 if row_idx < grid.len() && !grid[row_idx].is_empty() {
                                     grid[row_idx][0] = format_value(&v);
                                     cells.dirty.store(true, Ordering::Relaxed);
+                                }
+                                if let Some((ref gx, cb_id)) = on_update_call {
+                                    let _ = gx.call(cb_id, ValArray::from_iter([
+                                        Value::String(row_path_arc.clone()),
+                                        v,
+                                    ]));
                                 }
                             }
                         }
@@ -1649,20 +1714,33 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     self.column_types.clear();
                     self.col_callbacks.clear();
                     self.on_resize_callbacks.clear();
+                    self.on_resize_refs.clear();
+                    self.default_value_refs.clear();
+                    self.default_values.clear();
+                    self.per_row_default_refs.clear();
                 }
                 v => {
                     self.column_types = parse_column_specs(v);
                     self.col_callbacks.clear();
                     self.on_resize_callbacks.clear();
+                    self.on_resize_refs.clear();
+                    self.default_value_refs.clear();
+                    self.default_values.clear();
+                    self.per_row_default_refs.clear();
                     for (name, spec) in &self.column_types {
                         if let Some(cb_val) = &spec.callback_value {
                             if let Ok(callable) = rt.block_on(self.gx.compile_callable(cb_val.clone())) {
                                 self.col_callbacks.insert(name.clone(), callable);
                             }
                         }
-                        if let Some(cb_val) = &spec.on_resize_value {
-                            if let Ok(callable) = rt.block_on(self.gx.compile_callable(cb_val.clone())) {
-                                self.on_resize_callbacks.insert(name.clone(), callable);
+                        if spec.on_resize_bid != 0 {
+                            if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.on_resize_bid)) {
+                                if let Ok(Some(c)) = rt.block_on(
+                                    compile_callable_opt(&self.gx, &r),
+                                ) {
+                                    self.on_resize_callbacks.insert(name.clone(), c);
+                                }
+                                self.on_resize_refs.insert(name.clone(), r);
                             }
                         }
                         if spec.width_bid != 0 {
@@ -1671,6 +1749,30 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                                     self.ref_widths.insert(name.clone(), w as f32);
                                 }
                                 self.width_refs.insert(name.clone(), r);
+                            }
+                        }
+                        if spec.default_value_bid != 0 {
+                            if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.default_value_bid)) {
+                                match r.last.as_ref() {
+                                    Some(Value::Map(_)) => {
+                                        let (dv, row_refs) = rt.block_on(
+                                            compile_per_row_defaults(
+                                                &self.gx, r.last.clone().unwrap()
+                                            )
+                                        );
+                                        self.default_values.insert(name.clone(), dv);
+                                        self.per_row_default_refs.insert(
+                                            name.clone(), row_refs
+                                        );
+                                    }
+                                    Some(v) => {
+                                        self.default_values.insert(
+                                            name.clone(), parse_default_value(v.clone())
+                                        );
+                                    }
+                                    None => {}
+                                }
+                                self.default_value_refs.insert(name.clone(), r);
                             }
                         }
                     }
@@ -1708,6 +1810,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         update_cb!(on_activate_ref, on_activate);
         update_cb!(on_select_ref, on_select);
         update_cb!(on_header_click_ref, on_header_click);
+        update_cb!(on_update_ref, on_update);
         if self.cells.dirty.swap(false, Ordering::Relaxed) { changed = true; }
         // Check default_value ref updates (independent of column_types structure).
         // Find which column (if any) this update belongs to.
@@ -1718,8 +1821,21 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 name.clone()
             });
         if let Some(col_name) = dv_col {
-            let dv = parse_default_value(v.clone());
-            self.default_values.insert(col_name.clone(), dv);
+            match v {
+                Value::Map(_) => {
+                    let (dv, row_refs) = rt.block_on(
+                        compile_per_row_defaults(&self.gx, v.clone())
+                    );
+                    self.default_values.insert(col_name.clone(), dv);
+                    self.per_row_default_refs.insert(col_name.clone(), row_refs);
+                }
+                _ => {
+                    self.default_values.insert(
+                        col_name.clone(), parse_default_value(v.clone())
+                    );
+                    self.per_row_default_refs.remove(&col_name);
+                }
+            }
             // Update grid cells with new default values
             let mut grid = self.cells.grid.lock();
             if let Some(col_idx) = self.col_names.iter().position(|n| *n == col_name) {
@@ -1736,6 +1852,39 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             self.push_defaults_to_sparklines();
             changed = true;
         }
+        // Check per-row default value ref updates (inner refs from Map<string, &Any>)
+        let per_row_hit = self.per_row_default_refs.iter_mut()
+            .find_map(|(col_name, row_refs)| {
+                row_refs.iter_mut()
+                    .find(|(_, r)| id == r.id)
+                    .map(|(row_name, r)| {
+                        r.last = Some(v.clone());
+                        (col_name.clone(), row_name.clone())
+                    })
+            });
+        if let Some((col_name, row_name)) = per_row_hit {
+            let display = value_to_display(v);
+            if let Some(DefaultValue::PerRow(map)) = self.default_values.get_mut(&col_name) {
+                map.insert(row_name.clone(), display.clone());
+            }
+            let mut grid = self.cells.grid.lock();
+            if let Some(col_idx) = self.col_names.iter().position(|n| *n == col_name) {
+                for (row_idx, row_path) in self.row_paths.iter().enumerate() {
+                    let rn = Path::basename(row_path).unwrap_or(row_path);
+                    if rn == &*row_name
+                        && (!Path::is_absolute(row_path)
+                            || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true))
+                    {
+                        if row_idx < grid.len() && col_idx < grid[row_idx].len() {
+                            grid[row_idx][col_idx] = display.clone();
+                        }
+                    }
+                }
+            }
+            drop(grid);
+            self.push_defaults_to_sparklines();
+            changed = true;
+        }
         // Check width ref updates
         let width_col = self.width_refs.iter_mut()
             .find(|(_, r)| id == r.id)
@@ -1744,6 +1893,23 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             match v.clone().cast_to::<f64>() {
                 Ok(w) => { self.ref_widths.insert(col_name, w as f32); }
                 Err(_) => { self.ref_widths.remove(&col_name); }
+            }
+            changed = true;
+        }
+        // Check on_resize ref updates: the function inside the ref may
+        // be swapped, set to null, or initialized from null.
+        let on_resize_col = self.on_resize_refs.iter_mut()
+            .find(|(_, r)| id == r.id)
+            .map(|(name, r)| { r.last = Some(v.clone()); name.clone() });
+        if let Some(col_name) = on_resize_col {
+            match v {
+                Value::Null => { self.on_resize_callbacks.remove(&col_name); }
+                v => {
+                    match rt.block_on(self.gx.compile_callable(v.clone())) {
+                        Ok(c) => { self.on_resize_callbacks.insert(col_name, c); }
+                        Err(_) => { self.on_resize_callbacks.remove(&col_name); }
+                    }
+                }
             }
             changed = true;
         }
@@ -1770,6 +1936,9 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             selection: sel,
         })
     }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn handle_table_key(&mut self, action: &super::TableKeyAction) -> bool {
         use super::TableKeyAction;
@@ -2555,5 +2724,150 @@ impl<X: GXExt> DataTableW<X> {
             }
         };
         self.wrap_cell(inner, col_name, row_idx, w, is_selected)
+    }
+}
+
+#[cfg(test)]
+impl<X: GXExt> DataTableW<X> {
+    /// The width currently dictated by the column's `width` ref (the
+    /// graphix-controlled width), if any. Independent of user drags or
+    /// auto-sizing.
+    pub fn dt_ref_width(&self, col: &str) -> Option<f32> {
+        self.ref_widths.get(col).copied()
+    }
+
+    /// Number of points currently retained in the sparkline history for
+    /// the cell at (row_basename, col). Returns None if the row or column
+    /// is not a sparkline cell.
+    pub fn dt_sparkline_len(&self, row: &str, col: &str) -> Option<usize> {
+        let row_path = self.row_paths.iter()
+            .find(|p| Path::basename(p).unwrap_or(&***p) == row)?;
+        let key = (row_path.to_string(), col.to_string());
+        self.cells.sparklines.lock().get(&key).map(|h| h.len())
+    }
+
+    /// Snapshot of the values in the sparkline history for the cell at
+    /// (row_basename, col), in chronological order.
+    pub fn dt_sparkline_values(&self, row: &str, col: &str) -> Option<Vec<f64>> {
+        let row_path = self.row_paths.iter()
+            .find(|p| Path::basename(p).unwrap_or(&***p) == row)?;
+        let key = (row_path.to_string(), col.to_string());
+        self.cells.sparklines.lock().get(&key)
+            .map(|h| h.iter().map(|(_, v)| *v).collect())
+    }
+
+    /// Direct injection of a sparkline data point. Bypasses netidx
+    /// publishing so decimation can be exercised deterministically with
+    /// thousands of points. Triggers the same `decimate_sparkline` path
+    /// invoked by the runtime when MAX_SPARKLINE_POINTS is exceeded.
+    pub fn dt_push_sparkline(
+        &self,
+        row: &str,
+        col: &str,
+        when: Instant,
+        v: f64,
+    ) {
+        let row_path = match self.row_paths.iter()
+            .find(|p| Path::basename(p).unwrap_or(&***p) == row)
+        {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        let key = (row_path.to_string(), col.to_string());
+        let mut sp = self.cells.sparklines.lock();
+        let history = sp.entry(key).or_insert_with(VecDeque::new);
+        history.push_back((when, v));
+        if history.len() > MAX_SPARKLINE_POINTS {
+            decimate_sparkline(history);
+        }
+    }
+
+    /// CallableId of the per-column on_edit/on_click callback for `col`,
+    /// if one was registered. Tests use this with `gx.call(...)` to
+    /// dispatch edit/click events without going through pixel-layout.
+    pub fn dt_col_callback_id(&self, col: &str) -> Option<super::CallableId> {
+        self.col_callbacks.get(col).map(|c| c.id())
+    }
+
+    /// CallableId of the on_resize callback for `col`, if one was
+    /// registered. Tests use this together with the resize handler
+    /// methods to verify that column-resize drags fire the callback.
+    pub fn dt_on_resize_callback_id(&self, col: &str) -> Option<super::CallableId> {
+        self.on_resize_callbacks.get(col).map(|c| c.id())
+    }
+
+    /// Index of `col` in the col_meta vector built by `view()` — i.e.,
+    /// the value `handle_column_resize_start` expects. Returns None if
+    /// the column is not currently visible.
+    pub fn dt_meta_col_idx(&self, col: &str) -> Option<usize> {
+        let show_name = self.show_row_name.t.unwrap_or(true);
+        if col == "name" {
+            return if show_name { Some(0) } else { None };
+        }
+        let (vis_start, vis_end) = self.display_col_range();
+        let pos = self.col_names.iter().position(|n| n == col)?;
+        if pos < vis_start || pos >= vis_end {
+            return None;
+        }
+        let offset = if show_name { 1 } else { 0 };
+        Some(offset + (pos - vis_start))
+    }
+
+    /// Pixel bounds of the cell at (row_idx, col), computed from
+    /// `cached_col_widths` populated by the most recent `view()`. Tests
+    /// must call `view()` once before this to populate the cache. Returns
+    /// None if the column is not visible or the cache is empty.
+    pub fn dt_cell_bounds(
+        &self,
+        row_idx: usize,
+        col: &str,
+    ) -> Option<iced_core::Rectangle> {
+        let cache = self.cached_col_widths.lock();
+        if cache.is_empty() {
+            return None;
+        }
+        let show_name = self.show_row_name.t.unwrap_or(true);
+        let mut x = 0.0_f32;
+        let w;
+        if col == "name" && show_name {
+            w = cache.get("name").copied()?;
+        } else {
+            if show_name {
+                x += cache.get("name").copied()?;
+            }
+            let (vis_start, vis_end) = self.display_col_range();
+            let pos = self.col_names.iter().position(|n| n == col)?;
+            if pos < vis_start || pos >= vis_end {
+                return None;
+            }
+            for ci in vis_start..pos {
+                x += cache.get(&self.col_names[ci]).copied()?;
+            }
+            w = cache.get(col).copied()?;
+        }
+        // Header cell is one ROW_HEIGHT_ESTIMATE plus container padding (3+3).
+        let header_h = ROW_HEIGHT_ESTIMATE + 6.0;
+        let y = header_h + row_idx as f32 * ROW_HEIGHT_ESTIMATE;
+        Some(iced_core::Rectangle {
+            x,
+            y,
+            width: w,
+            height: ROW_HEIGHT_ESTIMATE,
+        })
+    }
+
+    /// Pixel center of the cell at (row_idx, col). See `dt_cell_bounds`.
+    pub fn dt_cell_center(
+        &self,
+        row_idx: usize,
+        col: &str,
+    ) -> Option<iced_core::Point> {
+        self.dt_cell_bounds(row_idx, col).map(|r| r.center())
+    }
+
+    /// The width currently set in `user_widths` (from drag resize or
+    /// auto-fit), if any. Independent of ref-controlled widths.
+    pub fn dt_user_width(&self, col: &str) -> Option<f32> {
+        self.user_widths.lock().get(col).copied()
     }
 }

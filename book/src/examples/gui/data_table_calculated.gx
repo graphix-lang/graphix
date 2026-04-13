@@ -1,0 +1,99 @@
+use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use str;
+use sys;
+use sys::net;
+mod icon;
+
+// Two published columns A and B. A virtual "sum" column gets its
+// value from a per-row default ref; the on_update callback watches
+// every cell update on subscribed cells and pushes the new (a+b)
+// total into the corresponding sum ref.
+
+sys::net::publish("/local/graphix/data_table_calculated/r0/A", i64:10);
+sys::net::publish("/local/graphix/data_table_calculated/r0/B", i64:5);
+sys::net::publish("/local/graphix/data_table_calculated/r1/A", i64:20);
+sys::net::publish("/local/graphix/data_table_calculated/r1/B", i64:3);
+sys::net::publish("/local/graphix/data_table_calculated/r2/A", i64:4);
+sys::net::publish("/local/graphix/data_table_calculated/r2/B", i64:11);
+
+let tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+
+// Per-row state: running totals and the latest value each cell has
+// seen. on_update updates whichever input changed, then recomputes
+// the sum.
+let r0_a = i64:10;
+let r0_b = i64:5;
+let r0_sum = "15";
+let r1_a = i64:20;
+let r1_b = i64:3;
+let r1_sum = "23";
+let r2_a = i64:4;
+let r2_b = i64:11;
+let r2_sum = "15";
+
+let update = |#path: string, #value: Primitive| {
+    let v = cast<i64>(value)$;
+    select path {
+        "/local/graphix/data_table_calculated/r0/A" => {
+            r0_a <- v;
+            r0_sum <- "[v + r0_b]"
+        },
+        "/local/graphix/data_table_calculated/r0/B" => {
+            r0_b <- v;
+            r0_sum <- "[r0_a + v]"
+        },
+        "/local/graphix/data_table_calculated/r1/A" => {
+            r1_a <- v;
+            r1_sum <- "[v + r1_b]"
+        },
+        "/local/graphix/data_table_calculated/r1/B" => {
+            r1_b <- v;
+            r1_sum <- "[r1_a + v]"
+        },
+        "/local/graphix/data_table_calculated/r2/A" => {
+            r2_a <- v;
+            r2_sum <- "[v + r2_b]"
+        },
+        "/local/graphix/data_table_calculated/r2/B" => {
+            r2_b <- v;
+            r2_sum <- "[r2_a + v]"
+        },
+        _ => never()
+    }
+};
+
+let types = {
+    "sum" => {
+        typ: `Text({ on_edit: null }),
+        display_name: "A + B",
+        default_value: &{ "r0" => &r0_sum, "r1" => &r1_sum, "r2" => &r2_sum },
+        on_resize: &null,
+        width: &null
+    }
+};
+
+let layout = column(
+    #spacing: &12.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &20.0, &"Calculated column"),
+        text(&"on_update fires on every cell update; the virtual sum column reflects A + B."),
+        data_table(
+            #column_types: &types,
+            #on_update: update,
+            #table: &tbl
+        )
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Calculated",
+    #theme: &`CatppuccinMocha,
+    &layout
+)]

@@ -202,6 +202,14 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         None
     }
 
+    /// Downcast escape hatch for tests that need access to a concrete
+    /// widget type. Default panics — only widgets that need test-only
+    /// state inspection (currently just `DataTableW`) override this.
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        unimplemented!("as_any not implemented for this widget")
+    }
+
     /// Route a text editor action to the widget that owns the given
     /// content ref. Returns `Some((callable_id, value))` if the action
     /// was an edit and the result should be called back to graphix.
