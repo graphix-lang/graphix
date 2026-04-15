@@ -737,6 +737,9 @@ impl<X: GXExt> DataTableW<X> {
                                     .or_default()
                                     .insert(row_key.clone(), format_value(&v));
                                 dirty.store(true, Ordering::Relaxed);
+                                if let Some(w) = crate::REDRAW_WAKER.get() {
+                                    w.wake();
+                                }
                             }
                         }
                     }
@@ -864,6 +867,17 @@ impl<X: GXExt> DataTableW<X> {
                                     if row_idx < grid.len() && col_idx < grid[row_idx].len() {
                                         grid[row_idx][col_idx] = format_value(&v);
                                         cells.dirty.store(true, Ordering::Relaxed);
+                                        // Subscription updates run on
+                                        // a tokio task outside the iced
+                                        // event cycle. Poke the event
+                                        // loop so it redraws — without
+                                        // this, the new cell value only
+                                        // appears when some other winit
+                                        // event (mouse move, keypress,
+                                        // …) happens to wake the loop.
+                                        if let Some(w) = crate::REDRAW_WAKER.get() {
+                                            w.wake();
+                                        }
                                     }
                                     // Accumulate sparkline history
                                     if is_sparkline {
@@ -916,6 +930,9 @@ impl<X: GXExt> DataTableW<X> {
                                 if row_idx < grid.len() && !grid[row_idx].is_empty() {
                                     grid[row_idx][0] = format_value(&v);
                                     cells.dirty.store(true, Ordering::Relaxed);
+                                    if let Some(w) = crate::REDRAW_WAKER.get() {
+                                        w.wake();
+                                    }
                                 }
                                 if let Some((ref gx, cb_id)) = on_update_call {
                                     let _ = gx.call(cb_id, ValArray::from_iter([

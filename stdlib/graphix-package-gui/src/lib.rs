@@ -33,8 +33,39 @@ mod test;
 pub(crate) enum ToGui {
     Update(ExprId, Value),
     ResizeTimer(WindowId, SizeV),
+    /// Wake the winit event loop so it runs its `about_to_wait`
+    /// render pass, picking up any widget state that was mutated
+    /// outside the iced event cycle (e.g. a netidx subscription
+    /// update setting `cells.dirty = true` on a data_table).
+    Redraw,
     Stop(oneshot::Sender<()>),
 }
+
+/// Thread-safe handle the event loop hands out to widgets that
+/// update their view state from background tasks (netidx
+/// subscriptions in data_table being the motivating case). Calling
+/// `.wake()` posts a `ToGui::Redraw` which the event loop processes
+/// by flagging every window for redraw. Cheap to clone.
+#[derive(Clone)]
+pub(crate) struct RedrawWaker {
+    proxy: EventLoopProxy<ToGui>,
+}
+
+impl RedrawWaker {
+    pub(crate) fn new(proxy: EventLoopProxy<ToGui>) -> Self {
+        Self { proxy }
+    }
+
+    pub(crate) fn wake(&self) {
+        let _ = self.proxy.send_event(ToGui::Redraw);
+    }
+}
+
+/// Set by the event loop after it creates its proxy, so widgets
+/// compiled before the proxy exists (compilation happens inside the
+/// same call that builds the window) can still pick it up.
+pub(crate) static REDRAW_WAKER: std::sync::OnceLock<RedrawWaker> =
+    std::sync::OnceLock::new();
 
 struct Gui<X: GXExt> {
     proxy: EventLoopProxy<ToGui>,

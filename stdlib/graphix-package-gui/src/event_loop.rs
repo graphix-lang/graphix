@@ -230,6 +230,15 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                 }
             }
+            ToGui::Redraw => {
+                // A background task (typically a data_table cell
+                // subscription) mutated state outside the iced event
+                // cycle. Flag every window for redraw so `about_to_wait`
+                // runs the render pass and picks up the change.
+                for tw in self.windows.values_mut() {
+                    tw.needs_redraw = true;
+                }
+            }
             ToGui::Update(id, v) => {
                 if id == self.root_exp.id {
                     if let Err(e) = reconcile_windows(
@@ -480,7 +489,9 @@ pub(crate) fn run<X: GXExt>(
             return;
         }
     };
-    let _ = proxy_tx.send(event_loop.create_proxy());
+    let proxy = event_loop.create_proxy();
+    let _ = crate::REDRAW_WAKER.set(crate::RedrawWaker::new(proxy.clone()));
+    let _ = proxy_tx.send(proxy);
     let (resize_tx, resize_rx) = mpsc::unbounded_channel();
     let debounce_proxy = event_loop.create_proxy();
     rt.spawn(resize_debounce(resize_rx, debounce_proxy));
