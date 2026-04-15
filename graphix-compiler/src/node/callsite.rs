@@ -103,8 +103,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(Box::new(site))
     }
 
-    fn make_ref(&self, id: BindId, typ: Type) -> Node<R, E> {
-        Box::new(Ref { spec: NOP.clone(), typ, id, top_id: self.top_id })
+    fn make_ref(&self, id: BindId, typ: Type, spec: TArc<Expr>) -> Node<R, E> {
+        Box::new(Ref { spec, typ, id, top_id: self.top_id })
     }
 
     fn bind(
@@ -180,17 +180,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             .as_ref()
                             .map(|n| n.typ().clone())
                             .unwrap_or_else(|| farg.typ.clone());
-                        self.arg_refs.push(self.make_ref(arg.id, typ));
+                        let spec = arg
+                            .node
+                            .as_ref()
+                            .map(|n| TArc::new(n.spec().clone()))
+                            .unwrap_or_else(|| NOP.clone());
+                        self.arg_refs.push(self.make_ref(arg.id, typ, spec));
                     }
                     None if *default => {
                         let id = BindId::new();
                         let default_node = compile_default!(i, f);
                         let typ = default_node.typ().clone();
+                        let spec = TArc::new(default_node.spec().clone());
                         self.args.insert(
                             ArgKey::Named(name.clone()),
                             Arg { id, node: Some(default_node), is_default: true },
                         );
-                        self.arg_refs.push(self.make_ref(id, typ));
+                        self.arg_refs.push(self.make_ref(id, typ, spec));
                     }
                     None => bail!("BUG: in bind missing required argument {name}"),
                 }
@@ -212,7 +218,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     .as_ref()
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| farg.typ.clone());
-                self.arg_refs.push(self.make_ref(arg.id, typ));
+                let spec = arg
+                    .node
+                    .as_ref()
+                    .map(|n| TArc::new(n.spec().clone()))
+                    .unwrap_or_else(|| NOP.clone());
+                self.arg_refs.push(self.make_ref(arg.id, typ, spec));
             }
         }
         // Handle vargs - remaining positional args
@@ -227,7 +238,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             .as_ref()
                             .map(|n| n.typ().clone())
                             .unwrap_or_else(|| Type::Bottom);
-                        self.arg_refs.push(self.make_ref(arg.id, typ));
+                        let spec = arg
+                            .node
+                            .as_ref()
+                            .map(|n| TArc::new(n.spec().clone()))
+                            .unwrap_or_else(|| NOP.clone());
+                        self.arg_refs.push(self.make_ref(arg.id, typ, spec));
                     }
                     None => break,
                 }
