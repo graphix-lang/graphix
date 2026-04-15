@@ -298,7 +298,7 @@ impl<X: GXExt> Shell<X> {
                                             .with_deref(|t| t.cloned())
                                             .unwrap_or_else(|| e.typ.clone());
                                         format_with_flags(
-                                            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                                            PrintFlag::ReplacePrims,
                                             || println!("-: {}", typ)
                                         );
                                         output.clear().await;
