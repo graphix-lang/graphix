@@ -1,0 +1,140 @@
+use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use sys;
+use sys::net;
+mod icon;
+
+// Four editable columns demonstrating every ColumnType that takes
+// user input: Text, Toggle, Combo, Spin. Each cell is published with
+// an #on_write handler so edits round-trip through netidx.
+
+let host_01_name = "alpha";
+let host_01_enabled = true;
+let host_01_zone = "us-east-1";
+let host_01_cpu = f64:4.0;
+
+sys::net::publish(
+    #on_write: |v: string| host_01_name <- v,
+    "/local/graphix/data_table_editable/host-01/name",
+    host_01_name
+);
+sys::net::publish(
+    #on_write: |v: bool| host_01_enabled <- v,
+    "/local/graphix/data_table_editable/host-01/enabled",
+    host_01_enabled
+);
+sys::net::publish(
+    #on_write: |v: string| host_01_zone <- v,
+    "/local/graphix/data_table_editable/host-01/zone",
+    host_01_zone
+);
+sys::net::publish(
+    #on_write: |v: f64| host_01_cpu <- v,
+    "/local/graphix/data_table_editable/host-01/cpu",
+    host_01_cpu
+);
+
+let host_02_name = "bravo";
+let host_02_enabled = false;
+let host_02_zone = "eu-west-1";
+let host_02_cpu = f64:8.0;
+
+sys::net::publish(
+    #on_write: |v: string| host_02_name <- v,
+    "/local/graphix/data_table_editable/host-02/name",
+    host_02_name
+);
+sys::net::publish(
+    #on_write: |v: bool| host_02_enabled <- v,
+    "/local/graphix/data_table_editable/host-02/enabled",
+    host_02_enabled
+);
+sys::net::publish(
+    #on_write: |v: string| host_02_zone <- v,
+    "/local/graphix/data_table_editable/host-02/zone",
+    host_02_zone
+);
+sys::net::publish(
+    #on_write: |v: f64| host_02_cpu <- v,
+    "/local/graphix/data_table_editable/host-02/cpu",
+    host_02_cpu
+);
+
+let tbl = sys::net::list_table("/local/graphix/data_table_editable")$;
+
+// Each on_edit callback writes the new value back to the published
+// path. The publisher's #on_write fires, updates the backing variable,
+// and the data_table's subscription receives the new value — a full
+// round trip through netidx.
+let types = {
+    "name" => {
+        typ: `Text({
+            on_edit: |#path: string, #value: string|
+                sys::net::write(path, value)$
+        }),
+        display_name: "Name",
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    },
+    "enabled" => {
+        typ: `Toggle({
+            on_edit: |#path: string, #value: bool|
+                sys::net::write(path, value)$
+        }),
+        display_name: "Enabled",
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    },
+    "zone" => {
+        typ: `Combo({
+            choices: [
+                { id: "us-east-1", label: "US East" },
+                { id: "us-west-2", label: "US West" },
+                { id: "eu-west-1", label: "EU West" },
+                { id: "ap-south-1", label: "Asia Pacific" }
+            ],
+            on_edit: |#path: string, #value: string|
+                sys::net::write(path, value)$
+        }),
+        display_name: "Zone",
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    },
+    "cpu" => {
+        typ: `Spin({
+            min: f64:1.0,
+            max: f64:64.0,
+            increment: f64:1.0,
+            on_edit: |#path: string, #value: f64|
+                sys::net::write(path, value)$
+        }),
+        display_name: "CPU cores",
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    }
+};
+
+let layout = column(
+    #spacing: &12.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &20.0, &"Editable hosts"),
+        text(&"Edits are written back through netidx and reflected in the same cell."),
+        data_table(#column_types: &types, #table: &tbl)
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Editable",
+    #theme: &`CatppuccinMocha,
+    &layout
+)]

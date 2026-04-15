@@ -1,0 +1,191 @@
+use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use core::math;
+use str;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Kitchen-sink example combining the main data_table features:
+// * Combo column for state picklists
+// * Sparkline column for rolling cpu metrics
+// * Progress column for uptime %
+// * Button column that fires an action callback
+// * Regex row filter wired to a text input
+// * Column sort driven by pick_list widgets in the sidebar
+// * Selection echoed in the footer
+
+let tick = time::timer(duration:1.s, true);
+let t = 0;
+t <- tick ~ t + 1;
+
+// Publish a tiny fleet of services. state is writable (Combo).
+let svc_1_state = "healthy";
+sys::net::publish(
+    #on_write: |v: string| svc_1_state <- v,
+    "/local/graphix/data_table_dashboard/svc-1/state",
+    svc_1_state
+);
+let svc_1_cpu = f64:20.0;
+svc_1_cpu <- tick ~ 30.0 + 20.0 * math::sin(cast<f64>(t)$ / 5.0);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-1/cpu", svc_1_cpu);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-1/uptime", f64:0.91);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-1/action", "Restart");
+
+let svc_2_state = "degraded";
+sys::net::publish(
+    #on_write: |v: string| svc_2_state <- v,
+    "/local/graphix/data_table_dashboard/svc-2/state",
+    svc_2_state
+);
+let svc_2_cpu = f64:80.0;
+svc_2_cpu <- tick ~ 75.0 + 15.0 * math::sin(cast<f64>(t + 10)$ / 3.0);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-2/cpu", svc_2_cpu);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-2/uptime", f64:0.62);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-2/action", "Restart");
+
+let svc_3_state = "healthy";
+sys::net::publish(
+    #on_write: |v: string| svc_3_state <- v,
+    "/local/graphix/data_table_dashboard/svc-3/state",
+    svc_3_state
+);
+let svc_3_cpu = f64:5.0;
+svc_3_cpu <- tick ~ 10.0 + 5.0 * math::sin(cast<f64>(t + 20)$ / 4.0);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-3/cpu", svc_3_cpu);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-3/uptime", f64:0.99);
+sys::net::publish("/local/graphix/data_table_dashboard/svc-3/action", "Restart");
+
+let tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+
+// Filter + sort controls
+let pattern = "";
+let row_filter: FilterSpec = `All;
+row_filter <- select str::len(pattern) {
+    n if n == 0 => `All,
+    _ => `IncludeMatch([pattern])
+};
+
+let sort_col = "state";
+let sort_dir: SortDirection = `Ascending;
+let sort_mode: SortMode = `None;
+sort_mode <- `Column({ name: sort_col, direction: sort_dir });
+
+// Selection + footer
+let selection: Array<string> = [];
+let last_action = "";
+
+let types = {
+    "state" => {
+        typ: `Combo({
+            choices: [
+                { id: "healthy", label: "Healthy" },
+                { id: "degraded", label: "Degraded" },
+                { id: "down", label: "Down" }
+            ],
+            on_edit: |#path: string, #value: string|
+                sys::net::write(path, value)$
+        }),
+        display_name: "State",
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    },
+    "cpu" => {
+        typ: `Sparkline({ history_seconds: f64:30.0 }),
+        display_name: "CPU",
+        default_value: &null,
+        on_resize: &null,
+        width: &f64:220.0
+    },
+    "uptime" => {
+        typ: `Progress,
+        display_name: "Uptime",
+        default_value: &null,
+        on_resize: &null,
+        width: &f64:180.0
+    },
+    "action" => {
+        typ: `Button({
+            on_click: |#path: string, #value: Any|
+                last_action <- "[path]"
+        }),
+        display_name: "Action",
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    }
+};
+
+let controls = row(
+    #spacing: &10.0,
+    &[
+        text(&"Filter:"),
+        text_input(
+            #on_input: |v: string| pattern <- v,
+            #placeholder: &"regex or blank",
+            #width: &`Fill,
+            &pattern
+        ),
+        text(&"Sort:"),
+        pick_list(
+            #on_select: |v: string| sort_col <- v,
+            #selected: &sort_col,
+            &["state", "cpu", "uptime"]
+        ),
+        pick_list(
+            #on_select: |v: string| sort_dir <- select v {
+                "Ascending" => `Ascending,
+                _ => `Descending
+            },
+            #selected: &select sort_dir {
+                `Ascending => "Ascending",
+                `Descending => "Descending"
+            },
+            &["Ascending", "Descending"]
+        )
+    ]
+);
+
+let footer = row(
+    #spacing: &10.0,
+    &[
+        text(&"Selected:"),
+        text(&"[selection]"),
+        text(&"  Last action:"),
+        text(&"[last_action]")
+    ]
+);
+
+let layout = column(
+    #spacing: &10.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &20.0, &"Service dashboard"),
+        controls,
+        data_table(
+            #column_types: &types,
+            #row_filter: &row_filter,
+            #sort_mode: &sort_mode,
+            #selection: &selection,
+            #on_select: |#path: string| selection <- [path],
+            #table: &tbl
+        ),
+        footer
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Dashboard",
+    #theme: &`CatppuccinMocha,
+    &layout
+)]

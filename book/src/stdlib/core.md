@@ -225,3 +225,261 @@ val encode: fn(Array<Encode>) -> bytes;
 /// Returns the remaining bytes after all fields are consumed.
 val decode: fn(bytes, Array<Decode>) -> Result<bytes, `DecodeError(string)>;
 ```
+
+## core::math
+
+The `math` submodule wraps Rust's `f64` math intrinsics (trigonometric,
+hyperbolic, exponential, logarithmic, power, rounding, comparison,
+predicate, and angle-conversion routines) plus the standard
+mathematical constants. Argument and result conventions match
+`std::f64`: angles are in radians, NaN propagates through arithmetic,
+and `min`/`max` return the non-NaN operand when one input is NaN.
+
+For polymorphic n-ary `min` / `max` / `sum` / `product` over `Number`,
+use the top-level functions in `core` instead — the bindings here are
+the binary `f64`-only forms.
+
+```graphix
+/// Sine. Argument in radians.
+val sin: fn(f64) -> f64;
+
+/// Cosine. Argument in radians.
+val cos: fn(f64) -> f64;
+
+/// Tangent. Argument in radians.
+val tan: fn(f64) -> f64;
+
+/// Inverse sine. Result in radians, [-π/2, π/2].
+val asin: fn(f64) -> f64;
+
+/// Inverse cosine. Result in radians, [0, π].
+val acos: fn(f64) -> f64;
+
+/// Inverse tangent. Result in radians, (-π/2, π/2).
+val atan: fn(f64) -> f64;
+
+/// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
+val atan2: fn(f64, f64) -> f64;
+
+/// Hyperbolic sine.
+val sinh: fn(f64) -> f64;
+
+/// Hyperbolic cosine.
+val cosh: fn(f64) -> f64;
+
+/// Hyperbolic tangent.
+val tanh: fn(f64) -> f64;
+
+/// Inverse hyperbolic sine.
+val asinh: fn(f64) -> f64;
+
+/// Inverse hyperbolic cosine.
+val acosh: fn(f64) -> f64;
+
+/// Inverse hyperbolic tangent.
+val atanh: fn(f64) -> f64;
+
+/// `e^x`.
+val exp: fn(f64) -> f64;
+
+/// `2^x`.
+val exp2: fn(f64) -> f64;
+
+/// `e^x - 1`. More accurate than `exp(x) - 1` near zero.
+val exp_m1: fn(f64) -> f64;
+
+/// Natural logarithm (base e).
+val ln: fn(f64) -> f64;
+
+/// `ln(1 + x)`. More accurate than `ln(1 + x)` near zero.
+val ln_1p: fn(f64) -> f64;
+
+/// Logarithm base 2.
+val log2: fn(f64) -> f64;
+
+/// Logarithm base 10.
+val log10: fn(f64) -> f64;
+
+/// Logarithm with arbitrary base: `log(x, base) = ln(x) / ln(base)`.
+val log: fn(f64, f64) -> f64;
+
+/// `x^y`.
+val pow: fn(f64, f64) -> f64;
+
+/// Square root.
+val sqrt: fn(f64) -> f64;
+
+/// Cube root.
+val cbrt: fn(f64) -> f64;
+
+/// `sqrt(x^2 + y^2)`, computed without overflow for large inputs.
+val hypot: fn(f64, f64) -> f64;
+
+/// Largest integer less than or equal to `x`.
+val floor: fn(f64) -> f64;
+
+/// Smallest integer greater than or equal to `x`.
+val ceil: fn(f64) -> f64;
+
+/// Round to the nearest integer, ties away from zero.
+val round: fn(f64) -> f64;
+
+/// Truncate toward zero.
+val trunc: fn(f64) -> f64;
+
+/// Fractional part: `x - trunc(x)`.
+val fract: fn(f64) -> f64;
+
+/// Absolute value.
+val abs: fn(f64) -> f64;
+
+/// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
+val signum: fn(f64) -> f64;
+
+/// `x` with the sign of `y`.
+val copysign: fn(f64, f64) -> f64;
+
+/// Smaller of two f64 values, returning the non-NaN operand if one is
+/// NaN. For n-ary polymorphic behaviour over `Number`, use the
+/// top-level `min` from core.
+val min: fn(f64, f64) -> f64;
+
+/// Larger of two f64 values, returning the non-NaN operand if one is
+/// NaN. For n-ary polymorphic behaviour over `Number`, use the
+/// top-level `max` from core.
+val max: fn(f64, f64) -> f64;
+
+/// Clamp `x` to the closed interval `[lo, hi]`.
+val clamp: fn(f64, f64, f64) -> f64;
+
+/// True if `x` is NaN.
+val is_nan: fn(f64) -> bool;
+
+/// True if `x` is finite (not NaN, not infinite).
+val is_finite: fn(f64) -> bool;
+
+/// True if `x` is positive or negative infinity.
+val is_infinite: fn(f64) -> bool;
+
+/// Convert radians to degrees.
+val to_degrees: fn(f64) -> f64;
+
+/// Convert degrees to radians.
+val to_radians: fn(f64) -> f64;
+
+/// π ≈ 3.14159265358979…
+val pi: f64;
+
+/// e ≈ 2.71828182845904…
+val e: f64;
+
+/// τ = 2π ≈ 6.28318530717958…
+val tau: f64;
+
+/// √2 ≈ 1.41421356237309…
+val sqrt_2: f64;
+
+/// ln(2) ≈ 0.69314718055994…
+val ln_2: f64;
+
+/// ln(10) ≈ 2.30258509299404…
+val ln_10: f64;
+
+/// Positive infinity.
+val infinity: f64;
+
+/// Not-a-number.
+val nan: f64;
+```
+
+## core::opt
+
+The `opt` submodule provides combinators for working with optional
+values — graphix's `Option<'a>` is just the structural union
+`['a, null]`, and these functions mirror the most useful parts of
+Rust's `std::option::Option` API in a reactive setting.
+
+The higher-order combinators (`map`, `flat_map`, `filter`, `or_else`,
+`ok_or_else`, `is_some_and`, `is_none_or`) are deliberately
+fire-and-forget: they never queue inputs. If a callback is slow or
+never produces a value, a new input simply supersedes the pending one
+(latest wins). Use the explicit `core::queue` / `core::hold` operators
+when you need ordered async behavior.
+
+```graphix
+/// true if v is not null
+val is_some: fn(['a, null]) -> bool;
+
+/// true if v is null
+val is_none: fn(['a, null]) -> bool;
+
+/// true if v is not null and equals x. Produces false when v is null
+/// regardless of x.
+val contains: fn(['a, null], 'a) -> bool;
+
+/// or_never(v) does not return anything if v is null, otherwise it
+/// returns v.
+val or_never: fn(['a, null]) -> 'a;
+
+/// or_default(v, d): if v is null return d, otherwise return v
+val or_default: fn(['a, null], 'a) -> 'a;
+
+/// or(a, b): return a if non-null, otherwise return b (which may
+/// itself be null).
+val or: fn(['a, null], ['a, null]) -> ['a, null];
+
+/// and(a, b): return b if a is non-null, otherwise return null. The
+/// value of b is not inspected when a is null.
+val and: fn(['a, null], ['b, null]) -> ['b, null];
+
+/// xor(a, b): return whichever of a or b is non-null, or null if both
+/// or neither are non-null.
+val xor: fn(['a, null], ['a, null]) -> ['a, null];
+
+/// Collapse a nested option. Present for symmetry with Rust; at the
+/// value level this is the identity (graphix structural unions make
+/// [[T, null], null] equivalent to [T, null]).
+val flatten: fn([['a, null], null]) -> ['a, null];
+
+/// ok_or(v, e): return v unchanged when non-null, otherwise return
+/// error(e).
+val ok_or: fn(['a, null], 'e) -> Result<'a, 'e>;
+
+/// zip(a, b): if both are non-null return the tuple (a, b), otherwise
+/// return null.
+val zip: fn(['a, null], ['b, null]) -> [('a, 'b), null];
+
+/// unzip(p): given a tuple-valued option, return the pair of options.
+/// null input yields (null, null).
+val unzip: fn([('a, 'b), null]) -> (['a, null], ['b, null]);
+
+/// map(v, f): apply f to the inner value if v is non-null, otherwise
+/// return null.
+val map: fn(['a, null], fn('a) -> 'b) -> ['b, null];
+
+/// flat_map(v, f): apply f to the inner value if v is non-null,
+/// otherwise return null. f's own optional result is forwarded
+/// unchanged.
+val flat_map: fn(['a, null], fn('a) -> ['b, null]) -> ['b, null];
+
+/// filter(v, pred): if v is non-null and pred(v) is true, emit v.
+/// Otherwise (v is null, or pred is false) emit null.
+val filter: fn(['a, null], fn('a) -> bool) -> ['a, null];
+
+/// or_else(v, f): return v if non-null, otherwise return whatever f()
+/// produces. f is invoked eagerly and its latest value is cached so
+/// later updates to v can be resolved without re-invoking f.
+val or_else: fn(['a, null], fn() -> ['a, null]) -> ['a, null];
+
+/// ok_or_else(v, f): return v if non-null, otherwise return
+/// error(f()). Same eager-with-caching semantics as or_else.
+val ok_or_else: fn(['a, null], fn() -> 'e) -> Result<'a, 'e>;
+
+/// is_some_and(v, pred): true when v is non-null and pred(v) is true,
+/// false when v is null or pred is false.
+val is_some_and: fn(['a, null], fn('a) -> bool) -> bool;
+
+/// is_none_or(v, pred): true when v is null or pred(v) is true, false
+/// when v is non-null and pred is false.
+val is_none_or: fn(['a, null], fn('a) -> bool) -> bool;
+```
