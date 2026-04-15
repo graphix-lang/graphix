@@ -42,7 +42,7 @@ type ColumnType = [
 type ColumnSpec = {
     typ: ColumnType,
     display_name: [string, null],
-    default_value: &[null, string, Map<string, &Any>],
+    default_value: &[null, string, Map<string, Any>],
     on_resize: &[fn(f64) -> Any, null],
     width: &[f64, null]
 };

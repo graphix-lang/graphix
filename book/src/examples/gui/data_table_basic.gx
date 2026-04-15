@@ -6,22 +6,15 @@ use sys;
 use sys::net;
 mod icon;
 
-// Publish a tiny fleet of hosts. Each host exposes four read-only
-// cells: hostname, status, cpu %, and memory %.
-sys::net::publish("/local/graphix/data_table_basic/host-01/hostname", "alpha");
-sys::net::publish("/local/graphix/data_table_basic/host-01/status", "up");
-sys::net::publish("/local/graphix/data_table_basic/host-01/cpu", f64:12.4);
-sys::net::publish("/local/graphix/data_table_basic/host-01/memory", f64:37.1);
+let publish_host = |#name, #status, #cpu, #mem| {
+    sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
+    sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
+};
 
-sys::net::publish("/local/graphix/data_table_basic/host-02/hostname", "bravo");
-sys::net::publish("/local/graphix/data_table_basic/host-02/status", "up");
-sys::net::publish("/local/graphix/data_table_basic/host-02/cpu", f64:88.2);
-sys::net::publish("/local/graphix/data_table_basic/host-02/memory", f64:62.0);
-
-sys::net::publish("/local/graphix/data_table_basic/host-03/hostname", "charlie");
-sys::net::publish("/local/graphix/data_table_basic/host-03/status", "degraded");
-sys::net::publish("/local/graphix/data_table_basic/host-03/cpu", f64:4.1);
-sys::net::publish("/local/graphix/data_table_basic/host-03/memory", f64:19.8);
+publish_host(#name: "host-01", #status: `Up, #cpu: 12.4, #mem: 37.1);
+publish_host(#name: "host-02", #status: `Up, #cpu: 88.2, #mem: 62.0);
+publish_host(#name: "host-03", #status: `Degraded, #cpu: 4.1, #mem: 19.8);
 
 // list_table inspects the resolver to discover children of this path.
 let tbl = sys::net::list_table("/local/graphix/data_table_basic")$;

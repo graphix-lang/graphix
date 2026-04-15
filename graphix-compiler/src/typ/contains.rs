@@ -83,9 +83,11 @@ impl Type {
                 }
                 if flags.contains(ContainsFlags::InitTVars) {
                     *t0.read().typ.write() = Some(Self::Bottom);
-                    return Ok(true);
                 }
-                Ok(false)
+                // Symmetric with the (TVar, Bottom) case above: report
+                // success even without InitTVars so that probe-mode
+                // (no binding) reflects what commit-mode would do.
+                Ok(true)
             }
             (Self::Bottom, Self::Bottom) => Ok(true),
             (Self::Bottom, _) => Ok(false),
@@ -269,17 +271,70 @@ impl Type {
                 .map(|t1| t0.contains_int(flags, env, hist, t1))
                 .collect::<Result<AndAc>>()?
                 .0),
-            (Self::Set(s), t) => Ok(s
-                .iter()
-                .fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
-                    Ok(acc? || t0.contains_int(flags, env, hist, t)?)
-                })?
-                || t.iter_prims().fold(Ok::<_, anyhow::Error>(true), |acc, t1| {
-                    Ok(acc?
-                        && s.iter().fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
-                            Ok(acc? || t0.contains_int(flags, env, hist, &t1)?)
+            // Two strategies for `Set(s) ⊇ t` when `t` is not itself
+            // a Set:
+            //   whole - some element of `s` contains all of `t`
+            //   prims - for each primitive of `t`, some element of `s`
+            //           contains it
+            // For non-Primitive `t` and single-bit Primitives,
+            // `iter_prims` yields `[t]` and the two strategies are
+            // equivalent. They diverge when `t` is a multi-bit
+            // primitive (e.g. `[i64, null]`): `prims` lets a TVar in
+            // `s` bind to just the bits not already covered by
+            // concrete elements of `s`, while `whole` lets the TVar
+            // greedily swallow the whole multi-bit primitive.
+            //
+            // We prefer `prims` when it works because it produces the
+            // narrowest TVar bindings. We can't just try `prims` first
+            // with `||` short-circuiting to `whole` on failure — a
+            // failed `prims` attempt would leave partial TVar bindings
+            // that poison the `whole` retry. So we probe both with
+            // binding off, pick whichever (or both) succeeds, and then
+            // re-run the chosen strategy with binding back on.
+            (Self::Set(s), t) => {
+                let probe = BitFlags::empty();
+                let whole_ok =
+                    s.iter().fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
+                        Ok(acc? || t0.contains_int(probe, env, hist, t)?)
+                    })?;
+                let prims_ok =
+                    t.iter_prims().fold(Ok::<_, anyhow::Error>(true), |acc, t1| {
+                        Ok(acc?
+                            && s.iter().fold(
+                                Ok::<_, anyhow::Error>(false),
+                                |acc, t0| {
+                                    Ok(acc?
+                                        || t0.contains_int(probe, env, hist, &t1)?)
+                                },
+                            )?)
+                    })?;
+                match (whole_ok, prims_ok) {
+                    (false, false) => Ok(false),
+                    // prefer prims when valid — narrowest TVar bindings
+                    (_, true) => {
+                        Ok(t.iter_prims().fold(
+                            Ok::<_, anyhow::Error>(true),
+                            |acc, t1| {
+                                Ok(acc?
+                                    && s.iter().fold(
+                                        Ok::<_, anyhow::Error>(false),
+                                        |acc, t0| {
+                                            Ok(acc?
+                                                || t0.contains_int(
+                                                    flags, env, hist, &t1,
+                                                )?)
+                                        },
+                                    )?)
+                            },
+                        )?)
+                    }
+                    (true, false) => {
+                        Ok(s.iter().fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
+                            Ok(acc? || t0.contains_int(flags, env, hist, t)?)
                         })?)
-                })?),
+                    }
+                }
+            }
             (Self::Fn(f0), Self::Fn(f1)) => {
                 let same = Arc::ptr_eq(f0, f1);
                 let r = same || f0.contains_int(flags, env, hist, f1)?;

@@ -182,15 +182,6 @@ enum ColumnType {
     Hidden,
 }
 
-/// Default value for a column: either a single value for all rows,
-/// or a per-row map keyed by row name (basename, not full path).
-#[derive(Clone)]
-enum DefaultValue {
-    None,
-    Uniform(String),
-    PerRow(FxHashMap<ArcStr, String>),
-}
-
 /// Parsed column spec from the graphix Map<string, ColumnSpec>.
 struct ColumnSpec {
     typ: ColumnType,
@@ -424,37 +415,6 @@ fn value_to_display(v: &Value) -> String {
     }
 }
 
-fn parse_default_value(v: Value) -> DefaultValue {
-    match &v {
-        Value::Null | Value::Map(_) => DefaultValue::None,
-        _ => DefaultValue::Uniform(value_to_display(&v)),
-    }
-}
-
-async fn compile_per_row_defaults<X: GXExt>(
-    gx: &GXHandle<X>,
-    map_val: Value,
-) -> (DefaultValue, FxHashMap<ArcStr, Ref<X>>) {
-    let mut row_refs = FxHashMap::default();
-    let mut row_defaults = FxHashMap::default();
-    if let Ok(pairs) = map_val.cast_to::<Vec<(ArcStr, Value)>>() {
-        for (key, bid_val) in pairs {
-            if let Ok(bid) = bid_val.cast_to::<u64>() {
-                if bid != 0 {
-                    if let Ok(inner_ref) = gx.compile_ref(bid).await {
-                        let display = inner_ref.last.as_ref()
-                            .map(|v| value_to_display(v))
-                            .unwrap_or_default();
-                        row_defaults.insert(key.clone(), display);
-                        row_refs.insert(key, inner_ref);
-                    }
-                }
-            }
-        }
-    }
-    (DefaultValue::PerRow(row_defaults), row_refs)
-}
-
 fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
     let pairs = match v.clone().cast_to::<Vec<(String, Value)>>() {
         Ok(p) => p,
@@ -682,13 +642,10 @@ pub(crate) struct DataTableW<X: GXExt> {
     on_update: Option<Callable<X>>,
     /// Compiled callables for per-column on_edit/on_click
     col_callbacks: FxHashMap<String, Callable<X>>,
-    /// Compiled refs for per-column default_value
+    /// Compiled refs for per-column default_value. The ref's `.last`
+    /// holds the Value directly (uniform, `Value::Map`, or `Value::Null`);
+    /// cells look up per-row entries from the stored Map on demand.
     default_value_refs: FxHashMap<String, Ref<X>>,
-    /// Parsed default values (updated when refs change)
-    default_values: FxHashMap<String, DefaultValue>,
-    /// Per-column inner refs for Map<string, &Any> default values.
-    /// Outer key = column name, inner key = row name (ArcStr from graphix).
-    per_row_default_refs: FxHashMap<String, FxHashMap<ArcStr, Ref<X>>>,
     /// Compiled refs for per-column width
     width_refs: FxHashMap<String, Ref<X>>,
     /// Ref-controlled widths (from width refs)
@@ -708,6 +665,11 @@ pub(crate) struct DataTableW<X: GXExt> {
     mode: DisplayMode,
     col_names: Vec<String>,
     row_paths: Vec<Path>,
+    /// Row name (basename) for each row in `row_paths`, as `ArcStr` so
+    /// lookups that need the name as a key (e.g. Map keys for per-row
+    /// defaults) don't allocate on every access. Kept in sync with
+    /// `row_paths` — same length, same order.
+    row_names: Vec<ArcStr>,
     cells: Arc<SharedCells>,
     row_subs: Vec<Option<Vec<Dval>>>,
     sub_start: usize,
@@ -801,9 +763,6 @@ impl<X: GXExt> DataTableW<X> {
         // Compile per-column callbacks, default_value refs, width refs, on_resize
         let mut col_callbacks = FxHashMap::default();
         let mut default_value_refs = FxHashMap::default();
-        let mut default_values = FxHashMap::default();
-        let mut per_row_default_refs: FxHashMap<String, FxHashMap<ArcStr, Ref<X>>> =
-            FxHashMap::default();
         let mut width_refs = FxHashMap::default();
         let mut ref_widths = FxHashMap::default();
         let mut on_resize_callbacks = FxHashMap::default();
@@ -816,23 +775,6 @@ impl<X: GXExt> DataTableW<X> {
             }
             if spec.default_value_bid != 0 {
                 if let Ok(r) = gx.compile_ref(spec.default_value_bid).await {
-                    match r.last.as_ref() {
-                        Some(Value::Map(_)) => {
-                            let (dv, row_refs) = compile_per_row_defaults(
-                                &gx, r.last.clone().unwrap()
-                            ).await;
-                            default_values.insert(name.clone(), dv);
-                            per_row_default_refs.insert(name.clone(), row_refs);
-                        }
-                        Some(v) => {
-                            default_values.insert(
-                                name.clone(), parse_default_value(v.clone())
-                            );
-                        }
-                        None => {
-                            default_values.insert(name.clone(), DefaultValue::None);
-                        }
-                    }
                     default_value_refs.insert(name.clone(), r);
                 }
             }
@@ -875,8 +817,6 @@ impl<X: GXExt> DataTableW<X> {
             on_update_ref, on_update,
             col_callbacks,
             default_value_refs,
-            default_values,
-            per_row_default_refs,
             width_refs,
             ref_widths,
             user_widths: Mutex::new(FxHashMap::default()),
@@ -885,7 +825,7 @@ impl<X: GXExt> DataTableW<X> {
             resize_drag: None,
             last_resize_click: None,
             mode: DisplayMode::Table,
-            col_names: vec![], row_paths: vec![],
+            col_names: vec![], row_paths: vec![], row_names: vec![],
             cells, row_subs: vec![],
             sub_start: 0, sub_end: 0,
             first_row: 0, first_col: 0,
@@ -913,6 +853,7 @@ impl<X: GXExt> DataTableW<X> {
         self.sub_end = 0;
         self.col_names.clear();
         self.row_paths.clear();
+        self.row_names.clear();
         // Re-read selection from graphix ref (don't clear user selection)
         self.selection = self.selection_ref.last.as_ref()
             .map(parse_selection).unwrap_or_default();
@@ -952,6 +893,9 @@ impl<X: GXExt> DataTableW<X> {
             .collect();
         self.col_names = apply_filter_to_names(raw_cols, &self.column_filter, &self.sort_mode);
         self.row_paths = apply_filter_to_paths(raw_row_paths, &self.row_filter, &self.sort_mode);
+        self.row_names = self.row_paths.iter()
+            .map(|p| ArcStr::from(Path::basename(p).unwrap_or(&**p)))
+            .collect();
         // Remove hidden columns
         self.col_names.retain(|name| {
             match self.column_types.get(name) {
@@ -1016,8 +960,7 @@ impl<X: GXExt> DataTableW<X> {
         };
         // Initialize grid with default values
         let mut grid = Vec::with_capacity(n_rows);
-        for row_path in &self.row_paths {
-            let row_name = Path::basename(row_path).unwrap_or(row_path);
+        for row_name in &self.row_names {
             let mut row = Vec::with_capacity(n_cols);
             if self.mode == DisplayMode::Value {
                 // Value mode: 1 cell per row (subscribed to row path directly)
@@ -1218,8 +1161,8 @@ impl<X: GXExt> DataTableW<X> {
                 ColumnType::Sparkline { history_seconds } => *history_seconds,
                 _ => unreachable!(),
             };
-            for (_row_idx, row_path) in self.row_paths.iter().enumerate() {
-                let row_name = Path::basename(row_path).unwrap_or(row_path);
+            for (row_idx, row_path) in self.row_paths.iter().enumerate() {
+                let row_name = &self.row_names[row_idx];
                 let val_str = self.default_for(col_name, row_name);
                 if val_str.is_empty() { continue; }
                 if let Ok(f) = val_str.parse::<f64>() {
@@ -1241,7 +1184,8 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    fn sort_value_for(&self, row_path: &Path, sort_col: &str) -> String {
+    fn sort_value_for(&self, row_idx: usize, sort_col: &str) -> String {
+        let row_path = &self.row_paths[row_idx];
         // Check subscribed sort column values
         let vals = self.sort_col_values.lock();
         if let Some(v) = vals.get(&**row_path) {
@@ -1249,8 +1193,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         drop(vals);
         // Fall back to default value
-        let row_name = Path::basename(row_path).unwrap_or(row_path);
-        self.default_for(sort_col, row_name)
+        self.default_for(sort_col, &self.row_names[row_idx])
     }
 
     /// Re-sort row_paths by sort column values and rebuild the cell grid.
@@ -1262,8 +1205,8 @@ impl<X: GXExt> DataTableW<X> {
             _ => return,
         };
         // Collect sort keys for each row
-        let keys: Vec<String> = self.row_paths.iter()
-            .map(|p| self.sort_value_for(p, &sort_col))
+        let keys: Vec<String> = (0..self.row_paths.len())
+            .map(|i| self.sort_value_for(i, &sort_col))
             .collect();
         // Build index pairs and sort
         let mut indices: Vec<usize> = (0..self.row_paths.len()).collect();
@@ -1277,10 +1220,12 @@ impl<X: GXExt> DataTableW<X> {
             };
             if ascending { cmp } else { cmp.reverse() }
         });
-        // Reorder row_paths by sorted indices
+        // Reorder row_paths and row_names in lockstep
         let old_paths = self.row_paths.clone();
+        let old_names = self.row_names.clone();
         for (new_i, &old_i) in indices.iter().enumerate() {
             self.row_paths[new_i] = old_paths[old_i].clone();
+            self.row_names[new_i] = old_names[old_i].clone();
         }
         // Rebuild the grid for the new row order
         let n_cols = match self.mode {
@@ -1288,8 +1233,7 @@ impl<X: GXExt> DataTableW<X> {
             DisplayMode::Value => 1,
         };
         let mut grid = Vec::with_capacity(self.row_paths.len());
-        for row_path in &self.row_paths {
-            let row_name = Path::basename(row_path).unwrap_or(row_path);
+        for row_name in &self.row_names {
             let mut row = Vec::with_capacity(n_cols);
             if self.mode == DisplayMode::Value {
                 row.push(String::new());
@@ -1326,23 +1270,28 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// Get the default value string for a cell, checking the column's
-    /// default_value ref (Uniform or PerRow).
-    fn default_for(&self, col_name: &str, row_name: &str) -> String {
-        match self.default_values.get(col_name) {
-            Some(DefaultValue::Uniform(s)) => s.clone(),
-            Some(DefaultValue::PerRow(map)) => {
-                map.get(row_name).cloned().unwrap_or_default()
+    /// Get the default value string for a cell, reading from the column's
+    /// stored default_value ref. A `Value::Map` is treated as a per-row
+    /// table (key = row basename); anything else is a uniform value.
+    fn default_for(&self, col_name: &str, row_name: &ArcStr) -> String {
+        let Some(r) = self.default_value_refs.get(col_name) else {
+            return String::new();
+        };
+        match r.last.as_ref() {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::Map(m)) => {
+                let key = Value::String(row_name.clone());
+                m.get(&key).map(value_to_display).unwrap_or_default()
             }
-            _ => String::new(),
+            Some(v) => value_to_display(v),
         }
     }
 
-    /// Check if a column has any non-None default value.
+    /// Check if a column has any non-null default value.
     fn has_default(&self, col_name: &str) -> bool {
-        !matches!(
-            self.default_values.get(col_name),
-            None | Some(DefaultValue::None)
+        matches!(
+            self.default_value_refs.get(col_name).and_then(|r| r.last.as_ref()),
+            Some(v) if !matches!(v, Value::Null)
         )
     }
 
@@ -1716,8 +1665,6 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     self.on_resize_callbacks.clear();
                     self.on_resize_refs.clear();
                     self.default_value_refs.clear();
-                    self.default_values.clear();
-                    self.per_row_default_refs.clear();
                 }
                 v => {
                     self.column_types = parse_column_specs(v);
@@ -1725,8 +1672,6 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     self.on_resize_callbacks.clear();
                     self.on_resize_refs.clear();
                     self.default_value_refs.clear();
-                    self.default_values.clear();
-                    self.per_row_default_refs.clear();
                     for (name, spec) in &self.column_types {
                         if let Some(cb_val) = &spec.callback_value {
                             if let Ok(callable) = rt.block_on(self.gx.compile_callable(cb_val.clone())) {
@@ -1753,25 +1698,6 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                         }
                         if spec.default_value_bid != 0 {
                             if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.default_value_bid)) {
-                                match r.last.as_ref() {
-                                    Some(Value::Map(_)) => {
-                                        let (dv, row_refs) = rt.block_on(
-                                            compile_per_row_defaults(
-                                                &self.gx, r.last.clone().unwrap()
-                                            )
-                                        );
-                                        self.default_values.insert(name.clone(), dv);
-                                        self.per_row_default_refs.insert(
-                                            name.clone(), row_refs
-                                        );
-                                    }
-                                    Some(v) => {
-                                        self.default_values.insert(
-                                            name.clone(), parse_default_value(v.clone())
-                                        );
-                                    }
-                                    None => {}
-                                }
                                 self.default_value_refs.insert(name.clone(), r);
                             }
                         }
@@ -1821,62 +1747,18 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 name.clone()
             });
         if let Some(col_name) = dv_col {
-            match v {
-                Value::Map(_) => {
-                    let (dv, row_refs) = rt.block_on(
-                        compile_per_row_defaults(&self.gx, v.clone())
-                    );
-                    self.default_values.insert(col_name.clone(), dv);
-                    self.per_row_default_refs.insert(col_name.clone(), row_refs);
-                }
-                _ => {
-                    self.default_values.insert(
-                        col_name.clone(), parse_default_value(v.clone())
-                    );
-                    self.per_row_default_refs.remove(&col_name);
-                }
-            }
-            // Update grid cells with new default values
+            // Update grid cells with new default values. default_for reads
+            // from the ref's .last we just wrote, so Map/uniform/null are
+            // all handled uniformly — whenever the graphix-side map literal
+            // re-evaluates (because any bound name inside it changed), this
+            // handler propagates the new values to the grid.
             let mut grid = self.cells.grid.lock();
             if let Some(col_idx) = self.col_names.iter().position(|n| *n == col_name) {
                 for (row_idx, row_path) in self.row_paths.iter().enumerate() {
                     if !Path::is_absolute(row_path) || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true) {
-                        let row_name = Path::basename(row_path).unwrap_or(row_path);
+                        let row_name = &self.row_names[row_idx];
                         if row_idx < grid.len() && col_idx < grid[row_idx].len() {
                             grid[row_idx][col_idx] = self.default_for(&col_name, row_name);
-                        }
-                    }
-                }
-            }
-            drop(grid);
-            self.push_defaults_to_sparklines();
-            changed = true;
-        }
-        // Check per-row default value ref updates (inner refs from Map<string, &Any>)
-        let per_row_hit = self.per_row_default_refs.iter_mut()
-            .find_map(|(col_name, row_refs)| {
-                row_refs.iter_mut()
-                    .find(|(_, r)| id == r.id)
-                    .map(|(row_name, r)| {
-                        r.last = Some(v.clone());
-                        (col_name.clone(), row_name.clone())
-                    })
-            });
-        if let Some((col_name, row_name)) = per_row_hit {
-            let display = value_to_display(v);
-            if let Some(DefaultValue::PerRow(map)) = self.default_values.get_mut(&col_name) {
-                map.insert(row_name.clone(), display.clone());
-            }
-            let mut grid = self.cells.grid.lock();
-            if let Some(col_idx) = self.col_names.iter().position(|n| *n == col_name) {
-                for (row_idx, row_path) in self.row_paths.iter().enumerate() {
-                    let rn = Path::basename(row_path).unwrap_or(row_path);
-                    if rn == &*row_name
-                        && (!Path::is_absolute(row_path)
-                            || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true))
-                    {
-                        if row_idx < grid.len() && col_idx < grid[row_idx].len() {
-                            grid[row_idx][col_idx] = display.clone();
                         }
                     }
                 }

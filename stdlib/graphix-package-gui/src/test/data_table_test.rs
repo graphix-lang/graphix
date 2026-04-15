@@ -235,7 +235,7 @@ let result = data_table(
         "c0" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => &a, "r1" => &b },
+            default_value: &{"r0" => a, "r1" => b },
             on_resize: &null, width: &null
         }
     },
@@ -262,7 +262,7 @@ let result = data_table(
         "virtual" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => &a, "r1" => &b },
+            default_value: &{"r0" => a, "r1" => b },
             on_resize: &null, width: &null
         }
     },
@@ -427,7 +427,7 @@ let result = data_table(
         "priority" => {
             typ: `Text({ on_edit: null }),
             display_name: "Priority",
-            default_value: &{"r0" => &p0, "r1" => &p1, "r2" => &p2 },
+            default_value: &{"r0" => p0, "r1" => p1, "r2" => p2 },
             on_resize: &null, width: &null
         }
     },
@@ -455,7 +455,7 @@ let result = data_table(
         "score" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => &s0, "r1" => &s1, "r2" => &s2 },
+            default_value: &{"r0" => s0, "r1" => s1, "r2" => s2 },
             on_resize: &null, width: &null
         }
     },
@@ -483,7 +483,7 @@ let result = data_table(
         "label" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => &l0, "r1" => &l1, "r2" => &l2 },
+            default_value: &{"r0" => l0, "r1" => l1, "r2" => l2 },
             on_resize: &null, width: &null
         }
     },
@@ -884,7 +884,7 @@ let result = data_table(
         "c0" => {
             typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => &a},
+            default_value: &{"r0" => a},
             on_resize: &null, width: &null
         }
     },
