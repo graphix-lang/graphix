@@ -46,6 +46,15 @@ const MAX_SPARKLINE_POINTS: usize = 512;
 const CELL_H_PADDING: f32 = 10.0;
 /// Width of the resize handle inside header cells.
 const RESIZE_HANDLE_WIDTH: f32 = 5.0;
+/// Internal key for the synthesized row-name column (leftmost when
+/// `show_row_name` is true). Contains a leading null byte so it can
+/// never collide with a real netidx column name, even one literally
+/// called "name". All width caches, ref/user width maps, scroll
+/// targets, and cell-path routing use this key for the row-name
+/// column — `"name"` is only ever the displayed header label.
+const ROW_NAME_KEY: &str = "\0__rowname__";
+/// Header label displayed for the synthesized row-name column.
+const ROW_NAME_LABEL: &str = "name";
 
 type Paragraph = <Renderer as iced_core::text::Renderer>::Paragraph;
 
@@ -340,7 +349,12 @@ fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
         Err(_) => return FxHashMap::default(),
     };
     let mut map = FxHashMap::default();
-    for (name, spec_val) in pairs {
+    for (mut name, spec_val) in pairs {
+        // Strip null bytes from column keys so a user-supplied column
+        // spec can't collide with the `ROW_NAME_KEY` sentinel.
+        if name.contains('\0') {
+            name.retain(|ch| ch != '\0');
+        }
         // ColumnSpec struct: { default_value, display_name, on_resize, typ, width } — alphabetical
         let (dv_bid, display_name, on_resize_bid, typ_val, width_bid) =
             match spec_val.cast_to::<[(ArcStr, Value); 5]>() {
@@ -634,11 +648,21 @@ impl<X: GXExt> DataTableW<X> {
             }
         };
         // Table is { rows: Array<string>, columns: Array<string> }
-        // Fields alphabetical: columns, rows
+        // Fields alphabetical: columns, rows.
+        //
+        // Null bytes in incoming column names are stripped to prevent
+        // collisions with `ROW_NAME_KEY` (which has a leading `\0`)
+        // and similar internal sentinel keys used by width caches.
         let (raw_cols, raw_rows) = match table_val.cast_to::<[(ArcStr, Value); 2]>() {
             Ok([(_, cols_val), (_, rows_val)]) => {
-                let cols: Vec<String> = cols_val.cast_to::<Vec<String>>()
+                let mut cols: Vec<String> = cols_val
+                    .cast_to::<Vec<String>>()
                     .unwrap_or_default();
+                for c in cols.iter_mut() {
+                    if c.contains('\0') {
+                        c.retain(|ch| ch != '\0');
+                    }
+                }
                 let rows: Vec<String> = rows_val.cast_to::<Vec<String>>()
                     .unwrap_or_default();
                 (cols, rows)
@@ -1038,7 +1062,7 @@ impl<X: GXExt> DataTableW<X> {
         if let Some(callable) = &self.on_select {
             if let Some(row_path) = self.row_paths.get(row_idx) {
                 // Send the full cell path: row_path/col_name
-                let cell_path = if col_name == "name" {
+                let cell_path = if col_name == ROW_NAME_KEY {
                     ArcStr::from(&**row_path)
                 } else {
                     ArcStr::from(format!("{}/{}", &**row_path, col_name))
@@ -1091,7 +1115,7 @@ impl<X: GXExt> DataTableW<X> {
         let show_name = self.show_row_name.t.unwrap_or(true);
         let cache = self.cached_col_widths.lock();
         let mut used = if show_name {
-            cache.get("name").copied().unwrap_or(MIN_COL_WIDTH)
+            cache.get(ROW_NAME_KEY).copied().unwrap_or(MIN_COL_WIDTH)
         } else {
             0.0
         };
@@ -1120,8 +1144,10 @@ impl<X: GXExt> DataTableW<X> {
             self.first_row = row.saturating_sub(self.rows_in_view.saturating_sub(1));
             changed = true;
         }
-        // Column scroll using actual cached widths
-        if col_name != "name" {
+        // Column scroll using actual cached widths (skip when
+        // scrolling to the synthesized row-name column, which is
+        // always at the viewport's left edge).
+        if col_name != ROW_NAME_KEY {
             if let Some(ci) = self.col_names.iter().position(|n| n == col_name) {
                 if ci < self.first_col {
                     self.first_col = ci;
@@ -1155,7 +1181,7 @@ impl<X: GXExt> DataTableW<X> {
         for sel_path in self.selection.clone() {
             for (ri, rp) in self.row_paths.iter().enumerate() {
                 if show_name && sel_path == &**rp {
-                    self.scroll_to_cell(ri, "name");
+                    self.scroll_to_cell(ri, ROW_NAME_KEY);
                     return;
                 }
                 let prefix = format!("{}/", &**rp);
@@ -1174,12 +1200,12 @@ impl<X: GXExt> DataTableW<X> {
         let show_name = self.show_row_name.t.unwrap_or(true);
         let mut widths = self.user_widths.lock();
         if show_name {
-            let mut w = col_header_width("name").max(MIN_COL_WIDTH);
+            let mut w = col_header_width(ROW_NAME_LABEL).max(MIN_COL_WIDTH);
             for p in &self.row_paths {
                 let name = Path::basename(p).unwrap_or("");
                 w = w.max(col_text_width(name).max(MIN_COL_WIDTH));
             }
-            widths.insert("name".into(), w);
+            widths.insert(ROW_NAME_KEY.into(), w);
         }
         match self.mode {
             DisplayMode::Table => {
@@ -1570,7 +1596,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         // Keyboard nav needs to move beyond the visible range and scroll.
         let mut display_cols: Vec<String> = Vec::new();
         if show_name {
-            display_cols.push("name".to_string());
+            display_cols.push(ROW_NAME_KEY.to_string());
         }
         match self.mode {
             DisplayMode::Table => {
@@ -1591,7 +1617,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 for (ri, rp) in self.row_paths.iter().enumerate() {
                     // Check "row_path/col_name" format
                     for (ci, col_name) in display_cols.iter().enumerate() {
-                        let cell_path = if col_name == "name" {
+                        let cell_path = if col_name == ROW_NAME_KEY {
                             rp.to_string()
                         } else {
                             format!("{}/{}", &**rp, col_name)
@@ -1720,8 +1746,11 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     }
 
     fn handle_cell_click(&mut self, row: usize, col: String) -> bool {
-        // Name column click fires on_activate
-        if col == "name" {
+        // Name column click fires on_activate. Accept the display
+        // label `"name"` as a synonym for the row-name col so tests
+        // and external callers don't need to know the internal
+        // sentinel key.
+        if col == ROW_NAME_KEY || col == ROW_NAME_LABEL {
             if let Some(callable) = &self.on_activate {
                 if let Some(path) = self.row_paths.get(row) {
                     let pv = Value::String(ArcStr::from(&**path));
@@ -1786,7 +1815,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         }
         let show_name = self.show_row_name.t.unwrap_or(true);
         let name = if show_name && col_meta_idx == 0 {
-            "name".to_string()
+            ROW_NAME_KEY.to_string()
         } else {
             let data_idx = if show_name { col_meta_idx - 1 } else { col_meta_idx };
             let (vis_start, _vis_end) = self.display_col_range();
@@ -1868,11 +1897,11 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         // and lock the result into user_widths.
         let mut col_meta: Vec<(String, f32)> = Vec::new();
         if show_row_name {
-            let w = match self.effective_col_width("name") {
+            let w = match self.effective_col_width(ROW_NAME_KEY) {
                 Some(w) => w,
                 None => {
                     let max_w = DEFAULT_MAX_COL_WIDTH;
-                    let mut w = col_min_width("name", max_w);
+                    let mut w = col_min_width(ROW_NAME_LABEL, max_w);
                     for row_idx in vis_row_start..vis_row_end {
                         if let Some(p) = self.row_paths.get(row_idx) {
                             let name = Path::basename(p).unwrap_or("");
@@ -1882,7 +1911,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     w
                 }
             };
-            col_meta.push(("name".into(), w));
+            col_meta.push((ROW_NAME_KEY.into(), w));
         }
         match self.mode {
             DisplayMode::Table => {
@@ -1944,7 +1973,9 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     .and_then(|s| s.display_name.clone())
                     .unwrap_or_else(|| name.clone())
             } else {
-                name.clone()
+                // Synthesized row-name column: render the user-facing
+                // label, not the internal sentinel key.
+                ROW_NAME_LABEL.to_string()
             };
             let is_fixed = self.ref_widths.contains_key(name)
                 && !self.on_resize_callbacks.contains_key(name);
@@ -2472,7 +2503,10 @@ impl<X: GXExt> DataTableW<X> {
     /// the column is not currently visible.
     pub fn dt_meta_col_idx(&self, col: &str) -> Option<usize> {
         let show_name = self.show_row_name.t.unwrap_or(true);
-        if col == "name" {
+        // Test-facing convenience: treat the bare string "name" as the
+        // synthesized row-name column so tests don't need to know the
+        // internal `ROW_NAME_KEY` sentinel.
+        if col == "name" || col == ROW_NAME_KEY {
             return if show_name { Some(0) } else { None };
         }
         let (vis_start, vis_end) = self.display_col_range();
@@ -2500,11 +2534,12 @@ impl<X: GXExt> DataTableW<X> {
         let show_name = self.show_row_name.t.unwrap_or(true);
         let mut x = 0.0_f32;
         let w;
-        if col == "name" && show_name {
-            w = cache.get("name").copied()?;
+        let is_row_name_col = col == "name" || col == ROW_NAME_KEY;
+        if is_row_name_col && show_name {
+            w = cache.get(ROW_NAME_KEY).copied()?;
         } else {
             if show_name {
-                x += cache.get("name").copied()?;
+                x += cache.get(ROW_NAME_KEY).copied()?;
             }
             let (vis_start, vis_end) = self.display_col_range();
             let pos = self.col_names.iter().position(|n| n == col)?;

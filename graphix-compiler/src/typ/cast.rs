@@ -278,10 +278,19 @@ impl Type {
         v: &Value,
     ) -> bool {
         match self {
-            Type::Ref { .. } => match self.lookup_ref(env) {
+            Type::Ref { scope, name, .. } => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
-                    let t_addr = (&t as *const Type).addr();
+                    // Cycle detection keyed on the Ref's (scope, name)
+                    // pointers plus the value's pointer. `&t` can't
+                    // serve as the key: it's a reference to a local
+                    // binding that the Ok arm reuses across sibling
+                    // calls (e.g. every element of a Set{Ref,Ref,...}
+                    // lands in the same stack slot), so a single
+                    // `scope::name` lookup poisons later Refs in the
+                    // same traversal and they all short-circuit false.
+                    let t_addr = (scope.as_ref() as *const _ as *const u8).addr()
+                        ^ (name.as_ref() as *const _ as *const u8).addr();
                     let v_addr = (v as *const Value).addr();
                     !hist.contains(&(t_addr, v_addr)) && {
                         hist.insert((t_addr, v_addr));

@@ -111,7 +111,7 @@ let types = {
             max: f64:64.0,
             increment: f64:1.0,
             on_edit: |#path: string, #value: f64|
-                sys::net::write(path, value)$
+                sys::net::write(path, dbg(value))$
         }),
         display_name: "CPU cores",
         default_value: &null,
@@ -119,6 +119,8 @@ let types = {
         width: &null
     }
 };
+
+let selection: Array<string> = [];
 
 let layout = column(
     #spacing: &12.0,
@@ -128,7 +130,13 @@ let layout = column(
     &[
         text(#size: &20.0, &"Editable hosts"),
         text(&"Edits are written back through netidx and reflected in the same cell."),
-        data_table(#column_types: &types, #table: &tbl)
+        data_table(
+            #column_types: &types,
+            #selection: &selection,
+            #on_select: |#path| selection <- [path],
+            #on_update: |#path, #value| dbg((path, value)),
+            #table: &tbl
+        )
     ]
 );
 
