@@ -2,10 +2,13 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::Result;
-use graphix_compiler::typ::FnType;
+use anyhow::{bail, Result};
 use graphix_compiler::{
-    expr::ExprId, Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId,
+    node::genn,
+    typ::{FnType, Type},
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TypecheckPhase,
+    UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
@@ -131,6 +134,25 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
 }
 
 type Get = CachedArgs<GetEv>;
+
+#[derive(Debug, Default)]
+struct GetOrEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
+    const NAME: &str = "map_get_or";
+    const NEEDS_CALLSITE: bool = false;
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match (&from.0[0], &from.0[1], &from.0[2]) {
+            (Some(Value::Map(m)), Some(key), Some(default)) => {
+                Some(m.get(key).cloned().unwrap_or_else(|| default.clone()))
+            }
+            _ => None,
+        }
+    }
+}
+
+type GetOr = CachedArgs<GetOrEv>;
 
 #[derive(Debug, Default)]
 struct InsertEv;
@@ -293,6 +315,135 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 }
 
+#[derive(Debug)]
+struct Change<R: Rt, E: UserEvent> {
+    inner: Node<R, E>,
+    fid: BindId,
+    x: BindId,
+    last_m: Option<CMap<Value, Value, 32>>,
+    last_k: Option<Value>,
+    last_d: Option<Value>,
+    last_f: Option<Value>,
+}
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Change<R, E> {
+    const NAME: &str = "map_change";
+    const NEEDS_CALLSITE: bool = false;
+
+    fn init<'a, 'b, 'c, 'd>(
+        ctx: &'a mut ExecCtx<R, E>,
+        typ: &'a FnType,
+        resolved: Option<&'d FnType>,
+        scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        if from.len() != 4 {
+            bail!("expected four arguments");
+        }
+        let typ = resolved.unwrap_or(typ);
+        let ptyp = match &typ.args[3].typ {
+            Type::Fn(ft) => ft.clone(),
+            t => bail!("expected a function not {t}"),
+        };
+        if ptyp.args.is_empty() {
+            bail!("expected unary callback");
+        }
+        let x_typ = ptyp.args[0].typ.clone();
+        let (x, xn) = genn::bind(ctx, &scope.lexical, "x", x_typ, top_id);
+        let fid = BindId::new();
+        let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
+        let inner = genn::apply(fnode, scope.clone(), vec![xn], &ptyp, top_id);
+        Ok(Box::new(Self {
+            inner,
+            fid,
+            x,
+            last_m: None,
+            last_k: None,
+            last_d: None,
+            last_f: None,
+        }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        if let Some(v) = from[3].update(ctx, event) {
+            ctx.cached.insert(self.fid, v.clone());
+            event.variables.insert(self.fid, v);
+        }
+        let mut changed = false;
+        if let Some(Value::Map(m)) = from[0].update(ctx, event) {
+            self.last_m = Some(m);
+            changed = true;
+        }
+        if let Some(k) = from[1].update(ctx, event) {
+            self.last_k = Some(k);
+            changed = true;
+        }
+        if let Some(d) = from[2].update(ctx, event) {
+            self.last_d = Some(d);
+            changed = true;
+        }
+        if changed {
+            if let (Some(m), Some(k), Some(d)) =
+                (&self.last_m, &self.last_k, &self.last_d)
+            {
+                let current = m.get(k).cloned().unwrap_or_else(|| d.clone());
+                ctx.cached.insert(self.x, current.clone());
+                event.variables.insert(self.x, current);
+            }
+        }
+        let f_fired = if let Some(v) = self.inner.update(ctx, event) {
+            self.last_f = Some(v);
+            true
+        } else {
+            false
+        };
+        if changed || f_fired {
+            if let (Some(m), Some(k), Some(fv)) =
+                (&self.last_m, &self.last_k, &self.last_f)
+            {
+                return Some(Value::Map(m.insert(k.clone(), fv.clone()).0));
+            }
+        }
+        None
+    }
+
+    fn typecheck(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _phase: TypecheckPhase<'_>,
+    ) -> Result<()> {
+        self.inner.typecheck(ctx)
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.inner.refs(refs);
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        ctx.cached.remove(&self.fid);
+        ctx.cached.remove(&self.x);
+        ctx.env.unbind_variable(self.x);
+        self.inner.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.last_m = None;
+        self.last_k = None;
+        self.last_d = None;
+        self.last_f = None;
+        self.inner.sleep(ctx);
+    }
+}
+
 graphix_derive::defpackage! {
     builtins => [
         Map as Map<GXRt<X>, X::UserEvent>,
@@ -301,9 +452,11 @@ graphix_derive::defpackage! {
         Fold as Fold<GXRt<X>, X::UserEvent>,
         Len,
         Get,
+        GetOr,
         Insert,
         Remove,
         Iter,
         IterQ,
+        Change as Change<GXRt<X>, X::UserEvent>,
     ],
 }

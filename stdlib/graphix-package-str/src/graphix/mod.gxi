@@ -37,6 +37,12 @@ val dirname: fn(string) -> Option<string>;
 /// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -> bar
 val basename: fn(string) -> Option<string>;
 
+/// given a path ending in .../row/col, return the tuple (row, col).
+/// equivalent to (basename(dirname(s)), basename(s)), but in a single
+/// builtin call. returns null if s has fewer than two path components.
+/// e.g. /foo/bar/baz -> ("bar", "baz"), /foo -> null
+val row_col: fn(string) -> Option<(string, string)>;
+
 /// return a single string with the arguments concatenated and separated by #sep
 val join: fn(#sep:string, @args: [string, Array<string>]) -> string;
 

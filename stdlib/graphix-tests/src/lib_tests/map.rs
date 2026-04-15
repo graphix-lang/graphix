@@ -39,6 +39,82 @@ run!(map_get_absent, MAP_GET_ABSENT, |v: Result<&Value>| match v {
     _ => false,
 });
 
+const MAP_GET_OR_PRESENT: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2, "c" => 3};
+  map::get_or(m, "b", 99)
+}
+"#;
+
+run!(map_get_or_present, MAP_GET_OR_PRESENT, |v: Result<&Value>| match v {
+    Ok(Value::I64(2)) => true,
+    _ => false,
+});
+
+const MAP_GET_OR_ABSENT: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2, "c" => 3};
+  map::get_or(m, "d", 99)
+}
+"#;
+
+run!(map_get_or_absent, MAP_GET_OR_ABSENT, |v: Result<&Value>| match v {
+    Ok(Value::I64(99)) => true,
+    _ => false,
+});
+
+const MAP_CHANGE_PRESENT: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2, "c" => 3};
+  map::get(map::change(m, "b", 0, |v| v + 10), "b")
+}
+"#;
+
+run!(map_change_present, MAP_CHANGE_PRESENT, |v: Result<&Value>| match v {
+    Ok(Value::I64(12)) => true,
+    _ => false,
+});
+
+const MAP_CHANGE_ABSENT: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2, "c" => 3};
+  map::get(map::change(m, "d", 100, |v| v + 10), "d")
+}
+"#;
+
+run!(map_change_absent, MAP_CHANGE_ABSENT, |v: Result<&Value>| match v {
+    Ok(Value::I64(110)) => true,
+    _ => false,
+});
+
+const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2, "c" => 3};
+  let m2 = map::change(m, "b", 0, |v| v * 100);
+  map::get(m2, "a")
+}
+"#;
+
+run!(map_change_preserves_others, MAP_CHANGE_PRESERVES_OTHERS, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+});
+
+const MAP_CHANGE_CHAINED: &str = r#"
+{
+  let m: Map<string, i64> = {};
+  let m = map::change(m, "count", 0, |n| n + 1);
+  let m = map::change(m, "count", 0, |n| n + 1);
+  let m = map::change(m, "count", 0, |n| n + 1);
+  map::get(m, "count")
+}
+"#;
+
+run!(map_change_chained, MAP_CHANGE_CHAINED, |v: Result<&Value>| match v {
+    Ok(Value::I64(3)) => true,
+    _ => false,
+});
+
 const MAP_MAP: &str = r#"
 {
   let m = {"a" => 1, "b" => 2, "c" => 3};

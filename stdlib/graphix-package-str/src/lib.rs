@@ -240,6 +240,40 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BasenameEv {
 type Basename = CachedArgs<BasenameEv>;
 
 #[derive(Debug, Default)]
+struct RowColEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for RowColEv {
+    const NAME: &str = "str_row_col";
+    const NEEDS_CALLSITE: bool = false;
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match &from.0[0] {
+            Some(Value::String(path)) => {
+                let col = match Path::basename(path) {
+                    Some(s) => s,
+                    None => return Some(Value::Null),
+                };
+                let parent = match Path::dirname(path) {
+                    Some(s) => s,
+                    None => return Some(Value::Null),
+                };
+                let row = match Path::basename(parent) {
+                    Some(s) => s,
+                    None => return Some(Value::Null),
+                };
+                Some(Value::Array(ValArray::from([
+                    Value::String(row.into()),
+                    Value::String(col.into()),
+                ])))
+            }
+            _ => None,
+        }
+    }
+}
+
+type RowCol = CachedArgs<RowColEv>;
+
+#[derive(Debug, Default)]
 struct StringJoinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringJoinEv {
@@ -840,6 +874,7 @@ graphix_derive::defpackage! {
         Replace,
         Dirname,
         Basename,
+        RowCol,
         StringJoin,
         StringConcat,
         StringEscape,

@@ -31,18 +31,14 @@ let data: Map<string, Map<string, i64>> = {};
 // on_update is called on updates to netidx subscriptions by the table
 let on_update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
-    let d = v ~ data;
-    let col = opt::or_never(basename(path));
-    let row = opt::or_never(basename(opt::or_never(dirname(path))));
-    let rows = opt::or_default(map::get(d, col), {});
-    let sums = opt::or_default(map::get(d, "sum"), {});
-    let d = map::insert(d, col, map::insert(rows, row, v));
+    let d = v ~ data; // run only when v updates
+    let (row, col) = opt::or_never(str::row_col(path));
+    let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
         "sum" => sum,
-        col => sum + opt::or_default(map::get(rows, row), 0)
+        col => sum + map::get_or(rows, row, 0)
     });
-    let sums = map::insert(sums, row, sum);
-    data <- map::insert(d, "sum", sums)
+    data <- map::change(d, "sum", {}, |sums| map::insert(sums, row, sum))
 };
 
 dbg(data);
@@ -51,7 +47,7 @@ let types = {
     "sum" => {
         typ: `Text({ on_edit: null }),
         display_name: "A + B",
-        default_value: &opt::or_default(map::get(data, "sum"), {}),
+        default_value: &map::get_or(data, "sum", {}),
         on_resize: &null,
         width: &null
     }

@@ -123,6 +123,58 @@ run!(str_basename, STR_BASENAME, |v: Result<&Value>| {
     }
 });
 
+const STR_ROW_COL: &str = r#"
+  str::row_col("/foo/bar/baz")
+"#;
+
+run!(str_row_col, STR_ROW_COL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::String(s0), Value::String(s1)] => s0 == "bar" && s1 == "baz",
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const STR_ROW_COL_TWO: &str = r#"
+  str::row_col("/foo/bar")
+"#;
+
+run!(str_row_col_two, STR_ROW_COL_TWO, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::String(s0), Value::String(s1)] => s0 == "foo" && s1 == "bar",
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const STR_ROW_COL_SINGLE: &str = r#"
+  str::row_col("/foo")
+"#;
+
+run!(str_row_col_single, STR_ROW_COL_SINGLE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+});
+
+const STR_ROW_COL_ROOT: &str = r#"
+  str::row_col("/")
+"#;
+
+run!(str_row_col_root, STR_ROW_COL_ROOT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+});
+
+const STR_ROW_COL_EMPTY: &str = r#"
+  str::row_col("")
+"#;
+
+run!(str_row_col_empty, STR_ROW_COL_EMPTY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+});
+
 const STR_JOIN: &str = r#"
   str::join(#sep:"/", "/foo", "bar", ["baz", "zam"])
 "#;

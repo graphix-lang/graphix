@@ -20,8 +20,17 @@ val len: fn(Map<'k, 'v>) -> i64;
 /// get the value associated with the key k in the map m, or null if not present
 val get: fn(Map<'k, 'v>, 'k) -> Option<'v>;
 
+/// get the value associated with the key k in the map m, or return the
+/// default value if k is not present in m
+val get_or: fn(Map<'k, 'v>, 'k, 'v) -> 'v;
+
 /// insert a new value into the map
 val insert: fn(Map<'k, 'v>, 'k, 'v) -> Map<'k, 'v>;
+
+/// update the value at k by applying f to the current value at k, or
+/// to the provided default if k is not present. returns the new map
+/// with k set to f's result. e.g. change(m, "count", 0, |n| n + 1)
+val change: fn(Map<'k, 'v>, 'k, 'v, fn('v) -> 'v) -> Map<'k, 'v>;
 
 /// remove the value associated with the specified key from the map
 val remove: fn(Map<'k, 'v>, 'k) -> Map<'k, 'v>;
