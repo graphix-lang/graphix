@@ -12,27 +12,46 @@ mod icon;
 // every cell update on subscribed cells and pushes the new (a+b)
 // total into the corresponding sum ref.
 
-sys::net::publish("/local/graphix/data_table_calculated/r0/A", i64:10);
-sys::net::publish("/local/graphix/data_table_calculated/r0/B", i64:5);
-sys::net::publish("/local/graphix/data_table_calculated/r1/A", i64:20);
-sys::net::publish("/local/graphix/data_table_calculated/r1/B", i64:3);
-sys::net::publish("/local/graphix/data_table_calculated/r2/A", i64:4);
-sys::net::publish("/local/graphix/data_table_calculated/r2/B", i64:11);
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0, #end:10, #clock)
+};
+
+publish("/local/graphix/data_table_calculated/r0/A", rv());
+publish("/local/graphix/data_table_calculated/r1/A", rv());
+publish("/local/graphix/data_table_calculated/r2/A", rv());
+publish("/local/graphix/data_table_calculated/r0/B", rv());
+publish("/local/graphix/data_table_calculated/r1/B", rv());
+publish("/local/graphix/data_table_calculated/r2/B", rv());
+
 let tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map<string, Map<string, i64>> = {};
 
+// on_update is called for netidx subscriptions
 let update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
+    let d = v ~ data;
     let col = opt::or_never(basename(path));
-    let row = opt::or_never(basename(opt::or_never(dirname(path))))
+    let row = opt::or_never(basename(opt::or_never(dirname(path))));
+    let rows = opt::or_default(map::get(d, col), {});
+    let sums = opt::or_default(map::get(d, "sum"), {});
+    let d = map::insert(d, col, map::insert(rows, row, v));
+    let sum = map::fold(d, 0, |sum, (col, rows)| select col {
+        "sum" => sum,
+        col => sum + opt::or_default(map::get(rows, row), 0)
+    });
+    let sums = map::insert(sums, row, sum);
+    data <- map::insert(d, "sum", sums)
 };
+
+dbg(data);
 
 let types = {
     "sum" => {
         typ: `Text({ on_edit: null }),
         display_name: "A + B",
-        default_value: &{ "r0" => r0_sum, "r1" => r1_sum, "r2" => r2_sum },
+        default_value: &opt::or_default(map::get(data, "sum"), {}),
         on_resize: &null,
         width: &null
     }
