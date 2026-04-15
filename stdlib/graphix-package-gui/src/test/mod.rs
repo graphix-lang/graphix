@@ -184,7 +184,9 @@ impl GuiTestHarness {
                 }
                 // These are host-handled in production; tests that care
                 // invoke the widget handler methods directly.
-                Message::ColumnResizeStart(_) | Message::ColumnResizeEnd => {}
+                Message::ColumnResizeStart(_)
+                | Message::ColumnResizeMove(_)
+                | Message::ColumnResizeEnd => {}
                 Message::EditorAction(id, action) => {
                     if let Some((cid, v)) = self.widget.editor_action(*id, action) {
                         self.gx.call(cid, ValArray::from_iter([v]))?;

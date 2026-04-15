@@ -65,6 +65,14 @@ impl<X: GXExt> MouseAreaW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        std::slice::from_mut(&mut self.child)
+    }
+
+    fn children(&self) -> &[GuiW<X>] {
+        std::slice::from_ref(&self.child)
+    }
+
     fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,

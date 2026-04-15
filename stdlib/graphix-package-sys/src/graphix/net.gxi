@@ -1,4 +1,4 @@
-type Table = { rows: Array<string>, columns: Array<(string, v64)> };
+type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 
 /// write the value to the specified path

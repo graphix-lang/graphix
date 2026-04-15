@@ -115,6 +115,11 @@ pub enum Message {
     CellEditCancel,
     /// Column resize drag started (col_meta index).
     ColumnResizeStart(usize),
+    /// Cursor moved while a column resize drag might be active
+    /// (cursor x in widget-local coordinates). The event loop filters
+    /// this against the widget's `is_column_resizing` state — only
+    /// widgets currently dragging consume it.
+    ColumnResizeMove(f32),
     /// Column resize drag ended.
     ColumnResizeEnd,
     /// Keyboard navigation in a data table.
@@ -153,46 +158,121 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
 
+    /// Child widgets that interactive handlers should forward to.
+    /// Leaf widgets return `&mut []` (the default). Containers
+    /// (row, column, container, scrollable, stack, etc.) override
+    /// this so that handler messages like `handle_cell_click` and
+    /// `handle_column_resize_start` flow down to a nested data_table.
+    ///
+    /// Without this forwarding the event loop delivers messages to
+    /// the window's top-level widget only, and anything nested in a
+    /// container silently swallows them.
+    fn children_mut(&mut self) -> &mut [GuiW<X>] { &mut [] }
+
+    fn children(&self) -> &[GuiW<X>] { &[] }
+
     /// Handle a keyboard navigation action. Returns true if redraw needed.
-    fn handle_table_key(&mut self, _action: &TableKeyAction) -> bool { false }
+    fn handle_table_key(&mut self, action: &TableKeyAction) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_table_key(action);
+        }
+        changed
+    }
 
     /// Begin editing a cell, update edit text, submit, or cancel.
-    fn handle_cell_edit(&mut self, _row: usize, _col: String) -> bool { false }
-    fn handle_cell_edit_input(&mut self, _text: String) -> bool { false }
-    fn handle_cell_edit_submit(&mut self) -> bool { false }
-    fn handle_cell_edit_cancel(&mut self) -> bool { false }
+    fn handle_cell_edit(&mut self, row: usize, col: String) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_cell_edit(row, col.clone());
+        }
+        changed
+    }
+    fn handle_cell_edit_input(&mut self, text: String) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_cell_edit_input(text.clone());
+        }
+        changed
+    }
+    fn handle_cell_edit_submit(&mut self) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_cell_edit_submit();
+        }
+        changed
+    }
+    fn handle_cell_edit_cancel(&mut self) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_cell_edit_cancel();
+        }
+        changed
+    }
 
     /// Process a cell click in a data table. Returns true if redraw needed.
-    fn handle_cell_click(&mut self, _row: usize, _col: String) -> bool {
-        false
+    fn handle_cell_click(&mut self, row: usize, col: String) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_cell_click(row, col.clone());
+        }
+        changed
     }
 
     /// Notify that the viewport size changed (e.g. window resize).
     /// Returns true if visible content changed.
-    fn handle_viewport_resize(&mut self, _vp_w: f32, _vp_h: f32) -> bool {
-        false
+    fn handle_viewport_resize(&mut self, vp_w: f32, vp_h: f32) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_viewport_resize(vp_w, vp_h);
+        }
+        changed
     }
 
     /// Process a virtual scroll position change.
     /// Returns true if the visible content changed and a redraw is needed.
-    fn handle_scroll(&mut self, _v: f32, _h: f32, _vp_w: f32, _vp_h: f32) -> bool {
-        false
+    fn handle_scroll(&mut self, v: f32, h: f32, vp_w: f32, vp_h: f32) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_scroll(v, h, vp_w, vp_h);
+        }
+        changed
     }
 
     /// Start a column resize drag. Returns true if a drag was started.
-    fn handle_column_resize_start(&mut self, _col_idx: usize, _cursor_x: f32) -> bool {
-        false
+    fn handle_column_resize_start(&mut self, col_idx: usize, cursor_x: f32) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_column_resize_start(col_idx, cursor_x);
+        }
+        changed
     }
 
     /// Update during a column resize drag. Returns Some((callable_id, new_width))
     /// if an on_resize callback should be fired.
-    fn handle_mouse_move_resize(&mut self, _cursor_x: f32) -> Option<(CallableId, f64)> {
+    fn handle_mouse_move_resize(&mut self, cursor_x: f32) -> Option<(CallableId, f64)> {
+        for child in self.children_mut() {
+            if let some @ Some(_) = child.handle_mouse_move_resize(cursor_x) {
+                return some;
+            }
+        }
         None
     }
 
     /// End a column resize drag. Returns true if a drag was ended.
     fn handle_column_resize_end(&mut self) -> bool {
-        false
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.handle_column_resize_end();
+        }
+        changed
+    }
+
+    /// True if a column resize drag is currently in progress. The
+    /// event loop polls this after each cursor move / button release
+    /// to decide whether to route the event into the drag handlers.
+    fn is_column_resizing(&self) -> bool {
+        self.children().iter().any(|c| c.is_column_resizing())
     }
 
     /// Return a DataTableSnapshot if this widget is a data table.
@@ -308,6 +388,14 @@ macro_rules! flex_widget {
         }
 
         impl<X: GXExt> GuiWidget<X> for $name<X> {
+            fn children_mut(&mut self) -> &mut [GuiW<X>] {
+                &mut self.children
+            }
+
+            fn children(&self) -> &[GuiW<X>] {
+                &self.children
+            }
+
             fn handle_update(
                 &mut self,
                 rt: &tokio::runtime::Handle,

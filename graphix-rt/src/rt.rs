@@ -332,12 +332,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.tasks.spawn(async move {
             check_changed!(id, resolver, path, ct);
             let mut tbl = or_err!(id, resolver.table(path).await);
-            let cols = tbl.cols.drain(..).map(|(name, count)| {
-                Value::Array(ValArray::from([
-                    Value::String(name.into()),
-                    Value::V64(count.0),
-                ]))
-            });
+            let cols = tbl.cols.drain(..).map(|(name, _count)| Value::String(name.into()));
             let cols = Value::Array(ValArray::from_iter_exact(cols));
             let rows = tbl.rows.drain(..).map(|name| Value::String(name.into()));
             let rows = Value::Array(ValArray::from_iter_exact(rows));

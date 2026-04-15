@@ -48,6 +48,14 @@ impl<X: GXExt> GridW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for GridW<X> {
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        &mut self.children
+    }
+
+    fn children(&self) -> &[GuiW<X>] {
+        &self.children
+    }
+
     fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,

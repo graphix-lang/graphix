@@ -6,6 +6,9 @@ use gui::text;
 use gui::text_input;
 use gui::pick_list;
 use core::math;
+use array;
+use opt;
+use re;
 use str;
 use sys;
 use sys::net;
@@ -62,20 +65,24 @@ sys::net::publish("/local/graphix/data_table_dashboard/svc-3/cpu", svc_3_cpu);
 sys::net::publish("/local/graphix/data_table_dashboard/svc-3/uptime", f64:0.99);
 sys::net::publish("/local/graphix/data_table_dashboard/svc-3/action", "Restart");
 
-let tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
 
-// Filter + sort controls
+// Caller-side filter: apply the regex to the Table's rows before
+// handing the Table to the widget.
 let pattern = "";
-let row_filter: FilterSpec = `All;
-row_filter <- select str::len(pattern) {
-    n if n == 0 => `All,
-    _ => `IncludeMatch([pattern])
+let tbl: sys::net::Table = raw_tbl;
+tbl <- select str::len(pattern) {
+    n if n == 0 => raw_tbl,
+    _ => { raw_tbl with rows: array::filter(raw_tbl.rows, |r|
+        opt::or_default(
+            re::is_match(#pat: pattern, opt::or_default(str::basename(r), r))$,
+            false)) }
 };
 
 let sort_col = "state";
 let sort_dir: SortDirection = `Ascending;
-let sort_mode: SortMode = `None;
-sort_mode <- `Column({ name: sort_col, direction: sort_dir });
+let sort_by: Array<SortBy> = [];
+sort_by <- [{ column: sort_col, direction: sort_dir }];
 
 // Selection + footer
 let selection: Array<string> = [];
@@ -173,8 +180,7 @@ let layout = column(
         controls,
         data_table(
             #column_types: &types,
-            #row_filter: &row_filter,
-            #sort_mode: &sort_mode,
+            #sort_by: &sort_by,
             #selection: &selection,
             #on_select: |#path: string| selection <- [path],
             #table: &tbl

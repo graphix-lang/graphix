@@ -80,6 +80,14 @@ fn key_event_to_value(event: &keyboard::Event) -> Value {
 }
 
 impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        std::slice::from_mut(&mut self.child)
+    }
+
+    fn children(&self) -> &[GuiW<X>] {
+        std::slice::from_ref(&self.child)
+    }
+
     fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,

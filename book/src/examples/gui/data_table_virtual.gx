@@ -6,18 +6,32 @@ use gui::text;
 use sys;
 mod icon;
 
-// Rows here are NOT absolute netidx paths, so the data_table treats
-// them as "virtual" and never subscribes. All values come from the
-// column_types default_value refs. A uniform default propagates one
-// string to every row; a per-row &Any map lets each row have its own
-// value that updates reactively.
-let tbl = { rows: ["row-a", "row-b", "row-c"], columns: [("region", v64:0)] };
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0., #end:1., #clock)
+};
 
-// Per-row variables exposed through sliders (0.0..=1.0 matches the
-// range the Progress column widget draws).
-let score_a = f64:0.25;
-let score_b = f64:0.50;
-let score_c = f64:0.75;
+net::publish("/local/graphix/data_table_virtual/nr0/score", rv());
+net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
+net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
+
+// In the Table record defining the structure of a data table, rows that are not
+// absolute netidx paths are treated "virtual". The data_table will not attempt
+// to subscribe to virtual rows, all values in virtual rows come from the
+// column_types default_value refs. A uniform default propagates one string to
+// every row; a per-row &Any map lets each row have its own value that updates
+// reactively. Columns can also be virtual, any column with a column type will
+// become a column regardless of whether it appears in the table description.
+//
+// Virtual rows and columns can be mixed with rows and columns in netidx.
+// Everything is ultimatly defined by the Table record delived to data_table.
+let tbl = net::list_table("/local/graphix/data_table_virtual")$;
+let tbl = uniq({
+    rows: array::concat(tbl.rows, ["vr0", "vr1", "vr2"]),
+    columns: array::concat(["region"], tbl.columns)
+});
+
+let score: Map<string, f64> = {};
 
 let types = {
     // Every row sees the same literal for "region".
@@ -33,7 +47,7 @@ let types = {
     "score" => {
         typ: `Progress,
         display_name: "Score",
-        default_value: &{ "row-a" => &score_a, "row-b" => &score_b, "row-c" => &score_c },
+        default_value: &score,
         on_resize: &null,
         width: &f64:180.0
     }
@@ -46,21 +60,21 @@ let layout = column(
     #height: &`Fill,
     &[
         text(#size: &20.0, &"Virtual rows"),
-        text(&"Move the sliders to drive the per-row default_value refs."),
+        text(&"Move the sliders to drive change the score in the three virtual rows"),
         slider(
-            #on_change: |v: f64| score_a <- v,
+            #on_change: |v: f64| score <- v ~ map::insert(score, "vr0", v),
             #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
-            &score_a
+            &map::get_or(score, "vr0", 0.)
         ),
         slider(
-            #on_change: |v: f64| score_b <- v,
+            #on_change: |v: f64| score <- v ~ map::insert(score, "vr1", v),
             #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
-            &score_b
+            &map::get_or(score, "vr1", 0.)
         ),
         slider(
-            #on_change: |v: f64| score_c <- v,
+            #on_change: |v: f64| score <- v ~ map::insert(score, "vr2", v),
             #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
-            &score_c
+            &map::get_or(score, "vr2", 0.)
         ),
         data_table(#column_types: &types, #table: &tbl)
     ]

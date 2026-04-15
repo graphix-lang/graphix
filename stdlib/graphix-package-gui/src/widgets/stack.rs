@@ -42,6 +42,14 @@ impl<X: GXExt> StackW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for StackW<X> {
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        &mut self.children
+    }
+
+    fn children(&self) -> &[GuiW<X>] {
+        &self.children
+    }
+
     fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,

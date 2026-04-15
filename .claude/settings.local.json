@@ -104,7 +104,10 @@
       "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -10 {}')",
       "Bash(./target/debug/graphix --check /tmp/opt_min.gx)",
       "Bash(./target/debug/graphix --check book/src/examples/gui/data_table_calculated.gx)",
-      "Bash(strings target/debug/deps/graphix_package_gui-*.so target/debug/deps/graphix_package_gui-*.rlib)"
+      "Bash(strings target/debug/deps/graphix_package_gui-*.so target/debug/deps/graphix_package_gui-*.rlib)",
+      "Bash(awk NR>=20 && NR<=40 {print NR\": \"$0} *)",
+      "Bash(awk '/^impl.*GuiWidget.*for DataTableW/,/^}$/' /home/eric/proj/graphix/stdlib/graphix-package-gui/src/widgets/data_table.rs)",
+      "Bash(awk 'NR==1376,/^}$/' /home/eric/proj/graphix/stdlib/graphix-package-gui/src/widgets/data_table.rs)"
     ],
     "deny": [],
     "ask": []

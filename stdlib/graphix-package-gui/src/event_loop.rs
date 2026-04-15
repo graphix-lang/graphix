@@ -388,8 +388,41 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         tw.content.handle_cell_edit_cancel();
                     }
                 }
-                Message::ColumnResizeStart(_) | Message::ColumnResizeEnd => {
-                    // Handled by the browser/host application, not the graphix event loop
+                Message::ColumnResizeStart(ci) => {
+                    for tw in self.windows.values_mut() {
+                        let x = tw.cursor_position.x;
+                        if tw.content.handle_column_resize_start(ci, x) {
+                            tw.needs_redraw = true;
+                        }
+                    }
+                }
+                Message::ColumnResizeMove(x) => {
+                    // Fires on every cursor move over the table.
+                    // Only act on it when a drag is in progress; the
+                    // is_column_resizing check filters the no-op case.
+                    for tw in self.windows.values_mut() {
+                        if !tw.content.is_column_resizing() {
+                            continue;
+                        }
+                        if let Some((cid, w)) =
+                            tw.content.handle_mouse_move_resize(x)
+                        {
+                            if let Err(e) = self.gx.call(
+                                cid,
+                                ValArray::from_iter([Value::F64(w)]),
+                            ) {
+                                error!("on_resize call failed: {e:?}");
+                            }
+                        }
+                        tw.needs_redraw = true;
+                    }
+                }
+                Message::ColumnResizeEnd => {
+                    for tw in self.windows.values_mut() {
+                        if tw.content.handle_column_resize_end() {
+                            tw.needs_redraw = true;
+                        }
+                    }
                 }
                 Message::TableKey(action) => {
                     for tw in self.windows.values_mut() {

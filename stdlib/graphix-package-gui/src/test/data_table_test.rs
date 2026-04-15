@@ -30,7 +30,7 @@ async fn dt(code: &str) -> Result<GuiTestHarness> {
 async fn basic_structure() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: [("c0", v64:0), ("c1", v64:0)] };
+let tbl = { rows: ["r0", "r1", "r2"], columns: ["c0", "c1"] };
 let result = data_table(#table: &tbl)
 "#;
     let h = dt(code).await?;
@@ -77,39 +77,13 @@ let result = data_table(#table: &tbl)
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn sort_ascending_numeric() -> Result<()> {
+async fn default_preserves_table_order() -> Result<()> {
+    // No sort_by passed: widget preserves the caller's row and column
+    // order exactly as given in the Table.
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["3", "1", "2"], columns: [("b", v64:0), ("a", v64:0)] };
+let tbl = { rows: ["z", "a", "m"], columns: ["c", "a"] };
 let result = data_table(#table: &tbl)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames, vec!["1", "2", "3"]);
-    assert_eq!(snap.col_names, vec!["a", "b"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn sort_ascending_lexicographic() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["cherry", "apple", "banana"], columns: [("z", v64:0), ("a", v64:0)] };
-let result = data_table(#table: &tbl)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames, vec!["apple", "banana", "cherry"]);
-    assert_eq!(snap.col_names, vec!["a", "z"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn sort_disabled_preserves_order() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["z", "a", "m"], columns: [("c", v64:0), ("a", v64:0)] };
-let result = data_table(#sort_mode: &`Disabled, #table: &tbl)
 "#;
     let h = dt(code).await?;
     let snap = h.dt_snapshot();
@@ -119,96 +93,10 @@ let result = data_table(#sort_mode: &`Disabled, #table: &tbl)
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn column_filter_include_preserves_order() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("a", v64:0), ("b", v64:0), ("c", v64:0)] };
-let result = data_table(
-    #column_filter: &`Include(["c", "a"]),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    // Include with SortMode::None preserves the Include array order
-    assert_eq!(snap.col_names, vec!["c", "a"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn column_filter_exclude() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("a", v64:0), ("b", v64:0), ("c", v64:0)] };
-let result = data_table(
-    #column_filter: &`Exclude(["b"]),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.col_names, vec!["a", "c"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn row_filter_include_preserves_order() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["a", "b", "c"], columns: [("c0", v64:0)] };
-let result = data_table(
-    #row_filter: &`Include(["c", "a"]),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames, vec!["c", "a"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn row_filter_keep_range() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["a", "b", "c", "d", "e"], columns: [("c0", v64:0)] };
-let result = data_table(
-    #row_filter: &`KeepRange({ start: 1, end: 3 }),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    // KeepRange(1,3) on resolver order, then sorted ascending
-    assert_eq!(snap.row_basenames.len(), 2);
-    assert!(snap.row_basenames.contains(&"b".to_string()));
-    assert!(snap.row_basenames.contains(&"c".to_string()));
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn hidden_column() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("visible", v64:0), ("hidden", v64:0)] };
-let result = data_table(
-    #column_types: &{
-        "hidden" => { typ: `Hidden, display_name: null, default_value: &null, on_resize: &null, width: &null }
-    },
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.col_names, vec!["visible"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn default_value_uniform() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => { typ: `Text({ on_edit: null }), display_name: null, default_value: &"DEF", on_resize: &null, width: &null }
@@ -227,7 +115,7 @@ let result = data_table(
 async fn default_value_per_row() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let a = "val_a";
 let b = "val_b";
 let result = data_table(
@@ -239,7 +127,6 @@ let result = data_table(
             on_resize: &null, width: &null
         }
     },
-    #sort_mode: &`Disabled,
     #table: &tbl
 )
 "#;
@@ -254,7 +141,7 @@ let result = data_table(
 async fn virtual_column() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: [("real", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["real"] };
 let a = "calc_a";
 let b = "calc_b";
 let result = data_table(
@@ -266,7 +153,6 @@ let result = data_table(
             on_resize: &null, width: &null
         }
     },
-    #sort_mode: &`Disabled,
     #table: &tbl
 )
 "#;
@@ -286,7 +172,7 @@ async fn selection_initial_empty() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let sel = [];
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(#selection: &sel, #table: &tbl)
 "#;
     let h = dt(code).await?;
@@ -300,7 +186,7 @@ async fn selection_from_graphix() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let sel = ["r0/c0"];
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(#selection: &sel, #table: &tbl)
 "#;
     let h = dt(code).await?;
@@ -318,7 +204,7 @@ async fn on_select_fires_on_click() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let sel = [];
 let last_clicked = "";
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(
     #selection: &sel,
     #on_select: |#path: string| {
@@ -351,7 +237,7 @@ async fn on_activate_fires_on_name_click() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let activated = "";
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(
     #on_activate: |#path: string| activated <- path,
     #table: &tbl
@@ -380,7 +266,7 @@ async fn on_header_click_fires() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let clicked_col = "";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0), ("c1", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let result = data_table(
     #on_header_click: |#column: string| clicked_col <- column,
     #table: &tbl
@@ -417,12 +303,12 @@ let result = data_table(
 async fn sort_by_virtual_column_ascending() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: [("real", v64:0)] };
+let tbl = { rows: ["r0", "r1", "r2"], columns: ["real"] };
 let p0 = "3";
 let p1 = "1";
 let p2 = "2";
 let result = data_table(
-    #sort_mode: &`Column({ name: "priority", direction: `Ascending }),
+    #sort_by: &[{ column: "priority", direction: `Ascending }],
     #column_types: &{
         "priority" => {
             typ: `Text({ on_edit: null }),
@@ -445,12 +331,12 @@ let result = data_table(
 async fn sort_by_virtual_column_descending() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: [("real", v64:0)] };
+let tbl = { rows: ["r0", "r1", "r2"], columns: ["real"] };
 let s0 = "10";
 let s1 = "30";
 let s2 = "20";
 let result = data_table(
-    #sort_mode: &`Column({ name: "score", direction: `Descending }),
+    #sort_by: &[{ column: "score", direction: `Descending }],
     #column_types: &{
         "score" => {
             typ: `Text({ on_edit: null }),
@@ -473,12 +359,12 @@ let result = data_table(
 async fn sort_by_virtual_column_lexicographic() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: [("data", v64:0)] };
+let tbl = { rows: ["r0", "r1", "r2"], columns: ["data"] };
 let l0 = "cherry";
 let l1 = "apple";
 let l2 = "banana";
 let result = data_table(
-    #sort_mode: &`Column({ name: "label", direction: `Ascending }),
+    #sort_by: &[{ column: "label", direction: `Ascending }],
     #column_types: &{
         "label" => {
             typ: `Text({ on_edit: null }),
@@ -537,13 +423,15 @@ fn sparkline_decimation() {
 // ── Editable column callbacks ──────────────────────────────────────
 
 /// 1: Text column on_edit fires through cell-edit lifecycle (begin → input → submit).
+/// User types `new` — not parseable as a graphix value, so it's
+/// committed as a string.
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let log = "";
-let edit = |#path: string, #value: string| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let edit = |#path: string, #value: Any| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -572,14 +460,53 @@ let result = data_table(
     Ok(())
 }
 
+/// 1b: Text column parse-or-quote: a numeric-looking edit buffer is
+/// committed as an i64, not a string, so the on_edit callback
+/// receives a typed value.
+#[tokio::test(flavor = "current_thread")]
+async fn on_edit_text_column_parses_number() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let log = "";
+let edit = |#path: string, #value: Any| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: ["c0"] };
+let result = data_table(
+    #column_types: &{
+        "c0" => {
+            typ: `Text({ on_edit: edit }),
+            display_name: null,
+            default_value: &"1",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::log").await?;
+    h.drain().await?;
+    h.widget.handle_cell_edit(0, "c0".to_string());
+    h.widget.handle_cell_edit_input("42".to_string());
+    h.widget.handle_cell_edit_submit();
+    h.drain().await?;
+    let log = h.get_watched("test::log");
+    // Interpolating an i64 into a string gives the bare number.
+    assert_eq!(
+        log,
+        Some(&Value::String(arcstr::literal!("r0/c0=42"))),
+        "numeric edit should commit typed i64, got: {log:?}",
+    );
+    Ok(())
+}
+
 /// 2: Cancelling a text edit must not fire the on_edit callback.
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_cancel() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let log = "";
-let edit = |#path: string, #value: string| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let edit = |#path: string, #value: Any| log <- "[path]=[value]";
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -617,7 +544,7 @@ async fn on_edit_toggle_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let toggled = |#path: string, #value: bool| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -663,7 +590,7 @@ async fn on_edit_combo_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let pick = |#path: string, #value: string| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -724,7 +651,7 @@ async fn on_edit_spin_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let bumped = |#path: string, #value: f64| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -794,7 +721,7 @@ async fn on_click_button_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let pressed = |#path: string, #value: Any| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -842,7 +769,7 @@ async fn on_update_fires_for_subscribed_cell() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 sys::net::publish("/local/dt7/r0/c0", v64:42);
-let tbl = { rows: ["/local/dt7/r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["/local/dt7/r0"], columns: ["c0"] };
 let result = data_table(
     #on_update: |#path: string, #value: Primitive| log <- "[path]=[value]",
     #table: &tbl
@@ -878,7 +805,7 @@ async fn default_value_per_row_ref_updates() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let a = "v1";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -901,6 +828,34 @@ let result = data_table(
         if h.dt_snapshot().grid[0][0] == "v1b" { break; }
     }
     assert_eq!(h.dt_snapshot().grid[0][0], "v1b");
+    Ok(())
+}
+
+/// 8a: A table with `columns: []` but column_types entries that
+/// supply virtual columns should render as Table mode, not Value mode.
+/// Regression test for the detection which previously ran before
+/// virtual-column insertion.
+#[tokio::test(flavor = "current_thread")]
+async fn virtual_columns_prevent_value_mode() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1"], columns: [] };
+let result = data_table(
+    #column_types: &{
+        "region" => {
+            typ: `Text({ on_edit: null }),
+            display_name: "Region",
+            default_value: &"prod",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    assert!(!snap.is_value_mode, "should render as Table, not Value");
+    assert_eq!(snap.col_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(), vec!["region"]);
     Ok(())
 }
 
@@ -931,7 +886,7 @@ let push = |row: string, sum: i64| {
 };
 let tbl = {
     rows: ["/local/dt8b/r0", "/local/dt8b/r1"],
-    columns: [("c0", v64:0)]
+    columns: ["c0"]
 };
 let result = data_table(
     #column_types: &{
@@ -1038,7 +993,7 @@ let result = data_table(
 async fn default_value_uniform_string() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0", "r1", "r2"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -1067,7 +1022,7 @@ async fn column_width_ref_controlled() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let w = 120.0;
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -1096,7 +1051,7 @@ use gui; use gui::data_table; use sys;
 let log = 0.0;
 let on_w = |new_w: f64| log <- new_w;
 let w = 100.0;
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #column_types: &{
         "c0" => {
@@ -1115,6 +1070,9 @@ let result = data_table(
     h.drain().await?;
     let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
     h.widget.handle_column_resize_start(idx, 100.0);
+    // First move seeds the last-x baseline; the second sample is
+    // where we actually compute a delta and fire on_resize.
+    assert!(h.widget.handle_mouse_move_resize(100.0).is_none());
     let result = h.widget.handle_mouse_move_resize(180.0);
     let (cb_id, new_w) = result.expect("on_resize callback returned");
     h.widget.handle_column_resize_end();
@@ -1124,82 +1082,6 @@ let result = data_table(
         matches!(log, Some(Value::F64(f)) if *f > 100.0),
         "on_resize should have logged the new width, got: {log:?}",
     );
-    Ok(())
-}
-
-// ── Filter and sort variants ───────────────────────────────────────
-
-/// 12: A regex IncludeMatch row filter keeps only rows matching the patterns.
-#[tokio::test(flavor = "current_thread")]
-async fn row_filter_regex_include() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["abc", "abd", "xyz"], columns: [("c0", v64:0)] };
-let result = data_table(
-    #row_filter: &`IncludeMatch(["^ab"]),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames, vec!["abc", "abd"]);
-    Ok(())
-}
-
-/// 13: A regex ExcludeMatch row filter drops matching rows.
-#[tokio::test(flavor = "current_thread")]
-async fn row_filter_regex_exclude() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["abc", "xyz", "xab"], columns: [("c0", v64:0)] };
-let result = data_table(
-    #row_filter: &`ExcludeMatch(["^x"]),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames, vec!["abc"]);
-    Ok(())
-}
-
-/// 14: External sort mode disables built-in sorting (graphix manages
-/// row order via filters).
-#[tokio::test(flavor = "current_thread")]
-async fn sort_external_preserves_order() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["zeta", "alpha", "mu"], columns: [("c0", v64:0)] };
-let result = data_table(
-    #sort_mode: &`External({"c0" => `Ascending}),
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames, vec!["zeta", "alpha", "mu"]);
-    Ok(())
-}
-
-/// 15: A Hidden column type is removed from the visible col_names even
-/// when other columns are present.
-#[tokio::test(flavor = "current_thread")]
-async fn hidden_column_absent() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("a", v64:0), ("secret", v64:0), ("b", v64:0)] };
-let result = data_table(
-    #column_types: &{
-        "secret" => { typ: `Hidden, display_name: null, default_value: &null, on_resize: &null, width: &null }
-    },
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert!(!snap.col_names.contains(&"secret".to_string()),
-        "hidden column must not appear in col_names, got: {:?}", snap.col_names);
-    assert_eq!(snap.col_names, vec!["a", "b"]);
     Ok(())
 }
 
@@ -1223,7 +1105,7 @@ c <- t1 ~ 1;
 c <- t2 ~ 2;
 c <- t3 ~ 3;
 sys::net::publish("/local/dt17/r0/load", c);
-let tbl = { rows: ["/local/dt17/r0"], columns: [("load", v64:0)] };
+let tbl = { rows: ["/local/dt17/r0"], columns: ["load"] };
 let result = data_table(
     #column_types: &{
         "load" => {
@@ -1265,7 +1147,7 @@ let result = data_table(
 async fn sparkline_default_value_seeds_history() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("anchor", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["anchor"] };
 let result = data_table(
     #column_types: &{
         "spark" => {
@@ -1294,7 +1176,7 @@ async fn sparkline_decimation_caps_length() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("anchor", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["anchor"] };
 let result = data_table(
     #column_types: &{
         "load" => {
@@ -1340,7 +1222,7 @@ async fn sparkline_decimation_preserves_extremes() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("anchor", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["anchor"] };
 let result = data_table(
     #column_types: &{
         "load" => {
@@ -1390,7 +1272,7 @@ use gui; use gui::data_table; use sys;
 let sel = [];
 let selected = "";
 let activated = "";
-let tbl = { rows: ["r0", "r1"], columns: [("c0", v64:0), ("c1", v64:0)] };
+let tbl = { rows: ["r0", "r1"], columns: ["c0", "c1"] };
 let result = data_table(
     #selection: &sel,
     #on_select: |#path: string| {
@@ -1441,7 +1323,7 @@ async fn name_click_activate_only() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let sel_log = "";
 let act_log = "";
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let result = data_table(
     #on_select: |#path: string| sel_log <- path,
     #on_activate: |#path: string| act_log <- path,
@@ -1468,7 +1350,7 @@ let result = data_table(
 async fn resize_handle_double_click_autofits() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: [("c0", v64:0)] };
+let tbl = { rows: ["r0"], columns: ["c0"] };
 let long = "wider than MIN_COL_WIDTH default";
 let result = data_table(
     #column_types: &{

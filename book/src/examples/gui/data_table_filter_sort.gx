@@ -5,6 +5,10 @@ use gui::column;
 use gui::text;
 use gui::text_input;
 use gui::pick_list;
+use array;
+use opt;
+use re;
+use str;
 use sys;
 use sys::net;
 mod icon;
@@ -24,26 +28,34 @@ sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
 sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
 sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
 
-let tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 
 // Filter controls: a regex pattern and whether it includes or excludes.
+// Unlike earlier versions where the widget carried a FilterSpec, the
+// caller now reshapes the Table in graphix before passing it in.
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
-let row_filter: FilterSpec = `All;
-row_filter <- select str::len(pattern) {
-    n if n == 0 => `All,
-    _ => select mode {
-        `Include => `IncludeMatch([pattern]),
-        `Exclude => `ExcludeMatch([pattern])
+let tbl: sys::net::Table = raw_tbl;
+tbl <- select str::len(pattern) {
+    n if n == 0 => raw_tbl,
+    _ => {
+        let name_of = |r: string| opt::or_default(str::basename(r), r);
+        let matches = |r: string| opt::or_default(
+            re::is_match(#pat: pattern, name_of(r))$, false);
+        let keep = |r: string| select mode {
+            `Include => matches(r),
+            `Exclude => !matches(r)
+        };
+        { raw_tbl with rows: array::filter(raw_tbl.rows, keep) }
     }
 };
 
 // Sort controls: pick a column and direction.
 let sort_col: string = "name";
 let sort_dir: SortDirection = `Ascending;
-let sort_mode: SortMode = `None;
-sort_mode <- `Column({ name: sort_col, direction: sort_dir });
+let sort_by: Array<SortBy> = [];
+sort_by <- [{ column: sort_col, direction: sort_dir }];
 
 let controls = row(
     #spacing: &10.0,
@@ -95,8 +107,7 @@ let layout = column(
         text(#size: &20.0, &"Interactive filter + sort"),
         controls,
         data_table(
-            #row_filter: &row_filter,
-            #sort_mode: &sort_mode,
+            #sort_by: &sort_by,
             #table: &tbl
         )
     ]

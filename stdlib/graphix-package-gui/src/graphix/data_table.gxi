@@ -1,25 +1,8 @@
 type SortDirection = [`Ascending, `Descending];
-type SortMode = [
-    `None,
-    `Disabled,
-    `Column({ name: string, direction: SortDirection }),
-    `External(Map<string, SortDirection>)
-];
-
-type FilterSpec = [
-    `All,
-    `None,
-    `Include(Array<string>),
-    `Exclude(Array<string>),
-    `IncludeMatch(Array<string>),
-    `ExcludeMatch(Array<string>),
-    `KeepRange({ start: i64, end: i64 }),
-    `DropRange({ start: i64, end: i64 })
-];
-
+type SortBy = { column: string, direction: SortDirection };
 
 type ColumnType = [
-    `Text({ on_edit: [fn(#path: string, #value: string) -> Any, null] }),
+    `Text({ on_edit: [fn(#path: string, #value: Any) -> Any, null] }),
     `Toggle({ on_edit: [fn(#path: string, #value: bool) -> Any, null] }),
     `Combo({
         choices: Array<{ id: string, label: string }>,
@@ -35,8 +18,7 @@ type ColumnType = [
     `Button({
         on_click: [fn(#path: string, #value: Any) -> Any, null]
     }),
-    `Sparkline({ history_seconds: f64 }),
-    `Hidden
+    `Sparkline({ history_seconds: f64 })
 ];
 
 type ColumnSpec = {
@@ -48,16 +30,14 @@ type ColumnSpec = {
 };
 
 type DataTable = {
-    column_filter: &FilterSpec,
     column_types: &Map<string, ColumnSpec>,
     on_activate: &[fn(#path: string) -> Any, null],
     on_header_click: &[fn(#column: string) -> Any, null],
     on_select: &[fn(#path: string) -> Any, null],
     on_update: &[fn(#path: string, #value: Primitive) -> Any, null],
-    row_filter: &FilterSpec,
     selection: &Array<string>,
     show_row_name: &bool,
-    sort_mode: &SortMode,
+    sort_by: &Array<SortBy>,
     table: &sys::net::Table
 };
 
@@ -67,12 +47,18 @@ type DataTable = {
 /// Rows that are not absolute paths are virtual — they display only
 /// default values from column_types.
 ///
-/// Pass the result of `sys::net::list_table(path)` as the table parameter.
+/// The caller owns the shape of the Table: to filter rows or columns,
+/// hide columns, or reorder them, build `tbl.rows` / `tbl.columns` in
+/// graphix before passing `#table` in.
+///
+/// `sort_by` is a list of sort keys applied in order: the first key
+/// is the primary sort, subsequent keys break ties. Empty list (the
+/// default) preserves the Table's row order. Sort values come from
+/// live subscriptions to the named columns, so rows without a
+/// subscribable value for a given column fall at the end.
 val data_table: fn(
-    ?#sort_mode: &SortMode,
-    ?#column_filter: &FilterSpec,
+    ?#sort_by: &Array<SortBy>,
     ?#column_types: &Map<string, ColumnSpec>,
-    ?#row_filter: &FilterSpec,
     ?#selection: &Array<string>,
     ?#show_row_name: &bool,
     ?#on_select: [fn(#path: string) -> Any, null],

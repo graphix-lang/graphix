@@ -24,7 +24,7 @@ let browser = |
                 [] => `List,
                 _ => `Table
             });
-            let columns: Array<string> = select array::map(columns, |(col, _)| col) {
+            let columns: Array<string> = select columns {
                 [] => ["Value"],
                 cols => array::sort(#numeric:true, cols)
             };
