@@ -904,6 +904,135 @@ let result = data_table(
     Ok(())
 }
 
+/// 8b: A default_value ref that reads from a nested Map via map::get +
+/// opt::or_default continues to reflect later updates to the
+/// underlying map, not just the first update. This mirrors
+/// book/src/examples/gui/data_table_calculated.gx where `data` is
+/// Map<string, Map<string, i64>> updated via `data <- ...` from a
+/// callable and the virtual column default_value is
+/// `&opt::or_default(map::get(data, "sum"), {})`.
+#[tokio::test(flavor = "current_thread")]
+async fn default_value_reactive_via_connect() -> Result<()> {
+    // Mirror the data_table_calculated.gx pattern: absolute row
+    // paths (so the rows ARE subscribed via netidx) and a virtual
+    // `sum` column whose default_value reads from a let-bound
+    // Map<string, Map<string, i64>> that is updated via `<-` connect.
+    // The bug only reproduces with absolute (subscribed) row paths —
+    // the cell-update guard at handle_update suppresses default
+    // writes when the row has any subscriptions.
+    let code = r#"
+use gui; use gui::data_table; use sys; use map; use opt;
+sys::net::publish("/local/dt8b/r0/c0", v64:0);
+sys::net::publish("/local/dt8b/r1/c0", v64:0);
+let data: Map<string, Map<string, i64>> = {};
+let push = |row: string, sum: i64| {
+    let sums = opt::or_default(map::get(data, "sum"), {});
+    data <- sum ~ map::insert(data, "sum", map::insert(sums, row, sum))
+};
+let tbl = {
+    rows: ["/local/dt8b/r0", "/local/dt8b/r1"],
+    columns: [("c0", v64:0)]
+};
+let result = data_table(
+    #column_types: &{
+        "sum" => {
+            typ: `Text({ on_edit: null }),
+            display_name: "A + B",
+            default_value: &opt::or_default(map::get(data, "sum"), {}),
+            on_resize: &null,
+            width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // Find "sum" column index (table has c0 and sum).
+    let snap = h.dt_snapshot();
+    let sum_col = snap
+        .col_names
+        .iter()
+        .position(|n| n == "sum")
+        .expect("sum column present");
+    let r0 = snap.row_basenames.iter().position(|n| n == "r0").unwrap();
+    let r1 = snap.row_basenames.iter().position(|n| n == "r1").unwrap();
+    // Initially data is empty so no per-row defaults exist.
+    assert_eq!(snap.grid[r0][sum_col], "");
+    // First push: r0 -> 5. Should show "5".
+    let push_id = h.compile_named_callable("test::push").await?;
+    h.call_callback(
+        push_id,
+        ValArray::from_iter([
+            Value::String(arcstr::literal!("r0")),
+            Value::I64(5),
+        ]),
+    )
+    .await?;
+    for _ in 0..5 {
+        h.drain().await?;
+        if h.dt_snapshot().grid[r0][sum_col] == "5" {
+            break;
+        }
+    }
+    assert_eq!(h.dt_snapshot().grid[r0][sum_col], "5", "first update");
+    // Second push: r0 -> 9. This is the critical case — does the
+    // grid reflect the second update, or does it remain stuck at 5?
+    h.call_callback(
+        push_id,
+        ValArray::from_iter([
+            Value::String(arcstr::literal!("r0")),
+            Value::I64(9),
+        ]),
+    )
+    .await?;
+    for _ in 0..5 {
+        h.drain().await?;
+        if h.dt_snapshot().grid[r0][sum_col] == "9" {
+            break;
+        }
+    }
+    assert_eq!(h.dt_snapshot().grid[r0][sum_col], "9", "second update");
+    // Third push on a different row: r1 -> 3. r0 should stay at 9,
+    // r1 should become 3.
+    h.call_callback(
+        push_id,
+        ValArray::from_iter([
+            Value::String(arcstr::literal!("r1")),
+            Value::I64(3),
+        ]),
+    )
+    .await?;
+    for _ in 0..5 {
+        h.drain().await?;
+        if h.dt_snapshot().grid[r1][sum_col] == "3" {
+            break;
+        }
+    }
+    assert_eq!(h.dt_snapshot().grid[r0][sum_col], "9", "r0 preserved");
+    assert_eq!(h.dt_snapshot().grid[r1][sum_col], "3", "r1 update");
+    // Stress: fire multiple pushes back-to-back without draining
+    // between, then drain once. The grid should reflect the latest
+    // values, which is what would happen in a GUI event loop where
+    // many subscription updates can arrive between renders.
+    for v in [10i64, 20, 30, 40] {
+        h.gx.call(
+            push_id,
+            ValArray::from_iter([
+                Value::String(arcstr::literal!("r0")),
+                Value::I64(v),
+            ]),
+        )?;
+    }
+    for _ in 0..10 {
+        h.drain().await?;
+        if h.dt_snapshot().grid[r0][sum_col] == "40" {
+            break;
+        }
+    }
+    assert_eq!(h.dt_snapshot().grid[r0][sum_col], "40", "rapid updates");
+    Ok(())
+}
+
 /// 9: A uniform string default propagates to every grid cell.
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_uniform_string() -> Result<()> {

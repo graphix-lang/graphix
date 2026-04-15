@@ -28,8 +28,8 @@ let tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map<string, Map<string, i64>> = {};
 
-// on_update is called for netidx subscriptions
-let update = |#path: string, #value: Primitive| {
+// on_update is called on updates to netidx subscriptions by the table
+let on_update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
     let d = v ~ data;
     let col = opt::or_never(basename(path));
@@ -67,7 +67,7 @@ let layout = column(
         text(&"on_update fires on every cell update; the virtual sum column reflects A + B."),
         data_table(
             #column_types: &types,
-            #on_update: update,
+            #on_update,
             #table: &tbl
         )
     ]

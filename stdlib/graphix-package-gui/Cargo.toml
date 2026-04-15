@@ -55,6 +55,7 @@ winit = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 fxhash = { workspace = true }
+graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
 graphix-package-sys = { version = "0.7.0", path = "../graphix-package-sys" }
 netidx-core = { workspace = true }
 poolshark = { workspace = true }

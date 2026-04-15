@@ -664,6 +664,13 @@ pub(crate) struct DataTableW<X: GXExt> {
     last_resize_click: Option<(usize, Instant)>,
     mode: DisplayMode,
     col_names: Vec<String>,
+    /// Names of columns that have no source in the table's `columns`
+    /// array — they exist only as virtual columns whose values come
+    /// from `default_value`. Populated in `apply_table`. Used by the
+    /// default_value update path to know which cells to refresh
+    /// regardless of whether the row has subscriptions for its
+    /// non-virtual columns.
+    virtual_cols: FxHashSet<String>,
     row_paths: Vec<Path>,
     /// Row name (basename) for each row in `row_paths`, as `ArcStr` so
     /// lookups that need the name as a key (e.g. Map keys for per-row
@@ -825,7 +832,9 @@ impl<X: GXExt> DataTableW<X> {
             resize_drag: None,
             last_resize_click: None,
             mode: DisplayMode::Table,
-            col_names: vec![], row_paths: vec![], row_names: vec![],
+            col_names: vec![],
+            virtual_cols: FxHashSet::default(),
+            row_paths: vec![], row_names: vec![],
             cells, row_subs: vec![],
             sub_start: 0, sub_end: 0,
             first_row: 0, first_col: 0,
@@ -908,13 +917,19 @@ impl<X: GXExt> DataTableW<X> {
         } else {
             DisplayMode::Table
         };
-        // Add virtual columns
+        // Add virtual columns and record which columns are virtual.
+        // A column is virtual when it's defined in `column_types` but
+        // doesn't appear in the table's `columns` array — its value
+        // comes solely from `default_value`, never from a netidx
+        // subscription.
+        self.virtual_cols.clear();
         for (name, spec) in &self.column_types {
             if self.has_default(name)
                 && !self.col_names.contains(name)
                 && !matches!(spec.typ, ColumnType::Hidden)
             {
                 self.col_names.push(name.clone());
+                self.virtual_cols.insert(name.clone());
             }
         }
         // Subscribe to sort column for Column sort mode
@@ -1747,15 +1762,28 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 name.clone()
             });
         if let Some(col_name) = dv_col {
-            // Update grid cells with new default values. default_for reads
-            // from the ref's .last we just wrote, so Map/uniform/null are
-            // all handled uniformly — whenever the graphix-side map literal
-            // re-evaluates (because any bound name inside it changed), this
-            // handler propagates the new values to the grid.
+            // Update grid cells with new default values. default_for
+            // reads from the ref's .last we just wrote, so
+            // Map/uniform/null are all handled uniformly — whenever
+            // the graphix-side map literal re-evaluates (because any
+            // bound name inside it changed), this handler propagates
+            // the new values to the grid.
+            //
+            // For non-virtual columns the cell is normally populated
+            // by a netidx subscription; we only let the default fill
+            // it in if there's no active subscription on this row.
+            // For virtual columns (no source in the table's `columns`
+            // array) the default IS the value, so we always overwrite
+            // — without this exception, subscribed rows whose other
+            // columns are subscribed would never see updates to the
+            // virtual column's default.
+            let is_virtual = self.virtual_cols.contains(&col_name);
             let mut grid = self.cells.grid.lock();
             if let Some(col_idx) = self.col_names.iter().position(|n| *n == col_name) {
                 for (row_idx, row_path) in self.row_paths.iter().enumerate() {
-                    if !Path::is_absolute(row_path) || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true) {
+                    let unsubscribed = !Path::is_absolute(row_path)
+                        || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true);
+                    if is_virtual || unsubscribed {
                         let row_name = &self.row_names[row_idx];
                         if row_idx < grid.len() && col_idx < grid[row_idx].len() {
                             grid[row_idx][col_idx] = self.default_for(&col_name, row_name);

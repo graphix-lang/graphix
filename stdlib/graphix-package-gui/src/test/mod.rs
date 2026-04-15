@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use graphix_compiler::expr::{ExprId, ModuleResolver};
 use graphix_compiler::BindId;
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
-use graphix_rt::{CompRes, GXEvent, NoExt, Ref};
+use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::global::GPooled;
 use std::time::Duration;
@@ -19,6 +19,7 @@ mod widgets_test;
 
 const TEST_REGISTER: &[RegisterFn] = &[
     <graphix_package_core::P as graphix_package::Package<NoExt>>::register,
+    <graphix_package_map::P as graphix_package::Package<NoExt>>::register,
     <graphix_package_str::P as graphix_package::Package<NoExt>>::register,
     <graphix_package_sys::P as graphix_package::Package<NoExt>>::register,
     <crate::P as graphix_package::Package<NoExt>>::register,
@@ -40,6 +41,7 @@ struct GuiTestHarness {
     watched: fxhash::FxHashMap<ExprId, Value>,
     watch_names: fxhash::FxHashMap<String, ExprId>,
     _refs: Vec<Ref<NoExt>>,
+    _callables: Vec<Callable<NoExt>>,
 }
 
 impl GuiTestHarness {
@@ -85,6 +87,7 @@ impl GuiTestHarness {
             watched: fxhash::FxHashMap::default(),
             watch_names: fxhash::FxHashMap::default(),
             _refs: Vec::new(),
+            _callables: Vec::new(),
         })
     }
 
@@ -235,7 +238,10 @@ impl GuiTestHarness {
 
     /// Compile a graphix-defined function (lambda) by its module-qualified
     /// name into a `CallableId`. Mirrors the existing `watch` lookup but
-    /// returns a callable rather than a tracked ref.
+    /// returns a callable rather than a tracked ref. The `Ref` and
+    /// `Callable` are retained on the harness — dropping the
+    /// `Callable` immediately sends `DeleteCallable` to the runtime,
+    /// invalidating the returned id.
     async fn compile_named_callable(
         &mut self,
         name: &str,
@@ -248,9 +254,10 @@ impl GuiTestHarness {
             .with_context(|| format!("compile_named_callable: no value for {name}"))?;
         let cb = self.gx.compile_callable(val).await
             .with_context(|| format!("compile_named_callable: compile_callable {name}"))?;
-        // Hold the ref alive so the runtime keeps the binding tracked.
+        let id = cb.id();
         self._refs.push(r);
-        Ok(cb.id())
+        self._callables.push(cb);
+        Ok(id)
     }
 }
 

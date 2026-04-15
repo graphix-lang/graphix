@@ -102,7 +102,9 @@
       "Read(//home/eric/proj/netidx/netidx-value/src/**)",
       "Bash(bash gen.sh)",
       "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -10 {}')",
-      "Bash(./target/debug/graphix --check /tmp/opt_min.gx)"
+      "Bash(./target/debug/graphix --check /tmp/opt_min.gx)",
+      "Bash(./target/debug/graphix --check book/src/examples/gui/data_table_calculated.gx)",
+      "Bash(strings target/debug/deps/graphix_package_gui-*.so target/debug/deps/graphix_package_gui-*.rlib)"
     ],
     "deny": [],
     "ask": []
