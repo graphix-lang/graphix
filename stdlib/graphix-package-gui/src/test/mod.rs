@@ -451,7 +451,29 @@ impl InteractionHarness {
         self.inner.drain().await
     }
 
-    fn view(&self) -> crate::widgets::IcedElement<'_> {
+    /// Simulate a window resize. Changes the layout viewport so the
+    /// next `process_events`/`view` pass lays out at the new size, and
+    /// delivers an empty-events pass so the responsive-wrapped widgets
+    /// see the new size immediately.
+    #[allow(dead_code)]
+    fn resize(&mut self, viewport: Size) {
+        self.viewport = viewport;
+        // Invalidate the cache; bounds changed, so the cached tree is
+        // stale.
+        self.cache = user_interface::Cache::default();
+        let _ = self.process_events(&[]);
+    }
+
+    fn view(&mut self) -> crate::widgets::IcedElement<'_> {
+        // Some widgets (notably `data_table`) wrap their view in
+        // `iced_widget::responsive`, so size-dependent state like
+        // `cached_col_widths` is populated by the closure during
+        // layout, not by the `view()` call itself. Run an empty-events
+        // pass first so that layout executes — side effects (cache
+        // writes through interior mutability) persist even though the
+        // first UserInterface is discarded — then return a fresh
+        // element for the caller.
+        let _ = self.process_events(&[]);
         self.inner.view()
     }
 

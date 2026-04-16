@@ -142,6 +142,31 @@ fn truncate_to_width(text: &str, max_px: f32) -> String {
     }
 }
 
+/// Viewport-derived layout metrics. Written by the `responsive`
+/// closure on each layout pass, read by keyboard nav, scroll handling,
+/// subscription updates. `dirty` drives the deferred
+/// `update_subscriptions()` hook in `before_view`.
+#[derive(Clone, Copy)]
+struct ViewportMetrics {
+    viewport_width: f32,
+    viewport_height: f32,
+    rows_in_view: usize,
+    cols_in_view: usize,
+    dirty: bool,
+}
+
+impl Default for ViewportMetrics {
+    fn default() -> Self {
+        Self {
+            viewport_width: 1024.0,
+            viewport_height: 0.0,
+            rows_in_view: DEFAULT_VISIBLE_ROWS,
+            cols_in_view: DEFAULT_VISIBLE_COLS,
+            dirty: false,
+        }
+    }
+}
+
 /// State for an active column resize drag.
 struct ResizeDrag {
     col_name: String,
@@ -488,15 +513,16 @@ pub(crate) struct DataTableW<X: GXExt> {
     /// `row_paths` — same length, same order.
     row_names: Vec<ArcStr>,
     cells: Arc<SharedCells>,
-    row_subs: Vec<Option<Vec<Dval>>>,
-    sub_start: usize,
-    sub_end: usize,
+    /// Active row subscriptions, keyed by row_path. Identity-keyed (not
+    /// position-keyed) so that re-sorting `row_paths` doesn't strand
+    /// subs at stale positions or require any sub churn.
+    row_subs: FxHashMap<ArcStr, Vec<Dval>>,
     first_row: usize,
     first_col: usize,
-    rows_in_view: usize,
-    cols_in_view: usize,
-    /// Last known viewport width in pixels (for column fit calculations).
-    viewport_width: f32,
+    /// Viewport-derived layout metrics. Written during layout by the
+    /// `responsive` wrapper around `view()`; read everywhere else.
+    /// Interior-mutable because iced requires the widget to be `Sync`.
+    viewport_metrics: Mutex<ViewportMetrics>,
     /// Cached actual column widths from the last view() call, keyed by col_name.
     cached_col_widths: Mutex<FxHashMap<String, f32>>,
     /// Set when keyboard nav changes first_row/first_col. Suppresses
@@ -634,12 +660,9 @@ impl<X: GXExt> DataTableW<X> {
             col_names: vec![],
             virtual_cols: FxHashSet::default(),
             row_paths: vec![], row_names: vec![],
-            cells, row_subs: vec![],
-            sub_start: 0, sub_end: 0,
+            cells, row_subs: FxHashMap::default(),
             first_row: 0, first_col: 0,
-            rows_in_view: DEFAULT_VISIBLE_ROWS,
-            cols_in_view: DEFAULT_VISIBLE_COLS,
-            viewport_width: 1024.0,
+            viewport_metrics: Mutex::new(ViewportMetrics::default()),
             cached_col_widths: Mutex::new(FxHashMap::default()),
             keyboard_scroll_override: false,
             editing: None, edit_buffer: String::new(),
@@ -657,11 +680,13 @@ impl<X: GXExt> DataTableW<X> {
     /// No resolver call — the user passes the table directly.
     fn apply_table(&mut self) {
         self.row_subs.clear();
-        self.sub_start = 0;
-        self.sub_end = 0;
         self.col_names.clear();
         self.row_paths.clear();
         self.row_names.clear();
+        // Reset column-width cache: the prior table's columns may not
+        // appear in the new one, and any widths that *do* match a new
+        // column name are stale until re-measured.
+        self.cached_col_widths.lock().clear();
         // Re-read selection from graphix ref (don't clear user selection)
         self.selection = self.selection_ref.last.as_ref()
             .map(parse_selection).unwrap_or_default();
@@ -775,7 +800,6 @@ impl<X: GXExt> DataTableW<X> {
             }
             self.sort_col_subs.insert(sort_col, subs);
         }
-        let n_rows = self.row_paths.len();
         // Reset grid; default values are computed at render time via
         // `default_for`, so we only seed entries that aren't otherwise
         // filled by a subscription. Identity-keyed by (row_path, col)
@@ -787,7 +811,6 @@ impl<X: GXExt> DataTableW<X> {
         // sparkline map just won't be rendered.
         self.push_defaults_to_sparklines();
         self.cells.dirty.store(false, Ordering::Relaxed);
-        self.row_subs = (0..n_rows).map(|_| None).collect();
         // Apply column sort using default values (for virtual columns/rows).
         // Subscribed sort column data will trigger resort_by_column later.
         if !self.sort_by.is_empty() {
@@ -800,7 +823,8 @@ impl<X: GXExt> DataTableW<X> {
         let n = self.row_paths.len();
         if n == 0 { return (0, 0); }
         let start = self.first_row.min(n.saturating_sub(1));
-        let end = (start + self.rows_in_view).min(n);
+        let rows_in_view = self.viewport_metrics.lock().rows_in_view;
+        let end = (start + rows_in_view).min(n);
         (start, end)
     }
 
@@ -814,7 +838,8 @@ impl<X: GXExt> DataTableW<X> {
         let total = self.total_data_cols();
         if total == 0 { return (0, 0); }
         let start = self.first_col.min(total.saturating_sub(1));
-        let end = (start + self.cols_in_view).min(total);
+        let cols_in_view = self.viewport_metrics.lock().cols_in_view;
+        let end = (start + cols_in_view).min(total);
         (start, end)
     }
 
@@ -825,35 +850,42 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
+    /// Reconcile `row_subs` with the current visible window. Subs are
+    /// keyed by `row_path` (identity) — not row position — so this
+    /// stays correct after re-sorts even when the visible positions
+    /// don't change. Drops subs for paths that scrolled out, spawns
+    /// subs for paths that scrolled in.
     fn update_subscriptions(&mut self) {
-        let (new_start, new_end) = self.subscription_row_range();
-        if new_start == self.sub_start && new_end == self.sub_end { return; }
-        for i in self.sub_start..self.sub_end {
-            if (i < new_start || i >= new_end) && i < self.row_subs.len() {
-                self.row_subs[i] = None;
+        let (s, e) = self.subscription_row_range();
+        let want: FxHashSet<ArcStr> = (s..e)
+            .filter_map(|i| self.row_paths.get(i).map(|p| ArcStr::from(&**p)))
+            .collect();
+        // Drop any sub whose row is no longer in the visible window.
+        self.row_subs.retain(|p, _| want.contains(p));
+        // Spawn subs for visible rows that don't yet have one.
+        for i in s..e {
+            let row_path = match self.row_paths.get(i) {
+                Some(p) => p.clone(),
+                None => continue,
+            };
+            let arc_p = ArcStr::from(&*row_path);
+            if !self.row_subs.contains_key(&arc_p) {
+                self.subscribe_row(&row_path);
             }
         }
-        for i in new_start..new_end {
-            if i < self.row_subs.len() && self.row_subs[i].is_none() {
-                self.subscribe_row(i);
-            }
-        }
-        self.sub_start = new_start;
-        self.sub_end = new_end;
     }
 
-    fn subscribe_row(&mut self, row_idx: usize) {
-        let row_path = &self.row_paths[row_idx];
+    fn subscribe_row(&mut self, row_path: &Path) {
         // Only subscribe if the row is an absolute netidx path
         if !Path::is_absolute(row_path) {
             return;
         }
+        let row_path_arc = ArcStr::from(&**row_path);
         let cells = self.cells.clone();
         let on_update_call = self.on_update.as_ref()
             .map(|c| (self.gx.clone(), c.id()));
         match self.mode {
             DisplayMode::Table => {
-                let row_path_arc = ArcStr::from(&**row_path);
                 let mut dvals = Vec::with_capacity(self.col_names.len());
                 for col_name in self.col_names.iter() {
                     let is_sparkline = matches!(
@@ -928,13 +960,13 @@ impl<X: GXExt> DataTableW<X> {
                         }
                     });
                 }
-                self.row_subs[row_idx] = Some(dvals);
+                self.row_subs.insert(row_path_arc, dvals);
             }
             DisplayMode::Value => {
                 let (tx, mut rx) = futures::channel::mpsc::channel(2);
                 let dval = self.subscriber.subscribe(row_path.clone());
-                let row_path_arc = ArcStr::from(&**row_path);
                 let grid_key = (row_path_arc.clone(), VALUE_COL_KEY);
+                let cb_path_arc = row_path_arc.clone();
                 dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
                 let cells = cells.clone();
                 self.rt.spawn(async move {
@@ -950,7 +982,7 @@ impl<X: GXExt> DataTableW<X> {
                                 }
                                 if let Some((ref gx, cb_id)) = on_update_call {
                                     let _ = gx.call(cb_id, ValArray::from_iter([
-                                        Value::String(row_path_arc.clone()),
+                                        Value::String(cb_path_arc.clone()),
                                         v,
                                     ]));
                                 }
@@ -958,7 +990,7 @@ impl<X: GXExt> DataTableW<X> {
                         }
                     }
                 });
-                self.row_subs[row_idx] = Some(vec![dval]);
+                self.row_subs.insert(row_path_arc, vec![dval]);
             }
         }
     }
@@ -1143,13 +1175,14 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Scroll viewport to ensure cell at (row_idx, col_name) is visible.
     fn scroll_to_cell(&mut self, row: usize, col_name: &str) {
+        let metrics = *self.viewport_metrics.lock();
         let mut changed = false;
         // Row scroll
         if row < self.first_row {
             self.first_row = row;
             changed = true;
-        } else if row >= self.first_row + self.rows_in_view {
-            self.first_row = row.saturating_sub(self.rows_in_view.saturating_sub(1));
+        } else if row >= self.first_row + metrics.rows_in_view {
+            self.first_row = row.saturating_sub(metrics.rows_in_view.saturating_sub(1));
             changed = true;
         }
         // Column scroll using actual cached widths (skip when
@@ -1162,13 +1195,13 @@ impl<X: GXExt> DataTableW<X> {
                     changed = true;
                 } else {
                     // Use actual widths to check if the column fits in viewport
-                    let vis = self.actual_visible_cols(self.first_col, self.viewport_width);
+                    let vis = self.actual_visible_cols(self.first_col, metrics.viewport_width);
                     if ci >= self.first_col + vis {
                         // Scroll right so ci is the last visible column
                         self.first_col = ci.saturating_sub(
                             self.actual_visible_cols(
-                                ci.saturating_sub(self.cols_in_view),
-                                self.viewport_width,
+                                ci.saturating_sub(metrics.cols_in_view),
+                                metrics.viewport_width,
                             ).saturating_sub(1)
                         );
                         changed = true;
@@ -1432,6 +1465,26 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         let mut changed = false;
         if self.sort_col_dirty.swap(false, Ordering::Relaxed) {
             self.resort_by_column();
+            // Re-sort permuted `row_paths`, so the visible window now
+            // contains different rows. Re-evaluate subs so the new
+            // visible rows are subscribed and the ones that scrolled
+            // out are dropped.
+            self.update_subscriptions();
+            changed = true;
+        }
+        // The `responsive` wrapper around `view()` updates
+        // `viewport_metrics` during layout and sets `dirty` when the
+        // visible row count changed. It can't call
+        // `update_subscriptions()` itself (only has `&self`), so we
+        // pick up the pending work here, one cycle later.
+        let viewport_dirty = {
+            let mut m = self.viewport_metrics.lock();
+            let d = m.dirty;
+            m.dirty = false;
+            d
+        };
+        if viewport_dirty {
+            self.update_subscriptions();
             changed = true;
         }
         if self.cells.dirty.swap(false, Ordering::Relaxed) {
@@ -1558,11 +1611,12 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 let col_arc = ArcStr::from(col_name.as_str());
                 let mut grid = self.cells.grid.lock();
                 for (row_idx, row_path) in self.row_paths.iter().enumerate() {
+                    let row_path_arc = ArcStr::from(&**row_path);
                     let unsubscribed = !Path::is_absolute(row_path)
-                        || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true);
+                        || !self.row_subs.contains_key(&row_path_arc);
                     if is_virtual || unsubscribed {
                         let row_name = &self.row_names[row_idx];
-                        let key = (ArcStr::from(&**row_path), col_arc.clone());
+                        let key = (row_path_arc, col_arc.clone());
                         grid.insert(key, self.default_for(&col_name, row_name));
                     }
                 }
@@ -1792,16 +1846,28 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     }
 
     fn handle_viewport_resize(&mut self, vp_w: f32, vp_h: f32) -> bool {
-        let rows_in_view = ((vp_h / ROW_HEIGHT_ESTIMATE).ceil() as usize).max(1);
+        let row_h = self.row_height();
+        let header_h = ROW_HEIGHT_ESTIMATE;
+        let body_h = (vp_h - header_h).max(0.0);
+        let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
         let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
         let cols_in_view = ((vp_w / MIN_COL_WIDTH).ceil() as usize)
             .saturating_sub(name_cols).max(1);
-        if self.rows_in_view == rows_in_view && self.cols_in_view == cols_in_view {
+        let prev = *self.viewport_metrics.lock();
+        if prev.rows_in_view == rows_in_view
+            && prev.cols_in_view == cols_in_view
+            && prev.viewport_width == vp_w
+            && prev.viewport_height == vp_h
+        {
             return false;
         }
-        self.rows_in_view = rows_in_view;
-        self.cols_in_view = cols_in_view;
-        self.viewport_width = vp_w;
+        *self.viewport_metrics.lock() = ViewportMetrics {
+            viewport_width: vp_w,
+            viewport_height: vp_h,
+            rows_in_view,
+            cols_in_view,
+            dirty: false,
+        };
         self.update_subscriptions();
         true
     }
@@ -1826,39 +1892,62 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     }
 
     fn handle_scroll(&mut self, ox: f32, oy: f32, vp_w: f32, vp_h: f32) -> bool {
+        let row_h = self.row_height();
+        let header_h = ROW_HEIGHT_ESTIMATE;
+        let body_h = (vp_h - header_h).max(0.0);
+        let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
+        let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
+        let cols_in_view = ((vp_w / MIN_COL_WIDTH).ceil() as usize)
+            .saturating_sub(name_cols).max(1);
+        // Viewport metrics update unconditionally so that a pure resize
+        // notification (no offset change, or offset matching the
+        // keyboard-override position) still refreshes the cached
+        // viewport width / row count. Gating this behind the override
+        // check would drop resize updates.
+        let prev = *self.viewport_metrics.lock();
+        let metrics_changed = prev.viewport_width != vp_w
+            || prev.viewport_height != vp_h
+            || prev.rows_in_view != rows_in_view
+            || prev.cols_in_view != cols_in_view;
+        if metrics_changed {
+            *self.viewport_metrics.lock() = ViewportMetrics {
+                viewport_width: vp_w,
+                viewport_height: vp_h,
+                rows_in_view,
+                cols_in_view,
+                dirty: false,
+            };
+        }
         if self.keyboard_scroll_override {
             // Check if this is a real user scroll (position actually changed
             // from what we'd expect) or just the overlay re-asserting.
             let expected_ox = self.first_col as f32 * MIN_COL_WIDTH;
-            let expected_oy = self.first_row as f32 * ROW_HEIGHT_ESTIMATE;
+            let expected_oy = self.first_row as f32 * row_h;
             let real_scroll = (ox - expected_ox).abs() > MIN_COL_WIDTH * 0.5
-                || (oy - expected_oy).abs() > ROW_HEIGHT_ESTIMATE * 0.5;
+                || (oy - expected_oy).abs() > row_h * 0.5;
             if !real_scroll {
-                // Just the overlay re-asserting — keep keyboard position
-                return false;
+                // Overlay is re-asserting — keep keyboard-driven
+                // first_row/first_col, but metric changes above still
+                // take effect. Re-subscribe if the visible row window
+                // grew/shrank so newly-visible rows get subs.
+                if metrics_changed && prev.rows_in_view != rows_in_view {
+                    self.update_subscriptions();
+                }
+                return metrics_changed;
             }
             // Real user scroll — clear override and process normally
             self.keyboard_scroll_override = false;
         }
         let n_rows = self.row_paths.len();
         let n_cols = self.total_data_cols();
-        let new_first_row = ((oy / ROW_HEIGHT_ESTIMATE).round() as usize).min(n_rows.saturating_sub(1));
+        let new_first_row = ((oy / row_h).round() as usize).min(n_rows.saturating_sub(1));
         let new_first_col = ((ox / MIN_COL_WIDTH).round() as usize).min(n_cols.saturating_sub(1));
-        let rows_in_view = ((vp_h / ROW_HEIGHT_ESTIMATE).ceil() as usize).max(1);
-        let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
-        let cols_in_view = ((vp_w / MIN_COL_WIDTH).ceil() as usize)
-            .saturating_sub(name_cols).max(1);
-        let changed = self.first_row != new_first_row
-            || self.first_col != new_first_col
-            || self.rows_in_view != rows_in_view
-            || self.cols_in_view != cols_in_view;
-        if !changed { return false; }
-        let row_changed = self.first_row != new_first_row || self.rows_in_view != rows_in_view;
+        let pos_changed = self.first_row != new_first_row || self.first_col != new_first_col;
+        if !metrics_changed && !pos_changed { return false; }
+        let row_changed = self.first_row != new_first_row
+            || prev.rows_in_view != rows_in_view;
         self.first_row = new_first_row;
         self.first_col = new_first_col;
-        self.rows_in_view = rows_in_view;
-        self.cols_in_view = cols_in_view;
-        self.viewport_width = vp_w;
         if row_changed { self.update_subscriptions(); }
         true
     }
@@ -1934,6 +2023,50 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 "No table specified".to_string()
             };
             return widget::text(msg).into();
+        }
+        // Wrap in `responsive` so the widget receives its actual
+        // allocated size at layout time. This is what lets the
+        // horizontal scrollbar appear dynamically when the user shrinks
+        // the window below content width: we derive `need_hscroll` and
+        // the rendered row/column counts from `size` directly, and
+        // refresh the cached viewport metrics as a side effect so
+        // off-layout consumers (keyboard nav, subscription updates)
+        // also see the latest values.
+        widget::responsive(|size| self.render_with_size(size))
+            .width(iced_core::Length::Fill)
+            .height(iced_core::Length::Fill)
+            .into()
+    }
+}
+
+impl<X: GXExt> DataTableW<X> {
+    fn render_with_size(&self, size: iced_core::Size) -> IcedElement<'_> {
+        // Update viewport metrics from the actual layout size. The
+        // `dirty` flag is consumed in `before_view` to trigger a
+        // deferred `update_subscriptions()` on resize — we can't call
+        // it from here because the closure only holds `&self`.
+        {
+            let row_h = self.row_height();
+            let header_h = ROW_HEIGHT_ESTIMATE;
+            let body_h = (size.height - header_h).max(0.0);
+            let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
+            let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
+            let cols_in_view = ((size.width / MIN_COL_WIDTH).ceil() as usize)
+                .saturating_sub(name_cols).max(1);
+            let mut m = self.viewport_metrics.lock();
+            let changed = m.viewport_width != size.width
+                || m.viewport_height != size.height
+                || m.rows_in_view != rows_in_view
+                || m.cols_in_view != cols_in_view;
+            if changed {
+                *m = ViewportMetrics {
+                    viewport_width: size.width,
+                    viewport_height: size.height,
+                    rows_in_view,
+                    cols_in_view,
+                    dirty: m.dirty || m.rows_in_view != rows_in_view,
+                };
+            }
         }
         let num_rows = self.row_paths.len();
         let show_row_name = self.show_row_name.t.unwrap_or(true);
@@ -2040,10 +2173,15 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 col_meta.push(("value".into(), w));
             }
         }
-        // Cache column widths for keyboard nav viewport calculations
+        // Cache column widths for keyboard nav viewport calculations.
+        // Accumulated across frames (not cleared here) so columns that
+        // have scrolled out of view retain their last-known widths —
+        // virtual_width below needs an estimate of the *entire*
+        // content's width to get the horizontal scrollbar range right,
+        // not just the currently-visible slice. `apply_table` clears
+        // the cache when the column set changes.
         {
             let mut cache = self.cached_col_widths.lock();
-            cache.clear();
             for (name, w) in &col_meta {
                 cache.insert(name.clone(), *w);
             }
@@ -2178,39 +2316,47 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             .width(iced_core::Length::Shrink)
             .height(iced_core::Length::Fill)
             .into();
-        let need_vscroll = num_rows > self.rows_in_view;
-        let total_data_cols = self.total_data_cols();
-        // Check if all columns fit by summing actual widths
-        let total_col_width: f32 = col_meta.iter().map(|(_, w)| *w).sum();
-        let need_hscroll = total_data_cols > self.cols_in_view
-            || total_col_width > self.viewport_width;
-        if !need_vscroll && !need_hscroll {
-            return self.wrap_keyboard(self.wrap_resize_drag(grid_area));
-        }
-        let virtual_height = if need_vscroll {
-            (num_rows + self.rows_in_view) as f32 * ROW_HEIGHT_ESTIMATE
-        } else { 1.0 };
-        let virtual_width = if need_hscroll {
-            (total_data_cols + self.cols_in_view) as f32 * MIN_COL_WIDTH
-        } else { 1.0 };
+        let row_h = self.row_height();
+        let header_h = ROW_HEIGHT_ESTIMATE;
+        // Virtual content size drives iced's scrollable range and its
+        // auto-hide: a bar shows iff `content_bounds > bounds` in that
+        // axis (`vendor/iced_widget/src/scrollable.rs:1949-1955`).
+        //
+        // Critical: this must reflect the **entire** content extent,
+        // not just the currently-rendered slice. `col_meta` holds only
+        // the visible column window, so summing it is wrong — once the
+        // user scrolls right, the off-screen left columns are not in
+        // `col_meta` and the sum shrinks, which iced then reads as
+        // "content fits" and hides the scrollbar mid-scroll. Instead,
+        // we sum across all `col_names`, falling back to
+        // `MIN_COL_WIDTH` for columns whose widths haven't been
+        // measured yet because they've never been rendered.
+        // `cached_col_widths` persists across frames for this purpose.
+        let virtual_width = {
+            let cache = self.cached_col_widths.lock();
+            let name_col_w = if show_row_name {
+                cache.get(ROW_NAME_KEY).copied().unwrap_or(MIN_COL_WIDTH)
+            } else {
+                0.0
+            };
+            let data_cols_w: f32 = match self.mode {
+                DisplayMode::Table => self.col_names.iter()
+                    .map(|n| cache.get(n).copied().unwrap_or(MIN_COL_WIDTH))
+                    .sum(),
+                DisplayMode::Value => cache.get("value")
+                    .copied().unwrap_or(MIN_COL_WIDTH),
+            };
+            name_col_w + data_cols_w
+        };
+        let virtual_height = num_rows as f32 * row_h + header_h;
         let virtual_content: IcedElement<'_> = widget::Space::new()
             .width(virtual_width).height(virtual_height).into();
-        let direction = match (need_vscroll, need_hscroll) {
-            (true, true) => widget::scrollable::Direction::Both {
-                vertical: widget::scrollable::Scrollbar::default(),
-                horizontal: widget::scrollable::Scrollbar::default(),
-            },
-            (true, false) => widget::scrollable::Direction::Vertical(
-                widget::scrollable::Scrollbar::default(),
-            ),
-            (false, true) => widget::scrollable::Direction::Horizontal(
-                widget::scrollable::Scrollbar::default(),
-            ),
-            (false, false) => unreachable!(),
-        };
         let scroll_overlay: IcedElement<'_> =
             widget::Scrollable::<'_, Message, GraphixTheme, Renderer>::new(virtual_content)
-                .direction(direction)
+                .direction(widget::scrollable::Direction::Both {
+                    vertical: widget::scrollable::Scrollbar::default(),
+                    horizontal: widget::scrollable::Scrollbar::default(),
+                })
                 .on_scroll(|vp| {
                     let abs = vp.absolute_offset();
                     let bounds = vp.bounds();
@@ -2219,13 +2365,25 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 .width(iced_core::Length::Fill)
                 .height(iced_core::Length::Fill)
                 .into();
-        let result: IcedElement<'_> = widget::Stack::<'_, Message, GraphixTheme, Renderer>::new()
-            .push(grid_area)
-            .push(scroll_overlay)
+        let stacked: IcedElement<'_> =
+            widget::Stack::<'_, Message, GraphixTheme, Renderer>::new()
+                .push(grid_area)
+                .push(scroll_overlay)
+                .width(iced_core::Length::Fill)
+                .height(iced_core::Length::Fill)
+                .into();
+        // Clip the final output so a partial last row (rendered because
+        // `rows_in_view` is `ceil`'d for the "more below" affordance)
+        // doesn't bleed past the table's allocated bounds into widgets
+        // below. `container::clip(true)` sets iced's scissor rect
+        // during draw only — layout, hit-testing, focus traversal and
+        // iced overlay dropdowns (pick_list, tooltips) are unaffected.
+        let clipped: IcedElement<'_> = widget::container(stacked)
             .width(iced_core::Length::Fill)
             .height(iced_core::Length::Fill)
+            .clip(true)
             .into();
-        self.wrap_keyboard(self.wrap_resize_drag(result))
+        self.wrap_keyboard(self.wrap_resize_drag(clipped))
     }
 }
 
@@ -2578,6 +2736,17 @@ impl<X: GXExt> DataTableW<X> {
     /// auto-sizing.
     pub fn dt_ref_width(&self, col: &str) -> Option<f32> {
         self.ref_widths.get(col).copied()
+    }
+
+    /// Snapshot of the viewport metrics written by the responsive
+    /// closure during the most recent layout. Tests assert these to
+    /// verify that resize-only events propagate — the horizontal-
+    /// scrollbar-on-shrink bug surfaced here before the `responsive`
+    /// refactor because this state never updated when content fit
+    /// initially.
+    pub fn dt_viewport_metrics(&self) -> (f32, f32, usize, usize) {
+        let m = self.viewport_metrics.lock();
+        (m.viewport_width, m.viewport_height, m.rows_in_view, m.cols_in_view)
     }
 
     /// Number of points currently retained in the sparkline history for

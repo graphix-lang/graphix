@@ -46,28 +46,19 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
     sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
 };
 
-// Each cpu series oscillates in a similar 0–100 band but with a
-// distinct period and phase offset, so the relative ordering shifts
-// every few seconds — handy for watching the cpu sort re-rank rows
-// live.
-svc(
-    #name:"svc-1",
-    #state:`Healthy,
-    #uptime:0.91,
-    #cpu:50.0 + 35.0 * math::sin(t / 4.0)
-);
-svc(
-    #name:"svc-2",
-    #state:`Degraded,
-    #uptime:0.62,
-    #cpu:50.0 + 35.0 * math::sin((t + 6.) / 5.0)
-);
-svc(
-    #name:"svc-3",
-    #state:`Healthy,
-    #uptime:0.99,
-    #cpu:50.0 + 35.0 * math::sin((t + 12.) / 6.0)
-);
+// single random number
+let rn = |start: f64, end: f64| -> f64 rand::rand(#start, #end, #clock:1);
+
+let published = array::init(1024, |i| svc(
+    #name:"svc-[i]",
+    #state:select rand::rand(#clock:1) {
+        n if n <= 0.8 => `Healthy,
+        n if n <= 0.9 => `Degraded,
+        _ => `Down
+    },
+    #uptime:rn(0., 1.),
+    #cpu:rn(0., 30.) + rn(1., 5.) * math::sin((t + rn(0., 5.)) / rn(1., 5.))
+));
 
 // Caller-side filter: apply the regex to the Table's rows before
 // handing the Table to the widget.

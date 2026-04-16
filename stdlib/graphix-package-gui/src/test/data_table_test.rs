@@ -446,6 +446,65 @@ let result = data_table(
     Ok(())
 }
 
+/// Regression: with more rows than fit in the visible window, sorting
+/// can shift the visible set to rows that were never subscribed
+/// initially. After resort, those newly-visible rows must have live
+/// subscriptions and show real data, not empty cells.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_subscribes_newly_visible_rows() -> Result<()> {
+    // 40 rows with cpu = row_index; default visible window is 30 so
+    // the initial sub set covers cpu 0..30. After descending sort the
+    // visible window holds cpu 39..10 — i.e. mostly rows that were
+    // never originally subscribed. They must end up with live subs.
+    let n_rows: usize = 40;
+    let mut publishes = String::new();
+    let mut rows = String::new();
+    for i in 0..n_rows {
+        publishes.push_str(&format!(
+            "sys::net::publish(\"/local/dt_sub_resort/r{i}/cpu\", v64:{i});\n"
+        ));
+        if i > 0 { rows.push_str(", "); }
+        rows.push_str(&format!("\"/local/dt_sub_resort/r{i}\""));
+    }
+    let code = format!(
+        r#"
+use gui; use gui::data_table; use sys;
+{publishes}
+let tbl = {{ rows: [{rows}], columns: ["cpu"] }};
+let result = data_table(
+    #sort_by: &[{{ column: "cpu", direction: `Descending }}],
+    #table: &tbl
+)
+"#
+    );
+    let mut h = dt(&code).await?;
+    let top = format!("r{}", n_rows - 1);
+    for _ in 0..20 {
+        h.drain().await?;
+        h.before_view();
+        let snap = h.dt_snapshot();
+        if snap.row_basenames.first().map(|s| s.as_str()) == Some(top.as_str())
+            && !snap.grid.first().and_then(|r| r.first()).map(|s| s.is_empty()).unwrap_or(true)
+        {
+            break;
+        }
+    }
+    let snap = h.dt_snapshot();
+    assert_eq!(snap.row_basenames[0], top, "top row after desc sort");
+    // Every visible row must have a live cpu cell — these are mostly
+    // rows that weren't in the initial visible window before resort.
+    for vi in 0..30 {
+        let row = &snap.row_basenames[vi];
+        let val = &snap.grid[vi][0];
+        assert!(
+            !val.is_empty(),
+            "row {row} (visible position {vi}) has empty cpu cell after resort \
+             — subs didn't follow the new visible set"
+        );
+    }
+    Ok(())
+}
+
 // ── Sparkline decimation unit test ─────────────────────────────────
 
 #[test]
@@ -1439,5 +1498,55 @@ let result = data_table(
     let w = h.dt().dt_user_width("c0").expect("auto-fit writes user_widths");
     // MIN_COL_WIDTH = 80; the long content must exceed it.
     assert!(w > 80.0, "auto-fit width must exceed MIN_COL_WIDTH, got {w}");
+    Ok(())
+}
+
+/// Regression: the horizontal scrollbar must react to window resizes,
+/// not just to scroll events. Before the `responsive` refactor, the
+/// widget only updated its cached `viewport_width` via the
+/// Scrollable's `on_scroll` callback — which never fires when content
+/// fits — so shrinking the window below content width did not cause
+/// the scrollbar to appear.
+///
+/// Here we verify the underlying mechanism: viewport metrics (width,
+/// height, rows_in_view, cols_in_view) update on every layout pass,
+/// including when only the viewport size changes.
+#[tokio::test(flavor = "current_thread")]
+async fn viewport_metrics_update_on_resize() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1", "r2", "r3", "r4"], columns: ["c0", "c1", "c2"] };
+let result = data_table(#table: &tbl)
+"#;
+    use iced_core::Size;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(800.0, 400.0)).await?;
+    // Settle reactive evaluation so the table is fully built.
+    for _ in 0..20 {
+        h.drain().await?;
+    }
+    // First layout at 800x400.
+    let _ = h.view();
+    let (w0, h0, rows0, cols0) = h.inner.dt().dt_viewport_metrics();
+    assert!((w0 - 800.0).abs() < 0.5, "initial viewport_width ~800, got {w0}");
+    assert!((h0 - 400.0).abs() < 0.5, "initial viewport_height ~400, got {h0}");
+    assert!(rows0 > 1, "rows_in_view > 1 at 400px tall, got {rows0}");
+    assert!(cols0 > 1, "cols_in_view > 1 at 800px wide, got {cols0}");
+
+    // Shrink the window. Before the responsive refactor, viewport_width
+    // stayed at 1024.0 (the field default) because no on_scroll
+    // callback fired — content still fit, so the Scrollable's
+    // notify_viewport bailed out early.
+    h.resize(Size::new(200.0, 80.0));
+    let (w1, h1, rows1, cols1) = h.inner.dt().dt_viewport_metrics();
+    assert!((w1 - 200.0).abs() < 0.5, "post-shrink viewport_width ~200, got {w1}");
+    assert!((h1 - 80.0).abs() < 0.5, "post-shrink viewport_height ~80, got {h1}");
+    assert!(rows1 < rows0, "rows_in_view shrank: before {rows0}, after {rows1}");
+    assert!(cols1 < cols0, "cols_in_view shrank: before {cols0}, after {cols1}");
+
+    // And grow it back — metrics must follow the grow, not stay stuck.
+    h.resize(Size::new(1200.0, 600.0));
+    let (w2, h2, _rows2, _cols2) = h.inner.dt().dt_viewport_metrics();
+    assert!((w2 - 1200.0).abs() < 0.5, "post-grow viewport_width ~1200, got {w2}");
+    assert!((h2 - 600.0).abs() < 0.5, "post-grow viewport_height ~600, got {h2}");
     Ok(())
 }
