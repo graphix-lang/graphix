@@ -178,8 +178,11 @@ enum ColumnType {
     Progress,
     /// Clickable button showing cell value.
     Button,
-    /// Mini line chart accumulating recent values.
-    Sparkline { history_seconds: f64 },
+    /// Mini line chart accumulating recent values. `min`/`max`, when
+    /// `Some`, fix the y-axis bounds for every cell in the column;
+    /// otherwise the column auto-scales to the union of all rows'
+    /// values (so cells in the same column can be compared visually).
+    Sparkline { history_seconds: f64, min: Option<f64>, max: Option<f64> },
 }
 
 /// Parsed column spec from the graphix Map<string, ColumnSpec>.
@@ -290,12 +293,27 @@ fn parse_column_type(v: &Value) -> (ColumnType, Option<Value>) {
             (ColumnType::Button, cb)
         }
         "Sparkline" => {
-            // struct { history_seconds } — 1 field
-            let hs = match payload.cast_to::<[(ArcStr, Value); 1]>() {
-                Ok([(_, v)]) => v.cast_to::<f64>().unwrap_or(60.0),
-                Err(_) => 60.0,
-            };
-            (ColumnType::Sparkline { history_seconds: hs }, Option::None)
+            // struct { history_seconds, max, min } — 3 fields alphabetical.
+            // `min`/`max` are `[f64, null]` so cast_to::<f64>() returns
+            // Err for `null` — that's how we get None.
+            let (hs, max_o, min_o) =
+                match payload.cast_to::<[(ArcStr, Value); 3]>() {
+                    Ok([(_, hs_v), (_, max_v), (_, min_v)]) => {
+                        let hs = hs_v.cast_to::<f64>().unwrap_or(60.0);
+                        let max_o = max_v.cast_to::<f64>().ok();
+                        let min_o = min_v.cast_to::<f64>().ok();
+                        (hs, max_o, min_o)
+                    }
+                    Err(_) => (60.0, Option::None, Option::None),
+                };
+            (
+                ColumnType::Sparkline {
+                    history_seconds: hs,
+                    min: min_o,
+                    max: max_o,
+                },
+                Option::None,
+            )
         }
         _ => (ColumnType::Text, Option::None),
     }
@@ -843,7 +861,7 @@ impl<X: GXExt> DataTableW<X> {
                         ColumnType::Sparkline { .. }
                     );
                     let history_secs = match self.col_type_for(col_name) {
-                        ColumnType::Sparkline { history_seconds } => *history_seconds,
+                        ColumnType::Sparkline { history_seconds, .. } => *history_seconds,
                         _ => 0.0,
                     };
                     let sparkline_key = (row_path.to_string(), col_name.to_string());
@@ -962,7 +980,7 @@ impl<X: GXExt> DataTableW<X> {
                 continue;
             }
             let history_secs = match self.col_type_for(col_name) {
-                ColumnType::Sparkline { history_seconds } => *history_seconds,
+                ColumnType::Sparkline { history_seconds, .. } => *history_seconds,
                 _ => unreachable!(),
             };
             for (row_idx, row_path) in self.row_paths.iter().enumerate() {
@@ -1325,10 +1343,23 @@ fn value_to_f64(v: &Value) -> Option<f64> {
 type Col<'a> = widget::Column<'a, Message, GraphixTheme, Renderer>;
 type Row<'a> = widget::Row<'a, Message, GraphixTheme, Renderer>;
 
+/// Y-axis bounds for a sparkline cell. Both ends are pre-resolved
+/// during view(): the column-wide union of all rows' values for axes
+/// the caller didn't fix, and the user-supplied `min`/`max` from the
+/// `Sparkline` column type for the ones they did.
+#[derive(Clone, Copy)]
+struct SparkBounds {
+    min: f64,
+    max: f64,
+}
+
 /// Canvas program that draws a sparkline polyline.
 struct SparklineCanvas {
     /// (time_offset_secs, value) pairs
     points: Vec<(f64, f64)>,
+    /// Y-axis bounds resolved by the caller (column-wide auto-scale or
+    /// user-fixed via the column type's `min`/`max`).
+    bounds: SparkBounds,
 }
 
 impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer> for SparklineCanvas {
@@ -1347,13 +1378,8 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer> for Spark
         if self.points.len() < 2 {
             return vec![frame.into_geometry()];
         }
-        // Find value range
-        let (mut min_v, mut max_v) = (f64::MAX, f64::MIN);
+        let (mut min_v, mut max_v) = (self.bounds.min, self.bounds.max);
         let (min_t, max_t) = (self.points.first().unwrap().0, self.points.last().unwrap().0);
-        for &(_, v) in &self.points {
-            if v < min_v { min_v = v; }
-            if v > max_v { max_v = v; }
-        }
         if (max_v - min_v).abs() < 1e-12 {
             min_v -= 1.0;
             max_v += 1.0;
@@ -2093,6 +2119,12 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         // Data rows
         let _has_on_select = self.on_select.is_some();
         let row_h = self.row_height();
+        // Resolve sparkline y-axis bounds once per column. Default
+        // behavior: union of every row's points so cells in the same
+        // column are visually comparable. The column type's `min`/`max`
+        // override either end when set.
+        let spark_bounds_by_col: FxHashMap<String, SparkBounds> =
+            self.compute_sparkline_bounds();
         let mut body = Col::new()
             .spacing(0)
             .width(iced_core::Length::Shrink)
@@ -2130,7 +2162,10 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     } else {
                         &ColumnType::Text
                     };
-                    self.render_cell(col_name, col_type, text, row_idx, *w, row_h, false)
+                    let sb = spark_bounds_by_col.get(col_name).copied();
+                    self.render_cell(
+                        col_name, col_type, text, row_idx, *w, row_h, false, sb,
+                    )
                 };
                 row_w = row_w.push(cell_el);
             }
@@ -2314,6 +2349,50 @@ impl<X: GXExt> DataTableW<X> {
         .into()
     }
 
+    /// Compute the y-axis bounds for every sparkline column, by row
+    /// union, so cells share a scale. Returns one entry per
+    /// `Sparkline`-typed column. The column type's `min`/`max` clamp
+    /// either end when set; otherwise the bound comes from the union
+    /// of every row's recorded points.
+    fn compute_sparkline_bounds(&self) -> FxHashMap<String, SparkBounds> {
+        let mut out = FxHashMap::default();
+        // Collect column-wide value ranges by walking the sparkline
+        // history in one lock.
+        let mut ranges: FxHashMap<String, (f64, f64)> = FxHashMap::default();
+        {
+            let sp = self.cells.sparklines.lock();
+            for ((_row, col), history) in sp.iter() {
+                let entry = ranges.entry(col.clone()).or_insert((f64::MAX, f64::MIN));
+                for (_t, v) in history.iter() {
+                    if *v < entry.0 { entry.0 = *v; }
+                    if *v > entry.1 { entry.1 = *v; }
+                }
+            }
+        }
+        for (col_name, spec) in &self.column_types {
+            let (fmin, fmax) = match &spec.typ {
+                ColumnType::Sparkline { min, max, .. } => (*min, *max),
+                _ => continue,
+            };
+            // Auto-scale fallback: use the column's union range if
+            // we've seen any points; otherwise an arbitrary unit
+            // window the canvas's degenerate-range guard widens.
+            let (auto_min, auto_max) = ranges
+                .get(col_name)
+                .copied()
+                .filter(|&(lo, hi)| lo <= hi)
+                .unwrap_or((0.0, 1.0));
+            out.insert(
+                col_name.clone(),
+                SparkBounds {
+                    min: fmin.unwrap_or(auto_min),
+                    max: fmax.unwrap_or(auto_max),
+                },
+            );
+        }
+        out
+    }
+
     fn render_cell<'a>(
         &'a self,
         col_name: &str,
@@ -2323,6 +2402,7 @@ impl<X: GXExt> DataTableW<X> {
         w: f32,
         row_h: f32,
         _can_select: bool,
+        spark_bounds: Option<SparkBounds>,
     ) -> IcedElement<'a> {
         let cell_path = self.row_paths.get(row_idx)
             .map(|p| p.append(col_name));
@@ -2475,7 +2555,11 @@ impl<X: GXExt> DataTableW<X> {
                 if points.is_empty() {
                     widget::text(text).size(13).into()
                 } else {
-                    let sparkline = SparklineCanvas { points };
+                    let bounds = spark_bounds.unwrap_or(SparkBounds {
+                        min: 0.0,
+                        max: 1.0,
+                    });
+                    let sparkline = SparklineCanvas { points, bounds };
                     widget::Canvas::new(sparkline)
                         .width(iced_core::Length::Fill)
                         .height(20.0)

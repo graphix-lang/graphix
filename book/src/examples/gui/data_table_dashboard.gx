@@ -46,23 +46,27 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
     sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
 };
 
+// Each cpu series oscillates in a similar 0–100 band but with a
+// distinct period and phase offset, so the relative ordering shifts
+// every few seconds — handy for watching the cpu sort re-rank rows
+// live.
 svc(
     #name:"svc-1",
     #state:`Healthy,
     #uptime:0.91,
-    #cpu:30.0 + 20.0 * math::sin(t / 5.0)
+    #cpu:50.0 + 35.0 * math::sin(t / 4.0)
 );
 svc(
     #name:"svc-2",
     #state:`Degraded,
     #uptime:0.62,
-    #cpu:75.0 + 15.0 * math::sin((t + 10.) / 3.0)
+    #cpu:50.0 + 35.0 * math::sin((t + 6.) / 5.0)
 );
 svc(
     #name:"svc-3",
     #state:`Healthy,
     #uptime:0.99,
-    #cpu:10.0 + 5.0 * math::sin((t + 20.) / 4.0)
+    #cpu:50.0 + 35.0 * math::sin((t + 12.) / 6.0)
 );
 
 // Caller-side filter: apply the regex to the Table's rows before

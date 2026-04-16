@@ -204,6 +204,16 @@ impl GuiTestHarness {
         self.widget.view()
     }
 
+    /// Mirror what the iced event loop does between a wake and the next
+    /// render: flush any deferred per-widget state (e.g. data_table
+    /// re-sort triggered by sort-column subscription updates that
+    /// arrived since the last drain). Tests that publish values to a
+    /// sort column should call this before reading `dt_snapshot()`.
+    #[allow(dead_code)]
+    fn before_view(&mut self) -> bool {
+        self.widget.before_view()
+    }
+
     /// Get a DataTableSnapshot from the widget, if it is a data table.
     fn dt_snapshot(&self) -> crate::widgets::DataTableSnapshot {
         self.widget
@@ -443,6 +453,11 @@ impl InteractionHarness {
 
     fn view(&self) -> crate::widgets::IcedElement<'_> {
         self.inner.view()
+    }
+
+    #[allow(dead_code)]
+    fn before_view(&mut self) -> bool {
+        self.inner.before_view()
     }
 
     #[allow(dead_code)]

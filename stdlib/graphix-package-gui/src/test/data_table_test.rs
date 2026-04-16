@@ -383,6 +383,69 @@ let result = data_table(
     Ok(())
 }
 
+// ── Sort-by reorders on subscription updates ───────────────────────
+
+/// Regression: when sort_by names a netidx-subscribed column, every
+/// update to that column must re-sort the rows. The dirty flag set by
+/// the sort-column subscription task is consumed in `before_view`,
+/// which the iced event loop runs on every redraw and tests must
+/// invoke explicitly.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_by_subscribed_column_reorders_on_update() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let v0 = f64:30.0;
+let v1 = f64:10.0;
+let v2 = f64:20.0;
+sys::net::publish("/local/dt_sort_live/r0/cpu", v0);
+sys::net::publish("/local/dt_sort_live/r1/cpu", v1);
+sys::net::publish("/local/dt_sort_live/r2/cpu", v2);
+let tbl = {
+    rows: ["/local/dt_sort_live/r0", "/local/dt_sort_live/r1", "/local/dt_sort_live/r2"],
+    columns: ["cpu"]
+};
+let result = data_table(
+    #sort_by: &[{ column: "cpu", direction: `Ascending }],
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // Wait for the sort_col subs' BEGIN_WITH_LAST values to arrive,
+    // then flush the dirty flag the sub task set.
+    for _ in 0..15 {
+        h.drain().await?;
+        h.before_view();
+        let snap = h.dt_snapshot();
+        if snap.row_basenames == vec!["r1", "r2", "r0"] {
+            break;
+        }
+    }
+    let snap = h.dt_snapshot();
+    assert_eq!(
+        snap.row_basenames, vec!["r1", "r2", "r0"],
+        "initial ascending sort: r1(10) < r2(20) < r0(30)"
+    );
+
+    // Bump r1's cpu past r0's so the order should become r2(20), r0(30), r1(100).
+    let bid = find_bind_id(&h.compiled.env, "test::v1")?;
+    let mut v1_ref = h.gx.compile_ref(bid).await?;
+    v1_ref.set(Value::F64(100.0))?;
+    for _ in 0..15 {
+        h.drain().await?;
+        h.before_view();
+        let snap = h.dt_snapshot();
+        if snap.row_basenames == vec!["r2", "r0", "r1"] {
+            break;
+        }
+    }
+    let snap = h.dt_snapshot();
+    assert_eq!(
+        snap.row_basenames, vec!["r2", "r0", "r1"],
+        "after bumping r1's cpu to 100: r2(20) < r0(30) < r1(100)"
+    );
+    Ok(())
+}
+
 // ── Sparkline decimation unit test ─────────────────────────────────
 
 #[test]
@@ -1109,7 +1172,7 @@ let tbl = { rows: ["/local/dt17/r0"], columns: ["load"] };
 let result = data_table(
     #column_types: &{
         "load" => {
-            typ: `Sparkline({ history_seconds: 60.0 }),
+            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
             default_value: &null,
             on_resize: &null, width: &null
@@ -1151,7 +1214,7 @@ let tbl = { rows: ["r0"], columns: ["anchor"] };
 let result = data_table(
     #column_types: &{
         "spark" => {
-            typ: `Sparkline({ history_seconds: 60.0 }),
+            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
             default_value: &"7.5",
             on_resize: &null, width: &null
@@ -1180,7 +1243,7 @@ let tbl = { rows: ["r0"], columns: ["anchor"] };
 let result = data_table(
     #column_types: &{
         "load" => {
-            typ: `Sparkline({ history_seconds: 60.0 }),
+            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
             default_value: &"0.0",
             on_resize: &null, width: &null
@@ -1226,7 +1289,7 @@ let tbl = { rows: ["r0"], columns: ["anchor"] };
 let result = data_table(
     #column_types: &{
         "load" => {
-            typ: `Sparkline({ history_seconds: 60.0 }),
+            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
             default_value: &"0.0",
             on_resize: &null, width: &null

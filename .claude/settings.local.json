@@ -107,7 +107,9 @@
       "Bash(strings target/debug/deps/graphix_package_gui-*.so target/debug/deps/graphix_package_gui-*.rlib)",
       "Bash(awk NR>=20 && NR<=40 {print NR\": \"$0} *)",
       "Bash(awk '/^impl.*GuiWidget.*for DataTableW/,/^}$/' /home/eric/proj/graphix/stdlib/graphix-package-gui/src/widgets/data_table.rs)",
-      "Bash(awk 'NR==1376,/^}$/' /home/eric/proj/graphix/stdlib/graphix-package-gui/src/widgets/data_table.rs)"
+      "Bash(awk 'NR==1376,/^}$/' /home/eric/proj/graphix/stdlib/graphix-package-gui/src/widgets/data_table.rs)",
+      "Bash(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /home/eric/proj/graphix/Screencast_20260416_102209.mp4)",
+      "Bash(ffmpeg -y -i /home/eric/proj/graphix/Screencast_20260416_102209.mp4 -vf \"fps=1/3,scale=900:-1\" /tmp/screencast_frames/frame_%03d.png)"
     ],
     "deny": [],
     "ask": []

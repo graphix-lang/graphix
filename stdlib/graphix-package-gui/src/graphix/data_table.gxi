@@ -18,7 +18,11 @@ type ColumnType = [
     `Button({
         on_click: [fn(#path: string, #value: Any) -> Any, null]
     }),
-    `Sparkline({ history_seconds: f64 })
+    `Sparkline({
+        history_seconds: f64,
+        min: [f64, null],
+        max: [f64, null]
+    })
 ];
 
 type ColumnSpec = {
@@ -128,9 +132,15 @@ val button_column: fn(
 ) -> ColumnSpec;
 
 /// Build a `Sparkline` ColumnSpec. Each cell accumulates values from its
-/// subscription for `history_seconds` and renders them as a rolling chart.
+/// subscription for `history_seconds` and renders them as a rolling
+/// chart. By default the y-axis is shared across every cell in the
+/// column (auto-scaled to the union of all rows' values), so cells can
+/// be compared visually. Pass `#min`/`#max` to fix the axis to a
+/// caller-defined range instead.
 val sparkline_column: fn(
     #history_seconds: f64,
+    ?#min: [f64, null],
+    ?#max: [f64, null],
     ?#display_name: [string, null],
     ?#default_value: &[null, string, Map<string, Any>],
     ?#on_resize: &[fn(f64) -> Any, null],

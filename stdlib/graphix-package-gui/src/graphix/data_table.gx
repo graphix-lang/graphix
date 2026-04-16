@@ -87,11 +87,13 @@ let button_column = |
 
 let sparkline_column = |
   #history_seconds: f64,
+  #min: [f64, null] = null,
+  #max: [f64, null] = null,
   #display_name: [string, null] = null,
   #default_value: &[null, string, Map<string, Any>] = &null,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
-    typ: `Sparkline({ history_seconds }),
+    typ: `Sparkline({ history_seconds, min, max }),
     display_name, default_value, on_resize, width
 };
