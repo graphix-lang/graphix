@@ -41,16 +41,11 @@ let on_update = |#path: string, #value: Primitive| {
     data <- map::change(d, "sum", {}, |sums| map::insert(sums, row, sum))
 };
 
-dbg(data);
-
 let types = {
-    "sum" => {
-        typ: `Text({ on_edit: null }),
-        display_name: "A + B",
-        default_value: &map::get_or(data, "sum", {}),
-        on_resize: &null,
-        width: &null
-    }
+    "sum" => text_column(
+        #display_name: "A + B",
+        #default_value: &map::get_or(data, "sum", {})
+    )
 };
 
 let layout = column(

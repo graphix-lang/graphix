@@ -301,6 +301,20 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         let _ = (id, action);
         None
     }
+
+    /// Called immediately before `view()` so widgets can flush deferred
+    /// state that arrived asynchronously from background tasks (e.g.
+    /// `data_table` re-sorting after sort-column subscription data
+    /// arrives outside of the graphix update cycle). Returns `true` if
+    /// state changed and the window should redraw. The default forwards
+    /// to children so containers don't have to.
+    fn before_view(&mut self) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.before_view();
+        }
+        changed
+    }
 }
 
 pub type GuiW<X> = Box<dyn GuiWidget<X>>;

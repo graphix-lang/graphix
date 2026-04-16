@@ -15,3 +15,83 @@ let data_table = |
     on_update: &on_update,
     selection, show_row_name, sort_by, table
 });
+
+let text_column = |
+  #on_edit: [fn(#path: string, #value: Any) -> Any, null] = null,
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Text({ on_edit }),
+    display_name, default_value, on_resize, width
+};
+
+let toggle_column = |
+  #on_edit: [fn(#path: string, #value: bool) -> Any, null] = null,
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Toggle({ on_edit }),
+    display_name, default_value, on_resize, width
+};
+
+let combo_column = |
+  #choices: Array<{ id: string, label: string }>,
+  #on_edit: [fn(#path: string, #value: string) -> Any, null] = null,
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Combo({ choices, on_edit }),
+    display_name, default_value, on_resize, width
+};
+
+let spin_column = |
+  #min: f64,
+  #max: f64,
+  #increment: f64,
+  #on_edit: [fn(#path: string, #value: f64) -> Any, null] = null,
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Spin({ min, max, increment, on_edit }),
+    display_name, default_value, on_resize, width
+};
+
+let progress_column = |
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Progress,
+    display_name, default_value, on_resize, width
+};
+
+let button_column = |
+  #on_click: [fn(#path: string, #value: Any) -> Any, null] = null,
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Button({ on_click }),
+    display_name, default_value, on_resize, width
+};
+
+let sparkline_column = |
+  #history_seconds: f64,
+  #display_name: [string, null] = null,
+  #default_value: &[null, string, Map<string, Any>] = &null,
+  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #width: &[f64, null] = &null
+| -> ColumnSpec {
+    typ: `Sparkline({ history_seconds }),
+    display_name, default_value, on_resize, width
+};

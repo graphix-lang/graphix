@@ -35,22 +35,17 @@ let score: Map<string, f64> = {};
 
 let types = {
     // Every row sees the same literal for "region".
-    "region" => {
-        typ: `Text({ on_edit: null }),
-        display_name: "Region",
-        default_value: &"production",
-        on_resize: &null,
-        width: &null
-    },
+    "region" => text_column(
+        #display_name: "Region",
+        #default_value: &"production"
+    ),
     // Virtual column: no matching key in tbl.columns, but has a
     // per-row default_value, so the table synthesizes it.
-    "score" => {
-        typ: `Progress,
-        display_name: "Score",
-        default_value: &score,
-        on_resize: &null,
-        width: &f64:180.0
-    }
+    "score" => progress_column(
+        #display_name: "Score",
+        #default_value: &score,
+        #width: &f64:180.0
+    )
 };
 
 let layout = column(

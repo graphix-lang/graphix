@@ -291,6 +291,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     ));
                 }
                 let cache = self.ui_caches.remove(&win_id).unwrap_or_default();
+                // Let widgets flush deferred state (e.g. data_table
+                // re-sorting after sort-column subscriptions arrive)
+                // before we build the iced element tree.
+                tw.content.before_view();
                 let element = tw.content.view();
                 let viewport_size = ws.logical_size();
                 let mut ui =

@@ -388,8 +388,18 @@ fn numeric_key(s: &str) -> Option<f64> {
 
 // ── Shared cell data ───────────────────────────────────────────────
 
+/// Sentinel column key used for `DisplayMode::Value` rows where the cell
+/// has no real column name. Leading `\0` keeps it from colliding with
+/// any user-supplied column (apply_table strips `\0` from incoming
+/// column names).
+const VALUE_COL_KEY: arcstr::ArcStr = arcstr::literal!("\0value");
+
 struct SharedCells {
-    grid: Mutex<Vec<Vec<String>>>,
+    /// Cell values keyed by `(row_path, col_name)`. Identity-keyed so
+    /// reordering rows or rebinding subscriptions can't shuffle data
+    /// into wrong rows — the same fix the sparkline map already uses.
+    /// `col_name` is `VALUE_COL_KEY` for Value-mode rows.
+    grid: Mutex<FxHashMap<(ArcStr, ArcStr), String>>,
     /// Sparkline history: (row_path, col_name) → timestamped values.
     /// Keyed by path strings so history survives row reordering.
     sparklines: Mutex<FxHashMap<(String, String), VecDeque<(Instant, f64)>>>,
@@ -580,7 +590,7 @@ impl<X: GXExt> DataTableW<X> {
         let show_row_name =
             TRef::new(show_row_name_ref).context("data_table tref show_row_name")?;
         let cells = Arc::new(SharedCells {
-            grid: Mutex::new(vec![]),
+            grid: Mutex::new(FxHashMap::default()),
             sparklines: Mutex::new(FxHashMap::default()),
             dirty: AtomicBool::new(false),
         });
@@ -748,25 +758,11 @@ impl<X: GXExt> DataTableW<X> {
             self.sort_col_subs.insert(sort_col, subs);
         }
         let n_rows = self.row_paths.len();
-        let n_cols = match self.mode {
-            DisplayMode::Table => self.col_names.len(),
-            DisplayMode::Value => 1,
-        };
-        // Initialize grid with default values
-        let mut grid = Vec::with_capacity(n_rows);
-        for row_name in &self.row_names {
-            let mut row = Vec::with_capacity(n_cols);
-            if self.mode == DisplayMode::Value {
-                // Value mode: 1 cell per row (subscribed to row path directly)
-                row.push(String::new());
-            } else {
-                for col_name in &self.col_names {
-                    row.push(self.default_for(col_name, row_name));
-                }
-            }
-            grid.push(row);
-        }
-        *self.cells.grid.lock() = grid;
+        // Reset grid; default values are computed at render time via
+        // `default_for`, so we only seed entries that aren't otherwise
+        // filled by a subscription. Identity-keyed by (row_path, col)
+        // so re-sorts and sub re-binds can't shuffle data.
+        self.cells.grid.lock().clear();
         // Don't clear sparkline history — push_defaults_to_sparklines adds
         // new points. Full clear only happens when row_paths/col_names change
         // (which they do during apply_table), so stale (row, col) keys in the
@@ -839,8 +835,9 @@ impl<X: GXExt> DataTableW<X> {
             .map(|c| (self.gx.clone(), c.id()));
         match self.mode {
             DisplayMode::Table => {
+                let row_path_arc = ArcStr::from(&**row_path);
                 let mut dvals = Vec::with_capacity(self.col_names.len());
-                for (col_idx, col_name) in self.col_names.iter().enumerate() {
+                for col_name in self.col_names.iter() {
                     let is_sparkline = matches!(
                         self.col_type_for(col_name),
                         ColumnType::Sparkline { .. }
@@ -850,6 +847,8 @@ impl<X: GXExt> DataTableW<X> {
                         _ => 0.0,
                     };
                     let sparkline_key = (row_path.to_string(), col_name.to_string());
+                    let col_name_arc = ArcStr::from(col_name.as_str());
+                    let grid_key = (row_path_arc.clone(), col_name_arc);
                     let cell_path = row_path.append(col_name);
                     let cell_path_arc = ArcStr::from(&*cell_path);
                     let (tx, mut rx) = futures::channel::mpsc::channel(2);
@@ -864,20 +863,18 @@ impl<X: GXExt> DataTableW<X> {
                             let mut grid = cells.grid.lock();
                             for (_, event) in batch.drain(..) {
                                 if let Event::Update(v) = event {
-                                    if row_idx < grid.len() && col_idx < grid[row_idx].len() {
-                                        grid[row_idx][col_idx] = format_value(&v);
-                                        cells.dirty.store(true, Ordering::Relaxed);
-                                        // Subscription updates run on
-                                        // a tokio task outside the iced
-                                        // event cycle. Poke the event
-                                        // loop so it redraws — without
-                                        // this, the new cell value only
-                                        // appears when some other winit
-                                        // event (mouse move, keypress,
-                                        // …) happens to wake the loop.
-                                        if let Some(w) = crate::REDRAW_WAKER.get() {
-                                            w.wake();
-                                        }
+                                    grid.insert(grid_key.clone(), format_value(&v));
+                                    cells.dirty.store(true, Ordering::Relaxed);
+                                    // Subscription updates run on
+                                    // a tokio task outside the iced
+                                    // event cycle. Poke the event
+                                    // loop so it redraws — without
+                                    // this, the new cell value only
+                                    // appears when some other winit
+                                    // event (mouse move, keypress,
+                                    // …) happens to wake the loop.
+                                    if let Some(w) = crate::REDRAW_WAKER.get() {
+                                        w.wake();
                                     }
                                     // Accumulate sparkline history
                                     if is_sparkline {
@@ -919,6 +916,7 @@ impl<X: GXExt> DataTableW<X> {
                 let (tx, mut rx) = futures::channel::mpsc::channel(2);
                 let dval = self.subscriber.subscribe(row_path.clone());
                 let row_path_arc = ArcStr::from(&**row_path);
+                let grid_key = (row_path_arc.clone(), VALUE_COL_KEY);
                 dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
                 let cells = cells.clone();
                 self.rt.spawn(async move {
@@ -927,12 +925,10 @@ impl<X: GXExt> DataTableW<X> {
                         let mut grid = cells.grid.lock();
                         for (_, event) in batch.drain(..) {
                             if let Event::Update(v) = event {
-                                if row_idx < grid.len() && !grid[row_idx].is_empty() {
-                                    grid[row_idx][0] = format_value(&v);
-                                    cells.dirty.store(true, Ordering::Relaxed);
-                                    if let Some(w) = crate::REDRAW_WAKER.get() {
-                                        w.wake();
-                                    }
+                                grid.insert(grid_key.clone(), format_value(&v));
+                                cells.dirty.store(true, Ordering::Relaxed);
+                                if let Some(w) = crate::REDRAW_WAKER.get() {
+                                    w.wake();
                                 }
                                 if let Some((ref gx, cb_id)) = on_update_call {
                                     let _ = gx.call(cb_id, ValArray::from_iter([
@@ -1006,9 +1002,11 @@ impl<X: GXExt> DataTableW<X> {
         self.default_for(sort_col, &self.row_names[row_idx])
     }
 
-    /// Re-sort row_paths by sort column values and rebuild the cell grid.
-    /// Called when sort_col_dirty is set, meaning new sort data arrived,
-    /// or during apply_table when sort_by is non-empty.
+    /// Re-sort row_paths by sort column values. The cell grid is keyed
+    /// by (row_path, col_name), so reordering row_paths is enough — no
+    /// grid rebuild and no subscription churn. Called when
+    /// sort_col_dirty is set or during apply_table when sort_by is
+    /// non-empty.
     fn resort_by_column(&mut self) {
         if self.sort_by.is_empty() {
             return;
@@ -1047,32 +1045,7 @@ impl<X: GXExt> DataTableW<X> {
             self.row_paths[new_i] = old_paths[old_i].clone();
             self.row_names[new_i] = old_names[old_i].clone();
         }
-        // Rebuild the grid for the new row order
-        let n_cols = match self.mode {
-            DisplayMode::Table => self.col_names.len(),
-            DisplayMode::Value => 1,
-        };
-        let mut grid = Vec::with_capacity(self.row_paths.len());
-        for row_name in &self.row_names {
-            let mut row = Vec::with_capacity(n_cols);
-            if self.mode == DisplayMode::Value {
-                row.push(String::new());
-            } else {
-                for col_name in &self.col_names {
-                    row.push(self.default_for(col_name, row_name));
-                }
-            }
-            grid.push(row);
-        }
-        *self.cells.grid.lock() = grid;
-        // Clear existing row subscriptions so virtualization re-subscribes
-        // in the new order
-        for sub in self.row_subs.iter_mut() {
-            *sub = None;
-        }
-        self.sub_start = 0;
-        self.sub_end = 0;
-        self.update_subscriptions();
+        self.cells.dirty.store(true, Ordering::Relaxed);
     }
 
     fn fire_on_select(&self, row_idx: usize, col_name: &str) {
@@ -1213,8 +1186,11 @@ impl<X: GXExt> DataTableW<X> {
     /// Auto-fit all columns to their max content width (no cap).
     /// Scans ALL rows, not just visible ones.
     fn auto_fit_all_columns(&mut self) {
-        let grid = self.cells.grid.lock();
         let show_name = self.show_row_name.t.unwrap_or(true);
+        let row_path_arcs: Vec<ArcStr> = self.row_paths.iter()
+            .map(|p| ArcStr::from(&**p))
+            .collect();
+        let grid = self.cells.grid.lock();
         let mut widths = self.user_widths.lock();
         if show_name {
             let mut w = col_header_width(ROW_NAME_LABEL).max(MIN_COL_WIDTH);
@@ -1226,7 +1202,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         match self.mode {
             DisplayMode::Table => {
-                for (col_idx, col_name) in self.col_names.iter().enumerate() {
+                for col_name in self.col_names.iter() {
                     // Skip columns with fixed ref width and no on_resize
                     let is_fixed = self.ref_widths.contains_key(col_name)
                         && !self.on_resize_callbacks.contains_key(col_name);
@@ -1235,18 +1211,22 @@ impl<X: GXExt> DataTableW<X> {
                         .and_then(|s| s.display_name.as_deref())
                         .unwrap_or(col_name);
                     let mut w = col_header_width(display).max(MIN_COL_WIDTH);
-                    for row in grid.iter() {
-                        if col_idx < row.len() {
-                            w = w.max(col_text_width(&row[col_idx]).max(MIN_COL_WIDTH));
-                        }
+                    let col_arc = ArcStr::from(col_name.as_str());
+                    for (ri, row_arc) in row_path_arcs.iter().enumerate() {
+                        let key = (row_arc.clone(), col_arc.clone());
+                        let text = match grid.get(&key) {
+                            Some(s) => s.clone(),
+                            None => self.default_for(col_name, &self.row_names[ri]),
+                        };
+                        w = w.max(col_text_width(&text).max(MIN_COL_WIDTH));
                     }
                     widths.insert(col_name.clone(), w);
                 }
             }
             DisplayMode::Value => {
                 let mut w = col_header_width("value").max(MIN_COL_WIDTH);
-                for row in grid.iter() {
-                    if let Some(v) = row.first() {
+                for row_arc in row_path_arcs.iter() {
+                    if let Some(v) = grid.get(&(row_arc.clone(), VALUE_COL_KEY)) {
                         w = w.max(col_text_width(v).max(MIN_COL_WIDTH));
                     }
                 }
@@ -1417,6 +1397,23 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer> for Spark
 }
 
 impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
+    /// Consume any deferred work that arrived from background tasks
+    /// (sort-column subscription updates) before the next render. This
+    /// is the path that propagates "the sort column has new data" into
+    /// an actual reorder when no graphix ref update happens to fire
+    /// `handle_update`.
+    fn before_view(&mut self) -> bool {
+        let mut changed = false;
+        if self.sort_col_dirty.swap(false, Ordering::Relaxed) {
+            self.resort_by_column();
+            changed = true;
+        }
+        if self.cells.dirty.swap(false, Ordering::Relaxed) {
+            changed = true;
+        }
+        changed
+    }
+
     fn handle_update(&mut self, rt: &tokio::runtime::Handle, id: ExprId, v: &Value) -> Result<bool> {
         let mut changed = false;
         if id == self.table_ref.id {
@@ -1531,20 +1528,19 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             // columns are subscribed would never see updates to the
             // virtual column's default.
             let is_virtual = self.virtual_cols.contains(&col_name);
-            let mut grid = self.cells.grid.lock();
-            if let Some(col_idx) = self.col_names.iter().position(|n| *n == col_name) {
+            if self.col_names.iter().any(|n| *n == col_name) {
+                let col_arc = ArcStr::from(col_name.as_str());
+                let mut grid = self.cells.grid.lock();
                 for (row_idx, row_path) in self.row_paths.iter().enumerate() {
                     let unsubscribed = !Path::is_absolute(row_path)
                         || self.row_subs.get(row_idx).map(|s| s.is_none()).unwrap_or(true);
                     if is_virtual || unsubscribed {
                         let row_name = &self.row_names[row_idx];
-                        if row_idx < grid.len() && col_idx < grid[row_idx].len() {
-                            grid[row_idx][col_idx] = self.default_for(&col_name, row_name);
-                        }
+                        let key = (ArcStr::from(&**row_path), col_arc.clone());
+                        grid.insert(key, self.default_for(&col_name, row_name));
                     }
                 }
             }
-            drop(grid);
             self.push_defaults_to_sparklines();
             changed = true;
         }
@@ -1589,12 +1585,37 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     fn data_table_snapshot(&self) -> Option<super::DataTableSnapshot> {
         let mut sel: Vec<String> = self.selection.iter().cloned().collect();
         sel.sort();
+        // Materialize the identity-keyed grid into the row-major
+        // Vec<Vec<String>> the snapshot uses, falling back to the
+        // column's default for cells not yet populated by a sub.
+        let grid_map = self.cells.grid.lock();
+        let grid: Vec<Vec<String>> = match self.mode {
+            DisplayMode::Table => self.row_paths.iter().enumerate()
+                .map(|(ri, rp)| {
+                    let row_arc = ArcStr::from(&**rp);
+                    self.col_names.iter()
+                        .map(|cn| {
+                            let key = (row_arc.clone(), ArcStr::from(cn.as_str()));
+                            grid_map.get(&key).cloned()
+                                .unwrap_or_else(|| self.default_for(cn, &self.row_names[ri]))
+                        })
+                        .collect()
+                })
+                .collect(),
+            DisplayMode::Value => self.row_paths.iter()
+                .map(|rp| {
+                    let key = (ArcStr::from(&**rp), VALUE_COL_KEY);
+                    vec![grid_map.get(&key).cloned().unwrap_or_default()]
+                })
+                .collect(),
+        };
+        drop(grid_map);
         Some(super::DataTableSnapshot {
             col_names: self.col_names.clone(),
             row_basenames: self.row_paths.iter()
                 .map(|p| Path::basename(p).unwrap_or(&**p).to_string())
                 .collect(),
-            grid: self.cells.grid.lock().clone(),
+            grid,
             is_value_mode: self.mode == DisplayMode::Value,
             selection: sel,
         })
@@ -1701,14 +1722,11 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     fn handle_cell_edit(&mut self, row: usize, col: String) -> bool {
         self.editing = Some((row, col.clone()));
         // Initialize edit buffer with current cell value
-        let col_idx = self.col_names.iter().position(|n| *n == col);
-        if let Some(ci) = col_idx {
+        let col_in_table = self.col_names.iter().any(|n| *n == col);
+        if let (true, Some(row_path)) = (col_in_table, self.row_paths.get(row)) {
+            let key = (ArcStr::from(&**row_path), ArcStr::from(col.as_str()));
             let grid = self.cells.grid.lock();
-            if row < grid.len() && ci < grid[row].len() {
-                self.edit_buffer = grid[row][ci].clone();
-            } else {
-                self.edit_buffer.clear();
-            }
+            self.edit_buffer = grid.get(&key).cloned().unwrap_or_default();
         } else {
             self.edit_buffer.clear();
         }
@@ -1900,11 +1918,34 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         };
         let (vis_row_start, vis_row_end) = self.display_row_range();
         let (vis_col_start, vis_col_end) = self.display_col_range();
-        // Snapshot cell data (need it for column width computation too)
+        // Snapshot cell data (need it for column width computation too).
+        // Materialize from the identity-keyed grid into a Vec<Vec<String>>
+        // sized [visible_rows][all_cols]; falling back to per-cell defaults
+        // for entries no subscription has filled in yet.
         let grid_snapshot: Vec<Vec<String>> = {
             let grid = self.cells.grid.lock();
             (vis_row_start..vis_row_end)
-                .map(|i| if i < grid.len() { grid[i].clone() } else { vec![] })
+                .map(|i| match self.row_paths.get(i) {
+                    None => vec![],
+                    Some(rp) => {
+                        let row_arc = ArcStr::from(&**rp);
+                        match self.mode {
+                            DisplayMode::Table => self.col_names.iter()
+                                .map(|cn| {
+                                    let key =
+                                        (row_arc.clone(), ArcStr::from(cn.as_str()));
+                                    grid.get(&key).cloned().unwrap_or_else(|| {
+                                        self.default_for(cn, &self.row_names[i])
+                                    })
+                                })
+                                .collect(),
+                            DisplayMode::Value => {
+                                let key = (row_arc, VALUE_COL_KEY);
+                                vec![grid.get(&key).cloned().unwrap_or_default()]
+                            }
+                        }
+                    }
+                })
                 .collect()
         };
         let name_col_offset = if show_row_name { 1 } else { 0 };

@@ -24,110 +24,101 @@ mod icon;
 // * Column sort driven by pick_list widgets in the sidebar
 // * Selection echoed in the footer
 
-let tick = time::timer(duration:1.s, true);
-let t = 0;
-t <- tick ~ t + 1;
+let t = {
+    let tick = time::timer(duration:1.s, true);
+    let t = 0.;
+    t <- tick ~ t + 1.;
+    t
+};
+
+type State = [`Healthy, `Degraded, `Down];
 
 // Publish a tiny fleet of services. state is writable (Combo).
-let svc_1_state = "healthy";
-sys::net::publish(
-    #on_write: |v: string| svc_1_state <- v,
-    "/local/graphix/data_table_dashboard/svc-1/state",
-    svc_1_state
-);
-let svc_1_cpu = f64:20.0;
-svc_1_cpu <- tick ~ 30.0 + 20.0 * math::sin(cast<f64>(t)$ / 5.0);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-1/cpu", svc_1_cpu);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-1/uptime", f64:0.91);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-1/action", "Restart");
+let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
+    sys::net::publish(
+        #on_write: |v: string| state <- cast<State>(v)$,
+        "/local/graphix/data_table_dashboard/[name]/state",
+        state
+    );
+    // svc_1_cpu <- ;
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+};
 
-let svc_2_state = "degraded";
-sys::net::publish(
-    #on_write: |v: string| svc_2_state <- v,
-    "/local/graphix/data_table_dashboard/svc-2/state",
-    svc_2_state
+svc(
+    #name:"svc-1",
+    #state:`Healthy,
+    #uptime:0.91,
+    #cpu:30.0 + 20.0 * math::sin(t / 5.0)
 );
-let svc_2_cpu = f64:80.0;
-svc_2_cpu <- tick ~ 75.0 + 15.0 * math::sin(cast<f64>(t + 10)$ / 3.0);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-2/cpu", svc_2_cpu);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-2/uptime", f64:0.62);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-2/action", "Restart");
-
-let svc_3_state = "healthy";
-sys::net::publish(
-    #on_write: |v: string| svc_3_state <- v,
-    "/local/graphix/data_table_dashboard/svc-3/state",
-    svc_3_state
+svc(
+    #name:"svc-2",
+    #state:`Degraded,
+    #uptime:0.62,
+    #cpu:75.0 + 15.0 * math::sin((t + 10.) / 3.0)
 );
-let svc_3_cpu = f64:5.0;
-svc_3_cpu <- tick ~ 10.0 + 5.0 * math::sin(cast<f64>(t + 20)$ / 4.0);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-3/cpu", svc_3_cpu);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-3/uptime", f64:0.99);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-3/action", "Restart");
-
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+svc(
+    #name:"svc-3",
+    #state:`Healthy,
+    #uptime:0.99,
+    #cpu:10.0 + 5.0 * math::sin((t + 20.) / 4.0)
+);
 
 // Caller-side filter: apply the regex to the Table's rows before
 // handing the Table to the widget.
 let pattern = "";
-let tbl: sys::net::Table = raw_tbl;
-tbl <- select str::len(pattern) {
-    n if n == 0 => raw_tbl,
-    _ => { raw_tbl with rows: array::filter(raw_tbl.rows, |r|
-        opt::or_default(
-            re::is_match(#pat: pattern, opt::or_default(str::basename(r), r))$,
-            false)) }
+let tbl: sys::net::Table = {
+    let tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    select str::len(pattern) {
+        n if n == 0 => tbl,
+        _ => {
+            let rows = array::filter(tbl.rows, |r| {
+                let row = opt::or_default(str::basename(r), r);
+                select re::is_match(#pat: pattern, row) {
+                    error as _ => false,
+                    b => b
+                }
+            });
+            { tbl with rows }
+        }
+    }
 };
 
 let sort_col = "state";
 let sort_dir: SortDirection = `Ascending;
-let sort_by: Array<SortBy> = [];
-sort_by <- [{ column: sort_col, direction: sort_dir }];
+let sort_by: Array<SortBy> = [{ column: sort_col, direction: sort_dir }];
 
 // Selection + footer
 let selection: Array<string> = [];
 let last_action = "";
 
 let types = {
-    "state" => {
-        typ: `Combo({
-            choices: [
-                { id: "healthy", label: "Healthy" },
-                { id: "degraded", label: "Degraded" },
-                { id: "down", label: "Down" }
-            ],
-            on_edit: |#path: string, #value: string|
-                sys::net::write(path, value)$
-        }),
-        display_name: "State",
-        default_value: &null,
-        on_resize: &null,
-        width: &null
-    },
-    "cpu" => {
-        typ: `Sparkline({ history_seconds: f64:30.0 }),
-        display_name: "CPU",
-        default_value: &null,
-        on_resize: &null,
-        width: &f64:220.0
-    },
-    "uptime" => {
-        typ: `Progress,
-        display_name: "Uptime",
-        default_value: &null,
-        on_resize: &null,
-        width: &f64:180.0
-    },
-    "action" => {
-        typ: `Button({
-            on_click: |#path: string, #value: Any|
-                last_action <- "[path]"
-        }),
-        display_name: "Action",
-        default_value: &null,
-        on_resize: &null,
-        width: &null
-    }
+    "state" => combo_column(
+        #choices: [
+            { id: "Healthy", label: "Healthy" },
+            { id: "Degraded", label: "Degraded" },
+            { id: "Down", label: "Down" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "State",
+        #width:&110.
+    ),
+    "cpu" => sparkline_column(
+        #history_seconds: f64:30.0,
+        #display_name: "CPU",
+        #width: &220.0
+    ),
+    "uptime" => progress_column(
+        #display_name: "Uptime",
+        #width: &180.0
+    ),
+    "action" => button_column(
+        #on_click: |#path: string, #value: Any|
+            last_action <- "[path]",
+        #display_name: "Action"
+    )
 };
 
 let controls = row(
@@ -164,7 +155,7 @@ let footer = row(
     #spacing: &10.0,
     &[
         text(&"Selected:"),
-        text(&"[selection]"),
+        text(&"[selection[0]$]"),
         text(&"  Last action:"),
         text(&"[last_action]")
     ]

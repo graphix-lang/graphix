@@ -67,3 +67,72 @@ val data_table: fn(
     ?#on_update: [fn(#path: string, #value: Primitive) -> Any, null],
     #table: &sys::net::Table
 ) -> Widget;
+
+/// Build a `Text` ColumnSpec. With no `on_edit` the cell is read-only.
+val text_column: fn(
+    ?#on_edit: [fn(#path: string, #value: Any) -> Any, null],
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Toggle` ColumnSpec for boolean cells.
+val toggle_column: fn(
+    ?#on_edit: [fn(#path: string, #value: bool) -> Any, null],
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Combo` ColumnSpec. `choices` is the picklist; each entry's
+/// `id` is the value written and `label` is what the user sees.
+val combo_column: fn(
+    #choices: Array<{ id: string, label: string }>,
+    ?#on_edit: [fn(#path: string, #value: string) -> Any, null],
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Spin` ColumnSpec for bounded numeric input.
+val spin_column: fn(
+    #min: f64,
+    #max: f64,
+    #increment: f64,
+    ?#on_edit: [fn(#path: string, #value: f64) -> Any, null],
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a read-only `Progress` ColumnSpec. Cell values are clamped to [0, 1].
+val progress_column: fn(
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Button` ColumnSpec. Each cell renders as a button; clicking
+/// fires `on_click` with the cell's path and current value.
+val button_column: fn(
+    ?#on_click: [fn(#path: string, #value: Any) -> Any, null],
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Sparkline` ColumnSpec. Each cell accumulates values from its
+/// subscription for `history_seconds` and renders them as a rolling chart.
+val sparkline_column: fn(
+    #history_seconds: f64,
+    ?#display_name: [string, null],
+    ?#default_value: &[null, string, Map<string, Any>],
+    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
