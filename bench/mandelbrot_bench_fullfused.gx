@@ -1,0 +1,23 @@
+// Mandelbrot variant where BOTH the `iterate` function and the
+// per-pixel `array::init` callback are native fused kernels. The
+// callback is `bench::pixel_auto` — a Rust function that inlines all
+// the coord math and calls `fused_iterate_body` directly.
+//
+// Use this benchmark to measure the ceiling of two-layer fusion:
+// everything inside the hot loop becomes native code, and only
+// `array::init` itself remains interpreted.
+use array;
+use sys::time;
+use bench;
+
+let w = 100;
+let h = 75;
+
+let start = cast<f64>(sys::time::now(once(null)))$;
+let counts = array::init(w * h, bench::pixel_auto);
+let checksum = array::fold(counts, 0, |acc, n| acc + n);
+let finish = cast<f64>(sys::time::now(checksum))$;
+let elapsed = finish - start;
+
+println("mandelbrot-fullfused [w * h] pixels, checksum=[checksum], elapsed=[elapsed]s");
+sys::exit(elapsed ~ 0)

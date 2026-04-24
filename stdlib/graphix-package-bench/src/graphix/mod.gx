@@ -1,0 +1,3 @@
+let mandelbrot_iterate = |zr: f64, zi: f64, cr: f64, ci: f64, max_iter: i64| -> i64 'bench_mandelbrot_iterate;
+let iterate_auto = |zr: f64, zi: f64, cr: f64, ci: f64, max_iter: i64| -> i64 'bench_iterate_auto;
+let pixel_auto = |idx: i64| -> i64 'bench_pixel_auto

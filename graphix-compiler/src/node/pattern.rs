@@ -641,11 +641,11 @@ impl StructPatternNode {
 }
 
 #[derive(Debug)]
-pub(crate) struct PatternNode<R: Rt, E: UserEvent> {
-    pub(super) explicit_type_predicate: bool,
-    pub(super) type_predicate: Type,
-    pub(super) structure_predicate: StructPatternNode,
-    pub(super) guard: Option<Cached<R, E>>,
+pub struct PatternNode<R: Rt, E: UserEvent> {
+    pub explicit_type_predicate: bool,
+    pub type_predicate: Type,
+    pub structure_predicate: StructPatternNode,
+    pub guard: Option<Cached<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {

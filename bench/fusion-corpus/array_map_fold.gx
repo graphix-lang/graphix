@@ -1,0 +1,18 @@
+// Array-level HOFs: init + map + fold. Each closure should go
+// through the typechecker-derived callback-arg injection (no
+// annotations needed).
+use array;
+
+let n = 50;
+
+// Build [1, 2, ..., n]
+let xs = array::init(n, |i| i + 1);
+
+// Square each element
+let squared = array::map(xs, |x| x * x);
+
+// Sum the squared array
+let total = array::fold(squared, 0, |acc, x| acc + x);
+
+println("sum of 1..[n] squared = [total]");
+sys::exit(0)

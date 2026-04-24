@@ -11,6 +11,7 @@ extern crate serde_derive;
 
 pub mod env;
 pub mod expr;
+pub mod fusion;
 pub mod node;
 pub mod typ;
 
@@ -878,6 +879,14 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// time it's invoked, recording the scope it was called with.
     /// IDE tooling reads this to answer `cursor → scope` queries.
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    /// Resolved function types keyed by the ExprId of the Lambda /
+    /// Apply site they describe. Populated by Lambda::compile (source
+    /// lambdas) and CallSite::typecheck (function being applied). This
+    /// is the type-map graphix-compile's fusion pass reads from to
+    /// replace its ad-hoc type heuristics with real typechecker-
+    /// derived types. Only populated by code that cares — nodes that
+    /// don't write entries just leave it alone.
+    pub fn_types: IntMap<crate::expr::ExprId, crate::typ::FnType>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -910,6 +919,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
+            fn_types: IntMap::default(),
         })
     }
 

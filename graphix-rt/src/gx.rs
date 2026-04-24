@@ -298,6 +298,15 @@ impl<X: GXExt> GX<X> {
                 ToGX::Check { path, resolvers, initial_scope, res } => {
                     let _ = res.send(self.check(&path, resolvers, initial_scope).await);
                 }
+                ToGX::CheckWithTypes { path, res } => {
+                    // Identical to `check`, but we also return the
+                    // parsed Exprs and clone fn_types out of ExecCtx
+                    // so the caller can rewrite the same Expr tree
+                    // the typechecker just saw — ExprIds in the
+                    // returned tree match keys in the fn_types map.
+                    let r = self.check_and_capture(&path).await;
+                    let _ = res.send(r);
+                }
                 ToGX::Compile { text, rt, res } => {
                     let _ = res.send(self.compile(rt, text).await);
                 }
@@ -465,6 +474,36 @@ impl<X: GXExt> GX<X> {
         resolver_override: Option<Vec<ModuleResolver>>,
         initial_scope: Option<ArcStr>,
     ) -> Result<crate::CheckResult> {
+        self.check_inner(source, resolver_override, initial_scope).await.map(|(_, r)| r)
+    }
+
+    /// Like `check`, but also returns the (post-resolve) Expr tree
+    /// and a snapshot of `ctx.fn_types` populated during typecheck.
+    /// Used by `ToGX::CheckWithTypes` to hand back types to the
+    /// caller for fusion codegen.
+    async fn check_and_capture(
+        &mut self,
+        source: &Source,
+    ) -> Result<(Arc<[Expr]>, nohash::IntMap<ExprId, graphix_compiler::typ::FnType>)> {
+        let prior_fn_types = std::mem::take(&mut self.ctx.fn_types);
+        match self.check_inner(source, None, None).await {
+            Ok((exprs, _)) => {
+                let types = std::mem::replace(&mut self.ctx.fn_types, prior_fn_types);
+                Ok((exprs, types))
+            }
+            Err(e) => {
+                self.ctx.fn_types = prior_fn_types;
+                Err(e)
+            }
+        }
+    }
+
+    async fn check_inner(
+        &mut self,
+        source: &Source,
+        resolver_override: Option<Vec<ModuleResolver>>,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         let env = self.ctx.env.clone();
         let prev_refs = std::mem::replace(
             &mut self.ctx.references,
@@ -542,7 +581,16 @@ impl<X: GXExt> GX<X> {
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok(crate::CheckResult { env, references, module_references, scope_map, lsp })
+            Ok((
+                Arc::from_iter(exprs),
+                crate::CheckResult {
+                    env,
+                    references,
+                    module_references,
+                    scope_map,
+                    lsp,
+                },
+            ))
         };
         let res = go.await;
         self.ctx.env = env;

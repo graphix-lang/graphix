@@ -1,0 +1,15 @@
+// Evaluate a polynomial at a point using Horner's method. Pure
+// arithmetic over f64 with a recursive fold over coefficients.
+let rec horner = |x: f64, n: i64, acc: f64| -> f64
+    select n {
+        0 => acc,
+        _ => horner(x, n - 1, acc * x + cast<f64>(n)$)
+    };
+
+// p(x) = x^4 + 2x^3 + 3x^2 + 4x + 5, using coefs = n=5..1
+let p = |x: f64| -> f64 horner(x, 5, 0.0);
+
+println("p(1.0) = [p(1.0)]");
+println("p(2.0) = [p(2.0)]");
+println("p(0.5) = [p(0.5)]");
+sys::exit(0)

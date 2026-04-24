@@ -430,6 +430,14 @@ impl Lambda {
             check: Mutex::new(None),
         });
         ctx.lambda_defs.insert(id, def.clone());
+        // Publish the lambda's FnType under its source-level ExprId
+        // so later consumers (the fusion pass) can resolve the type
+        // without re-doing inference. `typ` here is Arc-shared with
+        // the copy stored on the lambda's Value; TVars inside get
+        // unified in place as the containing expression typechecks,
+        // so our cloned-out FnType sees the same resolved state
+        // through its TVar Arcs.
+        ctx.fn_types.insert(spec.id, (*typ).clone());
         Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
     }
 }

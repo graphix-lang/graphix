@@ -449,9 +449,52 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
     }
 }
 
+// ── Exit ──────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub(crate) struct Exit;
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
+    const NAME: &str = "sys_exit";
+    const NEEDS_CALLSITE: bool = false;
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        if let Some(Value::I64(code)) = from.get_mut(0).and_then(|n| n.update(ctx, event)) {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            std::process::exit(code as i32);
+        }
+        None
+    }
+
+    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+}
+
 graphix_derive::defpackage! {
     builtins => [
         Args,
+        Exit,
         GxTempDir,
         TempDirPath,
         JoinPath,

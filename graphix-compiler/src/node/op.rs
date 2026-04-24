@@ -16,14 +16,23 @@ use triomphe::Arc;
 macro_rules! compare_op {
     ($name:ident, $op:tt) => {
         #[derive(Debug)]
-        pub(crate) struct $name<R: Rt, E: UserEvent> {
-            spec: Expr,
-            typ: Type,
-            lhs: Cached<R, E>,
-            rhs: Cached<R, E>,
+        pub struct $name<R: Rt, E: UserEvent> {
+            pub(super) spec: Expr,
+            pub(super) typ: Type,
+            pub(super) lhs: Cached<R, E>,
+            pub(super) rhs: Cached<R, E>,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
+            /// Build the comparison node from already-compiled children.
+            /// Used by AOT-generated code.
+            pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
+                let lhs = Cached::new(lhs);
+                let rhs = Cached::new(rhs);
+                let typ = Type::Primitive(Typ::Bool.into());
+                Box::new(Self { spec, typ, lhs, rhs })
+            }
+
             pub(crate) fn compile(
                 ctx: &mut ExecCtx<R, E>,
                 flags: BitFlags<CFlag>,
@@ -102,14 +111,21 @@ compare_op!(Gte, >=);
 macro_rules! bool_op {
     ($name:ident, $op:tt) => {
         #[derive(Debug)]
-        pub(crate) struct $name<R: Rt, E: UserEvent> {
-            spec: Expr,
-            typ: Type,
-            lhs: Cached<R, E>,
-            rhs: Cached<R, E>,
+        pub struct $name<R: Rt, E: UserEvent> {
+            pub(super) spec: Expr,
+            pub(super) typ: Type,
+            pub(super) lhs: Cached<R, E>,
+            pub(super) rhs: Cached<R, E>,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
+            pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
+                let lhs = Cached::new(lhs);
+                let rhs = Cached::new(rhs);
+                let typ = Type::Primitive(Typ::Bool.into());
+                Box::new(Self { spec, typ, lhs, rhs })
+            }
+
             pub(crate) fn compile(
                 ctx: &mut ExecCtx<R, E>,
                 flags: BitFlags<CFlag>,
@@ -182,13 +198,18 @@ bool_op!(And, &&);
 bool_op!(Or, ||);
 
 #[derive(Debug)]
-pub(crate) struct Not<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Node<R, E>,
+pub struct Not<R: Rt, E: UserEvent> {
+    pub(super) spec: Expr,
+    pub(super) typ: Type,
+    pub(super) n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Not<R, E> {
+    pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
+        let typ = Type::Primitive(Typ::Bool.into());
+        Box::new(Self { spec, typ, n })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -288,14 +309,30 @@ defetyp!(ARITH_ERR, ARITH_ERR_TAG, "ArithError", "Error<`{}(string)>");
 macro_rules! arith_op {
     ($name:ident, $opn:expr, $checked:literal, $op:tt) => {
         #[derive(Debug)]
-        pub(crate) struct $name<R: Rt, E: UserEvent> {
-            spec: Expr,
-            typ: Type,
-            lhs: Cached<R, E>,
-            rhs: Cached<R, E>,
+        pub struct $name<R: Rt, E: UserEvent> {
+            pub(super) spec: Expr,
+            pub(super) typ: Type,
+            pub(super) lhs: Cached<R, E>,
+            pub(super) rhs: Cached<R, E>,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
+            /// Build the arithmetic op from already-compiled children,
+            /// with the resolved `typ` supplied by the caller. AOT
+            /// codegen uses this to skip the interpreter's late type
+            /// unification — the type is already known after
+            /// typecheck.
+            pub fn new(
+                lhs: Node<R, E>,
+                rhs: Node<R, E>,
+                typ: Type,
+                spec: Expr,
+            ) -> Node<R, E> {
+                let lhs = Cached::new(lhs);
+                let rhs = Cached::new(rhs);
+                Box::new(Self { spec, typ, lhs, rhs })
+            }
+
             pub(crate) fn compile(
                 ctx: &mut ExecCtx<R, E>,
                 flags: BitFlags<CFlag>,

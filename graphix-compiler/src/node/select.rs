@@ -18,15 +18,30 @@ use std::collections::hash_map::Entry;
 atomic_id!(SelectId);
 
 #[derive(Debug)]
-pub(crate) struct Select<R: Rt, E: UserEvent> {
-    selected: Option<usize>,
-    arg: Cached<R, E>,
-    arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
-    typ: Type,
-    spec: Expr,
+pub struct Select<R: Rt, E: UserEvent> {
+    pub(super) selected: Option<usize>,
+    pub(super) arg: Cached<R, E>,
+    pub(super) arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
+    pub(super) typ: Type,
+    pub(super) spec: Expr,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
+    /// Build a `Select` node from an already-compiled scrutinee
+    /// expression and a vector of (pattern, arm body) pairs.
+    pub fn new(
+        arg: Node<R, E>,
+        arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
+        typ: Type,
+        spec: Expr,
+    ) -> Node<R, E> {
+        let arms = arms
+            .into_iter()
+            .map(|(p, n)| (p, Cached::new(n)))
+            .collect::<Vec<_>>();
+        Box::new(Self { spec, typ, arg: Cached::new(arg), arms, selected: None })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,

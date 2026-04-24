@@ -1,0 +1,30 @@
+// Primality test via trial division. Loop via tail-recursive helper;
+// early-out when a factor is found.
+let rec has_divisor = |n: i64, d: i64| -> bool
+    select n % d {
+        0 => true,
+        _ => select d * d > n {
+            true => false,
+            false => has_divisor(n, d + 1)
+        }
+    };
+
+let is_prime = |n: i64| -> bool
+    select n {
+        0 => false,
+        1 => false,
+        2 => true,
+        _ => !has_divisor(n, 2)
+    };
+
+// Count primes up to 100 (classic: 25 primes)
+use array;
+let n = 100;
+let flags = array::init(n, |i| is_prime(i));
+let count = array::fold(flags, 0, |acc, b| select b {
+    true => acc + 1,
+    false => acc
+});
+
+println("primes in 0..100 = [count]");
+sys::exit(0)
