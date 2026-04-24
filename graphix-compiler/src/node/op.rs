@@ -26,6 +26,7 @@ macro_rules! compare_op {
         impl<R: Rt, E: UserEvent> $name<R, E> {
             /// Build the comparison node from already-compiled children.
             /// Used by AOT-generated code.
+            #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
                 let lhs = Cached::new(lhs);
                 let rhs = Cached::new(rhs);
@@ -119,6 +120,7 @@ macro_rules! bool_op {
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
+            #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
                 let lhs = Cached::new(lhs);
                 let rhs = Cached::new(rhs);
@@ -205,6 +207,7 @@ pub struct Not<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Not<R, E> {
+    #[allow(dead_code)]
     pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
         let typ = Type::Primitive(Typ::Bool.into());
         Box::new(Self { spec, typ, n })
@@ -322,6 +325,7 @@ macro_rules! arith_op {
             /// codegen uses this to skip the interpreter's late type
             /// unification — the type is already known after
             /// typecheck.
+            #[allow(dead_code)]
             pub fn new(
                 lhs: Node<R, E>,
                 rhs: Node<R, E>,

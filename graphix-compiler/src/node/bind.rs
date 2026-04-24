@@ -26,6 +26,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// already-compiled destructuring pattern. AOT codegen has
     /// already resolved the type and generated BindIds for the
     /// pattern's names.
+    #[allow(dead_code)]
     pub fn new(
         pattern: StructPatternNode,
         node: Node<R, E>,
@@ -185,6 +186,7 @@ impl Ref {
     /// Callers must ensure the runtime is told about the reference
     /// (via `ctx.rt.ref_var(id, top_id)`) separately — this
     /// constructor is a pure builder and does not touch ExecCtx.
+    #[allow(dead_code)]
     pub fn new<R: Rt, E: UserEvent>(
         id: BindId,
         typ: Type,
@@ -275,6 +277,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     /// ref-to-ref chaining must mirror that separately via
     /// `ctx.env.byref_chain.insert_cow(...)` before building the
     /// node.
+    #[allow(dead_code)]
     pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
         Box::new(Self { spec, typ, child, id })
     }
@@ -351,6 +354,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// evaluates to a `Value::U64` / `Value::V64` holding a BindId.
     /// AOT codegen passes the resolved type rather than leaving an
     /// empty type variable for the interpreter to pin down later.
+    #[allow(dead_code)]
     pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
         Box::new(Self { spec, typ, child, id: None, top_id })
     }
