@@ -27,11 +27,6 @@ val and: fn(['a, null], ['b, null]) -> ['b, null];
 /// or neither are non-null.
 val xor: fn(['a, null], ['a, null]) -> ['a, null];
 
-/// Collapse a nested option. Present for symmetry with Rust; at the
-/// value level this is the identity (graphix structural unions make
-/// [[T, null], null] equivalent to [T, null]).
-val flatten: fn([['a, null], null]) -> ['a, null];
-
 /// ok_or(v, e): return v unchanged when non-null, otherwise return
 /// error(e).
 val ok_or: fn(['a, null], 'e) -> Result<'a, 'e>;
@@ -58,21 +53,34 @@ val flat_map: fn(['a, null], fn('a) -> ['b, null]) -> ['b, null];
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
 /// Otherwise (v is null, or pred is false) emit null. Same fire-and-
 /// forget semantics as map.
+///
+/// Caveat for reactive predicates: when pred takes more than one cycle
+/// to produce its bool, the emitted value is the *current* input, not
+/// the input pred was actually answering for. If the input changes
+/// between feeding pred and pred firing, you'll see the new value
+/// gated on a verdict about the old one. Pure predicates (the
+/// expected case) are unaffected. Use `core::queue` if you need
+/// strict input-bool pairing.
 val filter: fn(['a, null], fn('a) -> bool) -> ['a, null];
 
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
 /// produces. f is invoked eagerly and its latest value is cached so
-/// later updates to v can be resolved without re-invoking f.
+/// later updates to v can be resolved without re-invoking f. If v is
+/// null before f has produced its first value, no output is emitted
+/// until f fires.
 val or_else: fn(['a, null], fn() -> ['a, null]) -> ['a, null];
 
 /// ok_or_else(v, f): return v if non-null, otherwise return
-/// error(f()). Same eager-with-caching semantics as or_else.
+/// error(f()). Same eager-with-caching semantics as or_else; null v
+/// before f's first firing is silent until f produces.
 val ok_or_else: fn(['a, null], fn() -> 'e) -> Result<'a, 'e>;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
-/// false when v is null or pred is false. Fire-and-forget like map.
+/// false when v is null or pred is false. Fire-and-forget like map —
+/// for non-null v, no output is produced until pred fires.
 val is_some_and: fn(['a, null], fn('a) -> bool) -> bool;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
-/// when v is non-null and pred is false. Fire-and-forget like map.
+/// when v is non-null and pred is false. Fire-and-forget like map —
+/// for non-null v, no output is produced until pred fires.
 val is_none_or: fn(['a, null], fn('a) -> bool) -> bool

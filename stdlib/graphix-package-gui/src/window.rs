@@ -101,6 +101,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             needs_redraw: true,
             last_set_size: None,
             pending_resize: None,
+            resize_timer_armed: false,
             last_render: Instant::now(),
         }
     }
@@ -124,6 +125,11 @@ pub struct TrackedWindow<X: GXExt> {
     pub needs_redraw: bool,
     pub last_set_size: Option<SizeV>,
     pub pending_resize: Option<(u32, u32, f64)>,
+    /// True while a debounce timer is armed for this window. Set when
+    /// a `Resized` event arrives and `pending_resize` transitions
+    /// `None → Some`; cleared when the timer fires. Prevents arming
+    /// multiple timers during a continuous drag.
+    pub resize_timer_armed: bool,
     pub last_render: Instant,
 }
 
@@ -213,15 +219,16 @@ impl<X: GXExt> TrackedWindow<X> {
 
     pub fn push_event(&mut self, event: iced_core::Event) {
         self.pending_events.push(event);
-        self.needs_redraw = true;
-    }
-
-    pub fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(graphix_rt::CallableId, Value)> {
-        self.content.editor_action(id, action)
+        // During a resize drag, let the render-period timer drive
+        // renders. Without this guard, every `CursorMoved` during
+        // the drag (the mouse is always moving when you're dragging
+        // the corner) sets `needs_redraw = true` and the render
+        // cadence blows past the intended ~10 Hz. Events still
+        // accumulate in `pending_events` — they're processed on
+        // the next timer-driven render.
+        if !self.resize_timer_armed {
+            self.needs_redraw = true;
+        }
     }
 
     pub fn cursor(&self) -> mouse::Cursor {

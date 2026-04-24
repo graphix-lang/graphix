@@ -1,3 +1,8 @@
+// This is an example how NOT to use graphix, at least not for anything but a
+// short term solution to a problem. You'd do this properly by writing iterate
+// as a rust builtin and leaving everything else in graphix. This example
+// exists to show that it is possible, if not performant, to do this kind of
+// calculation in graphix
 use gui;
 use gui::canvas;
 use array;

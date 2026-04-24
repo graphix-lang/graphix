@@ -1,0 +1,83 @@
+use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use sys;
+use sys::net;
+use sys::time;
+use array;
+use rand;
+mod icon;
+
+// Enough rows and columns that both the vertical and horizontal
+// virtualized scrollbars kick in at the default window size. Rows
+// are real netidx paths, so scrolling also exercises the
+// subscribe-on-enter / drop-on-exit window around the viewport.
+
+let host_ids = [
+    "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
+    "011", "012", "013", "014", "015", "016", "017", "018", "019", "020",
+    "021", "022", "023", "024", "025", "026", "027", "028", "029", "030",
+    "031", "032", "033", "034", "035", "036", "037", "038", "039", "040"
+];
+
+let base = "/local/graphix/data_table_scrolling";
+
+// Drive every metric off one clock so all rows update in lockstep.
+let tick = time::timer(duration:2.s, true);
+
+let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
+let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
+let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
+
+let publish_host = |name: string| -> bool {
+    net::publish("[base]/host-[name]/cpu_pct", rand100());
+    net::publish("[base]/host-[name]/mem_pct", rand100());
+    net::publish("[base]/host-[name]/disk_pct", rand100());
+    net::publish("[base]/host-[name]/net_in_mbps", rand_mbps());
+    net::publish("[base]/host-[name]/net_out_mbps", rand_mbps());
+    net::publish("[base]/host-[name]/load_1m", rand01());
+    net::publish("[base]/host-[name]/load_5m", rand01());
+    net::publish("[base]/host-[name]/load_15m", rand01());
+    net::publish("[base]/host-[name]/error_count", rand100());
+    net::publish("[base]/host-[name]/request_count", rand_mbps());
+    true
+};
+
+// Keep the result live so the publishers stay registered.
+let publishers = array::map(host_ids, publish_host);
+
+let tbl = net::list_table(base)$;
+
+let types = {
+    "cpu_pct"        => progress_column(#display_name: "CPU %",      #width: &f64:90.),
+    "mem_pct"        => progress_column(#display_name: "Memory %",   #width: &f64:90.),
+    "disk_pct"       => progress_column(#display_name: "Disk %",     #width: &f64:90.),
+    "net_in_mbps"    => text_column(    #display_name: "Net In",     #width: &f64:110.),
+    "net_out_mbps"   => text_column(    #display_name: "Net Out",    #width: &f64:110.),
+    "load_1m"        => sparkline_column(#history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &f64:120.),
+    "load_5m"        => sparkline_column(#history_seconds: f64:300., #display_name: "Load 5m",  #width: &f64:120.),
+    "load_15m"       => sparkline_column(#history_seconds: f64:900., #display_name: "Load 15m", #width: &f64:120.),
+    "error_count"    => text_column(    #display_name: "Errors",     #width: &f64:100.),
+    "request_count"  => text_column(    #display_name: "Requests",   #width: &f64:110.)
+};
+
+let layout = column(
+    #spacing: &10.0,
+    #padding: &`All(14.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &18.0, &"40 hosts × 10 metrics"),
+        text(&"Scroll vertically or horizontally to reveal off-screen cells."),
+        data_table(#column_types: &types, #table: &tbl)
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Scrolling",
+    #theme: &`CatppuccinMocha,
+    #size: &{width: f64:900., height: f64:400.},
+    &layout
+)]

@@ -1590,15 +1590,17 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
 
 type Shr = CachedArgs<ShrEv>;
 
+/// Fire-and-forget filter: when the input produces a value we feed it
+/// into `pred`, and emit the value whenever `pred` returns `true`. If a
+/// new input arrives while `pred` is still working on the last one, the
+/// new input replaces the pending value — the caller should wrap this
+/// with `queue` if they need strict pairing between inputs and verdicts.
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
-    ready: bool,
-    queue: VecDeque<Value>,
     pred: Node<R, E>,
-    top_id: ExprId,
+    pending: Option<Value>,
     fid: BindId,
     x: BindId,
-    out: BindId,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
@@ -1625,10 +1627,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                 };
                 let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
                 let pred = genn::apply(fnode, scope.clone(), vec![xn], &ptyp, top_id);
-                let queue = VecDeque::new();
-                let out = BindId::new();
-                ctx.rt.ref_var(out, top_id);
-                Ok(Box::new(Self { ready: true, queue, pred, fid, x, out, top_id }))
+                Ok(Box::new(Self { pred, pending: None, fid, x }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -1642,52 +1641,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        macro_rules! set {
-            ($v:expr) => {{
-                self.ready = false;
-                ctx.cached.insert(self.x, $v.clone());
-                event.variables.insert(self.x, $v);
-            }};
-        }
-        macro_rules! maybe_cont {
-            () => {{
-                if let Some(v) = self.queue.front().cloned() {
-                    set!(v);
-                    continue;
-                }
-                break;
-            }};
-        }
-        if let Some(v) = from[0].update(ctx, event) {
-            self.queue.push_back(v);
-        }
         if let Some(v) = from[1].update(ctx, event) {
             ctx.cached.insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
-        if self.ready && self.queue.len() > 0 {
-            let v = self.queue.front().unwrap().clone();
-            set!(v);
+        if let Some(v) = from[0].update(ctx, event) {
+            self.pending = Some(v.clone());
+            ctx.cached.insert(self.x, v.clone());
+            event.variables.insert(self.x, v);
         }
-        loop {
-            match self.pred.update(ctx, event) {
-                None => break,
-                Some(v) => {
-                    self.ready = true;
-                    match v {
-                        Value::Bool(true) => {
-                            ctx.rt.set_var(self.out, self.queue.pop_front().unwrap());
-                            maybe_cont!();
-                        }
-                        _ => {
-                            let _ = self.queue.pop_front();
-                            maybe_cont!();
-                        }
-                    }
-                }
-            }
-        }
-        event.variables.get(&self.out).map(|v| v.clone())
+        self.pred.update(ctx, event).and_then(|b| match b {
+            Value::Bool(true) => self.pending.clone(),
+            _ => None,
+        })
     }
 
     fn typecheck(
@@ -1706,18 +1672,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.out);
         ctx.cached.remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
-        ctx.rt.unref_var(self.out, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.out, self.top_id);
-        self.out = BindId::new();
-        ctx.rt.ref_var(self.out, self.top_id);
-        self.queue.clear();
+        self.pending = None;
         self.pred.sleep(ctx);
     }
 }
@@ -2491,7 +2452,6 @@ graphix_derive::defpackage! {
         opt::Or,
         opt::And,
         opt::Xor,
-        opt::Flatten,
         opt::OkOr,
         opt::Zip,
         opt::Unzip,

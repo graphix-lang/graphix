@@ -463,24 +463,35 @@ fn find_nearest_point<X: GXExt>(
             }
             DatasetEntry::Bar { data, style } => {
                 if let Some(bd) = data.t.as_ref() {
-                    if pixel_to_data(cursor, info).is_some() {
-                        for (cat, val) in bd.0.iter() {
-                            let label = style.label.as_deref().unwrap_or(cat.as_str());
-                            let py = data_to_pixel(0.0, *val, info);
-                            let dist = (cursor.y - py.y).abs();
-                            if dist < SNAP_THRESHOLD * 2.0
-                                && best.as_ref().map_or(true, |(d, _)| dist < *d)
-                            {
-                                best = Some((
-                                    dist,
-                                    SnapPoint {
-                                        pixel: Point::new(cursor.x, py.y),
-                                        label: label.to_string(),
-                                        value: format!("{cat}: {val:.2}"),
-                                    },
-                                ));
-                            }
-                        }
+                    // Bar charts use x_range (0, N) with one bar per
+                    // integer segment. Pick the bar by cursor X alone
+                    // (the entire vertical strip counts as a hit) and
+                    // snap the tooltip anchor to the bar's X-center
+                    // at the bar's top-Y — not to the cursor.
+                    let (data_x, _) = match pixel_to_data(cursor, info) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if data_x < 0.0 {
+                        continue;
+                    }
+                    let idx = data_x.floor() as usize;
+                    if idx >= bd.0.len() {
+                        continue;
+                    }
+                    let (cat, val) = &bd.0[idx];
+                    let label = style.label.as_deref().unwrap_or(cat.as_str());
+                    let pixel = data_to_pixel(idx as f64 + 0.5, *val, info);
+                    let dist = (cursor.x - pixel.x).abs();
+                    if best.as_ref().map_or(true, |(d, _)| dist < *d) {
+                        best = Some((
+                            dist,
+                            SnapPoint {
+                                pixel,
+                                label: label.to_string(),
+                                value: format!("{cat}: {val:.2}"),
+                            },
+                        ));
                     }
                 }
             }
@@ -495,10 +506,10 @@ fn find_nearest_point<X: GXExt>(
                     let radius = (info.rect.width.min(info.rect.height) * 0.35).max(10.0);
                     let dx = cursor.x - cx;
                     let dy = cursor.y - cy;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    if dist > radius {
-                        continue;
-                    }
+                    // Hover activates anywhere in the wedge sector,
+                    // not only inside the pie itself — any cursor
+                    // angle that lands in a slice selects it, no
+                    // matter the radial distance.
                     let start = style.start_angle.unwrap_or(0.0);
                     let angle =
                         ((dy.atan2(dx) as f64).to_degrees() - start).rem_euclid(360.0);
@@ -507,10 +518,21 @@ fn find_nearest_point<X: GXExt>(
                         let slice_angle = (*val / total) * 360.0;
                         if angle >= cumulative && angle < cumulative + slice_angle {
                             let pct = (*val / total) * 100.0;
+                            // Snap the tooltip anchor to the wedge
+                            // centroid at half-radius on the slice's
+                            // mid-angle, so the dot sits inside the
+                            // slice regardless of cursor position.
+                            let mid_deg = cumulative + slice_angle / 2.0 + start;
+                            let mid_rad = (mid_deg as f64).to_radians();
+                            let anchor_r = (radius * 0.5) as f64;
+                            let pixel = Point::new(
+                                cx + (mid_rad.cos() * anchor_r) as f32,
+                                cy + (mid_rad.sin() * anchor_r) as f32,
+                            );
                             best = Some((
                                 0.0,
                                 SnapPoint {
-                                    pixel: cursor,
+                                    pixel,
                                     label: cat.clone(),
                                     value: format!("{val:.2} ({pct:.1}%)"),
                                 },

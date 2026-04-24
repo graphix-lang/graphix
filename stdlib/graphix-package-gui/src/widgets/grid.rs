@@ -3,7 +3,7 @@ use crate::types::{GridColumnsV, GridSizingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -80,18 +80,6 @@ impl<X: GXExt> GuiWidget<X> for GridW<X> {
         Ok(changed)
     }
 
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        for child in &mut self.children {
-            if let some @ Some(_) = child.editor_action(id, action) {
-                return some;
-            }
-        }
-        None
-    }
 
     fn view(&self) -> IcedElement<'_> {
         let mut g = widget::Grid::new();

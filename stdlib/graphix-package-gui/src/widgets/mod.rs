@@ -1,8 +1,10 @@
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
+use compact_str::CompactString;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{future::Future, pin::Pin};
 
@@ -56,12 +58,12 @@ macro_rules! update_child {
 
 pub mod button;
 pub mod canvas;
-pub mod data_table;
 pub mod chart;
 pub mod combo_box;
 pub mod container;
 pub mod context_menu;
 pub mod context_menu_widget;
+pub mod data_table;
 pub mod grid;
 pub mod iced_keyboard_area;
 pub mod image;
@@ -104,11 +106,16 @@ pub enum Message {
     /// All values in logical pixels.
     Scroll(f32, f32, f32, f32),
     /// A cell was clicked in a data table (row index, column name).
-    CellClick(usize, String),
+    /// Column name is the data_table widget's cached `ColumnSpec.name`
+    /// or one of the synthesized sentinels (`ROW_NAME_KEY`/value-mode);
+    /// either way it's a refcount-bump clone, never a fresh allocation.
+    CellClick(usize, ArcStr),
     /// A cell was clicked to begin editing (row index, column name).
-    CellEdit(usize, String),
-    /// Cell edit text changed (new text).
-    CellEditInput(String),
+    CellEdit(usize, ArcStr),
+    /// Cell edit text changed (new text). `CompactString` keeps small
+    /// edits inline (≤ 24 bytes) without heap traffic on each
+    /// keystroke.
+    CellEditInput(CompactString),
     /// Cell edit submitted (Enter pressed).
     CellEditSubmit,
     /// Cell edit cancelled (Escape or click elsewhere).
@@ -141,6 +148,25 @@ pub enum TableKeyAction {
     Escape,
 }
 
+/// Context passed to `GuiWidget::on_message` so handlers can read
+/// per-window state (e.g. the cursor position a column-resize needs)
+/// and publish follow-up messages (e.g. a `Call` fired from a drag
+/// update) without the event loop having to know widget specifics.
+pub struct MessageShell {
+    pub cursor_position: iced_core::Point,
+    pub out: LPooled<Vec<Message>>,
+}
+
+impl MessageShell {
+    pub fn new(cursor_position: iced_core::Point) -> Self {
+        Self { cursor_position, out: LPooled::take() }
+    }
+
+    pub fn publish(&mut self, msg: Message) {
+        self.out.push(msg);
+    }
+}
+
 /// Trait for GUI widgets. Unlike TUI widgets, GUI widgets are not
 /// async — handle_update is synchronous, and the view method builds
 /// an iced Element tree.
@@ -158,119 +184,36 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
 
-    /// Child widgets that interactive handlers should forward to.
-    /// Leaf widgets return `&mut []` (the default). Containers
-    /// (row, column, container, scrollable, stack, etc.) override
-    /// this so that handler messages like `handle_cell_click` and
-    /// `handle_column_resize_start` flow down to a nested data_table.
-    ///
-    /// Without this forwarding the event loop delivers messages to
-    /// the window's top-level widget only, and anything nested in a
-    /// container silently swallows them.
-    fn children_mut(&mut self) -> &mut [GuiW<X>] { &mut [] }
+    /// Child widgets that `on_message` and `before_view` should
+    /// forward to. Leaf widgets return `&mut []` (the default).
+    /// Containers (row, column, container, scrollable, stack, …)
+    /// override this so that messages flow down to nested widgets
+    /// like `data_table` — without it the event loop delivers
+    /// messages to the window's top-level widget only.
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        &mut []
+    }
 
-    fn children(&self) -> &[GuiW<X>] { &[] }
+    fn children(&self) -> &[GuiW<X>] {
+        &[]
+    }
 
-    /// Handle a keyboard navigation action. Returns true if redraw needed.
-    fn handle_table_key(&mut self, action: &TableKeyAction) -> bool {
+    /// Dispatch a message to the widget. Returns `true` if the
+    /// widget changed and a redraw is needed. Widgets that emit
+    /// follow-up messages (e.g. a `Call` fired from a column-resize
+    /// drag) publish through `shell`. The default implementation
+    /// forwards to children — containers don't need to override.
+    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
         let mut changed = false;
         for child in self.children_mut() {
-            changed |= child.handle_table_key(action);
+            changed |= child.on_message(msg, shell);
         }
         changed
     }
 
-    /// Begin editing a cell, update edit text, submit, or cancel.
-    fn handle_cell_edit(&mut self, row: usize, col: String) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_cell_edit(row, col.clone());
-        }
-        changed
-    }
-    fn handle_cell_edit_input(&mut self, text: String) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_cell_edit_input(text.clone());
-        }
-        changed
-    }
-    fn handle_cell_edit_submit(&mut self) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_cell_edit_submit();
-        }
-        changed
-    }
-    fn handle_cell_edit_cancel(&mut self) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_cell_edit_cancel();
-        }
-        changed
-    }
-
-    /// Process a cell click in a data table. Returns true if redraw needed.
-    fn handle_cell_click(&mut self, row: usize, col: String) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_cell_click(row, col.clone());
-        }
-        changed
-    }
-
-    /// Notify that the viewport size changed (e.g. window resize).
-    /// Returns true if visible content changed.
-    fn handle_viewport_resize(&mut self, vp_w: f32, vp_h: f32) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_viewport_resize(vp_w, vp_h);
-        }
-        changed
-    }
-
-    /// Process a virtual scroll position change.
-    /// Returns true if the visible content changed and a redraw is needed.
-    fn handle_scroll(&mut self, v: f32, h: f32, vp_w: f32, vp_h: f32) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_scroll(v, h, vp_w, vp_h);
-        }
-        changed
-    }
-
-    /// Start a column resize drag. Returns true if a drag was started.
-    fn handle_column_resize_start(&mut self, col_idx: usize, cursor_x: f32) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_column_resize_start(col_idx, cursor_x);
-        }
-        changed
-    }
-
-    /// Update during a column resize drag. Returns Some((callable_id, new_width))
-    /// if an on_resize callback should be fired.
-    fn handle_mouse_move_resize(&mut self, cursor_x: f32) -> Option<(CallableId, f64)> {
-        for child in self.children_mut() {
-            if let some @ Some(_) = child.handle_mouse_move_resize(cursor_x) {
-                return some;
-            }
-        }
-        None
-    }
-
-    /// End a column resize drag. Returns true if a drag was ended.
-    fn handle_column_resize_end(&mut self) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.handle_column_resize_end();
-        }
-        changed
-    }
-
-    /// True if a column resize drag is currently in progress. The
-    /// event loop polls this after each cursor move / button release
-    /// to decide whether to route the event into the drag handlers.
+    /// True if this widget (or any descendant) is currently tracking
+    /// a column-resize drag. The event loop polls this to decide
+    /// whether a cursor-moved event should be routed as a drag update.
     fn is_column_resizing(&self) -> bool {
         self.children().iter().any(|c| c.is_column_resizing())
     }
@@ -290,16 +233,9 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         unimplemented!("as_any not implemented for this widget")
     }
 
-    /// Route a text editor action to the widget that owns the given
-    /// content ref. Returns `Some((callable_id, value))` if the action
-    /// was an edit and the result should be called back to graphix.
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        let _ = (id, action);
-        None
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        unimplemented!("as_any_mut not implemented for this widget")
     }
 
     /// Called immediately before `view()` so widgets can flush deferred
@@ -438,19 +374,6 @@ macro_rules! flex_widget {
                     changed |= child.handle_update(rt, id, v)?;
                 }
                 Ok(changed)
-            }
-
-            fn editor_action(
-                &mut self,
-                id: ExprId,
-                action: &iced_widget::text_editor::Action,
-            ) -> Option<(CallableId, Value)> {
-                for child in &mut self.children {
-                    if let some @ Some(_) = child.editor_action(id, action) {
-                        return some;
-                    }
-                }
-                None
             }
 
             fn view(&self) -> IcedElement<'_> {

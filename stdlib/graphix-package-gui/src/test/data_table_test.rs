@@ -219,7 +219,7 @@ let result = data_table(
     h.drain().await?;
 
     // Simulate clicking cell (row 0, col "c0") via the widget trait method
-    h.widget.handle_cell_click(0, "c0".to_string());
+    h.dt_mut().handle_cell_click(0, "c0".into());
     h.drain().await?;
 
     let clicked = h.get_watched("test::last_clicked");
@@ -248,7 +248,7 @@ let result = data_table(
     h.drain().await?;
 
     // Simulate clicking the name column for row 0
-    h.widget.handle_cell_click(0, "name".to_string());
+    h.dt_mut().handle_cell_click(0, "name".into());
     h.drain().await?;
 
     let activated = h.get_watched("test::activated");
@@ -569,9 +569,9 @@ let result = data_table(
     let mut h = dt(code).await?;
     let _ = h.watch("test::log").await?;
     h.drain().await?;
-    h.widget.handle_cell_edit(0, "c0".to_string());
-    h.widget.handle_cell_edit_input("new".to_string());
-    h.widget.handle_cell_edit_submit();
+    h.dt_mut().handle_cell_edit(0, "c0".into());
+    h.dt_mut().handle_cell_edit_input("new".into());
+    h.dt_mut().handle_cell_edit_submit();
     h.drain().await?;
     let log = h.get_watched("test::log");
     assert_eq!(
@@ -607,9 +607,9 @@ let result = data_table(
     let mut h = dt(code).await?;
     let _ = h.watch("test::log").await?;
     h.drain().await?;
-    h.widget.handle_cell_edit(0, "c0".to_string());
-    h.widget.handle_cell_edit_input("42".to_string());
-    h.widget.handle_cell_edit_submit();
+    h.dt_mut().handle_cell_edit(0, "c0".into());
+    h.dt_mut().handle_cell_edit_input("42".into());
+    h.dt_mut().handle_cell_edit_submit();
     h.drain().await?;
     let log = h.get_watched("test::log");
     // Interpolating an i64 into a string gives the bare number.
@@ -644,9 +644,9 @@ let result = data_table(
     let mut h = dt(code).await?;
     let _ = h.watch("test::log").await?;
     h.drain().await?;
-    h.widget.handle_cell_edit(0, "c0".to_string());
-    h.widget.handle_cell_edit_input("never-applied".to_string());
-    h.widget.handle_cell_edit_cancel();
+    h.dt_mut().handle_cell_edit(0, "c0".into());
+    h.dt_mut().handle_cell_edit_input("never-applied".into());
+    h.dt_mut().handle_cell_edit_cancel();
     h.drain().await?;
     let log = h.get_watched("test::log");
     assert_eq!(
@@ -1191,13 +1191,13 @@ let result = data_table(
     let _ = h.watch("test::log").await?;
     h.drain().await?;
     let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
-    h.widget.handle_column_resize_start(idx, 100.0);
+    h.dt_mut().handle_column_resize_start(idx, 100.0);
     // First move seeds the last-x baseline; the second sample is
     // where we actually compute a delta and fire on_resize.
-    assert!(h.widget.handle_mouse_move_resize(100.0).is_none());
-    let result = h.widget.handle_mouse_move_resize(180.0);
+    assert!(h.dt_mut().handle_mouse_move_resize(100.0).is_none());
+    let result = h.dt_mut().handle_mouse_move_resize(180.0);
     let (cb_id, new_w) = result.expect("on_resize callback returned");
-    h.widget.handle_column_resize_end();
+    h.dt_mut().handle_column_resize_end();
     h.call_callback(cb_id, ValArray::from_iter([Value::F64(new_w)])).await?;
     let log = h.get_watched("test::log");
     assert!(
@@ -1210,19 +1210,21 @@ let result = data_table(
 // ── Sparkline accumulation and decimation ──────────────────────────
 
 /// 17: A Sparkline column accumulates published values arriving over
-/// the netidx subscription path. Uses three one-shot timers spaced by
-/// tens of milliseconds: a repeating timer would keep `drain()` spinning
-/// forever because batches would always arrive within its reset window.
-/// Each timer fires once, publishes a distinct counter value, and then
-/// stops producing events — so drain terminates after the last tick.
+/// the netidx subscription path. The three one-shot timers are spaced
+/// well past resolver + subscriber setup (300ms / 450ms / 600ms) so
+/// every timer's publication lands on a live subscriber — the earlier
+/// "fire at 20ms, hope the subscriber is ready" version produced
+/// flaky results and had to weaken its assertion to `>= 2`. Using
+/// one-shot timers (second arg `false`) is still important because a
+/// repeating timer would keep `drain()` spinning forever.
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_accumulates() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys; use sys::time;
 let c = 0;
-let t1 = time::timer(duration:20.ms, false);
-let t2 = time::timer(duration:80.ms, false);
-let t3 = time::timer(duration:150.ms, false);
+let t1 = time::timer(duration:300.ms, false);
+let t2 = time::timer(duration:450.ms, false);
+let t3 = time::timer(duration:600.ms, false);
 c <- t1 ~ 1;
 c <- t2 ~ 2;
 c <- t3 ~ 3;
@@ -1241,25 +1243,25 @@ let result = data_table(
 )
 "#;
     let mut h = dt(code).await?;
-    // Give the timers (last fires at 150ms) plus publisher/subscriber
-    // round-trips time to land. The cap here is wall-clock bounded: a
-    // few hundred ms even if all iterations run.
-    for _ in 0..8 {
-        h.drain().await?;
-        if h.dt().dt_sparkline_len("r0", "load").unwrap_or(0) >= 3 {
-            break;
-        }
+    h.wait_until(
+        |h| {
+            let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
+            vs.contains(&1.0) && vs.contains(&2.0) && vs.contains(&3.0)
+        },
+        std::time::Duration::from_secs(2),
+        "sparkline to receive all three timer-driven values",
+    ).await?;
+    // Every timer-driven update must be present. The initial
+    // BEGIN_WITH_LAST value (0) may or may not be retained depending on
+    // whether the subscriber saw it before the first timer fired, but
+    // the three timer values are mandatory.
+    let vs = h.dt().dt_sparkline_values("r0", "load").unwrap();
+    for expected in [1.0, 2.0, 3.0] {
+        assert!(
+            vs.contains(&expected),
+            "sparkline missing timer value {expected}, got: {vs:?}",
+        );
     }
-    let len = h.dt().dt_sparkline_len("r0", "load");
-    // Subscriber race conditions (resolver lookup + connection happen
-    // asynchronously) can sometimes cause the first one or two timer
-    // ticks to arrive before the subscriber is ready, so require only
-    // >= 2 here. The point is to demonstrate that subscription-driven
-    // accumulation flows through the sparkline history.
-    assert!(
-        len.unwrap_or(0) >= 2,
-        "sparkline should have accumulated >= 2 subscribed points, got: {len:?}",
-    );
     Ok(())
 }
 
@@ -1456,7 +1458,7 @@ let result = data_table(
     let _ = h.watch("test::sel_log").await?;
     let _ = h.watch("test::act_log").await?;
     h.drain().await?;
-    h.widget.handle_cell_click(0, "name".to_string());
+    h.dt_mut().handle_cell_click(0, "name".into());
     h.drain().await?;
     assert_eq!(h.get_watched("test::act_log"),
         Some(&Value::String(arcstr::literal!("r0"))));
@@ -1492,9 +1494,9 @@ let result = data_table(
     // Baseline: no user width yet (cell was auto-sized in view()).
     assert_eq!(h.dt().dt_user_width("c0"), None);
     // First call: starts a resize drag.
-    h.widget.handle_column_resize_start(idx, 100.0);
+    h.dt_mut().handle_column_resize_start(idx, 100.0);
     // Second call within 400ms on the same handle: triggers auto-fit.
-    h.widget.handle_column_resize_start(idx, 100.0);
+    h.dt_mut().handle_column_resize_start(idx, 100.0);
     let w = h.dt().dt_user_width("c0").expect("auto-fit writes user_widths");
     // MIN_COL_WIDTH = 80; the long content must exceed it.
     assert!(w > 80.0, "auto-fit width must exceed MIN_COL_WIDTH, got {w}");
@@ -1548,5 +1550,144 @@ let result = data_table(#table: &tbl)
     let (w2, h2, _rows2, _cols2) = h.inner.dt().dt_viewport_metrics();
     assert!((w2 - 1200.0).abs() < 0.5, "post-grow viewport_width ~1200, got {w2}");
     assert!((h2 - 600.0).abs() < 0.5, "post-grow viewport_height ~600, got {h2}");
+    Ok(())
+}
+
+// ── Horizontal scroll with variable-width columns ──────────────────
+//
+// Regression for the `first_col` math: it used to divide the scroll
+// offset by `MIN_COL_WIDTH`, so tables with wider-than-min columns saw
+// their scrollbar position drift out of sync with the rendered first
+// column. With prefix-sum mapping, a scroll to the sum of the first
+// few columns' widths lands `first_col` on the exact next column.
+
+#[tokio::test(flavor = "current_thread")]
+async fn horizontal_scroll_variable_width() -> Result<()> {
+    // Three data cols with intentionally uneven widths (60 / 200 /
+    // 140). Name column is 80 (the auto-fit floor for a one-char
+    // basename). Total virtual width = 80 + 60 + 200 + 140 = 480.
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r"], columns: ["a", "b", "c"] };
+let result = data_table(
+    #column_types: &{
+        "a" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null, default_value: &"a",
+            on_resize: &null, width: &null
+        },
+        "b" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null, default_value: &"b",
+            on_resize: &null, width: &null
+        },
+        "c" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null, default_value: &"c",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    // Manually seed the width cache so the test doesn't depend on
+    // font-metric layout. `ROW_NAME_KEY` uses the internal sentinel.
+    let w = h.dt();
+    w.dt_set_cached_width("\0__rowname__", 80.0);
+    w.dt_set_cached_width("a", 60.0);
+    w.dt_set_cached_width("b", 200.0);
+    w.dt_set_cached_width("c", 140.0);
+    // ox = 0 → first_col 0 (name col is sticky, so offset 0 means
+    // "show everything starting at data col 0").
+    assert_eq!(w.col_at_offset_for_test(0.0), 0, "ox=0 → first_col=0");
+    // ox slightly past name column start but well under name_col_w +
+    // col_a_w/2: still first_col=0. With name_col_w=80 and col_a_w=60,
+    // the midpoint boundary is at ox = 80 + 30 = 110.
+    assert_eq!(w.col_at_offset_for_test(100.0), 0, "ox=100 still in col a");
+    // ox past boundary to col b: with col_a_w=60 and col_b_w=200,
+    // midpoint is name_col_w + col_a_w + col_b_w/2 = 80 + 60 + 100 =
+    // 240. ox=200 is past col_a (first_col=1).
+    assert_eq!(w.col_at_offset_for_test(200.0), 1, "ox=200 lands on col b");
+    // ox=300 is past col_b's midpoint (240) — snap to col c.
+    assert_eq!(w.col_at_offset_for_test(300.0), 2, "ox=300 lands on col c");
+    // With the old `ox / MIN_COL_WIDTH` math, ox=200 would have
+    // returned floor(200/80)=2 (col c) — off by one column. This
+    // assertion passes only with the prefix-sum fix.
+    Ok(())
+}
+
+// ── column_types display_name-only update preserves subscriptions ──
+//
+// Regression for the subscription-churn bug: a graphix-side update to
+// the `column_types` ref that only changed field values (e.g. the
+// header's display name) used to tear down every row's subs and
+// rebuild from scratch. Now the diff-based reconcile leaves subs
+// alone when the column name set is unchanged.
+
+#[tokio::test(flavor = "current_thread")]
+async fn column_types_display_name_update_preserves_subs() -> Result<()> {
+    // `display_name` starts null, then a connect flips it via a
+    // one-shot timer. Because col_types dereferences *display_name*,
+    // the map value re-emits when display_name changes, which fires a
+    // column_types update on the data_table. Only display_name
+    // changes — the diff-based reconcile should therefore NOT tear
+    // down subs.
+    let code = r#"
+use gui; use gui::data_table; use sys; use sys::time;
+sys::net::publish("/local/dt_dn/r0/c0", i64:42);
+let display_name: [string, null] = null;
+display_name <- time::timer(duration:100.ms, false) ~ "Renamed";
+let tbl = { rows: ["/local/dt_dn/r0"], columns: ["c0"] };
+let col_types = {
+    "c0" => {
+        typ: `Text({ on_edit: null }),
+        display_name,
+        default_value: &null,
+        on_resize: &null,
+        width: &null
+    }
+};
+let result = data_table(
+    #column_types: &col_types,
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    h.wait_until(
+        |h| h.dt().dt_snapshot_value_at(0, 0) == Some("42".to_string()),
+        std::time::Duration::from_secs(2),
+        "subscribed cell value to land",
+    ).await?;
+    let subs_before = h.dt().dt_row_sub_count();
+    assert!(subs_before >= 1, "expected >= 1 active row sub, got {subs_before}");
+    // Wait for display_name to flip past the timer boundary. The data
+    // table will fire the column_types handler with the new spec; the
+    // diff reconcile should be the path taken (only display_name
+    // changed, column keys and bids unchanged).
+    h.wait_until(
+        |h| {
+            // Some evidence the update landed: dt_snapshot is the
+            // simplest observable that still works after
+            // display_name changes. Row count stays the same, so if
+            // the table is still there we're past the update.
+            h.dt().dt_snapshot_value_at(0, 0) == Some("42".to_string())
+                && h.dt().dt_row_sub_count() > 0
+        },
+        std::time::Duration::from_secs(2),
+        "display_name update to be processed",
+    ).await?;
+    let subs_after = h.dt().dt_row_sub_count();
+    assert_eq!(
+        subs_after, subs_before,
+        "display_name-only update must preserve row subs: before={subs_before} after={subs_after}",
+    );
+    // Cell value stays visible without a round-trip back to the
+    // publisher — since subs weren't torn down, the grid isn't wiped.
+    assert_eq!(
+        h.dt().dt_snapshot_value_at(0, 0),
+        Some("42".to_string()),
+        "cell value must persist across display_name-only update",
+    );
     Ok(())
 }

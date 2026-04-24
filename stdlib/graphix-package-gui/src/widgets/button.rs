@@ -3,7 +3,7 @@ use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
@@ -91,13 +91,6 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         Ok(changed)
     }
 
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        self.child.editor_action(id, action)
-    }
 
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.view());

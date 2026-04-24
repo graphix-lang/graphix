@@ -195,6 +195,12 @@ val dirname: fn(string) -&gt; Option&lt;string&gt;;
 /// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -&gt; bar
 val basename: fn(string) -&gt; Option&lt;string&gt;;
 
+/// given a path ending in .../row/col, return the tuple (row, col).
+/// equivalent to (basename(dirname(s)), basename(s)), but in a single
+/// builtin call. returns null if s has fewer than two path components.
+/// e.g. /foo/bar/baz -&gt; ("bar", "baz"), /foo -&gt; null
+val row_col: fn(string) -&gt; Option&lt;(string, string)&gt;;
+
 /// return a single string with the arguments concatenated and separated by #sep
 val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 

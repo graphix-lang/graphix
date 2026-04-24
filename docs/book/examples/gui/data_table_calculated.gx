@@ -12,30 +12,40 @@ mod icon;
 // every cell update on subscribed cells and pushes the new (a+b)
 // total into the corresponding sum ref.
 
-sys::net::publish("/local/graphix/data_table_calculated/r0/A", i64:10);
-sys::net::publish("/local/graphix/data_table_calculated/r0/B", i64:5);
-sys::net::publish("/local/graphix/data_table_calculated/r1/A", i64:20);
-sys::net::publish("/local/graphix/data_table_calculated/r1/B", i64:3);
-sys::net::publish("/local/graphix/data_table_calculated/r2/A", i64:4);
-sys::net::publish("/local/graphix/data_table_calculated/r2/B", i64:11);
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0, #end:10, #clock)
+};
+
+publish("/local/graphix/data_table_calculated/r0/A", rv());
+publish("/local/graphix/data_table_calculated/r1/A", rv());
+publish("/local/graphix/data_table_calculated/r2/A", rv());
+publish("/local/graphix/data_table_calculated/r0/B", rv());
+publish("/local/graphix/data_table_calculated/r1/B", rv());
+publish("/local/graphix/data_table_calculated/r2/B", rv());
+
 let tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map<string, Map<string, i64>> = {};
 
-let update = |#path: string, #value: Primitive| {
+// on_update is called on updates to netidx subscriptions by the table
+let on_update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
-    let col = opt::or_never(basename(path));
-    let row = opt::or_never(basename(opt::or_never(dirname(path))))
+    let d = v ~ data; // run only when v updates
+    let (row, col) = opt::or_never(str::row_col(path));
+    let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
+    let sum = map::fold(d, 0, |sum, (col, rows)| select col {
+        "sum" => sum,
+        col => sum + map::get_or(rows, row, 0)
+    });
+    data <- map::change(d, "sum", {}, |sums| map::insert(sums, row, sum))
 };
 
 let types = {
-    "sum" => {
-        typ: `Text({ on_edit: null }),
-        display_name: "A + B",
-        default_value: &{ "r0" => r0_sum, "r1" => r1_sum, "r2" => r2_sum },
-        on_resize: &null,
-        width: &null
-    }
+    "sum" => text_column(
+        #display_name: "A + B",
+        #default_value: &map::get_or(data, "sum", {})
+    )
 };
 
 let layout = column(
@@ -48,7 +58,7 @@ let layout = column(
         text(&"on_update fires on every cell update; the virtual sum column reflects A + B."),
         data_table(
             #column_types: &types,
-            #on_update: update,
+            #on_update,
             #table: &tbl
         )
     ]

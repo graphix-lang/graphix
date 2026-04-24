@@ -1,13 +1,21 @@
-//! Netidx data table widget.
+//! Data table widget.
 //!
-//! Subscribes to a netidx path, discovers rows and columns via the
-//! resolver, subscribes to individual cells, and renders a live
-//! scrollable table with virtualized scrolling.
+//! Takes a `sys::net::Table` — rows, columns, and an optional base
+//! path — and renders a live scrollable table with virtualized row
+//! and column viewports. Rows whose path is absolute drive netidx
+//! subscriptions; rows whose path is not absolute are virtual and
+//! only display per-column default values. Columns are configured via
+//! the `column_types` map, which selects per-column editor widgets
+//! (text, toggle, combo, spin, progress, button, sparkline) and
+//! supplies default values, widths, and resize callbacks. Sort order,
+//! selection, header clicks, cell activation, and cell edits are all
+//! driven by graphix refs and callables.
 
 use super::{GuiW, GuiWidget, IcedElement, Message, Renderer};
 use crate::theme::GraphixTheme;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
+use arcstr::{literal, ArcStr};
+use compact_str::{format_compact, CompactString};
 use fxhash::{FxHashMap, FxHashSet};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
@@ -20,8 +28,11 @@ use netidx::{
     publisher::Value,
     subscriber::{Dval, Event, Subscriber, UpdatesFlags},
 };
+use netidx_derive::FromValue;
 use parking_lot::Mutex;
+use poolshark::local::LPooled;
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -52,7 +63,13 @@ const RESIZE_HANDLE_WIDTH: f32 = 5.0;
 /// called "name". All width caches, ref/user width maps, scroll
 /// targets, and cell-path routing use this key for the row-name
 /// column — `"name"` is only ever the displayed header label.
+///
+/// `ROW_NAME_KEY_ARC` is the static `ArcStr` form used as a map key
+/// or `Message` payload — clones are refcount bumps with no alloc.
+/// `ROW_NAME_KEY` is the same bytes as a `&'static str` for `==`
+/// checks against incoming column-name strings.
 const ROW_NAME_KEY: &str = "\0__rowname__";
+static ROW_NAME_KEY_ARC: ArcStr = literal!("\0__rowname__");
 /// Header label displayed for the synthesized row-name column.
 const ROW_NAME_LABEL: &str = "name";
 
@@ -77,7 +94,8 @@ fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// Compute the column width needed for a cell's text content.
 fn col_text_width(name: &str) -> f32 {
     measure_text(name, 13.0, iced_core::Font::DEFAULT)
-        + CELL_H_PADDING + RESIZE_HANDLE_WIDTH
+        + CELL_H_PADDING
+        + RESIZE_HANDLE_WIDTH
 }
 
 /// Compute the column width needed for a header's text (bold, size 14).
@@ -86,8 +104,7 @@ fn col_header_width(name: &str) -> f32 {
         weight: iced_core::font::Weight::Bold,
         ..iced_core::Font::DEFAULT
     };
-    measure_text(name, 14.0, bold)
-        + CELL_H_PADDING + RESIZE_HANDLE_WIDTH
+    measure_text(name, 14.0, bold) + CELL_H_PADDING + RESIZE_HANDLE_WIDTH
 }
 
 fn col_min_width(name: &str, max_w: f32) -> f32 {
@@ -95,21 +112,23 @@ fn col_min_width(name: &str, max_w: f32) -> f32 {
 }
 
 /// Truncate text to fit within a pixel width, appending "..." if needed.
-/// Uses actual text measurement for accuracy.
-fn truncate_to_width(text: &str, max_px: f32) -> String {
+/// Uses actual text measurement for accuracy. Returns the input as a
+/// borrow when no truncation is required — the common case for short
+/// numeric cells — so no allocation happens in that path.
+fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     let avail = max_px - CELL_H_PADDING - RESIZE_HANDLE_WIDTH;
     if avail <= 0.0 || text.is_empty() {
-        return String::new();
+        return Cow::Borrowed("");
     }
     let full_w = measure_text(text, 13.0, iced_core::Font::DEFAULT);
     if full_w <= avail {
-        return text.to_string();
+        return Cow::Borrowed(text);
     }
     // Binary search for the longest prefix that fits with "..."
     let ellipsis_w = measure_text("...", 13.0, iced_core::Font::DEFAULT);
     let target = avail - ellipsis_w;
     if target <= 0.0 {
-        return "...".to_string();
+        return Cow::Borrowed("...");
     }
     let mut lo = 0usize;
     let mut hi = text.len();
@@ -120,25 +139,35 @@ fn truncate_to_width(text: &str, max_px: f32) -> String {
             text.len()
         } else {
             let mut m = mid;
-            while m > 0 && !text.is_char_boundary(m) { m -= 1; }
+            while m > 0 && !text.is_char_boundary(m) {
+                m -= 1;
+            }
             m
         };
-        if mid == 0 { break; }
+        if mid == 0 {
+            break;
+        }
         let w = measure_text(&text[..mid], 13.0, iced_core::Font::DEFAULT);
         if w <= target {
             lo = mid;
-            if lo == hi { break; }
+            if lo == hi {
+                break;
+            }
         } else {
             hi = mid - 1;
             // Snap hi to char boundary
-            while hi > 0 && !text.is_char_boundary(hi) { hi -= 1; }
+            while hi > 0 && !text.is_char_boundary(hi) {
+                hi -= 1;
+            }
         }
     }
     if lo == 0 {
-        "...".to_string()
+        Cow::Borrowed("...")
     } else {
-        while lo > 0 && !text.is_char_boundary(lo) { lo -= 1; }
-        format!("{}...", &text[..lo])
+        while lo > 0 && !text.is_char_boundary(lo) {
+            lo -= 1;
+        }
+        Cow::Owned(format!("{}...", &text[..lo]))
     }
 }
 
@@ -169,7 +198,7 @@ impl Default for ViewportMetrics {
 
 /// State for an active column resize drag.
 struct ResizeDrag {
-    col_name: String,
+    col_name: ArcStr,
     /// Last cursor x in whatever coordinate system ColumnResizeMove
     /// uses (widget-local, per MouseArea::on_move). We track deltas
     /// between successive moves so the drag is robust regardless of
@@ -182,12 +211,17 @@ struct ResizeDrag {
 
 // ── Sort / column types ────────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Clone, FromValue)]
 struct SortBy {
-    column: String,
-    ascending: bool,
+    column: ArcStr,
+    direction: SortDirection,
 }
 
+#[derive(Clone, PartialEq, FromValue)]
+enum SortDirection {
+    Ascending,
+    Descending,
+}
 
 #[derive(Clone)]
 enum ColumnType {
@@ -196,7 +230,7 @@ enum ColumnType {
     /// Boolean toggle.
     Toggle,
     /// Dropdown selection from a fixed list.
-    Combo { choices: Vec<(String, String)> },
+    Combo { choices: Vec<(ArcStr, ArcStr)> },
     /// Numeric spinner with range and step.
     Spin { min: f64, max: f64, increment: f64 },
     /// Progress bar (read-only).
@@ -213,7 +247,7 @@ enum ColumnType {
 /// Parsed column spec from the graphix Map<string, ColumnSpec>.
 struct ColumnSpec {
     typ: ColumnType,
-    display_name: Option<String>,
+    display_name: Option<ArcStr>,
     /// Raw default_value ref bind ID — compiled separately into default_value_refs.
     default_value_bid: u64,
     /// Raw width ref bind ID — compiled separately into width_refs.
@@ -228,32 +262,20 @@ struct ColumnSpec {
 // ── Parsing ────────────────────────────────────────────────────────
 
 fn parse_sort_by(v: &Value) -> Vec<SortBy> {
-    let items = v.clone().cast_to::<Vec<Value>>().unwrap_or_default();
-    items
-        .into_iter()
-        .filter_map(|item| {
-            // SortBy struct: { column, direction } — alphabetical
-            let [(_, col_v), (_, dir_v)] =
-                item.cast_to::<[(ArcStr, Value); 2]>().ok()?;
-            let column = col_v.cast_to::<String>().ok()?;
-            let ascending = match &dir_v {
-                Value::String(s) => s.as_str() == "Ascending",
-                _ => dir_v
-                    .clone()
-                    .cast_to::<(ArcStr, Value)>()
-                    .map(|(tag, _)| tag.as_str() == "Ascending")
-                    .unwrap_or(true),
-            };
-            Some(SortBy { column, ascending })
-        })
-        .collect()
+    v.clone().cast_to().unwrap_or_default()
 }
 
-fn parse_selection(v: &Value) -> FxHashSet<String> {
-    v.clone()
-        .cast_to::<Vec<String>>()
-        .unwrap_or_default()
+fn parse_selection(v: &Value) -> FxHashSet<ArcStr> {
+    let items = match v.clone().cast_to::<Vec<Value>>() {
+        Ok(items) => items,
+        Err(_) => return FxHashSet::default(),
+    };
+    items
         .into_iter()
+        .filter_map(|v| match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        })
         .collect()
 }
 
@@ -261,151 +283,131 @@ fn parse_column_type(v: &Value) -> (ColumnType, Option<Value>) {
     // Bare variants arrive as Value::String("Tag")
     if let Value::String(tag) = v {
         return match tag.as_str() {
-            "Progress" => (ColumnType::Progress, Option::None),
-            _ => (ColumnType::Text, Option::None),
+            "Progress" => (ColumnType::Progress, None),
+            _ => (ColumnType::Text, None),
         };
     }
     let (tag, payload) = match v.clone().cast_to::<(ArcStr, Value)>() {
         Ok(t) => t,
-        Err(_) => return (ColumnType::Text, Option::None),
+        Err(_) => return (ColumnType::Text, None),
     };
     match tag.as_str() {
-        "Text" => {
-            // struct { on_edit: [fn|null] } — field: on_edit
-            let cb = extract_callback_field(&payload, 1, 0);
-            (ColumnType::Text, cb)
-        }
-        "Toggle" => {
-            let cb = extract_callback_field(&payload, 1, 0);
-            (ColumnType::Toggle, cb)
-        }
+        "Text" => (ColumnType::Text, extract_struct1_callback(&payload)),
+        "Toggle" => (ColumnType::Toggle, extract_struct1_callback(&payload)),
         "Combo" => {
             // struct { choices, on_edit } — alphabetical: choices, on_edit
-            let choices = match payload.clone().cast_to::<[(ArcStr, Value); 2]>() {
-                Ok([(_, choices_val), (_, _on_edit)]) => {
-                    parse_combo_choices(&choices_val)
+            match payload.cast_to::<[(ArcStr, Value); 2]>() {
+                Ok([(_, choices_val), (_, on_edit)]) => {
+                    let choices = parse_combo_choices(&choices_val);
+                    (ColumnType::Combo { choices }, non_null(on_edit))
                 }
-                Err(_) => vec![],
-            };
-            let cb = match payload.cast_to::<[(ArcStr, Value); 2]>() {
-                Ok([(_, _), (_, on_edit)]) => non_null(on_edit),
-                Err(_) => Option::None,
-            };
-            (ColumnType::Combo { choices }, cb)
+                Err(_) => (ColumnType::Combo { choices: vec![] }, None),
+            }
         }
         "Spin" => {
             // struct { increment, max, min, on_edit } — 4 fields alphabetical
-            let (min, max, inc) =
-                match payload.clone().cast_to::<[(ArcStr, Value); 4]>() {
-                    Ok([(_, inc_v), (_, max_v), (_, min_v), (_, _)]) => {
-                        let inc = inc_v.cast_to::<f64>().unwrap_or(1.0);
-                        let max = max_v.cast_to::<f64>().unwrap_or(100.0);
-                        let min = min_v.cast_to::<f64>().unwrap_or(0.0);
-                        (min, max, inc)
-                    }
-                    Err(_) => (0.0, 100.0, 1.0),
-                };
-            let cb = match payload.cast_to::<[(ArcStr, Value); 4]>() {
-                Ok([(_, _), (_, _), (_, _), (_, on_edit)]) => non_null(on_edit),
-                Err(_) => Option::None,
-            };
-            (ColumnType::Spin { min, max, increment: inc }, cb)
+            match payload.cast_to::<[(ArcStr, Value); 4]>() {
+                Ok([(_, inc_v), (_, max_v), (_, min_v), (_, on_edit)]) => {
+                    let inc = inc_v.cast_to::<f64>().unwrap_or(1.0);
+                    let max = max_v.cast_to::<f64>().unwrap_or(100.0);
+                    let min = min_v.cast_to::<f64>().unwrap_or(0.0);
+                    (ColumnType::Spin { min, max, increment: inc }, non_null(on_edit))
+                }
+                Err(_) => {
+                    (ColumnType::Spin { min: 0.0, max: 100.0, increment: 1.0 }, None)
+                }
+            }
         }
-        "Progress" => (ColumnType::Progress, Option::None),
-        "Button" => {
-            // struct { on_click } — 1 field
-            let cb = extract_callback_field(&payload, 1, 0);
-            (ColumnType::Button, cb)
-        }
+        "Progress" => (ColumnType::Progress, None),
+        "Button" => (ColumnType::Button, extract_struct1_callback(&payload)),
         "Sparkline" => {
             // struct { history_seconds, max, min } — 3 fields alphabetical.
             // `min`/`max` are `[f64, null]` so cast_to::<f64>() returns
             // Err for `null` — that's how we get None.
-            let (hs, max_o, min_o) =
-                match payload.cast_to::<[(ArcStr, Value); 3]>() {
-                    Ok([(_, hs_v), (_, max_v), (_, min_v)]) => {
-                        let hs = hs_v.cast_to::<f64>().unwrap_or(60.0);
-                        let max_o = max_v.cast_to::<f64>().ok();
-                        let min_o = min_v.cast_to::<f64>().ok();
-                        (hs, max_o, min_o)
-                    }
-                    Err(_) => (60.0, Option::None, Option::None),
-                };
-            (
-                ColumnType::Sparkline {
-                    history_seconds: hs,
-                    min: min_o,
-                    max: max_o,
-                },
-                Option::None,
-            )
+            let (hs, max_o, min_o) = match payload.cast_to::<[(ArcStr, Value); 3]>() {
+                Ok([(_, hs_v), (_, max_v), (_, min_v)]) => {
+                    let hs = hs_v.cast_to::<f64>().unwrap_or(60.0);
+                    let max_o = max_v.cast_to::<f64>().ok();
+                    let min_o = min_v.cast_to::<f64>().ok();
+                    (hs, max_o, min_o)
+                }
+                Err(_) => (60.0, None, None),
+            };
+            (ColumnType::Sparkline { history_seconds: hs, min: min_o, max: max_o }, None)
         }
-        _ => (ColumnType::Text, Option::None),
+        _ => (ColumnType::Text, None),
     }
 }
 
-fn extract_callback_field(payload: &Value, n_fields: usize, idx: usize) -> Option<Value> {
-    if n_fields == 1 {
-        match payload.clone().cast_to::<[(ArcStr, Value); 1]>() {
-            Ok(fields) => non_null(fields[idx].1.clone()),
-            Err(_) => Option::None,
-        }
-    } else {
-        Option::None
+/// Extract the lone field of a one-field struct (e.g. `Text({on_edit})`),
+/// returning `None` for `null` so callers don't compile callbacks for
+/// the absent case.
+fn extract_struct1_callback(payload: &Value) -> Option<Value> {
+    match payload.clone().cast_to::<[(ArcStr, Value); 1]>() {
+        Ok([(_, v)]) => non_null(v),
+        Err(_) => None,
     }
 }
 
 fn non_null(v: Value) -> Option<Value> {
     match v {
-        Value::Null => Option::None,
+        Value::Null => None,
         v => Some(v),
     }
 }
 
-fn parse_combo_choices(v: &Value) -> Vec<(String, String)> {
+fn parse_combo_choices(v: &Value) -> Vec<(ArcStr, ArcStr)> {
     let items = v.clone().cast_to::<Vec<Value>>().unwrap_or_default();
-    let mut choices = Vec::new();
-    for item in &items {
+    let mut choices = Vec::with_capacity(items.len());
+    for item in items {
         // struct { id, label } — alphabetical
-        if let Ok([(_, id_val), (_, label_val)]) =
-            item.clone().cast_to::<[(ArcStr, Value); 2]>()
+        if let Ok([(_, id_val), (_, label_val)]) = item.cast_to::<[(ArcStr, Value); 2]>()
         {
-            let id = id_val.cast_to::<String>().unwrap_or_default();
-            let label = label_val.cast_to::<String>().unwrap_or_default();
+            let id = match id_val {
+                Value::String(s) => s,
+                _ => ArcStr::new(),
+            };
+            let label = match label_val {
+                Value::String(s) => s,
+                _ => ArcStr::new(),
+            };
             choices.push((id, label));
         }
     }
     choices
 }
 
-fn value_to_display(v: &Value) -> String {
+fn value_to_display(v: &Value) -> ArcStr {
     match v {
-        Value::Null => String::new(),
-        Value::String(s) => s.to_string(),
-        _ => NakedValue(v).to_string(),
+        Value::Null => ArcStr::new(),
+        Value::String(s) => s.clone(),
+        _ => format_compact!("{}", NakedValue(v)).as_str().into(),
     }
 }
 
-fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
-    let pairs = match v.clone().cast_to::<Vec<(String, Value)>>() {
+fn parse_column_specs(v: &Value) -> FxHashMap<ArcStr, ColumnSpec> {
+    let pairs = match v.clone().cast_to::<Vec<(ArcStr, Value)>>() {
         Ok(p) => p,
         Err(_) => return FxHashMap::default(),
     };
     let mut map = FxHashMap::default();
-    for (mut name, spec_val) in pairs {
+    for (raw_name, spec_val) in pairs {
         // Strip null bytes from column keys so a user-supplied column
         // spec can't collide with the `ROW_NAME_KEY` sentinel.
-        if name.contains('\0') {
-            name.retain(|ch| ch != '\0');
-        }
+        let name: ArcStr = if raw_name.contains('\0') {
+            let cleaned: CompactString =
+                raw_name.chars().filter(|ch| *ch != '\0').collect();
+            cleaned.as_str().into()
+        } else {
+            raw_name
+        };
         // ColumnSpec struct: { default_value, display_name, on_resize, typ, width } — alphabetical
         let (dv_bid, display_name, on_resize_bid, typ_val, width_bid) =
             match spec_val.cast_to::<[(ArcStr, Value); 5]>() {
                 Ok([(_, dv), (_, dn), (_, or), (_, tv), (_, w)]) => {
                     let bid = dv.cast_to::<u64>().unwrap_or(0);
                     let display_name = match dn {
-                        Value::Null => None,
-                        Value::String(s) => Some(s.to_string()),
+                        Value::String(s) => Some(s),
                         _ => None,
                     };
                     let on_resize_bid = or.cast_to::<u64>().unwrap_or(0);
@@ -415,10 +417,17 @@ fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
                 Err(_) => (0, None, 0, Value::Null, 0),
             };
         let (typ, callback_value) = parse_column_type(&typ_val);
-        map.insert(name, ColumnSpec {
-            typ, display_name, default_value_bid: dv_bid,
-            width_bid, on_resize_bid, callback_value,
-        });
+        map.insert(
+            name,
+            ColumnSpec {
+                typ,
+                display_name,
+                default_value_bid: dv_bid,
+                width_bid,
+                on_resize_bid,
+                callback_value,
+            },
+        );
     }
     map
 }
@@ -427,6 +436,75 @@ fn parse_column_specs(v: &Value) -> FxHashMap<String, ColumnSpec> {
 
 fn numeric_key(s: &str) -> Option<f64> {
     s.parse::<f64>().ok()
+}
+
+/// Return the basename of a row path as `&str`, falling back to the
+/// full path string when it has no separator. Zero-allocation — the
+/// result borrows from the path's backing `ArcStr`.
+fn row_basename(p: &Path) -> &str {
+    Path::basename(p).unwrap_or(&**p)
+}
+
+/// Pre-parsed cache for a column's `default_value` ref. Built once
+/// when the ref updates so the per-cell `default_for` /
+/// `default_value_f64_for` hot path can look up by `&str` without
+/// building a `Value::String(ArcStr)` key on every call. `PerRow`
+/// uses `FxHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
+/// enables the cheap lookup.
+enum DefaultValue {
+    Null,
+    Uniform(Value),
+    PerRow(FxHashMap<ArcStr, Value>),
+}
+
+impl DefaultValue {
+    fn parse(v: Option<&Value>) -> Self {
+        match v {
+            None | Some(Value::Null) => DefaultValue::Null,
+            Some(Value::Map(m)) => {
+                // CR estokes: Can't we just Some(v@ Value::Map(_)) => v.cast_to::<FxHashMap<ArcStr, Value>>() ...
+                // the type checker will prove that the key can only be a string so we can unwrap.
+                let mut per_row: FxHashMap<ArcStr, Value> = FxHashMap::default();
+                for (k, val) in m.into_iter() {
+                    if let Value::String(key) = k {
+                        per_row.insert(key.clone(), val.clone());
+                    }
+                }
+                DefaultValue::PerRow(per_row)
+            }
+            Some(v) => DefaultValue::Uniform(v.clone()),
+        }
+    }
+
+    fn is_present(&self) -> bool {
+        !matches!(self, DefaultValue::Null)
+    }
+
+    fn lookup(&self, row_name: &str) -> Option<&Value> {
+        match self {
+            DefaultValue::Null => None,
+            DefaultValue::Uniform(v) => Some(v),
+            DefaultValue::PerRow(m) => m.get(row_name),
+        }
+    }
+}
+
+/// A `default_value` column ref paired with its pre-parsed lookup
+/// cache.
+struct DefaultValueEntry<X: GXExt> {
+    r: Ref<X>,
+    parsed: DefaultValue,
+}
+
+impl<X: GXExt> DefaultValueEntry<X> {
+    fn new(r: Ref<X>) -> Self {
+        let parsed = DefaultValue::parse(r.last.as_ref());
+        Self { r, parsed }
+    }
+
+    fn refresh_from_last(&mut self) {
+        self.parsed = DefaultValue::parse(self.r.last.as_ref());
+    }
 }
 
 // ── Shared cell data ───────────────────────────────────────────────
@@ -441,16 +519,24 @@ struct SharedCells {
     /// Cell values keyed by `(row_path, col_name)`. Identity-keyed so
     /// reordering rows or rebinding subscriptions can't shuffle data
     /// into wrong rows — the same fix the sparkline map already uses.
-    /// `col_name` is `VALUE_COL_KEY` for Value-mode rows.
-    grid: Mutex<FxHashMap<(ArcStr, ArcStr), String>>,
+    /// `col_name` is `VALUE_COL_KEY` for Value-mode rows. `Path` is
+    /// a newtype over `ArcStr`, so clones are refcount bumps.
+    grid: Mutex<FxHashMap<(Path, ArcStr), ArcStr>>,
     /// Sparkline history: (row_path, col_name) → timestamped values.
-    /// Keyed by path strings so history survives row reordering.
-    sparklines: Mutex<FxHashMap<(String, String), VecDeque<(Instant, f64)>>>,
+    /// Identity-keyed by `Path` so history survives row reordering
+    /// and every lookup is a refcount bump rather than a fresh
+    /// allocation.
+    // CR estokes: probably should LPool the VecDeque, we're going to cycle
+    // through a lot of them in a table with a bunch of sparkline columns
+    sparklines: Mutex<FxHashMap<(Path, ArcStr), VecDeque<(Instant, f64)>>>,
     dirty: AtomicBool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum DisplayMode { Table, Value }
+enum DisplayMode {
+    Table,
+    Value,
+}
 
 // ── Widget ─────────────────────────────────────────────────────────
 
@@ -464,9 +550,10 @@ pub(crate) struct DataTableW<X: GXExt> {
     column_types_ref: Ref<X>,
     selection_ref: Ref<X>,
     sort_by: Vec<SortBy>,
-    column_types: FxHashMap<String, ColumnSpec>,
-    /// Set of selected row paths, controlled by graphix
-    selection: FxHashSet<String>,
+    column_types: FxHashMap<ArcStr, ColumnSpec>,
+    /// Set of selected cell paths (`row_path` for the row-name column,
+    /// `row_path/col_name` otherwise), controlled by graphix.
+    selection: FxHashSet<ArcStr>,
     on_activate_ref: Ref<X>,
     on_activate: Option<Callable<X>>,
     on_select_ref: Ref<X>,
@@ -476,47 +563,44 @@ pub(crate) struct DataTableW<X: GXExt> {
     on_update_ref: Ref<X>,
     on_update: Option<Callable<X>>,
     /// Compiled callables for per-column on_edit/on_click
-    col_callbacks: FxHashMap<String, Callable<X>>,
-    /// Compiled refs for per-column default_value. The ref's `.last`
-    /// holds the Value directly (uniform, `Value::Map`, or `Value::Null`);
-    /// cells look up per-row entries from the stored Map on demand.
-    default_value_refs: FxHashMap<String, Ref<X>>,
+    col_callbacks: FxHashMap<ArcStr, Callable<X>>,
+    /// Compiled refs for per-column default_value, each paired with
+    /// a pre-parsed `DefaultValue` cache so per-cell lookups don't
+    /// rebuild a `Value::String` key every call.
+    default_value_refs: FxHashMap<ArcStr, DefaultValueEntry<X>>,
     /// Compiled refs for per-column width
-    width_refs: FxHashMap<String, Ref<X>>,
+    width_refs: FxHashMap<ArcStr, Ref<X>>,
     /// Ref-controlled widths (from width refs)
-    ref_widths: FxHashMap<String, f32>,
+    ref_widths: FxHashMap<ArcStr, f32>,
     /// User-controlled widths (free resize or auto-sized on first load)
-    user_widths: Mutex<FxHashMap<String, f32>>,
+    user_widths: Mutex<FxHashMap<ArcStr, f32>>,
     /// Compiled on_resize callables per column
-    on_resize_callbacks: FxHashMap<String, Callable<X>>,
+    on_resize_callbacks: FxHashMap<ArcStr, Callable<X>>,
     /// Compiled refs for per-column on_resize. The .gxi types on_resize
     /// as a `&` field, so the inner callable can change at runtime; we
     /// recompile the callable when the ref's value updates.
-    on_resize_refs: FxHashMap<String, Ref<X>>,
+    on_resize_refs: FxHashMap<ArcStr, Ref<X>>,
     /// Active resize drag state
     resize_drag: Option<ResizeDrag>,
     /// Last resize handle click: (col_meta_idx, timestamp) for double-click detection
     last_resize_click: Option<(usize, Instant)>,
     mode: DisplayMode,
-    col_names: Vec<String>,
+    col_names: Vec<ArcStr>,
     /// Names of columns that have no source in the table's `columns`
     /// array — they exist only as virtual columns whose values come
     /// from `default_value`. Populated in `apply_table`. Used by the
     /// default_value update path to know which cells to refresh
     /// regardless of whether the row has subscriptions for its
     /// non-virtual columns.
-    virtual_cols: FxHashSet<String>,
+    virtual_cols: FxHashSet<ArcStr>,
     row_paths: Vec<Path>,
-    /// Row name (basename) for each row in `row_paths`, as `ArcStr` so
-    /// lookups that need the name as a key (e.g. Map keys for per-row
-    /// defaults) don't allocate on every access. Kept in sync with
-    /// `row_paths` — same length, same order.
-    row_names: Vec<ArcStr>,
     cells: Arc<SharedCells>,
     /// Active row subscriptions, keyed by row_path. Identity-keyed (not
     /// position-keyed) so that re-sorting `row_paths` doesn't strand
     /// subs at stale positions or require any sub churn.
-    row_subs: FxHashMap<ArcStr, Vec<Dval>>,
+    // CR estokes: definitely LPool this Vec, we're going to cycle through a LOT
+    // of these as we scroll.
+    row_subs: FxHashMap<Path, Vec<Dval>>,
     first_row: usize,
     first_col: usize,
     /// Viewport-derived layout metrics. Written during layout by the
@@ -524,23 +608,28 @@ pub(crate) struct DataTableW<X: GXExt> {
     /// Interior-mutable because iced requires the widget to be `Sync`.
     viewport_metrics: Mutex<ViewportMetrics>,
     /// Cached actual column widths from the last view() call, keyed by col_name.
-    cached_col_widths: Mutex<FxHashMap<String, f32>>,
+    cached_col_widths: Mutex<FxHashMap<ArcStr, f32>>,
     /// Set when keyboard nav changes first_row/first_col. Suppresses
     /// the next handle_scroll from overwriting the keyboard-driven position.
     keyboard_scroll_override: bool,
-    /// Which cell is being edited: (row_idx, col_name)
-    editing: Option<(usize, String)>,
+    /// Which cell is being edited: (row_path, col_name). Keyed by path
+    /// rather than index so the edit stays attached to the right row
+    /// under scroll or sort changes.
+    editing: Option<(Path, ArcStr)>,
     /// Text buffer for the cell being edited
-    edit_buffer: String,
+    edit_buffer: CompactString,
     /// Sort column subscriptions: one Vec<Dval> per distinct column in
     /// `sort_by`, kept alive so their background tasks can feed
     /// `sort_col_values`.
-    sort_col_subs: FxHashMap<String, Vec<Dval>>,
+    sort_col_subs: FxHashMap<ArcStr, LPooled<Vec<Dval>>>,
     /// Sort column values: column → row_path → display string,
     /// populated by sort subscriptions.
-    sort_col_values: Arc<Mutex<FxHashMap<String, FxHashMap<String, String>>>>,
+    sort_col_values: Arc<Mutex<FxHashMap<ArcStr, LPooled<FxHashMap<Path, ArcStr>>>>>,
     /// Flag set by sort column subscription tasks when new data arrives.
     sort_col_dirty: Arc<AtomicBool>,
+    // CR estokes: As far as I can tell this variable is never read, and it's
+    // name suggests it's vestigal, from the time when we did table resolution
+    // internally. Please verify my conclusion before removing.
     needs_resolve: bool,
 }
 
@@ -548,19 +637,8 @@ impl<X: GXExt> DataTableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         // Fields alphabetical: column_types, on_activate, on_header_click,
         // on_select, on_update, selection, show_row_name, sort_by, table
-        let [
-            (_, column_types_id),
-            (_, on_activate_id),
-            (_, on_header_click_id),
-            (_, on_select_id),
-            (_, on_update_id),
-            (_, selection_id),
-            (_, show_row_name_id),
-            (_, sort_by_id),
-            (_, table_id),
-        ] = source
-            .cast_to::<[(ArcStr, u64); 9]>()
-            .context("data_table flds")?;
+        let [(_, column_types_id), (_, on_activate_id), (_, on_header_click_id), (_, on_select_id), (_, on_update_id), (_, selection_id), (_, show_row_name_id), (_, sort_by_id), (_, table_id)] =
+            source.cast_to::<[(ArcStr, u64); 9]>().context("data_table flds")?;
         let (
             column_types_ref,
             on_activate_ref,
@@ -586,14 +664,13 @@ impl<X: GXExt> DataTableW<X> {
         let on_select = compile_callable_opt(&gx, &on_select_ref).await?;
         let on_header_click = compile_callable_opt(&gx, &on_header_click_ref).await?;
         let on_update = compile_callable_opt(&gx, &on_update_ref).await?;
-        let sort_by = sort_by_ref.last.as_ref()
-            .map(parse_sort_by).unwrap_or_default();
+        let sort_by = sort_by_ref.last.as_ref().map(parse_sort_by).unwrap_or_default();
         let column_types_parsed = match column_types_ref.last.as_ref() {
             Some(Value::Null) | None => FxHashMap::default(),
             Some(v) => parse_column_specs(v),
         };
-        let selection = selection_ref.last.as_ref()
-            .map(parse_selection).unwrap_or_default();
+        let selection =
+            selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         // Compile per-column callbacks, default_value refs, width refs, on_resize
         let mut col_callbacks = FxHashMap::default();
         let mut default_value_refs = FxHashMap::default();
@@ -601,6 +678,7 @@ impl<X: GXExt> DataTableW<X> {
         let mut ref_widths = FxHashMap::default();
         let mut on_resize_callbacks = FxHashMap::default();
         let mut on_resize_refs = FxHashMap::default();
+        // CR estokes: see mirror CR in update, lets try to factor this out into one method
         for (name, spec) in &column_types_parsed {
             if let Some(cb_val) = &spec.callback_value {
                 if let Ok(callable) = gx.compile_callable(cb_val.clone()).await {
@@ -609,12 +687,14 @@ impl<X: GXExt> DataTableW<X> {
             }
             if spec.default_value_bid != 0 {
                 if let Ok(r) = gx.compile_ref(spec.default_value_bid).await {
-                    default_value_refs.insert(name.clone(), r);
+                    default_value_refs.insert(name.clone(), DefaultValueEntry::new(r));
                 }
             }
             if spec.width_bid != 0 {
                 if let Ok(r) = gx.compile_ref(spec.width_bid).await {
-                    if let Some(w) = r.last.as_ref().and_then(|v| v.clone().cast_to::<f64>().ok()) {
+                    if let Some(w) =
+                        r.last.as_ref().and_then(|v| v.clone().cast_to::<f64>().ok())
+                    {
                         ref_widths.insert(name.clone(), w as f32);
                     }
                     width_refs.insert(name.clone(), r);
@@ -639,14 +719,25 @@ impl<X: GXExt> DataTableW<X> {
             dirty: AtomicBool::new(false),
         });
         let mut w = Self {
-            gx, subscriber, rt,
-            table_ref, show_row_name,
-            sort_by_ref, column_types_ref, selection_ref,
-            sort_by, column_types: column_types_parsed, selection,
-            on_activate_ref, on_activate,
-            on_select_ref, on_select,
-            on_header_click_ref, on_header_click,
-            on_update_ref, on_update,
+            gx,
+            subscriber,
+            rt,
+            table_ref,
+            show_row_name,
+            sort_by_ref,
+            column_types_ref,
+            selection_ref,
+            sort_by,
+            column_types: column_types_parsed,
+            selection,
+            on_activate_ref,
+            on_activate,
+            on_select_ref,
+            on_select,
+            on_header_click_ref,
+            on_header_click,
+            on_update_ref,
+            on_update,
             col_callbacks,
             default_value_refs,
             width_refs,
@@ -659,13 +750,16 @@ impl<X: GXExt> DataTableW<X> {
             mode: DisplayMode::Table,
             col_names: vec![],
             virtual_cols: FxHashSet::default(),
-            row_paths: vec![], row_names: vec![],
-            cells, row_subs: FxHashMap::default(),
-            first_row: 0, first_col: 0,
+            row_paths: vec![],
+            cells,
+            row_subs: FxHashMap::default(),
+            first_row: 0,
+            first_col: 0,
             viewport_metrics: Mutex::new(ViewportMetrics::default()),
             cached_col_widths: Mutex::new(FxHashMap::default()),
             keyboard_scroll_override: false,
-            editing: None, edit_buffer: String::new(),
+            editing: None,
+            edit_buffer: CompactString::new(""),
             sort_col_subs: FxHashMap::default(),
             sort_col_values: Arc::new(Mutex::new(FxHashMap::default())),
             sort_col_dirty: Arc::new(AtomicBool::new(false)),
@@ -682,14 +776,13 @@ impl<X: GXExt> DataTableW<X> {
         self.row_subs.clear();
         self.col_names.clear();
         self.row_paths.clear();
-        self.row_names.clear();
         // Reset column-width cache: the prior table's columns may not
         // appear in the new one, and any widths that *do* match a new
         // column name are stale until re-measured.
         self.cached_col_widths.lock().clear();
         // Re-read selection from graphix ref (don't clear user selection)
-        self.selection = self.selection_ref.last.as_ref()
-            .map(parse_selection).unwrap_or_default();
+        self.selection =
+            self.selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         self.editing = None;
         self.first_row = 0;
         self.first_col = 0;
@@ -708,16 +801,32 @@ impl<X: GXExt> DataTableW<X> {
         // and similar internal sentinel keys used by width caches.
         let (raw_cols, raw_rows) = match table_val.cast_to::<[(ArcStr, Value); 2]>() {
             Ok([(_, cols_val), (_, rows_val)]) => {
-                let mut cols: Vec<String> = cols_val
-                    .cast_to::<Vec<String>>()
-                    .unwrap_or_default();
-                for c in cols.iter_mut() {
-                    if c.contains('\0') {
-                        c.retain(|ch| ch != '\0');
-                    }
-                }
-                let rows: Vec<String> = rows_val.cast_to::<Vec<String>>()
-                    .unwrap_or_default();
+                // CR estokes: I see a bunch of Vecs in here that should be
+                // LPooled. No reason not to change the type of col_names and
+                // row paths to also be LPooled if needed.
+                let cols_raw: Vec<Value> =
+                    cols_val.cast_to::<Vec<Value>>().unwrap_or_default();
+                let cols: Vec<ArcStr> = cols_raw
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) if s.contains('\0') => Some({
+                            let cleaned: CompactString =
+                                s.chars().filter(|c| *c != '\0').collect();
+                            cleaned.as_str().into()
+                        }),
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect();
+                let rows_raw: Vec<Value> =
+                    rows_val.cast_to::<Vec<Value>>().unwrap_or_default();
+                let rows: Vec<ArcStr> = rows_raw
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect();
                 (cols, rows)
             }
             Err(_) => {
@@ -727,15 +836,10 @@ impl<X: GXExt> DataTableW<X> {
             }
         };
         // Convert row strings to Paths (for absolute netidx paths)
-        // or keep as-is for virtual rows
-        let raw_row_paths: Vec<Path> = raw_rows.into_iter()
-            .map(|s| Path::from(s))
-            .collect();
+        // or keep as-is for virtual rows. `Path` is a newtype over
+        // `ArcStr`, so map keys built from it clone via refcount bump.
         self.col_names = raw_cols;
-        self.row_paths = raw_row_paths;
-        self.row_names = self.row_paths.iter()
-            .map(|p| ArcStr::from(Path::basename(p).unwrap_or(&**p)))
-            .collect();
+        self.row_paths = raw_rows.into_iter().map(Path::from).collect();
         // Add virtual columns and record which columns are virtual.
         // A column is virtual when it's defined in `column_types` but
         // doesn't appear in the table's `columns` array — its value
@@ -743,7 +847,11 @@ impl<X: GXExt> DataTableW<X> {
         // subscription.
         self.virtual_cols.clear();
         for (name, _spec) in &self.column_types {
-            if self.has_default(name) && !self.col_names.contains(name) {
+            // CR estokes: You may call me pedantic at any time, but I must point out that I
+            // don't love this O(N^2) lookup. This is netidx we're talking about, it's perfectly
+            // possible for a table to have ... a lot ... of columns. Perhaps col_names should
+            // be an LPooled<IndexSet>?
+            if self.has_default(name) && !self.col_names.iter().any(|n| n == name) {
                 self.col_names.push(name.clone());
                 self.virtual_cols.insert(name.clone());
             }
@@ -758,20 +866,22 @@ impl<X: GXExt> DataTableW<X> {
         self.sort_col_subs.clear();
         self.sort_col_values.lock().clear();
         self.sort_col_dirty.store(false, Ordering::Relaxed);
-        let sort_cols: FxHashSet<String> =
+        // CR estokes: LPool all the things :)
+        let sort_cols: FxHashSet<ArcStr> =
             self.sort_by.iter().map(|s| s.column.clone()).collect();
         for sort_col in sort_cols {
-            let mut subs: Vec<Dval> = Vec::new();
-            self.sort_col_values
-                .lock()
-                .entry(sort_col.clone())
-                .or_default();
-            for row_path in &self.row_paths {
+            let mut subs: LPooled<Vec<Dval>> = LPooled::take();
+            self.sort_col_values.lock().entry(sort_col.clone()).or_default();
+            for row_path in self.row_paths.iter() {
                 if !Path::is_absolute(row_path) {
                     continue;
                 }
                 let cell_path = row_path.append(&sort_col);
-                let row_key = row_path.to_string();
+                let row_key = row_path.clone();
+                // CR estokes: It's very inefficient to create a new channel
+                // for every subscription (tables might be quite large), much
+                // better to share one channel (with more slack) for a given
+                // sort column
                 let (tx, mut rx) = futures::channel::mpsc::channel(2);
                 let dval = self.subscriber.subscribe(cell_path);
                 dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
@@ -779,11 +889,19 @@ impl<X: GXExt> DataTableW<X> {
                 let values = self.sort_col_values.clone();
                 let dirty = self.sort_col_dirty.clone();
                 let col_name = sort_col.clone();
+                // CR estokes: uuuuuh, no. No, we should not spawn a TASK for
+                // every row in the sort column. Lets spawn one task for the
+                // column, feeding from the one channel for the column, and then
+                // we can lock the table once per BATCH of updates.
                 self.rt.spawn(async move {
                     use futures::StreamExt;
                     while let Some(mut batch) = rx.next().await {
                         for (_, event) in batch.drain(..) {
                             if let Event::Update(v) = event {
+                                // CR estokes: We have a BATCH of updates, we
+                                // should amortize the lock cost across the
+                                // batch, and then make the batches as big as
+                                // possible.
                                 values
                                     .lock()
                                     .entry(col_name.clone())
@@ -821,7 +939,9 @@ impl<X: GXExt> DataTableW<X> {
 
     fn display_row_range(&self) -> (usize, usize) {
         let n = self.row_paths.len();
-        if n == 0 { return (0, 0); }
+        if n == 0 {
+            return (0, 0);
+        }
         let start = self.first_row.min(n.saturating_sub(1));
         let rows_in_view = self.viewport_metrics.lock().rows_in_view;
         let end = (start + rows_in_view).min(n);
@@ -836,7 +956,9 @@ impl<X: GXExt> DataTableW<X> {
 
     fn display_col_range(&self) -> (usize, usize) {
         let total = self.total_data_cols();
-        if total == 0 { return (0, 0); }
+        if total == 0 {
+            return (0, 0);
+        }
         let start = self.first_col.min(total.saturating_sub(1));
         let cols_in_view = self.viewport_metrics.lock().cols_in_view;
         let end = (start + cols_in_view).min(total);
@@ -850,6 +972,51 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
+    /// Pixel width of the synthesized row-name column (0 when hidden).
+    fn name_col_width(&self) -> f32 {
+        if !self.show_row_name.t.unwrap_or(true) {
+            return 0.0;
+        }
+        self.cached_col_widths.lock().get(ROW_NAME_KEY).copied().unwrap_or(MIN_COL_WIDTH)
+    }
+
+    /// Data-column index (into `col_names`) whose prefix-sum boundary
+    /// is nearest the given virtual scroll offset. Snap-to-column:
+    /// partial column visibility at the left edge is rounded to whichever
+    /// boundary is closer. Accounts for the fixed name column at the
+    /// start of the virtual content.
+    fn col_at_offset(&self, ox: f32) -> usize {
+        let name_col_w = self.name_col_width();
+        let effective_ox = (ox - name_col_w).max(0.0);
+        let cache = self.cached_col_widths.lock();
+        let mut acc = 0.0;
+        for (i, name) in self.col_names.iter().enumerate() {
+            let w = cache.get(name).copied().unwrap_or(MIN_COL_WIDTH);
+            let next = acc + w;
+            if effective_ox < (acc + next) / 2.0 {
+                return i;
+            }
+            acc = next;
+        }
+        self.col_names.len().saturating_sub(1)
+    }
+
+    /// Inverse of `col_at_offset`: virtual scroll offset corresponding
+    /// to `first_col = ci`. Used to detect whether a scrollbar event
+    /// reflects a real user drag or just the overlay re-asserting the
+    /// keyboard-driven position.
+    fn offset_at_col(&self, ci: usize) -> f32 {
+        let name_col_w = self.name_col_width();
+        let cache = self.cached_col_widths.lock();
+        name_col_w
+            + self
+                .col_names
+                .iter()
+                .take(ci)
+                .map(|n| cache.get(n).copied().unwrap_or(MIN_COL_WIDTH))
+                .sum::<f32>()
+    }
+
     /// Reconcile `row_subs` with the current visible window. Subs are
     /// keyed by `row_path` (identity) — not row position — so this
     /// stays correct after re-sorts even when the visible positions
@@ -857,9 +1024,9 @@ impl<X: GXExt> DataTableW<X> {
     /// subs for paths that scrolled in.
     fn update_subscriptions(&mut self) {
         let (s, e) = self.subscription_row_range();
-        let want: FxHashSet<ArcStr> = (s..e)
-            .filter_map(|i| self.row_paths.get(i).map(|p| ArcStr::from(&**p)))
-            .collect();
+        // CR estokes: LPool all the things
+        let want: FxHashSet<Path> =
+            (s..e).filter_map(|i| self.row_paths.get(i).cloned()).collect();
         // Drop any sub whose row is no longer in the visible window.
         self.row_subs.retain(|p, _| want.contains(p));
         // Spawn subs for visible rows that don't yet have one.
@@ -868,8 +1035,7 @@ impl<X: GXExt> DataTableW<X> {
                 Some(p) => p.clone(),
                 None => continue,
             };
-            let arc_p = ArcStr::from(&*row_path);
-            if !self.row_subs.contains_key(&arc_p) {
+            if !self.row_subs.contains_key(&row_path) {
                 self.subscribe_row(&row_path);
             }
         }
@@ -880,14 +1046,14 @@ impl<X: GXExt> DataTableW<X> {
         if !Path::is_absolute(row_path) {
             return;
         }
-        let row_path_arc = ArcStr::from(&**row_path);
         let cells = self.cells.clone();
-        let on_update_call = self.on_update.as_ref()
-            .map(|c| (self.gx.clone(), c.id()));
+        let on_update_call = self.on_update.as_ref().map(|c| (self.gx.clone(), c.id()));
         match self.mode {
             DisplayMode::Table => {
+                // CR estokes: LPool all the things
                 let mut dvals = Vec::with_capacity(self.col_names.len());
                 for col_name in self.col_names.iter() {
+                    // CR estokes: Shouldn't we pull both of these out in one match and yield a tuple?
                     let is_sparkline = matches!(
                         self.col_type_for(col_name),
                         ColumnType::Sparkline { .. }
@@ -896,11 +1062,22 @@ impl<X: GXExt> DataTableW<X> {
                         ColumnType::Sparkline { history_seconds, .. } => *history_seconds,
                         _ => 0.0,
                     };
-                    let sparkline_key = (row_path.to_string(), col_name.to_string());
-                    let col_name_arc = ArcStr::from(col_name.as_str());
-                    let grid_key = (row_path_arc.clone(), col_name_arc);
+                    let col_name_arc = col_name.clone();
+                    let sparkline_key = (row_path.clone(), col_name_arc.clone());
+                    let grid_key = (row_path.clone(), col_name_arc);
                     let cell_path = row_path.append(col_name);
                     let cell_path_arc = ArcStr::from(&*cell_path);
+                    // CR estokes: Again this pattern. No we should not create
+                    // a channel and a task for every cell. Honestly we should
+                    // probably have just ONE channel for all subscriptions, and
+                    // just ONE background task processing all subscriptions.
+                    // Including for sort columns, we can after all, check
+                    // when we receive an update if it's dval is part of a
+                    // sort column. We will need a shared FxHashMap (or two)
+                    // to index everything by whatever it needs to be indexed
+                    // by, but that will be lightyears more efficent than doing
+                    // this. Not to mention that it well reduce lock contention
+                    // immensely, and centralize pushback under high load.
                     let (tx, mut rx) = futures::channel::mpsc::channel(2);
                     let dval = self.subscriber.subscribe(cell_path);
                     dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
@@ -936,8 +1113,15 @@ impl<X: GXExt> DataTableW<X> {
                                                 .or_insert_with(VecDeque::new);
                                             history.push_back((now, f));
                                             // Trim entries older than history window
-                                            let cutoff = now - std::time::Duration::from_secs_f64(history_secs);
-                                            while history.front().map(|(t, _)| *t < cutoff).unwrap_or(false) {
+                                            let cutoff = now
+                                                - std::time::Duration::from_secs_f64(
+                                                    history_secs,
+                                                );
+                                            while history
+                                                .front()
+                                                .map(|(t, _)| *t < cutoff)
+                                                .unwrap_or(false)
+                                            {
                                                 history.pop_front();
                                             }
                                             // Decimate when exceeding max points.
@@ -950,23 +1134,26 @@ impl<X: GXExt> DataTableW<X> {
                                         }
                                     }
                                     if let Some((ref gx, cb_id)) = on_update_call {
-                                        let _ = gx.call(cb_id, ValArray::from_iter([
-                                            Value::String(cell_path_arc.clone()),
-                                            v,
-                                        ]));
+                                        let _ = gx.call(
+                                            cb_id,
+                                            ValArray::from_iter([
+                                                Value::String(cell_path_arc.clone()),
+                                                v,
+                                            ]),
+                                        );
                                     }
                                 }
                             }
                         }
                     });
                 }
-                self.row_subs.insert(row_path_arc, dvals);
+                self.row_subs.insert(row_path.clone(), dvals);
             }
             DisplayMode::Value => {
                 let (tx, mut rx) = futures::channel::mpsc::channel(2);
                 let dval = self.subscriber.subscribe(row_path.clone());
-                let grid_key = (row_path_arc.clone(), VALUE_COL_KEY);
-                let cb_path_arc = row_path_arc.clone();
+                let grid_key = (row_path.clone(), VALUE_COL_KEY);
+                let cb_path_arc = ArcStr::from(&**row_path);
                 dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx);
                 let cells = cells.clone();
                 self.rt.spawn(async move {
@@ -981,16 +1168,19 @@ impl<X: GXExt> DataTableW<X> {
                                     w.wake();
                                 }
                                 if let Some((ref gx, cb_id)) = on_update_call {
-                                    let _ = gx.call(cb_id, ValArray::from_iter([
-                                        Value::String(cb_path_arc.clone()),
-                                        v,
-                                    ]));
+                                    let _ = gx.call(
+                                        cb_id,
+                                        ValArray::from_iter([
+                                            Value::String(cb_path_arc.clone()),
+                                            v,
+                                        ]),
+                                    );
                                 }
                             }
                         }
                     }
                 });
-                self.row_subs.insert(row_path_arc, vec![dval]);
+                self.row_subs.insert(row_path.clone(), vec![dval]);
             }
         }
     }
@@ -1007,49 +1197,44 @@ impl<X: GXExt> DataTableW<X> {
         }
         let now = Instant::now();
         let mut sp = self.cells.sparklines.lock();
-        for (_col_idx, col_name) in self.col_names.iter().enumerate() {
-            if !matches!(self.col_type_for(col_name), ColumnType::Sparkline { .. }) {
-                continue;
-            }
+        for col_name in self.col_names.iter() {
             let history_secs = match self.col_type_for(col_name) {
                 ColumnType::Sparkline { history_seconds, .. } => *history_seconds,
-                _ => unreachable!(),
+                _ => continue,
             };
-            for (row_idx, row_path) in self.row_paths.iter().enumerate() {
-                let row_name = &self.row_names[row_idx];
-                let val_str = self.default_for(col_name, row_name);
-                if val_str.is_empty() { continue; }
-                if let Ok(f) = val_str.parse::<f64>() {
-                    let key = (row_path.to_string(), col_name.to_string());
-                    let history = sp
-                        .entry(key)
-                        .or_insert_with(VecDeque::new);
-                    history.push_back((now, f));
-                    // Trim old entries
-                    let cutoff = now - std::time::Duration::from_secs_f64(history_secs);
-                    while history.front().map(|(t, _)| *t < cutoff).unwrap_or(false) {
-                        history.pop_front();
-                    }
-                    if history.len() > MAX_SPARKLINE_POINTS {
-                        decimate_sparkline(history);
-                    }
+            for row_path in self.row_paths.iter() {
+                let row_name = row_basename(row_path);
+                let f = match self.default_value_f64_for(col_name, row_name) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let key = (row_path.clone(), col_name.clone());
+                let history = sp.entry(key).or_insert_with(VecDeque::new);
+                history.push_back((now, f));
+                // Trim old entries
+                let cutoff = now - std::time::Duration::from_secs_f64(history_secs);
+                while history.front().map(|(t, _)| *t < cutoff).unwrap_or(false) {
+                    history.pop_front();
+                }
+                if history.len() > MAX_SPARKLINE_POINTS {
+                    decimate_sparkline(history);
                 }
             }
         }
     }
 
-    fn sort_value_for(&self, row_idx: usize, sort_col: &str) -> String {
+    fn sort_value_for(&self, row_idx: usize, sort_col: &ArcStr) -> ArcStr {
         let row_path = &self.row_paths[row_idx];
         // Check subscribed sort column values (column → row → value)
         let vals = self.sort_col_values.lock();
         if let Some(col_map) = vals.get(sort_col) {
-            if let Some(v) = col_map.get(&**row_path) {
+            if let Some(v) = col_map.get(row_path) {
                 return v.clone();
             }
         }
         drop(vals);
         // Fall back to default value
-        self.default_for(sort_col, &self.row_names[row_idx])
+        self.default_for(sort_col, row_basename(row_path))
     }
 
     /// Re-sort row_paths by sort column values. The cell grid is keyed
@@ -1062,38 +1247,45 @@ impl<X: GXExt> DataTableW<X> {
             return;
         }
         let n = self.row_paths.len();
-        // Precompute sort keys: keys[row][sort_by_index] = display string
-        let keys: Vec<Vec<String>> = (0..n)
-            .map(|i| {
-                self.sort_by
-                    .iter()
-                    .map(|sb| self.sort_value_for(i, &sb.column))
-                    .collect()
-            })
-            .collect();
-        let mut indices: Vec<usize> = (0..n).collect();
+        let n_keys = self.sort_by.len();
+        // Precompute sort keys: flat row-major buffer indexed as
+        // `keys[row * n_keys + key_idx]`. Pooled because `resort` runs
+        // on every sort-column subscription update and we don't want
+        // an unpooled `Vec<Vec<...>>` allocation per tick.
+        let mut keys: LPooled<Vec<ArcStr>> = LPooled::take();
+        keys.reserve(n * n_keys);
+        for i in 0..n {
+            for sb in self.sort_by.iter() {
+                keys.push(self.sort_value_for(i, &sb.column));
+            }
+        }
+        let mut indices: LPooled<Vec<usize>> = (0..n).collect();
         indices.sort_by(|&a, &b| {
             for (idx, sb) in self.sort_by.iter().enumerate() {
-                let va = keys[a][idx].as_str();
-                let vb = keys[b][idx].as_str();
+                let va = keys[a * n_keys + idx].as_str();
+                let vb = keys[b * n_keys + idx].as_str();
                 let cmp = match (numeric_key(va), numeric_key(vb)) {
-                    (Some(na), Some(nb)) => na
-                        .partial_cmp(&nb)
-                        .unwrap_or(std::cmp::Ordering::Equal),
+                    (Some(na), Some(nb)) => {
+                        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                    }
                     _ => va.cmp(vb),
                 };
                 if cmp != std::cmp::Ordering::Equal {
-                    return if sb.ascending { cmp } else { cmp.reverse() };
+                    return match sb.direction {
+                        SortDirection::Ascending => cmp,
+                        SortDirection::Descending => cmp.reverse(),
+                    };
                 }
             }
             std::cmp::Ordering::Equal
         });
-        // Reorder row_paths and row_names in lockstep
-        let old_paths = self.row_paths.clone();
-        let old_names = self.row_names.clone();
+        // Reorder row_paths in place. Path clones are refcount bumps,
+        // and the cell grid / row_subs are keyed by Path (not index),
+        // so no grid rebuild or sub churn is needed.
+        let mut old_paths: LPooled<Vec<Path>> = LPooled::take();
+        old_paths.extend(self.row_paths.iter().cloned());
         for (new_i, &old_i) in indices.iter().enumerate() {
             self.row_paths[new_i] = old_paths[old_i].clone();
-            self.row_names[new_i] = old_names[old_i].clone();
         }
         self.cells.dirty.store(true, Ordering::Relaxed);
     }
@@ -1102,10 +1294,12 @@ impl<X: GXExt> DataTableW<X> {
         if let Some(callable) = &self.on_select {
             if let Some(row_path) = self.row_paths.get(row_idx) {
                 // Send the full cell path: row_path/col_name
-                let cell_path = if col_name == ROW_NAME_KEY {
-                    ArcStr::from(&**row_path)
+                let cell_path: ArcStr = if col_name == ROW_NAME_KEY {
+                    row_path.clone().into()
                 } else {
-                    ArcStr::from(format!("{}/{}", &**row_path, col_name))
+                    format_compact!("{}/{}", row_path.as_ref() as &str, col_name)
+                        .as_str()
+                        .into()
                 };
                 let pv = Value::String(cell_path);
                 let _ = self.gx.call(callable.id(), ValArray::from_iter([pv]));
@@ -1113,29 +1307,33 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// Get the default value string for a cell, reading from the column's
-    /// stored default_value ref. A `Value::Map` is treated as a per-row
-    /// table (key = row basename); anything else is a uniform value.
-    fn default_for(&self, col_name: &str, row_name: &ArcStr) -> String {
-        let Some(r) = self.default_value_refs.get(col_name) else {
-            return String::new();
-        };
-        match r.last.as_ref() {
-            None | Some(Value::Null) => String::new(),
-            Some(Value::Map(m)) => {
-                let key = Value::String(row_name.clone());
-                m.get(&key).map(value_to_display).unwrap_or_default()
-            }
-            Some(v) => value_to_display(v),
-        }
+    /// Get the default value string for a cell. Per-row Maps are
+    /// looked up by the row basename against the pre-parsed cache.
+    fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
+        self.default_value_refs
+            .get(col_name)
+            .and_then(|e| e.parsed.lookup(row_name))
+            .map(value_to_display)
+            .unwrap_or_default()
+    }
+
+    /// Like `default_for`, but pulls the underlying Value (not its
+    /// display string) and converts it to f64 directly. Used by
+    /// sparkline default seeding to avoid a format-then-reparse round
+    /// trip that would lose precision.
+    fn default_value_f64_for(&self, col_name: &str, row_name: &str) -> Option<f64> {
+        self.default_value_refs
+            .get(col_name)
+            .and_then(|e| e.parsed.lookup(row_name))
+            .and_then(value_to_f64)
     }
 
     /// Check if a column has any non-null default value.
     fn has_default(&self, col_name: &str) -> bool {
-        matches!(
-            self.default_value_refs.get(col_name).and_then(|r| r.last.as_ref()),
-            Some(v) if !matches!(v, Value::Null)
-        )
+        self.default_value_refs
+            .get(col_name)
+            .map(|e| e.parsed.is_present())
+            .unwrap_or(false)
     }
 
     /// Returns the effective column width if explicitly set (by ref or user drag).
@@ -1161,9 +1359,7 @@ impl<X: GXExt> DataTableW<X> {
         };
         let mut count = 0;
         for i in from_col..self.col_names.len() {
-            let w = cache.get(&self.col_names[i])
-                .copied()
-                .unwrap_or(MIN_COL_WIDTH);
+            let w = cache.get(&self.col_names[i]).copied().unwrap_or(MIN_COL_WIDTH);
             if used + w > vp_width && count > 0 {
                 break;
             }
@@ -1195,14 +1391,16 @@ impl<X: GXExt> DataTableW<X> {
                     changed = true;
                 } else {
                     // Use actual widths to check if the column fits in viewport
-                    let vis = self.actual_visible_cols(self.first_col, metrics.viewport_width);
+                    let vis =
+                        self.actual_visible_cols(self.first_col, metrics.viewport_width);
                     if ci >= self.first_col + vis {
                         // Scroll right so ci is the last visible column
                         self.first_col = ci.saturating_sub(
                             self.actual_visible_cols(
                                 ci.saturating_sub(metrics.cols_in_view),
                                 metrics.viewport_width,
-                            ).saturating_sub(1)
+                            )
+                            .saturating_sub(1),
                         );
                         changed = true;
                     }
@@ -1217,20 +1415,46 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Ensure at least one selected cell is visible in the viewport.
     fn ensure_selection_visible(&mut self) {
-        if self.selection.is_empty() { return; }
+        if self.selection.is_empty() {
+            return;
+        }
         let show_name = self.show_row_name.t.unwrap_or(true);
-        for sel_path in self.selection.clone() {
-            for (ri, rp) in self.row_paths.iter().enumerate() {
-                if show_name && sel_path == &**rp {
-                    self.scroll_to_cell(ri, ROW_NAME_KEY);
-                    return;
+        // Clone into a pooled scratch buffer — `scroll_to_cell`
+        // mutates `self`, so we can't hold a borrow on `self.selection`
+        // while iterating. Refcount clone is cheap; the pool avoids
+        // allocating a fresh Vec on every selection change.
+        let mut selection: LPooled<Vec<ArcStr>> = LPooled::take();
+        selection.extend(self.selection.iter().cloned());
+        // For each selected path, look for a row whose path is the
+        // prefix (row alone → name column; row + "/" + col → that
+        // col). String matching on the shared path avoids building
+        // per-row `<row>/` prefix strings.
+        let mut target: Option<(usize, ArcStr)> = None;
+        'outer: for sel_path in selection.iter() {
+            for (ri, row_path) in self.row_paths.iter().enumerate() {
+                let row_str: &str = row_path;
+                if show_name && sel_path.as_str() == row_str {
+                    target = Some((ri, ROW_NAME_KEY_ARC.clone()));
+                    break 'outer;
                 }
-                let prefix = format!("{}/", &**rp);
-                if let Some(col_name) = sel_path.strip_prefix(&prefix) {
-                    self.scroll_to_cell(ri, col_name);
-                    return;
+                if let Some(rest) = sel_path.as_str().strip_prefix(row_str) {
+                    if let Some(col) = rest.strip_prefix('/') {
+                        // Match against the existing ArcStr in col_names
+                        // so scroll_to_cell can compare by identity.
+                        let col_arc = self
+                            .col_names
+                            .iter()
+                            .find(|n| n.as_str() == col)
+                            .cloned()
+                            .unwrap_or_else(|| ArcStr::from(col));
+                        target = Some((ri, col_arc));
+                        break 'outer;
+                    }
                 }
             }
+        }
+        if let Some((ri, col)) = target {
+            self.scroll_to_cell(ri, &col);
         }
     }
 
@@ -1238,9 +1462,6 @@ impl<X: GXExt> DataTableW<X> {
     /// Scans ALL rows, not just visible ones.
     fn auto_fit_all_columns(&mut self) {
         let show_name = self.show_row_name.t.unwrap_or(true);
-        let row_path_arcs: Vec<ArcStr> = self.row_paths.iter()
-            .map(|p| ArcStr::from(&**p))
-            .collect();
         let grid = self.cells.grid.lock();
         let mut widths = self.user_widths.lock();
         if show_name {
@@ -1257,17 +1478,20 @@ impl<X: GXExt> DataTableW<X> {
                     // Skip columns with fixed ref width and no on_resize
                     let is_fixed = self.ref_widths.contains_key(col_name)
                         && !self.on_resize_callbacks.contains_key(col_name);
-                    if is_fixed { continue; }
-                    let display = self.column_types.get(col_name)
+                    if is_fixed {
+                        continue;
+                    }
+                    let display = self
+                        .column_types
+                        .get(col_name)
                         .and_then(|s| s.display_name.as_deref())
                         .unwrap_or(col_name);
                     let mut w = col_header_width(display).max(MIN_COL_WIDTH);
-                    let col_arc = ArcStr::from(col_name.as_str());
-                    for (ri, row_arc) in row_path_arcs.iter().enumerate() {
-                        let key = (row_arc.clone(), col_arc.clone());
+                    for row_path in self.row_paths.iter() {
+                        let key = (row_path.clone(), col_name.clone());
                         let text = match grid.get(&key) {
                             Some(s) => s.clone(),
-                            None => self.default_for(col_name, &self.row_names[ri]),
+                            None => self.default_for(col_name, row_basename(row_path)),
                         };
                         w = w.max(col_text_width(&text).max(MIN_COL_WIDTH));
                     }
@@ -1276,8 +1500,8 @@ impl<X: GXExt> DataTableW<X> {
             }
             DisplayMode::Value => {
                 let mut w = col_header_width("value").max(MIN_COL_WIDTH);
-                for row_arc in row_path_arcs.iter() {
-                    if let Some(v) = grid.get(&(row_arc.clone(), VALUE_COL_KEY)) {
+                for row_path in self.row_paths.iter() {
+                    if let Some(v) = grid.get(&(row_path.clone(), VALUE_COL_KEY)) {
                         w = w.max(col_text_width(v).max(MIN_COL_WIDTH));
                     }
                 }
@@ -1287,11 +1511,8 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     fn col_type_for(&self, col_name: &str) -> &ColumnType {
-        self.column_types.get(col_name)
-            .map(|s| &s.typ)
-            .unwrap_or(&ColumnType::Text)
+        self.column_types.get(col_name).map(|s| &s.typ).unwrap_or(&ColumnType::Text)
     }
-
 }
 
 async fn compile_callable_opt<X: GXExt>(
@@ -1310,15 +1531,17 @@ impl std::fmt::Display for NakedValue<'_> {
         self.0.fmt_naked(f)
     }
 }
-fn format_value(v: &Value) -> String {
+fn format_value(v: &Value) -> ArcStr {
     // Strings are displayed bare (no surrounding quotes). fmt_naked
     // quotes strings for parser round-tripping, but spreadsheet cells
     // look much better without the quotes, and Combo's value lookup
-    // matches raw ids.
+    // matches raw ids. Returns ArcStr because cell values are stored
+    // long-term (in `cells.grid`) and read many times per frame —
+    // refcount-bump clones beat per-read String allocs.
     match v {
-        Value::Null => String::new(),
-        Value::String(s) => s.to_string(),
-        _ => NakedValue(v).to_string(),
+        Value::Null => ArcStr::new(),
+        Value::String(s) => s.clone(),
+        _ => format_compact!("{}", NakedValue(v)).as_str().into(),
     }
 }
 
@@ -1330,6 +1553,18 @@ fn format_value(v: &Value) -> String {
 fn parse_or_quote(s: &str) -> Value {
     netidx::protocol::value_parser::parse_value(s)
         .unwrap_or_else(|_| Value::String(ArcStr::from(s)))
+}
+
+/// Check whether `sel` equals the cell path `<row>/<col>` without
+/// allocating a temporary string. Used by selection-position lookups
+/// in keyboard nav and cell-selection rendering.
+fn cell_path_matches(sel: &ArcStr, row: &str, col: &str) -> bool {
+    let s = sel.as_str();
+    let n = row.len();
+    s.len() == n + 1 + col.len()
+        && s.as_bytes().get(n) == Some(&b'/')
+        && s.starts_with(row)
+        && &s[n + 1..] == col
 }
 
 /// Decimate a sparkline history by merging adjacent pairs.
@@ -1395,7 +1630,9 @@ struct SparklineCanvas {
     bounds: SparkBounds,
 }
 
-impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer> for SparklineCanvas {
+impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
+    for SparklineCanvas
+{
     type State = ();
 
     fn draw(
@@ -1412,7 +1649,8 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer> for Spark
             return vec![frame.into_geometry()];
         }
         let (mut min_v, mut max_v) = (self.bounds.min, self.bounds.max);
-        let (min_t, max_t) = (self.points.first().unwrap().0, self.points.last().unwrap().0);
+        let (min_t, max_t) =
+            (self.points.first().unwrap().0, self.points.last().unwrap().0);
         if (max_v - min_v).abs() < 1e-12 {
             min_v -= 1.0;
             max_v += 1.0;
@@ -1493,7 +1731,12 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         changed
     }
 
-    fn handle_update(&mut self, rt: &tokio::runtime::Handle, id: ExprId, v: &Value) -> Result<bool> {
+    fn handle_update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
         let mut changed = false;
         if id == self.table_ref.id {
             self.table_ref.last = Some(v.clone());
@@ -1507,54 +1750,117 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             changed = true;
         }
         if id == self.column_types_ref.id {
+            // CR estokes: I suggest pulling this case (column type update) out
+            // into a method, and further I suggest that when initial column
+            // types are provided, we call the same method against the empty
+            // set.
             self.column_types_ref.last = Some(v.clone());
-            match v {
-                Value::Null => {
-                    self.column_types.clear();
-                    self.col_callbacks.clear();
-                    self.on_resize_callbacks.clear();
-                    self.on_resize_refs.clear();
-                    self.default_value_refs.clear();
+            let new_types = match v {
+                Value::Null => FxHashMap::default(),
+                v => parse_column_specs(v),
+            };
+            // Diff-based reconcile: if the column name set is
+            // unchanged AND no column's default_value_bid crossed
+            // between zero/nonzero (which flips whether the column is
+            // virtual, and so whether it's in `col_names`), we can
+            // reconcile per-column state in place without calling
+            // `apply_table`. That's the path that saves every row's
+            // subscriptions from being torn down and re-bound on e.g.
+            // a `display_name` or `callback` update.
+            let keys_same = self.column_types.len() == new_types.len()
+                && self.column_types.keys().all(|k| new_types.contains_key(k));
+            let virtuals_same = keys_same
+                && new_types.iter().all(|(name, spec)| {
+                    self.column_types
+                        .get(name)
+                        .map(|old| {
+                            (old.default_value_bid != 0) == (spec.default_value_bid != 0)
+                        })
+                        .unwrap_or(false)
+                });
+            let structural_change = !keys_same || !virtuals_same;
+            // Drop per-column state for removed columns. `user_widths`
+            // is intentionally kept: a re-added column reuses the
+            // user's drag preference.
+            let mut removed: LPooled<Vec<ArcStr>> = LPooled::take();
+            removed.extend(
+                self.column_types.keys().filter(|k| !new_types.contains_key(*k)).cloned(),
+            );
+            for name in removed.iter() {
+                self.col_callbacks.remove(name);
+                self.on_resize_callbacks.remove(name);
+                self.on_resize_refs.remove(name);
+                self.default_value_refs.remove(name);
+                self.width_refs.remove(name);
+                self.ref_widths.remove(name);
+            }
+            // For each new/retained column, recompile callables and
+            // refs only when the underlying bid or callback value
+            // actually changed. Unchanged bits stay compiled.
+            for (name, spec) in &new_types {
+                let old = self.column_types.get(name);
+                let old_cb = old.and_then(|s| s.callback_value.as_ref());
+                if old_cb != spec.callback_value.as_ref() {
+                    self.col_callbacks.remove(name);
+                    if let Some(cb_val) = &spec.callback_value {
+                        if let Ok(callable) =
+                            rt.block_on(self.gx.compile_callable(cb_val.clone()))
+                        {
+                            self.col_callbacks.insert(name.clone(), callable);
+                        }
+                    }
                 }
-                v => {
-                    self.column_types = parse_column_specs(v);
-                    self.col_callbacks.clear();
-                    self.on_resize_callbacks.clear();
-                    self.on_resize_refs.clear();
-                    self.default_value_refs.clear();
-                    for (name, spec) in &self.column_types {
-                        if let Some(cb_val) = &spec.callback_value {
-                            if let Ok(callable) = rt.block_on(self.gx.compile_callable(cb_val.clone())) {
-                                self.col_callbacks.insert(name.clone(), callable);
+                let old_on_resize_bid = old.map(|s| s.on_resize_bid).unwrap_or(0);
+                if old_on_resize_bid != spec.on_resize_bid {
+                    self.on_resize_callbacks.remove(name);
+                    self.on_resize_refs.remove(name);
+                    if spec.on_resize_bid != 0 {
+                        if let Ok(r) =
+                            rt.block_on(self.gx.compile_ref(spec.on_resize_bid))
+                        {
+                            if let Ok(Some(c)) =
+                                rt.block_on(compile_callable_opt(&self.gx, &r))
+                            {
+                                self.on_resize_callbacks.insert(name.clone(), c);
                             }
+                            self.on_resize_refs.insert(name.clone(), r);
                         }
-                        if spec.on_resize_bid != 0 {
-                            if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.on_resize_bid)) {
-                                if let Ok(Some(c)) = rt.block_on(
-                                    compile_callable_opt(&self.gx, &r),
-                                ) {
-                                    self.on_resize_callbacks.insert(name.clone(), c);
-                                }
-                                self.on_resize_refs.insert(name.clone(), r);
+                    }
+                }
+                let old_width_bid = old.map(|s| s.width_bid).unwrap_or(0);
+                if old_width_bid != spec.width_bid {
+                    self.ref_widths.remove(name);
+                    self.width_refs.remove(name);
+                    if spec.width_bid != 0 {
+                        if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.width_bid)) {
+                            if let Some(w) = r
+                                .last
+                                .as_ref()
+                                .and_then(|rv| rv.clone().cast_to::<f64>().ok())
+                            {
+                                self.ref_widths.insert(name.clone(), w as f32);
                             }
+                            self.width_refs.insert(name.clone(), r);
                         }
-                        if spec.width_bid != 0 {
-                            if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.width_bid)) {
-                                if let Some(w) = r.last.as_ref().and_then(|rv| rv.clone().cast_to::<f64>().ok()) {
-                                    self.ref_widths.insert(name.clone(), w as f32);
-                                }
-                                self.width_refs.insert(name.clone(), r);
-                            }
-                        }
-                        if spec.default_value_bid != 0 {
-                            if let Ok(r) = rt.block_on(self.gx.compile_ref(spec.default_value_bid)) {
-                                self.default_value_refs.insert(name.clone(), r);
-                            }
+                    }
+                }
+                let old_dv_bid = old.map(|s| s.default_value_bid).unwrap_or(0);
+                if old_dv_bid != spec.default_value_bid {
+                    self.default_value_refs.remove(name);
+                    if spec.default_value_bid != 0 {
+                        if let Ok(r) =
+                            rt.block_on(self.gx.compile_ref(spec.default_value_bid))
+                        {
+                            self.default_value_refs
+                                .insert(name.clone(), DefaultValueEntry::new(r));
                         }
                     }
                 }
             }
-            self.needs_resolve = true;
+            self.column_types = new_types;
+            if structural_change {
+                self.needs_resolve = true;
+            }
             changed = true;
         }
         if id == self.selection_ref.id {
@@ -1573,23 +1879,27 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             ($ref:ident, $field:ident) => {
                 if id == self.$ref.id {
                     self.$ref.last = Some(v.clone());
-                    self.$field = rt.block_on(compile_callable_opt(&self.gx, &self.$ref))?;
+                    self.$field =
+                        rt.block_on(compile_callable_opt(&self.gx, &self.$ref))?;
                 }
-            }
+            };
         }
         update_cb!(on_activate_ref, on_activate);
         update_cb!(on_select_ref, on_select);
         update_cb!(on_header_click_ref, on_header_click);
         update_cb!(on_update_ref, on_update);
-        if self.cells.dirty.swap(false, Ordering::Relaxed) { changed = true; }
+        if self.cells.dirty.swap(false, Ordering::Relaxed) {
+            changed = true;
+        }
         // Check default_value ref updates (independent of column_types structure).
         // Find which column (if any) this update belongs to.
-        let dv_col = self.default_value_refs.iter_mut()
-            .find(|(_, r)| id == r.id)
-            .map(|(name, r)| {
-                r.last = Some(v.clone());
+        let dv_col = self.default_value_refs.iter_mut().find(|(_, e)| id == e.r.id).map(
+            |(name, e)| {
+                e.r.last = Some(v.clone());
+                e.refresh_from_last();
                 name.clone()
-            });
+            },
+        );
         if let Some(col_name) = dv_col {
             // Update grid cells with new default values. default_for
             // reads from the ref's .last we just wrote, so
@@ -1608,15 +1918,13 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             // virtual column's default.
             let is_virtual = self.virtual_cols.contains(&col_name);
             if self.col_names.iter().any(|n| *n == col_name) {
-                let col_arc = ArcStr::from(col_name.as_str());
                 let mut grid = self.cells.grid.lock();
-                for (row_idx, row_path) in self.row_paths.iter().enumerate() {
-                    let row_path_arc = ArcStr::from(&**row_path);
+                for row_path in self.row_paths.iter() {
                     let unsubscribed = !Path::is_absolute(row_path)
-                        || !self.row_subs.contains_key(&row_path_arc);
+                        || !self.row_subs.contains_key(row_path);
                     if is_virtual || unsubscribed {
-                        let row_name = &self.row_names[row_idx];
-                        let key = (row_path_arc, col_arc.clone());
+                        let row_name = row_basename(row_path);
+                        let key = (row_path.clone(), col_name.clone());
                         grid.insert(key, self.default_for(&col_name, row_name));
                     }
                 }
@@ -1625,30 +1933,42 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             changed = true;
         }
         // Check width ref updates
-        let width_col = self.width_refs.iter_mut()
-            .find(|(_, r)| id == r.id)
-            .map(|(name, r)| { r.last = Some(v.clone()); name.clone() });
+        let width_col =
+            self.width_refs.iter_mut().find(|(_, r)| id == r.id).map(|(name, r)| {
+                r.last = Some(v.clone());
+                name.clone()
+            });
         if let Some(col_name) = width_col {
             match v.clone().cast_to::<f64>() {
-                Ok(w) => { self.ref_widths.insert(col_name, w as f32); }
-                Err(_) => { self.ref_widths.remove(&col_name); }
+                Ok(w) => {
+                    self.ref_widths.insert(col_name, w as f32);
+                }
+                Err(_) => {
+                    self.ref_widths.remove(&col_name);
+                }
             }
             changed = true;
         }
         // Check on_resize ref updates: the function inside the ref may
         // be swapped, set to null, or initialized from null.
-        let on_resize_col = self.on_resize_refs.iter_mut()
-            .find(|(_, r)| id == r.id)
-            .map(|(name, r)| { r.last = Some(v.clone()); name.clone() });
+        let on_resize_col =
+            self.on_resize_refs.iter_mut().find(|(_, r)| id == r.id).map(|(name, r)| {
+                r.last = Some(v.clone());
+                name.clone()
+            });
         if let Some(col_name) = on_resize_col {
             match v {
-                Value::Null => { self.on_resize_callbacks.remove(&col_name); }
-                v => {
-                    match rt.block_on(self.gx.compile_callable(v.clone())) {
-                        Ok(c) => { self.on_resize_callbacks.insert(col_name, c); }
-                        Err(_) => { self.on_resize_callbacks.remove(&col_name); }
-                    }
+                Value::Null => {
+                    self.on_resize_callbacks.remove(&col_name);
                 }
+                v => match rt.block_on(self.gx.compile_callable(v.clone())) {
+                    Ok(c) => {
+                        self.on_resize_callbacks.insert(col_name, c);
+                    }
+                    Err(_) => {
+                        self.on_resize_callbacks.remove(&col_name);
+                    }
+                },
             }
             changed = true;
         }
@@ -1663,36 +1983,48 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
 
     #[cfg(test)]
     fn data_table_snapshot(&self) -> Option<super::DataTableSnapshot> {
-        let mut sel: Vec<String> = self.selection.iter().cloned().collect();
+        let mut sel: Vec<String> = self.selection.iter().map(|s| s.to_string()).collect();
         sel.sort();
         // Materialize the identity-keyed grid into the row-major
         // Vec<Vec<String>> the snapshot uses, falling back to the
         // column's default for cells not yet populated by a sub.
+        // Snapshot stays String-keyed so existing test assertions
+        // (`vec!["foo", "bar"]`) keep working unchanged.
         let grid_map = self.cells.grid.lock();
         let grid: Vec<Vec<String>> = match self.mode {
-            DisplayMode::Table => self.row_paths.iter().enumerate()
-                .map(|(ri, rp)| {
-                    let row_arc = ArcStr::from(&**rp);
-                    self.col_names.iter()
+            DisplayMode::Table => self
+                .row_paths
+                .iter()
+                .map(|row_path| {
+                    self.col_names
+                        .iter()
                         .map(|cn| {
-                            let key = (row_arc.clone(), ArcStr::from(cn.as_str()));
-                            grid_map.get(&key).cloned()
-                                .unwrap_or_else(|| self.default_for(cn, &self.row_names[ri]))
+                            let key = (row_path.clone(), cn.clone());
+                            match grid_map.get(&key) {
+                                Some(s) => s.to_string(),
+                                None => self
+                                    .default_for(cn, row_basename(row_path))
+                                    .to_string(),
+                            }
                         })
                         .collect()
                 })
                 .collect(),
-            DisplayMode::Value => self.row_paths.iter()
-                .map(|rp| {
-                    let key = (ArcStr::from(&**rp), VALUE_COL_KEY);
-                    vec![grid_map.get(&key).cloned().unwrap_or_default()]
+            DisplayMode::Value => self
+                .row_paths
+                .iter()
+                .map(|row_path| {
+                    let key = (row_path.clone(), VALUE_COL_KEY);
+                    vec![grid_map.get(&key).map(|s| s.to_string()).unwrap_or_default()]
                 })
                 .collect(),
         };
         drop(grid_map);
         Some(super::DataTableSnapshot {
-            col_names: self.col_names.clone(),
-            row_basenames: self.row_paths.iter()
+            col_names: self.col_names.iter().map(|s| s.to_string()).collect(),
+            row_basenames: self
+                .row_paths
+                .iter()
                 .map(|p| Path::basename(p).unwrap_or(&**p).to_string())
                 .collect(),
             grid,
@@ -1702,45 +2034,129 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     }
 
     #[cfg(test)]
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-    fn handle_table_key(&mut self, action: &super::TableKeyAction) -> bool {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn on_message(
+        &mut self,
+        msg: &super::Message,
+        shell: &mut super::MessageShell,
+    ) -> bool {
+        use super::Message;
+        match msg {
+            Message::CellClick(row, col) => self.handle_cell_click(*row, col.clone()),
+            Message::CellEdit(row, col) => self.handle_cell_edit(*row, col.clone()),
+            Message::CellEditInput(text) => self.handle_cell_edit_input(text.clone()),
+            Message::CellEditSubmit => self.handle_cell_edit_submit(),
+            Message::CellEditCancel => self.handle_cell_edit_cancel(),
+            Message::TableKey(action) => self.handle_table_key(action),
+            Message::Scroll(v, h, vp_w, vp_h) => self.handle_scroll(*v, *h, *vp_w, *vp_h),
+            Message::ColumnResizeStart(ci) => {
+                self.handle_column_resize_start(*ci, shell.cursor_position.x)
+            }
+            Message::ColumnResizeMove(x) => {
+                // Only a widget actively dragging consumes ColumnResizeMove;
+                // otherwise the cursor is just passing over the table.
+                if !self.is_column_resizing() {
+                    return false;
+                }
+                if let Some((cid, w)) = self.handle_mouse_move_resize(*x) {
+                    shell.publish(Message::Call(
+                        cid,
+                        ValArray::from_iter([Value::F64(w)]),
+                    ));
+                }
+                true
+            }
+            Message::ColumnResizeEnd => self.handle_column_resize_end(),
+            // Variants `data_table` does not handle — enumerated
+            // exhaustively so a new `Message` variant forces a
+            // deliberate decision here rather than silently dropping.
+            Message::Nop | Message::Call(..) | Message::EditorAction(..) => false,
+        }
+    }
+
+    fn is_column_resizing(&self) -> bool {
+        self.resize_drag.is_some()
+    }
+
+    fn view(&self) -> IcedElement<'_> {
+        if self.row_paths.is_empty() {
+            let msg = if self.table_ref.last.is_some() {
+                "No data in table".to_string()
+            } else {
+                "No table specified".to_string()
+            };
+            return widget::text(msg).into();
+        }
+        // Wrap in `responsive` so the widget receives its actual
+        // allocated size at layout time. This is what lets the
+        // horizontal scrollbar appear dynamically when the user shrinks
+        // the window below content width: we derive `need_hscroll` and
+        // the rendered row/column counts from `size` directly, and
+        // refresh the cached viewport metrics as a side effect so
+        // off-layout consumers (keyboard nav, subscription updates)
+        // also see the latest values.
+        widget::responsive(|size| self.render_with_size(size))
+            .width(iced_core::Length::Fill)
+            .height(iced_core::Length::Fill)
+            .into()
+    }
+}
+
+// Inherent helpers that `on_message` dispatches to. These used to be
+// individual trait methods (`handle_cell_click`, `handle_scroll`, …)
+// that every container widget had to forward; with `on_message` as
+// the single trait entry point they're now just local plumbing.
+impl<X: GXExt> DataTableW<X> {
+    pub(crate) fn handle_table_key(&mut self, action: &super::TableKeyAction) -> bool {
         use super::TableKeyAction;
         let n_rows = self.row_paths.len();
-        if n_rows == 0 { return false; }
+        if n_rows == 0 {
+            return false;
+        }
         let show_name = self.show_row_name.t.unwrap_or(true);
         let name_offset = if show_name { 1 } else { 0 };
-        // Build the FULL column list (not just visible) for keyboard nav.
-        // Keyboard nav needs to move beyond the visible range and scroll.
-        let mut display_cols: Vec<String> = Vec::new();
+        // Build the FULL column list (not just visible) for keyboard
+        // nav. Pooled scratch — keyboard events are bursty (key repeat)
+        // and we don't want a fresh Vec per arrow press.
+        let mut display_cols: LPooled<Vec<ArcStr>> = LPooled::take();
         if show_name {
-            display_cols.push(ROW_NAME_KEY.to_string());
+            display_cols.push(ROW_NAME_KEY_ARC.clone());
         }
         match self.mode {
             DisplayMode::Table => {
-                for name in &self.col_names {
-                    display_cols.push(name.clone());
-                }
+                display_cols.extend(self.col_names.iter().cloned());
             }
             DisplayMode::Value => {
-                display_cols.push("value".to_string());
+                display_cols.push(literal!("value"));
             }
         }
         let n_display_cols = display_cols.len();
-        if n_display_cols == 0 { return false; }
+        if n_display_cols == 0 {
+            return false;
+        }
         // Find current position from the selection set.
         // Selection contains cell paths like "row_path/col_name" or "row_path" for name col.
-        let (cur_row, cur_col) = self.selection.iter()
+        let (cur_row, cur_col) = self
+            .selection
+            .iter()
             .find_map(|sel_path| {
                 for (ri, rp) in self.row_paths.iter().enumerate() {
                     // Check "row_path/col_name" format
                     for (ci, col_name) in display_cols.iter().enumerate() {
-                        let cell_path = if col_name == ROW_NAME_KEY {
-                            rp.to_string()
+                        let matches = if col_name == &ROW_NAME_KEY_ARC {
+                            sel_path.as_str() == rp.as_ref()
                         } else {
-                            format!("{}/{}", &**rp, col_name)
+                            cell_path_matches(sel_path, rp.as_ref(), col_name)
                         };
-                        if *sel_path == cell_path {
+                        if matches {
                             return Some((ri, ci));
                         }
                     }
@@ -1749,21 +2165,35 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             })
             .unwrap_or((0, name_offset));
         match action {
-            TableKeyAction::Up | TableKeyAction::Down
-            | TableKeyAction::Left | TableKeyAction::Right => {
+            TableKeyAction::Up
+            | TableKeyAction::Down
+            | TableKeyAction::Left
+            | TableKeyAction::Right => {
                 // Clamp c to data columns only (skip name column)
                 let min_col = name_offset;
                 let (mut r, mut c) = (cur_row, cur_col.max(min_col));
                 match action {
-                    TableKeyAction::Up => { r = r.saturating_sub(1); }
-                    TableKeyAction::Down => { r = (r + 1).min(n_rows - 1); }
+                    TableKeyAction::Up => {
+                        r = r.saturating_sub(1);
+                    }
+                    TableKeyAction::Down => {
+                        r = (r + 1).min(n_rows - 1);
+                    }
                     TableKeyAction::Left => {
-                        if c > min_col { c -= 1; }
-                        else if r > 0 { r -= 1; c = n_display_cols - 1; }
+                        if c > min_col {
+                            c -= 1;
+                        } else if r > 0 {
+                            r -= 1;
+                            c = n_display_cols - 1;
+                        }
                     }
                     TableKeyAction::Right => {
-                        if c + 1 < n_display_cols { c += 1; }
-                        else if r + 1 < n_rows { r += 1; c = min_col; }
+                        if c + 1 < n_display_cols {
+                            c += 1;
+                        } else if r + 1 < n_rows {
+                            r += 1;
+                            c = min_col;
+                        }
                     }
                     _ => unreachable!(),
                 }
@@ -1799,39 +2229,44 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         }
     }
 
-    fn handle_cell_edit(&mut self, row: usize, col: String) -> bool {
-        self.editing = Some((row, col.clone()));
+    pub(crate) fn handle_cell_edit(&mut self, row: usize, col: ArcStr) -> bool {
         // Initialize edit buffer with current cell value
-        let col_in_table = self.col_names.iter().any(|n| *n == col);
-        if let (true, Some(row_path)) = (col_in_table, self.row_paths.get(row)) {
-            let key = (ArcStr::from(&**row_path), ArcStr::from(col.as_str()));
+        let col_in_table = self.col_names.iter().any(|n| n == &col);
+        let row_path = match self.row_paths.get(row) {
+            Some(p) => p.clone(),
+            None => {
+                self.edit_buffer.clear();
+                return true;
+            }
+        };
+        if col_in_table {
+            let key = (row_path.clone(), col.clone());
             let grid = self.cells.grid.lock();
-            self.edit_buffer = grid.get(&key).cloned().unwrap_or_default();
+            self.edit_buffer = match grid.get(&key) {
+                Some(v) => v.as_str().into(),
+                None => CompactString::new(""),
+            };
         } else {
             self.edit_buffer.clear();
         }
+        self.editing = Some((row_path, col));
         true
     }
 
-    fn handle_cell_edit_input(&mut self, text: String) -> bool {
+    pub(crate) fn handle_cell_edit_input(&mut self, text: CompactString) -> bool {
         self.edit_buffer = text;
         true
     }
 
-    fn handle_cell_edit_submit(&mut self) -> bool {
-        if let Some((row, ref col)) = self.editing {
+    pub(crate) fn handle_cell_edit_submit(&mut self) -> bool {
+        if let Some((ref row_path, ref col)) = self.editing {
             if let Some(callable) = self.col_callbacks.get(col) {
-                if let Some(path) = self.row_paths.get(row) {
-                    let cell_path = path.append(col);
-                    let v = parse_or_quote(&self.edit_buffer);
-                    let _ = self.gx.call(
-                        callable.id(),
-                        ValArray::from_iter([
-                            Value::String(ArcStr::from(&*cell_path)),
-                            v,
-                        ]),
-                    );
-                }
+                let cell_path = row_path.append(col);
+                let v = parse_or_quote(&self.edit_buffer);
+                let _ = self.gx.call(
+                    callable.id(),
+                    ValArray::from_iter([Value::String(ArcStr::from(&*cell_path)), v]),
+                );
             }
         }
         self.editing = None;
@@ -1839,48 +2274,21 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         true
     }
 
-    fn handle_cell_edit_cancel(&mut self) -> bool {
+    pub(crate) fn handle_cell_edit_cancel(&mut self) -> bool {
         self.editing = None;
         self.edit_buffer.clear();
         true
     }
 
-    fn handle_viewport_resize(&mut self, vp_w: f32, vp_h: f32) -> bool {
-        let row_h = self.row_height();
-        let header_h = ROW_HEIGHT_ESTIMATE;
-        let body_h = (vp_h - header_h).max(0.0);
-        let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
-        let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
-        let cols_in_view = ((vp_w / MIN_COL_WIDTH).ceil() as usize)
-            .saturating_sub(name_cols).max(1);
-        let prev = *self.viewport_metrics.lock();
-        if prev.rows_in_view == rows_in_view
-            && prev.cols_in_view == cols_in_view
-            && prev.viewport_width == vp_w
-            && prev.viewport_height == vp_h
-        {
-            return false;
-        }
-        *self.viewport_metrics.lock() = ViewportMetrics {
-            viewport_width: vp_w,
-            viewport_height: vp_h,
-            rows_in_view,
-            cols_in_view,
-            dirty: false,
-        };
-        self.update_subscriptions();
-        true
-    }
-
-    fn handle_cell_click(&mut self, row: usize, col: String) -> bool {
+    pub(crate) fn handle_cell_click(&mut self, row: usize, col: ArcStr) -> bool {
         // Name column click fires on_activate. Accept the display
         // label `"name"` as a synonym for the row-name col so tests
         // and external callers don't need to know the internal
         // sentinel key.
-        if col == ROW_NAME_KEY || col == ROW_NAME_LABEL {
+        if col.as_str() == ROW_NAME_KEY || col.as_str() == ROW_NAME_LABEL {
             if let Some(callable) = &self.on_activate {
-                if let Some(path) = self.row_paths.get(row) {
-                    let pv = Value::String(ArcStr::from(&**path));
+                if let Some(row_path) = self.row_paths.get(row) {
+                    let pv = Value::String(row_path.clone().into());
                     let _ = self.gx.call(callable.id(), ValArray::from_iter([pv]));
                     return true;
                 }
@@ -1891,14 +2299,20 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         true
     }
 
-    fn handle_scroll(&mut self, ox: f32, oy: f32, vp_w: f32, vp_h: f32) -> bool {
+    pub(crate) fn handle_scroll(
+        &mut self,
+        ox: f32,
+        oy: f32,
+        vp_w: f32,
+        vp_h: f32,
+    ) -> bool {
         let row_h = self.row_height();
         let header_h = ROW_HEIGHT_ESTIMATE;
         let body_h = (vp_h - header_h).max(0.0);
         let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
         let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
-        let cols_in_view = ((vp_w / MIN_COL_WIDTH).ceil() as usize)
-            .saturating_sub(name_cols).max(1);
+        let cols_in_view =
+            ((vp_w / MIN_COL_WIDTH).ceil() as usize).saturating_sub(name_cols).max(1);
         // Viewport metrics update unconditionally so that a pure resize
         // notification (no offset change, or offset matching the
         // keyboard-override position) still refreshes the cached
@@ -1921,9 +2335,19 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if self.keyboard_scroll_override {
             // Check if this is a real user scroll (position actually changed
             // from what we'd expect) or just the overlay re-asserting.
-            let expected_ox = self.first_col as f32 * MIN_COL_WIDTH;
+            // Column threshold uses half the current column's width so
+            // wide columns don't mis-detect the overlay as a real scroll.
+            let expected_ox = self.offset_at_col(self.first_col);
             let expected_oy = self.first_row as f32 * row_h;
-            let real_scroll = (ox - expected_ox).abs() > MIN_COL_WIDTH * 0.5
+            let col_thresh = {
+                let cache = self.cached_col_widths.lock();
+                self.col_names
+                    .get(self.first_col)
+                    .and_then(|n| cache.get(n).copied())
+                    .unwrap_or(MIN_COL_WIDTH)
+                    * 0.5
+            };
+            let real_scroll = (ox - expected_ox).abs() > col_thresh
                 || (oy - expected_oy).abs() > row_h * 0.5;
             if !real_scroll {
                 // Overlay is re-asserting — keep keyboard-driven
@@ -1941,22 +2365,34 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         let n_rows = self.row_paths.len();
         let n_cols = self.total_data_cols();
         let new_first_row = ((oy / row_h).round() as usize).min(n_rows.saturating_sub(1));
-        let new_first_col = ((ox / MIN_COL_WIDTH).round() as usize).min(n_cols.saturating_sub(1));
-        let pos_changed = self.first_row != new_first_row || self.first_col != new_first_col;
-        if !metrics_changed && !pos_changed { return false; }
-        let row_changed = self.first_row != new_first_row
-            || prev.rows_in_view != rows_in_view;
+        let new_first_col = self.col_at_offset(ox).min(n_cols.saturating_sub(1));
+        let pos_changed =
+            self.first_row != new_first_row || self.first_col != new_first_col;
+        if !metrics_changed && !pos_changed {
+            return false;
+        }
+        let row_changed =
+            self.first_row != new_first_row || prev.rows_in_view != rows_in_view;
         self.first_row = new_first_row;
         self.first_col = new_first_col;
-        if row_changed { self.update_subscriptions(); }
+        if row_changed {
+            self.update_subscriptions();
+        }
         true
     }
 
-    fn handle_column_resize_start(&mut self, col_meta_idx: usize, _cursor_x: f32) -> bool {
+    pub(crate) fn handle_column_resize_start(
+        &mut self,
+        col_meta_idx: usize,
+        _cursor_x: f32,
+    ) -> bool {
         // Double-click detection: if same handle clicked within 400ms, auto-fit
         let now = Instant::now();
-        let is_double = self.last_resize_click
-            .map(|(idx, t)| idx == col_meta_idx && now.duration_since(t).as_millis() < 400)
+        let is_double = self
+            .last_resize_click
+            .map(|(idx, t)| {
+                idx == col_meta_idx && now.duration_since(t).as_millis() < 400
+            })
             .unwrap_or(false);
         self.last_resize_click = Some((col_meta_idx, now));
         if is_double {
@@ -1964,8 +2400,8 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             return true;
         }
         let show_name = self.show_row_name.t.unwrap_or(true);
-        let name = if show_name && col_meta_idx == 0 {
-            ROW_NAME_KEY.to_string()
+        let name: ArcStr = if show_name && col_meta_idx == 0 {
+            ROW_NAME_KEY_ARC.clone()
         } else {
             let data_idx = if show_name { col_meta_idx - 1 } else { col_meta_idx };
             let (vis_start, _vis_end) = self.display_col_range();
@@ -1976,18 +2412,19 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 return false;
             }
         };
-        let current_w = self.effective_col_width(&name)
+        let current_w = self
+            .effective_col_width(&name)
             .or_else(|| self.cached_col_widths.lock().get(&name).copied())
             .unwrap_or(DEFAULT_MAX_COL_WIDTH);
-        self.resize_drag = Some(ResizeDrag {
-            col_name: name,
-            last_x: None,
-            current_width: current_w,
-        });
+        self.resize_drag =
+            Some(ResizeDrag { col_name: name, last_x: None, current_width: current_w });
         true
     }
 
-    fn handle_mouse_move_resize(&mut self, cursor_x: f32) -> Option<(super::CallableId, f64)> {
+    pub(crate) fn handle_mouse_move_resize(
+        &mut self,
+        cursor_x: f32,
+    ) -> Option<(super::CallableId, f64)> {
         let drag = self.resize_drag.as_mut()?;
         // First sample seeds last_x; no width change yet.
         let last = match drag.last_x {
@@ -2003,39 +2440,11 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         let col_name = drag.col_name.clone();
         let new_width = drag.current_width;
         self.user_widths.lock().insert(col_name.clone(), new_width);
-        self.on_resize_callbacks.get(&col_name)
-            .map(|c| (c.id(), new_width as f64))
+        self.on_resize_callbacks.get(&col_name).map(|c| (c.id(), new_width as f64))
     }
 
-    fn handle_column_resize_end(&mut self) -> bool {
+    pub(crate) fn handle_column_resize_end(&mut self) -> bool {
         self.resize_drag.take().is_some()
-    }
-
-    fn is_column_resizing(&self) -> bool {
-        self.resize_drag.is_some()
-    }
-
-    fn view(&self) -> IcedElement<'_> {
-        if self.row_paths.is_empty() {
-            let msg = if self.table_ref.last.is_some() {
-                "No data in table".to_string()
-            } else {
-                "No table specified".to_string()
-            };
-            return widget::text(msg).into();
-        }
-        // Wrap in `responsive` so the widget receives its actual
-        // allocated size at layout time. This is what lets the
-        // horizontal scrollbar appear dynamically when the user shrinks
-        // the window below content width: we derive `need_hscroll` and
-        // the rendered row/column counts from `size` directly, and
-        // refresh the cached viewport metrics as a side effect so
-        // off-layout consumers (keyboard nav, subscription updates)
-        // also see the latest values.
-        widget::responsive(|size| self.render_with_size(size))
-            .width(iced_core::Length::Fill)
-            .height(iced_core::Length::Fill)
-            .into()
     }
 }
 
@@ -2052,7 +2461,8 @@ impl<X: GXExt> DataTableW<X> {
             let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
             let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
             let cols_in_view = ((size.width / MIN_COL_WIDTH).ceil() as usize)
-                .saturating_sub(name_cols).max(1);
+                .saturating_sub(name_cols)
+                .max(1);
             let mut m = self.viewport_metrics.lock();
             let changed = m.viewport_width != size.width
                 || m.viewport_height != size.height
@@ -2078,32 +2488,33 @@ impl<X: GXExt> DataTableW<X> {
         let (vis_row_start, vis_row_end) = self.display_row_range();
         let (vis_col_start, vis_col_end) = self.display_col_range();
         // Snapshot cell data (need it for column width computation too).
-        // Materialize from the identity-keyed grid into a Vec<Vec<String>>
+        // Materialize from the identity-keyed grid into a Vec<Vec<ArcStr>>
         // sized [visible_rows][all_cols]; falling back to per-cell defaults
-        // for entries no subscription has filled in yet.
-        let grid_snapshot: Vec<Vec<String>> = {
+        // for entries no subscription has filled in yet. ArcStr clones
+        // are refcount bumps — the grid's stored values are reused
+        // across width measurement, header rendering, and per-cell
+        // rendering without re-allocating.
+        let grid_snapshot: Vec<Vec<ArcStr>> = {
             let grid = self.cells.grid.lock();
             (vis_row_start..vis_row_end)
                 .map(|i| match self.row_paths.get(i) {
                     None => vec![],
-                    Some(rp) => {
-                        let row_arc = ArcStr::from(&**rp);
-                        match self.mode {
-                            DisplayMode::Table => self.col_names.iter()
-                                .map(|cn| {
-                                    let key =
-                                        (row_arc.clone(), ArcStr::from(cn.as_str()));
-                                    grid.get(&key).cloned().unwrap_or_else(|| {
-                                        self.default_for(cn, &self.row_names[i])
-                                    })
+                    Some(row_path) => match self.mode {
+                        DisplayMode::Table => self
+                            .col_names
+                            .iter()
+                            .map(|cn| {
+                                let key = (row_path.clone(), cn.clone());
+                                grid.get(&key).cloned().unwrap_or_else(|| {
+                                    self.default_for(cn, row_basename(row_path))
                                 })
-                                .collect(),
-                            DisplayMode::Value => {
-                                let key = (row_arc, VALUE_COL_KEY);
-                                vec![grid.get(&key).cloned().unwrap_or_default()]
-                            }
+                            })
+                            .collect(),
+                        DisplayMode::Value => {
+                            let key = (row_path.clone(), VALUE_COL_KEY);
+                            vec![grid.get(&key).cloned().unwrap_or_default()]
                         }
-                    }
+                    },
                 })
                 .collect()
         };
@@ -2112,7 +2523,7 @@ impl<X: GXExt> DataTableW<X> {
         // If effective_col_width returns Some, use it directly.
         // Otherwise auto-size from content (up to DEFAULT_MAX_COL_WIDTH)
         // and lock the result into user_widths.
-        let mut col_meta: Vec<(String, f32)> = Vec::new();
+        let mut col_meta: Vec<(ArcStr, f32)> = Vec::new();
         if show_row_name {
             let w = match self.effective_col_width(ROW_NAME_KEY) {
                 Some(w) => w,
@@ -2128,7 +2539,7 @@ impl<X: GXExt> DataTableW<X> {
                     w
                 }
             };
-            col_meta.push((ROW_NAME_KEY.into(), w));
+            col_meta.push((ROW_NAME_KEY_ARC.clone(), w));
         }
         match self.mode {
             DisplayMode::Table => {
@@ -2138,12 +2549,14 @@ impl<X: GXExt> DataTableW<X> {
                         Some(w) => w,
                         None => {
                             let max_w = DEFAULT_MAX_COL_WIDTH;
-                            let display = self.column_types.get(name)
+                            let display = self
+                                .column_types
+                                .get(name)
                                 .and_then(|s| s.display_name.as_deref())
-                                .unwrap_or(name);
+                                .unwrap_or(name.as_str());
                             // Header text (bold, 14pt) sets minimum
-                            let mut w = col_header_width(display)
-                                .max(MIN_COL_WIDTH).min(max_w);
+                            let mut w =
+                                col_header_width(display).max(MIN_COL_WIDTH).min(max_w);
                             // Cell content may be wider
                             for row in &grid_snapshot {
                                 if i < row.len() {
@@ -2170,7 +2583,7 @@ impl<X: GXExt> DataTableW<X> {
                         w
                     }
                 };
-                col_meta.push(("value".into(), w));
+                col_meta.push((literal!("value"), w));
             }
         }
         // Cache column widths for keyboard nav viewport calculations.
@@ -2190,32 +2603,44 @@ impl<X: GXExt> DataTableW<X> {
         let mut header_row = Row::new().spacing(0);
         for (ci, (name, w)) in col_meta.iter().enumerate() {
             let is_data_col = ci >= name_col_offset;
-            let header_text = if is_data_col {
-                self.column_types.get(name)
+            let header_text: ArcStr = if is_data_col {
+                self.column_types
+                    .get(name)
                     .and_then(|s| s.display_name.clone())
                     .unwrap_or_else(|| name.clone())
             } else {
                 // Synthesized row-name column: render the user-facing
                 // label, not the internal sentinel key.
-                ROW_NAME_LABEL.to_string()
+                literal!("name")
             };
             let is_fixed = self.ref_widths.contains_key(name)
                 && !self.on_resize_callbacks.contains_key(name);
             let text_el: IcedElement<'_> = if is_data_col {
                 if let Some(cid) = on_header_click {
                     widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
-                        widget::text(header_text).size(14).font(bold)
+                        widget::text(header_text.to_string())
+                            .size(14)
+                            .font(bold)
                             .wrapping(iced_core::text::Wrapping::None),
-                    ).on_press(Message::Call(cid, ValArray::from_iter([
-                        Value::String(ArcStr::from(name.as_str())),
-                    ]))).into()
+                    )
+                    .on_press(Message::Call(
+                        cid,
+                        ValArray::from_iter([Value::String(name.clone())]),
+                    ))
+                    .into()
                 } else {
-                    widget::text(header_text).size(14).font(bold)
-                        .wrapping(iced_core::text::Wrapping::None).into()
+                    widget::text(header_text.to_string())
+                        .size(14)
+                        .font(bold)
+                        .wrapping(iced_core::text::Wrapping::None)
+                        .into()
                 }
             } else {
-                widget::text(header_text).size(14).font(bold)
-                    .wrapping(iced_core::text::Wrapping::None).into()
+                widget::text(header_text.to_string())
+                    .size(14)
+                    .font(bold)
+                    .wrapping(iced_core::text::Wrapping::None)
+                    .into()
             };
             // Use same styling as wrap_cell: same width, padding, border
             let inner: IcedElement<'_> = if !is_fixed {
@@ -2223,7 +2648,7 @@ impl<X: GXExt> DataTableW<X> {
                     widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(
                         widget::container(widget::Space::new())
                             .width(RESIZE_HANDLE_WIDTH)
-                            .height(iced_core::Length::Fill)
+                            .height(iced_core::Length::Fill),
                     )
                     .interaction(iced_core::mouse::Interaction::ResizingColumn)
                     .on_press(Message::ColumnResizeStart(ci))
@@ -2251,7 +2676,8 @@ impl<X: GXExt> DataTableW<X> {
                         },
                         ..Default::default()
                     }
-                }).into();
+                })
+                .into();
             header_row = header_row.push(cell);
         }
         // Data rows
@@ -2261,7 +2687,7 @@ impl<X: GXExt> DataTableW<X> {
         // behavior: union of every row's points so cells in the same
         // column are visually comparable. The column type's `min`/`max`
         // override either end when set.
-        let spark_bounds_by_col: FxHashMap<String, SparkBounds> =
+        let spark_bounds_by_col: FxHashMap<ArcStr, SparkBounds> =
             self.compute_sparkline_bounds();
         let mut body = Col::new()
             .spacing(0)
@@ -2273,29 +2699,37 @@ impl<X: GXExt> DataTableW<X> {
             for (ci, (col_name, w)) in col_meta.iter().enumerate() {
                 let is_name_col = ci == 0 && show_row_name;
                 let cell_el: IcedElement<'_> = if is_name_col {
-                    let name = self.row_paths.get(row_idx)
-                        .and_then(|p| Path::basename(p))
-                        .unwrap_or("")
-                        .to_string();
-                    let is_sel = self.row_paths.get(row_idx)
-                        .map(|p| {
-                            let cell_path = format!("{}", &**p);
-                            self.selection.contains(&cell_path)
+                    let name =
+                        self.row_paths.get(row_idx).map(row_basename).unwrap_or("");
+                    // Name column's selection key is the row path
+                    // itself, not `<row>/<col>`.
+                    let is_sel = self
+                        .row_paths
+                        .get(row_idx)
+                        .map(|row_path| {
+                            self.selection
+                                .iter()
+                                .any(|sel| sel.as_str() == row_path.as_ref() as &str)
                         })
                         .unwrap_or(false);
-                    let inner: IcedElement<'_> = widget::text(truncate_to_width(&name, *w))
-                        .size(13)
-                        .wrapping(iced_core::text::Wrapping::None)
-                        .into();
+                    let inner: IcedElement<'_> =
+                        widget::text(truncate_to_width(name, *w))
+                            .size(13)
+                            .wrapping(iced_core::text::Wrapping::None)
+                            .into();
                     self.wrap_cell(inner, col_name, row_idx, *w, row_h, is_sel)
                 } else {
                     let data_col = vis_col_start + ci - name_col_offset;
-                    let text = if vi < grid_snapshot.len() && data_col < grid_snapshot[vi].len() {
+                    let text: ArcStr = if vi < grid_snapshot.len()
+                        && data_col < grid_snapshot[vi].len()
+                    {
                         grid_snapshot[vi][data_col].clone()
                     } else {
-                        String::new()
+                        ArcStr::new()
                     };
-                    let col_type = if self.mode == DisplayMode::Table && data_col < self.col_names.len() {
+                    let col_type = if self.mode == DisplayMode::Table
+                        && data_col < self.col_names.len()
+                    {
                         self.col_type_for(&self.col_names[data_col])
                     } else {
                         &ColumnType::Text
@@ -2340,31 +2774,36 @@ impl<X: GXExt> DataTableW<X> {
                 0.0
             };
             let data_cols_w: f32 = match self.mode {
-                DisplayMode::Table => self.col_names.iter()
+                DisplayMode::Table => self
+                    .col_names
+                    .iter()
                     .map(|n| cache.get(n).copied().unwrap_or(MIN_COL_WIDTH))
                     .sum(),
-                DisplayMode::Value => cache.get("value")
-                    .copied().unwrap_or(MIN_COL_WIDTH),
+                DisplayMode::Value => {
+                    cache.get("value").copied().unwrap_or(MIN_COL_WIDTH)
+                }
             };
             name_col_w + data_cols_w
         };
         let virtual_height = num_rows as f32 * row_h + header_h;
-        let virtual_content: IcedElement<'_> = widget::Space::new()
-            .width(virtual_width).height(virtual_height).into();
+        let virtual_content: IcedElement<'_> =
+            widget::Space::new().width(virtual_width).height(virtual_height).into();
         let scroll_overlay: IcedElement<'_> =
-            widget::Scrollable::<'_, Message, GraphixTheme, Renderer>::new(virtual_content)
-                .direction(widget::scrollable::Direction::Both {
-                    vertical: widget::scrollable::Scrollbar::default(),
-                    horizontal: widget::scrollable::Scrollbar::default(),
-                })
-                .on_scroll(|vp| {
-                    let abs = vp.absolute_offset();
-                    let bounds = vp.bounds();
-                    Message::Scroll(abs.x, abs.y, bounds.width, bounds.height)
-                })
-                .width(iced_core::Length::Fill)
-                .height(iced_core::Length::Fill)
-                .into();
+            widget::Scrollable::<'_, Message, GraphixTheme, Renderer>::new(
+                virtual_content,
+            )
+            .direction(widget::scrollable::Direction::Both {
+                vertical: widget::scrollable::Scrollbar::default(),
+                horizontal: widget::scrollable::Scrollbar::default(),
+            })
+            .on_scroll(|vp| {
+                let abs = vp.absolute_offset();
+                let bounds = vp.bounds();
+                Message::Scroll(abs.x, abs.y, bounds.width, bounds.height)
+            })
+            .width(iced_core::Length::Fill)
+            .height(iced_core::Length::Fill)
+            .into();
         let stacked: IcedElement<'_> =
             widget::Stack::<'_, Message, GraphixTheme, Renderer>::new()
                 .push(grid_area)
@@ -2386,7 +2825,6 @@ impl<X: GXExt> DataTableW<X> {
         self.wrap_keyboard(self.wrap_resize_drag(clipped))
     }
 }
-
 
 /// Keyboard area wrapper.
 impl<X: GXExt> DataTableW<X> {
@@ -2412,30 +2850,35 @@ impl<X: GXExt> DataTableW<X> {
         use iced_core::keyboard;
 
         KeyboardArea::new(content)
-            .on_key_press(|event| {
-                match event {
-                    keyboard::Event::KeyPressed { key, .. } => {
-                        use iced_core::keyboard::Key;
-                        match key {
-                            Key::Named(keyboard::key::Named::ArrowUp) =>
-                                Message::TableKey(super::TableKeyAction::Up),
-                            Key::Named(keyboard::key::Named::ArrowDown) =>
-                                Message::TableKey(super::TableKeyAction::Down),
-                            Key::Named(keyboard::key::Named::ArrowLeft) =>
-                                Message::TableKey(super::TableKeyAction::Left),
-                            Key::Named(keyboard::key::Named::ArrowRight) =>
-                                Message::TableKey(super::TableKeyAction::Right),
-                            Key::Named(keyboard::key::Named::Enter) =>
-                                Message::TableKey(super::TableKeyAction::Enter),
-                            Key::Named(keyboard::key::Named::Space) =>
-                                Message::TableKey(super::TableKeyAction::Space),
-                            Key::Named(keyboard::key::Named::Escape) =>
-                                Message::TableKey(super::TableKeyAction::Escape),
-                            _ => Message::Nop,
+            .on_key_press(|event| match event {
+                keyboard::Event::KeyPressed { key, .. } => {
+                    use iced_core::keyboard::Key;
+                    match key {
+                        Key::Named(keyboard::key::Named::ArrowUp) => {
+                            Message::TableKey(super::TableKeyAction::Up)
                         }
+                        Key::Named(keyboard::key::Named::ArrowDown) => {
+                            Message::TableKey(super::TableKeyAction::Down)
+                        }
+                        Key::Named(keyboard::key::Named::ArrowLeft) => {
+                            Message::TableKey(super::TableKeyAction::Left)
+                        }
+                        Key::Named(keyboard::key::Named::ArrowRight) => {
+                            Message::TableKey(super::TableKeyAction::Right)
+                        }
+                        Key::Named(keyboard::key::Named::Enter) => {
+                            Message::TableKey(super::TableKeyAction::Enter)
+                        }
+                        Key::Named(keyboard::key::Named::Space) => {
+                            Message::TableKey(super::TableKeyAction::Space)
+                        }
+                        Key::Named(keyboard::key::Named::Escape) => {
+                            Message::TableKey(super::TableKeyAction::Escape)
+                        }
+                        _ => Message::Nop,
                     }
-                    _ => Message::Nop,
                 }
+                _ => Message::Nop,
             })
             .into()
     }
@@ -2459,7 +2902,11 @@ impl<X: GXExt> DataTableW<X> {
                 _ => false,
             }
         });
-        if tall { ROW_HEIGHT_CONTROLS } else { ROW_HEIGHT_ESTIMATE }
+        if tall {
+            ROW_HEIGHT_CONTROLS
+        } else {
+            ROW_HEIGHT_ESTIMATE
+        }
     }
 
     /// Wrap a cell's inner content with spreadsheet-style container:
@@ -2467,13 +2914,13 @@ impl<X: GXExt> DataTableW<X> {
     fn wrap_cell<'a>(
         &'a self,
         inner: IcedElement<'a>,
-        col_name: &str,
+        col_name: &ArcStr,
         row_idx: usize,
         w: f32,
         row_h: f32,
         is_selected: bool,
     ) -> IcedElement<'a> {
-        let col_for_msg = col_name.to_string();
+        let col_for_msg = col_name.clone();
         let styled: IcedElement<'a> = widget::container(inner)
             .width(w)
             .height(iced_core::Length::Fixed(row_h))
@@ -2482,9 +2929,10 @@ impl<X: GXExt> DataTableW<X> {
                 let p = theme.palette();
                 widget::container::Style {
                     background: if is_selected {
-                        Some(iced_core::Background::Color(
-                            iced_core::Color { a: 0.25, ..p.primary },
-                        ))
+                        Some(iced_core::Background::Color(iced_core::Color {
+                            a: 0.25,
+                            ..p.primary
+                        }))
                     } else {
                         Option::None
                     },
@@ -2495,7 +2943,8 @@ impl<X: GXExt> DataTableW<X> {
                     },
                     ..Default::default()
                 }
-            }).into();
+            })
+            .into();
         // Wrap in mouse_area for click-to-select.
         // Container constrains the mouse_area to not expand.
         widget::container(
@@ -2512,18 +2961,22 @@ impl<X: GXExt> DataTableW<X> {
     /// `Sparkline`-typed column. The column type's `min`/`max` clamp
     /// either end when set; otherwise the bound comes from the union
     /// of every row's recorded points.
-    fn compute_sparkline_bounds(&self) -> FxHashMap<String, SparkBounds> {
+    fn compute_sparkline_bounds(&self) -> FxHashMap<ArcStr, SparkBounds> {
         let mut out = FxHashMap::default();
         // Collect column-wide value ranges by walking the sparkline
         // history in one lock.
-        let mut ranges: FxHashMap<String, (f64, f64)> = FxHashMap::default();
+        let mut ranges: FxHashMap<ArcStr, (f64, f64)> = FxHashMap::default();
         {
             let sp = self.cells.sparklines.lock();
             for ((_row, col), history) in sp.iter() {
                 let entry = ranges.entry(col.clone()).or_insert((f64::MAX, f64::MIN));
                 for (_t, v) in history.iter() {
-                    if *v < entry.0 { entry.0 = *v; }
-                    if *v > entry.1 { entry.1 = *v; }
+                    if *v < entry.0 {
+                        entry.0 = *v;
+                    }
+                    if *v > entry.1 {
+                        entry.1 = *v;
+                    }
                 }
             }
         }
@@ -2553,88 +3006,116 @@ impl<X: GXExt> DataTableW<X> {
 
     fn render_cell<'a>(
         &'a self,
-        col_name: &str,
+        col_name: &ArcStr,
         col_type: &ColumnType,
-        text: String,
+        text: ArcStr,
         row_idx: usize,
         w: f32,
         row_h: f32,
         _can_select: bool,
         spark_bounds: Option<SparkBounds>,
     ) -> IcedElement<'a> {
-        let cell_path = self.row_paths.get(row_idx)
-            .map(|p| p.append(col_name));
+        let cell_path = self.row_paths.get(row_idx).map(|p| p.append(col_name));
         let callback_id = self.col_callbacks.get(col_name).map(|c| c.id());
-        let is_selected = self.row_paths.get(row_idx)
-            .map(|p| {
-                let cell_path = format!("{}/{}", &**p, col_name);
-                self.selection.contains(&cell_path)
+        let is_selected = self
+            .row_paths
+            .get(row_idx)
+            .map(|row_path| {
+                self.selection.iter().any(|sel| {
+                    cell_path_matches(sel, row_path.as_ref() as &str, col_name)
+                })
             })
             .unwrap_or(false);
         let inner: IcedElement<'a> = match col_type {
             ColumnType::Text => {
-                let is_editing = self.editing.as_ref()
-                    .map(|(r, c)| *r == row_idx && c == col_name)
+                let is_editing = self
+                    .editing
+                    .as_ref()
+                    .and_then(|(p, c)| self.row_paths.get(row_idx).map(|rp| (p, c, rp)))
+                    .map(|(p, c, rp)| p == rp && c == col_name)
                     .unwrap_or(false);
                 if is_editing {
                     widget::TextInput::<'_, Message, GraphixTheme, Renderer>::new(
-                        "", &self.edit_buffer,
+                        "",
+                        self.edit_buffer.as_str(),
                     )
-                    .on_input(Message::CellEditInput)
+                    .on_input(|s: String| Message::CellEditInput(s.into()))
                     .on_submit(Message::CellEditSubmit)
                     .size(13)
                     .padding(2)
                     .into()
                 } else if is_selected && callback_id.is_some() {
                     // Selected editable cell: click again to edit
-                    let col_for_msg = col_name.to_string();
+                    let col_for_msg = col_name.clone();
                     widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
-                        widget::text(truncate_to_width(&text, w)).size(13)
+                        widget::text(truncate_to_width(&text, w).into_owned())
+                            .size(13)
                             .wrapping(iced_core::text::Wrapping::None),
-                    ).on_press(Message::CellEdit(row_idx, col_for_msg)).into()
+                    )
+                    .on_press(Message::CellEdit(row_idx, col_for_msg))
+                    .into()
                 } else {
-                    widget::text(truncate_to_width(&text, w)).size(13)
+                    widget::text(truncate_to_width(&text, w).into_owned())
+                        .size(13)
                         .wrapping(iced_core::text::Wrapping::None)
                         .into()
                 }
             }
             ColumnType::Toggle => {
-                let checked = &*text == "true" || &*text == "1";
+                let checked = text.as_str() == "true" || text.as_str() == "1";
                 let mut tog = widget::Toggler::new(checked);
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
                     let path_val = Value::String(ArcStr::from(&**cp));
                     tog = tog.on_toggle(move |new_val| {
-                        Message::Call(cid, ValArray::from_iter([
-                            path_val.clone(),
-                            Value::Bool(new_val),
-                        ]))
+                        Message::Call(
+                            cid,
+                            ValArray::from_iter([path_val.clone(), Value::Bool(new_val)]),
+                        )
                     });
                 }
                 tog.into()
             }
             ColumnType::Combo { choices } => {
-                let options: Vec<String> = choices.iter().map(|(_, label)| label.clone()).collect();
-                let selected = choices.iter()
-                    .find(|(id, _)| *id == text)
-                    .map(|(_, label)| label.clone());
-                widget::PickList::<'_, String, Vec<String>, String, Message, GraphixTheme, Renderer>::new(
-                    options, selected, {
-                        let id_map_owned: FxHashMap<String, String> = choices.iter()
-                            .map(|(id, label)| (label.clone(), id.clone())).collect();
-                        let cell_path = cell_path.clone();
-                        move |label: String| {
-                            if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
-                                let id = id_map_owned.get(&label).cloned().unwrap_or(label);
-                                Message::Call(cid, ValArray::from_iter([
+                let options: Vec<String> =
+                    choices.iter().map(|(_, label)| label.to_string()).collect();
+                let selected = choices
+                    .iter()
+                    .find(|(id, _)| id.as_str() == text.as_str())
+                    .map(|(_, label)| label.to_string());
+                widget::PickList::<
+                    '_,
+                    String,
+                    Vec<String>,
+                    String,
+                    Message,
+                    GraphixTheme,
+                    Renderer,
+                >::new(options, selected, {
+                    let id_map_owned: FxHashMap<String, ArcStr> = choices
+                        .iter()
+                        .map(|(id, label)| (label.to_string(), id.clone()))
+                        .collect();
+                    let cell_path = cell_path.clone();
+                    move |label: String| {
+                        if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
+                            let id = id_map_owned
+                                .get(&label)
+                                .cloned()
+                                .unwrap_or_else(|| ArcStr::from(label));
+                            Message::Call(
+                                cid,
+                                ValArray::from_iter([
                                     Value::String(ArcStr::from(&**cp)),
-                                    Value::String(ArcStr::from(id)),
-                                ]))
-                            } else {
-                                Message::Nop
-                            }
+                                    Value::String(id),
+                                ]),
+                            )
+                        } else {
+                            Message::Nop
                         }
-                    },
-                ).text_size(13).into()
+                    }
+                })
+                .text_size(13)
+                .into()
             }
             ColumnType::Spin { min, max, increment } => {
                 let val: f64 = text.parse().unwrap_or(*min);
@@ -2666,7 +3147,8 @@ impl<X: GXExt> DataTableW<X> {
                             ValArray::from_iter([path_inc, Value::F64(inc_val)]),
                         ))
                         .into();
-                    let label: IcedElement<'_> = widget::text(text).size(13).into();
+                    let label: IcedElement<'_> =
+                        widget::text(text.to_string()).size(13).into();
                     Row::new()
                         .push(minus)
                         .push(label)
@@ -2675,48 +3157,55 @@ impl<X: GXExt> DataTableW<X> {
                         .align_y(iced_core::Alignment::Center)
                         .into()
                 } else {
-                    widget::text(text).size(13).into()
+                    widget::text(text.to_string()).size(13).into()
                 }
             }
             ColumnType::Progress => {
                 let val: f32 = text.parse().unwrap_or(0.0);
-                widget::ProgressBar::<'_, GraphixTheme>::new(0.0..=1.0, val.clamp(0.0, 1.0))
-                    .girth(16).into()
+                widget::ProgressBar::<'_, GraphixTheme>::new(
+                    0.0..=1.0,
+                    val.clamp(0.0, 1.0),
+                )
+                .girth(16)
+                .into()
             }
             ColumnType::Button => {
                 let val_str = text.clone();
                 let mut btn = widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
-                    widget::text(text).size(13),
+                    widget::text(text.to_string()).size(13),
                 );
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
                     let path_val = Value::String(ArcStr::from(&**cp));
-                    let val = Value::String(ArcStr::from(val_str));
-                    btn = btn.on_press(Message::Call(cid, ValArray::from_iter([path_val, val])));
+                    let val = Value::String(val_str);
+                    btn = btn.on_press(Message::Call(
+                        cid,
+                        ValArray::from_iter([path_val, val]),
+                    ));
                 }
                 btn.into()
             }
             ColumnType::Sparkline { .. } => {
                 let sparklines = self.cells.sparklines.lock();
-                let key = self.row_paths.get(row_idx)
-                    .map(|p| (p.to_string(), col_name.to_string()));
+                let key = self
+                    .row_paths
+                    .get(row_idx)
+                    .map(|row_path| (row_path.clone(), col_name.clone()));
                 let history = key.as_ref().and_then(|k| sparklines.get(k));
                 let points: Vec<(f64, f64)> = match history {
                     Some(h) if h.len() >= 2 => {
                         let first_t = h.front().unwrap().0;
-                        h.iter().map(|(t, v)| {
-                            (t.duration_since(first_t).as_secs_f64(), *v)
-                        }).collect()
+                        h.iter()
+                            .map(|(t, v)| (t.duration_since(first_t).as_secs_f64(), *v))
+                            .collect()
                     }
                     _ => vec![],
                 };
                 drop(sparklines);
                 if points.is_empty() {
-                    widget::text(text).size(13).into()
+                    widget::text(text.to_string()).size(13).into()
                 } else {
-                    let bounds = spark_bounds.unwrap_or(SparkBounds {
-                        min: 0.0,
-                        max: 1.0,
-                    });
+                    let bounds =
+                        spark_bounds.unwrap_or(SparkBounds { min: 0.0, max: 1.0 });
                     let sparkline = SparklineCanvas { points, bounds };
                     widget::Canvas::new(sparkline)
                         .width(iced_core::Length::Fill)
@@ -2753,19 +3242,18 @@ impl<X: GXExt> DataTableW<X> {
     /// the cell at (row_basename, col). Returns None if the row or column
     /// is not a sparkline cell.
     pub fn dt_sparkline_len(&self, row: &str, col: &str) -> Option<usize> {
-        let row_path = self.row_paths.iter()
-            .find(|p| Path::basename(p).unwrap_or(&***p) == row)?;
-        let key = (row_path.to_string(), col.to_string());
+        let key = self.sparkline_key_for(row, col)?;
         self.cells.sparklines.lock().get(&key).map(|h| h.len())
     }
 
     /// Snapshot of the values in the sparkline history for the cell at
     /// (row_basename, col), in chronological order.
     pub fn dt_sparkline_values(&self, row: &str, col: &str) -> Option<Vec<f64>> {
-        let row_path = self.row_paths.iter()
-            .find(|p| Path::basename(p).unwrap_or(&***p) == row)?;
-        let key = (row_path.to_string(), col.to_string());
-        self.cells.sparklines.lock().get(&key)
+        let key = self.sparkline_key_for(row, col)?;
+        self.cells
+            .sparklines
+            .lock()
+            .get(&key)
             .map(|h| h.iter().map(|(_, v)| *v).collect())
     }
 
@@ -2773,20 +3261,11 @@ impl<X: GXExt> DataTableW<X> {
     /// publishing so decimation can be exercised deterministically with
     /// thousands of points. Triggers the same `decimate_sparkline` path
     /// invoked by the runtime when MAX_SPARKLINE_POINTS is exceeded.
-    pub fn dt_push_sparkline(
-        &self,
-        row: &str,
-        col: &str,
-        when: Instant,
-        v: f64,
-    ) {
-        let row_path = match self.row_paths.iter()
-            .find(|p| Path::basename(p).unwrap_or(&***p) == row)
-        {
-            Some(p) => p.clone(),
+    pub fn dt_push_sparkline(&self, row: &str, col: &str, when: Instant, v: f64) {
+        let key = match self.sparkline_key_for(row, col) {
+            Some(k) => k,
             None => return,
         };
-        let key = (row_path.to_string(), col.to_string());
         let mut sp = self.cells.sparklines.lock();
         let history = sp.entry(key).or_insert_with(VecDeque::new);
         history.push_back((when, v));
@@ -2795,18 +3274,19 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// CallableId of the per-column on_edit/on_click callback for `col`,
-    /// if one was registered. Tests use this with `gx.call(...)` to
-    /// dispatch edit/click events without going through pixel-layout.
-    pub fn dt_col_callback_id(&self, col: &str) -> Option<super::CallableId> {
-        self.col_callbacks.get(col).map(|c| c.id())
-    }
-
-    /// CallableId of the on_resize callback for `col`, if one was
-    /// registered. Tests use this together with the resize handler
-    /// methods to verify that column-resize drags fire the callback.
-    pub fn dt_on_resize_callback_id(&self, col: &str) -> Option<super::CallableId> {
-        self.on_resize_callbacks.get(col).map(|c| c.id())
+    fn sparkline_key_for(&self, row: &str, col: &str) -> Option<(Path, ArcStr)> {
+        let row_path = self
+            .row_paths
+            .iter()
+            .find(|p| Path::basename(*p).unwrap_or(&***p) == row)?
+            .clone();
+        let col_arc = self
+            .col_names
+            .iter()
+            .find(|n| n.as_str() == col)
+            .cloned()
+            .unwrap_or_else(|| ArcStr::from(col));
+        Some((row_path, col_arc))
     }
 
     /// Index of `col` in the col_meta vector built by `view()` — i.e.,
@@ -2865,26 +3345,56 @@ impl<X: GXExt> DataTableW<X> {
         // Header cell is one ROW_HEIGHT_ESTIMATE plus container padding (3+3).
         let header_h = ROW_HEIGHT_ESTIMATE + 6.0;
         let y = header_h + row_idx as f32 * ROW_HEIGHT_ESTIMATE;
-        Some(iced_core::Rectangle {
-            x,
-            y,
-            width: w,
-            height: ROW_HEIGHT_ESTIMATE,
-        })
-    }
-
-    /// Pixel center of the cell at (row_idx, col). See `dt_cell_bounds`.
-    pub fn dt_cell_center(
-        &self,
-        row_idx: usize,
-        col: &str,
-    ) -> Option<iced_core::Point> {
-        self.dt_cell_bounds(row_idx, col).map(|r| r.center())
+        Some(iced_core::Rectangle { x, y, width: w, height: ROW_HEIGHT_ESTIMATE })
     }
 
     /// The width currently set in `user_widths` (from drag resize or
     /// auto-fit), if any. Independent of ref-controlled widths.
     pub fn dt_user_width(&self, col: &str) -> Option<f32> {
         self.user_widths.lock().get(col).copied()
+    }
+
+    /// Number of rows with active netidx subscriptions. Tests use
+    /// this to verify that `column_types` updates don't tear down
+    /// live row subs unnecessarily.
+    pub fn dt_row_sub_count(&self) -> usize {
+        self.row_subs.len()
+    }
+
+    /// Manually populate the cached column widths so scroll-math
+    /// tests can predict `first_col` without waiting for a render
+    /// pass to measure text. Returns the previous value if any.
+    pub fn dt_set_cached_width(&self, col: &str, w: f32) -> Option<f32> {
+        self.cached_col_widths.lock().insert(ArcStr::from(col), w)
+    }
+
+    /// Public wrapper over `col_at_offset` for tests.
+    pub fn col_at_offset_for_test(&self, ox: f32) -> usize {
+        self.col_at_offset(ox)
+    }
+
+    /// Look up a single cell's display value, going through the same
+    /// grid/default fallback the snapshot uses. Returns `None` if the
+    /// indices are out of range.
+    pub fn dt_snapshot_value_at(&self, row_idx: usize, col_idx: usize) -> Option<String> {
+        let row_path = self.row_paths.get(row_idx)?;
+        match self.mode {
+            DisplayMode::Table => {
+                let col = self.col_names.get(col_idx)?;
+                let grid = self.cells.grid.lock();
+                let key = (row_path.clone(), col.clone());
+                let v = match grid.get(&key) {
+                    Some(s) => s.to_string(),
+                    None => self.default_for(col, row_basename(row_path)).to_string(),
+                };
+                Some(v)
+            }
+            DisplayMode::Value if col_idx == 0 => {
+                let grid = self.cells.grid.lock();
+                let key = (row_path.clone(), VALUE_COL_KEY);
+                Some(grid.get(&key).map(|s| s.to_string()).unwrap_or_default())
+            }
+            DisplayMode::Value => None,
+        }
     }
 }

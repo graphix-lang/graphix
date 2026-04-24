@@ -6,7 +6,6 @@ let or_default = |v: ['a, null], d: 'a| -> 'a 'core_opt_or_default;
 let or = |a: ['a, null], b: ['a, null]| -> ['a, null] 'core_opt_or;
 let and = |a: ['a, null], b: ['b, null]| -> ['b, null] 'core_opt_and;
 let xor = |a: ['a, null], b: ['a, null]| -> ['a, null] 'core_opt_xor;
-let flatten = |v: [['a, null], null]| -> ['a, null] 'core_opt_flatten;
 let ok_or = |v: ['a, null], e: 'e| -> Result<'a, 'e> 'core_opt_ok_or;
 let zip = |a: ['a, null], b: ['b, null]| -> [('a, 'b), null] 'core_opt_zip;
 let unzip = |p: [('a, 'b), null]| -> (['a, null], ['b, null]) 'core_opt_unzip;

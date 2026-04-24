@@ -6,6 +6,9 @@ use gui::text;
 use gui::text_input;
 use gui::pick_list;
 use core::math;
+use array;
+use opt;
+use re;
 use str;
 use sys;
 use sys::net;
@@ -21,106 +24,96 @@ mod icon;
 // * Column sort driven by pick_list widgets in the sidebar
 // * Selection echoed in the footer
 
-let tick = time::timer(duration:1.s, true);
-let t = 0;
-t <- tick ~ t + 1;
+let t = {
+    let tick = time::timer(duration:1.s, true);
+    let t = 0.;
+    t <- tick ~ t + 1.;
+    t
+};
+
+type State = [`Healthy, `Degraded, `Down];
 
 // Publish a tiny fleet of services. state is writable (Combo).
-let svc_1_state = "healthy";
-sys::net::publish(
-    #on_write: |v: string| svc_1_state <- v,
-    "/local/graphix/data_table_dashboard/svc-1/state",
-    svc_1_state
-);
-let svc_1_cpu = f64:20.0;
-svc_1_cpu <- tick ~ 30.0 + 20.0 * math::sin(cast<f64>(t)$ / 5.0);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-1/cpu", svc_1_cpu);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-1/uptime", f64:0.91);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-1/action", "Restart");
+let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
+    sys::net::publish(
+        #on_write: |v: string| state <- cast<State>(v)$,
+        "/local/graphix/data_table_dashboard/[name]/state",
+        state
+    );
+    // svc_1_cpu <- ;
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+};
 
-let svc_2_state = "degraded";
-sys::net::publish(
-    #on_write: |v: string| svc_2_state <- v,
-    "/local/graphix/data_table_dashboard/svc-2/state",
-    svc_2_state
-);
-let svc_2_cpu = f64:80.0;
-svc_2_cpu <- tick ~ 75.0 + 15.0 * math::sin(cast<f64>(t + 10)$ / 3.0);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-2/cpu", svc_2_cpu);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-2/uptime", f64:0.62);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-2/action", "Restart");
+// single random number
+let rn = |start: f64, end: f64| -> f64 rand::rand(#start, #end, #clock:1);
 
-let svc_3_state = "healthy";
-sys::net::publish(
-    #on_write: |v: string| svc_3_state <- v,
-    "/local/graphix/data_table_dashboard/svc-3/state",
-    svc_3_state
-);
-let svc_3_cpu = f64:5.0;
-svc_3_cpu <- tick ~ 10.0 + 5.0 * math::sin(cast<f64>(t + 20)$ / 4.0);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-3/cpu", svc_3_cpu);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-3/uptime", f64:0.99);
-sys::net::publish("/local/graphix/data_table_dashboard/svc-3/action", "Restart");
+let published = array::init(1024, |i| svc(
+    #name:"svc-[i]",
+    #state:select rand::rand(#clock:1) {
+        n if n <= 0.8 => `Healthy,
+        n if n <= 0.9 => `Degraded,
+        _ => `Down
+    },
+    #uptime:rn(0., 1.),
+    #cpu:rn(0., 30.) + rn(1., 5.) * math::sin((t + rn(0., 5.)) / rn(1., 5.))
+));
 
-let tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
-
-// Filter + sort controls
+// Caller-side filter: apply the regex to the Table's rows before
+// handing the Table to the widget.
 let pattern = "";
-let row_filter: FilterSpec = `All;
-row_filter <- select str::len(pattern) {
-    n if n == 0 => `All,
-    _ => `IncludeMatch([pattern])
+let tbl: sys::net::Table = {
+    let tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    select str::len(pattern) {
+        n if n == 0 => tbl,
+        _ => {
+            let rows = array::filter(tbl.rows, |r| {
+                let row = opt::or_default(str::basename(r), r);
+                select re::is_match(#pat: pattern, row) {
+                    error as _ => false,
+                    b => b
+                }
+            });
+            { tbl with rows }
+        }
+    }
 };
 
 let sort_col = "state";
 let sort_dir: SortDirection = `Ascending;
-let sort_mode: SortMode = `None;
-sort_mode <- `Column({ name: sort_col, direction: sort_dir });
+let sort_by: Array<SortBy> = [{ column: sort_col, direction: sort_dir }];
 
 // Selection + footer
 let selection: Array<string> = [];
 let last_action = "";
 
 let types = {
-    "state" => {
-        typ: `Combo({
-            choices: [
-                { id: "healthy", label: "Healthy" },
-                { id: "degraded", label: "Degraded" },
-                { id: "down", label: "Down" }
-            ],
-            on_edit: |#path: string, #value: string|
-                sys::net::write(path, value)$
-        }),
-        display_name: "State",
-        default_value: &null,
-        on_resize: &null,
-        width: &null
-    },
-    "cpu" => {
-        typ: `Sparkline({ history_seconds: f64:30.0 }),
-        display_name: "CPU",
-        default_value: &null,
-        on_resize: &null,
-        width: &f64:220.0
-    },
-    "uptime" => {
-        typ: `Progress,
-        display_name: "Uptime",
-        default_value: &null,
-        on_resize: &null,
-        width: &f64:180.0
-    },
-    "action" => {
-        typ: `Button({
-            on_click: |#path: string, #value: Any|
-                last_action <- "[path]"
-        }),
-        display_name: "Action",
-        default_value: &null,
-        on_resize: &null,
-        width: &null
-    }
+    "state" => combo_column(
+        #choices: [
+            { id: "Healthy", label: "Healthy" },
+            { id: "Degraded", label: "Degraded" },
+            { id: "Down", label: "Down" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "State",
+        #width:&110.
+    ),
+    "cpu" => sparkline_column(
+        #history_seconds: f64:30.0,
+        #display_name: "CPU",
+        #width: &220.0
+    ),
+    "uptime" => progress_column(
+        #display_name: "Uptime",
+        #width: &180.0
+    ),
+    "action" => button_column(
+        #on_click: |#path: string, #value: Any|
+            last_action <- "[path]",
+        #display_name: "Action"
+    )
 };
 
 let controls = row(
@@ -157,7 +150,7 @@ let footer = row(
     #spacing: &10.0,
     &[
         text(&"Selected:"),
-        text(&"[selection]"),
+        text(&"[selection[0]$]"),
         text(&"  Last action:"),
         text(&"[last_action]")
     ]
@@ -173,8 +166,7 @@ let layout = column(
         controls,
         data_table(
             #column_types: &types,
-            #row_filter: &row_filter,
-            #sort_mode: &sort_mode,
+            #sort_by: &sort_by,
             #selection: &selection,
             #on_select: |#path: string| selection <- [path],
             #table: &tbl

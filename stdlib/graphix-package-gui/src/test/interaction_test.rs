@@ -457,37 +457,68 @@ async fn scrollable_on_scroll_produces_call() -> Result<()> {
 
 // ── MouseArea (additional callbacks) ────────────────────────────────
 
-// CR estokes: mouse area has multiple callbacks, therefore we can't technically
-// tell whether the right one is being called just by getting a Call message. To
-// properly test, we must use the pattern used in slider et al. Its true that in
-// some cases, due to the semantics expect_call would be sufficient, but for
-// example this is broken by on_move. So lets just use the non brittle pattern
-// uniformly. This applies to all the mouse area callbacks and all the keyboard
-// area callbacks
+// mouse_area has many callback slots, so a bare `expect_call` can't
+// tell which one fired (e.g. on_move would match the assertion even
+// when testing on_enter). Every callback test flips a graphix-side
+// variable only that specific handler could reach, then verifies the
+// variable's post-dispatch value — the same pattern slider uses.
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_enter_produces_call() -> Result<()> {
-    let mut h = harness("mouse_area(#on_enter: |_| null, &text(&\"Zone\"))").await?;
+    let code = format!(
+        "{IMPORTS};\n\
+         let entered = false;\n\
+         let result = mouse_area(\
+             #on_enter: |click| entered <- click ~ true, \
+             &text(&\"Zone\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::entered").await?;
+    assert_eq!(initial, Value::Bool(false));
     let msgs = h.move_cursor(WIDGET_HIT);
-    expect_call(&msgs);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::entered"), Some(&Value::Bool(true)));
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_exit_produces_call() -> Result<()> {
-    let mut h = harness("mouse_area(#on_exit: |_| null, &text(&\"Zone\"))").await?;
+    let code = format!(
+        "{IMPORTS};\n\
+         let exited = false;\n\
+         let result = mouse_area(\
+             #on_exit: |click| exited <- click ~ true, \
+             &text(&\"Zone\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::exited").await?;
+    assert_eq!(initial, Value::Bool(false));
     // Enter first, then exit
     h.move_cursor(WIDGET_HIT);
     let msgs = h.move_cursor(Point::new(999.0, 999.0));
-    expect_call(&msgs);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::exited"), Some(&Value::Bool(true)));
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_move_produces_call() -> Result<()> {
-    let mut h = harness("mouse_area(#on_move: |pos| null, &text(&\"Zone\"))").await?;
+    let code = format!(
+        "{IMPORTS};\n\
+         let moved = false;\n\
+         let result = mouse_area(\
+             #on_move: |pos| moved <- pos ~ true, \
+             &text(&\"Zone\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::moved").await?;
+    assert_eq!(initial, Value::Bool(false));
+    // Enter first so iced's on_enter arm is consumed — only subsequent
+    // cursor motion inside the bounds reaches the on_move arm.
+    h.move_cursor(Point::new(5.0, 5.0));
     let msgs = h.move_cursor(WIDGET_HIT);
-    expect_call(&msgs);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::moved"), Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -495,29 +526,40 @@ async fn mouse_area_on_move_produces_call() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
-    let mut h =
-        harness("keyboard_area(#on_key_press: |ev| null, &text(&\"Type here\"))").await?;
+    let code = format!(
+        "{IMPORTS};\n\
+         let pressed = false;\n\
+         let result = keyboard_area(\
+             #on_key_press: |ev| pressed <- ev ~ true, \
+             &text(&\"Type here\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::pressed").await?;
+    assert_eq!(initial, Value::Bool(false));
     // Click to focus the keyboard_area
     h.click(WIDGET_HIT);
     let msgs = h.press_key(iced_core::keyboard::key::Named::Space);
-    expect_call_with_args(&msgs, |args| {
-        // The argument should be a KeyEvent struct value
-        !args.is_empty()
-    });
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::pressed"), Some(&Value::Bool(true)));
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
-    let mut h =
-        harness("keyboard_area(#on_key_release: |ev| null, &text(&\"Type here\"))")
-            .await?;
+    let code = format!(
+        "{IMPORTS};\n\
+         let released = false;\n\
+         let result = keyboard_area(\
+             #on_key_release: |ev| released <- ev ~ true, \
+             &text(&\"Type here\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::released").await?;
+    assert_eq!(initial, Value::Bool(false));
     // Click to focus the keyboard_area
     h.click(WIDGET_HIT);
     let msgs = h.release_key(iced_core::keyboard::key::Named::Space);
-    expect_call_with_args(&msgs, |args| {
-        // The argument should be a KeyEvent struct value
-        !args.is_empty()
-    });
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::released"), Some(&Value::Bool(true)));
     Ok(())
 }

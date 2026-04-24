@@ -170,23 +170,6 @@ pub(crate) type Xor = CachedArgs<XorEv>;
 // ── Structural ─────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
-pub(crate) struct FlattenEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
-    const NAME: &str = "core_opt_flatten";
-    const NEEDS_CALLSITE: bool = false;
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        // Structural unions collapse [[T, null], null] to [T, null], so
-        // flatten is a no-op at the value level. Pass through for
-        // documentation / Rust parity.
-        from.0[0].clone()
-    }
-}
-
-pub(crate) type Flatten = CachedArgs<FlattenEv>;
-
-#[derive(Debug, Default)]
 pub(crate) struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
@@ -314,6 +297,33 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         event.variables.insert(self.x, v);
     }
 
+    /// Standard fire-and-forget tick used by map/flat_map/is_some_and/
+    /// is_none_or: a null input emits `on_null` directly without
+    /// invoking the callback; a non-null input is fed into `x` and the
+    /// callback's output (whenever it arrives) becomes the result.
+    /// `direct.or(inner)` is `direct` first because in the same cycle
+    /// both can produce, and the direct branch is always for the input
+    /// we just consumed.
+    fn tick_unary(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+        on_null: Value,
+    ) -> Option<Value> {
+        self.feed_callable(ctx, from, event);
+        let direct = match from[0].update(ctx, event) {
+            Some(Value::Null) => Some(on_null),
+            Some(v) => {
+                self.feed_x(ctx, event, v);
+                None
+            }
+            None => None,
+        };
+        let inner_out = self.inner.update(ctx, event);
+        direct.or(inner_out)
+    }
+
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.inner.sleep(ctx);
     }
@@ -368,17 +378,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
-            Some(Value::Null) => Some(Value::Null),
-            Some(v) => {
-                self.s.feed_x(ctx, event, v);
-                None
-            }
-            None => None,
-        };
-        let inner_out = self.s.inner.update(ctx, event);
-        direct.or(inner_out)
+        self.s.tick_unary(ctx, from, event, Value::Null)
     }
 
     fn typecheck(
@@ -437,17 +437,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
-            Some(Value::Null) => Some(Value::Null),
-            Some(v) => {
-                self.s.feed_x(ctx, event, v);
-                None
-            }
-            None => None,
-        };
-        let inner_out = self.s.inner.update(ctx, event);
-        direct.or(inner_out)
+        self.s.tick_unary(ctx, from, event, Value::Null)
     }
 
     fn typecheck(
@@ -501,10 +491,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self {
-            s: HofState::unary(ctx, typ, scope, top_id)?,
-            pending: None,
-        }))
+        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)?, pending: None }))
     }
 }
 
@@ -592,17 +579,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
-            Some(Value::Null) => Some(Value::Bool(false)),
-            Some(v) => {
-                self.s.feed_x(ctx, event, v);
-                None
-            }
-            None => None,
-        };
-        let inner_out = self.s.inner.update(ctx, event);
-        direct.or(inner_out)
+        self.s.tick_unary(ctx, from, event, Value::Bool(false))
     }
 
     fn typecheck(
@@ -661,17 +638,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
-            Some(Value::Null) => Some(Value::Bool(true)),
-            Some(v) => {
-                self.s.feed_x(ctx, event, v);
-                None
-            }
-            None => None,
-        };
-        let inner_out = self.s.inner.update(ctx, event);
-        direct.or(inner_out)
+        self.s.tick_unary(ctx, from, event, Value::Bool(true))
     }
 
     fn typecheck(
@@ -814,12 +781,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         // a non-null always emits a
         // a null with cached f emits that f
         // f update while a is null emits the new f
+        // a null without cached f stays silent — we have nothing to emit
+        // until f produces, at which point the f_up arm below fires
         if a_up {
-            match self.s.last_a.clone() {
-                Some(Value::Null) => {
-                    Some(self.s.last_f.clone().unwrap_or(Value::Null))
-                }
-                Some(v) => Some(v),
+            match &self.s.last_a {
+                Some(Value::Null) => self.s.last_f.clone(),
+                Some(v) => Some(v.clone()),
                 None => None,
             }
         } else if f_up && matches!(self.s.last_a, Some(Value::Null)) {
@@ -886,11 +853,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
         let wrap_err = |e: Value| Value::Error(triomphe::Arc::new(e));
         if a_up {
-            match self.s.last_a.clone() {
-                Some(Value::Null) => {
-                    Some(self.s.last_f.clone().map(wrap_err).unwrap_or(Value::Null))
-                }
-                Some(v) => Some(v),
+            match &self.s.last_a {
+                // a null without cached f stays silent until f produces.
+                Some(Value::Null) => self.s.last_f.clone().map(wrap_err),
+                Some(v) => Some(v.clone()),
                 None => None,
             }
         } else if f_up && matches!(self.s.last_a, Some(Value::Null)) {

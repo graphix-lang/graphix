@@ -108,6 +108,7 @@
     - [QR Code](./ui/gui/qr_code.md)
     - [Markdown](./ui/gui/markdown.md)
     - [Table](./ui/gui/table.md)
+    - [Data Table](./ui/gui/data_table.md)
     - [Menus](./ui/gui/menu.md)
 - [Packages](./packages/overview.md)
   - [Using Packages](./packages/using.md)

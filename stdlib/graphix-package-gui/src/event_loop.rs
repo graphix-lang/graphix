@@ -11,7 +11,7 @@ use crate::{
     convert,
     render::{GpuState, WindowSurface},
     types::SizeV,
-    widgets::Message,
+    widgets::{Message, MessageShell},
     window::{ResolvedWindow, TrackedWindow},
     ToGui,
 };
@@ -23,7 +23,7 @@ use iced_core::{clipboard, mouse, renderer::Style, window, Size};
 use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::wgpu;
 use log::error;
-use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx::publisher::Value;
 use poolshark::local::LPooled;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -118,10 +118,6 @@ fn mouse_interaction_to_cursor(interaction: mouse::Interaction) -> CursorIcon {
     }
 }
 
-/// During active resize, cap the render+configure rate to avoid
-/// saturating the GPU queue and accumulating latency.
-const RESIZE_RENDER_INTERVAL: Duration = Duration::from_millis(8);
-
 /// All GUI state, implementing winit's ApplicationHandler.
 struct GuiHandler<X: GXExt> {
     gx: GXHandle<X>,
@@ -134,10 +130,40 @@ struct GuiHandler<X: GXExt> {
     surfaces: FxHashMap<WindowId, WindowSurface>,
     ui_caches: FxHashMap<WindowId, user_interface::Cache>,
     clipboard: Clipboard,
-    resize_tx: mpsc::UnboundedSender<(WindowId, SizeV)>,
-    messages: Vec<Message>,
+    /// Proxy cloned into the resize-burst render timer tasks so they
+    /// can post `ToGui::ResizeTimer` back into the main loop when
+    /// their timer elapses.
+    resize_proxy: EventLoopProxy<ToGui>,
+    /// Channel into `resize_end_debounce`: receives the logical size
+    /// of every `Resized` event. The debounce task resets its timer
+    /// on each message and emits `ToGui::ResizeEnd` once the window
+    /// has been quiet for `RESIZE_END_DEBOUNCE`.
+    resize_end_tx: mpsc::UnboundedSender<(WindowId, SizeV)>,
+    /// Scratch buffer for `iced`-emitted messages. Drained each pass
+    /// of `about_to_wait` into a local `VecDeque`. Pooled so the
+    /// backing `Vec` is recycled across frames.
+    messages: LPooled<Vec<Message>>,
     modifiers: ModifiersState,
 }
+
+/// Render cadence during a resize drag (≈60 Hz). The timer is armed
+/// on the first `Resized` event of a burst and NOT reset by
+/// subsequent events — every ~16 ms we render the latest pending
+/// size so the UI appears to follow the drag without rendering on
+/// every cursor move. Measured at 83 Hz sustained on a slow
+/// development machine with the old unbounded scheme, so 60 Hz
+/// should stay comfortably inside the frame budget.
+const RESIZE_RENDER_PERIOD: Duration = Duration::from_millis(16);
+
+/// Time with no `Resized` events that counts as drag-end. Longer
+/// than `RESIZE_RENDER_PERIOD` so the debounce reliably outlasts
+/// the render cadence. When this elapses we write the final size
+/// to the runtime's size ref exactly once — doing so on every
+/// render-timer fire instead would cause request_inner_size
+/// feedback against stale `last_set_size` state, visible as the
+/// window continuing to resize seconds after the user releases
+/// the drag handle.
+const RESIZE_END_DEBOUNCE: Duration = Duration::from_millis(200);
 
 impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -159,14 +185,30 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 if let WindowEvent::Resized(size) = &event {
                     let scale = tw.window.scale_factor();
                     tw.pending_resize = Some((size.width, size.height, scale));
-                    tw.needs_redraw = true;
+                    if !tw.resize_timer_armed {
+                        tw.resize_timer_armed = true;
+                        let proxy = self.resize_proxy.clone();
+                        self.rt.spawn(async move {
+                            tokio::time::sleep(RESIZE_RENDER_PERIOD).await;
+                            let _ = proxy.send_event(ToGui::ResizeTimer(window_id));
+                        });
+                    }
                     let logical = size.to_logical::<f32>(scale);
-                    let _ = self.resize_tx.send((
+                    let _ = self.resize_end_tx.send((
                         window_id,
                         SizeV(Size::new(logical.width, logical.height)),
                     ));
                 } else if let WindowEvent::RedrawRequested = &event {
-                    tw.needs_redraw = true;
+                    // The OS pairs every `Resized` with a
+                    // `RedrawRequested`. Setting `needs_redraw`
+                    // here during a drag would fire one render per
+                    // resize frame, ignoring the 100 ms timer. While
+                    // a resize timer is armed, the timer is the
+                    // sole render driver; outside a burst, treat
+                    // `RedrawRequested` normally.
+                    if !tw.resize_timer_armed {
+                        tw.needs_redraw = true;
+                    }
                 } else {
                     let scale = tw.window.scale_factor();
                     let mut iced_events =
@@ -215,7 +257,34 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
                 event_loop.exit();
             }
-            ToGui::ResizeTimer(window_id, sz) => {
+            ToGui::ResizeTimer(window_id) => {
+                // Render cadence tick during a drag. Purely
+                // schedules a redraw — does NOT write to `tw.size`.
+                // The size ref is updated by `ResizeEnd` exactly
+                // once per drag so the runtime's echo can't race
+                // against a stream of intermediate sizes.
+                if let Some(&bid) = self.win_to_bid.get(&window_id) {
+                    if let Some(tw) = self.windows.get_mut(&bid) {
+                        tw.resize_timer_armed = false;
+                        if tw.pending_resize.is_some() {
+                            tw.needs_redraw = true;
+                        }
+                    }
+                }
+            }
+            ToGui::ResizeEnd(window_id, sz) => {
+                // Drag-end debounce fired: no `Resized` for
+                // `RESIZE_END_DEBOUNCE`. This is the only site that
+                // writes OS-driven size updates back into the
+                // graphix-level `tw.size` TRef — `ResizeTimer` and
+                // the in-render `ws.resize` deal with the iced
+                // viewport, which is independent of the graphix
+                // size ref that user code reactively reads. Firing
+                // once per burst (rather than once per render) also
+                // keeps `last_set_size`'s echo dedupe sound; more
+                // than one in-flight echo at a time and stale
+                // `size.set`s leak out as `request_inner_size`
+                // calls against the OS.
                 if let Some(&bid) = self.win_to_bid.get(&window_id) {
                     if let Some(tw) = self.windows.get_mut(&bid) {
                         if tw.size.t.as_ref() != Some(&sz) {
@@ -224,9 +293,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                                 error!("failed to set window size: {e:?}");
                             }
                         }
-                        tw.push_event(iced_core::Event::Window(
-                            iced_core::window::Event::Resized(sz.0),
-                        ));
+                        tw.needs_redraw = true;
                     }
                 }
             }
@@ -274,11 +341,16 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 continue;
             }
             let win_id = tw.window_id();
-            // During resize, throttle the entire render+configure cycle
+            // Cap render rate while `pending_resize` is Some. In
+            // normal drags the `ResizeTimer` cadence already limits
+            // us to one render per `RESIZE_RENDER_PERIOD`; this is a
+            // backstop for the edge case where an event slips
+            // through the arm guard (e.g. a widget animation
+            // firing `shell.request_redraw()` mid-drag).
             if tw.pending_resize.is_some() {
                 let elapsed = tw.last_render.elapsed();
-                if elapsed < RESIZE_RENDER_INTERVAL {
-                    let wake = tw.last_render + RESIZE_RENDER_INTERVAL;
+                if elapsed < RESIZE_RENDER_PERIOD {
+                    let wake = tw.last_render + RESIZE_RENDER_PERIOD;
                     deferred_until = Some(deferred_until.map_or(wake, |d| d.min(wake)));
                     continue;
                 }
@@ -372,96 +444,33 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
             }
         }
-
-        for msg in self.messages.drain(..) {
+        // Drain messages by dispatching each one through each
+        // window's widget tree via `on_message`. Widgets that need
+        // to emit follow-ups (e.g. a `Call` from a column-resize
+        // drag tick) publish through the shell, which we feed back
+        // into the queue. `Call` is the one message the event loop
+        // handles directly — there's no widget to forward it to;
+        // it's just a side-effect on the graphix runtime.
+        // `VecDeque` + `pop_front` preserves FIFO order (matches the
+        // original `Vec::drain(..)` semantics). LIFO would reorder
+        // dependent messages (e.g. CellEdit → CellEditSubmit).
+        let mut pending: std::collections::VecDeque<Message> =
+            self.messages.drain(..).collect();
+        while let Some(msg) = pending.pop_front() {
             match msg {
                 Message::Nop => {}
-                Message::CellClick(row, col) => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_cell_click(row, col.clone());
-                    }
-                }
-                Message::CellEdit(row, col) => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_cell_edit(row, col.clone());
-                    }
-                }
-                Message::CellEditInput(text) => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_cell_edit_input(text.clone());
-                    }
-                }
-                Message::CellEditSubmit => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_cell_edit_submit();
-                    }
-                }
-                Message::CellEditCancel => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_cell_edit_cancel();
-                    }
-                }
-                Message::ColumnResizeStart(ci) => {
-                    for tw in self.windows.values_mut() {
-                        let x = tw.cursor_position.x;
-                        if tw.content.handle_column_resize_start(ci, x) {
-                            tw.needs_redraw = true;
-                        }
-                    }
-                }
-                Message::ColumnResizeMove(x) => {
-                    // Fires on every cursor move over the table.
-                    // Only act on it when a drag is in progress; the
-                    // is_column_resizing check filters the no-op case.
-                    for tw in self.windows.values_mut() {
-                        if !tw.content.is_column_resizing() {
-                            continue;
-                        }
-                        if let Some((cid, w)) =
-                            tw.content.handle_mouse_move_resize(x)
-                        {
-                            if let Err(e) = self.gx.call(
-                                cid,
-                                ValArray::from_iter([Value::F64(w)]),
-                            ) {
-                                error!("on_resize call failed: {e:?}");
-                            }
-                        }
-                        tw.needs_redraw = true;
-                    }
-                }
-                Message::ColumnResizeEnd => {
-                    for tw in self.windows.values_mut() {
-                        if tw.content.handle_column_resize_end() {
-                            tw.needs_redraw = true;
-                        }
-                    }
-                }
-                Message::TableKey(action) => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_table_key(&action);
-                    }
-                }
-                Message::Scroll(v, h, vp_w, vp_h) => {
-                    for tw in self.windows.values_mut() {
-                        tw.content.handle_scroll(v, h, vp_w, vp_h);
-                    }
-                }
                 Message::Call(id, args) => {
                     if let Err(e) = self.gx.call(id, args) {
                         error!("failed to call: {e:?}");
                     }
                 }
-                Message::EditorAction(id, action) => {
+                other => {
                     for tw in self.windows.values_mut() {
-                        if let Some((callable_id, v)) = tw.editor_action(id, &action) {
-                            if let Err(e) =
-                                self.gx.call(callable_id, ValArray::from_iter([v]))
-                            {
-                                error!("failed to call editor callback: {e:?}");
-                            }
-                            break;
+                        let mut shell = MessageShell::new(tw.cursor_position);
+                        if tw.content.on_message(&other, &mut shell) {
+                            tw.needs_redraw = true;
                         }
+                        pending.extend(shell.out.drain(..));
                     }
                 }
             }
@@ -496,9 +505,10 @@ pub(crate) fn run<X: GXExt>(
     let proxy = event_loop.create_proxy();
     let _ = crate::REDRAW_WAKER.set(crate::RedrawWaker::new(proxy.clone()));
     let _ = proxy_tx.send(proxy);
-    let (resize_tx, resize_rx) = mpsc::unbounded_channel();
-    let debounce_proxy = event_loop.create_proxy();
-    rt.spawn(resize_debounce(resize_rx, debounce_proxy));
+    let resize_proxy = event_loop.create_proxy();
+    let (resize_end_tx, resize_end_rx) = mpsc::unbounded_channel();
+    let resize_end_proxy = event_loop.create_proxy();
+    rt.spawn(resize_end_debounce(resize_end_rx, resize_end_proxy));
     let mut handler = GuiHandler {
         gx,
         root_exp,
@@ -510,8 +520,9 @@ pub(crate) fn run<X: GXExt>(
         surfaces: FxHashMap::default(),
         ui_caches: FxHashMap::default(),
         clipboard: Clipboard::new(),
-        resize_tx,
-        messages: Vec::new(),
+        resize_proxy,
+        resize_end_tx,
+        messages: LPooled::take(),
         modifiers: ModifiersState::default(),
     };
     if let Err(e) = event_loop.run_app(&mut handler) {
@@ -519,9 +530,13 @@ pub(crate) fn run<X: GXExt>(
     }
 }
 
-/// Debounce resize events: collect per-window sizes and only forward
-/// to the event loop 100ms after the last resize for that window.
-async fn resize_debounce(
+/// Debounces `Resized` events per window. On each message, records
+/// the latest size and (re)sets a timer to `RESIZE_END_DEBOUNCE`.
+/// When the timer elapses with no new messages, fires exactly one
+/// `ToGui::ResizeEnd` carrying the last seen size. This is what
+/// makes the runtime's size ref update fire once at drag-end rather
+/// than N times during the drag.
+async fn resize_end_debounce(
     mut rx: mpsc::UnboundedReceiver<(WindowId, SizeV)>,
     proxy: EventLoopProxy<ToGui>,
 ) {
@@ -532,18 +547,16 @@ async fn resize_debounce(
     let mut pending: FxHashMap<WindowId, SizeV> = FxHashMap::default();
     loop {
         tokio::select! {
-            msg = rx.recv() => {
-                match msg {
-                    Some((wid, sz)) => {
-                        pending.insert(wid, sz);
-                        timer.as_mut().reset(Instant::now() + Duration::from_millis(100));
-                    }
-                    None => break,
+            msg = rx.recv() => match msg {
+                Some((wid, sz)) => {
+                    pending.insert(wid, sz);
+                    timer.as_mut().reset(Instant::now() + RESIZE_END_DEBOUNCE);
                 }
-            }
+                None => break,
+            },
             _ = &mut timer => {
                 for (wid, sz) in pending.drain() {
-                    let _ = proxy.send_event(ToGui::ResizeTimer(wid, sz));
+                    let _ = proxy.send_event(ToGui::ResizeEnd(wid, sz));
                 }
                 timer.as_mut().reset(far());
             }

@@ -1,11 +1,11 @@
-use super::{GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, IcedElement, Message, MessageShell};
 use crate::types::{FontV, PaddingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget::{self as widget, text_editor};
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
 
 /// Multi-line text editor widget. Editable when on_edit callback is provided.
@@ -140,22 +140,40 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         te.into()
     }
 
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        if id != self.content_ref.r.id {
-            return None;
-        }
-        self.content.perform(action.clone());
-        if action.is_edit() {
-            if let Some(callable) = &self.on_edit_callable {
-                let text = self.content.text();
-                self.last_set_text = Some(text.clone());
-                return Some((callable.id(), Value::String(text.into())));
+    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
+        match msg {
+            Message::EditorAction(id, action) => {
+                if *id != self.content_ref.r.id {
+                    return false;
+                }
+                self.content.perform(action.clone());
+                if action.is_edit() {
+                    if let Some(callable) = &self.on_edit_callable {
+                        let text = self.content.text();
+                        self.last_set_text = Some(text.clone());
+                        shell.publish(Message::Call(
+                            callable.id(),
+                            ValArray::from_iter([Value::String(text.into())]),
+                        ));
+                    }
+                }
+                true
             }
+            // Variants `text_editor` does not handle — enumerated
+            // exhaustively so a new `Message` variant forces a
+            // deliberate decision here.
+            Message::Nop
+            | Message::Call(..)
+            | Message::Scroll(..)
+            | Message::CellClick(..)
+            | Message::CellEdit(..)
+            | Message::CellEditInput(..)
+            | Message::CellEditSubmit
+            | Message::CellEditCancel
+            | Message::ColumnResizeStart(..)
+            | Message::ColumnResizeMove(..)
+            | Message::ColumnResizeEnd
+            | Message::TableKey(..) => false,
         }
-        None
     }
 }

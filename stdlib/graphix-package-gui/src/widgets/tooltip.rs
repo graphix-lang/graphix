@@ -3,7 +3,7 @@ use crate::types::TooltipPositionV;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -73,17 +73,6 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
         );
         update_child!(self, rt, id, v, changed, tip_ref, tip, "tooltip tip recompile");
         Ok(changed)
-    }
-
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        if let some @ Some(_) = self.child.editor_action(id, action) {
-            return some;
-        }
-        self.tip.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {

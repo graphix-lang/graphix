@@ -3,7 +3,7 @@ use crate::types::{HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use smallvec::SmallVec;
@@ -152,24 +152,24 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         Ok(changed)
     }
 
-    fn editor_action(
+    fn on_message(
         &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
+        msg: &super::Message,
+        shell: &mut super::MessageShell,
+    ) -> bool {
+        // `table` has two child groups (header row + data cells) that
+        // don't fit a single `&mut [GuiW<X>]`, so we forward manually
+        // instead of implementing `children_mut`.
+        let mut changed = false;
         for col in &mut self.columns {
-            if let some @ Some(_) = col.header.editor_action(id, action) {
-                return some;
-            }
+            changed |= col.header.on_message(msg, shell);
         }
         for row in &mut self.cells {
             for cell in row {
-                if let some @ Some(_) = cell.editor_action(id, action) {
-                    return some;
-                }
+                changed |= cell.on_message(msg, shell);
             }
         }
-        None
+        changed
     }
 
     fn view(&self) -> IcedElement<'_> {

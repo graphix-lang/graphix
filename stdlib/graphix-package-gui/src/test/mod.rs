@@ -8,7 +8,7 @@ use poolshark::global::GPooled;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::widgets::{self, GuiW, Message};
+use crate::widgets::{self, GuiW, Message, MessageShell};
 
 mod canvas_test;
 mod chart_test;
@@ -74,8 +74,6 @@ impl GuiTestHarness {
             .context("compile widget tree")?;
 
         let rt_handle = tokio::runtime::Handle::current();
-
-        let mut widget = widget;
 
         Ok(Self {
             _ctx: ctx,
@@ -155,42 +153,29 @@ impl GuiTestHarness {
     /// tests see the same effects as production. Drains resulting
     /// reactive updates at the end.
     async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
-        for msg in msgs {
+        // Mirror the event loop: `Call` hits the graphix runtime
+        // directly, everything else goes through `on_message` and
+        // any follow-up messages the shell emits are fed back in.
+        // FIFO (same as the real event loop) so message ordering
+        // like CellEdit → CellEditSubmit is preserved.
+        let mut pending: std::collections::VecDeque<Message> = msgs.iter().cloned().collect();
+        while let Some(msg) = pending.pop_front() {
             match msg {
                 Message::Nop => {}
                 Message::Call(id, args) => {
-                    self.gx.call(*id, args.clone())?;
+                    self.gx.call(id, args)?;
                 }
-                Message::CellClick(row, col) => {
-                    self.widget.handle_cell_click(*row, col.clone());
-                }
-                Message::CellEdit(row, col) => {
-                    self.widget.handle_cell_edit(*row, col.clone());
-                }
-                Message::CellEditInput(text) => {
-                    self.widget.handle_cell_edit_input(text.clone());
-                }
-                Message::CellEditSubmit => {
-                    self.widget.handle_cell_edit_submit();
-                }
-                Message::CellEditCancel => {
-                    self.widget.handle_cell_edit_cancel();
-                }
-                Message::TableKey(action) => {
-                    self.widget.handle_table_key(action);
-                }
-                Message::Scroll(v, h, vp_w, vp_h) => {
-                    self.widget.handle_scroll(*v, *h, *vp_w, *vp_h);
-                }
-                // These are host-handled in production; tests that care
-                // invoke the widget handler methods directly.
+                // ColumnResize messages are host-handled in production
+                // (the event loop snapshots the cursor position before
+                // dispatch); tests that care invoke widget helpers
+                // directly.
                 Message::ColumnResizeStart(_)
                 | Message::ColumnResizeMove(_)
                 | Message::ColumnResizeEnd => {}
-                Message::EditorAction(id, action) => {
-                    if let Some((cid, v)) = self.widget.editor_action(*id, action) {
-                        self.gx.call(cid, ValArray::from_iter([v]))?;
-                    }
+                other => {
+                    let mut shell = MessageShell::new(iced_core::Point::ORIGIN);
+                    self.widget.on_message(&other, &mut shell);
+                    pending.extend(shell.out.drain(..));
                 }
             }
         }
@@ -214,6 +199,38 @@ impl GuiTestHarness {
         self.widget.before_view()
     }
 
+    /// Drain + before_view in a loop until `pred(self)` returns true
+    /// or `within` elapses. Panics on timeout with a diagnostic
+    /// message — preferred to the fragile manual `for _ in 0..N`
+    /// polling pattern because a missed condition produces a clear
+    /// failure instead of falling through to an assertion that
+    /// doesn't know polling was involved. Every iteration flushes
+    /// both the runtime queue and the widget's `before_view` hooks,
+    /// so tests see the same state a redraw would.
+    #[allow(dead_code)]
+    async fn wait_until<F>(&mut self, mut pred: F, within: Duration, why: &str) -> Result<()>
+    where
+        F: FnMut(&mut Self) -> bool,
+    {
+        let deadline = tokio::time::Instant::now() + within;
+        let mut iters = 0;
+        loop {
+            self.drain().await?;
+            self.before_view();
+            iters += 1;
+            if pred(self) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "wait_until timed out after {iters} iterations / {:?}: {why}",
+                    within,
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// Get a DataTableSnapshot from the widget, if it is a data table.
     fn dt_snapshot(&self) -> crate::widgets::DataTableSnapshot {
         self.widget
@@ -229,6 +246,16 @@ impl GuiTestHarness {
         self.widget
             .as_any()
             .downcast_ref::<crate::widgets::data_table::DataTableW<NoExt>>()
+            .expect("widget is not a DataTableW")
+    }
+
+    /// Mutable downcast to `DataTableW<NoExt>` — needed by tests that
+    /// call the widget's `handle_*` helpers (kept as inherent methods
+    /// after `on_message` became the trait entry point).
+    fn dt_mut(&mut self) -> &mut crate::widgets::data_table::DataTableW<NoExt> {
+        self.widget
+            .as_any_mut()
+            .downcast_mut::<crate::widgets::data_table::DataTableW<NoExt>>()
             .expect("widget is not a DataTableW")
     }
 
@@ -592,17 +619,26 @@ impl InteractionHarness {
         self.process_events(&[Event::Mouse(mouse::Event::CursorMoved { position: pos })])
     }
 
-    /// Route `Message::EditorAction` messages through the widget's
-    /// `editor_action` method and collect the callback results.
+    /// Drive `Message::EditorAction` messages through the widget's
+    /// `on_message` and collect the `Call` messages the editor
+    /// publishes. The matching editor widget publishes a single
+    /// `Message::Call(callable_id, [value])` per edit.
     fn process_editor_actions(&mut self, msgs: &[Message]) -> Vec<(CallableId, Value)> {
-        msgs.iter()
-            .filter_map(|m| match m {
-                Message::EditorAction(id, action) => {
-                    self.inner.widget.editor_action(*id, action)
+        let mut out = Vec::new();
+        for m in msgs {
+            if let Message::EditorAction(_, _) = m {
+                let mut shell = MessageShell::new(Point::ORIGIN);
+                self.inner.widget.on_message(m, &mut shell);
+                for emitted in shell.out.drain(..) {
+                    if let Message::Call(cid, args) = emitted {
+                        if let Some(v) = args.into_iter().next() {
+                            out.push((cid, v));
+                        }
+                    }
                 }
-                _ => None,
-            })
-            .collect()
+            }
+        }
+        out
     }
 
     fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {

@@ -4,7 +4,7 @@ use super::{compile, GuiW, GuiWidget, IcedElement};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{CallableId, GXExt, GXHandle, Ref};
+use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
 use tokio::try_join;
 
@@ -107,14 +107,6 @@ impl<X: GXExt> GuiWidget<X> for ContextMenuW<X> {
             }
         }
         Ok(changed)
-    }
-
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        self.child.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {

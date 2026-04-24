@@ -4,7 +4,7 @@ use super::{
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
+use graphix_rt::{Callable, GXExt, GXHandle, Ref};
 use iced_core::keyboard;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
@@ -124,14 +124,6 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
             "keyboard_area on_key_release recompile"
         );
         Ok(changed)
-    }
-
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        self.child.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {

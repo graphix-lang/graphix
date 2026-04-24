@@ -3,7 +3,7 @@ use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use tokio::try_join;
@@ -81,14 +81,6 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
             "container child recompile"
         );
         Ok(changed)
-    }
-
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        self.child.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {

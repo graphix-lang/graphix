@@ -15,7 +15,6 @@ use netidx::publisher::Value;
 use std::{marker::PhantomData, sync::LazyLock};
 use tokio::sync::oneshot;
 use triomphe::Arc;
-use types::SizeV;
 use winit::{event_loop::EventLoopProxy, window::WindowId};
 
 mod clipboard;
@@ -32,7 +31,21 @@ mod test;
 
 pub(crate) enum ToGui {
     Update(ExprId, Value),
-    ResizeTimer(WindowId, SizeV),
+    /// Fires once per resize burst, 100ms after the first `Resized`
+    /// event in the burst. The payload carries only the `WindowId`;
+    /// the event loop reads the most recent size from the window's
+    /// `pending_resize` slot rather than passing it through here.
+    /// Used purely to schedule renders during a drag — never touches
+    /// the graphix size ref (see `ResizeEnd`).
+    ResizeTimer(WindowId),
+    /// Fires once after a resize *burst* ends: the window has not
+    /// received a `Resized` event for `RESIZE_END_DEBOUNCE`. Carries
+    /// the final logical size the runtime's size ref should be set
+    /// to. Separate from `ResizeTimer` so that writing back to the
+    /// size ref — which echoes through the runtime and may trigger
+    /// a feedback `request_inner_size` — happens exactly once per
+    /// drag, not 10x/sec.
+    ResizeEnd(WindowId, crate::types::SizeV),
     /// Wake the winit event loop so it runs its `about_to_wait`
     /// render pass, picking up any widget state that was mutated
     /// outside the iced event cycle (e.g. a netidx subscription
