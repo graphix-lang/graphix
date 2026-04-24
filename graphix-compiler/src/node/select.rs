@@ -29,6 +29,7 @@ pub struct Select<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> Select<R, E> {
     /// Build a `Select` node from an already-compiled scrutinee
     /// expression and a vector of (pattern, arm body) pairs.
+    #[allow(dead_code)]
     pub fn new(
         arg: Node<R, E>,
         arms: Vec<(PatternNode<R, E>, Node<R, E>)>,

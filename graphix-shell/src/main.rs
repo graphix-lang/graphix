@@ -424,6 +424,12 @@ fn handle_compile(
     use std::fs;
     use std::fmt::Write as _;
 
+    // Pipe log::info! (e.g. fusion skip reasons) to stderr when the
+    // user opts in via RUST_LOG. Failure here is never fatal — a
+    // quiet compile is still a correct compile.
+    let _ = Logger::try_with_env_or_str("warn")
+        .and_then(|l| l.log_to_stderr().start());
+
     // Verification step: typecheck the program before any fusion.
     // `check_with_types` runs the real graphix typechecker (same
     // one the interpreter uses at runtime) and returns both the
@@ -462,7 +468,8 @@ fn handle_compile(
     // kernel / constant registries.
     let mut rewritten: Vec<Expr> = exprs.iter().cloned().collect();
     for e in &mut rewritten {
-        fusion::rewrite_program_with_state(e, &prefix, &mut state);
+        fusion::rewrite_program_with_state(e, &prefix, &mut state)
+            .context("fusion rejected the program")?;
     }
     let kernels = state.kernels;
     println!("Fused {} lambda(s).", kernels.len());

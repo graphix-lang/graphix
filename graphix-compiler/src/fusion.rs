@@ -1680,10 +1680,10 @@ pub struct FusedKernel {
 pub fn rewrite_program(
     expr: &mut Expr,
     package_prefix: &str,
-) -> Vec<FusedKernel> {
+) -> anyhow::Result<Vec<FusedKernel>> {
     let mut state = RewriteState::new();
-    rewrite_program_with_state(expr, package_prefix, &mut state);
-    state.kernels
+    rewrite_program_with_state(expr, package_prefix, &mut state)?;
+    Ok(state.kernels)
 }
 
 /// State carried across multiple `rewrite_program_with_state` calls so
@@ -1703,10 +1703,10 @@ pub struct RewriteState {
     /// in the program, keyed by ExprId. Populated by the compile()
     /// pipeline and consulted by the rewrite pass to drive codegen
     /// against real typechecker output (arg types, return types, HOF
-    /// callback signatures) instead of ad-hoc heuristics. Empty when
-    /// `rewrite_program` is called from a test or from a caller that
-    /// hasn't wired up the full typecheck — in which case the pass
-    /// falls back to the old heuristics.
+    /// callback signatures). Empty when `rewrite_program` is called
+    /// from a test or a caller that hasn't wired up the full
+    /// typecheck — in which case unannotated callback lambdas stay
+    /// unannotated and can't be fused.
     pub fn_types: fxhash::FxHashMap<crate::expr::ExprId, crate::typ::FnType>,
 }
 
@@ -1732,7 +1732,7 @@ pub fn rewrite_program_with_state(
     expr: &mut Expr,
     package_prefix: &str,
     state: &mut RewriteState,
-) {
+) -> anyhow::Result<()> {
     let fn_types = state.fn_types.clone();
     rewrite_walk(
         expr,
@@ -1742,7 +1742,7 @@ pub fn rewrite_program_with_state(
         &mut state.consts,
         &mut state.counter,
         &fn_types,
-    );
+    )
 }
 
 fn rewrite_walk(
@@ -1753,10 +1753,21 @@ fn rewrite_walk(
     consts: &mut std::collections::BTreeMap<ArcStr, KnownConst>,
     counter: &mut u32,
     fn_types: &fxhash::FxHashMap<crate::expr::ExprId, crate::typ::FnType>,
-) {
+) -> anyhow::Result<()> {
     // Helper: try to fuse a lambda bound to `name`. On success, mutate
     // the lambda in-place so its body becomes an Either::Right builtin
-    // reference and push a FusedKernel into `kernels`.
+    // reference and push a FusedKernel into `kernels`. On failure, we
+    // distinguish two cases:
+    //
+    // - The typechecker left an unresolved TVar somewhere in the
+    //   lambda's FnType — the user can fix this by adding an explicit
+    //   type annotation. In AOT mode we bail so the user finds out;
+    //   silently running their "fast" program in the interpreter is
+    //   exactly the surprise `compile` is supposed to eliminate.
+    //
+    // - The body has concrete but non-primitive types, reactive
+    //   constructs, or other constructs the emitter doesn't handle.
+    //   Not user-fixable — log::info and move on.
     fn try_rewrite_bind(
         name: &ArcStr,
         lambda_expr: &mut Expr,
@@ -1766,14 +1777,14 @@ fn rewrite_walk(
         consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
         counter: &mut u32,
         fn_types: &fxhash::FxHashMap<crate::expr::ExprId, crate::typ::FnType>,
-    ) {
+    ) -> anyhow::Result<()> {
         use netidx::utils::Either;
         let ExprKind::Lambda(lambda_arc) = &mut lambda_expr.kind else {
-            return;
+            return Ok(());
         };
         // Already a builtin shim — nothing to do.
         if matches!(&lambda_arc.body, Either::Right(_)) {
-            return;
+            return Ok(());
         }
         *counter += 1;
         let n = *counter;
@@ -1799,7 +1810,6 @@ fn rewrite_walk(
             known,
             consts,
         ) {
-            None => {}
             Some((src, signature)) => {
                 // Replace the body with the builtin reference. Since
                 // LambdaExpr is inside a triomphe::Arc, we need to
@@ -1821,6 +1831,38 @@ fn rewrite_walk(
                     fn_name: name.to_string(),
                     rust_source: src,
                 });
+                Ok(())
+            }
+            None => {
+                // For anonymous callback lambdas the rewriter synthesizes
+                // `anon<ExprId>` as the name — useless for a user-facing
+                // error. Strip it so source position does all the talking.
+                let pretty = if name.starts_with("anon") {
+                    compact_str::format_compact!("anonymous lambda")
+                } else {
+                    compact_str::format_compact!("lambda `{name}`")
+                };
+                if let Some(ft) = fn_types.get(&lambda_expr.id) {
+                    if let Some(pos) = fntype_first_unresolved(ft) {
+                        let src_pos = lambda_expr.pos;
+                        anyhow::bail!(
+                            "fusion: {pretty} at line {}, column {} can't be \
+                             compiled to native code — {pos} is an unresolved type \
+                             variable. Add an explicit type annotation so the AOT \
+                             emitter can pin the type.",
+                            src_pos.line,
+                            src_pos.column
+                        );
+                    }
+                }
+                log::info!(
+                    "fusion: skipping {pretty} at line {}, column {} — body \
+                     uses constructs the emitter doesn't handle; it will run in the \
+                     interpreter",
+                    lambda_expr.pos.line,
+                    lambda_expr.pos.column
+                );
+                Ok(())
             }
         }
     }
@@ -1830,7 +1872,7 @@ fn rewrite_walk(
             let arc = exprs;
             let mut tmp: Vec<Expr> = arc.iter().cloned().collect();
             for e in &mut tmp {
-                rewrite_walk(e, prefix, kernels, known, consts, counter, fn_types);
+                rewrite_walk(e, prefix, kernels, known, consts, counter, fn_types)?;
             }
             *arc = triomphe::Arc::from_iter(tmp);
         }
@@ -1847,7 +1889,7 @@ fn rewrite_walk(
                     consts,
                     counter,
                     fn_types,
-                );
+                )?;
             }
             rewrite_walk(
                 &mut bind_inner.value,
@@ -1857,38 +1899,33 @@ fn rewrite_walk(
                 consts,
                 counter,
                 fn_types,
-            );
+            )?;
         }
         ExprKind::Module { value, .. } => match value {
             crate::expr::ModuleKind::Resolved { exprs, .. } => {
                 let mut tmp: Vec<Expr> = exprs.iter().cloned().collect();
                 for e in &mut tmp {
-                    rewrite_walk(e, prefix, kernels, known, consts, counter, fn_types);
+                    rewrite_walk(e, prefix, kernels, known, consts, counter, fn_types)?;
                 }
                 *exprs = triomphe::Arc::from_iter(tmp);
             }
             crate::expr::ModuleKind::Dynamic { source, .. } => {
                 let source_mut = triomphe::Arc::make_mut(source);
-                rewrite_walk(source_mut, prefix, kernels, known, consts, counter, fn_types);
+                rewrite_walk(source_mut, prefix, kernels, known, consts, counter, fn_types)?;
             }
             crate::expr::ModuleKind::Unresolved { .. } => {}
         },
         ExprKind::Apply(a) => {
             // Descend into call args to find anonymous callback
             // lambdas (e.g. `array::init(n, |idx| <body>)`). The
-            // primary type source is the typechecker-derived
-            // `fn_types` map: look up this Apply's ExprId to get
-            // the callee's resolved FnType, then read the expected
-            // arg type of any position that holds a lambda. The
-            // legacy `known_hof_callback_args` table is kept as a
-            // fallback for callers that didn't populate fn_types
-            // (e.g. the standalone `emit_function_kernel` API).
+            // only type source is the typechecker-derived `fn_types`
+            // map: look up this Apply's ExprId to get the callee's
+            // resolved FnType, then read the expected arg type of
+            // any position that holds a lambda. If no fn_types entry
+            // exists (caller didn't populate the map), the lambda
+            // stays unannotated and will fail to fuse later.
             let apply_id = expr.id;
             let apply_fn_type = fn_types.get(&apply_id).cloned();
-            let fallback_hof_sig = match &a.function.kind {
-                ExprKind::Ref { name } => known_hof_callback_args(name),
-                _ => None,
-            };
             // (Optional trace: set GRAPHIX_FUSION_DEBUG=1 to see
             // which Apply sites have fn_types entries. Useful when
             // an expected fusion doesn't happen — the typechecker
@@ -1913,14 +1950,8 @@ fn rewrite_walk(
                 a.args.iter().cloned().collect();
             for (idx, (_label, arg)) in new_args.iter_mut().enumerate() {
                 if let ExprKind::Lambda(_) = &arg.kind {
-                    // Inject missing arg type annotations for the
-                    // callback. Prefer the typechecker's view — it's
-                    // always up to date and handles polymorphic
-                    // instantiation the hand-rolled table can't.
                     if let Some(ft) = &apply_fn_type {
                         inject_lambda_arg_types_from_fntype(arg, idx, ft);
-                    } else if let Some(cb_args) = fallback_hof_sig {
-                        inject_lambda_arg_types(arg, idx, cb_args);
                     }
                     let synth_name =
                         ArcStr::from(format!("anon{}", arg.id.inner()).as_str());
@@ -1933,13 +1964,13 @@ fn rewrite_walk(
                         consts,
                         counter,
                         fn_types,
-                    );
+                    )?;
                 }
-                rewrite_walk(arg, prefix, kernels, known, consts, counter, fn_types);
+                rewrite_walk(arg, prefix, kernels, known, consts, counter, fn_types)?;
             }
             a.args = triomphe::Arc::from_iter(new_args);
             let fn_mut = triomphe::Arc::make_mut(&mut a.function);
-            rewrite_walk(fn_mut, prefix, kernels, known, consts, counter, fn_types);
+            rewrite_walk(fn_mut, prefix, kernels, known, consts, counter, fn_types)?;
         }
         _ => {
             // We don't descend into every ExprKind variant. The
@@ -1947,6 +1978,7 @@ fn rewrite_walk(
             // level; everything else can wait.
         }
     }
+    Ok(())
 }
 
 fn sanitize(s: &str) -> String {
@@ -1955,88 +1987,11 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// **LEGACY FALLBACK**. Superseded by the typechecker-derived
-/// `fn_types` map threaded through `RewriteState::with_fn_types`.
-/// The production `graphix compile` path populates fn_types via the
-/// in-process typecheck and never consults this table; it's kept
-/// only to keep in-library tests passing for callers that invoke
-/// `rewrite_program()` directly without first running the real
-/// typechecker (which has no HOF knowledge of its own).
-///
-/// Hardcoded signatures for the HOFs we know about in the stdlib.
-/// For each known HOF, we record the callback's expected arg types
-/// (not the HOF's own args). `None` in the list means "don't inject
-/// anything for that arg" (used for polymorphic positions we can't
-/// pin without the rest of the type inference machinery).
-///
-/// Each entry is a promise we uphold even when the underlying stdlib
-/// signature changes — a wrong entry here silently produces wrong
-/// code. Another reason to prefer the typechecker-derived path.
-fn known_hof_callback_args(
-    path: &crate::expr::ModPath,
-) -> Option<&'static [Option<PrimType>]> {
-    const INIT_ARGS: &[Option<PrimType>] = &[Some(PrimType::I64)];
-    const FOLD_ARGS: &[Option<PrimType>] = &[None, None];
-    const MAP_ARGS: &[Option<PrimType>] = &[None];
-    // ModPath's Display impl emits the netidx-path parts joined with
-    // `::`. Match against that — simplest lookup that survives across
-    // stdlib path-format tweaks.
-    let s = path.to_string();
-    match s.as_str() {
-        "array::init" => Some(INIT_ARGS),
-        "array::fold" => Some(FOLD_ARGS),
-        "array::map" => Some(MAP_ARGS),
-        _ => None,
-    }
-}
-
-/// Inject type annotations into a lambda's argspec from the given
-/// callback signature. Only fills in missing (`constraint: None`)
-/// entries — explicit user annotations are left alone.
-fn inject_lambda_arg_types(
-    lambda_expr: &mut Expr,
-    _arg_position: usize,
-    callback_args: &[Option<PrimType>],
-) {
-    let ExprKind::Lambda(lambda_arc) = &mut lambda_expr.kind else {
-        return;
-    };
-    // Each callback arg type needs to be turned into a graphix
-    // `Type::Primitive(flag)` set to the single primitive variant.
-    let needs_patch = lambda_arc
-        .args
-        .iter()
-        .zip(callback_args.iter())
-        .any(|(a, hint)| a.constraint.is_none() && hint.is_some());
-    if !needs_patch {
-        return;
-    }
-    let mut new_args: Vec<crate::expr::Arg> = lambda_arc.args.iter().cloned().collect();
-    for (a, hint) in new_args.iter_mut().zip(callback_args.iter()) {
-        if a.constraint.is_some() {
-            continue;
-        }
-        let Some(prim) = hint else {
-            continue;
-        };
-        a.constraint = Some(prim_type_to_graphix(*prim));
-    }
-    let new_lambda = crate::expr::LambdaExpr {
-        args: triomphe::Arc::from_iter(new_args),
-        vargs: lambda_arc.vargs.clone(),
-        rtype: lambda_arc.rtype.clone(),
-        constraints: lambda_arc.constraints.clone(),
-        throws: lambda_arc.throws.clone(),
-        body: lambda_arc.body.clone(),
-    };
-    *lambda_arc = triomphe::Arc::new(new_lambda);
-}
-
 /// Inject argument types from a real typechecker-derived FnType into
-/// a callback lambda that was missing type annotations. Mirrors
-/// `inject_lambda_arg_types` but reads from FnType directly rather
-/// than a hardcoded table, so it tracks whatever the typechecker
-/// actually decided (including polymorphic instantiation).
+/// a callback lambda that was missing type annotations. Reads the
+/// outer HOF's arg type at `arg_position` — which should itself be a
+/// function type — and copies its arg types onto the lambda's argspec
+/// wherever the user didn't already annotate.
 ///
 /// `arg_position` is the lambda's position in the outer Apply's arg
 /// list; the FnType's Nth arg is our Lambda, and that FnType has its
@@ -2109,6 +2064,28 @@ fn apply_fntype_to_lambda(
         body: lambda_arc.body.clone(),
     };
     *lambda_arc = triomphe::Arc::new(new_lambda);
+}
+
+/// If any arg type or the return type of `ft` is an unresolved TVar,
+/// return a short description of the first such position. This is
+/// used to decide whether a failed fusion attempt should bail
+/// (annotation missing → user-fixable) or skip silently (everything
+/// else). Only the top level is inspected; nested types (e.g. a
+/// callback argument's own args) can stay polymorphic without
+/// blocking fusion of the outer lambda, since we only ever emit
+/// primitive-shaped lambdas and won't try to fuse a lambda whose arg
+/// is itself a function type.
+fn fntype_first_unresolved(ft: &crate::typ::FnType) -> Option<compact_str::CompactString> {
+    use compact_str::format_compact;
+    for (i, a) in ft.args.iter().enumerate() {
+        if a.typ.with_deref(|r| r.is_none()) {
+            return Some(format_compact!("argument {i}"));
+        }
+    }
+    if ft.rtype.with_deref(|r| r.is_none()) {
+        return Some(format_compact!("the return type"));
+    }
+    None
 }
 
 /// Like `apply_fntype_to_lambda` but takes `&mut Expr` — callers
@@ -2684,15 +2661,15 @@ mod tests {
     }
 
     #[test]
-    fn unannotated_array_init_callback_fuses() {
-        // The REAL mandelbrot example uses `|idx|` without any type
-        // annotation. Because `array::init`'s callback signature is
-        // known (fn(i64) -> T), the rewrite pass injects `idx: i64`
-        // and infer_body_rtype picks up the return type from the body.
+    fn annotated_callback_in_apply_fuses() {
+        // An annotated callback passed as an Apply arg should fuse
+        // via the anon-lambda descent path. (The unannotated-in-HOF
+        // case requires typechecker-derived fn_types and is covered
+        // end-to-end by the differential corpus.)
         use crate::expr::parser as p;
         use crate::expr::{Origin, Source};
         use arcstr::ArcStr;
-        let src = "let cb = array::init(10, |idx| idx * 2);";
+        let src = "let cb = array::init(10, |idx: i64| idx * 2);";
         let ori = Origin {
             parent: None,
             source: Source::Unspecified,
@@ -2702,23 +2679,21 @@ mod tests {
         let mut state = RewriteState::new();
         for e in exprs.iter() {
             let mut e = e.clone();
-            rewrite_program_with_state(&mut e, "ua", &mut state);
+            rewrite_program_with_state(&mut e, "ua", &mut state).expect("rewrite");
         }
-        // The unannotated |idx| callback should fuse.
         let anon = state
             .kernels
             .iter()
             .find(|k| k.fn_name.starts_with("anon"))
-            .expect("anon callback should fuse without explicit types");
+            .expect("annotated callback should fuse");
         assert!(
             anon.rust_source.contains("(idx * 2i64)"),
             "expected native `idx * 2` in fused body: {}",
             anon.rust_source
         );
-        // And the emitted fn signature should have `idx: i64`.
         assert!(
             anon.rust_source.contains("mut idx: i64"),
-            "expected injected i64 type on idx: {}",
+            "expected `idx: i64` from user annotation: {}",
             anon.rust_source
         );
     }
@@ -2759,7 +2734,7 @@ mod tests {
         let mut state = RewriteState::new();
         for e in exprs.iter() {
             let mut e = e.clone();
-            rewrite_program_with_state(&mut e, "anon", &mut state);
+            rewrite_program_with_state(&mut e, "anon", &mut state).expect("rewrite");
         }
         // The anon lambda should have fused (uses scale from outer).
         let fused = state
@@ -2796,7 +2771,7 @@ mod tests {
         let mut state = RewriteState::new();
         for e in exprs.iter() {
             let mut e = e.clone();
-            rewrite_program_with_state(&mut e, "ok", &mut state);
+            rewrite_program_with_state(&mut e, "ok", &mut state).expect("rewrite");
         }
         assert!(
             state.consts.contains_key(&ArcStr::from("max_iter")),
@@ -2862,7 +2837,7 @@ mod tests {
         let mut state = RewriteState::new();
         for e in exprs.iter() {
             let mut e = e.clone();
-            rewrite_program_with_state(&mut e, "ts", &mut state);
+            rewrite_program_with_state(&mut e, "ts", &mut state).expect("rewrite");
         }
         assert_eq!(state.kernels.len(), 2, "both lambdas should fuse");
         let caller = state
@@ -2921,7 +2896,7 @@ mod tests {
             null
         }"#;
         let mut e = parse_one(src).expect("parse");
-        let kernels = rewrite_program(&mut e, "cross");
+        let kernels = rewrite_program(&mut e, "cross").expect("rewrite");
         assert_eq!(kernels.len(), 2, "both lambdas should fuse, got: {kernels:?}");
         // The `caller` kernel must contain a direct call to
         // `fused_helper_body` (not a fallback/interpreted path).
@@ -2952,7 +2927,7 @@ mod tests {
             42
         }"#;
         let mut e = parse_one(src).expect("parse");
-        let kernels = rewrite_program(&mut e, "fused");
+        let kernels = rewrite_program(&mut e, "fused").expect("rewrite");
         assert_eq!(kernels.len(), 1, "exactly one fusable lambda");
         let k = &kernels[0];
         assert_eq!(k.fn_name, "iterate");
@@ -2991,7 +2966,7 @@ mod tests {
             42
         }"#;
         let mut e = parse_one(src).expect("parse");
-        let kernels = rewrite_program(&mut e, "fused");
+        let kernels = rewrite_program(&mut e, "fused").expect("rewrite");
         let pkg = emit_package("fused", kernels, format!("{}", e.kind));
         let lib_rs = render_lib_rs(&pkg);
         assert!(lib_rs.contains("fused_iterate_body"), "{lib_rs}");
@@ -3003,5 +2978,56 @@ mod tests {
         // mod.gxi and mod.gx are empty for compile-only packages
         assert_eq!(render_mod_gxi(&pkg), "");
         assert_eq!(render_mod_gx(&pkg), "");
+    }
+
+    #[test]
+    fn unresolved_tvar_is_refused() {
+        // A lambda whose FnType has an unresolved TVar in arg
+        // position can't be lowered to native code. AOT mode treats
+        // this as an error so the user gets a signal — silently
+        // running in the interpreter would defeat the point of
+        // `graphix compile`.
+        use crate::typ::{FnArgType, FnType, Type};
+        use triomphe::Arc as TArc;
+        let src = "let rec f = |x| x";
+        let mut e = parse_one(src).expect("parse");
+        // Find the lambda's ExprId inside the Bind.
+        let lambda_id = match &e.kind {
+            ExprKind::Bind(b) => match &b.value.kind {
+                ExprKind::Lambda(_) => b.value.id,
+                _ => panic!("expected lambda in bind"),
+            },
+            _ => panic!("expected bind"),
+        };
+        // Construct a FnType whose arg type and return type are both
+        // unbound TVars — exactly what the typechecker would leave
+        // behind for `|x| x` in a module that never calls it.
+        let ft = FnType {
+            args: TArc::from_iter([FnArgType {
+                label: None,
+                typ: Type::empty_tvar(),
+            }]),
+            rtype: Type::empty_tvar(),
+            ..Default::default()
+        };
+        let mut fn_types = fxhash::FxHashMap::default();
+        fn_types.insert(lambda_id, ft);
+        let mut state = RewriteState::with_fn_types(fn_types);
+        let err = rewrite_program_with_state(&mut e, "ur", &mut state)
+            .expect_err("unresolved tvar should be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unresolved type variable"),
+            "bail message should name the cause, got: {msg}"
+        );
+        assert!(
+            msg.contains("argument 0"),
+            "bail message should point at the offending position, got: {msg}"
+        );
+        assert!(
+            msg.contains("line") && msg.contains("column"),
+            "bail message should include source position so anon callbacks \
+             are findable, got: {msg}"
+        );
     }
 }
