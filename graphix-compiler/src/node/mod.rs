@@ -174,21 +174,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
     }
 }
 
+/// Wraps a child `Node` with its last-produced value cached for the
+/// current cycle. Many op nodes use this so that if one operand
+/// updates and another doesn't, they can still produce output using
+/// the previous cached value for the unchanged operand.
+///
+/// Public so that AOT-generated code (see `graphix compile`, item 3
+/// in the plan) can construct op-node trees directly. Don't rely on
+/// the exact shape of this type — it's public for codegen reuse, not
+/// as a stable user-facing API.
 #[derive(Debug)]
-struct Cached<R: Rt, E: UserEvent> {
-    cached: Option<Value>,
-    node: Node<R, E>,
+pub struct Cached<R: Rt, E: UserEvent> {
+    pub cached: Option<Value>,
+    pub node: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Cached<R, E> {
-    fn new(node: Node<R, E>) -> Self {
+    pub fn new(node: Node<R, E>) -> Self {
         Self { cached: None, node }
     }
 
     /// update the node, return whether the node updated. If it did,
     /// the updated value will be stored in the cached field, if not,
     /// the previous value will remain there.
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> bool {
+    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> bool {
         match self.node.update(ctx, event) {
             None => false,
             Some(v) => {
@@ -198,7 +207,7 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.cached = None;
         self.node.sleep(ctx)
     }
@@ -333,13 +342,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
 }
 
 #[derive(Debug)]
-pub(crate) struct Constant {
-    spec: Arc<Expr>,
-    value: Value,
-    typ: Type,
+pub struct Constant {
+    pub(super) spec: Arc<Expr>,
+    pub(super) value: Value,
+    pub(super) typ: Type,
 }
 
 impl Constant {
+    /// Construct a `Constant` node from its final components. AOT-
+    /// generated code uses this after it has already chosen the
+    /// value, type, and spec at code-generation time.
+    pub fn new<R: Rt, E: UserEvent>(value: Value, typ: Type, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec: Arc::new(spec), value, typ })
+    }
+
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         spec: Expr,
         value: &Value,
@@ -385,13 +401,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
 
 // used for both mod and do
 #[derive(Debug)]
-pub(crate) struct Block<R: Rt, E: UserEvent> {
-    module: bool,
-    spec: Expr,
-    children: Box<[Node<R, E>]>,
+pub struct Block<R: Rt, E: UserEvent> {
+    pub(super) module: bool,
+    pub(super) spec: Expr,
+    pub(super) children: Box<[Node<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
+    /// Build a `Block` / `do` node from an already-compiled list of
+    /// child expressions. `module` selects "module" semantics (no
+    /// returned value) vs "do" semantics (the last child's value is
+    /// the block's value).
+    pub fn new(
+        module: bool,
+        children: Box<[Node<R, E>]>,
+        spec: Expr,
+    ) -> Node<R, E> {
+        Box::new(Self { module, spec, children })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -547,13 +575,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Connect<R: Rt, E: UserEvent> {
-    spec: Expr,
-    node: Node<R, E>,
-    id: BindId,
+pub struct Connect<R: Rt, E: UserEvent> {
+    pub(super) spec: Expr,
+    pub(super) node: Node<R, E>,
+    pub(super) id: BindId,
 }
 
 impl<R: Rt, E: UserEvent> Connect<R, E> {
+    /// Build a `Connect` node from an already-compiled RHS expression
+    /// and the BindId of the variable to be updated on each cycle.
+    pub fn new(id: BindId, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec, node: rhs, id })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -620,15 +654,34 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ConnectDeref<R: Rt, E: UserEvent> {
-    spec: Expr,
-    rhs: Cached<R, E>,
-    src_id: BindId,
-    target_id: Option<BindId>,
-    top_id: ExprId,
+pub struct ConnectDeref<R: Rt, E: UserEvent> {
+    pub(super) spec: Expr,
+    pub(super) rhs: Cached<R, E>,
+    pub(super) src_id: BindId,
+    pub(super) target_id: Option<BindId>,
+    pub(super) top_id: ExprId,
 }
 
 impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
+    /// Build a `ConnectDeref` from an already-compiled RHS node and
+    /// the source reference's BindId. The caller is responsible for
+    /// registering the reference with the runtime (via
+    /// `ctx.rt.ref_var(src_id, top_id)`).
+    pub fn new(
+        src_id: BindId,
+        rhs: Node<R, E>,
+        top_id: ExprId,
+        spec: Expr,
+    ) -> Node<R, E> {
+        Box::new(Self {
+            spec,
+            rhs: Cached::new(rhs),
+            src_id,
+            target_id: None,
+            top_id,
+        })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,

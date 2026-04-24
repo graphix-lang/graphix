@@ -1,0 +1,3 @@
+// Empty program — measures binary startup cost (tokio, netidx init,
+// packages, etc.) with nothing real to compute.
+sys::exit(0)

@@ -1,0 +1,21 @@
+// Population count (number of set bits) via Brian Kernighan's loop:
+// `n & (n-1)` clears the lowest set bit each iteration. Tests that
+// modulo/division/and/etc. emit correctly.
+let rec popcount = |n: i64, acc: i64| -> i64
+    select n {
+        0 => acc,
+        _ => popcount(n - ((n / 2) * 2), acc + (n - ((n / 2) * 2)))
+    };
+
+// ^^^ simulates bitwise-and-with-1 via arithmetic (% 2), since we
+// don't support `&`/`|` as bitwise ops yet. We iterate n over n/2.
+let rec popcount2 = |n: i64, acc: i64| -> i64
+    select n {
+        0 => acc,
+        _ => popcount2(n / 2, acc + (n - ((n / 2) * 2)))
+    };
+
+println("popcount2(255, 0) = [popcount2(255, 0)]");  // expect 8
+println("popcount2(1023, 0) = [popcount2(1023, 0)]");  // expect 10
+println("popcount2(12345, 0) = [popcount2(12345, 0)]");  // expect 6
+sys::exit(0)

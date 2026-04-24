@@ -7,12 +7,12 @@ use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use netidx_core::path::Path;
 use tokio::sync::oneshot;
 
-pub(crate) struct RegisterResult {
+pub struct RegisterResult {
     pub root: ArcStr,
     pub main_program: Option<&'static str>,
 }
 
-pub(crate) fn register<X: GXExt>(
+pub fn register<X: GXExt>(
     ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
     modules: &mut FxHashMap<Path, ArcStr>,
 ) -> Result<RegisterResult> {
@@ -34,6 +34,7 @@ pub(crate) fn register<X: GXExt>(
     graphix_package_hbs::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_re::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_rand::P::register(ctx, modules, &mut root_mods)?;
+    graphix_package_bench::P::register(ctx, modules, &mut root_mods)?;
     graphix_package_tui::P::register(ctx, modules, &mut root_mods)?;
     #[cfg(feature = "gui")]
     graphix_package_gui::P::register(ctx, modules, &mut root_mods)?;
@@ -91,6 +92,7 @@ pub(crate) async fn maybe_init_custom<X: GXExt>(
     try_pkg!(graphix_package_hbs::P);
     try_pkg!(graphix_package_re::P);
     try_pkg!(graphix_package_rand::P);
+    try_pkg!(graphix_package_bench::P);
     try_pkg!(graphix_package_tui::P);
     #[cfg(feature = "gui")]
     try_pkg!(graphix_package_gui::P);

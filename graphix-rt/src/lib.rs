@@ -14,6 +14,7 @@ use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use fxhash::FxHashSet;
+use fxhash::FxHashMap;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath, ModuleResolver, Source},
@@ -433,6 +434,24 @@ enum ToGX<X: GXExt> {
         resolvers: Option<Vec<ModuleResolver>>,
         res: oneshot::Sender<Result<CheckResult>>,
     },
+    /// Like `Check`, but also returns the PARSED `Expr` tree
+    /// (so callers can match ExprIds against the typechecker's
+    /// output) plus the typechecker's `fn_types` map (ExprId →
+    /// resolved FnType for every Lambda and Apply in the program).
+    /// Used by `graphix compile` to drive fusion against real
+    /// typechecker-derived types instead of ad-hoc heuristics.
+    /// Returning the Exprs here, rather than re-parsing the source
+    /// in the caller, keeps ExprIds consistent between the types
+    /// and the tree being rewritten.
+    CheckWithTypes {
+        path: Source,
+        res: oneshot::Sender<
+            Result<(
+                triomphe::Arc<[graphix_compiler::expr::Expr]>,
+                FxHashMap<ExprId, graphix_compiler::typ::FnType>,
+            )>,
+        >,
+    },
     Compile {
         text: ArcStr,
         rt: GXHandle<X>,
@@ -542,6 +561,23 @@ impl<X: GXExt> GXHandle<X> {
         Ok(self
             .exec(|tx| ToGX::Check { path, resolvers: Some(resolvers), res: tx })
             .await??)
+    }
+
+    /// Like `check`, but additionally returns the parsed `Expr` tree
+    /// plus the typechecker's `fn_types` map (ExprId → resolved
+    /// FnType at every Lambda / Apply site). Used by `graphix
+    /// compile` to drive fusion against the real typechecker's view
+    /// rather than the ad-hoc heuristics. The returned Exprs share
+    /// ExprIds with the entries in the map, so callers can rewrite
+    /// the returned tree and look up types by ExprId directly.
+    pub async fn check_with_types(
+        &self,
+        path: Source,
+    ) -> Result<(
+        triomphe::Arc<[graphix_compiler::expr::Expr]>,
+        FxHashMap<ExprId, FnType>,
+    )> {
+        Ok(self.exec(|tx| ToGX::CheckWithTypes { path, res: tx }).await??)
     }
 
     /// Compile and execute a graphix expression

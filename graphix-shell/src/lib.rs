@@ -28,7 +28,10 @@ use std::{marker::PhantomData, process::exit, time::Duration};
 use tokio::{select, sync::mpsc};
 
 mod completion;
-mod deps;
+/// Package registration for graphix-shell. Made public so `graphix
+/// compile`'s in-process typecheck step (in `main.rs`) can drive the
+/// same stdlib-registration path the shell uses at startup.
+pub mod deps;
 mod input;
 pub mod lsp_backend;
 

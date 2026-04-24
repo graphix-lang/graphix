@@ -13,14 +13,27 @@ use netidx_value::Value;
 use triomphe::Arc;
 
 #[derive(Debug)]
-pub(crate) struct Bind<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    pattern: StructPatternNode,
-    node: Node<R, E>,
+pub struct Bind<R: Rt, E: UserEvent> {
+    pub(super) spec: Expr,
+    pub(super) typ: Type,
+    pub(super) pattern: StructPatternNode,
+    pub(super) node: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
+    /// Build a `Bind` node from an already-compiled RHS node and an
+    /// already-compiled destructuring pattern. AOT codegen has
+    /// already resolved the type and generated BindIds for the
+    /// pattern's names.
+    pub fn new(
+        pattern: StructPatternNode,
+        node: Node<R, E>,
+        typ: Type,
+        spec: Expr,
+    ) -> Node<R, E> {
+        Box::new(Self { spec, typ, pattern, node })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -156,7 +169,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Ref {
+pub struct Ref {
     pub(super) spec: Arc<Expr>,
     pub(super) typ: Type,
     pub(super) id: BindId,
@@ -164,6 +177,22 @@ pub(crate) struct Ref {
 }
 
 impl Ref {
+    /// Construct a `Ref` node from its already-resolved components.
+    /// AOT codegen uses this after name resolution has already
+    /// assigned a BindId and a Type.
+    ///
+    /// Callers must ensure the runtime is told about the reference
+    /// (via `ctx.rt.ref_var(id, top_id)`) separately — this
+    /// constructor is a pure builder and does not touch ExecCtx.
+    pub fn new<R: Rt, E: UserEvent>(
+        id: BindId,
+        typ: Type,
+        top_id: ExprId,
+        spec: Expr,
+    ) -> Node<R, E> {
+        Box::new(Self { spec: Arc::new(spec), typ, id, top_id })
+    }
+
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
@@ -227,14 +256,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 }
 
 #[derive(Debug)]
-pub(crate) struct ByRef<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    child: Node<R, E>,
-    id: BindId,
+pub struct ByRef<R: Rt, E: UserEvent> {
+    pub(super) spec: Expr,
+    pub(super) typ: Type,
+    pub(super) child: Node<R, E>,
+    pub(super) id: BindId,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
+    /// Construct a `ByRef` node from an already-compiled child.
+    /// AOT codegen supplies the `BindId` (allocated at codegen time,
+    /// reused when the generated tree is built) and the resolved
+    /// `Type`. Interpreter `compile` still handles the additional
+    /// byref-chain plumbing it needs — generated code that wants
+    /// ref-to-ref chaining must mirror that separately via
+    /// `ctx.env.byref_chain.insert_cow(...)` before building the
+    /// node.
+    pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec, typ, child, id })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -294,15 +335,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Deref<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    child: Node<R, E>,
-    id: Option<BindId>,
-    top_id: ExprId,
+pub struct Deref<R: Rt, E: UserEvent> {
+    pub(super) spec: Expr,
+    pub(super) typ: Type,
+    pub(super) child: Node<R, E>,
+    pub(super) id: Option<BindId>,
+    pub(super) top_id: ExprId,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
+    /// Build a `Deref` node from an already-compiled child that
+    /// evaluates to a `Value::U64` / `Value::V64` holding a BindId.
+    /// AOT codegen passes the resolved type rather than leaving an
+    /// empty type variable for the interpreter to pin down later.
+    pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec, typ, child, id: None, top_id })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,

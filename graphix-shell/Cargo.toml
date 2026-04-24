@@ -45,6 +45,7 @@ fxhash = { workspace = true }
 graphix-compiler = { version = "0.7.0", path = "../graphix-compiler" }
 graphix-package = { version = "0.7.0", path = "../graphix-package" }
 graphix-package-array = { version = "0.7.0", path = "../stdlib/graphix-package-array" }
+graphix-package-bench = { version = "0.7.0", path = "../stdlib/graphix-package-bench" }
 graphix-package-core = { version = "0.7.0", path = "../stdlib/graphix-package-core" }
 graphix-package-args = { version = "0.7.0", path = "../stdlib/graphix-package-args" }
 graphix-package-db = { version = "0.7.0", path = "../stdlib/graphix-package-db" }
@@ -72,3 +73,5 @@ netidx-core = { workspace = true }
 poolshark = { workspace = true }
 reedline = { workspace = true }
 tokio = { workspace = true }
+toml_edit = { workspace = true }
+triomphe = { workspace = true }
