@@ -297,6 +297,87 @@ let result = data_table(
     Ok(())
 }
 
+/// End-to-end: clicking a header dispatches a callback that rewrites
+/// `sort_by`, and the sort indicator on the header tracks that change
+/// across the cycle absent → Ascending → Descending → absent.
+/// Mirrors the filter_sort example's `cycle_sort` helper; catches
+/// regressions in any link of the chain (click routing, `<-` inside a
+/// closure body, sort_by update parsing, indicator rebuild).
+#[tokio::test(flavor = "current_thread")]
+async fn header_click_cycles_sort_state() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys; use array;
+let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
+let sort_by: Array<SortBy> = [];
+let result = data_table(
+    #sort_by: &sort_by,
+    #on_header_click: |#column: string|
+        sort_by <- column ~ {
+            let matches = array::filter(sort_by, |sb: SortBy| sb.column == column);
+            let n = array::len(matches);
+            let m0 = matches[0]$;
+            let dir: SortDirection = m0.direction;
+            select n {
+                0 => array::push(sort_by, { column: column, direction: `Ascending }),
+                _ => select dir {
+                    `Ascending => array::map(sort_by, |s: SortBy| -> SortBy
+                        select s.column == column {
+                            true => { s with direction: `Descending },
+                            false => s
+                        }),
+                    `Descending => array::filter(sort_by, |s: SortBy| s.column != column)
+                }
+            }
+        },
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code,
+        iced_core::Size::new(400.0, 200.0),
+    )
+    .await?;
+    h.inner.drain().await?;
+    // Populate cached_col_widths so dt_cell_bounds can locate the c1 column.
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
+    let click = iced_core::Point::new(bounds.x + 15.0, 10.0);
+
+    // Click 1: absent → Ascending.
+    let msgs = h.click(click);
+    h.inner.dispatch_calls(&msgs).await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    assert_eq!(
+        h.inner.dt().dt_sort_indicator("c1").as_deref(),
+        Some(" ▲"),
+        "first click should leave c1 sorted ascending",
+    );
+
+    // Click 2: Ascending → Descending.
+    let msgs = h.click(click);
+    h.inner.dispatch_calls(&msgs).await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    assert_eq!(
+        h.inner.dt().dt_sort_indicator("c1").as_deref(),
+        Some(" ▼"),
+        "second click should flip c1 to descending",
+    );
+
+    // Click 3: Descending → absent.
+    let msgs = h.click(click);
+    h.inner.dispatch_calls(&msgs).await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    assert_eq!(
+        h.inner.dt().dt_sort_indicator("c1"),
+        None,
+        "third click should remove c1 from sort_by",
+    );
+    Ok(())
+}
+
 // ── Sort by column data tests ──────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -380,6 +461,77 @@ let result = data_table(
     let snap = h.dt_snapshot();
     // Sorted ascending: apple(r1) < banana(r2) < cherry(r0)
     assert_eq!(snap.row_basenames, vec!["r1", "r2", "r0"]);
+    Ok(())
+}
+
+// ── Sort indicators in the column header ───────────────────────────
+
+/// No sort_by → no indicator on any column header. `dt_sort_indicator`
+/// returns `None` when the column isn't named in `sort_by`, regardless
+/// of whether that column exists in the table.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_indicator_absent_by_default() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
+let result = data_table(#table: &tbl)
+"#;
+    let h = dt(code).await?;
+    assert_eq!(h.dt().dt_sort_indicator("name"), None);
+    assert_eq!(h.dt().dt_sort_indicator("env"), None);
+    Ok(())
+}
+
+/// Single-column sort renders just the arrow, no subscript priority
+/// digit — the order doesn't matter when there's only one key.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_indicator_single_column() -> Result<()> {
+    let ascending = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
+let result = data_table(
+    #sort_by: &[{ column: "name", direction: `Ascending }],
+    #table: &tbl
+)
+"#;
+    let h = dt(ascending).await?;
+    assert_eq!(h.dt().dt_sort_indicator("name").as_deref(), Some(" ▲"));
+    assert_eq!(h.dt().dt_sort_indicator("env"), None);
+
+    let descending = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
+let result = data_table(
+    #sort_by: &[{ column: "env", direction: `Descending }],
+    #table: &tbl
+)
+"#;
+    let h = dt(descending).await?;
+    assert_eq!(h.dt().dt_sort_indicator("name"), None);
+    assert_eq!(h.dt().dt_sort_indicator("env").as_deref(), Some(" ▼"));
+    Ok(())
+}
+
+/// Multi-column sort gets a 1-based subscript priority digit on each
+/// indicator so the user can tell the primary key from the tie-breaker.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_indicator_multi_column_shows_priority() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1"], columns: ["name", "env", "score"] };
+let result = data_table(
+    #sort_by: &[
+        { column: "env", direction: `Ascending },
+        { column: "name", direction: `Descending },
+        { column: "score", direction: `Ascending }
+    ],
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    assert_eq!(h.dt().dt_sort_indicator("env").as_deref(), Some(" ▲₁"));
+    assert_eq!(h.dt().dt_sort_indicator("name").as_deref(), Some(" ▼₂"));
+    assert_eq!(h.dt().dt_sort_indicator("score").as_deref(), Some(" ▲₃"));
     Ok(())
 }
 
@@ -1688,6 +1840,467 @@ let result = data_table(
         h.dt().dt_snapshot_value_at(0, 0),
         Some("42".to_string()),
         "cell value must persist across display_name-only update",
+    );
+    Ok(())
+}
+
+/// CR #4 forward: a default_value ref that starts null should keep
+/// its column hidden, and flipping the ref to a non-null value must
+/// add the column as virtual without a full `apply_table` rebuild.
+#[tokio::test(flavor = "current_thread")]
+async fn default_value_null_to_nonnull_adds_virtual_col() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let dv: [null, string, Map<string, Any>] = null;
+let tbl = { rows: ["r0"], columns: [] };
+let result = data_table(
+    #column_types: &{
+        "virtual" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &dv,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // Initially dv is null → column is not virtual, col_names empty,
+    // mode degrades to Value.
+    let snap = h.dt_snapshot();
+    assert!(
+        !snap.col_names.iter().any(|n| n == "virtual"),
+        "virtual col must not be present while default is null: {:?}",
+        snap.col_names,
+    );
+    assert!(
+        snap.is_value_mode,
+        "with no columns and no virtual defaults, mode must be Value",
+    );
+    // Flip dv to a string; column must appear as a virtual column.
+    let bid = find_bind_id(&h.compiled.env, "test::dv")?;
+    let mut dv_ref = h.gx.compile_ref(bid).await?;
+    dv_ref.set(Value::String(arcstr::literal!("appeared")))?;
+    h.wait_until(
+        |h| h.dt_snapshot().col_names.iter().any(|n| n == "virtual"),
+        std::time::Duration::from_secs(2),
+        "virtual column to appear after default flip to non-null",
+    ).await?;
+    let snap = h.dt_snapshot();
+    assert!(!snap.is_value_mode, "mode must switch back to Table");
+    let vi = snap.col_names.iter().position(|n| n == "virtual").unwrap();
+    assert_eq!(snap.grid[0][vi], "appeared");
+    Ok(())
+}
+
+/// CR #4 reverse: a default_value ref that starts non-null must keep
+/// the column visible as virtual, and flipping the ref to null must
+/// remove it — without tearing down a live raw-column subscription
+/// (there isn't one here; the row is non-absolute).
+#[tokio::test(flavor = "current_thread")]
+async fn default_value_nonnull_to_null_removes_virtual_col() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let dv: [null, string, Map<string, Any>] = "initial";
+let tbl = { rows: ["r0"], columns: [] };
+let result = data_table(
+    #column_types: &{
+        "virtual" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &dv,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    assert!(
+        snap.col_names.iter().any(|n| n == "virtual"),
+        "virtual col must be present while default is set: {:?}",
+        snap.col_names,
+    );
+    assert!(!snap.is_value_mode);
+    let bid = find_bind_id(&h.compiled.env, "test::dv")?;
+    let mut dv_ref = h.gx.compile_ref(bid).await?;
+    dv_ref.set(Value::Null)?;
+    h.wait_until(
+        |h| !h.dt_snapshot().col_names.iter().any(|n| n == "virtual"),
+        std::time::Duration::from_secs(2),
+        "virtual column to disappear after default flip to null",
+    ).await?;
+    let snap = h.dt_snapshot();
+    // With every column hidden and a row still present, mode degrades
+    // back to Value.
+    assert!(
+        snap.is_value_mode,
+        "mode must fall back to Value when all virtuals drop out",
+    );
+    Ok(())
+}
+
+/// CR #6: flipping a column's `typ` from Text to Sparkline must
+/// re-register the subscription role with `sparkline_history_secs =
+/// Some(..)`, so subsequent live updates actually accumulate in the
+/// sparkline history. Before the fix, the diff reconcile saw only
+/// "same keys, same virtual-ness" and left stale Text-era Grid roles
+/// in place; values flowed into `inner.values` but never reached the
+/// sparkline history.
+#[tokio::test(flavor = "current_thread")]
+async fn column_type_text_to_sparkline_registers_history() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys; use sys::time;
+let c = 0;
+c <- time::timer(duration:300.ms, false) ~ 7;
+c <- time::timer(duration:500.ms, false) ~ 9;
+sys::net::publish("/local/dt_ct2/r0/load", c);
+
+// typ starts as Text, flips to Sparkline after 100ms.
+let t: [
+    `Text({ on_edit: [fn(#path: string, #value: Any) -> Any, null] }),
+    `Sparkline({ history_seconds: f64, min: [f64, null], max: [f64, null] })
+] = `Text({ on_edit: null });
+t <- time::timer(duration:100.ms, false) ~
+    `Sparkline({ history_seconds: 60.0, min: null, max: null });
+
+let tbl = { rows: ["/local/dt_ct2/r0"], columns: ["load"] };
+let result = data_table(
+    #column_types: &{
+        "load" => {
+            typ: t,
+            display_name: null,
+            default_value: &null,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // Wait for BOTH the typ flip and at least one post-flip publish to
+    // land. The sparkline history is keyed by (row, col) and only
+    // populated if the Grid role has sparkline_history_secs = Some(..).
+    h.wait_until(
+        |h| {
+            let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
+            vs.contains(&7.0) || vs.contains(&9.0)
+        },
+        std::time::Duration::from_secs(3),
+        "sparkline history to accumulate after Text->Sparkline flip",
+    ).await?;
+    let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
+    assert!(
+        vs.contains(&7.0) || vs.contains(&9.0),
+        "expected at least one post-flip value in sparkline history, got: {vs:?}",
+    );
+    Ok(())
+}
+
+/// CR #1: a Sparkline column declared with a non-finite or
+/// non-positive `history_seconds` must not panic when a live update
+/// arrives. `Duration::from_secs_f64` panics on NaN / negative
+/// values, so the parse path has to clamp.
+#[tokio::test(flavor = "current_thread")]
+async fn sparkline_history_seconds_rejects_negative() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys; use sys::time;
+let c = 0;
+c <- time::timer(duration:100.ms, false) ~ 5;
+sys::net::publish("/local/dt_hs/r0/load", c);
+let tbl = { rows: ["/local/dt_hs/r0"], columns: ["load"] };
+let result = data_table(
+    #column_types: &{
+        "load" => {
+            typ: `Sparkline({ history_seconds: -1.0, min: null, max: null }),
+            display_name: null,
+            default_value: &null,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    h.wait_until(
+        |h| {
+            let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
+            vs.contains(&5.0)
+        },
+        std::time::Duration::from_secs(2),
+        "sparkline update to land without panicking on invalid history_seconds",
+    ).await?;
+    Ok(())
+}
+
+/// CR #3: Button column must pass the raw `Value` to its `on_click`
+/// callback, not the column's formatted display string. Before the
+/// fix, a typed default like `i64:7` would arrive at the callback
+/// as `Value::String("7")` and break any handler that did
+/// `#value: i64`. `default_value` is typed
+/// `[null, string, Map<string, Any>]`, so use the per-row Map form
+/// to inject a non-string Value.
+#[tokio::test(flavor = "current_thread")]
+async fn button_column_passes_typed_raw_value() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let pressed_val: Any = null;
+let pressed = |#path: string, #value: Any| {
+    pressed_val <- value;
+    null
+};
+let tbl = { rows: ["r0"], columns: [] };
+let result = data_table(
+    #column_types: &{
+        "go" => {
+            typ: `Button({ on_click: pressed }),
+            display_name: null,
+            default_value: &{"r0" => i64:7},
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        code, iced_core::Size::new(500.0, 200.0),
+    ).await?;
+    let _ = h.inner.watch("test::pressed_val").await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "go").expect("go col visible");
+    let p = iced_core::Point::new(bounds.x + 15.0, bounds.center().y);
+    let msgs = h.click(p);
+    // The iced Message::Call args must carry the raw integer, not its
+    // string form. This is the invariant the CR was about.
+    expect_call_with_args(&msgs, |args| {
+        let v: Vec<_> = args.iter().collect();
+        matches!(
+            v.as_slice(),
+            [Value::String(p), Value::I64(7)]
+            if p == &arcstr::literal!("r0/go"),
+        )
+    });
+    h.inner.dispatch_calls(&msgs).await?;
+    assert_eq!(
+        h.inner.get_watched("test::pressed_val"),
+        Some(&Value::I64(7)),
+        "callback must receive the typed Value, not a string",
+    );
+    Ok(())
+}
+
+/// Regression for the "scroll-end clips last column" bug seen in
+/// the data_table_scrolling example: with ref-controlled column
+/// widths wider than the viewport, scrolling all the way right
+/// clipped the last column and only widening the window revealed it.
+///
+/// Two failure modes share a fix here:
+/// 1. `virtual_width` (and the scroll math that feeds off it) used
+///    `cached_col_widths` exclusively, so columns that hadn't
+///    rendered yet contributed `MIN_COL_WIDTH=80` instead of their
+///    declared width. The scrollbar's max offset was therefore
+///    capped short and the rightmost columns were unreachable.
+/// 2. Even with widths correct, `col_at_offset`'s snap-to-midpoint
+///    at `ox = max_ox` lands on a `first_col` BELOW the smallest
+///    value where the suffix `cols[first_col..total]` actually fits
+///    — the rendered grid then overflows the viewport on the right
+///    and the last column is clipped.
+#[tokio::test(flavor = "current_thread")]
+async fn horizontal_scroll_reaches_last_col_with_ref_widths() -> Result<()> {
+    // Five virtual rows, six data cols all with ref-controlled widths
+    // summing to 720px (120 each). Pick a viewport (450px) that's
+    // narrower than total content but where multiple cols fit, so
+    // the scroll math has a non-trivial first_col to land on.
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1", "r2", "r3", "r4"],
+            columns: ["a", "b", "c", "d", "e", "f"] };
+let cspec = |name: string| -> {
+    typ: ColumnType,
+    display_name: [string, null],
+    default_value: &[null, string, Map<string, Any>],
+    on_resize: &[fn(f64) -> Any, null],
+    width: &[f64, null]
+} {
+    typ: `Text({ on_edit: null }),
+    display_name: name,
+    default_value: &"x",
+    on_resize: &null,
+    width: &f64:120.0
+};
+let result = data_table(
+    #show_row_name: &false,
+    #column_types: &{
+        "a" => cspec("a"), "b" => cspec("b"), "c" => cspec("c"),
+        "d" => cspec("d"), "e" => cspec("e"), "f" => cspec("f")
+    },
+    #table: &tbl
+)
+"#;
+    let h = dt(code).await?;
+    // Sanity: ref widths landed.
+    for col in ["a", "b", "c", "d", "e", "f"] {
+        assert_eq!(
+            h.dt().dt_ref_width(col),
+            Some(120.0),
+            "ref width for {col} must be 120",
+        );
+    }
+    // virtual_content_width must reflect the ref widths even though
+    // no render pass has populated cached_col_widths for these cols
+    // yet. Without the canonical-width fallback this would fall back
+    // to MIN_COL_WIDTH=80 each → 480, not 720.
+    let vw = h.dt().virtual_content_width_for_test();
+    assert!(
+        (vw - 720.0).abs() < 0.5,
+        "virtual_content_width must use ref widths when cache is cold: \
+         expected 720, got {vw}",
+    );
+    // With viewport_width=450, only cols [3..6] (sum=360) fit. So
+    // min_first_col_for_fit(450) = 3.
+    let mff = h.dt().min_first_col_for_fit_for_test(450.0);
+    assert_eq!(
+        mff, 3,
+        "expected min_first_col_for_fit(450)=3 (last 3 cols of 120px each \
+         sum to 360 ≤ 450, but 4 of them would be 480 > 450), got {mff}",
+    );
+    Ok(())
+}
+
+/// Regression for the same bug, exercising the scroll-end clamp in
+/// `handle_scroll`. With ref widths summing to wider than the
+/// viewport, sending `ox = virtual_width - vp_w` (iced's max scroll)
+/// must land `first_col` at `min_first_col_for_fit` so the suffix
+/// fully renders. Before the fix, snap-to-midpoint at max ox left
+/// `first_col` below the fit threshold.
+#[tokio::test(flavor = "current_thread")]
+async fn scroll_end_clamps_first_col_to_fit_suffix() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0"], columns: ["a", "b", "c", "d", "e", "f"] };
+let cspec = |name: string| -> {
+    typ: ColumnType,
+    display_name: [string, null],
+    default_value: &[null, string, Map<string, Any>],
+    on_resize: &[fn(f64) -> Any, null],
+    width: &[f64, null]
+} {
+    typ: `Text({ on_edit: null }),
+    display_name: name,
+    default_value: &"x",
+    on_resize: &null,
+    width: &f64:120.0
+};
+let result = data_table(
+    #show_row_name: &false,
+    #column_types: &{
+        "a" => cspec("a"), "b" => cspec("b"), "c" => cspec("c"),
+        "d" => cspec("d"), "e" => cspec("e"), "f" => cspec("f")
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let vw = h.dt().virtual_content_width_for_test();
+    let vp_w = 450.0_f32;
+    let max_ox = vw - vp_w;
+    // Drive a max-scroll-right event. After the clamp, first_col
+    // should be 3 (cols 3..6 = three 120-wide cols sum to 360 ≤ 450,
+    // adding col 2 would push to 480 > 450).
+    h.dt_mut().handle_scroll_for_test(max_ox, 0.0, vp_w, 200.0);
+    let fc = h.dt().first_col_for_test();
+    assert_eq!(
+        fc, 3,
+        "max-scroll-right must clamp first_col to min_first_col_for_fit=3, got {fc}",
+    );
+    // A scroll back to ox=0 must release the clamp — first_col=0 so
+    // the leftmost columns are visible again. Before the fix, an
+    // incorrectly applied unconditional clamp would have stuck
+    // first_col at 3 forever, hiding cols 0..2.
+    h.dt_mut().handle_scroll_for_test(0.0, 0.0, vp_w, 200.0);
+    let fc = h.dt().first_col_for_test();
+    assert_eq!(fc, 0, "scrolling back to ox=0 must restore first_col=0, got {fc}");
+    // And max-scroll again — same answer as the first time.
+    h.dt_mut().handle_scroll_for_test(max_ox, 0.0, vp_w, 200.0);
+    let fc = h.dt().first_col_for_test();
+    assert_eq!(
+        fc, 3,
+        "second max-scroll must also clamp first_col=3 — the user's \
+         scroll-back-then-forward sequence in the screenshot regression \
+         was where the bug recurred. got {fc}",
+    );
+    Ok(())
+}
+
+/// CR #7: a virtual column (declared in `column_types` with only a
+/// default_value, not in the raw table columns) must not produce a
+/// netidx subscription at `row_path/virtual_col`. Before the fix,
+/// `subscribe_row` iterated every `col_names` entry — including
+/// virtuals — and created a Dval per visible row pointing at a path
+/// that would happily be shadowed by any unrelated publisher on that
+/// path.
+#[tokio::test(flavor = "current_thread")]
+async fn virtual_col_does_not_create_subscription() -> Result<()> {
+    // Publish BOTH a real column ("real") and the path a virtual
+    // column ("ghost") would resolve to if we were subscribing it.
+    // The virtual col's default is "from-default". If subscription
+    // leakage is happening, the ghost publication "from-publisher"
+    // would shadow the default in the grid; with the fix, the
+    // default wins.
+    let code = r#"
+use gui; use gui::data_table; use sys;
+sys::net::publish("/local/dt_virt/r0/real", "real-val");
+sys::net::publish("/local/dt_virt/r0/ghost", "from-publisher");
+let tbl = { rows: ["/local/dt_virt/r0"], columns: ["real"] };
+let result = data_table(
+    #column_types: &{
+        "ghost" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &"from-default",
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // Wait for the real column's subscription to land so we know the
+    // row has been processed by subscribe_row at least once.
+    h.wait_until(
+        |h| {
+            let snap = h.dt_snapshot();
+            let real_i = snap.col_names.iter().position(|n| n == "real");
+            real_i.map(|i| snap.grid[0][i] == "real-val").unwrap_or(false)
+        },
+        std::time::Duration::from_secs(2),
+        "real column value to arrive",
+    ).await?;
+    let snap = h.dt_snapshot();
+    let ghost_i = snap
+        .col_names
+        .iter()
+        .position(|n| n == "ghost")
+        .expect("ghost column present");
+    // The ghost cell must show the DEFAULT, not the publisher value.
+    // If the widget were still subscribing virtual_cols, the
+    // BEGIN_WITH_LAST sub would deliver "from-publisher" and it would
+    // appear in the grid.
+    assert_eq!(
+        snap.grid[0][ghost_i], "from-default",
+        "virtual column must use its default, not a coincident publication",
+    );
+    // Give netidx a moment to deliver any stray subscription — if a
+    // sub sneaks through, this is where it'd show up.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    h.drain().await?;
+    let snap = h.dt_snapshot();
+    assert_eq!(
+        snap.grid[0][ghost_i], "from-default",
+        "virtual column default must persist — no late subscription override",
     );
     Ok(())
 }

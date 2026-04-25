@@ -26,6 +26,7 @@ async-trait = { workspace = true }
 compact_str = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
+indexmap = { workspace = true }
 graphix-compiler = { version = "0.7.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.7.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.7.0", path = "../../graphix-package" }
@@ -57,6 +58,7 @@ winit = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 fxhash = { workspace = true }
+graphix-package-array = { version = "0.7.0", path = "../graphix-package-array" }
 graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
 graphix-package-sys = { version = "0.7.0", path = "../graphix-package-sys" }
 netidx-core = { workspace = true }
