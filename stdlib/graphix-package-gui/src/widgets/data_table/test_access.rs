@@ -15,7 +15,7 @@ impl<X: GXExt> DataTableW<X> {
     /// graphix-controlled width), if any. Independent of user drags or
     /// auto-sizing.
     pub fn dt_ref_width(&self, col: &str) -> Option<f32> {
-        self.ref_widths.get(col).copied()
+        self.columns.get(col).and_then(|c| c.ref_width)
     }
 
     /// Snapshot of the viewport metrics written by the responsive
@@ -73,10 +73,9 @@ impl<X: GXExt> DataTableW<X> {
             .find(|p| Path::basename(*p).unwrap_or(&***p) == row)?
             .clone();
         let col_arc = self
-            .col_names
-            .iter()
-            .find(|n| n.as_str() == col)
-            .cloned()
+            .displayed_columns()
+            .find(|(n, _)| n.as_str() == col)
+            .map(|(n, _)| n.clone())
             .unwrap_or_else(|| ArcStr::from(col));
         Some((row_path, col_arc))
     }
@@ -93,7 +92,7 @@ impl<X: GXExt> DataTableW<X> {
             return if show_name { Some(0) } else { None };
         }
         let (vis_start, vis_end) = self.display_col_range();
-        let pos = self.col_names.get_index_of(col)?;
+        let pos = self.displayed_index_of(col)?;
         if pos < vis_start || pos >= vis_end {
             return None;
         }
@@ -125,12 +124,13 @@ impl<X: GXExt> DataTableW<X> {
                 x += cache.get(ROW_NAME_KEY).copied()?;
             }
             let (vis_start, vis_end) = self.display_col_range();
-            let pos = self.col_names.get_index_of(col)?;
+            let pos = self.displayed_index_of(col)?;
             if pos < vis_start || pos >= vis_end {
                 return None;
             }
             for ci in vis_start..pos {
-                x += cache.get(&self.col_names[ci]).copied()?;
+                let (name, _) = self.displayed_column_at(ci)?;
+                x += cache.get(name).copied()?;
             }
             w = cache.get(col).copied()?;
         }
@@ -217,7 +217,7 @@ impl<X: GXExt> DataTableW<X> {
         let row_path = self.row_paths.get(row_idx)?;
         match self.mode {
             DisplayMode::Table => {
-                let col = self.col_names.get_index(col_idx)?;
+                let (col, _) = self.displayed_column_at(col_idx)?;
                 let mut inner = self.cells.inner.lock();
                 let key = (row_path.clone(), col.clone());
                 let id = inner.cells.get(&key).copied();

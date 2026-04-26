@@ -137,6 +137,80 @@ let result = data_table(
     Ok(())
 }
 
+/// `reconcile_virtual_cols` runs when a `default_value` ref transitions
+/// null↔non-null. Promotion (null → non-null) brings a spec-only
+/// column into the displayed prefix as a virtual column; demotion
+/// (non-null → null) takes it back out. This exercises
+/// `IndexMap::move_index` — the path that doesn't go through
+/// `apply_table`'s full rebuild — so that a regression in the
+/// promote/demote bookkeeping (`displayed_count`, `virtual_col` flag,
+/// or position) shows up here instead of as a silently misplaced
+/// column at runtime.
+#[tokio::test(flavor = "current_thread")]
+async fn reconcile_virtual_promotion_demotion() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let dv = null;
+let tbl = { rows: ["r0"], columns: ["real"] };
+let result = data_table(
+    #column_types: &{
+        "phantom" => {
+            typ: `Text({ on_edit: null }),
+            display_name: null,
+            default_value: &dv,
+            on_resize: &null, width: &null
+        }
+    },
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    // dv is null at startup, so "phantom" is spec-only — its
+    // `default_value` ref is compiled and live, but the column is
+    // past `displayed_count` and shouldn't appear in the snapshot.
+    let snap = h.dt_snapshot();
+    assert_eq!(snap.col_names, vec!["real".to_string()]);
+
+    // Promote: dv → "ghost". reconcile_virtual_cols should move
+    // "phantom" into the displayed prefix and mark virtual.
+    let bid = find_bind_id(&h.compiled.env, "test::dv")?;
+    let mut dv_ref = h.gx.compile_ref(bid).await?;
+    dv_ref.set(Value::String(arcstr::literal!("ghost")))?;
+    for _ in 0..5 {
+        h.drain().await?;
+        if h.dt_snapshot().col_names.iter().any(|n| n == "phantom") {
+            break;
+        }
+    }
+    let snap = h.dt_snapshot();
+    assert!(
+        snap.col_names.iter().any(|n| n == "phantom"),
+        "phantom should be displayed after default_value transitions to non-null; \
+         col_names = {:?}",
+        snap.col_names
+    );
+    let pi = snap.col_names.iter().position(|n| n == "phantom").unwrap();
+    assert_eq!(snap.grid[0][pi], "ghost");
+
+    // Demote: dv → null. The column should disappear from display.
+    dv_ref.set(Value::Null)?;
+    for _ in 0..5 {
+        h.drain().await?;
+        if !h.dt_snapshot().col_names.iter().any(|n| n == "phantom") {
+            break;
+        }
+    }
+    let snap = h.dt_snapshot();
+    assert!(
+        !snap.col_names.iter().any(|n| n == "phantom"),
+        "phantom should disappear from display after default_value transitions \
+         back to null; col_names = {:?}",
+        snap.col_names
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn virtual_column() -> Result<()> {
     let code = r#"

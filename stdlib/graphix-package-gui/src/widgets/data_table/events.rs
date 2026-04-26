@@ -56,7 +56,8 @@ impl<X: GXExt> DataTableW<X> {
         }
         match self.mode {
             DisplayMode::Table => {
-                display_cols.extend(self.col_names.iter().cloned());
+                display_cols
+                    .extend(self.displayed_columns().map(|(name, _)| name.clone()));
             }
             DisplayMode::Value => {
                 display_cols.push(literal!("value"));
@@ -140,7 +141,12 @@ impl<X: GXExt> DataTableW<X> {
             TableKeyAction::Space => {
                 if cur_col >= name_offset {
                     let col_name = &display_cols[cur_col];
-                    if self.col_callbacks.contains_key(col_name) {
+                    let has_callback = self
+                        .columns
+                        .get(col_name)
+                        .map(|c| c.callback.is_some())
+                        .unwrap_or(false);
+                    if has_callback {
                         self.handle_cell_edit(cur_row, col_name.clone());
                     }
                 }
@@ -155,7 +161,7 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(crate) fn handle_cell_edit(&mut self, row: usize, col: ArcStr) -> bool {
         // Initialize edit buffer with current cell value
-        let col_in_table = self.col_names.contains(&col);
+        let col_in_table = self.displayed_index_of(col.as_str()).is_some();
         let row_path = match self.row_paths.get(row) {
             Some(p) => p.clone(),
             None => {
@@ -185,11 +191,16 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(crate) fn handle_cell_edit_submit(&mut self) -> bool {
         if let Some((ref row_path, ref col)) = self.editing {
-            if let Some(callable) = self.col_callbacks.get(col) {
+            let callable_id = self
+                .columns
+                .get(col)
+                .and_then(|c| c.callback.as_ref())
+                .map(|cb| cb.id());
+            if let Some(cid) = callable_id {
                 let cell_path = row_path.append(col);
                 let v = parse_or_quote(&self.edit_buffer);
                 let _ = self.gx.call(
-                    callable.id(),
+                    cid,
                     ValArray::from_iter([Value::String(ArcStr::from(&*cell_path)), v]),
                 );
             }
@@ -266,9 +277,8 @@ impl<X: GXExt> DataTableW<X> {
             let expected_oy = self.first_row as f32 * row_h;
             let col_thresh = {
                 let cache = self.cached_col_widths.lock();
-                self.col_names
-                    .get_index(self.first_col)
-                    .and_then(|n| cache.get(n).copied())
+                self.displayed_column_at(self.first_col)
+                    .and_then(|(n, _)| cache.get(n).copied())
                     .unwrap_or(MIN_COL_WIDTH)
                     * 0.5
             };
@@ -346,10 +356,9 @@ impl<X: GXExt> DataTableW<X> {
             let data_idx = if show_name { col_meta_idx - 1 } else { col_meta_idx };
             let (vis_start, _vis_end) = self.display_col_range();
             let abs_idx = vis_start + data_idx;
-            if abs_idx < self.col_names.len() {
-                self.col_names[abs_idx].clone()
-            } else {
-                return false;
+            match self.displayed_column_at(abs_idx) {
+                Some((name, _)) => name.clone(),
+                None => return false,
             }
         };
         let current_w = self
@@ -380,7 +389,10 @@ impl<X: GXExt> DataTableW<X> {
         let col_name = drag.col_name.clone();
         let new_width = drag.current_width;
         self.user_widths.lock().insert(col_name.clone(), new_width);
-        self.on_resize_callbacks.get(&col_name).map(|c| (c.id(), new_width as f64))
+        self.columns
+            .get(&col_name)
+            .and_then(|c| c.on_resize.as_ref())
+            .map(|c| (c.id(), new_width as f64))
     }
 
     pub(crate) fn handle_column_resize_end(&mut self) -> bool {

@@ -11,8 +11,8 @@
 
 use super::types::{
     decimate_sparkline, format_value, numeric_key, parse_selection, row_basename,
-    value_to_f64, ColumnRecompile, ColumnSpec, ColumnType, DefaultValueEntry,
-    SortDirection,
+    value_to_f64, ColumnRecompile, ColumnSpec, ColumnState, ColumnType,
+    DefaultValueEntry, SortDirection,
 };
 use super::{
     compile_callable_opt, DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY,
@@ -328,7 +328,7 @@ impl<X: GXExt> DataTableW<X> {
     /// panic even on a trivially-ready future.
     pub(super) fn apply_column_types_diff(
         &mut self,
-        new_types: FxHashMap<ArcStr, ColumnSpec>,
+        mut new_types: FxHashMap<ArcStr, ColumnSpec>,
     ) -> (bool, LPooled<Vec<ColumnRecompile>>) {
         // Structural = column set changed, a column flipped between
         // virtual and non-virtual (default_value_bid crossed 0/non-0),
@@ -336,12 +336,19 @@ impl<X: GXExt> DataTableW<X> {
         // such that its subscription role metadata is now wrong.
         // Anything else (display_name, callback, width, on_resize
         // swap) reconciles in place without an `apply_table` call.
-        let keys_same = self.column_types.len() == new_types.len()
-            && self.column_types.keys().all(|k| new_types.contains_key(k));
+        let old_spec_count =
+            self.columns.values().filter(|c| c.spec.is_some()).count();
+        let keys_same = old_spec_count == new_types.len()
+            && self
+                .columns
+                .iter()
+                .filter(|(_, c)| c.spec.is_some())
+                .all(|(k, _)| new_types.contains_key(k));
         let virtuals_same = keys_same
             && new_types.iter().all(|(name, spec)| {
-                self.column_types
+                self.columns
                     .get(name)
+                    .and_then(|c| c.spec.as_ref())
                     .map(|old| {
                         (old.default_value_bid != 0) == (spec.default_value_bid != 0)
                     })
@@ -349,80 +356,112 @@ impl<X: GXExt> DataTableW<X> {
             });
         let kinds_same = keys_same
             && new_types.iter().all(|(name, spec)| {
-                self.column_types
+                self.columns
                     .get(name)
+                    .and_then(|c| c.spec.as_ref())
                     .map(|old| column_type_role_eq(&old.typ, &spec.typ))
                     .unwrap_or(false)
             });
         let structural_change = !keys_same || !virtuals_same || !kinds_same;
-        // Drop per-column state for removed columns. `user_widths`
-        // is intentionally kept: a re-added column reuses the
-        // user's drag preference.
-        let mut removed: LPooled<Vec<ArcStr>> = LPooled::take();
-        removed.extend(
-            self.column_types.keys().filter(|k| !new_types.contains_key(*k)).cloned(),
-        );
-        for name in removed.iter() {
-            self.col_callbacks.remove(name);
-            self.on_resize_callbacks.remove(name);
-            self.on_resize_refs.remove(name);
-            self.default_value_refs.remove(name);
-            self.width_refs.remove(name);
-            self.ref_widths.remove(name);
+        // Clear spec + compiled bits for columns whose spec is gone.
+        // `user_widths` is intentionally kept: a re-added column reuses
+        // the user's drag preference. Whether the entry stays in
+        // `columns` depends on display state — `apply_table` rebuilds
+        // the displayed prefix, so non-displayed entries with no spec
+        // would be dead weight; drop those here. Displayed entries
+        // (raw netidx columns) keep their slot with a now-empty spec.
+        let mut to_drop: LPooled<Vec<ArcStr>> = LPooled::take();
+        for (name, c) in self.columns.iter_mut() {
+            if c.spec.is_some() && !new_types.contains_key(name) {
+                c.clear_spec();
+            }
         }
+        // Second pass: drop entries that no longer have any reason to
+        // exist (spec gone AND not in displayed prefix). Iterate in
+        // reverse so swap_remove on tail entries doesn't disturb
+        // displayed-prefix indices.
+        for i in (0..self.columns.len()).rev() {
+            if i < self.displayed_count {
+                continue;
+            }
+            let dead = self
+                .columns
+                .get_index(i)
+                .map(|(_, c)| c.spec.is_none())
+                .unwrap_or(false);
+            if dead {
+                let key = self.columns.get_index(i).map(|(k, _)| k.clone()).unwrap();
+                to_drop.push(key);
+            }
+        }
+        for k in to_drop.iter() {
+            self.columns.swap_remove(k);
+        }
+        // Install or update specs. New (never-seen) columns get
+        // appended past the displayed prefix; `apply_table` will
+        // promote them into display order if structural_change fires.
         let mut recompile: LPooled<Vec<ColumnRecompile>> = LPooled::take();
-        for (name, spec) in &new_types {
-            let old = self.column_types.get(name);
-            let old_cb = old.and_then(|s| s.callback_value.as_ref());
-            if old_cb != spec.callback_value.as_ref() {
-                self.col_callbacks.remove(name);
-                if let Some(cb_val) = &spec.callback_value {
+        for (name, spec) in new_types.drain() {
+            let old_spec = self.columns.get(&name).and_then(|c| c.spec.as_ref());
+            let cb_changed =
+                old_spec.and_then(|s| s.callback_value.as_ref()) != spec.callback_value.as_ref();
+            let on_resize_changed =
+                old_spec.map(|s| s.on_resize_bid).unwrap_or(0) != spec.on_resize_bid;
+            let width_changed =
+                old_spec.map(|s| s.width_bid).unwrap_or(0) != spec.width_bid;
+            let dv_changed =
+                old_spec.map(|s| s.default_value_bid).unwrap_or(0) != spec.default_value_bid;
+            // Queue any recompiles BEFORE moving `spec` into the entry.
+            if cb_changed {
+                if let Some(cb_val) = spec.callback_value.clone() {
                     recompile.push(ColumnRecompile::Callback {
                         name: name.clone(),
-                        value: cb_val.clone(),
+                        value: cb_val,
                     });
                 }
             }
-            let old_on_resize_bid = old.map(|s| s.on_resize_bid).unwrap_or(0);
-            if old_on_resize_bid != spec.on_resize_bid {
-                self.on_resize_callbacks.remove(name);
-                self.on_resize_refs.remove(name);
-                if spec.on_resize_bid != 0 {
-                    recompile.push(ColumnRecompile::OnResize {
-                        name: name.clone(),
-                        bid: spec.on_resize_bid,
-                    });
-                }
+            if on_resize_changed && spec.on_resize_bid != 0 {
+                recompile.push(ColumnRecompile::OnResize {
+                    name: name.clone(),
+                    bid: spec.on_resize_bid,
+                });
             }
-            let old_width_bid = old.map(|s| s.width_bid).unwrap_or(0);
-            if old_width_bid != spec.width_bid {
-                self.ref_widths.remove(name);
-                self.width_refs.remove(name);
-                if spec.width_bid != 0 {
-                    recompile.push(ColumnRecompile::Width {
-                        name: name.clone(),
-                        bid: spec.width_bid,
-                    });
-                }
+            if width_changed && spec.width_bid != 0 {
+                recompile.push(ColumnRecompile::Width {
+                    name: name.clone(),
+                    bid: spec.width_bid,
+                });
             }
-            let old_dv_bid = old.map(|s| s.default_value_bid).unwrap_or(0);
-            if old_dv_bid != spec.default_value_bid {
-                self.default_value_refs.remove(name);
-                if spec.default_value_bid != 0 {
-                    recompile.push(ColumnRecompile::DefaultValue {
-                        name: name.clone(),
-                        bid: spec.default_value_bid,
-                    });
-                }
+            if dv_changed && spec.default_value_bid != 0 {
+                recompile.push(ColumnRecompile::DefaultValue {
+                    name: name.clone(),
+                    bid: spec.default_value_bid,
+                });
             }
+            let entry = self.columns.entry(name).or_insert_with(ColumnState::default);
+            if cb_changed {
+                entry.callback = None;
+            }
+            if on_resize_changed {
+                entry.on_resize = None;
+                entry.on_resize_ref = None;
+            }
+            if width_changed {
+                entry.width_ref = None;
+                entry.ref_width = None;
+            }
+            if dv_changed {
+                entry.default_value = None;
+            }
+            entry.spec = Some(spec);
         }
-        self.column_types = new_types;
         (structural_change, recompile)
     }
 
     /// Async half of the reconcile: compile every entry in
     /// `recompile` (produced by `apply_column_types_diff`) and
-    /// install the resulting callables/refs.
+    /// install the resulting callables/refs into the column's
+    /// `ColumnState`.
     pub(super) async fn apply_column_recompile(
         &mut self,
         recompile: LPooled<Vec<ColumnRecompile>>,
@@ -431,31 +470,38 @@ impl<X: GXExt> DataTableW<X> {
             match item {
                 ColumnRecompile::Callback { name, value } => {
                     if let Ok(c) = self.gx.compile_callable(value.clone()).await {
-                        self.col_callbacks.insert(name.clone(), c);
+                        if let Some(entry) = self.columns.get_mut(name) {
+                            entry.callback = Some(c);
+                        }
                     }
                 }
                 ColumnRecompile::OnResize { name, bid } => {
                     if let Ok(r) = self.gx.compile_ref(*bid).await {
-                        if let Ok(Some(c)) = compile_callable_opt(&self.gx, &r).await {
-                            self.on_resize_callbacks.insert(name.clone(), c);
+                        let cb = compile_callable_opt(&self.gx, &r).await.ok().flatten();
+                        if let Some(entry) = self.columns.get_mut(name) {
+                            entry.on_resize = cb;
+                            entry.on_resize_ref = Some(r);
                         }
-                        self.on_resize_refs.insert(name.clone(), r);
                     }
                 }
                 ColumnRecompile::Width { name, bid } => {
                     if let Ok(r) = self.gx.compile_ref(*bid).await {
-                        if let Some(w) =
-                            r.last.as_ref().and_then(|v| v.clone().cast_to::<f64>().ok())
-                        {
-                            self.ref_widths.insert(name.clone(), w as f32);
+                        let w = r
+                            .last
+                            .as_ref()
+                            .and_then(|v| v.clone().cast_to::<f64>().ok())
+                            .map(|w| w as f32);
+                        if let Some(entry) = self.columns.get_mut(name) {
+                            entry.ref_width = w;
+                            entry.width_ref = Some(r);
                         }
-                        self.width_refs.insert(name.clone(), r);
                     }
                 }
                 ColumnRecompile::DefaultValue { name, bid } => {
                     if let Ok(r) = self.gx.compile_ref(*bid).await {
-                        self.default_value_refs
-                            .insert(name.clone(), DefaultValueEntry::new(r));
+                        if let Some(entry) = self.columns.get_mut(name) {
+                            entry.default_value = Some(DefaultValueEntry::new(r));
+                        }
                     }
                 }
             }
@@ -470,7 +516,6 @@ impl<X: GXExt> DataTableW<X> {
         // index. Sparklines are kept so re-adding the same (row, col)
         // doesn't lose history.
         self.cells.inner.lock().clear_subs();
-        self.col_names.clear();
         self.row_paths.clear();
         // Reset column-width cache: the prior table's columns may not
         // appear in the new one, and any widths that *do* match a new
@@ -527,17 +572,49 @@ impl<X: GXExt> DataTableW<X> {
         // Convert row strings to Paths (for absolute netidx paths)
         // or keep as-is for virtual rows. `Path` is a newtype over
         // `ArcStr`, so map keys built from it clone via refcount bump.
-        self.col_names.extend(raw_cols.iter().cloned());
         self.row_paths.extend(raw_rows.iter().map(|s| Path::from(s.clone())));
-        // Add virtual columns and record which columns are virtual.
-        self.virtual_cols.clear();
-        for (name, _spec) in &self.column_types {
-            if self.has_default(name) && !self.col_names.contains(name) {
-                self.col_names.insert(name.clone());
-                self.virtual_cols.insert(name.clone());
-            }
+        // Rebuild the displayed prefix of `columns` so its order
+        // matches: raw_cols (in netidx order), then spec'd virtuals
+        // with a non-null default. Spec-only columns whose default is
+        // null sit past the displayed boundary so their refs stay
+        // alive without occupying a display slot. Take everything
+        // out, then re-insert in the desired order, preserving the
+        // existing `ColumnState` payload (spec, refs, callables) when
+        // a column is already known.
+        let mut existing: FxHashMap<ArcStr, ColumnState<X>> =
+            self.columns.drain(..).collect();
+        self.displayed_count = 0;
+        for raw in raw_cols.iter() {
+            let mut entry = existing.remove(raw).unwrap_or_default();
+            entry.virtual_col = false;
+            self.columns.insert(raw.clone(), entry);
+            self.displayed_count += 1;
         }
-        self.mode = if self.col_names.is_empty() && !self.row_paths.is_empty() {
+        // Snapshot virtual candidates before mutating `existing`, so
+        // we can drain in a stable order without juggling iterator
+        // invalidation.
+        let mut virtuals: LPooled<Vec<ArcStr>> = LPooled::take();
+        virtuals.extend(existing.iter().filter_map(|(name, state)| {
+            let has_default = state
+                .default_value
+                .as_ref()
+                .map(|d| d.parsed.is_present())
+                .unwrap_or(false);
+            (state.spec.is_some() && has_default).then(|| name.clone())
+        }));
+        for name in virtuals.drain(..) {
+            let mut entry = existing.remove(&name).unwrap();
+            entry.virtual_col = true;
+            self.columns.insert(name, entry);
+            self.displayed_count += 1;
+        }
+        // Anything still left in `existing` is spec-only without a
+        // current default — preserve it past the displayed boundary.
+        for (name, mut entry) in existing.drain() {
+            entry.virtual_col = false;
+            self.columns.insert(name, entry);
+        }
+        self.mode = if self.displayed_count == 0 && !self.row_paths.is_empty() {
             DisplayMode::Value
         } else {
             DisplayMode::Table
@@ -559,36 +636,58 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// Re-reconcile `virtual_cols` / `col_names` / `mode` after a
+    /// Re-reconcile the displayed prefix of `columns` after a
     /// `default_value` ref transitions null↔non-null. `apply_table`
     /// is the only other place this logic lives, but full rebuild
     /// would drop every live subscription — we only want to flip
     /// whether a default-only column is visible. Returns whether any
     /// visible column set changed so the caller can propagate `dirty`.
     ///
-    /// Columns present in `col_names` but not in `virtual_cols` are
-    /// "real" columns from the last `apply_table`; those we leave
+    /// Columns inside the displayed prefix but with `virtual_col=false`
+    /// are "real" columns from the last `apply_table`; those we leave
     /// alone even if their default presence changed.
     pub(super) fn reconcile_virtual_cols(&mut self) -> bool {
         let mut changed = false;
-        let names: LPooled<Vec<ArcStr>> =
-            self.column_types.keys().cloned().collect();
+        let names: LPooled<Vec<ArcStr>> = self
+            .columns
+            .iter()
+            .filter(|(_, c)| c.spec.is_some())
+            .map(|(name, _)| name.clone())
+            .collect();
         for name in names.iter() {
-            let has_default = self.has_default(name);
-            let in_virtual = self.virtual_cols.contains(name);
-            let in_col_names = self.col_names.contains(name);
-            if has_default && !in_col_names {
-                self.col_names.insert(name.clone());
-                self.virtual_cols.insert(name.clone());
+            let pos = match self.columns.get_index_of(name) {
+                Some(p) => p,
+                None => continue,
+            };
+            let displayed = pos < self.displayed_count;
+            let entry = &self.columns[pos];
+            let virtual_col = entry.virtual_col;
+            let has_default = entry
+                .default_value
+                .as_ref()
+                .map(|d| d.parsed.is_present())
+                .unwrap_or(false);
+            if displayed && !virtual_col {
+                continue;
+            }
+            if has_default && !displayed {
+                // Promote: move past the displayed boundary, mark
+                // virtual, grow displayed_count.
+                self.columns.move_index(pos, self.displayed_count);
+                self.columns[self.displayed_count].virtual_col = true;
+                self.displayed_count += 1;
                 changed = true;
-            } else if !has_default && in_virtual {
-                self.col_names.shift_remove(name);
-                self.virtual_cols.remove(name);
+            } else if !has_default && virtual_col {
+                // Demote: shrink the displayed prefix, then move the
+                // entry to the just-vacated boundary slot.
+                self.displayed_count -= 1;
+                self.columns.move_index(pos, self.displayed_count);
+                self.columns[self.displayed_count].virtual_col = false;
                 changed = true;
             }
         }
         if changed {
-            self.mode = if self.col_names.is_empty() && !self.row_paths.is_empty() {
+            self.mode = if self.displayed_count == 0 && !self.row_paths.is_empty() {
                 DisplayMode::Value
             } else {
                 DisplayMode::Table
@@ -687,10 +786,9 @@ impl<X: GXExt> DataTableW<X> {
                 }
                 let already_subbed = match self.mode {
                     DisplayMode::Table => self
-                        .col_names
-                        .iter()
-                        .filter(|c| !self.virtual_cols.contains(*c))
-                        .all(|c| {
+                        .displayed_columns()
+                        .filter(|(_, state)| !state.virtual_col)
+                        .all(|(c, _)| {
                             inner.cells.contains_key(&(row_path.clone(), c.clone()))
                         }),
                     DisplayMode::Value => inner
@@ -735,18 +833,29 @@ impl<X: GXExt> DataTableW<X> {
             };
         match self.mode {
             DisplayMode::Table => {
-                for col_name in self.col_names.iter().cloned().collect::<Vec<_>>() {
-                    if self.virtual_cols.contains(&col_name) {
+                // Snapshot the displayed-column slice so the closure
+                // can borrow `self` for `col_type_for` without
+                // colliding with the in-flight `self.columns` iterator.
+                let cols: LPooled<Vec<ArcStr>> =
+                    self.displayed_columns().map(|(name, _)| name.clone()).collect();
+                for col_name in cols.iter() {
+                    let entry = self.columns.get(col_name);
+                    if entry.map(|e| e.virtual_col).unwrap_or(false) {
                         continue;
                     }
-                    let sparkline_history_secs = match self.col_type_for(&col_name) {
+                    let sparkline_history_secs = match self.col_type_for(col_name) {
                         ColumnType::Sparkline { history_seconds, .. } => {
                             Some(*history_seconds)
                         }
                         _ => None,
                     };
-                    let path = row_path.append(&col_name);
-                    subscribe_one(&mut inner, col_name, path, sparkline_history_secs);
+                    let path = row_path.append(col_name);
+                    subscribe_one(
+                        &mut inner,
+                        col_name.clone(),
+                        path,
+                        sparkline_history_secs,
+                    );
                 }
             }
             DisplayMode::Value => {
@@ -765,7 +874,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         let now = Instant::now();
         let mut inner = self.cells.inner.lock();
-        for col_name in self.col_names.iter() {
+        for (col_name, _) in self.displayed_columns() {
             let history_secs = match self.col_type_for(col_name) {
                 ColumnType::Sparkline { history_seconds, .. } => *history_seconds,
                 _ => continue,

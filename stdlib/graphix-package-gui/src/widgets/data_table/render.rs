@@ -204,9 +204,8 @@ impl<X: GXExt> DataTableW<X> {
                     None => vec![],
                     Some(row_path) => match self.mode {
                         DisplayMode::Table => self
-                            .col_names
-                            .iter()
-                            .map(|cn| {
+                            .displayed_columns()
+                            .map(|(cn, _)| {
                                 let key = (row_path.clone(), cn.clone());
                                 let id = inner.cells.get(&key).copied();
                                 id.and_then(|id| inner.formatted_for(id))
@@ -255,14 +254,17 @@ impl<X: GXExt> DataTableW<X> {
         match self.mode {
             DisplayMode::Table => {
                 for i in vis_col_start..vis_col_end {
-                    let name = &self.col_names[i];
+                    let (name, state) = match self.displayed_column_at(i) {
+                        Some(p) => p,
+                        None => break,
+                    };
                     let w = match self.effective_col_width(name) {
                         Some(w) => w,
                         None => {
                             let max_w = DEFAULT_MAX_COL_WIDTH;
-                            let display = self
-                                .column_types
-                                .get(name)
+                            let display = state
+                                .spec
+                                .as_ref()
                                 .and_then(|s| s.display_name.as_deref())
                                 .unwrap_or(name.as_str());
                             // Include the sort indicator (if any) in
@@ -323,10 +325,10 @@ impl<X: GXExt> DataTableW<X> {
         let mut header_row = Row::new().spacing(0);
         for (ci, (name, w)) in col_meta.iter().enumerate() {
             let is_data_col = ci >= name_col_offset;
+            let entry = self.columns.get(name);
             let header_text: ArcStr = if is_data_col {
-                let base = self
-                    .column_types
-                    .get(name)
+                let base = entry
+                    .and_then(|c| c.spec.as_ref())
                     .and_then(|s| s.display_name.clone())
                     .unwrap_or_else(|| name.clone());
                 match sort_indicators.get(name) {
@@ -338,8 +340,9 @@ impl<X: GXExt> DataTableW<X> {
                 // label, not the internal sentinel key.
                 literal!("name")
             };
-            let is_fixed = self.ref_widths.contains_key(name)
-                && !self.on_resize_callbacks.contains_key(name);
+            let is_fixed = entry
+                .map(|c| c.ref_width.is_some() && c.on_resize.is_none())
+                .unwrap_or(false);
             // Render the header as plain text; if there's a header-click
             // callback wrap it in a `MouseArea` so the label stays flush
             // with the cell (a `Button` would add its own background,
@@ -453,10 +456,11 @@ impl<X: GXExt> DataTableW<X> {
                     } else {
                         ArcStr::new()
                     };
-                    let col_type = if self.mode == DisplayMode::Table
-                        && data_col < self.col_names.len()
-                    {
-                        self.col_type_for(&self.col_names[data_col])
+                    let col_type = if self.mode == DisplayMode::Table {
+                        match self.displayed_column_at(data_col) {
+                            Some((name, _)) => self.col_type_for(name),
+                            None => &ColumnType::Text,
+                        }
                     } else {
                         &ColumnType::Text
                     };
@@ -660,7 +664,11 @@ impl<X: GXExt> DataTableW<X> {
                 }
             }
         }
-        for (col_name, spec) in &self.column_types {
+        for (col_name, state) in self.columns.iter() {
+            let spec = match state.spec.as_ref() {
+                Some(s) => s,
+                None => continue,
+            };
             let (fmin, fmax) = match &spec.typ {
                 ColumnType::Sparkline { min, max, .. } => (*min, *max),
                 _ => continue,
@@ -696,7 +704,11 @@ impl<X: GXExt> DataTableW<X> {
         spark_bounds: Option<SparkBounds>,
     ) -> IcedElement<'a> {
         let cell_path = self.row_paths.get(row_idx).map(|p| p.append(col_name));
-        let callback_id = self.col_callbacks.get(col_name).map(|c| c.id());
+        let callback_id = self
+            .columns
+            .get(col_name.as_str())
+            .and_then(|c| c.callback.as_ref())
+            .map(|c| c.id());
         let is_selected = self
             .row_paths
             .get(row_idx)

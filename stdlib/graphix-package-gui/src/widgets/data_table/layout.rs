@@ -46,7 +46,7 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(super) fn total_data_cols(&self) -> usize {
         match self.mode {
-            DisplayMode::Table => self.col_names.len(),
+            DisplayMode::Table => self.displayed_count,
             DisplayMode::Value => 1,
         }
     }
@@ -59,16 +59,16 @@ impl<X: GXExt> DataTableW<X> {
         self.cached_col_widths.lock().get(ROW_NAME_KEY).copied().unwrap_or(MIN_COL_WIDTH)
     }
 
-    /// Data-column index (into `col_names`) whose prefix-sum boundary
-    /// is nearest the given virtual scroll offset. Snap-to-column:
-    /// partial column visibility at the left edge is rounded to whichever
-    /// boundary is closer. Accounts for the fixed name column at the
-    /// start of the virtual content.
+    /// Data-column index (into the displayed prefix of `columns`)
+    /// whose prefix-sum boundary is nearest the given virtual scroll
+    /// offset. Snap-to-column: partial column visibility at the left
+    /// edge is rounded to whichever boundary is closer. Accounts for
+    /// the fixed name column at the start of the virtual content.
     pub(super) fn col_at_offset(&self, ox: f32) -> usize {
         let name_col_w = self.name_col_width();
         let effective_ox = (ox - name_col_w).max(0.0);
         let mut acc = 0.0;
-        for (i, name) in self.col_names.iter().enumerate() {
+        for (i, (name, _)) in self.displayed_columns().enumerate() {
             let w = self.column_canonical_width(name);
             let next = acc + w;
             if effective_ox < (acc + next) / 2.0 {
@@ -76,7 +76,7 @@ impl<X: GXExt> DataTableW<X> {
             }
             acc = next;
         }
-        self.col_names.len().saturating_sub(1)
+        self.displayed_count.saturating_sub(1)
     }
 
     /// Inverse of `col_at_offset`: virtual scroll offset corresponding
@@ -87,18 +87,18 @@ impl<X: GXExt> DataTableW<X> {
         let name_col_w = self.name_col_width();
         name_col_w
             + self
-                .col_names
-                .iter()
+                .displayed_columns()
                 .take(ci)
-                .map(|n| self.column_canonical_width(n))
+                .map(|(n, _)| self.column_canonical_width(n))
                 .sum::<f32>()
     }
 
     /// Get the default value string for a cell. Per-row Maps are
     /// looked up by the row basename against the pre-parsed cache.
     pub(super) fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
-        self.default_value_refs
+        self.columns
             .get(col_name)
+            .and_then(|c| c.default_value.as_ref())
             .and_then(|e| e.parsed.lookup(row_name))
             .map(super::types::value_to_display)
             .unwrap_or_default()
@@ -113,8 +113,9 @@ impl<X: GXExt> DataTableW<X> {
         col_name: &str,
         row_name: &str,
     ) -> Option<f64> {
-        self.default_value_refs
+        self.columns
             .get(col_name)
+            .and_then(|c| c.default_value.as_ref())
             .and_then(|e| e.parsed.lookup(row_name))
             .and_then(value_to_f64)
     }
@@ -136,18 +137,11 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         drop(inner);
-        self.default_value_refs
+        self.columns
             .get(col_name.as_str())
+            .and_then(|c| c.default_value.as_ref())
             .and_then(|e| e.parsed.lookup(super::types::row_basename(row_path)))
             .cloned()
-    }
-
-    /// Check if a column has any non-null default value.
-    pub(super) fn has_default(&self, col_name: &str) -> bool {
-        self.default_value_refs
-            .get(col_name)
-            .map(|e| e.parsed.is_present())
-            .unwrap_or(false)
     }
 
     /// Returns the effective column width if explicitly set (by ref or user drag).
@@ -158,7 +152,7 @@ impl<X: GXExt> DataTableW<X> {
             return Some(*w);
         }
         // 2. Ref-controlled width
-        self.ref_widths.get(col_name).copied()
+        self.columns.get(col_name).and_then(|c| c.ref_width)
     }
 
     /// Canonical width for `col_name`: `effective_col_width` (ref or user
@@ -188,14 +182,15 @@ impl<X: GXExt> DataTableW<X> {
     /// At or above this, the user is at scroll-end and the suffix fully
     /// fits — going higher would just expose empty space.
     pub(super) fn min_first_col_for_fit(&self, vp_width: f32) -> usize {
-        let total = self.col_names.len();
+        let total = self.displayed_count;
         if total == 0 {
             return 0;
         }
         let avail = (vp_width - self.name_col_width()).max(0.0);
         let mut acc = 0.0;
         for k in (0..total).rev() {
-            let w = self.column_canonical_width(&self.col_names[k]);
+            let (name, _) = self.displayed_column_at(k).unwrap();
+            let w = self.column_canonical_width(name);
             if acc + w > avail {
                 return k + 1;
             }
@@ -212,9 +207,10 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn virtual_content_width(&self) -> f32 {
         let name_col_w = self.name_col_width();
         let data_cols_w: f32 = match self.mode {
-            DisplayMode::Table => {
-                self.col_names.iter().map(|n| self.column_canonical_width(n)).sum()
-            }
+            DisplayMode::Table => self
+                .displayed_columns()
+                .map(|(n, _)| self.column_canonical_width(n))
+                .sum(),
             DisplayMode::Value => self.column_canonical_width("value"),
         };
         name_col_w + data_cols_w
@@ -225,8 +221,9 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn actual_visible_cols(&self, from_col: usize, vp_width: f32) -> usize {
         let mut used = self.name_col_width();
         let mut count = 0;
-        for i in from_col..self.col_names.len() {
-            let w = self.column_canonical_width(&self.col_names[i]);
+        for i in from_col..self.displayed_count {
+            let (name, _) = self.displayed_column_at(i).unwrap();
+            let w = self.column_canonical_width(name);
             if used + w > vp_width && count > 0 {
                 break;
             }
@@ -252,7 +249,7 @@ impl<X: GXExt> DataTableW<X> {
         // scrolling to the synthesized row-name column, which is
         // always at the viewport's left edge).
         if col_name != ROW_NAME_KEY {
-            if let Some(ci) = self.col_names.get_index_of(col_name) {
+            if let Some(ci) = self.displayed_index_of(col_name) {
                 if ci < self.first_col {
                     self.first_col = ci;
                     changed = true;
@@ -306,13 +303,13 @@ impl<X: GXExt> DataTableW<X> {
                 }
                 if let Some(rest) = sel_path.as_str().strip_prefix(row_str) {
                     if let Some(col) = rest.strip_prefix('/') {
-                        // Match against the existing ArcStr in col_names
-                        // so scroll_to_cell can compare by identity.
+                        // Match against the existing ArcStr in
+                        // `columns` so scroll_to_cell can compare by
+                        // identity.
                         let col_arc = self
-                            .col_names
-                            .iter()
-                            .find(|n| n.as_str() == col)
-                            .cloned()
+                            .displayed_columns()
+                            .find(|(n, _)| n.as_str() == col)
+                            .map(|(n, _)| n.clone())
                             .unwrap_or_else(|| ArcStr::from(col));
                         target = Some((ri, col_arc));
                         break 'outer;
@@ -341,16 +338,21 @@ impl<X: GXExt> DataTableW<X> {
         }
         match self.mode {
             DisplayMode::Table => {
-                for col_name in self.col_names.iter() {
+                // Snapshot the displayed columns so the per-cell loop
+                // doesn't fight a reborrow of `self.columns`.
+                let cols: LPooled<Vec<ArcStr>> =
+                    self.displayed_columns().map(|(name, _)| name.clone()).collect();
+                for col_name in cols.iter() {
                     // Skip columns with fixed ref width and no on_resize
-                    let is_fixed = self.ref_widths.contains_key(col_name)
-                        && !self.on_resize_callbacks.contains_key(col_name);
+                    let entry = self.columns.get(col_name);
+                    let is_fixed = entry
+                        .map(|c| c.ref_width.is_some() && c.on_resize.is_none())
+                        .unwrap_or(false);
                     if is_fixed {
                         continue;
                     }
-                    let display = self
-                        .column_types
-                        .get(col_name)
+                    let display = entry
+                        .and_then(|c| c.spec.as_ref())
                         .and_then(|s| s.display_name.as_deref())
                         .unwrap_or(col_name);
                     let mut w = col_header_width(display).max(MIN_COL_WIDTH);
@@ -380,7 +382,11 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     pub(super) fn col_type_for(&self, col_name: &str) -> &ColumnType {
-        self.column_types.get(col_name).map(|s| &s.typ).unwrap_or(&ColumnType::Text)
+        self.columns
+            .get(col_name)
+            .and_then(|c| c.spec.as_ref())
+            .map(|s| &s.typ)
+            .unwrap_or(&ColumnType::Text)
     }
 
     /// Row height used by all data-row cells in this view pass.
@@ -391,8 +397,8 @@ impl<X: GXExt> DataTableW<X> {
     /// children out at their individual natural heights when they are
     /// `Length::Shrink`, which produces ragged borders.
     pub(super) fn row_height(&self) -> f32 {
-        let tall = self.col_names.iter().any(|n| {
-            match self.column_types.get(n).map(|s| &s.typ) {
+        let tall = self.displayed_columns().any(|(_, c)| {
+            match c.spec.as_ref().map(|s| &s.typ) {
                 Some(ColumnType::Combo { .. })
                 | Some(ColumnType::Spin { .. })
                 | Some(ColumnType::Toggle) => true,

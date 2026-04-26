@@ -8,7 +8,7 @@ use super::{Renderer, CELL_H_PADDING, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH};
 use arcstr::ArcStr;
 use compact_str::{format_compact, CompactString};
 use fxhash::{FxHashMap, FxHashSet};
-use graphix_rt::{GXExt, Ref};
+use graphix_rt::{Callable, GXExt, Ref};
 use iced_core::text::Paragraph as _;
 use log::warn;
 use netidx::{path::Path, publisher::Value};
@@ -462,6 +462,76 @@ impl<X: GXExt> DefaultValueEntry<X> {
 
     pub(super) fn refresh_from_last(&mut self) {
         self.parsed = DefaultValue::parse(self.r.last.as_ref());
+    }
+}
+
+/// Per-column state. One entry per known column — covers both the
+/// parsed `column_types` spec and the compiled refs/callables derived
+/// from it. A column without a configured spec (raw netidx column with
+/// no user override) has `spec: None` and inherits Text-column
+/// defaults at render time.
+///
+/// Display order is encoded by position in the parent
+/// `FxIndexMap<ArcStr, ColumnState<X>>`: the first `displayed_count`
+/// entries are the displayed columns in display order; the remainder
+/// are spec-only columns whose refs are kept live so their
+/// `default_value` can transition null→non-null and promote them into
+/// the displayed prefix.
+pub(super) struct ColumnState<X: GXExt> {
+    pub(super) spec: Option<ColumnSpec>,
+    pub(super) callback: Option<Callable<X>>,
+    pub(super) default_value: Option<DefaultValueEntry<X>>,
+    pub(super) width_ref: Option<Ref<X>>,
+    pub(super) ref_width: Option<f32>,
+    pub(super) on_resize_ref: Option<Ref<X>>,
+    pub(super) on_resize: Option<Callable<X>>,
+    /// True when this column has no source in raw_cols — its values
+    /// come solely from `default_value`. Implies the column is in the
+    /// displayed prefix.
+    pub(super) virtual_col: bool,
+}
+
+impl<X: GXExt> Default for ColumnState<X> {
+    fn default() -> Self {
+        Self {
+            spec: None,
+            callback: None,
+            default_value: None,
+            width_ref: None,
+            ref_width: None,
+            on_resize_ref: None,
+            on_resize: None,
+            virtual_col: false,
+        }
+    }
+}
+
+impl<X: GXExt> ColumnState<X> {
+    /// Wipe `spec` and every field derived from it. Used when a
+    /// column's `column_types` entry disappears but the column itself
+    /// stays alive (e.g. a raw netidx column that lost its user
+    /// spec). Bound via destructure so a future `ColumnState` field
+    /// forces a deliberate decision about whether it's spec-derived
+    /// — the compile error is the whole point.
+    pub(super) fn clear_spec(&mut self) {
+        let Self {
+            spec,
+            callback,
+            default_value,
+            width_ref,
+            ref_width,
+            on_resize_ref,
+            on_resize,
+            virtual_col,
+        } = self;
+        *spec = None;
+        *callback = None;
+        *default_value = None;
+        *width_ref = None;
+        *ref_width = None;
+        *on_resize_ref = None;
+        *on_resize = None;
+        *virtual_col = false;
     }
 }
 

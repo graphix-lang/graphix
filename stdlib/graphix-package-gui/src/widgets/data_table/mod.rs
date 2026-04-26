@@ -24,11 +24,11 @@ use super::{GuiW, GuiWidget, IcedElement, Message, Renderer};
 use anyhow::{Context, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::CompactString;
-use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
 use futures::channel::mpsc;
+use fxhash::{FxBuildHasher, FxHashMap};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
-use indexmap::IndexSet;
+use indexmap::IndexMap;
 use netidx::{
     path::Path,
     publisher::Value,
@@ -52,17 +52,22 @@ mod test_access;
 
 use subscriptions::{spawn_dispatch_task, SharedCells};
 use types::{
-    parse_column_specs, parse_selection, parse_sort_by, ColumnSpec, DefaultValueEntry,
-    ResizeDrag, SortBy,
+    parse_column_specs, parse_selection, parse_sort_by, ColumnState, ResizeDrag, SortBy,
 };
 
 #[cfg(test)]
 pub(crate) use types::decimate_sparkline;
 
-/// `IndexSet` with the project-standard fx hasher. Used for
-/// `col_names` where a netidx table can reach millions of columns
-/// and RandomState's hash cost would dominate.
-type FxIndexSet<K> = IndexSet<K, FxBuildHasher>;
+/// `IndexMap` with the project-standard fx hasher. Holds every known
+/// column, both displayed (raw netidx columns and virtual columns
+/// with a non-null default) and spec-only (configured but not yet
+/// displayed because their `default_value` ref currently resolves to
+/// null and the column has no source in the table data). Netidx
+/// tables can reach millions of columns, so the `fxhash` hasher
+/// matters and the indexed iteration order doubles as the display
+/// order — the first `displayed_count` entries are the displayed
+/// columns in display order.
+pub(super) type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
 const ROW_HEIGHT_ESTIMATE: f32 = 22.0;
 const ROW_HEIGHT_CONTROLS: f32 = 30.0;
@@ -123,10 +128,9 @@ pub(crate) struct DataTableW<X: GXExt> {
     column_types_ref: Ref<X>,
     selection_ref: Ref<X>,
     sort_by: Vec<SortBy>,
-    column_types: FxHashMap<ArcStr, ColumnSpec>,
     /// Set of selected cell paths (`row_path` for the row-name column,
     /// `row_path/col_name` otherwise), controlled by graphix.
-    selection: FxHashSet<ArcStr>,
+    selection: fxhash::FxHashSet<ArcStr>,
     on_activate_ref: Ref<X>,
     on_activate: Option<Callable<X>>,
     on_select_ref: Ref<X>,
@@ -135,43 +139,30 @@ pub(crate) struct DataTableW<X: GXExt> {
     on_header_click: Option<Callable<X>>,
     on_update_ref: Ref<X>,
     on_update: Option<Callable<X>>,
-    /// Compiled callables for per-column on_edit/on_click
-    col_callbacks: FxHashMap<ArcStr, Callable<X>>,
-    /// Compiled refs for per-column default_value, each paired with
-    /// a pre-parsed `DefaultValue` cache so per-cell lookups don't
-    /// rebuild a `Value::String` key every call.
-    default_value_refs: FxHashMap<ArcStr, DefaultValueEntry<X>>,
-    /// Compiled refs for per-column width
-    width_refs: FxHashMap<ArcStr, Ref<X>>,
-    /// Ref-controlled widths (from width refs)
-    ref_widths: FxHashMap<ArcStr, f32>,
-    /// User-controlled widths (free resize or auto-sized on first load)
+    /// All known columns. Indexed iteration order is the display
+    /// order: the first `displayed_count` entries are the displayed
+    /// columns, in display order; remaining entries are spec-only
+    /// (configured via `column_types` but not currently rendered).
+    /// Spec-only entries stay in the map so their `default_value`,
+    /// `width`, and `on_resize` refs remain alive — their updates can
+    /// promote the column into the displayed prefix without losing
+    /// callable identity.
+    columns: FxIndexMap<ArcStr, ColumnState<X>>,
+    /// Number of leading entries in `columns` that are currently
+    /// displayed. Maintained as an invariant by `apply_table`,
+    /// `apply_column_types_diff`, and `reconcile_virtual_cols`.
+    displayed_count: usize,
+    /// User-controlled widths (free resize or auto-sized on first
+    /// load). Held in a `Mutex` so render-path code (which only has
+    /// `&self`) can read and write through it. Lifetime is decoupled
+    /// from the column entry — a column re-added after deletion
+    /// reuses the user's stored drag preference.
     user_widths: Mutex<FxHashMap<ArcStr, f32>>,
-    /// Compiled on_resize callables per column
-    on_resize_callbacks: FxHashMap<ArcStr, Callable<X>>,
-    /// Compiled refs for per-column on_resize. The .gxi types on_resize
-    /// as a `&` field, so the inner callable can change at runtime; we
-    /// recompile the callable when the ref's value updates.
-    on_resize_refs: FxHashMap<ArcStr, Ref<X>>,
     /// Active resize drag state
     resize_drag: Option<ResizeDrag>,
     /// Last resize handle click: (col_meta_idx, timestamp) for double-click detection
     last_resize_click: Option<(usize, Instant)>,
     mode: DisplayMode,
-    /// Column names in display order. `FxIndexSet` keeps insertion
-    /// order (so column ordering is preserved) while giving O(1)
-    /// `contains` — important because virtual-column insertion,
-    /// sort-value fallback, and viewport scroll all need to ask
-    /// "is this column present?" frequently. Netidx tables can have
-    /// millions of columns, so the `fxhash` hasher matters.
-    col_names: FxIndexSet<ArcStr>,
-    /// Names of columns that have no source in the table's `columns`
-    /// array — they exist only as virtual columns whose values come
-    /// from `default_value`. Populated in `apply_table`. Used by the
-    /// default_value update path to know which cells to refresh
-    /// regardless of whether the row has subscriptions for its
-    /// non-virtual columns.
-    virtual_cols: FxHashSet<ArcStr>,
     row_paths: Vec<Path>,
     cells: Arc<SharedCells<X>>,
     first_row: usize,
@@ -207,7 +198,52 @@ async fn compile_callable_opt<X: GXExt>(
     }
 }
 
+/// Tag for which per-column ref the `handle_update` ref-id sweep
+/// matched. `default_value` carries the pre/post `is_present()` flags
+/// because the null↔non-null transition is what governs whether
+/// `reconcile_virtual_cols` needs to run.
+enum ColumnRefKind {
+    DefaultValue { was_present: bool, now_present: bool },
+    Width,
+    OnResize,
+}
+
 impl<X: GXExt> DataTableW<X> {
+    /// Iterator over the displayed prefix of `columns`, in display
+    /// order. Use this anywhere the previous code iterated `col_names`
+    /// — the position in the resulting iterator IS the column's
+    /// display index.
+    pub(in crate::widgets::data_table) fn displayed_columns(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&ArcStr, &ColumnState<X>)> {
+        self.columns.as_slice()[..self.displayed_count].iter().map(|(k, v)| (k, v))
+    }
+
+    /// `(name, state)` of the displayed column at `idx`, or `None` if
+    /// `idx` is out of the displayed range. The non-displayed
+    /// (spec-only) tail of `columns` is intentionally invisible
+    /// through this accessor.
+    pub(in crate::widgets::data_table) fn displayed_column_at(
+        &self,
+        idx: usize,
+    ) -> Option<(&ArcStr, &ColumnState<X>)> {
+        if idx >= self.displayed_count {
+            return None;
+        }
+        self.columns.get_index(idx)
+    }
+
+    /// Display-order index of `name`, or `None` if `name` isn't a
+    /// displayed column. Spec-only entries (sitting at positions
+    /// ≥ `displayed_count`) return `None` to keep callers from using
+    /// their position as a display index.
+    pub(in crate::widgets::data_table) fn displayed_index_of(
+        &self,
+        name: &str,
+    ) -> Option<usize> {
+        self.columns.get_index_of(name).filter(|&i| i < self.displayed_count)
+    }
+
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         // Fields alphabetical: column_types, on_activate, on_header_click,
         // on_select, on_update, selection, show_row_name, sort_by, table
@@ -240,7 +276,7 @@ impl<X: GXExt> DataTableW<X> {
         let on_update = compile_callable_opt(&gx, &on_update_ref).await?;
         let sort_by = sort_by_ref.last.as_ref().map(parse_sort_by).unwrap_or_default();
         let column_types_parsed = match column_types_ref.last.as_ref() {
-            Some(Value::Null) | None => FxHashMap::default(),
+            Some(Value::Null) | None => fxhash::FxHashMap::default(),
             Some(v) => parse_column_specs(v),
         };
         let selection =
@@ -266,7 +302,6 @@ impl<X: GXExt> DataTableW<X> {
             column_types_ref,
             selection_ref,
             sort_by,
-            column_types: FxHashMap::default(),
             selection,
             on_activate_ref,
             on_activate,
@@ -276,18 +311,12 @@ impl<X: GXExt> DataTableW<X> {
             on_header_click,
             on_update_ref,
             on_update,
-            col_callbacks: FxHashMap::default(),
-            default_value_refs: FxHashMap::default(),
-            width_refs: FxHashMap::default(),
-            ref_widths: FxHashMap::default(),
+            columns: FxIndexMap::default(),
+            displayed_count: 0,
             user_widths: Mutex::new(FxHashMap::default()),
-            on_resize_callbacks: FxHashMap::default(),
-            on_resize_refs: FxHashMap::default(),
             resize_drag: None,
             last_resize_click: None,
             mode: DisplayMode::Table,
-            col_names: FxIndexSet::default(),
-            virtual_cols: FxHashSet::default(),
             row_paths: vec![],
             cells,
             first_row: 0,
@@ -367,7 +396,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if id == self.column_types_ref.id {
             self.column_types_ref.last = Some(v.clone());
             let new_types = match v {
-                Value::Null => FxHashMap::default(),
+                Value::Null => fxhash::FxHashMap::default(),
                 v => parse_column_specs(v),
             };
             let (structural, recompile) = self.apply_column_types_diff(new_types);
@@ -410,7 +439,8 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         update_cb!(on_header_click_ref, on_header_click);
         if id == self.on_update_ref.id {
             self.on_update_ref.last = Some(v.clone());
-            let new_cb = rt.block_on(compile_callable_opt(&self.gx, &self.on_update_ref))?;
+            let new_cb =
+                rt.block_on(compile_callable_opt(&self.gx, &self.on_update_ref))?;
             // Publish the new id to the dispatch task before we drop
             // the old Callable — if we swapped first, the task could
             // briefly see an already-deleted id between drop and the
@@ -421,68 +451,61 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if self.cells.dirty.swap(false, Ordering::Relaxed) {
             changed = true;
         }
-        // Check default_value ref updates (independent of column_types structure).
-        // Find which column (if any) this update belongs to. Snapshot the
-        // pre-update presence so we can detect a null↔non-null transition
-        // — those change whether the column should appear as virtual.
-        let dv_col = self.default_value_refs.iter_mut().find(|(_, e)| id == e.r.id).map(
-            |(name, e)| {
-                let was_present = e.parsed.is_present();
-                e.r.last = Some(v.clone());
-                e.refresh_from_last();
-                let now_present = e.parsed.is_present();
-                (name.clone(), was_present, now_present)
-            },
-        );
-        if let Some((_col_name, was_present, now_present)) = dv_col {
-            if was_present != now_present {
-                self.reconcile_virtual_cols();
-            }
-            // Default values are read at render time via `default_for`
-            // (which consults `default_value_refs`). The ref's `.last`
-            // was just updated above, so the next view() pass sees the
-            // new value automatically — no eager write into a grid map
-            // is needed in the new SubId-indexed model.
-            self.push_defaults_to_sparklines();
-            changed = true;
-        }
-        // Check width ref updates
-        let width_col =
-            self.width_refs.iter_mut().find(|(_, r)| id == r.id).map(|(name, r)| {
-                r.last = Some(v.clone());
-                name.clone()
-            });
-        if let Some(col_name) = width_col {
-            match v.clone().cast_to::<f64>() {
-                Ok(w) => {
-                    self.ref_widths.insert(col_name, w as f32);
-                }
-                Err(_) => {
-                    self.ref_widths.remove(&col_name);
+        // Check per-column ref updates (default_value, width, on_resize).
+        // One pass over `columns` finds which column (if any) owns the
+        // updated ref id and which kind of ref it is — vs. one scan
+        // per ref kind in the previous map-per-kind layout.
+        let column_ref_hit = self.columns.iter_mut().find_map(|(name, c)| {
+            if let Some(e) = c.default_value.as_mut() {
+                if e.r.id == id {
+                    let was_present = e.parsed.is_present();
+                    e.r.last = Some(v.clone());
+                    e.refresh_from_last();
+                    let now_present = e.parsed.is_present();
+                    return Some((
+                        name.clone(),
+                        ColumnRefKind::DefaultValue { was_present, now_present },
+                    ));
                 }
             }
-            changed = true;
-        }
-        // Check on_resize ref updates: the function inside the ref may
-        // be swapped, set to null, or initialized from null.
-        let on_resize_col =
-            self.on_resize_refs.iter_mut().find(|(_, r)| id == r.id).map(|(name, r)| {
-                r.last = Some(v.clone());
-                name.clone()
-            });
-        if let Some(col_name) = on_resize_col {
-            match v {
-                Value::Null => {
-                    self.on_resize_callbacks.remove(&col_name);
+            if let Some(r) = c.width_ref.as_mut() {
+                if r.id == id {
+                    r.last = Some(v.clone());
+                    c.ref_width = v.clone().cast_to::<f64>().ok().map(|w| w as f32);
+                    return Some((name.clone(), ColumnRefKind::Width));
                 }
-                v => match rt.block_on(self.gx.compile_callable(v.clone())) {
-                    Ok(c) => {
-                        self.on_resize_callbacks.insert(col_name, c);
+            }
+            if let Some(r) = c.on_resize_ref.as_mut() {
+                if r.id == id {
+                    r.last = Some(v.clone());
+                    return Some((name.clone(), ColumnRefKind::OnResize));
+                }
+            }
+            None
+        });
+        if let Some((col_name, kind)) = column_ref_hit {
+            match kind {
+                ColumnRefKind::DefaultValue { was_present, now_present } => {
+                    if was_present != now_present {
+                        self.reconcile_virtual_cols();
                     }
-                    Err(_) => {
-                        self.on_resize_callbacks.remove(&col_name);
+                    // Default values are read at render time via
+                    // `default_for`, which consults the column's
+                    // `default_value` entry. The ref's `.last` was
+                    // refreshed above, so the next view() pass sees
+                    // the new value automatically.
+                    self.push_defaults_to_sparklines();
+                }
+                ColumnRefKind::Width => {}
+                ColumnRefKind::OnResize => {
+                    let new_cb = match v {
+                        Value::Null => None,
+                        v => rt.block_on(self.gx.compile_callable(v.clone())).ok(),
+                    };
+                    if let Some(c) = self.columns.get_mut(&col_name) {
+                        c.on_resize = new_cb;
                     }
-                },
+                }
             }
             changed = true;
         }
@@ -511,9 +534,8 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 .row_paths
                 .iter()
                 .map(|row_path| {
-                    self.col_names
-                        .iter()
-                        .map(|cn| {
+                    self.displayed_columns()
+                        .map(|(cn, _)| {
                             let key = (row_path.clone(), cn.clone());
                             let id = inner.cells.get(&key).copied();
                             id.and_then(|id| inner.formatted_for(id))
@@ -542,7 +564,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         };
         drop(inner);
         Some(super::DataTableSnapshot {
-            col_names: self.col_names.iter().map(|s| s.to_string()).collect(),
+            col_names: self.displayed_columns().map(|(s, _)| s.to_string()).collect(),
             row_basenames: self
                 .row_paths
                 .iter()
@@ -569,8 +591,8 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         msg: &super::Message,
         shell: &mut super::MessageShell,
     ) -> bool {
-        use netidx::protocol::valarray::ValArray;
         use super::Message;
+        use netidx::protocol::valarray::ValArray;
         match msg {
             Message::CellClick(row, col) => self.handle_cell_click(*row, col.clone()),
             Message::CellEdit(row, col) => self.handle_cell_edit(*row, col.clone()),
