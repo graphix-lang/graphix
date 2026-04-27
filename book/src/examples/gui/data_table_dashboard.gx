@@ -40,7 +40,6 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
         "/local/graphix/data_table_dashboard/[name]/state",
         state
     );
-    // svc_1_cpu <- ;
     sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
     sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
     sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
@@ -60,36 +59,14 @@ let published = array::init(1024, |i| svc(
     #cpu:rn(0., 30.) + rn(1., 5.) * math::sin((t + rn(0., 5.)) / rn(1., 5.))
 ));
 
-// Caller-side filter: apply the regex to the Table's rows before
-// handing the Table to the widget.
-let pattern = "";
-let tbl: sys::net::Table = {
-    let tbl = sys::net::list_table("/local/graphix/data_table_dashboard")$;
-    select str::len(pattern) {
-        n if n == 0 => tbl,
-        _ => {
-            let rows = array::filter(tbl.rows, |r| {
-                let row = opt::or_default(str::basename(r), r);
-                select re::is_match(#pat: pattern, row) {
-                    error as _ => false,
-                    b => b
-                }
-            });
-            { tbl with rows }
-        }
-    }
-};
-
-let sort_col = "state";
-let sort_dir: SortDirection = `Ascending;
-let sort_by: Array<SortBy> = [{ column: sort_col, direction: sort_dir }];
-
-// Selection + footer
-let selection: Array<string> = [];
 let last_action = "";
 
-let types = {
+// Map the resolver-derived columns array. Bare-string entries
+// (anything we don't recognize) pass through as default Text columns;
+// the four named columns get their custom ColumnSpec.
+let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
     "state" => combo_column(
+        #name: "state",
         #choices: [
             { id: "Healthy", label: "Healthy" },
             { id: "Degraded", label: "Degraded" },
@@ -98,23 +75,52 @@ let types = {
         #on_edit: |#path: string, #value: string|
             sys::net::write(path, value)$,
         #display_name: "State",
-        #width:&110.
+        #width: &110.
     ),
     "cpu" => sparkline_column(
+        #name: "cpu",
         #history_seconds: f64:30.0,
         #display_name: "CPU",
         #width: &220.0
     ),
     "uptime" => progress_column(
+        #name: "uptime",
         #display_name: "Uptime",
         #width: &180.0
     ),
     "action" => button_column(
+        #name: "action",
         #on_click: |#path: string, #value: Any|
             last_action <- "[path]",
         #display_name: "Action"
-    )
+    ),
+    other => other
+});
+
+// Caller-side filter: apply the regex to the Table's rows, then
+// rewrap with the column specs.
+let pattern = "";
+let tbl: Table = {
+    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let rows = select str::len(pattern) {
+        n if n == 0 => raw.rows,
+        _ => array::filter(raw.rows, |r| {
+            let row = opt::or_default(str::basename(r), r);
+            select re::is_match(#pat: pattern, row) {
+                error as _ => false,
+                b => b
+            }
+        })
+    };
+    { rows, columns: make_columns(raw.columns) }
 };
+
+let sort_col = "state";
+let sort_dir: SortDirection = `Ascending;
+let sort_by: Array<SortBy> = [{ column: sort_col, direction: sort_dir }];
+
+// Selection + footer
+let selection: Array<string> = [];
 
 let controls = row(
     #spacing: &10.0,
@@ -165,7 +171,6 @@ let layout = column(
         text(#size: &20.0, &"Service dashboard"),
         controls,
         data_table(
-            #column_types: &types,
             #sort_by: &sort_by,
             #selection: &selection,
             #on_select: |#path: string| selection <- [path],

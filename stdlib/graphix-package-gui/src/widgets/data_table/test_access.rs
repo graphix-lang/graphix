@@ -146,19 +146,6 @@ impl<X: GXExt> DataTableW<X> {
         self.user_widths.lock().get(col).copied()
     }
 
-    /// Number of distinct rows with at least one active netidx
-    /// subscription. Tests use this to verify that `column_types`
-    /// updates don't tear down live row subs unnecessarily.
-    pub fn dt_row_sub_count(&self) -> usize {
-        let inner = self.cells.inner.lock();
-        let mut seen: std::collections::HashSet<&netidx::path::Path> =
-            std::collections::HashSet::new();
-        for (path, _col) in inner.cells.keys() {
-            seen.insert(path);
-        }
-        seen.len()
-    }
-
     /// Manually populate the cached column widths so scroll-math
     /// tests can predict `first_col` without waiting for a render
     /// pass to measure text. Returns the previous value if any.
@@ -171,36 +158,6 @@ impl<X: GXExt> DataTableW<X> {
         self.col_at_offset(ox)
     }
 
-    /// Public wrapper over `min_first_col_for_fit` for tests.
-    pub fn min_first_col_for_fit_for_test(&self, vp_width: f32) -> usize {
-        self.min_first_col_for_fit(vp_width)
-    }
-
-    /// Public wrapper over `virtual_content_width` for tests.
-    pub fn virtual_content_width_for_test(&self) -> f32 {
-        self.virtual_content_width()
-    }
-
-    /// Drive `handle_scroll` directly. Mirrors the `Message::Scroll`
-    /// path the responsive scrollable would emit but skips the iced
-    /// layout pass — tests can pin viewport size and offset and verify
-    /// the resulting `first_col` / `first_row` choice. Returns the
-    /// boolean from `handle_scroll`.
-    pub fn handle_scroll_for_test(
-        &mut self,
-        ox: f32,
-        oy: f32,
-        vp_w: f32,
-        vp_h: f32,
-    ) -> bool {
-        self.handle_scroll(ox, oy, vp_w, vp_h)
-    }
-
-    /// Public read of `first_col` for tests.
-    pub fn first_col_for_test(&self) -> usize {
-        self.first_col
-    }
-
     /// Sort indicator suffix (e.g. `" ▲"`, `" ▼₂"`) for `col`, or
     /// `None` if the column isn't currently in `sort_by`. Tests use
     /// this to check that header arrows and subscript priorities
@@ -210,9 +167,7 @@ impl<X: GXExt> DataTableW<X> {
         self.build_sort_indicators().get(col).map(|s| s.to_string())
     }
 
-    /// Look up a single cell's display value, going through the same
-    /// formatted-cache + default fallback the snapshot uses. Returns
-    /// `None` if the indices are out of range.
+    #[allow(dead_code)]
     pub fn dt_snapshot_value_at(&self, row_idx: usize, col_idx: usize) -> Option<String> {
         let row_path = self.row_paths.get(row_idx)?;
         match self.mode {

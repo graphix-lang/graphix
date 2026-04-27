@@ -1,15 +1,13 @@
 let data_table = |
   #sort_by: &Array<SortBy> = &[],
-  #column_types: &Map<string, ColumnSpec> = &{},
   #selection: &Array<string> = &[],
   #show_row_name: &bool = &true,
   #on_select: [fn(#path: string) -> Any, null] = null,
   #on_activate: [fn(#path: string) -> Any, null] = null,
   #on_header_click: [fn(#column: string) -> Any, null] = null,
   #on_update: [fn(#path: string, #value: Primitive) -> Any, null] = null,
-  #table: &sys::net::Table
+  #table: &Table
 | -> Widget `DataTable({
-    column_types,
     on_activate: &on_activate,
     on_header_click: &on_header_click, on_select: &on_select,
     on_update: &on_update,
@@ -17,83 +15,97 @@ let data_table = |
 });
 
 let text_column = |
+  #name: string,
   #on_edit: [fn(#path: string, #value: Any) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Text({ on_edit }),
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };
 
 let toggle_column = |
+  #name: string,
   #on_edit: [fn(#path: string, #value: bool) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Toggle({ on_edit }),
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };
 
 let combo_column = |
+  #name: string,
   #choices: Array<{ id: string, label: string }>,
   #on_edit: [fn(#path: string, #value: string) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Combo({ choices, on_edit }),
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };
 
 let spin_column = |
+  #name: string,
   #min: f64,
   #max: f64,
   #increment: f64,
   #on_edit: [fn(#path: string, #value: f64) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Spin({ min, max, increment, on_edit }),
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };
 
 let progress_column = |
+  #name: string,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Progress,
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };
 
 let button_column = |
+  #name: string,
   #on_click: [fn(#path: string, #value: Any) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Button({ on_click }),
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };
 
 let sparkline_column = |
+  #name: string,
   #history_seconds: f64,
   #min: [f64, null] = null,
   #max: [f64, null] = null,
   #display_name: [string, null] = null,
-  #default_value: &[null, string, Map<string, Any>] = &null,
+  #source: &Source = &`Netidx,
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
+    name,
     typ: `Sparkline({ history_seconds, min, max }),
-    display_name, default_value, on_resize, width
+    display_name, source, on_resize, width
 };

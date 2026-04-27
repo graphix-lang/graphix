@@ -18,6 +18,7 @@ use fxhash::FxHashMap;
 use graphix_rt::GXExt;
 use iced_widget as widget;
 use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
+use poolshark::local::LPooled;
 
 type Col<'a> = widget::Column<'a, Message, GraphixTheme, Renderer>;
 type Row<'a> = widget::Row<'a, Message, GraphixTheme, Renderer>;
@@ -131,7 +132,9 @@ impl<X: GXExt> DataTableW<X> {
     /// there's more than one sort column, each indicator also gets a
     /// unicode subscript digit (₁ ₂ ₃…) showing its 1-based priority
     /// so the user can tell primary from tie-breakers.
-    pub(super) fn build_sort_indicators(&self) -> FxHashMap<ArcStr, CompactString> {
+    pub(super) fn build_sort_indicators(
+        &self,
+    ) -> LPooled<FxHashMap<ArcStr, CompactString>> {
         let multi = self.sort_by.len() > 1;
         self.sort_by
             .iter()
@@ -197,21 +200,20 @@ impl<X: GXExt> DataTableW<X> {
         // are refcount bumps — the grid's stored values are reused
         // across width measurement, header rendering, and per-cell
         // rendering without re-allocating.
-        let grid_snapshot: Vec<Vec<ArcStr>> = {
+        let grid_snapshot: LPooled<Vec<LPooled<Vec<ArcStr>>>> = {
             let mut inner = self.cells.inner.lock();
             (vis_row_start..vis_row_end)
                 .map(|i| match self.row_paths.get(i) {
-                    None => vec![],
+                    None => LPooled::take(),
                     Some(row_path) => match self.mode {
                         DisplayMode::Table => self
                             .displayed_columns()
                             .map(|(cn, _)| {
                                 let key = (row_path.clone(), cn.clone());
                                 let id = inner.cells.get(&key).copied();
-                                id.and_then(|id| inner.formatted_for(id))
-                                    .unwrap_or_else(|| {
-                                        self.default_for(cn, row_basename(row_path))
-                                    })
+                                id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(
+                                    || self.default_for(cn, row_basename(row_path)),
+                                )
                             })
                             .collect(),
                         DisplayMode::Value => {
@@ -220,20 +222,22 @@ impl<X: GXExt> DataTableW<X> {
                             let v = id
                                 .and_then(|id| inner.formatted_for(id))
                                 .unwrap_or_default();
-                            vec![v]
+                            let mut res: LPooled<Vec<ArcStr>> = LPooled::take();
+                            res.push(v);
+                            res
                         }
                     },
                 })
                 .collect()
         };
         let name_col_offset = if show_row_name { 1 } else { 0 };
-        let sort_indicators: FxHashMap<ArcStr, CompactString> =
+        let sort_indicators: LPooled<FxHashMap<ArcStr, CompactString>> =
             self.build_sort_indicators();
         // Column metadata with widths.
         // If effective_col_width returns Some, use it directly.
         // Otherwise auto-size from content (up to DEFAULT_MAX_COL_WIDTH)
         // and lock the result into user_widths.
-        let mut col_meta: Vec<(ArcStr, f32)> = Vec::new();
+        let mut col_meta: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
         if show_row_name {
             let w = match self.effective_col_width(ROW_NAME_KEY) {
                 Some(w) => w,
@@ -264,15 +268,14 @@ impl<X: GXExt> DataTableW<X> {
                             let max_w = DEFAULT_MAX_COL_WIDTH;
                             let display = state
                                 .spec
-                                .as_ref()
-                                .and_then(|s| s.display_name.as_deref())
+                                .display_name
+                                .as_deref()
                                 .unwrap_or(name.as_str());
                             // Include the sort indicator (if any) in
                             // header-width measurement so the arrow
-                                // can't be clipped or push the text against
+                            // can't be clipped or push the text against
                             // the resize handle when auto-sizing.
-                            let header: CompactString = match sort_indicators.get(name)
-                            {
+                            let header: CompactString = match sort_indicators.get(name) {
                                 Some(ind) => format_compact!("{display}{ind}"),
                                 None => display.into(),
                             };
@@ -280,7 +283,7 @@ impl<X: GXExt> DataTableW<X> {
                             let mut w =
                                 col_header_width(&header).max(MIN_COL_WIDTH).min(max_w);
                             // Cell content may be wider
-                            for row in &grid_snapshot {
+                            for row in &*grid_snapshot {
                                 if i < row.len() {
                                     w = w.max(col_min_width(&row[i], max_w));
                                 }
@@ -297,7 +300,7 @@ impl<X: GXExt> DataTableW<X> {
                     None => {
                         let max_w = DEFAULT_MAX_COL_WIDTH;
                         let mut w = col_min_width("value", max_w);
-                        for row in &grid_snapshot {
+                        for row in &*grid_snapshot {
                             if let Some(v) = row.first() {
                                 w = w.max(col_min_width(v, max_w));
                             }
@@ -317,7 +320,7 @@ impl<X: GXExt> DataTableW<X> {
         // the cache when the column set changes.
         {
             let mut cache = self.cached_col_widths.lock();
-            for (name, w) in &col_meta {
+            for (name, w) in &*col_meta {
                 cache.insert(name.clone(), *w);
             }
         }
@@ -328,8 +331,7 @@ impl<X: GXExt> DataTableW<X> {
             let entry = self.columns.get(name);
             let header_text: ArcStr = if is_data_col {
                 let base = entry
-                    .and_then(|c| c.spec.as_ref())
-                    .and_then(|s| s.display_name.clone())
+                    .and_then(|c| c.spec.display_name.clone())
                     .unwrap_or_else(|| name.clone());
                 match sort_indicators.get(name) {
                     Some(ind) => format_compact!("{base}{ind}").as_str().into(),
@@ -556,8 +558,8 @@ impl<X: GXExt> DataTableW<X> {
 
     fn wrap_keyboard<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
         use crate::widgets::iced_keyboard_area::KeyboardArea;
-        use iced_core::keyboard;
         use crate::widgets::TableKeyAction;
+        use iced_core::keyboard;
 
         KeyboardArea::new(content)
             .on_key_press(|event| match event {
@@ -665,12 +667,8 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         for (col_name, state) in self.columns.iter() {
-            let spec = match state.spec.as_ref() {
-                Some(s) => s,
-                None => continue,
-            };
-            let (fmin, fmax) = match &spec.typ {
-                ColumnType::Sparkline { min, max, .. } => (*min, *max),
+            let (fmin, fmax) = match &state.spec.typ {
+                ColumnType::Sparkline { min, max, .. } => (min, max),
                 _ => continue,
             };
             // Auto-scale fallback: use the column's union range if

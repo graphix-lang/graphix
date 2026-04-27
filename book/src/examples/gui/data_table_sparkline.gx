@@ -32,15 +32,18 @@ sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
 sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
 sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
 
-let tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
-
-let types = {
+let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
     "cpu" => sparkline_column(
+        #name: "cpu",
         #history_seconds: 30.0,
         #display_name: "CPU (last 30s)",
         #width: &260.0
-    )
-};
+    ),
+    other => other
+});
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let layout = column(
     #spacing: &12.0,
@@ -50,7 +53,7 @@ let layout = column(
     &[
         text(#size: &20.0, &"CPU over time"),
         text(&"Sparkline column accumulates values from its cell subscription."),
-        data_table(#column_types: &types, #table: &tbl)
+        data_table(#table: &tbl)
     ]
 );
 

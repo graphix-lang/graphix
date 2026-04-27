@@ -32,12 +32,11 @@ sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
 let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 
 // Filter controls: a regex pattern and whether it includes or excludes.
-// Unlike earlier versions where the widget carried a FilterSpec, the
-// caller now reshapes the Table in graphix before passing it in.
+// The caller reshapes the Table in graphix before passing it in.
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
-let tbl: sys::net::Table = raw_tbl;
+let tbl: Table = raw_tbl;
 tbl <- select str::len(pattern) {
     n if n == 0 => raw_tbl,
     _ => {

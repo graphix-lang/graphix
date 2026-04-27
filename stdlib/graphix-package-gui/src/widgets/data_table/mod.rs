@@ -51,9 +51,7 @@ mod types;
 mod test_access;
 
 use subscriptions::{spawn_dispatch_task, SharedCells};
-use types::{
-    parse_column_specs, parse_selection, parse_sort_by, ColumnState, ResizeDrag, SortBy,
-};
+use types::{parse_selection, parse_sort_by, ColumnState, ResizeDrag, SortBy};
 
 #[cfg(test)]
 pub(crate) use types::decimate_sparkline;
@@ -125,7 +123,6 @@ pub(crate) struct DataTableW<X: GXExt> {
     table_ref: Ref<X>,
     show_row_name: TRef<X, bool>,
     sort_by_ref: Ref<X>,
-    column_types_ref: Ref<X>,
     selection_ref: Ref<X>,
     sort_by: Vec<SortBy>,
     /// Set of selected cell paths (`row_path` for the row-name column,
@@ -139,19 +136,11 @@ pub(crate) struct DataTableW<X: GXExt> {
     on_header_click: Option<Callable<X>>,
     on_update_ref: Ref<X>,
     on_update: Option<Callable<X>>,
-    /// All known columns. Indexed iteration order is the display
-    /// order: the first `displayed_count` entries are the displayed
-    /// columns, in display order; remaining entries are spec-only
-    /// (configured via `column_types` but not currently rendered).
-    /// Spec-only entries stay in the map so their `default_value`,
-    /// `width`, and `on_resize` refs remain alive — their updates can
-    /// promote the column into the displayed prefix without losing
-    /// callable identity.
+    /// All columns in display order. The map's iteration order IS
+    /// the display order; insertion happens in `apply_table` from
+    /// the user-supplied `columns` array. Per-entry `ColumnState`
+    /// carries the parsed spec plus compiled callables/refs.
     columns: FxIndexMap<ArcStr, ColumnState<X>>,
-    /// Number of leading entries in `columns` that are currently
-    /// displayed. Maintained as an invariant by `apply_table`,
-    /// `apply_column_types_diff`, and `reconcile_virtual_cols`.
-    displayed_count: usize,
     /// User-controlled widths (free resize or auto-sized on first
     /// load). Held in a `Mutex` so render-path code (which only has
     /// `&self`) can read and write through it. Lifetime is decoupled
@@ -199,58 +188,58 @@ async fn compile_callable_opt<X: GXExt>(
 }
 
 /// Tag for which per-column ref the `handle_update` ref-id sweep
-/// matched. `default_value` carries the pre/post `is_present()` flags
-/// because the null↔non-null transition is what governs whether
-/// `reconcile_virtual_cols` needs to run.
+/// matched. `Source` carries the pre/post `is_netidx()` flags because
+/// a transition between Netidx and stored-source modes shifts
+/// subscription topology — the next `update_subscriptions` pass needs
+/// to pick that up.
 enum ColumnRefKind {
-    DefaultValue { was_present: bool, now_present: bool },
+    Source { was_netidx: bool, now_netidx: bool },
     Width,
     OnResize,
 }
 
 impl<X: GXExt> DataTableW<X> {
-    /// Iterator over the displayed prefix of `columns`, in display
-    /// order. Use this anywhere the previous code iterated `col_names`
-    /// — the position in the resulting iterator IS the column's
-    /// display index.
+    /// Iterator over all columns in display order. Position in the
+    /// iterator is the column's display index.
     pub(in crate::widgets::data_table) fn displayed_columns(
         &self,
     ) -> impl ExactSizeIterator<Item = (&ArcStr, &ColumnState<X>)> {
-        self.columns.as_slice()[..self.displayed_count].iter().map(|(k, v)| (k, v))
+        self.columns.iter()
     }
 
-    /// `(name, state)` of the displayed column at `idx`, or `None` if
-    /// `idx` is out of the displayed range. The non-displayed
-    /// (spec-only) tail of `columns` is intentionally invisible
-    /// through this accessor.
+    /// `(name, state)` of the column at display index `idx`, or
+    /// `None` if `idx` is out of range.
     pub(in crate::widgets::data_table) fn displayed_column_at(
         &self,
         idx: usize,
     ) -> Option<(&ArcStr, &ColumnState<X>)> {
-        if idx >= self.displayed_count {
-            return None;
-        }
         self.columns.get_index(idx)
     }
 
     /// Display-order index of `name`, or `None` if `name` isn't a
-    /// displayed column. Spec-only entries (sitting at positions
-    /// ≥ `displayed_count`) return `None` to keep callers from using
-    /// their position as a display index.
+    /// known column.
     pub(in crate::widgets::data_table) fn displayed_index_of(
         &self,
         name: &str,
     ) -> Option<usize> {
-        self.columns.get_index_of(name).filter(|&i| i < self.displayed_count)
+        self.columns.get_index_of(name)
+    }
+
+    /// Number of columns currently displayed. Equal to
+    /// `self.columns.len()` — provided as a named accessor so call
+    /// sites read symmetrically against `displayed_columns()` /
+    /// `displayed_column_at()` and don't have to know that there's no
+    /// longer a separate "spec-only" tail.
+    pub(in crate::widgets::data_table) fn displayed_count(&self) -> usize {
+        self.columns.len()
     }
 
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        // Fields alphabetical: column_types, on_activate, on_header_click,
-        // on_select, on_update, selection, show_row_name, sort_by, table
-        let [(_, column_types_id), (_, on_activate_id), (_, on_header_click_id), (_, on_select_id), (_, on_update_id), (_, selection_id), (_, show_row_name_id), (_, sort_by_id), (_, table_id)] =
-            source.cast_to::<[(ArcStr, u64); 9]>().context("data_table flds")?;
+        // Fields alphabetical: on_activate, on_header_click, on_select,
+        // on_update, selection, show_row_name, sort_by, table
+        let [(_, on_activate_id), (_, on_header_click_id), (_, on_select_id), (_, on_update_id), (_, selection_id), (_, show_row_name_id), (_, sort_by_id), (_, table_id)] =
+            source.cast_to::<[(ArcStr, u64); 8]>().context("data_table flds")?;
         let (
-            column_types_ref,
             on_activate_ref,
             on_header_click_ref,
             on_select_ref,
@@ -260,7 +249,6 @@ impl<X: GXExt> DataTableW<X> {
             sort_by_ref,
             table_ref,
         ) = tokio::try_join!(
-            gx.compile_ref(column_types_id),
             gx.compile_ref(on_activate_id),
             gx.compile_ref(on_header_click_id),
             gx.compile_ref(on_select_id),
@@ -275,10 +263,6 @@ impl<X: GXExt> DataTableW<X> {
         let on_header_click = compile_callable_opt(&gx, &on_header_click_ref).await?;
         let on_update = compile_callable_opt(&gx, &on_update_ref).await?;
         let sort_by = sort_by_ref.last.as_ref().map(parse_sort_by).unwrap_or_default();
-        let column_types_parsed = match column_types_ref.last.as_ref() {
-            Some(Value::Null) | None => fxhash::FxHashMap::default(),
-            Some(v) => parse_column_specs(v),
-        };
         let selection =
             selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         let subscriber = gx.subscriber();
@@ -290,16 +274,12 @@ impl<X: GXExt> DataTableW<X> {
         cells.inner.lock().on_update = initial_on_update;
         let (update_tx, update_rx) = mpsc::channel(SUB_CHANNEL_SLACK);
         spawn_dispatch_task(&rt, &cells, update_rx);
-        // Start with empty column_types so apply_column_types_update
-        // handles initial compilation via the same diff path the
-        // reactive update uses.
         let mut w = Self {
             gx,
             subscriber,
             table_ref,
             show_row_name,
             sort_by_ref,
-            column_types_ref,
             selection_ref,
             sort_by,
             selection,
@@ -312,7 +292,6 @@ impl<X: GXExt> DataTableW<X> {
             on_update_ref,
             on_update,
             columns: FxIndexMap::default(),
-            displayed_count: 0,
             user_widths: Mutex::new(FxHashMap::default()),
             resize_drag: None,
             last_resize_click: None,
@@ -328,9 +307,14 @@ impl<X: GXExt> DataTableW<X> {
             edit_buffer: CompactString::new(""),
             update_tx,
         };
-        let (_, recompile) = w.apply_column_types_diff(column_types_parsed);
-        w.apply_column_recompile(recompile).await?;
-        w.apply_table();
+        let pending = w.apply_table_sync();
+        if !pending.is_empty() {
+            w.compile_pending_columns(pending).await?;
+        }
+        w.push_defaults_to_sparklines();
+        if !w.sort_by.is_empty() {
+            w.resort_by_column();
+        }
         w.update_subscriptions();
         Ok(Box::new(w))
     }
@@ -393,35 +377,10 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             needs_resolve = true;
             changed = true;
         }
-        if id == self.column_types_ref.id {
-            self.column_types_ref.last = Some(v.clone());
-            let new_types = match v {
-                Value::Null => fxhash::FxHashMap::default(),
-                v => parse_column_specs(v),
-            };
-            let (structural, recompile) = self.apply_column_types_diff(new_types);
-            // Only enter the runtime if something actually needs
-            // compiling. `display_name`-only updates (and anything
-            // else that leaves every callable and bid alone) stay on
-            // the sync path so tests driven from a current-thread
-            // tokio task don't trip the nested-runtime panic.
-            if !recompile.is_empty() {
-                rt.block_on(self.apply_column_recompile(recompile))?;
-            }
-            if structural {
-                needs_resolve = true;
-            }
-            changed = true;
-        }
         if id == self.selection_ref.id {
             self.selection_ref.last = Some(v.clone());
             self.selection = parse_selection(v);
             self.ensure_selection_visible();
-            changed = true;
-        }
-        if needs_resolve {
-            self.apply_table();
-            self.update_subscriptions();
             changed = true;
         }
         changed |= self.show_row_name.update(id, v).context("show_row_name")?.is_some();
@@ -451,20 +410,19 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if self.cells.dirty.swap(false, Ordering::Relaxed) {
             changed = true;
         }
-        // Check per-column ref updates (default_value, width, on_resize).
+        // Check per-column ref updates (source, width, on_resize).
         // One pass over `columns` finds which column (if any) owns the
-        // updated ref id and which kind of ref it is — vs. one scan
-        // per ref kind in the previous map-per-kind layout.
+        // updated ref id and which kind of ref it is.
         let column_ref_hit = self.columns.iter_mut().find_map(|(name, c)| {
-            if let Some(e) = c.default_value.as_mut() {
+            if let Some(e) = c.source.as_mut() {
                 if e.r.id == id {
-                    let was_present = e.parsed.is_present();
+                    let was_netidx = e.parsed.is_netidx();
                     e.r.last = Some(v.clone());
                     e.refresh_from_last();
-                    let now_present = e.parsed.is_present();
+                    let now_netidx = e.parsed.is_netidx();
                     return Some((
                         name.clone(),
-                        ColumnRefKind::DefaultValue { was_present, now_present },
+                        ColumnRefKind::Source { was_netidx, now_netidx },
                     ));
                 }
             }
@@ -485,13 +443,17 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         });
         if let Some((col_name, kind)) = column_ref_hit {
             match kind {
-                ColumnRefKind::DefaultValue { was_present, now_present } => {
-                    if was_present != now_present {
-                        self.reconcile_virtual_cols();
+                ColumnRefKind::Source { was_netidx, now_netidx } => {
+                    if was_netidx != now_netidx {
+                        // Subscription topology shifts when a column
+                        // toggles between Netidx and stored-source
+                        // modes — the visible-window reconcile below
+                        // (via `update_subscriptions`) picks up new
+                        // subscriptions and drops stale ones.
+                        needs_resolve = true;
                     }
-                    // Default values are read at render time via
-                    // `default_for`, which consults the column's
-                    // `default_value` entry. The ref's `.last` was
+                    // Source values are read at render time via
+                    // `source_value_for`. The ref's `.last` was
                     // refreshed above, so the next view() pass sees
                     // the new value automatically.
                     self.push_defaults_to_sparklines();
@@ -513,6 +475,16 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if self.cells.sort_col_dirty.swap(false, Ordering::Relaxed) {
             self.resort_by_column();
             changed = true;
+        }
+        if needs_resolve {
+            let pending = self.apply_table_sync();
+            if !pending.is_empty() {
+                rt.block_on(self.compile_pending_columns(pending))?;
+            }
+            self.push_defaults_to_sparklines();
+            if !self.sort_by.is_empty() {
+                self.resort_by_column();
+            }
         }
         self.update_subscriptions();
         Ok(changed)

@@ -7,10 +7,10 @@ use sys;
 use sys::net;
 mod icon;
 
-// Two published columns A and B. A virtual "sum" column gets its
-// value from a per-row default ref; the on_update callback watches
-// every cell update on subscribed cells and pushes the new (a+b)
-// total into the corresponding sum ref.
+// Two published columns A and B. A virtual "sum" column has its
+// per-cell value set from a let-bound Map; the `on_update` callback
+// watches every subscribed cell update and pushes the new (a+b)
+// total into the sum entry.
 
 let rv = {
     let clock = time::timer(5, true);
@@ -24,11 +24,31 @@ publish("/local/graphix/data_table_calculated/r0/B", rv());
 publish("/local/graphix/data_table_calculated/r1/B", rv());
 publish("/local/graphix/data_table_calculated/r2/B", rv());
 
-let tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map<string, Map<string, i64>> = {};
 
-// on_update is called on updates to netidx subscriptions by the table
+// Append a virtual `sum` column to the resolver-derived table. The
+// bare strings from `sys::net::list_table` continue to mean "Netidx-
+// sourced Text columns"; the new entry pulls its values from a let-
+// bound Map updated by the on_update callback below.
+//
+// `array::map` with an explicit `-> [string, ColumnSpec]` return type
+// widens each bare-string entry into the union element type before
+// concat. Without the explicit return type, inference leaves the
+// resulting array as `Array<string>` and fails to fit ColumnSpec.
+let widened: Array<[string, ColumnSpec]> =
+    array::map(raw_tbl.columns, |n: string| -> [string, ColumnSpec] n);
+let tbl: Table = {
+    rows: raw_tbl.rows,
+    columns: array::push(widened, text_column(
+        #name: "sum",
+        #display_name: "A + B",
+        #source: &opt::or_default(map::get(data, "sum"), {})
+    ))
+};
+
+// on_update is called on updates to netidx subscriptions by the table.
 let on_update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
     let d = v ~ data; // run only when v updates
@@ -41,13 +61,6 @@ let on_update = |#path: string, #value: Primitive| {
     data <- map::change(d, "sum", {}, |sums| map::insert(sums, row, sum))
 };
 
-let types = {
-    "sum" => text_column(
-        #display_name: "A + B",
-        #default_value: &map::get_or(data, "sum", {})
-    )
-};
-
 let layout = column(
     #spacing: &12.0,
     #padding: &`All(20.0),
@@ -56,11 +69,7 @@ let layout = column(
     &[
         text(#size: &20.0, &"Calculated column"),
         text(&"on_update fires on every cell update; the virtual sum column reflects A + B."),
-        data_table(
-            #column_types: &types,
-            #on_update,
-            #table: &tbl
-        )
+        data_table(#on_update, #table: &tbl)
     ]
 );
 

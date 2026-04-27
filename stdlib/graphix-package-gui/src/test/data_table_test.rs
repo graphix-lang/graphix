@@ -96,12 +96,11 @@ let result = data_table(#table: &tbl)
 async fn default_value_uniform() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
+let tbl = { rows: ["r0", "r1"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }), display_name: null, source: &"DEF", on_resize: &null, width: &null }
+    ] };
 let result = data_table(
-    #column_types: &{
-        "c0" => { typ: `Text({ on_edit: null }), display_name: null, default_value: &"DEF", on_resize: &null, width: &null }
-    },
-    #table: &tbl
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -115,19 +114,16 @@ let result = data_table(
 async fn default_value_per_row() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let a = "val_a";
 let b = "val_b";
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0", "r1"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => a, "r1" => b },
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &{"r0" => a, "r1" => b },
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -136,98 +132,21 @@ let result = data_table(
     assert_eq!(snap.grid[1][0], "val_b");
     Ok(())
 }
-
-/// `reconcile_virtual_cols` runs when a `default_value` ref transitions
-/// null↔non-null. Promotion (null → non-null) brings a spec-only
-/// column into the displayed prefix as a virtual column; demotion
-/// (non-null → null) takes it back out. This exercises
-/// `IndexMap::move_index` — the path that doesn't go through
-/// `apply_table`'s full rebuild — so that a regression in the
-/// promote/demote bookkeeping (`displayed_count`, `virtual_col` flag,
-/// or position) shows up here instead of as a silently misplaced
-/// column at runtime.
-#[tokio::test(flavor = "current_thread")]
-async fn reconcile_virtual_promotion_demotion() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let dv = null;
-let tbl = { rows: ["r0"], columns: ["real"] };
-let result = data_table(
-    #column_types: &{
-        "phantom" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null,
-            default_value: &dv,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    // dv is null at startup, so "phantom" is spec-only — its
-    // `default_value` ref is compiled and live, but the column is
-    // past `displayed_count` and shouldn't appear in the snapshot.
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.col_names, vec!["real".to_string()]);
-
-    // Promote: dv → "ghost". reconcile_virtual_cols should move
-    // "phantom" into the displayed prefix and mark virtual.
-    let bid = find_bind_id(&h.compiled.env, "test::dv")?;
-    let mut dv_ref = h.gx.compile_ref(bid).await?;
-    dv_ref.set(Value::String(arcstr::literal!("ghost")))?;
-    for _ in 0..5 {
-        h.drain().await?;
-        if h.dt_snapshot().col_names.iter().any(|n| n == "phantom") {
-            break;
-        }
-    }
-    let snap = h.dt_snapshot();
-    assert!(
-        snap.col_names.iter().any(|n| n == "phantom"),
-        "phantom should be displayed after default_value transitions to non-null; \
-         col_names = {:?}",
-        snap.col_names
-    );
-    let pi = snap.col_names.iter().position(|n| n == "phantom").unwrap();
-    assert_eq!(snap.grid[0][pi], "ghost");
-
-    // Demote: dv → null. The column should disappear from display.
-    dv_ref.set(Value::Null)?;
-    for _ in 0..5 {
-        h.drain().await?;
-        if !h.dt_snapshot().col_names.iter().any(|n| n == "phantom") {
-            break;
-        }
-    }
-    let snap = h.dt_snapshot();
-    assert!(
-        !snap.col_names.iter().any(|n| n == "phantom"),
-        "phantom should disappear from display after default_value transitions \
-         back to null; col_names = {:?}",
-        snap.col_names
-    );
-
-    Ok(())
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn virtual_column() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: ["real"] };
 let a = "calc_a";
 let b = "calc_b";
-let result = data_table(
-    #column_types: &{
-        "virtual" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0", "r1"], columns: [
+        "real",
+        { name: "virtual", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => a, "r1" => b },
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &{"r0" => a, "r1" => b },
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -458,21 +377,19 @@ let result = data_table(
 async fn sort_by_virtual_column_ascending() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: ["real"] };
 let p0 = "3";
 let p1 = "1";
 let p2 = "2";
+let tbl = { rows: ["r0", "r1", "r2"], columns: [
+        "real",
+        { name: "priority", typ: `Text({ on_edit: null }),
+            display_name: "Priority",
+            source: &{"r0" => p0, "r1" => p1, "r2" => p2 },
+            on_resize: &null, width: &null }
+    ] };
 let result = data_table(
     #sort_by: &[{ column: "priority", direction: `Ascending }],
-    #column_types: &{
-        "priority" => {
-            typ: `Text({ on_edit: null }),
-            display_name: "Priority",
-            default_value: &{"r0" => p0, "r1" => p1, "r2" => p2 },
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -486,21 +403,19 @@ let result = data_table(
 async fn sort_by_virtual_column_descending() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: ["real"] };
 let s0 = "10";
 let s1 = "30";
 let s2 = "20";
+let tbl = { rows: ["r0", "r1", "r2"], columns: [
+        "real",
+        { name: "score", typ: `Text({ on_edit: null }),
+            display_name: null,
+            source: &{"r0" => s0, "r1" => s1, "r2" => s2 },
+            on_resize: &null, width: &null }
+    ] };
 let result = data_table(
     #sort_by: &[{ column: "score", direction: `Descending }],
-    #column_types: &{
-        "score" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null,
-            default_value: &{"r0" => s0, "r1" => s1, "r2" => s2 },
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -514,21 +429,19 @@ let result = data_table(
 async fn sort_by_virtual_column_lexicographic() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: ["data"] };
 let l0 = "cherry";
 let l1 = "apple";
 let l2 = "banana";
+let tbl = { rows: ["r0", "r1", "r2"], columns: [
+        "data",
+        { name: "label", typ: `Text({ on_edit: null }),
+            display_name: null,
+            source: &{"r0" => l0, "r1" => l1, "r2" => l2 },
+            on_resize: &null, width: &null }
+    ] };
 let result = data_table(
     #sort_by: &[{ column: "label", direction: `Ascending }],
-    #column_types: &{
-        "label" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null,
-            default_value: &{"r0" => l0, "r1" => l1, "r2" => l2 },
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -779,17 +692,14 @@ async fn on_edit_text_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: edit }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: edit }),
             display_name: null,
-            default_value: &"old",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"old",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -817,17 +727,14 @@ async fn on_edit_text_column_parses_number() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: edit }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: edit }),
             display_name: null,
-            default_value: &"1",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"1",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -854,17 +761,14 @@ async fn on_edit_text_cancel() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: edit }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: edit }),
             display_name: null,
-            default_value: &"x",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"x",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -892,17 +796,14 @@ async fn on_edit_toggle_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let toggled = |#path: string, #value: bool| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Toggle({ on_edit: toggled }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Toggle({ on_edit: toggled }),
             display_name: null,
-            default_value: &"false",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"false",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = InteractionHarness::with_viewport(
@@ -938,20 +839,17 @@ async fn on_edit_combo_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let pick = |#path: string, #value: string| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Combo({
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Combo({
                 choices: [{id: "a", label: "Alpha"}, {id: "b", label: "Bravo"}],
                 on_edit: pick
             }),
             display_name: null,
-            default_value: &"a",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"a",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = InteractionHarness::with_viewport(
@@ -999,17 +897,14 @@ async fn on_edit_spin_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let bumped = |#path: string, #value: f64| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Spin({ min: 0.0, max: 10.0, increment: 1.0, on_edit: bumped }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Spin({ min: 0.0, max: 10.0, increment: 1.0, on_edit: bumped }),
             display_name: null,
-            default_value: &"5.0",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"5.0",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = InteractionHarness::with_viewport(
@@ -1069,17 +964,14 @@ async fn on_click_button_column() -> Result<()> {
 use gui; use gui::data_table; use sys;
 let log = "";
 let pressed = |#path: string, #value: Any| log <- "[path]=[value]";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Button({ on_click: pressed }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Button({ on_click: pressed }),
             display_name: null,
-            default_value: &"Run",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"Run",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = InteractionHarness::with_viewport(
@@ -1153,17 +1045,14 @@ async fn default_value_per_row_ref_updates() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let a = "v1";
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &{"r0" => a},
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &{"r0" => a},
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -1187,17 +1076,14 @@ let result = data_table(
 async fn virtual_columns_prevent_value_mode() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1"], columns: [] };
-let result = data_table(
-    #column_types: &{
-        "region" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0", "r1"], columns: [
+        { name: "region", typ: `Text({ on_edit: null }),
             display_name: "Region",
-            default_value: &"prod",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"prod",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1234,19 +1120,17 @@ let push = |row: string, sum: i64| {
 };
 let tbl = {
     rows: ["/local/dt8b/r0", "/local/dt8b/r1"],
-    columns: ["c0"]
+    columns: [
+        "c0",
+        { name: "sum", typ: `Text({ on_edit: null }),
+            display_name: "A + B",
+            source: &opt::or_default(map::get(data, "sum"), {}),
+            on_resize: &null,
+            width: &null }
+    ]
 };
 let result = data_table(
-    #column_types: &{
-        "sum" => {
-            typ: `Text({ on_edit: null }),
-            display_name: "A + B",
-            default_value: &opt::or_default(map::get(data, "sum"), {}),
-            on_resize: &null,
-            width: &null
-        }
-    },
-    #table: &tbl
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -1341,17 +1225,14 @@ let result = data_table(
 async fn default_value_uniform_string() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0", "r1", "r2"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &"UNI",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"UNI",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1370,18 +1251,15 @@ async fn column_width_ref_controlled() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
 let w = 120.0;
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &null,
+            source: &`Netidx,
             on_resize: &null,
-            width: &w
-        }
-    },
-    #table: &tbl
+            width: &w }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1399,18 +1277,15 @@ use gui; use gui::data_table; use sys;
 let log = 0.0;
 let on_w = |new_w: f64| log <- new_w;
 let w = 100.0;
-let tbl = { rows: ["r0"], columns: ["c0"] };
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &"x",
+            source: &"x",
             on_resize: &on_w,
-            width: &w
-        }
-    },
-    #table: &tbl
+            width: &w }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -1455,17 +1330,14 @@ c <- t1 ~ 1;
 c <- t2 ~ 2;
 c <- t3 ~ 3;
 sys::net::publish("/local/dt17/r0/load", c);
-let tbl = { rows: ["/local/dt17/r0"], columns: ["load"] };
-let result = data_table(
-    #column_types: &{
-        "load" => {
-            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
+let tbl = { rows: ["/local/dt17/r0"], columns: [
+        { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
-            default_value: &null,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &`Netidx,
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -1497,17 +1369,15 @@ let result = data_table(
 async fn sparkline_default_value_seeds_history() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: ["anchor"] };
-let result = data_table(
-    #column_types: &{
-        "spark" => {
-            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
+let tbl = { rows: ["r0"], columns: [
+        "anchor",
+        { name: "spark", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
-            default_value: &"7.5",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"7.5",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1526,17 +1396,15 @@ async fn sparkline_decimation_caps_length() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: ["anchor"] };
-let result = data_table(
-    #column_types: &{
-        "load" => {
-            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
+let tbl = { rows: ["r0"], columns: [
+        "anchor",
+        { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
-            default_value: &"0.0",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"0.0",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1572,17 +1440,15 @@ async fn sparkline_decimation_preserves_extremes() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: ["anchor"] };
-let result = data_table(
-    #column_types: &{
-        "load" => {
-            typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
+let tbl = { rows: ["r0"], columns: [
+        "anchor",
+        { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
-            default_value: &"0.0",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"0.0",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1700,18 +1566,15 @@ let result = data_table(
 async fn resize_handle_double_click_autofits() -> Result<()> {
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: ["c0"] };
 let long = "wider than MIN_COL_WIDTH default";
-let result = data_table(
-    #column_types: &{
-        "c0" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &long,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &long,
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -1794,26 +1657,19 @@ async fn horizontal_scroll_variable_width() -> Result<()> {
     // basename). Total virtual width = 80 + 60 + 200 + 140 = 480.
     let code = r#"
 use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r"], columns: ["a", "b", "c"] };
+let tbl = { rows: ["r"], columns: [
+        { name: "a", typ: `Text({ on_edit: null }),
+            display_name: null, source: &"a",
+            on_resize: &null, width: &null },
+        { name: "b", typ: `Text({ on_edit: null }),
+            display_name: null, source: &"b",
+            on_resize: &null, width: &null },
+        { name: "c", typ: `Text({ on_edit: null }),
+            display_name: null, source: &"c",
+            on_resize: &null, width: &null }
+    ] };
 let result = data_table(
-    #column_types: &{
-        "a" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null, default_value: &"a",
-            on_resize: &null, width: &null
-        },
-        "b" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null, default_value: &"b",
-            on_resize: &null, width: &null
-        },
-        "c" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null, default_value: &"c",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+#table: &tbl
 )
 "#;
     let h = dt(code).await?;
@@ -1842,237 +1698,6 @@ let result = data_table(
     // assertion passes only with the prefix-sum fix.
     Ok(())
 }
-
-// ── column_types display_name-only update preserves subscriptions ──
-//
-// Regression for the subscription-churn bug: a graphix-side update to
-// the `column_types` ref that only changed field values (e.g. the
-// header's display name) used to tear down every row's subs and
-// rebuild from scratch. Now the diff-based reconcile leaves subs
-// alone when the column name set is unchanged.
-
-#[tokio::test(flavor = "current_thread")]
-async fn column_types_display_name_update_preserves_subs() -> Result<()> {
-    // `display_name` starts null, then a connect flips it via a
-    // one-shot timer. Because col_types dereferences *display_name*,
-    // the map value re-emits when display_name changes, which fires a
-    // column_types update on the data_table. Only display_name
-    // changes — the diff-based reconcile should therefore NOT tear
-    // down subs.
-    let code = r#"
-use gui; use gui::data_table; use sys; use sys::time;
-sys::net::publish("/local/dt_dn/r0/c0", i64:42);
-let display_name: [string, null] = null;
-display_name <- time::timer(duration:100.ms, false) ~ "Renamed";
-let tbl = { rows: ["/local/dt_dn/r0"], columns: ["c0"] };
-let col_types = {
-    "c0" => {
-        typ: `Text({ on_edit: null }),
-        display_name,
-        default_value: &null,
-        on_resize: &null,
-        width: &null
-    }
-};
-let result = data_table(
-    #column_types: &col_types,
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    h.wait_until(
-        |h| h.dt().dt_snapshot_value_at(0, 0) == Some("42".to_string()),
-        std::time::Duration::from_secs(2),
-        "subscribed cell value to land",
-    ).await?;
-    let subs_before = h.dt().dt_row_sub_count();
-    assert!(subs_before >= 1, "expected >= 1 active row sub, got {subs_before}");
-    // Wait for display_name to flip past the timer boundary. The data
-    // table will fire the column_types handler with the new spec; the
-    // diff reconcile should be the path taken (only display_name
-    // changed, column keys and bids unchanged).
-    h.wait_until(
-        |h| {
-            // Some evidence the update landed: dt_snapshot is the
-            // simplest observable that still works after
-            // display_name changes. Row count stays the same, so if
-            // the table is still there we're past the update.
-            h.dt().dt_snapshot_value_at(0, 0) == Some("42".to_string())
-                && h.dt().dt_row_sub_count() > 0
-        },
-        std::time::Duration::from_secs(2),
-        "display_name update to be processed",
-    ).await?;
-    let subs_after = h.dt().dt_row_sub_count();
-    assert_eq!(
-        subs_after, subs_before,
-        "display_name-only update must preserve row subs: before={subs_before} after={subs_after}",
-    );
-    // Cell value stays visible without a round-trip back to the
-    // publisher — since subs weren't torn down, the grid isn't wiped.
-    assert_eq!(
-        h.dt().dt_snapshot_value_at(0, 0),
-        Some("42".to_string()),
-        "cell value must persist across display_name-only update",
-    );
-    Ok(())
-}
-
-/// CR #4 forward: a default_value ref that starts null should keep
-/// its column hidden, and flipping the ref to a non-null value must
-/// add the column as virtual without a full `apply_table` rebuild.
-#[tokio::test(flavor = "current_thread")]
-async fn default_value_null_to_nonnull_adds_virtual_col() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let dv: [null, string, Map<string, Any>] = null;
-let tbl = { rows: ["r0"], columns: [] };
-let result = data_table(
-    #column_types: &{
-        "virtual" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null,
-            default_value: &dv,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    // Initially dv is null → column is not virtual, col_names empty,
-    // mode degrades to Value.
-    let snap = h.dt_snapshot();
-    assert!(
-        !snap.col_names.iter().any(|n| n == "virtual"),
-        "virtual col must not be present while default is null: {:?}",
-        snap.col_names,
-    );
-    assert!(
-        snap.is_value_mode,
-        "with no columns and no virtual defaults, mode must be Value",
-    );
-    // Flip dv to a string; column must appear as a virtual column.
-    let bid = find_bind_id(&h.compiled.env, "test::dv")?;
-    let mut dv_ref = h.gx.compile_ref(bid).await?;
-    dv_ref.set(Value::String(arcstr::literal!("appeared")))?;
-    h.wait_until(
-        |h| h.dt_snapshot().col_names.iter().any(|n| n == "virtual"),
-        std::time::Duration::from_secs(2),
-        "virtual column to appear after default flip to non-null",
-    ).await?;
-    let snap = h.dt_snapshot();
-    assert!(!snap.is_value_mode, "mode must switch back to Table");
-    let vi = snap.col_names.iter().position(|n| n == "virtual").unwrap();
-    assert_eq!(snap.grid[0][vi], "appeared");
-    Ok(())
-}
-
-/// CR #4 reverse: a default_value ref that starts non-null must keep
-/// the column visible as virtual, and flipping the ref to null must
-/// remove it — without tearing down a live raw-column subscription
-/// (there isn't one here; the row is non-absolute).
-#[tokio::test(flavor = "current_thread")]
-async fn default_value_nonnull_to_null_removes_virtual_col() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let dv: [null, string, Map<string, Any>] = "initial";
-let tbl = { rows: ["r0"], columns: [] };
-let result = data_table(
-    #column_types: &{
-        "virtual" => {
-            typ: `Text({ on_edit: null }),
-            display_name: null,
-            default_value: &dv,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert!(
-        snap.col_names.iter().any(|n| n == "virtual"),
-        "virtual col must be present while default is set: {:?}",
-        snap.col_names,
-    );
-    assert!(!snap.is_value_mode);
-    let bid = find_bind_id(&h.compiled.env, "test::dv")?;
-    let mut dv_ref = h.gx.compile_ref(bid).await?;
-    dv_ref.set(Value::Null)?;
-    h.wait_until(
-        |h| !h.dt_snapshot().col_names.iter().any(|n| n == "virtual"),
-        std::time::Duration::from_secs(2),
-        "virtual column to disappear after default flip to null",
-    ).await?;
-    let snap = h.dt_snapshot();
-    // With every column hidden and a row still present, mode degrades
-    // back to Value.
-    assert!(
-        snap.is_value_mode,
-        "mode must fall back to Value when all virtuals drop out",
-    );
-    Ok(())
-}
-
-/// CR #6: flipping a column's `typ` from Text to Sparkline must
-/// re-register the subscription role with `sparkline_history_secs =
-/// Some(..)`, so subsequent live updates actually accumulate in the
-/// sparkline history. Before the fix, the diff reconcile saw only
-/// "same keys, same virtual-ness" and left stale Text-era Grid roles
-/// in place; values flowed into `inner.values` but never reached the
-/// sparkline history.
-#[tokio::test(flavor = "current_thread")]
-async fn column_type_text_to_sparkline_registers_history() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys; use sys::time;
-let c = 0;
-c <- time::timer(duration:300.ms, false) ~ 7;
-c <- time::timer(duration:500.ms, false) ~ 9;
-sys::net::publish("/local/dt_ct2/r0/load", c);
-
-// typ starts as Text, flips to Sparkline after 100ms.
-let t: [
-    `Text({ on_edit: [fn(#path: string, #value: Any) -> Any, null] }),
-    `Sparkline({ history_seconds: f64, min: [f64, null], max: [f64, null] })
-] = `Text({ on_edit: null });
-t <- time::timer(duration:100.ms, false) ~
-    `Sparkline({ history_seconds: 60.0, min: null, max: null });
-
-let tbl = { rows: ["/local/dt_ct2/r0"], columns: ["load"] };
-let result = data_table(
-    #column_types: &{
-        "load" => {
-            typ: t,
-            display_name: null,
-            default_value: &null,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    // Wait for BOTH the typ flip and at least one post-flip publish to
-    // land. The sparkline history is keyed by (row, col) and only
-    // populated if the Grid role has sparkline_history_secs = Some(..).
-    h.wait_until(
-        |h| {
-            let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
-            vs.contains(&7.0) || vs.contains(&9.0)
-        },
-        std::time::Duration::from_secs(3),
-        "sparkline history to accumulate after Text->Sparkline flip",
-    ).await?;
-    let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
-    assert!(
-        vs.contains(&7.0) || vs.contains(&9.0),
-        "expected at least one post-flip value in sparkline history, got: {vs:?}",
-    );
-    Ok(())
-}
-
 /// CR #1: a Sparkline column declared with a non-finite or
 /// non-positive `history_seconds` must not panic when a live update
 /// arrives. `Duration::from_secs_f64` panics on NaN / negative
@@ -2084,17 +1709,14 @@ use gui; use gui::data_table; use sys; use sys::time;
 let c = 0;
 c <- time::timer(duration:100.ms, false) ~ 5;
 sys::net::publish("/local/dt_hs/r0/load", c);
-let tbl = { rows: ["/local/dt_hs/r0"], columns: ["load"] };
-let result = data_table(
-    #column_types: &{
-        "load" => {
-            typ: `Sparkline({ history_seconds: -1.0, min: null, max: null }),
+let tbl = { rows: ["/local/dt_hs/r0"], columns: [
+        { name: "load", typ: `Sparkline({ history_seconds: -1.0, min: null, max: null }),
             display_name: null,
-            default_value: &null,
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &`Netidx,
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;
@@ -2125,17 +1747,14 @@ let pressed = |#path: string, #value: Any| {
     pressed_val <- value;
     null
 };
-let tbl = { rows: ["r0"], columns: [] };
-let result = data_table(
-    #column_types: &{
-        "go" => {
-            typ: `Button({ on_click: pressed }),
+let tbl = { rows: ["r0"], columns: [
+        { name: "go", typ: `Button({ on_click: pressed }),
             display_name: null,
-            default_value: &{"r0" => i64:7},
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &{"r0" => i64:7},
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = InteractionHarness::with_viewport(
@@ -2165,150 +1784,6 @@ let result = data_table(
     );
     Ok(())
 }
-
-/// Regression for the "scroll-end clips last column" bug seen in
-/// the data_table_scrolling example: with ref-controlled column
-/// widths wider than the viewport, scrolling all the way right
-/// clipped the last column and only widening the window revealed it.
-///
-/// Two failure modes share a fix here:
-/// 1. `virtual_width` (and the scroll math that feeds off it) used
-///    `cached_col_widths` exclusively, so columns that hadn't
-///    rendered yet contributed `MIN_COL_WIDTH=80` instead of their
-///    declared width. The scrollbar's max offset was therefore
-///    capped short and the rightmost columns were unreachable.
-/// 2. Even with widths correct, `col_at_offset`'s snap-to-midpoint
-///    at `ox = max_ox` lands on a `first_col` BELOW the smallest
-///    value where the suffix `cols[first_col..total]` actually fits
-///    — the rendered grid then overflows the viewport on the right
-///    and the last column is clipped.
-#[tokio::test(flavor = "current_thread")]
-async fn horizontal_scroll_reaches_last_col_with_ref_widths() -> Result<()> {
-    // Five virtual rows, six data cols all with ref-controlled widths
-    // summing to 720px (120 each). Pick a viewport (450px) that's
-    // narrower than total content but where multiple cols fit, so
-    // the scroll math has a non-trivial first_col to land on.
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0", "r1", "r2", "r3", "r4"],
-            columns: ["a", "b", "c", "d", "e", "f"] };
-let cspec = |name: string| -> {
-    typ: ColumnType,
-    display_name: [string, null],
-    default_value: &[null, string, Map<string, Any>],
-    on_resize: &[fn(f64) -> Any, null],
-    width: &[f64, null]
-} {
-    typ: `Text({ on_edit: null }),
-    display_name: name,
-    default_value: &"x",
-    on_resize: &null,
-    width: &f64:120.0
-};
-let result = data_table(
-    #show_row_name: &false,
-    #column_types: &{
-        "a" => cspec("a"), "b" => cspec("b"), "c" => cspec("c"),
-        "d" => cspec("d"), "e" => cspec("e"), "f" => cspec("f")
-    },
-    #table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    // Sanity: ref widths landed.
-    for col in ["a", "b", "c", "d", "e", "f"] {
-        assert_eq!(
-            h.dt().dt_ref_width(col),
-            Some(120.0),
-            "ref width for {col} must be 120",
-        );
-    }
-    // virtual_content_width must reflect the ref widths even though
-    // no render pass has populated cached_col_widths for these cols
-    // yet. Without the canonical-width fallback this would fall back
-    // to MIN_COL_WIDTH=80 each → 480, not 720.
-    let vw = h.dt().virtual_content_width_for_test();
-    assert!(
-        (vw - 720.0).abs() < 0.5,
-        "virtual_content_width must use ref widths when cache is cold: \
-         expected 720, got {vw}",
-    );
-    // With viewport_width=450, only cols [3..6] (sum=360) fit. So
-    // min_first_col_for_fit(450) = 3.
-    let mff = h.dt().min_first_col_for_fit_for_test(450.0);
-    assert_eq!(
-        mff, 3,
-        "expected min_first_col_for_fit(450)=3 (last 3 cols of 120px each \
-         sum to 360 ≤ 450, but 4 of them would be 480 > 450), got {mff}",
-    );
-    Ok(())
-}
-
-/// Regression for the same bug, exercising the scroll-end clamp in
-/// `handle_scroll`. With ref widths summing to wider than the
-/// viewport, sending `ox = virtual_width - vp_w` (iced's max scroll)
-/// must land `first_col` at `min_first_col_for_fit` so the suffix
-/// fully renders. Before the fix, snap-to-midpoint at max ox left
-/// `first_col` below the fit threshold.
-#[tokio::test(flavor = "current_thread")]
-async fn scroll_end_clamps_first_col_to_fit_suffix() -> Result<()> {
-    let code = r#"
-use gui; use gui::data_table; use sys;
-let tbl = { rows: ["r0"], columns: ["a", "b", "c", "d", "e", "f"] };
-let cspec = |name: string| -> {
-    typ: ColumnType,
-    display_name: [string, null],
-    default_value: &[null, string, Map<string, Any>],
-    on_resize: &[fn(f64) -> Any, null],
-    width: &[f64, null]
-} {
-    typ: `Text({ on_edit: null }),
-    display_name: name,
-    default_value: &"x",
-    on_resize: &null,
-    width: &f64:120.0
-};
-let result = data_table(
-    #show_row_name: &false,
-    #column_types: &{
-        "a" => cspec("a"), "b" => cspec("b"), "c" => cspec("c"),
-        "d" => cspec("d"), "e" => cspec("e"), "f" => cspec("f")
-    },
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    let vw = h.dt().virtual_content_width_for_test();
-    let vp_w = 450.0_f32;
-    let max_ox = vw - vp_w;
-    // Drive a max-scroll-right event. After the clamp, first_col
-    // should be 3 (cols 3..6 = three 120-wide cols sum to 360 ≤ 450,
-    // adding col 2 would push to 480 > 450).
-    h.dt_mut().handle_scroll_for_test(max_ox, 0.0, vp_w, 200.0);
-    let fc = h.dt().first_col_for_test();
-    assert_eq!(
-        fc, 3,
-        "max-scroll-right must clamp first_col to min_first_col_for_fit=3, got {fc}",
-    );
-    // A scroll back to ox=0 must release the clamp — first_col=0 so
-    // the leftmost columns are visible again. Before the fix, an
-    // incorrectly applied unconditional clamp would have stuck
-    // first_col at 3 forever, hiding cols 0..2.
-    h.dt_mut().handle_scroll_for_test(0.0, 0.0, vp_w, 200.0);
-    let fc = h.dt().first_col_for_test();
-    assert_eq!(fc, 0, "scrolling back to ox=0 must restore first_col=0, got {fc}");
-    // And max-scroll again — same answer as the first time.
-    h.dt_mut().handle_scroll_for_test(max_ox, 0.0, vp_w, 200.0);
-    let fc = h.dt().first_col_for_test();
-    assert_eq!(
-        fc, 3,
-        "second max-scroll must also clamp first_col=3 — the user's \
-         scroll-back-then-forward sequence in the screenshot regression \
-         was where the bug recurred. got {fc}",
-    );
-    Ok(())
-}
-
 /// CR #7: a virtual column (declared in `column_types` with only a
 /// default_value, not in the raw table columns) must not produce a
 /// netidx subscription at `row_path/virtual_col`. Before the fix,
@@ -2328,17 +1803,15 @@ async fn virtual_col_does_not_create_subscription() -> Result<()> {
 use gui; use gui::data_table; use sys;
 sys::net::publish("/local/dt_virt/r0/real", "real-val");
 sys::net::publish("/local/dt_virt/r0/ghost", "from-publisher");
-let tbl = { rows: ["/local/dt_virt/r0"], columns: ["real"] };
-let result = data_table(
-    #column_types: &{
-        "ghost" => {
-            typ: `Text({ on_edit: null }),
+let tbl = { rows: ["/local/dt_virt/r0"], columns: [
+        "real",
+        { name: "ghost", typ: `Text({ on_edit: null }),
             display_name: null,
-            default_value: &"from-default",
-            on_resize: &null, width: &null
-        }
-    },
-    #table: &tbl
+            source: &"from-default",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(
+#table: &tbl
 )
 "#;
     let mut h = dt(code).await?;

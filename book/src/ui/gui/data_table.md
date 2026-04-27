@@ -1,6 +1,6 @@
 # The Data Table Widget
 
-A spreadsheet-style widget that renders a netidx `Table` as a grid of
+A spreadsheet-style widget that renders a `Table` value as a grid of
 live-subscribed cells. Columns are typed: each one picks the editor
 (text, toggle, pick-list, spinner), visualization (progress bar,
 sparkline), or action (button) that cells should use. Row sort, row
@@ -8,13 +8,19 @@ filter, column widths, and the selection set are all controlled from
 graphix — the widget is the rendering surface and the subscription
 manager, nothing more.
 
-Rows that are absolute netidx paths trigger live subscriptions.
-Non-absolute row names render as *virtual* rows whose cells draw from
-each column's `default_value` ref instead of a subscription. Virtual
-columns work the same way: a column that appears in `column_types`
-but not in the `Table`'s `columns` array is a column whose values
-come solely from its default. Virtual and live rows/columns freely
-mix.
+The `Table` value is the single source of truth for what columns
+exist, in what order, and how each one is sourced. Columns are
+declared as either bare strings (shorthand for a default Text column
+with `` `Netidx `` source named after the string) or full
+`ColumnSpec` structs. Bare strings let the output of
+`sys::net::list_table` (which has `columns: Array<string>`) flow
+straight through; mixed arrays are fine.
+
+Rows that are absolute netidx paths trigger live subscriptions for
+every column whose `source` is `` `Netidx ``. Non-absolute row names
+render as *virtual* rows. Columns whose `source` is a `string` or
+`Map<string, Any>` skip subscription entirely and read their values
+from the source ref.
 
 ## Interface
 
@@ -46,110 +52,63 @@ type ColumnType = [
     })
 ];
 
+type Source = [`Netidx, string, Map<string, Any>];
+
 type ColumnSpec = {
+    name: string,
     typ: ColumnType,
     display_name: [string, null],
-    default_value: &[null, string, Map<string, Any>],
+    source: &Source,
     on_resize: &[fn(f64) -> Any, null],
     width: &[f64, null]
 };
 
+type Table = {
+    rows: Array<string>,
+    columns: Array<[string, ColumnSpec]>
+};
+
 val data_table: fn(
     ?#sort_by: &Array<SortBy>,
-    ?#column_types: &Map<string, ColumnSpec>,
     ?#selection: &Array<string>,
     ?#show_row_name: &bool,
     ?#on_select: [fn(#path: string) -> Any, null],
     ?#on_activate: [fn(#path: string) -> Any, null],
     ?#on_header_click: [fn(#column: string) -> Any, null],
     ?#on_update: [fn(#path: string, #value: Primitive) -> Any, null],
-    #table: &sys::net::Table
+    #table: &Table
 ) -> Widget;
 
 val text_column: fn(
+    #name: string,
     ?#on_edit: [fn(#path: string, #value: Any) -> Any, null],
     ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
+    ?#source: &Source,
     ?#on_resize: &[fn(f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
-
-val toggle_column: fn(
-    ?#on_edit: [fn(#path: string, #value: bool) -> Any, null],
-    ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
-    ?#on_resize: &[fn(f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec;
-
-val combo_column: fn(
-    #choices: Array<{ id: string, label: string }>,
-    ?#on_edit: [fn(#path: string, #value: string) -> Any, null],
-    ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
-    ?#on_resize: &[fn(f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec;
-
-val spin_column: fn(
-    #min: f64,
-    #max: f64,
-    #increment: f64,
-    ?#on_edit: [fn(#path: string, #value: f64) -> Any, null],
-    ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
-    ?#on_resize: &[fn(f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec;
-
-val progress_column: fn(
-    ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
-    ?#on_resize: &[fn(f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec;
-
-val button_column: fn(
-    ?#on_click: [fn(#path: string, #value: Any) -> Any, null],
-    ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
-    ?#on_resize: &[fn(f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec;
-
-val sparkline_column: fn(
-    #history_seconds: f64,
-    ?#min: [f64, null],
-    ?#max: [f64, null],
-    ?#display_name: [string, null],
-    ?#default_value: &[null, string, Map<string, Any>],
-    ?#on_resize: &[fn(f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec
+// (toggle_column, combo_column, spin_column, progress_column,
+//  button_column, sparkline_column have the same shape — each takes
+//  #name plus its kind-specific args, and accepts the same source /
+//  width / on_resize options.)
 ```
 
 ## `data_table` Parameters
 
-- **`#table`** -- The table shape. `{ rows: Array<string>, columns:
-  Array<string> }`. `sys::net::list_table(path)` produces this by
-  inspecting the netidx resolver. The caller owns the shape: to
-  filter, sort, hide, or reorder rows and columns, build the Table
-  record in graphix and hand the result to `data_table`. Every change
-  to this ref is reconciled against the current subscription set.
-
-- **`#column_types`** -- Map from column name to `ColumnSpec`,
-  built with the helper constructors (`text_column`, `toggle_column`,
-  ...). A column that doesn't appear in `#table.columns` but is
-  declared here becomes a *virtual* column driven entirely by its
-  `default_value`. Updating this ref to change only display names,
-  callbacks, widths, or defaults does not tear down row subscriptions
-  — only adding or removing columns triggers resubscribes.
+- **`#table`** -- The table shape: `{ rows: Array<string>, columns:
+  Array<[string, ColumnSpec]> }`. `sys::net::list_table(path)`
+  produces a value whose `columns: Array<string>` unifies with this
+  type via the union element. The caller owns the shape: to filter,
+  sort, hide, or reorder rows and columns — or to attach custom
+  `ColumnSpec`s to specific columns — build the `Table` record in
+  graphix and hand the result to `data_table`. Every change to this
+  ref is reconciled against the current subscription set.
 
 - **`#sort_by`** -- Array of sort keys applied in order. The first is
   the primary sort; later keys break ties. Empty list (the default)
-  preserves the `Table`'s row order. Sort values come from live
-  subscriptions to the named columns, so rows without a subscribable
-  value for a given column sort to the end.
+  preserves the `Table`'s row order. Sort values come from the column's
+  source — a live subscription when source is `` `Netidx ``, or the
+  source's stored value otherwise.
 
 - **`#selection`** -- Controlled set of selected cell paths. For
   cells in the row-name column this is just `"row_path"`; for every
@@ -183,7 +142,10 @@ val sparkline_column: fn(
 ## Column Types
 
 Each `ColumnSpec` carries a `typ: ColumnType` picked with one of the
-helper constructors:
+helper constructors. All constructors take `#name: string` plus
+their kind-specific args (`#on_edit` / `#on_click` / `#choices` /
+etc.) and the common appearance options (`#display_name`, `#source`,
+`#width`, `#on_resize`).
 
 - **`text_column`** -- Plain text. With `on_edit` the cell becomes
   editable: clicking a selected cell opens a text field; `Enter`
@@ -233,22 +195,28 @@ Widths are controlled by two refs per column:
 Double-clicking any column's resize handle auto-fits *every* column
 to the widest cell in the entire table (not just the visible window).
 
-## Default Values and Virtual Cells
+## Source: Where Cell Values Come From
 
-Each `ColumnSpec.default_value` is a `&[null, string, Map<string,
-Any>]`. When a cell has no subscription value (either because the
-row is virtual or because the subscription hasn't produced yet) the
-widget renders the default:
+Each `ColumnSpec.source` is a `&Source` ref that decides where the
+column's per-cell values originate:
 
-- **`null`** -- Cell is blank.
-- **`string`** -- Same default shown for every row in the column.
-- **`Map<string, Any>`** -- Per-row defaults keyed by the row's
-  basename. Rows without a matching key fall back to blank.
+- **`` `Netidx ``** -- The column subscribes to
+  `<row_path>/<column_name>` for every row whose path is absolute.
+  Cell values come from the subscription. This is the default for the
+  column-builder helpers and the implicit behavior for bare-string
+  entries in `Table.columns`.
+- **`string`** -- A uniform value: every cell in the column renders
+  this text. No subscription. Useful for static fields and computed
+  columns where one value applies to all rows.
+- **`Map<string, Any>`** -- Per-row values keyed by the row's
+  basename. No subscription. Rows without a matching key render
+  blank. Useful for "calculated" columns whose values are derived in
+  graphix.
 
-When the default ref updates reactively (e.g. the map changes), the
+When the source ref updates reactively (e.g. the map changes), the
 widget re-reads it and refreshes the affected cells. Sparkline
-columns additionally push each new numeric default into the rolling
-history, so a virtual-column sparkline fed from graphix state
+columns additionally push each new numeric source value into the
+rolling history, so a virtual-column sparkline fed from graphix state
 accumulates points the same way a subscribed one does.
 
 ## Keyboard Navigation
@@ -265,8 +233,8 @@ scrolls into view as needed). `Enter` on a row-name cell fires
 
 Minimal usage: publish three hosts and hand the
 `sys::net::list_table` output to `data_table` with no column
-configuration. Cells display string values inferred from the netidx
-types.
+configuration. Bare-string columns become default Text columns with
+`` `Netidx `` source.
 
 ```graphix
 {{#include ../../examples/gui/data_table_basic.gx}}
@@ -277,8 +245,8 @@ types.
 ### Filter and Sort
 
 Row filtering (a regex over basenames) and sort configuration done
-in graphix before `#table` and `#sort_by` are handed to the widget.
-Shows how the caller owns the data pipeline end to end.
+in graphix before the `Table` is handed to the widget. Shows how the
+caller owns the data pipeline end to end.
 
 ```graphix
 {{#include ../../examples/gui/data_table_filter_sort.gx}}
@@ -290,7 +258,10 @@ Shows how the caller owns the data pipeline end to end.
 
 Every editable column type in one place: `Text`, `Toggle`, `Combo`,
 `Spin`. Each cell is published with an `on_write` handler so edits
-round-trip through netidx.
+round-trip through netidx. The example shows the
+`array::map(raw_columns, …)` pattern for attaching custom
+`ColumnSpec`s to specific column names while leaving everything else
+as bare-string Netidx-sourced columns.
 
 ```graphix
 {{#include ../../examples/gui/data_table_editable.gx}}
@@ -300,10 +271,9 @@ round-trip through netidx.
 
 ### Calculated Columns
 
-A virtual column whose `default_value` is a reactive
-`Map<string, Any>`, rebuilt whenever any subscribed cell updates.
-Demonstrates deriving per-row aggregates (here, sums) without
-touching netidx.
+A virtual column whose `source` is a reactive `Map<string, Any>`,
+rebuilt whenever any subscribed cell updates. Demonstrates deriving
+per-row aggregates (here, sums) without touching netidx.
 
 ```graphix
 {{#include ../../examples/gui/data_table_calculated.gx}}
@@ -326,8 +296,8 @@ bounds.
 ### Virtual Rows and Columns
 
 Mix live subscribed rows with virtual rows whose cells come from
-`default_value`. Virtual-column-plus-virtual-row combinations give
-you fully client-side cells.
+non-Netidx sources. Virtual-column-plus-virtual-row combinations
+give you fully client-side cells.
 
 ```graphix
 {{#include ../../examples/gui/data_table_virtual.gx}}

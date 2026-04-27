@@ -186,17 +186,26 @@ pub(super) enum ColumnType {
     Sparkline { history_seconds: f64, min: Option<f64>, max: Option<f64> },
 }
 
-/// Parsed column spec from the graphix Map<string, ColumnSpec>.
+/// Parsed column spec from one entry of the graphix
+/// `Array<[string, ColumnSpec]>` columns array. A bare-string entry
+/// (`Value::String`) inflates to a `ColumnSpec` with `typ = Text`,
+/// `source` reffing `` `Netidx ``, and no callback — the equivalent of
+/// the netidx-published cell behavior the column would have had under
+/// the old `column_types` API.
 pub(super) struct ColumnSpec {
+    pub(super) name: ArcStr,
     pub(super) typ: ColumnType,
     pub(super) display_name: Option<ArcStr>,
-    /// Raw default_value ref bind ID — compiled separately into default_value_refs.
-    pub(super) default_value_bid: u64,
-    /// Raw width ref bind ID — compiled separately into width_refs.
+    /// Raw `source` ref bind ID — compiled separately into the
+    /// `ColumnState::source` entry. `0` for bare-string columns,
+    /// which inflate to a synthetic `&\`Netidx` ref with no bid.
+    pub(super) source_bid: u64,
+    /// Raw width ref bind ID — compiled separately into the
+    /// `ColumnState::width_ref` slot.
     pub(super) width_bid: u64,
-    /// Raw on_resize ref bind ID — compiled separately. The .gxi types
-    /// the field as `&[fn(f64) -> Any, null]`, so the runtime value is
-    /// a u64 bid pointing at the callable (or null).
+    /// Raw on_resize ref bind ID. The .gxi types the field as
+    /// `&[fn(f64) -> Any, null]`, so the runtime value is a u64 bid
+    /// pointing at the callable (or null).
     pub(super) on_resize_bid: u64,
     pub(super) callback_value: Option<Value>,
 }
@@ -328,51 +337,79 @@ pub(super) fn value_to_display(v: &Value) -> ArcStr {
     }
 }
 
-pub(super) fn parse_column_specs(v: &Value) -> FxHashMap<ArcStr, ColumnSpec> {
-    let pairs = match v.clone().cast_to::<Vec<(ArcStr, Value)>>() {
-        Ok(p) => p,
-        Err(_) => return FxHashMap::default(),
-    };
-    let mut map = FxHashMap::default();
-    for (raw_name, spec_val) in pairs {
-        // Strip null bytes from column keys so a user-supplied column
-        // spec can't collide with the `ROW_NAME_KEY` sentinel.
-        let name: ArcStr = if raw_name.contains('\0') {
-            let cleaned: CompactString =
-                raw_name.chars().filter(|ch| *ch != '\0').collect();
-            cleaned.as_str().into()
-        } else {
-            raw_name
-        };
-        // ColumnSpec struct: { default_value, display_name, on_resize, typ, width } — alphabetical
-        let (dv_bid, display_name, on_resize_bid, typ_val, width_bid) =
-            match spec_val.cast_to::<[(ArcStr, Value); 5]>() {
-                Ok([(_, dv), (_, dn), (_, or), (_, tv), (_, w)]) => {
-                    let bid = dv.cast_to::<u64>().unwrap_or(0);
-                    let display_name = match dn {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    };
-                    let on_resize_bid = or.cast_to::<u64>().unwrap_or(0);
-                    let width_bid = w.cast_to::<u64>().unwrap_or(0);
-                    (bid, display_name, on_resize_bid, tv, width_bid)
-                }
-                Err(_) => (0, None, 0, Value::Null, 0),
-            };
-        let (typ, callback_value) = parse_column_type(&typ_val);
-        map.insert(
-            name,
-            ColumnSpec {
-                typ,
-                display_name,
-                default_value_bid: dv_bid,
-                width_bid,
-                on_resize_bid,
-                callback_value,
-            },
-        );
+/// Strip null bytes from a column name so user-supplied input can't
+/// collide with the `ROW_NAME_KEY` / `VALUE_COL_KEY` sentinels (both
+/// of which carry leading `\0`).
+fn sanitize_col_name(raw: ArcStr) -> ArcStr {
+    if raw.contains('\0') {
+        let cleaned: CompactString = raw.chars().filter(|ch| *ch != '\0').collect();
+        cleaned.as_str().into()
+    } else {
+        raw
     }
-    map
+}
+
+/// Parse one entry of the columns array. Bare strings inflate to a
+/// default Text column with `` `Netidx `` source. Structs cast to the
+/// 6-field ColumnSpec shape (name, typ, display_name, source,
+/// on_resize, width — alphabetical).
+fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
+    if let Value::String(name) = v {
+        return Some(ColumnSpec {
+            name: sanitize_col_name(name),
+            typ: ColumnType::Text,
+            display_name: None,
+            source_bid: 0,
+            width_bid: 0,
+            on_resize_bid: 0,
+            callback_value: None,
+        });
+    }
+    // Struct fields alphabetical: display_name, name, on_resize,
+    // source, typ, width.
+    let [(_, dn), (_, name_v), (_, or), (_, src), (_, tv), (_, w)] =
+        v.cast_to::<[(ArcStr, Value); 6]>().ok()?;
+    let name = match name_v {
+        Value::String(s) => sanitize_col_name(s),
+        _ => return None,
+    };
+    let display_name = match dn {
+        Value::String(s) => Some(s),
+        _ => None,
+    };
+    let source_bid = src.cast_to::<u64>().unwrap_or(0);
+    let on_resize_bid = or.cast_to::<u64>().unwrap_or(0);
+    let width_bid = w.cast_to::<u64>().unwrap_or(0);
+    let (typ, callback_value) = parse_column_type(&tv);
+    Some(ColumnSpec {
+        name,
+        typ,
+        display_name,
+        source_bid,
+        width_bid,
+        on_resize_bid,
+        callback_value,
+    })
+}
+
+/// Parse the columns array of a `Table` value. Returns the specs in
+/// the user-supplied order; duplicate names are kept in their first
+/// position (later duplicates are dropped silently — a column key is
+/// the dedup primitive).
+pub(super) fn parse_table_columns(v: &Value) -> Vec<ColumnSpec> {
+    let raw = match v.clone().cast_to::<Vec<Value>>() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<ColumnSpec> = Vec::with_capacity(raw.len());
+    let mut seen: FxHashSet<ArcStr> = FxHashSet::default();
+    for item in raw {
+        let Some(spec) = parse_column_entry(item) else { continue };
+        if seen.insert(spec.name.clone()) {
+            out.push(spec);
+        }
+    }
+    out
 }
 
 // ── Filter / sort ──────────────────────────────────────────────────
@@ -388,150 +425,122 @@ pub(super) fn row_basename(p: &Path) -> &str {
     Path::basename(p).unwrap_or(&**p)
 }
 
-/// Pre-parsed cache for a column's `default_value` ref. Built once
-/// when the ref updates so the per-cell `default_for` /
-/// `default_value_f64_for` hot path can look up by `&str` without
-/// building a `Value::String(ArcStr)` key on every call. `PerRow`
-/// uses `FxHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
+/// Pre-parsed cache for a column's `source` ref. Built once when the
+/// ref updates so the per-cell display path can look up by `&str`
+/// without rebuilding a `Value::String(ArcStr)` key per call.
+/// `PerRow` uses `FxHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
 /// enables the cheap lookup.
-pub(super) enum DefaultValue {
-    Null,
+///
+/// `Netidx` means the column subscribes to `<row_path>/<col_name>` for
+/// every row; cell values come from netidx, not from the source ref
+/// itself. The other variants are pure display data with no
+/// subscription.
+pub(super) enum Source {
+    Netidx,
     Uniform(Value),
     PerRow(FxHashMap<ArcStr, Value>),
 }
 
-impl DefaultValue {
+impl Source {
     fn parse(v: Option<&Value>) -> Self {
         match v {
-            None | Some(Value::Null) => DefaultValue::Null,
+            // The .gxi defaults the source ref to `&\`Netidx`, so a
+            // missing/null value here means the column never had a
+            // source attached (bare-string column with synthesized
+            // default). Treat as Netidx.
+            None | Some(Value::Null) => Source::Netidx,
+            Some(Value::String(s)) if s.as_str() == "Netidx" => Source::Netidx,
             Some(v @ Value::Map(_)) => {
-                // `default_value` is typed `&[null, string, Map<string, Any>]`
+                // `source` is typed `&[\`Netidx, string, Map<string, Any>]`
                 // in the .gxi, so a `Value::Map` here is guaranteed to
-                // have string keys — if cast_to fails something is
-                // very wrong and the table shouldn't silently drop
-                // entries the way a pre-check-and-skip loop would.
+                // have string keys.
                 match v.clone().cast_to::<FxHashMap<ArcStr, Value>>() {
-                    Ok(per_row) => DefaultValue::PerRow(per_row),
+                    Ok(per_row) => Source::PerRow(per_row),
                     Err(e) => {
-                        warn!("default_value Map had non-string keys: {e}");
-                        DefaultValue::Null
+                        warn!("source Map had non-string keys: {e}");
+                        Source::Netidx
                     }
                 }
             }
-            Some(v) => DefaultValue::Uniform(v.clone()),
+            Some(v) => Source::Uniform(v.clone()),
         }
     }
 
-    pub(super) fn is_present(&self) -> bool {
-        !matches!(self, DefaultValue::Null)
+    /// True when this source drives a netidx subscription. The
+    /// subscription path is `<row_path>/<col_name>` per row;
+    /// non-Netidx sources skip subscription and render from their
+    /// stored value.
+    pub(super) fn is_netidx(&self) -> bool {
+        matches!(self, Source::Netidx)
     }
 
+    /// Per-row stored value for non-Netidx sources, or `None` for
+    /// Netidx (cells come from subscriptions instead).
     pub(super) fn lookup(&self, row_name: &str) -> Option<&Value> {
         match self {
-            DefaultValue::Null => None,
-            DefaultValue::Uniform(v) => Some(v),
-            DefaultValue::PerRow(m) => m.get(row_name),
+            Source::Netidx => None,
+            Source::Uniform(v) => Some(v),
+            Source::PerRow(m) => m.get(row_name),
         }
     }
 }
 
-/// A `default_value` column ref paired with its pre-parsed lookup
-/// cache.
-pub(super) struct DefaultValueEntry<X: GXExt> {
+/// A `source` column ref paired with its pre-parsed lookup cache.
+pub(super) struct SourceEntry<X: GXExt> {
     pub(super) r: Ref<X>,
-    pub(super) parsed: DefaultValue,
+    pub(super) parsed: Source,
 }
 
-/// One unit of async work produced by `apply_column_types_diff` and
-/// consumed by `apply_column_recompile`. An empty recompile list is
-/// the signal that the diff can be applied without touching an async
-/// runtime at all — important because `handle_update` sometimes runs
-/// from inside a tokio task where `block_on` would panic.
-pub(super) enum ColumnRecompile {
-    Callback { name: ArcStr, value: Value },
-    OnResize { name: ArcStr, bid: u64 },
-    Width { name: ArcStr, bid: u64 },
-    DefaultValue { name: ArcStr, bid: u64 },
-}
-
-impl<X: GXExt> DefaultValueEntry<X> {
+impl<X: GXExt> SourceEntry<X> {
     pub(super) fn new(r: Ref<X>) -> Self {
-        let parsed = DefaultValue::parse(r.last.as_ref());
+        let parsed = Source::parse(r.last.as_ref());
         Self { r, parsed }
     }
 
     pub(super) fn refresh_from_last(&mut self) {
-        self.parsed = DefaultValue::parse(self.r.last.as_ref());
+        self.parsed = Source::parse(self.r.last.as_ref());
     }
 }
 
-/// Per-column state. One entry per known column — covers both the
-/// parsed `column_types` spec and the compiled refs/callables derived
-/// from it. A column without a configured spec (raw netidx column with
-/// no user override) has `spec: None` and inherits Text-column
-/// defaults at render time.
-///
-/// Display order is encoded by position in the parent
-/// `FxIndexMap<ArcStr, ColumnState<X>>`: the first `displayed_count`
-/// entries are the displayed columns in display order; the remainder
-/// are spec-only columns whose refs are kept live so their
-/// `default_value` can transition null→non-null and promote them into
-/// the displayed prefix.
+/// Per-column state. One entry per column in the table's `columns`
+/// array, in display order. Always carries a `ColumnSpec` (bare
+/// strings inflate to a default Text + `` `Netidx `` source spec
+/// during parsing); compiled callables and refs are populated as
+/// `apply_table` resolves the per-column bind ids.
 pub(super) struct ColumnState<X: GXExt> {
-    pub(super) spec: Option<ColumnSpec>,
+    pub(super) spec: ColumnSpec,
     pub(super) callback: Option<Callable<X>>,
-    pub(super) default_value: Option<DefaultValueEntry<X>>,
+    pub(super) source: Option<SourceEntry<X>>,
     pub(super) width_ref: Option<Ref<X>>,
     pub(super) ref_width: Option<f32>,
     pub(super) on_resize_ref: Option<Ref<X>>,
     pub(super) on_resize: Option<Callable<X>>,
-    /// True when this column has no source in raw_cols — its values
-    /// come solely from `default_value`. Implies the column is in the
-    /// displayed prefix.
-    pub(super) virtual_col: bool,
 }
 
-impl<X: GXExt> Default for ColumnState<X> {
-    fn default() -> Self {
+impl<X: GXExt> ColumnState<X> {
+    /// Build a fresh `ColumnState` from a parsed spec. Compiled
+    /// callables/refs start `None` and are filled in by
+    /// `apply_column_recompile`.
+    pub(super) fn new(spec: ColumnSpec) -> Self {
         Self {
-            spec: None,
+            spec,
             callback: None,
-            default_value: None,
+            source: None,
             width_ref: None,
             ref_width: None,
             on_resize_ref: None,
             on_resize: None,
-            virtual_col: false,
         }
     }
-}
 
-impl<X: GXExt> ColumnState<X> {
-    /// Wipe `spec` and every field derived from it. Used when a
-    /// column's `column_types` entry disappears but the column itself
-    /// stays alive (e.g. a raw netidx column that lost its user
-    /// spec). Bound via destructure so a future `ColumnState` field
-    /// forces a deliberate decision about whether it's spec-derived
-    /// — the compile error is the whole point.
-    pub(super) fn clear_spec(&mut self) {
-        let Self {
-            spec,
-            callback,
-            default_value,
-            width_ref,
-            ref_width,
-            on_resize_ref,
-            on_resize,
-            virtual_col,
-        } = self;
-        *spec = None;
-        *callback = None;
-        *default_value = None;
-        *width_ref = None;
-        *ref_width = None;
-        *on_resize_ref = None;
-        *on_resize = None;
-        *virtual_col = false;
+    /// True when this column subscribes to netidx — derived from the
+    /// source ref's parsed value when known, defaulting to true (the
+    /// `` `Netidx `` variant is what bare-string columns inflate to).
+    pub(super) fn is_subscribed(&self) -> bool {
+        match self.source.as_ref() {
+            Some(s) => s.parsed.is_netidx(),
+            None => true,
+        }
     }
 }
 

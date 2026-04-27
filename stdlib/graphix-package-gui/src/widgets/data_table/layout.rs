@@ -46,7 +46,7 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(super) fn total_data_cols(&self) -> usize {
         match self.mode {
-            DisplayMode::Table => self.displayed_count,
+            DisplayMode::Table => self.displayed_count(),
             DisplayMode::Value => 1,
         }
     }
@@ -76,7 +76,7 @@ impl<X: GXExt> DataTableW<X> {
             }
             acc = next;
         }
-        self.displayed_count.saturating_sub(1)
+        self.displayed_count().saturating_sub(1)
     }
 
     /// Inverse of `col_at_offset`: virtual scroll offset corresponding
@@ -98,7 +98,7 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
         self.columns
             .get(col_name)
-            .and_then(|c| c.default_value.as_ref())
+            .and_then(|c| c.source.as_ref())
             .and_then(|e| e.parsed.lookup(row_name))
             .map(super::types::value_to_display)
             .unwrap_or_default()
@@ -115,7 +115,7 @@ impl<X: GXExt> DataTableW<X> {
     ) -> Option<f64> {
         self.columns
             .get(col_name)
-            .and_then(|c| c.default_value.as_ref())
+            .and_then(|c| c.source.as_ref())
             .and_then(|e| e.parsed.lookup(row_name))
             .and_then(value_to_f64)
     }
@@ -139,7 +139,7 @@ impl<X: GXExt> DataTableW<X> {
         drop(inner);
         self.columns
             .get(col_name.as_str())
-            .and_then(|c| c.default_value.as_ref())
+            .and_then(|c| c.source.as_ref())
             .and_then(|e| e.parsed.lookup(super::types::row_basename(row_path)))
             .cloned()
     }
@@ -182,7 +182,7 @@ impl<X: GXExt> DataTableW<X> {
     /// At or above this, the user is at scroll-end and the suffix fully
     /// fits — going higher would just expose empty space.
     pub(super) fn min_first_col_for_fit(&self, vp_width: f32) -> usize {
-        let total = self.displayed_count;
+        let total = self.displayed_count();
         if total == 0 {
             return 0;
         }
@@ -221,7 +221,7 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn actual_visible_cols(&self, from_col: usize, vp_width: f32) -> usize {
         let mut used = self.name_col_width();
         let mut count = 0;
-        for i in from_col..self.displayed_count {
+        for i in from_col..self.displayed_count() {
             let (name, _) = self.displayed_column_at(i).unwrap();
             let w = self.column_canonical_width(name);
             if used + w > vp_width && count > 0 {
@@ -352,8 +352,7 @@ impl<X: GXExt> DataTableW<X> {
                         continue;
                     }
                     let display = entry
-                        .and_then(|c| c.spec.as_ref())
-                        .and_then(|s| s.display_name.as_deref())
+                        .and_then(|c| c.spec.display_name.as_deref())
                         .unwrap_or(col_name);
                     let mut w = col_header_width(display).max(MIN_COL_WIDTH);
                     for row_path in self.row_paths.iter() {
@@ -382,11 +381,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     pub(super) fn col_type_for(&self, col_name: &str) -> &ColumnType {
-        self.columns
-            .get(col_name)
-            .and_then(|c| c.spec.as_ref())
-            .map(|s| &s.typ)
-            .unwrap_or(&ColumnType::Text)
+        self.columns.get(col_name).map(|c| &c.spec.typ).unwrap_or(&ColumnType::Text)
     }
 
     /// Row height used by all data-row cells in this view pass.
@@ -398,12 +393,10 @@ impl<X: GXExt> DataTableW<X> {
     /// `Length::Shrink`, which produces ragged borders.
     pub(super) fn row_height(&self) -> f32 {
         let tall = self.displayed_columns().any(|(_, c)| {
-            match c.spec.as_ref().map(|s| &s.typ) {
-                Some(ColumnType::Combo { .. })
-                | Some(ColumnType::Spin { .. })
-                | Some(ColumnType::Toggle) => true,
-                _ => false,
-            }
+            matches!(
+                c.spec.typ,
+                ColumnType::Combo { .. } | ColumnType::Spin { .. } | ColumnType::Toggle
+            )
         });
         if tall {
             ROW_HEIGHT_CONTROLS

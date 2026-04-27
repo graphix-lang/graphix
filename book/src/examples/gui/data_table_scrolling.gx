@@ -47,20 +47,22 @@ let publish_host = |name: string| -> bool {
 // Keep the result live so the publishers stay registered.
 let publishers = array::map(host_ids, publish_host);
 
-let tbl = net::list_table(base)$;
+let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
+    "cpu_pct"       => progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &f64:90.),
+    "mem_pct"       => progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &f64:90.),
+    "disk_pct"      => progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &f64:90.),
+    "net_in_mbps"   => text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &f64:110.),
+    "net_out_mbps"  => text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &f64:110.),
+    "load_1m"       => sparkline_column(#name: "load_1m",    #history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &f64:120.),
+    "load_5m"       => sparkline_column(#name: "load_5m",    #history_seconds: f64:300., #display_name: "Load 5m",  #width: &f64:120.),
+    "load_15m"      => sparkline_column(#name: "load_15m",   #history_seconds: f64:900., #display_name: "Load 15m", #width: &f64:120.),
+    "error_count"   => text_column(    #name: "error_count", #display_name: "Errors",   #width: &f64:100.),
+    "request_count" => text_column(    #name: "request_count",#display_name: "Requests",#width: &f64:110.),
+    other => other
+});
 
-let types = {
-    "cpu_pct"        => progress_column(#display_name: "CPU %",      #width: &f64:90.),
-    "mem_pct"        => progress_column(#display_name: "Memory %",   #width: &f64:90.),
-    "disk_pct"       => progress_column(#display_name: "Disk %",     #width: &f64:90.),
-    "net_in_mbps"    => text_column(    #display_name: "Net In",     #width: &f64:110.),
-    "net_out_mbps"   => text_column(    #display_name: "Net Out",    #width: &f64:110.),
-    "load_1m"        => sparkline_column(#history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &f64:120.),
-    "load_5m"        => sparkline_column(#history_seconds: f64:300., #display_name: "Load 5m",  #width: &f64:120.),
-    "load_15m"       => sparkline_column(#history_seconds: f64:900., #display_name: "Load 15m", #width: &f64:120.),
-    "error_count"    => text_column(    #display_name: "Errors",     #width: &f64:100.),
-    "request_count"  => text_column(    #display_name: "Requests",   #width: &f64:110.)
-};
+let raw_tbl = net::list_table(base)$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let layout = column(
     #spacing: &10.0,
@@ -70,7 +72,7 @@ let layout = column(
     &[
         text(#size: &18.0, &"40 hosts × 10 metrics"),
         text(&"Scroll vertically or horizontally to reveal off-screen cells."),
-        data_table(#column_types: &types, #table: &tbl)
+        data_table(#table: &tbl)
     ]
 );
 
