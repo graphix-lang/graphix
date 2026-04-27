@@ -8,8 +8,7 @@ mod icon;
 
 let rate = 0.;
 let clock = sys::time::timer(1. - rate, true);
-let x = 0.;
-x <- clock ~ x + 1.;
+let x = cast<f64>(count(clock))$;
 
 let series = |start: f64, end: f64| -> Array<(f64, f64)> {
     let d = [];

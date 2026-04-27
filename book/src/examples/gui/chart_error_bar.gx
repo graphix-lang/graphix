@@ -5,8 +5,7 @@ use gui::column;
 mod icon;
 
 let clock = sys::time::timer(duration:1.s, true);
-let x = 0.;
-x <- clock ~ x + 1.;
+let x = cast<f64>(count(clock))$;
 
 let avg_data = [];
 let err_data = [];

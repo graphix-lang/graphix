@@ -12,8 +12,7 @@ mod icon;
 // on a sine-wave pattern staggered per row. The Sparkline column
 // accumulates the history and draws a rolling chart.
 let tick = time::timer(duration:1.s, true);
-let t = 0.;
-t <- tick ~ t + 1.;
+let t = cast<f64>(count(tick))$;
 
 let cpu_1 = 0.0;
 cpu_1 <- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);

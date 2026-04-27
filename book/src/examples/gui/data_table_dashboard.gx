@@ -24,12 +24,7 @@ mod icon;
 // * Column sort driven by pick_list widgets in the sidebar
 // * Selection echoed in the footer
 
-let t = {
-    let tick = time::timer(duration:1.s, true);
-    let t = 0.;
-    t <- tick ~ t + 1.;
-    t
-};
+let t = cast<f64>(count(time::timer(duration:1.s, true)))$;
 
 type State = [`Healthy, `Degraded, `Down];
 
