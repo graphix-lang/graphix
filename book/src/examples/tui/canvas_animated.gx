@@ -1,12 +1,7 @@
 use tui;
 use tui::canvas;
 
-let clock = sys::time::timer(duration:0.1s, true);
-let x = 0.0;
-x <- {
-    let new_x = (clock ~ x) + 0.1;
-    select new_x > 10.0 { true => 0.0, false => new_x }
-};
+let x = cast<f64>(count(sys::time::timer(0.1, true)))$ * 0.1 % 10.;
 
 let moving_circle = `Circle({color: `Red, x, y: 5.0, radius: 1.0});
 
