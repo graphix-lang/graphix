@@ -93,13 +93,22 @@ impl<X: GXExt> DataTableW<X> {
                 .sum::<f32>()
     }
 
-    /// Get the default value string for a cell. Per-row Maps are
-    /// looked up by the row basename against the pre-parsed cache.
+    /// String shown for a cell that has no live subscription value
+    /// (either because the column is non-Netidx-sourced, or because
+    /// the subscription is pending / went `Unsubscribed`). For
+    /// Netidx columns this is the placeholder string carried in
+    /// `` `Netidx(placeholder) `` (or empty when absent); for
+    /// stored-source columns it's the uniform string or per-row
+    /// lookup against the row basename.
     pub(super) fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
-        self.columns
-            .get(col_name)
-            .and_then(|c| c.source.as_ref())
-            .and_then(|e| e.parsed.lookup(row_name))
+        let Some(c) = self.columns.get(col_name) else { return ArcStr::new() };
+        let Some(entry) = c.source.as_ref() else { return ArcStr::new() };
+        if let Some(p) = entry.parsed.netidx_placeholder() {
+            return p.clone();
+        }
+        entry
+            .parsed
+            .lookup(row_name)
             .map(super::types::value_to_display)
             .unwrap_or_default()
     }

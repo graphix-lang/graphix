@@ -52,7 +52,7 @@ type ColumnType = [
     })
 ];
 
-type Source = [`Netidx, string, Map<string, Any>];
+type Source = [`Netidx([null, string]), string, Map<string, Any>];
 
 type ColumnSpec = {
     name: string,
@@ -200,11 +200,15 @@ to the widest cell in the entire table (not just the visible window).
 Each `ColumnSpec.source` is a `&Source` ref that decides where the
 column's per-cell values originate:
 
-- **`` `Netidx ``** -- The column subscribes to
+- **`` `Netidx(placeholder) ``** -- The column subscribes to
   `<row_path>/<column_name>` for every row whose path is absolute.
-  Cell values come from the subscription. This is the default for the
-  column-builder helpers and the implicit behavior for bare-string
-  entries in `Table.columns`.
+  Cell values come from the subscription. The `placeholder` payload
+  (`null` or a string) is the text rendered before the subscription
+  resolves and any time it goes `Unsubscribed` afterward — useful
+  for distinguishing "not yet subscribed" / "lost" from a real blank
+  value. `` `Netidx(null) `` is the default for the column-builder
+  helpers and the implicit behavior for bare-string entries in
+  `Table.columns`.
 - **`string`** -- A uniform value: every cell in the column renders
   this text. No subscription. Useful for static fields and computed
   columns where one value applies to all rows.

@@ -63,6 +63,11 @@ val window: fn(#n:i64, Array<'a>, @args: 'a) -> Array<'a>;
 /// with all the nested elements concatenated together.
 val flatten: fn(Array<Array<'a>>) -> Array<'a>;
 
+/// return a new array with duplicate elements removed, preserving the order of
+/// first occurrence. Uses a hash set internally so the input does not need to
+/// be sorted. O(N) expected.
+val dedup: fn(Array<'a>) -> Array<'a>;
+
 /// applies f to every element in a and returns the first element for which f
 /// returns true, or null if no element returns true
 val find: fn(Array<'a>, fn('a) -> bool throws 'e) -> Option<'a> throws 'e;

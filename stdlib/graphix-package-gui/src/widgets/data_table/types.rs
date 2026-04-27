@@ -431,12 +431,15 @@ pub(super) fn row_basename(p: &Path) -> &str {
 /// `PerRow` uses `FxHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
 /// enables the cheap lookup.
 ///
-/// `Netidx` means the column subscribes to `<row_path>/<col_name>` for
-/// every row; cell values come from netidx, not from the source ref
-/// itself. The other variants are pure display data with no
-/// subscription.
+/// `Netidx { placeholder }` means the column subscribes to
+/// `<row_path>/<col_name>` for every row; cell values come from
+/// netidx. The placeholder (`Some(text)` or `None`) is what's
+/// rendered before the subscription resolves and any time it goes
+/// `Unsubscribed` afterward, so the user can distinguish "not yet
+/// subscribed" from a real blank value. The other variants are pure
+/// display data with no subscription.
 pub(super) enum Source {
-    Netidx,
+    Netidx { placeholder: Option<ArcStr> },
     Uniform(Value),
     PerRow(FxHashMap<ArcStr, Value>),
 }
@@ -444,25 +447,37 @@ pub(super) enum Source {
 impl Source {
     fn parse(v: Option<&Value>) -> Self {
         match v {
-            // The .gxi defaults the source ref to `&\`Netidx`, so a
-            // missing/null value here means the column never had a
-            // source attached (bare-string column with synthesized
-            // default). Treat as Netidx.
-            None | Some(Value::Null) => Source::Netidx,
-            Some(Value::String(s)) if s.as_str() == "Netidx" => Source::Netidx,
-            Some(v @ Value::Map(_)) => {
-                // `source` is typed `&[\`Netidx, string, Map<string, Any>]`
-                // in the .gxi, so a `Value::Map` here is guaranteed to
-                // have string keys.
-                match v.clone().cast_to::<FxHashMap<ArcStr, Value>>() {
-                    Ok(per_row) => Source::PerRow(per_row),
-                    Err(e) => {
-                        warn!("source Map had non-string keys: {e}");
-                        Source::Netidx
-                    }
+            // Missing / null source ref → default Netidx with no
+            // placeholder (bare-string columns inflate to this via
+            // the parser).
+            None | Some(Value::Null) => Source::Netidx { placeholder: None },
+            // Variant with payload arrives as a 2-element tuple
+            // (tag, payload) — `\`Netidx(p)` casts to ("Netidx", p).
+            Some(v) => match v.clone().cast_to::<(ArcStr, Value)>() {
+                Ok((tag, payload)) if tag.as_str() == "Netidx" => {
+                    let placeholder = match payload {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    };
+                    Source::Netidx { placeholder }
                 }
-            }
-            Some(v) => Source::Uniform(v.clone()),
+                _ => match v {
+                    v @ Value::Map(_) => {
+                        // `source` is typed
+                        // `&[\`Netidx(_), string, Map<string, Any>]`
+                        // in the .gxi, so a `Value::Map` here is
+                        // guaranteed to have string keys.
+                        match v.clone().cast_to::<FxHashMap<ArcStr, Value>>() {
+                            Ok(per_row) => Source::PerRow(per_row),
+                            Err(e) => {
+                                warn!("source Map had non-string keys: {e}");
+                                Source::Netidx { placeholder: None }
+                            }
+                        }
+                    }
+                    v => Source::Uniform(v.clone()),
+                },
+            },
         }
     }
 
@@ -471,14 +486,24 @@ impl Source {
     /// non-Netidx sources skip subscription and render from their
     /// stored value.
     pub(super) fn is_netidx(&self) -> bool {
-        matches!(self, Source::Netidx)
+        matches!(self, Source::Netidx { .. })
+    }
+
+    /// Placeholder text rendered while a Netidx subscription is
+    /// pending or Unsubscribed. `None` for non-Netidx sources or
+    /// Netidx columns that didn't supply a placeholder.
+    pub(super) fn netidx_placeholder(&self) -> Option<&ArcStr> {
+        match self {
+            Source::Netidx { placeholder } => placeholder.as_ref(),
+            _ => None,
+        }
     }
 
     /// Per-row stored value for non-Netidx sources, or `None` for
     /// Netidx (cells come from subscriptions instead).
     pub(super) fn lookup(&self, row_name: &str) -> Option<&Value> {
         match self {
-            Source::Netidx => None,
+            Source::Netidx { .. } => None,
             Source::Uniform(v) => Some(v),
             Source::PerRow(m) => m.get(row_name),
         }

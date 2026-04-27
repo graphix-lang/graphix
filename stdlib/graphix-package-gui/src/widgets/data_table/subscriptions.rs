@@ -200,12 +200,32 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
                 let mut inner = cells.inner.lock();
                 let cb_id = inner.on_update;
                 for (sub_id, event) in batch.drain(..) {
-                    let Event::Update(v) = event else { continue };
                     // Gate on `dvals` — it is the authoritative record of
                     // "this widget still owns a subscription with this id".
                     if !inner.dvals.contains_key(&sub_id) {
                         continue;
                     }
+                    let v = match event {
+                        Event::Update(v) => v,
+                        Event::Unsubscribed => {
+                            // Drop cached value + formatted text;
+                            // render falls back to the column's
+                            // Netidx placeholder. Roles fan-out
+                            // marks grid_dirty / sort_dirty so the
+                            // next view picks up the change.
+                            inner.values.remove(&sub_id);
+                            inner.formatted.remove(&sub_id);
+                            if let Some(roles) = inner.routing.get(&sub_id).cloned() {
+                                for role in roles.iter() {
+                                    match role {
+                                        SubRole::Grid { .. } => grid_dirty = true,
+                                        SubRole::Sort => sort_dirty = true,
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    };
                     inner.values.insert(sub_id, v.clone());
                     // Evict the formatted-display cache for this id —
                     // the next render will repopulate it. We don't

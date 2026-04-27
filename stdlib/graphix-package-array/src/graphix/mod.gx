@@ -13,6 +13,7 @@ let push = |a: Array<'a>, @args: 'a| -> Array<'a> 'array_push_back;
 let push_front = |a: Array<'a>, @args: 'a| -> Array<'a> 'array_push_front;
 let window = |#n: i64, a: Array<'a>, @args: 'a| -> Array<'a> 'array_window;
 let flatten = |a: Array<Array<'a>>| -> Array<'a> 'array_flatten;
+let dedup = |a: Array<'a>| -> Array<'a> 'array_dedup;
 let find = |a: Array<'a>, f: fn('a) -> bool throws 'e| -> Option<'a> throws 'e 'array_find;
 let find_map = |a: Array<'a>, f: fn('a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'array_find_map;
 let sort = |#dir: Direction = `Ascending, #numeric: bool = false, a: Array<'a>| -> Array<'a> 'array_sort;

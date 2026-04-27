@@ -18,7 +18,7 @@ let text_column = |
   #name: string,
   #on_edit: [fn(#path: string, #value: Any) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
@@ -31,7 +31,7 @@ let toggle_column = |
   #name: string,
   #on_edit: [fn(#path: string, #value: bool) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
@@ -45,7 +45,7 @@ let combo_column = |
   #choices: Array<{ id: string, label: string }>,
   #on_edit: [fn(#path: string, #value: string) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
@@ -61,7 +61,7 @@ let spin_column = |
   #increment: f64,
   #on_edit: [fn(#path: string, #value: f64) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
@@ -73,7 +73,7 @@ let spin_column = |
 let progress_column = |
   #name: string,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
@@ -86,7 +86,7 @@ let button_column = |
   #name: string,
   #on_click: [fn(#path: string, #value: Any) -> Any, null] = null,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
@@ -101,7 +101,7 @@ let sparkline_column = |
   #min: [f64, null] = null,
   #max: [f64, null] = null,
   #display_name: [string, null] = null,
-  #source: &Source = &`Netidx,
+  #source: &Source = &`Netidx(null),
   #on_resize: &[fn(f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {

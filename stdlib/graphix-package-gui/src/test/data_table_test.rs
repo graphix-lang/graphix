@@ -110,6 +110,42 @@ let result = data_table(
     Ok(())
 }
 
+/// `` `Netidx(placeholder) `` renders the placeholder for every row
+/// while the column's subscription is pending or absent. Uses
+/// non-absolute row paths so no actual netidx subscription is
+/// attempted; the cell takes the placeholder fallback. With
+/// `placeholder: null` the cell is blank — confirms the variant's
+/// payload threads through Source::parse correctly.
+#[tokio::test(flavor = "current_thread")]
+async fn netidx_source_placeholder() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let tbl = { rows: ["r0", "r1"], columns: [
+        { name: "loading", typ: `Text({ on_edit: null }),
+            display_name: null,
+            source: &`Netidx("…"),
+            on_resize: &null, width: &null },
+        { name: "blank", typ: `Text({ on_edit: null }),
+            display_name: null,
+            source: &`Netidx(null),
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    let loading_idx = snap.col_names.iter().position(|n| n == "loading").unwrap();
+    let blank_idx = snap.col_names.iter().position(|n| n == "blank").unwrap();
+    // The "loading" column shows the placeholder for every row
+    // because no subscription has resolved (rows are virtual).
+    assert_eq!(snap.grid[0][loading_idx], "…");
+    assert_eq!(snap.grid[1][loading_idx], "…");
+    // The "blank" column has no placeholder, so cells are empty.
+    assert_eq!(snap.grid[0][blank_idx], "");
+    assert_eq!(snap.grid[1][blank_idx], "");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_per_row() -> Result<()> {
     let code = r#"
@@ -1254,7 +1290,7 @@ let w = 120.0;
 let tbl = { rows: ["r0"], columns: [
         { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
-            source: &`Netidx,
+            source: &`Netidx(null),
             on_resize: &null,
             width: &w }
     ] };
@@ -1333,7 +1369,7 @@ sys::net::publish("/local/dt17/r0/load", c);
 let tbl = { rows: ["/local/dt17/r0"], columns: [
         { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
-            source: &`Netidx,
+            source: &`Netidx(null),
             on_resize: &null, width: &null }
     ] };
 let result = data_table(
@@ -1712,7 +1748,7 @@ sys::net::publish("/local/dt_hs/r0/load", c);
 let tbl = { rows: ["/local/dt_hs/r0"], columns: [
         { name: "load", typ: `Sparkline({ history_seconds: -1.0, min: null, max: null }),
             display_name: null,
-            source: &`Netidx,
+            source: &`Netidx(null),
             on_resize: &null, width: &null }
     ] };
 let result = data_table(

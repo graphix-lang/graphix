@@ -498,6 +498,56 @@ run!(array_sort3, ARRAY_SORT3, |v: Result<&Value>| {
     }
 });
 
+const ARRAY_DEDUP0: &str = r#"
+{
+   let a = [1, 2, 2, 3, 1, 4, 3, 5];
+   array::dedup(a)
+}
+"#;
+
+run!(array_dedup0, ARRAY_DEDUP0, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
+            Ok([1, 2, 3, 4, 5]) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const ARRAY_DEDUP1: &str = r#"
+{
+   let a: Array<i64> = [];
+   array::dedup(a)
+}
+"#;
+
+run!(array_dedup1, ARRAY_DEDUP1, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => a.is_empty(),
+        _ => false,
+    }
+});
+
+const ARRAY_DEDUP2: &str = r#"
+{
+   let a = ["a", "b", "a", "c", "b", "d"];
+   array::dedup(a)
+}
+"#;
+
+run!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[ArcStr; 4]>() {
+            Ok([s0, s1, s2, s3]) => {
+                &*s0 == "a" && &*s1 == "b" && &*s2 == "c" && &*s3 == "d"
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
 const ARRAY_ENUMERATE: &str = r#"
 {
    let a = [1, 2, 3];

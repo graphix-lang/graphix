@@ -27,16 +27,19 @@ type ColumnType = [
 
 /// Where a column's per-cell values come from.
 ///
-/// - `` `Netidx ``: subscribe to `<row_path>/<column_name>` for each row;
-///   the column has no synthesized default (cells are blank until a
-///   subscription arrives).
+/// - `` `Netidx(placeholder) ``: subscribe to
+///   `<row_path>/<column_name>` for each row. The placeholder
+///   (`null` or a string) is rendered until the subscription
+///   resolves and any time it goes `Unsubscribed` afterward, so the
+///   user can tell "not yet subscribed" / "lost" apart from a real
+///   blank value.
 /// - `string`: a uniform default — every cell renders this text. No
-///   subscription. Useful for static fields and computed columns where
-///   one value applies to all rows.
+///   subscription. Useful for static fields and computed columns
+///   where one value applies to all rows.
 /// - `Map<string, Any>`: per-row defaults keyed by row basename. No
 ///   subscription. Useful for "calculated" virtual columns whose
 ///   values are derived in graphix.
-type Source = [`Netidx, string, Map<string, Any>];
+type Source = [`Netidx([null, string]), string, Map<string, Any>];
 
 type ColumnSpec = {
     name: string,

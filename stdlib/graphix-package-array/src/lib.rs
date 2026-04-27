@@ -14,9 +14,11 @@ use graphix_compiler::{
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
 };
+use fxhash::FxHashSet;
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value, utils::Either};
 use netidx_value::ValArray;
+use poolshark::local::LPooled;
 use smallvec::{smallvec, SmallVec};
 use std::{collections::hash_map::Entry, collections::VecDeque, fmt::Debug, iter};
 use triomphe::Arc as TArc;
@@ -391,6 +393,32 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
 }
 
 type Sort = CachedArgs<SortEv>;
+
+#[derive(Debug, Default)]
+struct DedupEv(SmallVec<[Value; 32]>);
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
+    const NAME: &str = "array_dedup";
+    const NEEDS_CALLSITE: bool = false;
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match &from.0[0] {
+            Some(Value::Array(a)) => {
+                let mut seen: LPooled<FxHashSet<Value>> = LPooled::take();
+                for v in a.iter() {
+                    if !seen.contains(v) {
+                        seen.insert(v.clone());
+                        self.0.push(v.clone());
+                    }
+                }
+                Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
+            }
+            Some(_) | None => None,
+        }
+    }
+}
+
+type Dedup = CachedArgs<DedupEv>;
 
 #[derive(Debug, Default)]
 struct EnumerateEv;
@@ -888,6 +916,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
 graphix_derive::defpackage! {
     builtins => [
         Concat,
+        Dedup,
         Filter as Filter<GXRt<X>, X::UserEvent>,
         FilterMap as FilterMap<GXRt<X>, X::UserEvent>,
         Find as Find<GXRt<X>, X::UserEvent>,
