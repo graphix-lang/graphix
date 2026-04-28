@@ -70,7 +70,10 @@ where
     info!("graphix lsp server initialized");
     let workspace_roots = workspace_roots_from(&init_params);
     let mut state = ServerState::new(backend);
-    state.set_workspace_roots(workspace_roots);
+    let initial = state.set_workspace_roots(workspace_roots);
+    for (uri, diags) in initial {
+        publish_diagnostics(&connection, uri, diags, 0)?;
+    }
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -169,7 +172,14 @@ fn handle_notification(
             // A save means disk now reflects the user's intent —
             // recompile every project so cross-file errors and
             // references update.
-            state.recheck_workspace();
+            let updates = state.recheck_workspace();
+            // Publish per-file diagnostics. Skip the active doc if
+            // it's the file the user just saved — its own per-doc
+            // check already publishes diagnostics for it on each
+            // change.
+            for (uri, diags) in updates {
+                publish_diagnostics(connection, uri, diags, 0)?;
+            }
         }
         _ => {
             info!("unhandled notification: {}", not.method);

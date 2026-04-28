@@ -2,36 +2,82 @@
 //!
 //! The compiler reports errors as anyhow chains, with position information
 //! either embedded in the leaf parser-error message ("Parse error at line:
-//! L, column: C") or in the displayed `ErrorContext` ("at: L:C, in: …").
-//! We surface the deepest position info we can find.
+//! L, column: C") or in the displayed `ErrorContext`
+//! ("at: line: L, column: C in file <path>, in: …"). We surface the deepest
+//! position and source-file info we can find.
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+use std::path::PathBuf;
 
+/// What the chain told us about the failure: a position (line/col) and
+/// optionally the source file the error originated in.
+#[derive(Debug, Clone, Default)]
+pub struct ErrorLocation {
+    pub position: Option<Position>,
+    pub file: Option<PathBuf>,
+}
+
+/// Build a single LSP `Diagnostic` from an anyhow error. `text` is
+/// the source text the error pertains to and is used to clamp
+/// out-of-range positions back inside the document.
 pub fn error_to_diagnostics(err: &anyhow::Error, text: &str) -> Vec<Diagnostic> {
-    let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
-    // Innermost cause makes the best inline message — that's the actual
-    // type/parse error rather than a "while compiling …" wrapper.
-    let leaf = chain.last().cloned().unwrap_or_else(|| "error".into());
-    // Pick the deepest position info we can find. ErrorContext wraps appear
-    // closer to the leaf so iterating from leaf outward finds the most
-    // specific span first.
-    let pos = chain
-        .iter()
-        .rev()
-        .find_map(|s| extract_position(s))
-        .unwrap_or(Position { line: 0, character: 0 });
-    let pos = clamp_position(pos, text);
-    let range = Range { start: pos, end: pos };
-    // Strip the position prefix from `at: line: L, column: C, in: …` so
-    // the message itself doesn't repeat what the range already encodes.
-    let message = strip_context_prefix(&leaf).to_string();
+    let loc = error_location(err);
+    let pos = clamp_position(loc.position.unwrap_or_default(), text);
     vec![Diagnostic {
-        range,
+        range: Range { start: pos, end: pos },
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("graphix".to_string()),
-        message,
+        message: error_leaf_message(err),
         ..Default::default()
     }]
+}
+
+/// Walk the error chain and pick the most specific position +
+/// source file we can find. Inner ErrorContext wraps appear closer
+/// to the leaf, so iterating from leaf outward gets the deepest
+/// span first.
+pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
+    let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
+    let mut loc = ErrorLocation::default();
+    for s in chain.iter().rev() {
+        if loc.file.is_none() {
+            if let Some(p) = extract_file(s) {
+                loc.file = Some(p);
+            }
+        }
+        if loc.position.is_none() {
+            if let Some(p) = extract_position(s) {
+                loc.position = Some(p);
+            }
+        }
+        if loc.file.is_some() && loc.position.is_some() {
+            break;
+        }
+    }
+    loc
+}
+
+/// Trim the chain's leaf entry to a clean inline message —
+/// strip both the `at: …` position prefix and the trailing
+/// `, in: <snippet>` for legibility.
+pub fn error_leaf_message(err: &anyhow::Error) -> String {
+    let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
+    let leaf = chain.last().cloned().unwrap_or_else(|| "error".into());
+    strip_context_prefix(&leaf).to_string()
+}
+
+/// Extract `in file <path>` from an `at: … in file PATH, in: …`
+/// chain entry, if present.
+fn extract_file(s: &str) -> Option<PathBuf> {
+    let i = s.find(" in file ")?;
+    let rest = &s[i + " in file ".len()..];
+    let end = rest.find(", in: ").unwrap_or(rest.len());
+    let path = rest[..end].trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
 }
 
 fn strip_context_prefix(s: &str) -> &str {
@@ -108,5 +154,20 @@ mod tests {
         let p =
             parse_context_pos("at: line: 12, column: 4, in: let x = ...").unwrap();
         assert_eq!(p, Position { line: 11, character: 3 });
+    }
+
+    #[test]
+    fn parses_context_pos_with_file() {
+        let p = parse_context_pos(
+            "at: line: 12, column: 4 in file /tmp/foo.gx, in: let x = ...",
+        )
+        .unwrap();
+        assert_eq!(p, Position { line: 11, character: 3 });
+    }
+
+    #[test]
+    fn extracts_file_from_chain_entry() {
+        let s = "at: line: 12, column: 4 in file /tmp/foo.gx, in: let x = ...";
+        assert_eq!(extract_file(s), Some(PathBuf::from("/tmp/foo.gx")));
     }
 }

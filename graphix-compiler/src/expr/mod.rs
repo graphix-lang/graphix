@@ -595,15 +595,34 @@ impl fmt::Display for ErrorContext {
         BUF.with_borrow_mut(|buf| {
             buf.clear();
             write!(buf, "{}", self.0).unwrap();
-            if buf.len() <= MAX {
-                write!(f, "at: {}, in: {buf}", self.0.pos)
+            // Truncate the in-line snippet for legibility but keep file
+            // info — IDE tooling parses the source path back out of the
+            // chain to attribute diagnostics to the right file.
+            let snippet: &str = if buf.len() <= MAX {
+                &buf
             } else {
                 let mut end = MAX;
                 while !buf.is_char_boundary(end) {
                     end += 1
                 }
-                let buf = &buf[0..end];
-                write!(f, "at: {}, in: {buf}..", self.0.pos)
+                &buf[0..end]
+            };
+            let suffix = if buf.len() > MAX { ".." } else { "" };
+            match &self.0.ori.source {
+                Source::File(p) => write!(
+                    f,
+                    "at: {} in file {}, in: {snippet}{suffix}",
+                    self.0.pos,
+                    p.display()
+                ),
+                Source::Netidx(p) => write!(
+                    f,
+                    "at: {} in netidx {p}, in: {snippet}{suffix}",
+                    self.0.pos
+                ),
+                Source::Internal(_) | Source::Unspecified => {
+                    write!(f, "at: {}, in: {snippet}{suffix}", self.0.pos)
+                }
             }
         })
     }

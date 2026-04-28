@@ -1,4 +1,4 @@
-use crate::diagnostics::error_to_diagnostics;
+use crate::diagnostics::{error_leaf_message, error_location, error_to_diagnostics};
 use arcstr::ArcStr;
 use graphix_compiler::{
     env::Env,
@@ -7,7 +7,12 @@ use graphix_compiler::{
     ReferenceSite, SourcePosition,
 };
 use lsp_types::Uri;
-use std::{collections::HashMap, path::{Path, PathBuf}, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+};
 
 /// An open document tracked by the language server.
 pub struct Document {
@@ -92,6 +97,11 @@ pub struct ServerState {
     /// `workspace.projects`. `None` while a project hasn't been
     /// checked yet or its last check errored.
     pub project_results: Vec<Option<ProjectResult>>,
+    /// URIs we published non-empty diagnostics for in the last
+    /// project recheck. Used to publish empty diagnostics on the
+    /// next cycle for files that recovered, so editors don't show
+    /// stale red squiggles.
+    pub last_project_diag_uris: HashSet<Uri>,
 }
 
 impl ServerState {
@@ -104,43 +114,74 @@ impl ServerState {
             workspace_roots: Vec::new(),
             workspace: Default::default(),
             project_results: Vec::new(),
+            last_project_diag_uris: HashSet::new(),
         }
     }
 
     /// Tell the state about the editor's workspace folders. Triggers
-    /// an initial scan and project compile.
-    pub fn set_workspace_roots(&mut self, roots: Vec<PathBuf>) {
+    /// an initial scan and project compile, returning the
+    /// per-file diagnostics so the caller can publish them.
+    pub fn set_workspace_roots(
+        &mut self,
+        roots: Vec<PathBuf>,
+    ) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
         self.workspace_roots = roots;
-        self.recheck_workspace();
+        self.recheck_workspace()
     }
 
     /// Re-scan the workspace and re-typecheck every project from
     /// disk. Throws away the previous project state and replaces it
     /// wholesale.
-    pub fn recheck_workspace(&mut self) {
+    ///
+    /// Returns a (uri → diagnostics) map covering both errored
+    /// projects (with the diagnostic attributed to the file the
+    /// error originated in) and previously-erroring files that now
+    /// compile cleanly (returned with an empty diagnostic list so
+    /// callers can clear stale squiggles).
+    pub fn recheck_workspace(&mut self) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
         if self.workspace_roots.is_empty() {
             self.workspace = Default::default();
             self.project_results.clear();
-            return;
+            // Clear any stale diagnostics from the previous cycle.
+            let mut out = HashMap::new();
+            for uri in self.last_project_diag_uris.drain() {
+                out.insert(uri, Vec::new());
+            }
+            return out;
         }
         self.workspace = crate::workspace::scan(&self.workspace_roots);
         let mut results: Vec<Option<ProjectResult>> =
             Vec::with_capacity(self.workspace.projects.len());
+        let mut diags_by_uri: HashMap<Uri, Vec<lsp_types::Diagnostic>> =
+            HashMap::new();
         for project in &self.workspace.projects {
             let r = self.backend.typecheck_project(&project.root);
             match r {
                 Ok(TypecheckResult { env, references }) => {
                     results.push(Some(ProjectResult { env, references }));
                 }
-                Err(_) => {
-                    // The error is already routed through the
-                    // diagnostics path elsewhere; for queries we just
-                    // mark the project as having no result this cycle.
+                Err(e) => {
+                    let (uri, diag) =
+                        project_error_to_diagnostic(&e, &project.root);
+                    diags_by_uri.entry(uri).or_default().push(diag);
                     results.push(None);
                 }
             }
         }
         self.project_results = results;
+        // Compose the publish set: every URI we have diagnostics for
+        // this cycle plus every URI that had diagnostics last cycle but
+        // doesn't anymore (so we can publish empty to clear).
+        let mut out: HashMap<Uri, Vec<lsp_types::Diagnostic>> = HashMap::new();
+        for (uri, diags) in diags_by_uri {
+            out.insert(uri, diags);
+        }
+        for uri in self.last_project_diag_uris.iter() {
+            out.entry(uri.clone()).or_default();
+        }
+        self.last_project_diag_uris =
+            out.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k.clone()).collect();
+        out
     }
 
     /// Indices of projects that contain the file at `uri`.
@@ -516,6 +557,34 @@ fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
 fn path_to_uri(path: &PathBuf) -> Option<Uri> {
     let uri_str = format!("file://{}", path.display());
     Uri::from_str(&uri_str).ok()
+}
+
+/// Turn a project compile error into a (uri, diagnostic) pair. The
+/// uri is the file the error originated in (extracted from the
+/// chain) — falling back to the project root if attribution failed.
+fn project_error_to_diagnostic(
+    err: &anyhow::Error,
+    project_root: &Path,
+) -> (Uri, lsp_types::Diagnostic) {
+    let loc = error_location(err);
+    let target_path = loc.file.unwrap_or_else(|| project_root.to_path_buf());
+    let uri = path_to_uri(&target_path).unwrap_or_else(|| {
+        // Path → URI conversion shouldn't fail for absolute paths,
+        // but if it does we fall back to the project root URI rather
+        // than dropping the diagnostic on the floor.
+        path_to_uri(&project_root.to_path_buf())
+            .or_else(|| Uri::from_str("file:///").ok())
+            .expect("file:/// is a valid URI")
+    });
+    let pos = loc.position.unwrap_or_default();
+    let diag = lsp_types::Diagnostic {
+        range: lsp_types::Range { start: pos, end: pos },
+        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+        source: Some("graphix".to_string()),
+        message: error_leaf_message(err),
+        ..Default::default()
+    };
+    (uri, diag)
 }
 
 /// Check whether a 0-indexed LSP position falls inside a reference
