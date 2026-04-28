@@ -165,12 +165,15 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         }
         let mut argpats = vec![];
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
+            // Use the argument's own source position (recorded by the
+            // parser) so go-to-def on a parameter lands at the param
+            // token, not on the lambda body.
             let pattern = StructPatternNode::compile(
                 ctx,
                 &atyp.typ,
                 &a.pattern,
                 scope,
-                body.pos,
+                a.pos,
                 body.ori.clone(),
             )?;
             if pattern.is_refutable() {
@@ -300,11 +303,13 @@ impl Lambda {
                     labeled: a.labeled.clone(),
                     pattern: a.pattern.clone(),
                     constraint: None,
+                    pos: a.pos,
                 },
                 Some(typ) => Arg {
                     labeled: a.labeled.clone(),
                     pattern: a.pattern.clone(),
                     constraint: Some(typ.scope_refs(&scope.lexical)),
+                    pos: a.pos,
                 },
             })
             .collect::<LPooled<Vec<_>>>();

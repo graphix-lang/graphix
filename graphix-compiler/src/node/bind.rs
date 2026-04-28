@@ -176,11 +176,15 @@ impl Ref {
             Some((_, bind)) => {
                 let bind_id = bind.id;
                 let typ = bind.typ.clone();
+                let def_pos = bind.pos;
+                let def_ori = bind.ori.clone();
                 ctx.references.push(crate::ReferenceSite {
                     pos: spec.pos,
                     ori: spec.ori.clone(),
                     name: name.clone(),
                     bind_id,
+                    def_pos,
+                    def_ori,
                 });
                 ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);

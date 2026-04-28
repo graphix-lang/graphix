@@ -4,7 +4,7 @@ use graphix_compiler::{
     env::Env,
     expr::{ModPath, Source},
     typ::Type,
-    ReferenceSite, SourcePosition,
+    ModuleRefSite, ReferenceSite, SourcePosition,
 };
 use lsp_types::Uri;
 use std::{
@@ -27,11 +27,19 @@ pub struct Document {
     /// recent successful check, used to answer
     /// `textDocument/references` and prepareRename.
     pub references: Vec<ReferenceSite>,
+    /// Module reference sites (`use foo;`, `mod foo;`).
+    pub module_references: Vec<ModuleRefSite>,
 }
 
 impl Document {
     pub fn new(text: String, version: i32) -> Self {
-        Self { version, text, env: None, references: Vec::new() }
+        Self {
+            version,
+            text,
+            env: None,
+            references: Vec::new(),
+            module_references: Vec::new(),
+        }
     }
 }
 
@@ -40,6 +48,7 @@ impl Document {
 pub struct TypecheckResult {
     pub env: Env,
     pub references: Vec<ReferenceSite>,
+    pub module_references: Vec<ModuleRefSite>,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -77,6 +86,7 @@ pub trait LspBackend: Send + Sync + 'static {
 pub struct ProjectResult {
     pub env: Env,
     pub references: Vec<ReferenceSite>,
+    pub module_references: Vec<ModuleRefSite>,
 }
 
 /// Core language intelligence state.
@@ -157,8 +167,12 @@ impl ServerState {
         for project in &self.workspace.projects {
             let r = self.backend.typecheck_project(&project.root);
             match r {
-                Ok(TypecheckResult { env, references }) => {
-                    results.push(Some(ProjectResult { env, references }));
+                Ok(TypecheckResult { env, references, module_references }) => {
+                    results.push(Some(ProjectResult {
+                        env,
+                        references,
+                        module_references,
+                    }));
                 }
                 Err(e) => {
                     let (uri, diag) =
@@ -225,10 +239,11 @@ impl ServerState {
         let source = uri_to_source(uri);
         let text = ArcStr::from(doc.text.as_str());
         match self.backend.typecheck(source, text.clone()) {
-            Ok(TypecheckResult { env, references }) => {
+            Ok(TypecheckResult { env, references, module_references }) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = Some(env);
                     d.references = references;
+                    d.module_references = module_references;
                 }
                 Vec::new()
             }
@@ -236,6 +251,7 @@ impl ServerState {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = None;
                     d.references.clear();
+                    d.module_references.clear();
                 }
                 error_to_diagnostics(&e, &text)
             }
@@ -403,6 +419,12 @@ impl ServerState {
                 );
             }
         }
+        // Module references: if the cursor is on a module name, also
+        // collect every `use foo;` / `mod foo;` site that resolved to
+        // the same canonical path.
+        if let Some(canonical) = self.canonical_module_at(uri, position) {
+            self.collect_module_refs(&canonical, uri, &mut locs);
+        }
         locs.sort_by_key(|l| {
             (
                 l.uri.as_str().to_string(),
@@ -459,6 +481,110 @@ impl ServerState {
         None
     }
 
+    /// If the cursor sits on a recorded reference site, return the
+    /// declaration site (`def_pos`, `def_ori`) recorded on it. The
+    /// ReferenceSite captures this at resolution time, so this
+    /// works even for bindings that have since been removed from
+    /// the env (e.g. lambda parameters tied to a single callsite).
+    /// If the cursor is on a `use foo;` / `mod foo;` site, return
+    /// the canonical module path it resolved to.
+    fn canonical_module_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<ModPath> {
+        let doc = self.documents.get(uri)?;
+        for m in &doc.module_references {
+            if position_in_module_ref(position, m) {
+                return Some(m.canonical.clone());
+            }
+        }
+        None
+    }
+
+    /// Walk active doc + every project's module_references, yielding
+    /// locations for every entry whose canonical path matches.
+    fn collect_module_refs(
+        &self,
+        canonical: &ModPath,
+        requesting_uri: &Uri,
+        out: &mut Vec<lsp_types::Location>,
+    ) {
+        let push = |m: &ModuleRefSite, out: &mut Vec<lsp_types::Location>| {
+            if let Some(loc) = ref_to_location(requesting_uri, &m.ori, m.pos) {
+                out.push(loc);
+            }
+        };
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            for m in &doc.module_references {
+                if &m.canonical == canonical {
+                    push(m, out);
+                }
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for m in &r.module_references {
+                    if &m.canonical == canonical {
+                        push(m, out);
+                    }
+                }
+            }
+        }
+    }
+
+    fn def_site_at_position(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<(SourcePosition, graphix_compiler::expr::Origin)> {
+        let doc = self.documents.get(uri)?;
+        for r in &doc.references {
+            if position_in_ref(position, &doc.text, r) {
+                return Some((r.def_pos, graphix_compiler::expr::Origin::clone(&r.def_ori)));
+            }
+        }
+        None
+    }
+
+    /// If the cursor is on a `use foo;` or `mod foo;` site, return
+    /// the file the module body lives in (for `mod` decls the
+    /// resolver gives us a file directly; for `use` we look across
+    /// the workspace for any `mod` decl with the same canonical
+    /// path).
+    fn module_definition_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let doc = self.documents.get(uri)?;
+        let target = doc
+            .module_references
+            .iter()
+            .find(|m| position_in_module_ref(position, m))?;
+        // Prefer this site's own def_ori if the resolver attached one.
+        if let Some(ori) = target.def_ori.as_ref() {
+            return module_origin_to_location(uri, ori);
+        }
+        // Otherwise look at any other module ref with the same
+        // canonical path that DOES have a def_ori — likely the
+        // `mod foo;` declaration in the project's main file.
+        let canonical = &target.canonical;
+        let mut search: Vec<&ModuleRefSite> = Vec::new();
+        search.extend(&doc.module_references);
+        for r in &self.project_results {
+            if let Some(r) = r {
+                search.extend(&r.module_references);
+            }
+        }
+        search
+            .into_iter()
+            .find(|m| &m.canonical == canonical && m.def_ori.is_some())
+            .and_then(|m| {
+                module_origin_to_location(uri, m.def_ori.as_ref().unwrap())
+            })
+    }
+
     /// Return the document's top-level user-defined bindings. We
     /// identify "user bindings" by matching the bind's recorded
     /// `Origin.text` against the live document text — stdlib and
@@ -513,6 +639,23 @@ impl ServerState {
         uri: &Uri,
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
+        // First try the references list — each ReferenceSite carries
+        // the bind's declaration site. This works for all bindings,
+        // including lambda parameters that the env's by_id map no
+        // longer remembers (their callsite was deleted post-typecheck).
+        if let Some((def_pos, def_ori)) =
+            self.def_site_at_position(uri, position)
+        {
+            return ref_to_location(uri, &def_ori, def_pos);
+        }
+        // Try module references — `use foo;` and `mod foo;` sites
+        // carry the file the module body lives in.
+        if let Some(loc) = self.module_definition_at(uri, position) {
+            return Some(loc);
+        }
+        // Fall back to env lookup — this catches the cursor sitting
+        // directly on the binding name (where there's no
+        // ReferenceSite for it but the bind is reachable via name).
         let doc = self.documents.get(uri)?;
         let word = get_word_at_position(&doc.text, position)?;
         let scope = ModPath::root();
@@ -521,9 +664,6 @@ impl ServerState {
         let (_, bind) = env.lookup_bind(&scope, &name)?;
         let target_uri = match &bind.ori.source {
             Source::File(p) => path_to_uri(p)?,
-            // Bindings whose origin is the live document text (the LSP
-            // always feeds Source::Internal) point back at the document
-            // the user is in.
             Source::Internal(_) | Source::Unspecified => uri.clone(),
             Source::Netidx(_) => return None,
         };
@@ -591,13 +731,42 @@ fn project_error_to_diagnostic(
 /// site's textual span. We use the printed length of the name as a
 /// rough span — `array::map` covers 10 characters from `pos`.
 fn position_in_ref(pos: lsp_types::Position, _text: &str, r: &ReferenceSite) -> bool {
-    let line0 = r.pos.line.saturating_sub(1).max(0) as u32;
+    span_covers(pos, r.pos, r.name.to_string().chars().count() as u32)
+}
+
+/// Same idea for a module reference. The pos points at the `mod` or
+/// `use` keyword, so we extend the span to cover the keyword + name.
+fn position_in_module_ref(pos: lsp_types::Position, m: &ModuleRefSite) -> bool {
+    // The keyword is "use" or "mod" (3 chars) + 1 space + name length.
+    let name_len = m.name.to_string().chars().count() as u32;
+    span_covers(pos, m.pos, 4 + name_len)
+}
+
+fn span_covers(pos: lsp_types::Position, start: SourcePosition, len: u32) -> bool {
+    let line0 = start.line.saturating_sub(1).max(0) as u32;
     if pos.line != line0 {
         return false;
     }
-    let col0 = r.pos.column.saturating_sub(1).max(0) as u32;
-    let len = r.name.to_string().chars().count() as u32;
+    let col0 = start.column.saturating_sub(1).max(0) as u32;
     pos.character >= col0 && pos.character <= col0 + len
+}
+
+/// Map a module reference's `def_ori` (file the module body was
+/// loaded from) to an LSP Location pointing at the file's start.
+fn module_origin_to_location(
+    requesting_uri: &Uri,
+    ori: &graphix_compiler::expr::Origin,
+) -> Option<lsp_types::Location> {
+    let target_uri = match &ori.source {
+        Source::File(p) => path_to_uri(p)?,
+        Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
+        Source::Netidx(_) => return None,
+    };
+    let pos = lsp_types::Position { line: 0, character: 0 };
+    Some(lsp_types::Location {
+        uri: target_uri,
+        range: lsp_types::Range { start: pos, end: pos },
+    })
 }
 
 /// Map a (Origin, SourcePosition) pair to an LSP Location. For

@@ -79,6 +79,24 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
             if ctx.env.modules.contains(&scope.lexical) {
                 bail!("duplicate module definition {}", scope.lexical)
             }
+            // Record the `mod foo;` declaration site for IDE tooling.
+            // For `Resolved` modules the inner exprs were produced by
+            // the resolver, so their `ori` points at the file the
+            // module body lives in — exactly what go-to-definition
+            // wants.
+            let def_ori = match value {
+                ModuleKind::Resolved { exprs, .. } => {
+                    exprs.first().map(|e| e.ori.clone())
+                }
+                _ => None,
+            };
+            ctx.module_references.push(crate::ModuleRefSite {
+                pos: spec.pos,
+                ori: spec.ori.clone(),
+                name: crate::expr::ModPath::from([name.as_str()]),
+                canonical: scope.lexical.clone(),
+                def_ori,
+            });
             match value {
                 ModuleKind::Unresolved { .. } => {
                     bail!("external modules are not allowed in this context")

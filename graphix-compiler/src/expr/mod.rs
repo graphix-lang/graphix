@@ -66,11 +66,39 @@ impl fmt::Display for CouldNotResolve {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone)]
 pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
+    /// Source position of the argument in its declaring lambda.
+    /// Used by IDE tooling for go-to-definition; the compiler
+    /// itself doesn't read it.
+    pub pos: SourcePosition,
+}
+
+// Equality ignores `pos` — it's purely IDE metadata, not part of the
+// expression's identity. Same convention as `Expr::eq`.
+impl PartialEq for Arg {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.labeled == rhs.labeled
+            && self.pattern == rhs.pattern
+            && self.constraint == rhs.constraint
+    }
+}
+
+impl PartialOrd for Arg {
+    fn partial_cmp(&self, rhs: &Self) -> Option<std::cmp::Ordering> {
+        match self.labeled.partial_cmp(&rhs.labeled)? {
+            std::cmp::Ordering::Equal => (),
+            o => return Some(o),
+        }
+        match self.pattern.partial_cmp(&rhs.pattern)? {
+            std::cmp::Ordering::Equal => (),
+            o => return Some(o),
+        }
+        self.constraint.partial_cmp(&rhs.constraint)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]

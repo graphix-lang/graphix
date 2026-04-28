@@ -552,6 +552,7 @@ macro_rules! lambda {
                                 labeled: labeled.then_some(default),
                                 pattern,
                                 constraint,
+                                pos: Default::default(),
                             }
                         },
                     );

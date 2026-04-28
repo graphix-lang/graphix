@@ -290,13 +290,40 @@ pub use combine::stream::position::SourcePosition;
 /// A textual occurrence of a name at a specific source position that
 /// the compiler resolved to a particular `BindId`. Populated as a side
 /// effect of compilation so IDE tooling can answer
-/// `textDocument/references` without re-implementing name resolution.
+/// `textDocument/references` and `textDocument/definition` without
+/// re-implementing name resolution.
+///
+/// `def_pos` and `def_ori` mirror the bind's declaration site at
+/// resolution time. They're captured here because some bindings
+/// (notably lambda parameters) are unbound from the env when the
+/// callsite that created them is dropped — but their declaration
+/// site is still meaningful to the user.
 #[derive(Debug, Clone)]
 pub struct ReferenceSite {
     pub pos: SourcePosition,
     pub ori: Arc<expr::Origin>,
     pub name: expr::ModPath,
     pub bind_id: BindId,
+    pub def_pos: SourcePosition,
+    pub def_ori: Arc<expr::Origin>,
+}
+
+/// A textual occurrence of a module reference (either `use foo;` or
+/// `mod foo;`). For the `mod foo;` case `def_ori` points at the file
+/// the module's body was loaded from — that's the natural target for
+/// go-to-definition on a module name.
+#[derive(Debug, Clone)]
+pub struct ModuleRefSite {
+    pub pos: SourcePosition,
+    pub ori: Arc<expr::Origin>,
+    /// Module name as the user wrote it (might be relative).
+    pub name: expr::ModPath,
+    /// Absolute module path the compiler resolved this reference to.
+    pub canonical: expr::ModPath,
+    /// Origin of the module's body (the file it was loaded from)
+    /// when this site is itself a declaration that pulled the
+    /// module in. `None` for plain `use` sites.
+    pub def_ori: Option<Arc<expr::Origin>>,
 }
 
 impl Refs {
@@ -776,6 +803,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Use `references.swap()` (via `mem::take`) at compile boundaries
     /// to scope collection per check/compile.
     pub references: Vec<ReferenceSite>,
+    /// Module reference sites — `use foo;` and `mod foo;` mentions.
+    /// Same scoping rules as `references`.
+    pub module_references: Vec<ModuleRefSite>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -806,6 +836,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambda_defs: FxHashMap::default(),
             deferred_checks: Vec::new(),
             references: Vec::new(),
+            module_references: Vec::new(),
         })
     }
 

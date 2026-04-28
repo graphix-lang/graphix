@@ -424,7 +424,12 @@ async fn resolve(
                 ts.elapsed()
             )
         });
-        return Ok(Expr { id, ori: Arc::new(implementation), pos, kind });
+        // Keep the original parent's `ori` on the Module Expr — that's
+        // the file where `mod foo;` was written. The body's exprs
+        // already carry the implementation file as their ori, so error
+        // reporting and IDE tooling stay accurate at both layers.
+        let _ = implementation; // implementation lives on the inner exprs
+        return Ok(Expr { id, ori: parent, pos, kind });
     }
     bail!("module {name} could not be found {errors:?}")
 }

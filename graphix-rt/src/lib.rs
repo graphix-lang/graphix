@@ -142,11 +142,13 @@ pub struct CompRes<X: GXExt> {
 
 /// Result of a typecheck-only compile pass. Carries the env as it
 /// would be after the source was compiled, plus the set of resolved
-/// name references encountered during compilation.
+/// name references and module references encountered during
+/// compilation.
 #[derive(Debug, Clone)]
 pub struct CheckResult {
     pub env: Env,
     pub references: Vec<graphix_compiler::ReferenceSite>,
+    pub module_references: Vec<graphix_compiler::ModuleRefSite>,
 }
 
 pub struct Ref<X: GXExt> {

@@ -443,6 +443,7 @@ impl<X: GXExt> GX<X> {
         // restore them — ReferenceSite is a side-channel for IDE
         // tooling and we want each `check` to scope its own collection.
         let prev_refs = std::mem::take(&mut self.ctx.references);
+        let prev_modrefs = std::mem::take(&mut self.ctx.module_references);
         let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
             Some(v) => Arc::from(v),
             None => self.resolvers.clone(),
@@ -474,14 +475,16 @@ impl<X: GXExt> GX<X> {
             // can see any bindings/types the module would have introduced.
             let env = self.ctx.env.clone();
             let references = std::mem::take(&mut self.ctx.references);
+            let module_references = std::mem::take(&mut self.ctx.module_references);
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok(crate::CheckResult { env, references })
+            Ok(crate::CheckResult { env, references, module_references })
         };
         let res = go.await;
         self.ctx.env = env;
         self.ctx.references = prev_refs;
+        self.ctx.module_references = prev_modrefs;
         res
     }
 

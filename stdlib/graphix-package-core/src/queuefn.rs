@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use compact_str::format_compact;
+use graphix_compiler::SourcePosition;
 use graphix_compiler::{
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
@@ -247,6 +248,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
                     labeled: a.label.as_ref().map(|_| None),
                     pattern: StructurePattern::Bind(name),
                     constraint: Some(a.typ.clone()),
+                    pos: SourcePosition::default(),
                 }
             })
             .collect::<Vec<_>>()
