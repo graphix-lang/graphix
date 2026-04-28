@@ -105,3 +105,4 @@ version.texi
 !src/vendor/**
 /src/target/
 no_llvm_build
+/ide/tree-sitter-graphix/node_modules
