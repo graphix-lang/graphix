@@ -422,6 +422,11 @@ enum ToGX<X: GXExt> {
     },
     Check {
         path: Source,
+        /// If provided, override the runtime's default resolver chain
+        /// for this check only. Used by IDE tooling that needs
+        /// project-scoped module resolution without rebuilding the
+        /// runtime.
+        resolvers: Option<Vec<ModuleResolver>>,
         res: oneshot::Sender<Result<CheckResult>>,
     },
     Compile {
@@ -516,7 +521,23 @@ impl<X: GXExt> GXHandle<X> {
     /// is not altered — to keep the bindings live, use `compile` or
     /// `load`.
     pub async fn check(&self, path: Source) -> Result<CheckResult> {
-        Ok(self.exec(|tx| ToGX::Check { path, res: tx }).await??)
+        Ok(self
+            .exec(|tx| ToGX::Check { path, resolvers: None, res: tx })
+            .await??)
+    }
+
+    /// Like `check` but overrides the runtime's resolver chain for
+    /// this call only. Used by IDE tooling to compile a project
+    /// against a project-scoped resolver chain (e.g. `Files(<root>)`)
+    /// without having to rebuild the runtime.
+    pub async fn check_with_resolvers(
+        &self,
+        path: Source,
+        resolvers: Vec<ModuleResolver>,
+    ) -> Result<CheckResult> {
+        Ok(self
+            .exec(|tx| ToGX::Check { path, resolvers: Some(resolvers), res: tx })
+            .await??)
     }
 
     /// Compile and execute a graphix expression

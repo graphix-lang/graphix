@@ -7,7 +7,7 @@ use graphix_compiler::{
     ReferenceSite, SourcePosition,
 };
 use lsp_types::Uri;
-use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
+use std::{collections::HashMap, path::{Path, PathBuf}, str::FromStr, sync::Arc};
 
 /// An open document tracked by the language server.
 pub struct Document {
@@ -56,22 +56,101 @@ pub trait LspBackend: Send + Sync + 'static {
         source: Source,
         text: ArcStr,
     ) -> anyhow::Result<TypecheckResult>;
+    /// Type-check a project from disk, reading `root` and walking
+    /// every `mod foo;` declaration via a `Files(<root>.parent())`
+    /// resolver. Used by the workspace-wide recheck path to find
+    /// cross-file errors and references. Reads files from disk —
+    /// unsaved active-doc edits are not seen here (use `typecheck`
+    /// for that).
+    fn typecheck_project(&self, root: &Path) -> anyhow::Result<TypecheckResult>;
+}
+
+/// One project's last-known typecheck result, keyed by the project
+/// index in `ServerState.workspace.projects`. `None` while we
+/// haven't run the project compile yet (or it failed).
+#[derive(Debug, Clone)]
+pub struct ProjectResult {
+    pub env: Env,
+    pub references: Vec<ReferenceSite>,
 }
 
 /// Core language intelligence state.
 ///
-/// Holds the compiler environment and open documents, and provides
-/// completion, hover, go-to-definition, and diagnostics.
+/// Holds the compiler environment, open documents, and the workspace
+/// project graph. Drives completion, hover, go-to-definition,
+/// references, and diagnostics.
 pub struct ServerState {
     pub env: Env,
     pub documents: HashMap<Uri, Document>,
     pub backend: Arc<dyn LspBackend>,
+    /// Filesystem roots the editor told us about (root_uri /
+    /// workspaceFolders). Used to scan for `.gx`/`.gxi` files.
+    pub workspace_roots: Vec<PathBuf>,
+    /// Last scan of the workspace. Rebuilt on workspace changes.
+    pub workspace: crate::workspace::WorkspaceModel,
+    /// Last typecheck result per project, parallel to
+    /// `workspace.projects`. `None` while a project hasn't been
+    /// checked yet or its last check errored.
+    pub project_results: Vec<Option<ProjectResult>>,
 }
 
 impl ServerState {
     pub fn new(backend: Arc<dyn LspBackend>) -> Self {
         let env = backend.env();
-        Self { env, documents: HashMap::new(), backend }
+        Self {
+            env,
+            documents: HashMap::new(),
+            backend,
+            workspace_roots: Vec::new(),
+            workspace: Default::default(),
+            project_results: Vec::new(),
+        }
+    }
+
+    /// Tell the state about the editor's workspace folders. Triggers
+    /// an initial scan and project compile.
+    pub fn set_workspace_roots(&mut self, roots: Vec<PathBuf>) {
+        self.workspace_roots = roots;
+        self.recheck_workspace();
+    }
+
+    /// Re-scan the workspace and re-typecheck every project from
+    /// disk. Throws away the previous project state and replaces it
+    /// wholesale.
+    pub fn recheck_workspace(&mut self) {
+        if self.workspace_roots.is_empty() {
+            self.workspace = Default::default();
+            self.project_results.clear();
+            return;
+        }
+        self.workspace = crate::workspace::scan(&self.workspace_roots);
+        let mut results: Vec<Option<ProjectResult>> =
+            Vec::with_capacity(self.workspace.projects.len());
+        for project in &self.workspace.projects {
+            let r = self.backend.typecheck_project(&project.root);
+            match r {
+                Ok(TypecheckResult { env, references }) => {
+                    results.push(Some(ProjectResult { env, references }));
+                }
+                Err(_) => {
+                    // The error is already routed through the
+                    // diagnostics path elsewhere; for queries we just
+                    // mark the project as having no result this cycle.
+                    results.push(None);
+                }
+            }
+        }
+        self.project_results = results;
+    }
+
+    /// Indices of projects that contain the file at `uri`.
+    fn projects_containing<'a>(&'a self, uri: &Uri) -> impl Iterator<Item = usize> + 'a {
+        let path = uri_to_path(uri);
+        self.workspace
+            .file_to_projects
+            .get(&path.unwrap_or_default())
+            .into_iter()
+            .flat_map(|v| v.iter().copied())
     }
 
     /// Track a newly opened document.
@@ -122,13 +201,22 @@ impl ServerState {
         }
     }
 
-    /// Pick the most-specific env we have for `uri`: the document's
-    /// post-check env when present, otherwise the backend base.
+    /// Pick the most-specific env we have for `uri`. Order:
+    ///   1. The document's own post-check env (live, single-file).
+    ///   2. Any project containing the file — its env covers more
+    ///      ground (cross-file imports), even if the data is from
+    ///      the most recent disk-based project recheck.
+    ///   3. The backend's base env (stdlib only).
     fn env_for<'a>(&'a self, uri: &Uri) -> &'a Env {
-        self.documents
-            .get(uri)
-            .and_then(|d| d.env.as_ref())
-            .unwrap_or(&self.env)
+        if let Some(env) = self.documents.get(uri).and_then(|d| d.env.as_ref()) {
+            return env;
+        }
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                return &r.env;
+            }
+        }
+        &self.env
     }
 
     /// Return completion items at the given position.
@@ -235,28 +323,43 @@ impl ServerState {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
-        let bind_id = self
-            .bind_id_at(uri, position)
-            .or_else(|| self.bind_id_by_name_at(uri, position));
-        let Some(bind_id) = bind_id else {
-            return Vec::new();
-        };
+        // We use (name, scope) as the cross-source key because BindIds
+        // are minted fresh per compile — the same identifier resolves
+        // to a different `BindId` in the active-doc check vs each
+        // project compile.
+        let scope = ModPath::root();
+        let name = self
+            .name_at(uri, position)
+            .or_else(|| {
+                get_word_at_position(&doc.text, position)
+                    .map(|w| w.split("::").collect::<ModPath>())
+            });
+        let Some(name) = name else { return Vec::new() };
         let mut locs: Vec<lsp_types::Location> = Vec::new();
-        for r in &doc.references {
-            if r.bind_id != bind_id {
-                continue;
-            }
-            if let Some(loc) = ref_to_location(uri, &r.ori, r.pos) {
-                locs.push(loc);
-            }
-        }
-        if include_declaration {
-            if let Some(env) = doc.env.as_ref() {
-                if let Some(bind) = env.by_id.get(&bind_id) {
-                    if let Some(loc) = ref_to_location(uri, &bind.ori, bind.pos) {
-                        locs.push(loc);
-                    }
-                }
+        // Active doc: doc-local bindings (let foo = …) only the live
+        // check sees them.
+        self.collect_refs_from(
+            doc.env.as_ref(),
+            &doc.references,
+            &scope,
+            &name,
+            include_declaration,
+            uri,
+            &mut locs,
+        );
+        // Each containing project contributes its cross-file
+        // references for the same name.
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                self.collect_refs_from(
+                    Some(&r.env),
+                    &r.references,
+                    &scope,
+                    &name,
+                    include_declaration,
+                    uri,
+                    &mut locs,
+                );
             }
         }
         locs.sort_by_key(|l| {
@@ -270,36 +373,49 @@ impl ServerState {
         locs
     }
 
-    /// If `position` falls inside a recorded reference site of the
-    /// document, return its `BindId`.
-    fn bind_id_at(
+    fn collect_refs_from(
+        &self,
+        env: Option<&Env>,
+        references: &[ReferenceSite],
+        scope: &ModPath,
+        name: &ModPath,
+        include_declaration: bool,
+        requesting_uri: &Uri,
+        out: &mut Vec<lsp_types::Location>,
+    ) {
+        let Some(env) = env else { return };
+        let Some((_, bind)) = env.lookup_bind(scope, name) else { return };
+        let bind_id = bind.id;
+        for r in references {
+            if r.bind_id != bind_id {
+                continue;
+            }
+            if let Some(loc) = ref_to_location(requesting_uri, &r.ori, r.pos) {
+                out.push(loc);
+            }
+        }
+        if include_declaration {
+            if let Some(loc) = ref_to_location(requesting_uri, &bind.ori, bind.pos) {
+                out.push(loc);
+            }
+        }
+    }
+
+    /// If a recorded reference site in the active document covers
+    /// `position`, return the name from that site so we can
+    /// distinguish shadowed identifiers in cross-source lookup.
+    fn name_at(
         &self,
         uri: &Uri,
         position: lsp_types::Position,
-    ) -> Option<graphix_compiler::BindId> {
+    ) -> Option<ModPath> {
         let doc = self.documents.get(uri)?;
         for r in &doc.references {
             if position_in_ref(position, &doc.text, r) {
-                return Some(r.bind_id);
+                return Some(r.name.clone());
             }
         }
         None
-    }
-
-    /// Resolve the textual word at `position` to a `BindId` via env
-    /// lookup. Lets references() answer queries from the cursor on
-    /// the declaration site itself.
-    fn bind_id_by_name_at(
-        &self,
-        uri: &Uri,
-        position: lsp_types::Position,
-    ) -> Option<graphix_compiler::BindId> {
-        let doc = self.documents.get(uri)?;
-        let word = get_word_at_position(&doc.text, position)?;
-        let scope = ModPath::root();
-        let name: ModPath = word.split("::").collect();
-        let env = self.env_for(uri);
-        env.lookup_bind(&scope, &name).map(|(_, b)| b.id)
     }
 
     /// Return the document's top-level user-defined bindings. We

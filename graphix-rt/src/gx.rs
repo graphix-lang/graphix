@@ -5,7 +5,6 @@ use futures::{channel::mpsc, future::try_join_all, StreamExt};
 use fxhash::{FxBuildHasher, FxHashMap};
 use graphix_compiler::{
     compile,
-    env::Env,
     expr::{self, Expr, ExprId, ExprKind, ModuleResolver, Origin, Source},
     node::{genn, lambda::LambdaDef},
     typ::Type,
@@ -288,8 +287,8 @@ impl<X: GXExt> GX<X> {
                 ToGX::GetEnv { res } => {
                     let _ = res.send(self.ctx.env.clone());
                 }
-                ToGX::Check { path, res } => {
-                    let _ = res.send(self.check(&path).await);
+                ToGX::Check { path, resolvers, res } => {
+                    let _ = res.send(self.check(&path, resolvers).await);
                 }
                 ToGX::Compile { text, rt, res } => {
                     let _ = res.send(self.compile(rt, text).await);
@@ -434,19 +433,27 @@ impl<X: GXExt> GX<X> {
         Ok((ori, exprs))
     }
 
-    async fn check(&mut self, source: &Source) -> Result<crate::CheckResult> {
+    async fn check(
+        &mut self,
+        source: &Source,
+        resolver_override: Option<Vec<ModuleResolver>>,
+    ) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
         // Stash any references collected before this check so we can
         // restore them — ReferenceSite is a side-channel for IDE
         // tooling and we want each `check` to scope its own collection.
         let prev_refs = std::mem::take(&mut self.ctx.references);
+        let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
+            Some(v) => Arc::from(v),
+            None => self.resolvers.clone(),
+        };
         let go = async {
             let st = Instant::now();
             info!("parse time: {:?}", st.elapsed());
             let scope = Scope::root();
             let (ori, exprs) = self.load_exprs(source).await?;
             let exprs =
-                try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
+                try_join_all(exprs.iter().map(|e| e.resolve_modules(&resolvers_for_call)))
                     .await?;
             info!("resolve time: {:?}", st.elapsed());
             let mut nodes: LPooled<Vec<_>> = LPooled::take();

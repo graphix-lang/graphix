@@ -13,10 +13,11 @@ use log::info;
 use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, HoverProviderCapability, InitializeParams, OneOf,
-    PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, HoverProviderCapability,
+    InitializeParams, OneOf, PublishDiagnosticsParams, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Run the LSP server, communicating over stdin/stdout. Blocks until
@@ -36,9 +37,15 @@ where
 }
 
 fn server_capabilities() -> ServerCapabilities {
+    use lsp_types::{SaveOptions, TextDocumentSyncOptions};
     ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(
-            TextDocumentSyncKind::FULL,
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::FULL),
+                save: Some(SaveOptions { include_text: Some(false) }.into()),
+                ..Default::default()
+            },
         )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
@@ -61,7 +68,9 @@ where
     let init_params: InitializeParams = serde_json::from_value(init_value)?;
     let backend = make_backend(&init_params)?;
     info!("graphix lsp server initialized");
+    let workspace_roots = workspace_roots_from(&init_params);
     let mut state = ServerState::new(backend);
+    state.set_workspace_roots(workspace_roots);
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -154,11 +163,53 @@ fn handle_notification(
             let params: DidCloseTextDocumentParams = serde_json::from_value(not.params)?;
             handlers::diagnostics::did_close(state, params.text_document.uri);
         }
+        "textDocument/didSave" => {
+            let _params: DidSaveTextDocumentParams =
+                serde_json::from_value(not.params)?;
+            // A save means disk now reflects the user's intent —
+            // recompile every project so cross-file errors and
+            // references update.
+            state.recheck_workspace();
+        }
         _ => {
             info!("unhandled notification: {}", not.method);
         }
     }
     Ok(())
+}
+
+/// Pull filesystem roots out of the editor's `initialize` params.
+/// Prefers `workspaceFolders` (multi-root capable), falls back to the
+/// deprecated `rootUri`/`rootPath`.
+fn workspace_roots_from(init: &InitializeParams) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(folders) = &init.workspace_folders {
+        for folder in folders {
+            if let Some(p) = file_uri_to_path(&folder.uri) {
+                out.push(p);
+            }
+        }
+    }
+    if out.is_empty() {
+        #[allow(deprecated)]
+        if let Some(uri) = &init.root_uri {
+            if let Some(p) = file_uri_to_path(uri) {
+                out.push(p);
+            }
+        }
+    }
+    if out.is_empty() {
+        #[allow(deprecated)]
+        if let Some(p) = init.root_path.as_ref() {
+            out.push(PathBuf::from(p));
+        }
+    }
+    out
+}
+
+fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    let s = uri.as_str();
+    s.strip_prefix("file://").map(PathBuf::from)
 }
 
 fn publish_diagnostics(
