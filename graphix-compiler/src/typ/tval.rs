@@ -1,4 +1,4 @@
-use super::{PrintFlag, Type};
+use super::{PrintFlag, Type, TypeRef};
 use super::cast::IsAFlags;
 use crate::{env::Env, typ::format_with_flags};
 use fxhash::FxHashSet;
@@ -39,7 +39,7 @@ impl<'a> TVal<'a> {
             }
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => write!(f, "{}", NakedValue(v)),
-            (Type::Ref { .. }, v) => {
+            (Type::Ref (TypeRef { .. }), v) => {
                 let typ = match self.typ.lookup_ref(&self.env) {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,

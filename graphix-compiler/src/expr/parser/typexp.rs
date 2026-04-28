@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
-    typ::{AbstractId, FnArgType, FnType, TVar, Type},
+    typ::{AbstractId, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use combine::{
@@ -263,6 +263,7 @@ where
     I::Range: Range,
 {
     (
+        position(),
         typath(),
         look_ahead(optional(attempt(sptoken('<')))).then(|o| match o {
             None => value(None).left(),
@@ -275,11 +276,20 @@ where
             .right(),
         }),
     )
-        .map(|(n, params): (ModPath, Option<LPooled<Vec<Type>>>)| {
+        .map(|(pos, n, params): (SourcePosition, ModPath, Option<LPooled<Vec<Type>>>)| {
             let params = params
                 .map(|mut a| Arc::from_iter(a.drain(..)))
                 .unwrap_or_else(|| Arc::from_iter([]));
-            Type::Ref { scope: ModPath::root(), name: n, params }
+            // Capture parse-time position + origin so IDE tooling can
+            // record find-references / go-to-def info when this
+            // `Type::Ref` is dereferenced (or walked from a typedef body).
+            Type::Ref(TypeRef {
+                scope: ModPath::root(),
+                name: n,
+                params,
+                pos: Some(pos),
+                ori: Some(crate::expr::get_origin()),
+            })
         })
 }
 

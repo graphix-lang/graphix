@@ -9,7 +9,7 @@ use graphix_compiler::{
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
-    typ::{FnType, TVal, Type},
+    typ::{FnType, TVal, Type, TypeRef},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, UserEvent,
 };
@@ -43,7 +43,7 @@ pub(crate) mod queuefn;
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     let ft = resolved_typ?;
     let typ = match &ft.rtype {
-        Type::Ref { name, params, .. }
+        Type::Ref (TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {
             params[0].clone()

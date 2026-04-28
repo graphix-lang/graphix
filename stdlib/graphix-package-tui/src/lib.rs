@@ -21,7 +21,7 @@ use gauge::GaugeW;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath},
-    typ::Type,
+    typ::{Type, TypeRef},
     BindId,
 };
 use graphix_package::CustomDisplay;
@@ -553,11 +553,11 @@ async fn run<X: GXExt>(
     Ok(())
 }
 
-static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {
+static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref (TypeRef {
     scope: ModPath::root(),
     name: ModPath::from(["tui", "Tui"]),
     params: Arc::from_iter([]),
-});
+ ..Default::default()}));
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {

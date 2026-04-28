@@ -1,6 +1,6 @@
 use crate::{
     expr::ModPath,
-    typ::{FnType, PrintFlag, Type, PRINT_FLAGS},
+    typ::{FnType, PrintFlag, Type, PRINT_FLAGS, TypeRef},
 };
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
@@ -20,7 +20,7 @@ atomic_id!(TVarId);
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     match t {
-        Type::Primitive(_) | Type::Any | Type::Bottom | Type::Ref { .. } => false,
+        Type::Primitive(_) | Type::Any | Type::Bottom | Type::Ref (TypeRef { .. }) => false,
         Type::TVar(t) => {
             Arc::as_ptr(&t.read().typ).addr() == addr
                 || match &*t.read().typ.read() {
@@ -244,7 +244,7 @@ impl Type {
     pub fn unfreeze_tvars(&self) {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref { params, .. } => {
+            Type::Ref (TypeRef { params, .. }) => {
                 for t in params.iter() {
                     t.unfreeze_tvars();
                 }
@@ -290,7 +290,7 @@ impl Type {
     pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref { params, .. } => {
+            Type::Ref (TypeRef { params, .. }) => {
                 for t in params.iter() {
                     t.alias_tvars(known);
                 }
@@ -345,7 +345,7 @@ impl Type {
     pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref { params, .. } => {
+            Type::Ref (TypeRef { params, .. }) => {
                 for t in params.iter() {
                     t.collect_tvars(known);
                 }
@@ -396,7 +396,7 @@ impl Type {
     pub fn check_tvars_declared(&self, declared: &FxHashSet<ArcStr>) -> Result<()> {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => Ok(()),
-            Type::Ref { params, .. } => {
+            Type::Ref (TypeRef { params, .. }) => {
                 params.iter().try_for_each(|t| t.check_tvars_declared(declared))
             }
             Type::Error(t) => t.check_tvars_declared(declared),
@@ -433,7 +433,7 @@ impl Type {
     pub fn has_unbound(&self) -> bool {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => false,
-            Type::Ref { .. } => false,
+            Type::Ref (TypeRef { .. }) => false,
             Type::Error(e) => e.has_unbound(),
             Type::Array(t0) => t0.has_unbound(),
             Type::Map { key, value } => key.has_unbound() || value.has_unbound(),
@@ -452,7 +452,7 @@ impl Type {
     pub fn bind_as(&self, t: &Self) {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref { .. } => (),
+            Type::Ref (TypeRef { .. }) => (),
             Type::Error(t0) => t0.bind_as(t),
             Type::Array(t0) => t0.bind_as(t),
             Type::Map { key, value } => {
@@ -503,11 +503,11 @@ impl Type {
             Type::Bottom => Type::Bottom,
             Type::Any => Type::Any,
             Type::Primitive(p) => Type::Primitive(*p),
-            Type::Ref { scope, name, params } => Type::Ref {
+            Type::Ref (TypeRef { scope, name, params, .. }) => Type::Ref (TypeRef {
                 scope: scope.clone(),
                 name: name.clone(),
                 params: Arc::from_iter(params.iter().map(|t| t.reset_tvars())),
-            },
+             ..Default::default()}),
             Type::Error(t0) => Type::Error(Arc::new(t0.reset_tvars())),
             Type::Array(t0) => Type::Array(Arc::new(t0.reset_tvars())),
             Type::Map { key, value } => {
@@ -562,13 +562,13 @@ impl Type {
             Type::Bottom => Type::Bottom,
             Type::Any => Type::Any,
             Type::Primitive(p) => Type::Primitive(*p),
-            Type::Ref { scope, name, params } => Type::Ref {
+            Type::Ref (TypeRef { scope, name, params, .. }) => Type::Ref (TypeRef {
                 scope: scope.clone(),
                 name: name.clone(),
                 params: Arc::from_iter(
                     params.iter().map(|t| t.replace_tvars_int(known, renamed)),
                 ),
-            },
+             ..Default::default()}),
             Type::Error(t0) => {
                 Type::Error(Arc::new(t0.replace_tvars_int(known, renamed)))
             }
@@ -611,7 +611,7 @@ impl Type {
     /// Unbind any bound tvars, but do not unalias them.
     pub(crate) fn unbind_tvars(&self) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Ref { .. } => (),
+            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Ref (TypeRef { .. }) => (),
             Type::Error(t0) => t0.unbind_tvars(),
             Type::Array(t0) => t0.unbind_tvars(),
             Type::Map { key, value } => {

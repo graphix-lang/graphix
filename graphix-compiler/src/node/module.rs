@@ -57,6 +57,10 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                     td.params.clone(),
                     typ.clone(),
                     si.doc.0.clone(),
+                    si.pos,
+                    si.ori
+                        .clone()
+                        .unwrap_or_else(|| Arc::new(Origin::default())),
                 )?;
             }
         }

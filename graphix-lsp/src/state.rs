@@ -4,7 +4,7 @@ use graphix_compiler::{
     env::Env,
     expr::{ModPath, Source},
     typ::Type,
-    ModuleRefSite, ReferenceSite, SourcePosition,
+    ModuleRefSite, ReferenceSite, SourcePosition, TypeRefSite,
 };
 use lsp_types::Uri;
 use std::{
@@ -29,6 +29,8 @@ pub struct Document {
     pub references: Vec<ReferenceSite>,
     /// Module reference sites (`use foo;`, `mod foo;`).
     pub module_references: Vec<ModuleRefSite>,
+    /// Type-name reference sites (uses of `Foo` in type positions).
+    pub type_references: Vec<TypeRefSite>,
 }
 
 impl Document {
@@ -39,6 +41,7 @@ impl Document {
             env: None,
             references: Vec::new(),
             module_references: Vec::new(),
+            type_references: Vec::new(),
         }
     }
 }
@@ -49,6 +52,7 @@ pub struct TypecheckResult {
     pub env: Env,
     pub references: Vec<ReferenceSite>,
     pub module_references: Vec<ModuleRefSite>,
+    pub type_references: Vec<TypeRefSite>,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -87,6 +91,7 @@ pub struct ProjectResult {
     pub env: Env,
     pub references: Vec<ReferenceSite>,
     pub module_references: Vec<ModuleRefSite>,
+    pub type_references: Vec<TypeRefSite>,
 }
 
 /// Core language intelligence state.
@@ -167,11 +172,17 @@ impl ServerState {
         for project in &self.workspace.projects {
             let r = self.backend.typecheck_project(&project.root);
             match r {
-                Ok(TypecheckResult { env, references, module_references }) => {
+                Ok(TypecheckResult {
+                    env,
+                    references,
+                    module_references,
+                    type_references,
+                }) => {
                     results.push(Some(ProjectResult {
                         env,
                         references,
                         module_references,
+                        type_references,
                     }));
                 }
                 Err(e) => {
@@ -239,11 +250,17 @@ impl ServerState {
         let source = uri_to_source(uri);
         let text = ArcStr::from(doc.text.as_str());
         match self.backend.typecheck(source, text.clone()) {
-            Ok(TypecheckResult { env, references, module_references }) => {
+            Ok(TypecheckResult {
+                env,
+                references,
+                module_references,
+                type_references,
+            }) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = Some(env);
                     d.references = references;
                     d.module_references = module_references;
+                    d.type_references = type_references;
                 }
                 Vec::new()
             }
@@ -252,6 +269,7 @@ impl ServerState {
                     d.env = None;
                     d.references.clear();
                     d.module_references.clear();
+                    d.type_references.clear();
                 }
                 error_to_diagnostics(&e, &text)
             }
@@ -425,6 +443,22 @@ impl ServerState {
         if let Some(canonical) = self.canonical_module_at(uri, position) {
             self.collect_module_refs(&canonical, uri, &mut locs);
         }
+        // Type references: if the cursor is on a type name, find
+        // every site that resolved to the same canonical (scope, name).
+        // The compiler captures both lookup_ref derefs and the walk
+        // of typedef bodies, so we can match precisely.
+        if let Some((canonical_scope, type_name)) =
+            self.canonical_typedef_at(uri, position)
+        {
+            self.collect_type_refs(&canonical_scope, &type_name, uri, &mut locs);
+            if include_declaration {
+                if let Some(loc) =
+                    self.typedef_decl_location(&canonical_scope, &type_name, uri)
+                {
+                    locs.push(loc);
+                }
+            }
+        }
         locs.sort_by_key(|l| {
             (
                 l.uri.as_str().to_string(),
@@ -531,6 +565,123 @@ impl ServerState {
                 }
             }
         }
+    }
+
+    /// If the cursor is on a recorded TypeRefSite, return the
+    /// canonical (scope, name) of the typedef it resolved to.
+    fn canonical_typedef_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<(ModPath, ModPath)> {
+        let doc = self.documents.get(uri)?;
+        for t in &doc.type_references {
+            if position_in_type_ref(position, t) {
+                return Some((t.canonical_scope.clone(), t.name.clone()));
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in &r.type_references {
+                    if origin_matches_uri(&t.ori, uri)
+                        && position_in_type_ref(position, t)
+                    {
+                        return Some((t.canonical_scope.clone(), t.name.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn collect_type_refs(
+        &self,
+        canonical_scope: &ModPath,
+        name: &ModPath,
+        requesting_uri: &Uri,
+        out: &mut Vec<lsp_types::Location>,
+    ) {
+        let push = |t: &TypeRefSite, out: &mut Vec<lsp_types::Location>| {
+            if let Some(loc) = ref_to_location(requesting_uri, &t.ori, t.pos) {
+                out.push(loc);
+            }
+        };
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            for t in &doc.type_references {
+                if &t.canonical_scope == canonical_scope && &t.name == name {
+                    push(t, out);
+                }
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in &r.type_references {
+                    if &t.canonical_scope == canonical_scope && &t.name == name {
+                        push(t, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Look up the typedef declaration site for a given canonical
+    /// (scope, name). Walks active doc and projects; any TypeRefSite
+    /// with matching canonical info has the same def_pos/def_ori, so
+    /// any match works.
+    fn typedef_decl_location(
+        &self,
+        canonical_scope: &ModPath,
+        name: &ModPath,
+        requesting_uri: &Uri,
+    ) -> Option<lsp_types::Location> {
+        let take = |t: &TypeRefSite| ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            for t in &doc.type_references {
+                if &t.canonical_scope == canonical_scope && &t.name == name {
+                    return take(t);
+                }
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in &r.type_references {
+                    if &t.canonical_scope == canonical_scope && &t.name == name {
+                        return take(t);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// If the cursor is on a recorded type-reference site, return
+    /// the typedef's declaration location.
+    fn type_definition_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let doc = self.documents.get(uri)?;
+        for t in &doc.type_references {
+            if position_in_type_ref(position, t) {
+                return ref_to_location(uri, &t.def_ori, t.def_pos);
+            }
+        }
+        // Also try any project's type_references (cross-file).
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in &r.type_references {
+                    // Match by file ori source equality on the use side
+                    // (the use site lives in this URI).
+                    if origin_matches_uri(&t.ori, uri)
+                        && position_in_type_ref(position, t)
+                    {
+                        return ref_to_location(uri, &t.def_ori, t.def_pos);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn def_site_at_position(
@@ -653,6 +804,11 @@ impl ServerState {
         if let Some(loc) = self.module_definition_at(uri, position) {
             return Some(loc);
         }
+        // Try type references — `Foo` in `let x: Foo` resolves to a
+        // typedef; jump to its declaration.
+        if let Some(loc) = self.type_definition_at(uri, position) {
+            return Some(loc);
+        }
         // Fall back to env lookup — this catches the cursor sitting
         // directly on the binding name (where there's no
         // ReferenceSite for it but the bind is reachable via name).
@@ -661,14 +817,31 @@ impl ServerState {
         let scope = ModPath::root();
         let name: ModPath = word.split("::").collect();
         let env = self.env_for(uri);
-        let (_, bind) = env.lookup_bind(&scope, &name)?;
-        let target_uri = match &bind.ori.source {
+        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
+            let target_uri = match &bind.ori.source {
+                Source::File(p) => path_to_uri(p)?,
+                Source::Internal(_) | Source::Unspecified => uri.clone(),
+                Source::Netidx(_) => return None,
+            };
+            let line = bind.pos.line.saturating_sub(1).max(0) as u32;
+            let column = bind.pos.column.saturating_sub(1).max(0) as u32;
+            let pos = lsp_types::Position { line, character: column };
+            return Some(lsp_types::Location {
+                uri: target_uri,
+                range: lsp_types::Range { start: pos, end: pos },
+            });
+        }
+        // Last fallback: cursor on a typedef name with no recorded
+        // ReferenceSite (e.g. cursor right on `Foo` in
+        // `type Foo = …` itself).
+        let typedef = env.lookup_typedef(&scope, &name)?;
+        let target_uri = match &typedef.ori.source {
             Source::File(p) => path_to_uri(p)?,
             Source::Internal(_) | Source::Unspecified => uri.clone(),
             Source::Netidx(_) => return None,
         };
-        let line = bind.pos.line.saturating_sub(1).max(0) as u32;
-        let column = bind.pos.column.saturating_sub(1).max(0) as u32;
+        let line = typedef.pos.line.saturating_sub(1).max(0) as u32;
+        let column = typedef.pos.column.saturating_sub(1).max(0) as u32;
         let pos = lsp_types::Position { line, character: column };
         Some(lsp_types::Location {
             uri: target_uri,
@@ -740,6 +913,25 @@ fn position_in_module_ref(pos: lsp_types::Position, m: &ModuleRefSite) -> bool {
     // The keyword is "use" or "mod" (3 chars) + 1 space + name length.
     let name_len = m.name.to_string().chars().count() as u32;
     span_covers(pos, m.pos, 4 + name_len)
+}
+
+/// Type references record the position of the type name itself.
+fn position_in_type_ref(pos: lsp_types::Position, t: &TypeRefSite) -> bool {
+    span_covers(pos, t.pos, t.name.to_string().chars().count() as u32)
+}
+
+/// True if the given Origin's source path matches the requesting URI.
+/// Internal/Unspecified always match (they're the active doc's own
+/// content); Netidx never does.
+fn origin_matches_uri(ori: &graphix_compiler::expr::Origin, uri: &Uri) -> bool {
+    match &ori.source {
+        Source::File(p) => match path_to_uri(p) {
+            Some(u) => &u == uri,
+            None => false,
+        },
+        Source::Internal(_) | Source::Unspecified => true,
+        Source::Netidx(_) => false,
+    }
 }
 
 fn span_covers(pos: lsp_types::Position, start: SourcePosition, len: u32) -> bool {

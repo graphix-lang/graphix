@@ -4,7 +4,7 @@ use crate::{
         ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
         StructurePattern,
     },
-    typ::{FnArgType, TVar, Type},
+    typ::{FnArgType, TVar, Type, TypeRef},
 };
 use arcstr::literal;
 use netidx::{publisher::Typ, utils::Either};
@@ -632,11 +632,11 @@ fn select1() {
         ),
         (
             Pattern {
-                type_predicate: Some(Type::Ref {
+                type_predicate: Some(Type::Ref (TypeRef {
                     scope: ModPath::root(),
                     name: ["Foo"].into(),
                     params: Arc::from_iter([]),
-                }),
+                 ..Default::default()})),
                 structure_predicate: StructurePattern::Struct {
                     all: None,
                     exhaustive: false,
@@ -907,11 +907,11 @@ fn apply_typed_lambda() {
                         pattern: StructurePattern::Bind("b".into()),
                         constraint: Some(Type::Set(Arc::from_iter([
                             Type::Primitive(Typ::Null.into()),
-                            Type::Ref {
+                            Type::Ref (TypeRef {
                                 scope: ModPath::root(),
                                 name: ["Number"].into(),
                                 params: Arc::from_iter([]),
-                            },
+                             ..Default::default()}),
                         ]))),
                                         pos: Default::default(),
                     },
@@ -970,11 +970,11 @@ fn labeled_argument_lambda() {
             args: Arc::from_iter([
                 FnArgType {
                     label: Some(("foo".into(), true)),
-                    typ: Type::Ref {
+                    typ: Type::Ref (TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
                         params: Arc::from_iter([]),
-                    },
+                     ..Default::default()}),
                 },
                 FnArgType {
                     label: Some(("bar".into(), true)),
@@ -997,11 +997,11 @@ fn labeled_argument_lambda() {
                     labeled: Some(Some(
                         ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
                     )),
-                    constraint: Some(Type::Ref {
+                    constraint: Some(Type::Ref (TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
                         params: Arc::from_iter([]),
-                    }),
+                     ..Default::default()})),
                                 pos: Default::default(),
                 },
                 Arg {

@@ -326,6 +326,48 @@ pub struct ModuleRefSite {
     pub def_ori: Option<Arc<expr::Origin>>,
 }
 
+/// A textual occurrence of a type reference (e.g. `Foo` in `let x: Foo`).
+/// Captured by the compiler when a `Type::Ref` carrying parse-time
+/// position info gets dereferenced. `def_pos`/`def_ori` point at the
+/// `type Foo = …` declaration site so go-to-def on a type name lands
+/// on the typedef.
+#[derive(Debug, Clone)]
+pub struct TypeRefSite {
+    pub pos: SourcePosition,
+    pub ori: Arc<expr::Origin>,
+    /// The name as written in source (e.g. `Result`, `array::Foo`).
+    pub name: expr::ModPath,
+    /// Canonical scope of the typedef the reference resolved to.
+    pub canonical_scope: expr::ModPath,
+    pub def_pos: SourcePosition,
+    pub def_ori: Arc<expr::Origin>,
+}
+
+thread_local! {
+    static TYPE_REF_SINK: std::cell::RefCell<Vec<TypeRefSite>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Push a `TypeRefSite` to the active thread-local sink. Called by
+/// `Type::lookup_ref` when it derefs a `TypeRef` that carries
+/// parse-time position info. Drained by the runtime at the end of
+/// each `check` cycle (mirroring how the parser uses
+/// `set_origin`/`get_origin`).
+pub fn push_type_ref(site: TypeRefSite) {
+    TYPE_REF_SINK.with(|s| s.borrow_mut().push(site));
+}
+
+pub fn take_type_refs() -> Vec<TypeRefSite> {
+    TYPE_REF_SINK.with(|s| std::mem::take(&mut *s.borrow_mut()))
+}
+
+/// Replace the sink with `prev`, returning whatever was already in
+/// the sink. Used by the runtime's check to scope the collection
+/// per check cycle.
+pub fn swap_type_refs(prev: Vec<TypeRefSite>) -> Vec<TypeRefSite> {
+    TYPE_REF_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), prev))
+}
+
 impl Refs {
     pub fn clear(&mut self) {
         self.refed.clear();

@@ -125,10 +125,31 @@ pub enum SigKind {
     Use(ModPath),
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone)]
 pub struct SigItem {
     pub doc: Doc,
     pub kind: SigKind,
+    /// Source position where this item was declared. IDE metadata,
+    /// ignored for equality.
+    pub pos: SourcePosition,
+    /// File / origin this sig item was parsed from. IDE metadata,
+    /// ignored for equality. `None` for synthetic items.
+    pub ori: Option<Arc<Origin>>,
+}
+
+impl PartialEq for SigItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.doc == other.doc && self.kind == other.kind
+    }
+}
+
+impl PartialOrd for SigItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.doc.partial_cmp(&other.doc)? {
+            std::cmp::Ordering::Equal => self.kind.partial_cmp(&other.kind),
+            ord => Some(ord),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]

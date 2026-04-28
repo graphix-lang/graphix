@@ -1,6 +1,6 @@
 use crate::{
     env::Env,
-    typ::{RefHist, Type},
+    typ::{RefHist, Type, TypeRef},
 };
 use anyhow::Result;
 use enumflags2::BitFlags;
@@ -18,19 +18,21 @@ impl Type {
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
-            (
-                Type::Ref { scope: s0, name: n0, params: p0 },
-                Type::Ref { scope: s1, name: n1, params: p1 },
-            ) if n0 == n1 && s0 == s1 && p0.len() == p1.len() => {
-                let mut params = p0
+            (Type::Ref(t0), Type::Ref(t1))
+                if t0.name == t1.name
+                    && t0.scope == t1.scope
+                    && t0.params.len() == t1.params.len() =>
+            {
+                let mut params = t0
+                    .params
                     .iter()
-                    .zip(p1.iter())
+                    .zip(t1.params.iter())
                     .map(|(p0, p1)| p0.union_int(env, hist, p1))
                     .collect::<Result<LPooled<Vec<_>>>>()?;
                 let params = Arc::from_iter(params.drain(..));
-                Ok(Self::Ref { scope: s0.clone(), name: n0.clone(), params })
+                Ok(Self::Ref(TypeRef { params, ..t0.clone() }))
             }
-            (tr @ Type::Ref { .. }, t) => {
+            (tr @ Type::Ref (TypeRef { .. }), t) => {
                 let t0_id = hist.ref_id(tr, env);
                 let t_id = hist.ref_id(t, env);
                 let t0 = tr.lookup_ref(env)?;
@@ -44,7 +46,7 @@ impl Type {
                     }
                 }
             }
-            (t, tr @ Type::Ref { .. }) => {
+            (t, tr @ Type::Ref (TypeRef { .. })) => {
                 let t_id = hist.ref_id(t, env);
                 let t1_id = hist.ref_id(tr, env);
                 let t1 = tr.lookup_ref(env)?;
@@ -222,10 +224,10 @@ impl Type {
     ) -> Result<Self> {
         match (self, t) {
             (
-                Type::Ref { scope: s0, name: n0, .. },
-                Type::Ref { scope: s1, name: n1, .. },
+                Type::Ref (TypeRef { scope: s0, name: n0, .. }),
+                Type::Ref (TypeRef { scope: s1, name: n1, .. }),
             ) if s0 == s1 && n0 == n1 => Ok(Type::Primitive(BitFlags::empty())),
-            (t0 @ Type::Ref { .. }, t1) | (t0, t1 @ Type::Ref { .. }) => {
+            (t0 @ Type::Ref (TypeRef { .. }), t1) | (t0, t1 @ Type::Ref (TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;

@@ -134,9 +134,14 @@ impl LspBackend for ShellLspBackend {
 
     fn typecheck(&self, source: Source, text: ArcStr) -> Result<TypecheckResult> {
         let _ = source; // The LSP always holds live document text.
-        let CheckResult { env, references, module_references } =
+        let CheckResult { env, references, module_references, type_references } =
             self.rt_handle.block_on(self.gx.check(Source::Internal(text)))?;
-        Ok(TypecheckResult { env, references, module_references })
+        Ok(TypecheckResult {
+            env,
+            references,
+            module_references,
+            type_references,
+        })
     }
 
     fn typecheck_project(&self, root: &Path) -> Result<TypecheckResult> {
@@ -144,12 +149,17 @@ impl LspBackend for ShellLspBackend {
         if let Some(parent) = root.parent() {
             resolvers.push(ModuleResolver::Files(parent.to_path_buf()));
         }
-        let CheckResult { env, references, module_references } = self
+        let CheckResult { env, references, module_references, type_references } = self
             .rt_handle
             .block_on(self.gx.check_with_resolvers(
                 Source::File(root.to_path_buf()),
                 resolvers,
             ))?;
-        Ok(TypecheckResult { env, references, module_references })
+        Ok(TypecheckResult {
+            env,
+            references,
+            module_references,
+            type_references,
+        })
     }
 }

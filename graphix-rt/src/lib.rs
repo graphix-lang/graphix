@@ -149,6 +149,7 @@ pub struct CheckResult {
     pub env: Env,
     pub references: Vec<graphix_compiler::ReferenceSite>,
     pub module_references: Vec<graphix_compiler::ModuleRefSite>,
+    pub type_references: Vec<graphix_compiler::TypeRefSite>,
 }
 
 pub struct Ref<X: GXExt> {

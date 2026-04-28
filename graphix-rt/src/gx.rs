@@ -444,6 +444,10 @@ impl<X: GXExt> GX<X> {
         // tooling and we want each `check` to scope its own collection.
         let prev_refs = std::mem::take(&mut self.ctx.references);
         let prev_modrefs = std::mem::take(&mut self.ctx.module_references);
+        // The compiler pushes `TypeRefSite`s to a thread-local during
+        // `Type::lookup_ref` deref; clear it for this check and stash
+        // anything that was already there.
+        let prev_typrefs = graphix_compiler::swap_type_refs(Vec::new());
         let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
             Some(v) => Arc::from(v),
             None => self.resolvers.clone(),
@@ -476,15 +480,24 @@ impl<X: GXExt> GX<X> {
             let env = self.ctx.env.clone();
             let references = std::mem::take(&mut self.ctx.references);
             let module_references = std::mem::take(&mut self.ctx.module_references);
+            let type_references = graphix_compiler::take_type_refs();
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok(crate::CheckResult { env, references, module_references })
+            Ok(crate::CheckResult {
+                env,
+                references,
+                module_references,
+                type_references,
+            })
         };
         let res = go.await;
         self.ctx.env = env;
         self.ctx.references = prev_refs;
         self.ctx.module_references = prev_modrefs;
+        // Restore prior thread-local sink content (drops anything
+        // type system internals pushed during delete).
+        graphix_compiler::swap_type_refs(prev_typrefs);
         res
     }
 

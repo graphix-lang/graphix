@@ -3,7 +3,7 @@ use crate::{
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
     node::{compiler, Cached},
-    typ::Type,
+    typ::{Type, TypeRef},
     BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, UserEvent,
 };
 use anyhow::{anyhow, bail, Result};
@@ -112,7 +112,7 @@ impl StructPatternNode {
             }};
         }
         let type_predicate = match type_predicate {
-            Type::Ref { .. } => type_predicate.lookup_ref(&ctx.env)?,
+            Type::Ref (TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
             t => t.clone(),
         };
         let type_predicate = &type_predicate;
@@ -680,7 +680,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Tuple(_)
             | Type::Variant(_, _)
             | Type::Struct(_)
-            | Type::Ref { .. } => (),
+            | Type::Ref (TypeRef { .. }) => (),
         }
         let structure_predicate = StructPatternNode::compile(
             ctx,

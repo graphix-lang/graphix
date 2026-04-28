@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgType, FnType, Type},
+    typ::{FnArgType, FnType, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -260,7 +260,7 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
-                    Type::Ref { scope: ModPath::root(), name, params: Arc::from(params) }
+                    Type::Ref (TypeRef { scope: ModPath::root(), name, params: Arc::from(params) , ..Default::default()})
                 }
             ),
             (
@@ -721,18 +721,33 @@ macro_rules! deref {
 fn module_sigitem() -> impl Strategy<Value = SigItem> {
     prop_oneof![
         (random_fname(), typexp(), option::of(arcstr())).prop_map(|(name, typ, doc)| {
-            SigItem { kind: SigKind::Bind(BindSig { name, typ }), doc: Doc(doc) }
+            SigItem {
+                kind: SigKind::Bind(BindSig { name, typ }),
+                doc: Doc(doc),
+                pos: Default::default(),
+                ori: None,
+            }
         }),
         (typedef(), option::of(arcstr())).prop_map(|(td, doc)| match td.kind {
-            ExprKind::TypeDef(td) =>
-                SigItem { kind: SigKind::TypeDef(td), doc: Doc(doc) },
+            ExprKind::TypeDef(td) => SigItem {
+                kind: SigKind::TypeDef(td),
+                doc: Doc(doc),
+                pos: Default::default(),
+                ori: None,
+            },
             _ => unreachable!(),
         }),
-        (modpath(), option::of(arcstr()))
-            .prop_map(|(path, doc)| SigItem { kind: SigKind::Use(path), doc: Doc(doc) }),
+        (modpath(), option::of(arcstr())).prop_map(|(path, doc)| SigItem {
+            kind: SigKind::Use(path),
+            doc: Doc(doc),
+            pos: Default::default(),
+            ori: None,
+        }),
         (random_fname(), option::of(arcstr())).prop_map(|(name, doc)| SigItem {
             kind: SigKind::Module(name),
             doc: Doc(doc),
+            pos: Default::default(),
+            ori: None,
         })
     ]
 }
@@ -1150,20 +1165,20 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (
-                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0 },
-                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1 },
+                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0, .. },
+                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1, .. },
             ) => n0 == n1 && check_type(t0, t1) && d0 == d1,
             (
-                SigItem { kind: SigKind::TypeDef(td0), doc: d0 },
-                SigItem { kind: SigKind::TypeDef(td1), doc: d1 },
+                SigItem { kind: SigKind::TypeDef(td0), doc: d0, .. },
+                SigItem { kind: SigKind::TypeDef(td1), doc: d1, .. },
             ) => check_typedef(td0, td1) && d0 == d1,
             (
-                SigItem { kind: SigKind::Use(path0), doc: d0 },
-                SigItem { kind: SigKind::Use(path1), doc: d1 },
+                SigItem { kind: SigKind::Use(path0), doc: d0, .. },
+                SigItem { kind: SigKind::Use(path1), doc: d1, .. },
             ) => path0 == path1 && d0 == d1,
             (
-                SigItem { kind: SigKind::Module(n0), doc: d0 },
-                SigItem { kind: SigKind::Module(n1), doc: d1 },
+                SigItem { kind: SigKind::Module(n0), doc: d0, .. },
+                SigItem { kind: SigKind::Module(n1), doc: d1, .. },
             ) => n0 == n1 && d0 == d1,
             (_, _) => false,
         })

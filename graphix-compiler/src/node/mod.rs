@@ -60,7 +60,7 @@ macro_rules! deref_typ {
                 #[allow(unreachable_patterns)]
                 match &typ {
                     $($pat => break $body),+,
-                    Some(rt @ Type::Ref { .. }) => {
+                    Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
                         let rt = rt.lookup_ref(&$ctx.env)?;
                         if hist.insert(&rt as *const _ as usize) {
                             typ = Some(rt);
@@ -287,7 +287,15 @@ impl TypeDef {
     ) -> Result<Node<R, E>> {
         let typ = typ.scope_refs(&scope.lexical);
         ctx.env
-            .deftype(&scope.lexical, name, params.clone(), typ, None)
+            .deftype(
+                &scope.lexical,
+                name,
+                params.clone(),
+                typ,
+                None,
+                spec.pos,
+                spec.ori.clone(),
+            )
             .with_context(|| format!("in typedef at {}", spec.pos))?;
         let name = name.clone();
         Ok(Box::new(Self { spec, scope: scope.lexical.clone(), name }))

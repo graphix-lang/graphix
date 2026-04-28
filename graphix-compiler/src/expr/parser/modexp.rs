@@ -20,29 +20,34 @@ parser! {
     pub(super) fn sig_item[I]()(I) -> SigItem
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        doc_comment().skip(spaces()).then(|doc| {
+        (position(), doc_comment().skip(spaces())).then(|(pos, doc)| {
+            let ori = Some(crate::expr::get_origin());
             choice((
                 typedef().map({
                     let doc = doc.clone();
+                    let ori = ori.clone();
                     move |e| match e.kind {
-                        ExprKind::TypeDef(td) => SigItem { doc: doc.clone(), kind: SigKind::TypeDef(td) },
+                        ExprKind::TypeDef(td) => SigItem { doc: doc.clone(), kind: SigKind::TypeDef(td), pos, ori: ori.clone() },
                         _ => unreachable!()
                     }
                 }),
                 string("val").with(space()).with((spfname(), sptoken(':').with(typ())))
                     .map({
                         let doc = doc.clone();
+                        let ori = ori.clone();
                         move |(name, typ)| {
-                            SigItem { doc: doc.clone(), kind: SigKind::Bind(BindSig { name, typ }) }
+                            SigItem { doc: doc.clone(), kind: SigKind::Bind(BindSig { name, typ }), pos, ori: ori.clone() }
                         }
                     }),
                 string("use").with(space()).with(modpath()).map({
                     let doc = doc.clone();
-                    move |path| SigItem { doc: doc.clone(), kind: SigKind::Use(path) }
+                    let ori = ori.clone();
+                    move |path| SigItem { doc: doc.clone(), kind: SigKind::Use(path), pos, ori: ori.clone() }
                 }),
                 string("mod").with(space()).with(spfname().skip(spaces())).map({
                     let doc = doc.clone();
-                    move |n: ArcStr| SigItem { doc: doc.clone(), kind: SigKind::Module(n) }
+                    let ori = ori.clone();
+                    move |n: ArcStr| SigItem { doc: doc.clone(), kind: SigKind::Module(n), pos, ori: ori.clone() }
                 })
             ))
         })

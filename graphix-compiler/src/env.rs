@@ -54,6 +54,10 @@ pub struct TypeDef {
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
     pub doc: Option<ArcStr>,
+    /// Source position where this typedef was declared. Used by IDE
+    /// tooling for go-to-definition; the compiler doesn't read it.
+    pub pos: SourcePosition,
+    pub ori: Arc<Origin>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -320,38 +324,46 @@ impl Env {
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
         doc: Option<ArcStr>,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
     ) -> Result<()> {
-        let defs = self.typedefs.get_or_default_cow(scope.clone());
-        if defs.get(name).is_some() {
+        if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
-        } else {
-            let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
-            let mut declared: LPooled<FxHashSet<ArcStr>> = LPooled::take();
-            for (tv, tc) in params.iter() {
-                Type::TVar(tv.clone()).alias_tvars(&mut known);
-                if let Some(tc) = tc {
-                    tc.alias_tvars(&mut known);
-                }
-            }
-            typ.alias_tvars(&mut known);
-            for (tv, _) in params.iter() {
-                if !declared.insert(tv.name.clone()) {
-                    bail!("duplicate type variable {tv} in definition of {name}");
-                }
-            }
-            for (_, t) in params.iter() {
-                if let Some(t) = t {
-                    t.check_tvars_declared(&mut declared)?;
-                }
-            }
-            for dec in declared.iter() {
-                if !known.contains_key(dec) {
-                    bail!("unused type parameter {dec} in definition of {name}")
-                }
-            }
-            defs.insert_cow(name.into(), TypeDef { params, typ, doc });
-            Ok(())
         }
+        let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut declared: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+        for (tv, tc) in params.iter() {
+            Type::TVar(tv.clone()).alias_tvars(&mut known);
+            if let Some(tc) = tc {
+                tc.alias_tvars(&mut known);
+            }
+        }
+        typ.alias_tvars(&mut known);
+        for (tv, _) in params.iter() {
+            if !declared.insert(tv.name.clone()) {
+                bail!("duplicate type variable {tv} in definition of {name}");
+            }
+        }
+        for (_, t) in params.iter() {
+            if let Some(t) = t {
+                t.check_tvars_declared(&mut declared)?;
+            }
+        }
+        for dec in declared.iter() {
+            if !known.contains_key(dec) {
+                bail!("unused type parameter {dec} in definition of {name}")
+            }
+        }
+        // Capture every type-name occurrence inside the typedef
+        // body for IDE find-references. This catches uses that
+        // never go through `Type::lookup_ref` directly (e.g.
+        // `Foo` inside `type Pair = (Foo, Foo)` — typedef bodies
+        // are stored, not type-checked against anything). Done
+        // before we mutably borrow `self.typedefs` below.
+        typ.record_ide_refs(self, scope);
+        let defs = self.typedefs.get_or_default_cow(scope.clone());
+        defs.insert_cow(name.into(), TypeDef { params, typ, doc, pos, ori });
+        Ok(())
     }
 
     pub fn undeftype(&mut self, scope: &ModPath, name: &str) {

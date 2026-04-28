@@ -1,7 +1,7 @@
 use crate::{
     env::Env,
     errf,
-    typ::{RefHist, Type},
+    typ::{RefHist, Type, TypeRef},
     AbstractTypeRegistry, CAST_ERR_TAG,
 };
 use anyhow::{anyhow, bail, Result};
@@ -56,7 +56,7 @@ impl Type {
             Type::Variant(_, ts) => Ok(for t in ts.iter() {
                 t.check_cast_int(env, hist)?
             }),
-            Type::Ref { .. } => {
+            Type::Ref (TypeRef { .. }) => {
                 let id = hist.ref_id(self, env);
                 let t = self.lookup_ref(env)?;
                 if hist.contains(&id) {
@@ -248,7 +248,7 @@ impl Type {
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
-            Type::Ref { .. } => {
+            Type::Ref (TypeRef { .. }) => {
                 let t = self.lookup_ref(env)?;
                 t.cast_value_int(env, hist, v)
             }
@@ -278,7 +278,7 @@ impl Type {
         v: &Value,
     ) -> bool {
         match self {
-            Type::Ref { scope, name, .. } => match self.lookup_ref(env) {
+            Type::Ref (TypeRef { scope, name, .. }) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
                     // Cycle detection keyed on the Ref's (scope, name)

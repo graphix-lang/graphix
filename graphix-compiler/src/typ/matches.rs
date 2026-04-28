@@ -1,7 +1,7 @@
 use crate::{
     env::Env,
     format_with_flags,
-    typ::{AbstractId, AndAc, RefHist, Type},
+    typ::{AbstractId, AndAc, RefHist, Type, TypeRef},
     PrintFlag,
 };
 use anyhow::{bail, Result};
@@ -20,8 +20,8 @@ impl Type {
         let fl = BitFlags::empty();
         match (self, t) {
             (
-                Self::Ref { scope: s0, name: n0, params: p0 },
-                Self::Ref { scope: s1, name: n1, params: p1 },
+                Self::Ref (TypeRef { scope: s0, name: n0, params: p0 , ..}),
+                Self::Ref (TypeRef { scope: s1, name: n1, params: p1 , ..}),
             ) if s0 == s1 && n0 == n1 => Ok(p0.len() == p1.len()
                 && p0
                     .iter()
@@ -29,7 +29,7 @@ impl Type {
                     .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+            (t0 @ Self::Ref (TypeRef { .. }), t1) | (t0, t1 @ Self::Ref (TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;
@@ -179,15 +179,15 @@ impl Type {
             (Self::Any, Self::Any) => Ok(()),
             (Self::Primitive(p0), Self::Primitive(p1)) if p0 == p1 => Ok(()),
             (
-                Self::Ref { scope: s0, name: n0, params: p0 },
-                Self::Ref { scope: s1, name: n1, params: p1 },
+                Self::Ref (TypeRef { scope: s0, name: n0, params: p0 , ..}),
+                Self::Ref (TypeRef { scope: s1, name: n1, params: p1 , ..}),
             ) if s0 == s1 && n0 == n1 && p0.len() == p1.len() => {
                 for (t0, t1) in p0.iter().zip(p1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
                 }
                 Ok(())
             }
-            (t0 @ Self::Ref { .. }, t1) | (t0, t1 @ Self::Ref { .. }) => {
+            (t0 @ Self::Ref (TypeRef { .. }), t1) | (t0, t1 @ Self::Ref (TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;

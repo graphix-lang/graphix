@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath},
-    typ::Type,
+    typ::{Type, TypeRef},
 };
 use graphix_package::CustomDisplay;
 use graphix_rt::{CompExp, GXExt, GXHandle};
@@ -113,11 +113,11 @@ impl<X: GXExt> Gui<X> {
 }
 
 pub static GUITYP: LazyLock<Type> = LazyLock::new(|| {
-    Type::Array(Arc::new(Type::ByRef(Arc::new(Type::Ref {
+    Type::Array(Arc::new(Type::ByRef(Arc::new(Type::Ref (TypeRef {
         scope: ModPath::root(),
         name: ModPath::from(["gui", "Window"]),
         params: Arc::from_iter([]),
-    }))))
+     ..Default::default()})))))
 });
 
 #[async_trait]
