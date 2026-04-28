@@ -140,6 +140,15 @@ pub struct CompRes<X: GXExt> {
     pub env: Env,
 }
 
+/// Result of a typecheck-only compile pass. Carries the env as it
+/// would be after the source was compiled, plus the set of resolved
+/// name references encountered during compilation.
+#[derive(Debug, Clone)]
+pub struct CheckResult {
+    pub env: Env,
+    pub references: Vec<graphix_compiler::ReferenceSite>,
+}
+
 pub struct Ref<X: GXExt> {
     pub id: ExprId,
     // the most recent value of the variable
@@ -413,7 +422,7 @@ enum ToGX<X: GXExt> {
     },
     Check {
         path: Source,
-        res: oneshot::Sender<Result<()>>,
+        res: oneshot::Sender<Result<CheckResult>>,
     },
     Compile {
         text: ArcStr,
@@ -495,16 +504,18 @@ impl<X: GXExt> GXHandle<X> {
         self.exec(|res| ToGX::GetEnv { res }).await
     }
 
-    /// Check that a graphix module compiles
+    /// Check that a graphix module compiles and type-checks.
     ///
-    /// If path startes with `netidx:` then the module will be loaded
-    /// from netidx, otherwise it will be loaded from the
-    /// filesystem. If the file compiles successfully return Ok(())
-    /// otherwise an error describing the problem. The environment
-    /// will not be altered by checking an expression, so you will not
-    /// be able to use any defined names later in the program. If you
-    /// want to do that see `compile`.
-    pub async fn check(&self, path: Source) -> Result<()> {
+    /// If path starts with `netidx:` the module is loaded from
+    /// netidx; otherwise it is loaded from the filesystem (or read
+    /// directly if `Source::Internal`). On success returns a
+    /// `CheckResult` containing both an env snapshot (as it would be
+    /// after the module was compiled) and the set of resolved name
+    /// references the compiler observed — useful for IDE tooling
+    /// (`textDocument/references`). The runtime's live environment
+    /// is not altered — to keep the bindings live, use `compile` or
+    /// `load`.
+    pub async fn check(&self, path: Source) -> Result<CheckResult> {
         Ok(self.exec(|tx| ToGX::Check { path, res: tx }).await??)
     }
 

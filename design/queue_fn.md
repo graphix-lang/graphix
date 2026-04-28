@@ -1,7 +1,11 @@
-# `queue_fn` — queued function invocation
+# `queuefn` — queued function invocation
 
-Status: design agreed, not yet implemented. Paused to finish the data-table
-review; return to this afterward.
+Status: implemented v1 (2026-04-27). Lives in `graphix-package-core::queuefn`.
+Working: pop_count=1 immediate, queue+trigger pop, multi-arg, closure
+capture, count ref writes (through-the-ref via `byref_chain`).
+Not yet implemented: per-generation wrappers when `f` re-emits — current
+impl shares one queue across all generations, which is simpler and
+sufficient for the common case. See "Implementation status" below.
 
 ## Motivation
 
@@ -13,173 +17,239 @@ fire-and-forget semantics even when strict input/output pairing matters —
 and then when the predicate of a `filter`-style pipeline stalls, they have
 no way to observe it.
 
-`queue_fn` packages the pattern as a first-class operation: wrap a function,
-get back a handle, enqueue invocations against it, trigger releases
-explicitly.
+`queuefn` packages the pattern as a single transformation: wrap a function,
+get back a function with the same signature whose invocations are queued
+and released by an external trigger.
 
 ## API shape
 
 ```graphix
-// Opaque handle parameterized by the wrapped fn type.
-type QueuedFn<'f: fn>;
-
-// Wrap a function. Returns a handle.
-val queue_fn: fn<'f: fn>('f) -> QueuedFn<'f>;
-
-// Read current queue depth. Reactive — updates whenever the queue changes.
-val qfn_depth: fn<'f: fn>(QueuedFn<'f>) -> u64;
-
-// Trigger release of one queued invocation. Fire-and-forget on the Any
-// trigger arg; the result of the released invocation flows out of the
-// `qfn_invoke` call site, not this one.
-val qfn_trigger: fn<'f: fn>(QueuedFn<'f>, Any) -> null;
-
-// Special: not a plain builtin. See "qfn_invoke" section below. The call
-// shape at the source level is `qfn_invoke(q, a, b, c)` where (a, b, c)
-// must type-match 'f's args; the return has 'f's return type.
-val qfn_invoke: <magic>;
+val queuefn: fn(?#count: &[i64, null], #trigger: Any, f: 'a) -> 'a;
 ```
 
-Typical wire-up for a self-driven queue (release-on-output):
+- `f: 'a` — the function to wrap. `'a` is structurally a fn type; checked
+  in the CallSite phase. No `Fn` kind constraint is added — graphix
+  doesn't have one yet, and the CallSite check is sufficient.
+- `#trigger: Any` — each update releases one queued invocation (or banks a
+  pop). Reactive idiom.
+- `#count: &[i64, null]` — optional writable ref. When non-null, the
+  builtin writes the queue depth whenever it changes. Pure observability.
+- Return: a fn value of type `'a` — call it like any other function.
+
+There is **no abstract handle type**. The queue is internal state of the
+returned wrapper. Each call to `queuefn` produces a fresh wrapper bound to
+a fresh queue.
+
+Typical use:
 
 ```graphix
-let q = queue_fn(my_fn);
-let out = qfn_invoke(q, a, b, c);
-qfn_trigger(q, out);
+let trig = sys::time::timer(duration:1.s, true);
+let depth = 0;
+let slow = queuefn(#trigger:trig, #count:&depth, real_slow_fn);
+
+// Now slow has the same signature as real_slow_fn, but invocations are
+// rate-limited by trig — at most one release per timer tick.
+let result = slow(x, y);
 ```
 
-For an externally-driven queue, replace `out` with any other reactive
-trigger (a timer, a user action, a frame boundary, etc.). No implicit
-release mode — all releases are explicit.
+## Semantics
 
-## Key decisions
+State per wrapper (internal to one `queuefn` call site):
 
-### Explicit trigger only
+- `queue: VecDeque<args-tuple>` — pending invocations, oldest first.
+- `pop_count: i64` — banked permission slots. Initialized to **1**, so the
+  first invocation can run immediately and may emit in the same cycle.
 
-Manual trigger everywhere. No "auto release on output" default.
+**Wrapper invocation** (user calls the returned fn):
+- If `pop_count > 0`: decrement, invoke f with the args. Output flows
+  through normally.
+- Else: push args onto the queue. The call site emits nothing this cycle.
 
-Rationale: auto-release is seductive for ergonomics but misbehaves when the
+**`#trigger` update**:
+- If queue non-empty: dequeue oldest args, invoke f with them.
+- Else: increment `pop_count`.
+
+`pop_count > 0` and `queue.len() > 0` are mutually exclusive — a non-empty
+queue would have already drained any banked pops.
+
+**Whenever queue depth changes**: if `#count` is non-null, write the new
+depth through the ref.
+
+**When `f` updates (re-emits a new fn value)**: produce a brand-new wrapper
+with a fresh queue and `pop_count = 1`. Previously-returned wrappers stay
+alive with their own state. They share `#trigger` and `#count` with the
+new wrapper — every trigger pops every live wrapper, and any wrapper's
+depth change writes `*count`. Acceptable: the common case is the user
+discards stale wrappers.
+
+**Concurrent invocations**: if `#trigger` fires before f finishes emitting
+from a previous invocation, invocation N+1 starts and you get interleaved
+output streams. The wrapper's emitted value is "everything f emits from
+any in-flight invocation." Documented gotcha; the price of not having
+auto-pop-on-output.
+
+## Why a manual trigger
+
+Auto-release on output is seductive for ergonomics but misbehaves when the
 wrapped fn emits more than once per invocation (reactive inner updates,
 animation loops, accumulators). The symptom — new args released mid-
-invocation, or no release when the fn settles to a steady value — is nearly
-impossible to diagnose from source. Making the trigger edge explicit costs
-one extra line per use site and buys predictability.
+invocation, or no release when the fn settles — is hard to diagnose from
+source. Making the release edge explicit costs one extra reference per
+use site and buys predictability.
 
-### `qfn_invoke` as a compile-time construct, not a builtin
+## Why this shape (vs. the earlier QueuedFn handle)
 
-The core problem: graphix's type system can't express "the arg types are
-'f's arg types and the return type is 'f's return type". Declaring
-`qfn_invoke` as a plain builtin forces a signature like
-`fn(QueuedFn<'f>, @args: Any) -> Any`.
+The earlier design had an opaque `QueuedFn<'f>` handle type plus
+`queue_fn`, `qfn_depth`, `qfn_trigger`, and a special `qfn_invoke`
+compile-time form. `qfn_invoke` had to be a magic compile-time construct
+because a plain builtin signature `fn(QueuedFn<'f>, @args: Any) -> Any`
+poisoned type inference with `Any` before NEEDS_CALLSITE could fix it.
 
-`Any` in the return type flows into normal inference before NEEDS_CALLSITE
-runs. Downstream TVars get unified with `Any`, and even when CallSite phase
-later learns the correct types, the earlier inference decisions aren't
-revisited. `json::read` sidesteps this by requiring a contextual type
-annotation that pins the return before deferred checks fire; we can't ask
-users to annotate every `qfn_invoke(q, ...)` call that way.
+Returning a value of type `'a` directly avoids the entire problem:
 
-Instead: the compiler recognizes `qfn_invoke` at CallSite construction
-time, reads the `QueuedFn<'f>` type off the first arg, and emits a node
-whose signature is exactly 'f's signature. No `Any` ever enters inference.
-
-`qfn_depth` and `qfn_trigger` stay as ordinary builtins — their signatures
-are clean and don't need the special handling. Only `qfn_invoke` is
-weird.
+- Call sites of the wrapper are plain function applications — no special
+  form. Type inference works exactly like calling f.
+- No abstract type to expose. The queue is implementation-internal.
+- One builtin instead of four.
+- Each `queuefn` call site naturally has its own queue, no handle
+  juggling. The corner case `let q = queuefn(...); array::map(a, q);
+  array::map(b, q);` shares the queue across both maps — that's "you
+  asked for it" and matches user intent.
 
 ## Implementation sketch
 
-### Abstract type `QueuedFn<'f>`
+### Constructing the wrapper
 
-Declared in `graphix-package-core` (sibling of `queue`). Parameterized by
-the fn type. Runtime representation: a `u64` handle indexing a per-`ExecCtx`
-registry of queue states. Clones are refcount-free (plain value).
+The wrapper is a `LambdaDef` constructed at runtime by the `queuefn`
+builtin's `init` (or its first update, when `f` is first known). This
+project does not currently have a builtin that returns a runtime-built
+LambdaDef — `queuefn` will be the first. The wrapper LambdaDef:
 
-A `Fn` constraint on `'f` is new — today the documented constraints are
-numeric (`Number`, `Int`, `Float`). Two options:
-- Add an `Fn` constraint to the type system (cleanest).
-- Leave `'f` unconstrained and rely on use sites (`queue_fn(f: 'f)` unifies
-  `'f` with whatever was passed; only function values can reach it).
+- Has the same signature as `f` (extracted from the resolved fn type during
+  the CallSite typecheck phase).
+- Body is a synthesized expression that calls a private dispatch builtin,
+  passing the args plus the (captured) reference to this `queuefn`'s
+  internal queue state.
+- "Captured" here means the dispatch builtin has access to per-wrapper
+  state via a side-channel — likely a handle held in the queuefn node's
+  state plus a paired registration so the lambda body's call resolves to
+  the right state. Exact wiring TBD until we look at how lambda bodies
+  reach builtin args today.
 
-The unconstrained form may be enough; revisit if it lets ill-formed programs
-typecheck.
+### Queue state
 
-### Per-queue state
-
-Held in `ExecCtx` keyed by handle:
+Held in the `queuefn` node:
 
 ```rust
 struct QueueState<R: Rt, E: UserEvent> {
     queue: VecDeque<ValArray>,   // one entry per queued invocation
+    pop_count: i64,              // initialized to 1
     pred: Node<R, E>,            // compiled call to the wrapped fn
     fid: BindId,                 // ref to the wrapped fn value
     arg_bids: SmallVec<[BindId; 4]>, // one bind per fn arg
-    out_bid: BindId,             // output value broadcast bind
-    ref_count: usize,            // # of invoke sites referencing this handle
+    out_bid: BindId,             // output broadcast bind
 }
 ```
 
-Clean up when all references drop.
+When `f` updates: tear down old `pred`, build a new one against the new f
+value, reset queue and pop_count. Old wrappers (if anyone still holds
+them) keep their old state.
 
-### Builtins
+### Builtin update behavior
 
-- `queue_fn(f)`: allocate a `QueueState`, return `Value::U64(handle)`.
-- `qfn_depth(q)`: read the state's `queue.len()`, emit as u64. Reactive on
-  queue mutations.
-- `qfn_trigger(q, trigger)`: on `trigger.update() == Some`, pop one arg
-  tuple from the queue (if any), write each arg into `arg_bids`, let
-  `pred.update()` produce the result into `out_bid`.
+Each cycle, the `queuefn` node:
 
-### `qfn_invoke` — compile-time specialization
+1. If `f` updated, build a new wrapper (and emit it as queuefn's output).
+2. If `#trigger` updated:
+   - Queue non-empty: dequeue, invoke pred with those args.
+   - Queue empty: `pop_count += 1`.
+3. Wrapper invocations from user code arrive via the dispatch path:
+   - `pop_count > 0`: decrement, invoke pred.
+   - Else: push onto queue. Emit nothing on the call site.
+4. If queue depth changed and `#count` non-null: write `*count = depth`.
 
-In `graphix-compiler/src/node/compiler.rs`, when building a `CallSite` node:
-- Detect the call whose head resolves to `qfn_invoke`.
-- Extract `'f` from the first arg's resolved type (unify with `QueuedFn<'f>`).
-- Type-check remaining args against 'f's arg types.
-- Emit a node that:
-  - On each arg update, pushes the new arg tuple onto the handle's queue.
-  - Watches `out_bid` from the handle's state; emits whatever the wrapped
-    fn produces.
-  - Has return type = 'f's return type.
+### Type-checking
 
-Pattern mirrors `MapQ`/`FoldQ`'s deferred-typecheck trick for their
-predicate args, but produces a single call-application node rather than a
-HOF wrapper.
+The CallSite phase resolves `'a`. The `queuefn` builtin verifies that the
+resolved `'a` is a fn type; if not, error. It uses the resolved arg/return
+types to construct the wrapper LambdaDef's signature and the inner
+`pred` application.
 
 ## Known risks
 
-1. **Stall visibility.** The whole point of queueing is explicit
-   back-pressure; if the user forgets to wire `qfn_trigger`, the queue grows
-   unbounded silently. `qfn_depth` being reactive helps (users can render
-   it, assert on it, or gate with `>`), but consider a warn-on-threshold
-   log for extreme growth.
+1. **Constructing a LambdaDef from a builtin.** Novel work in the compiler.
+   The user expects this to be tractable because we're "just wrapping an
+   existing one" — f is already a fn value with known structure. Spike this
+   first to confirm.
 
-2. **Handle lifetime and sleep/delete.** If the `queue_fn` node is deleted
-   while an `invoke` site still holds the handle, reads must fail gracefully
-   (emit null / stop emitting) rather than panic. Sleep needs to clear the
-   queue and park the wrapped fn.
+2. **Stall visibility.** If the user forgets to wire `#trigger`, the queue
+   grows unbounded. `#count` being a writable ref helps (the user can
+   render or assert on depth); consider an opt-in warn-on-threshold log if
+   silent growth becomes a footgun.
 
-3. **Ordering across multi-arg updates.** When several of `qfn_invoke(q,
-   a, b, c)`'s arg streams fire in the same cycle, we enqueue one tuple
-   capturing that cycle's values. When they fire across cycles, each partial
-   update produces a fresh tuple snapshotting the currently-cached values
-   of the other args. Document clearly: queueing is keyed per-update-cycle,
-   not per-arg-stream.
+3. **Handle lifetime, sleep, delete.** Wrapper lambdas might outlive the
+   `queuefn` node if pasted into longer-lived contexts. The dispatch
+   builtin must fail gracefully (emit nothing) when the underlying state
+   is gone. Sleep should clear the queue and reset pop_count.
 
-4. **`Fn` constraint.** If we don't add one, malformed programs like
-   `queue_fn(5)` might slip past earlier type stages and surface only at
-   the `qfn_invoke` callsite. Acceptable if the error message there is
-   clear; consider adding the constraint if not.
+4. **Ordering across multi-arg updates.** When several args of a wrapper
+   call fire in the same cycle, one tuple is enqueued. When they fire in
+   different cycles, each partial update produces a fresh tuple snapshot
+   of the other args' currently-cached values. Document clearly: queueing
+   is keyed per-update-cycle, not per-arg-stream.
 
-## Return-to-work checklist
+5. **Concurrent in-flight invocations.** Already noted — interleaved
+   outputs are accepted semantics, not a bug.
 
-When picking this back up:
+## Implementation status (2026-04-27)
 
-- [ ] Decide on `Fn` constraint vs unconstrained `'f`.
-- [ ] Add `QueuedFn<'f>` abstract type to `graphix-package-core`.
-- [ ] Implement `queue_fn`, `qfn_depth`, `qfn_trigger` builtins.
-- [ ] Add `qfn_invoke` specialization in `graphix-compiler::node::compiler`.
-- [ ] Write .gxi declarations; register in the core package.
-- [ ] Tests: basic queue/release, depth reactivity, stall with no trigger,
-  handle lifetime across sleep/delete, multi-arg update-cycle semantics.
-- [ ] Book chapter in `book/src/stdlib/` — or under core queueing docs.
+### What's wired
+- `ExecCtx::wrap_lambda` is the public path for builtins to mint a
+  `LambdaDef` and emit it as a Value (`graphix-compiler/src/lib.rs`).
+  `queuefn` is the first user.
+- Builtin `core_queuefn` in `graphix-package-core::queuefn`. Holds a
+  shared `Arc<Mutex<QueueState>>`. The wrapper LambdaDef's `init` captures
+  a clone of that Arc; per-call-site Apply impls push args / dispatch via
+  the shared state.
+- Per call site, the wrapper Apply allocates fresh arg `BindId`s and
+  builds a `pred = genn::apply(reference(fid), [arg_bids], ftyp)`. The
+  shared `fid` is owned by the queuefn node and updated whenever `f`
+  re-emits, so all live preds see the latest `f`.
+- Push path (no pop available): wrapper writes count ref directly, since
+  queuefn's update isn't re-entered when a wrapper pushes.
+- Pop path: queuefn pops oldest entry, calls `ctx.rt.set_var(arg_bid,
+  v)` to schedule the bind for the next cycle; the call-site pred fires
+  next cycle and emits.
+- `#count` ref handling resolves the outer ByRef via `byref_chain` to
+  the underlying target BindId, then writes through that.
+
+### Final shape (deviation from earlier draft)
+The earlier draft said: "When `f` updates, produce a brand-new wrapper
+with a fresh queue; previously-returned wrappers stay alive with their
+own state."
+
+Final shape: one `LambdaDef` per `queuefn` call site, built lazily on
+first `f` value, one shared QueueState. When `f` re-emits, the shared
+`fid` updates so all wrappers start calling the latest `f`. No new
+LambdaDef is minted, no per-generation state.
+
+Resolved out-of-scope: this covers ~all real use cases, and a user who
+genuinely needs per-generation wrapper isolation can build one by hand
+on top of the existing `queue` builtin.
+
+### Tests run manually
+- pop_count=1 immediate: `qf(7)` → emits `70` same cycle ✓
+- Queue + trigger: `qf(1) qf(2)` → both emit, `r2` after a tick ✓
+- Multi-arg: `qf(x, y)` with two-arg fn ✓
+- Closure capture: `qf` wrapping `|x| x * multiplier` where `multiplier`
+  is a captured binding ✓
+- Count ref writes: `depth` ramps up on push, down on pop ✓
+
+### Open follow-ups
+- [ ] Sleep/delete cleanup for wrappers — current impl only cleans the
+  queuefn node's `fid`. Wrapper apply impls clean their own `pred`.
+- [ ] Documented gotcha: queueing-by-update-cycle vs by-arg-stream
+  (already captured in this doc; needs to make it into the book chapter).
+- [ ] Book chapter — likely under core queueing docs alongside `queue`.
+- [ ] Language tests in `graphix-tests` for the cases covered by manual
+  smoke tests above.

@@ -1,10 +1,11 @@
 use crate::{
-    expr::{ModPath, Sandbox},
+    expr::{ModPath, Origin, Sandbox},
     typ::{TVar, Type},
     BindId, Scope,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
+use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
@@ -20,6 +21,11 @@ pub struct Bind {
     pub doc: Option<ArcStr>,
     pub scope: ModPath,
     pub name: CompactString,
+    /// Source position where the binding was introduced. Used by IDE
+    /// tooling for go-to-definition; not consulted by the compiler.
+    pub pos: SourcePosition,
+    /// Source origin (file/buffer) where the binding was introduced.
+    pub ori: Arc<Origin>,
 }
 
 impl fmt::Debug for Bind {
@@ -37,6 +43,8 @@ impl Clone for Bind {
             doc: self.doc.clone(),
             export: self.export,
             typ: self.typ.clone(),
+            pos: self.pos,
+            ori: self.ori.clone(),
         }
     }
 }
@@ -356,8 +364,17 @@ impl Env {
     }
 
     /// create a new binding. If an existing bind exists in the same
-    /// scope shadow it.
-    pub fn bind_variable(&mut self, scope: &ModPath, name: &str, typ: Type) -> &mut Bind {
+    /// scope shadow it. `pos` and `ori` describe where in the source
+    /// the binding was introduced — IDE tooling consumes them for
+    /// go-to-definition. The compiler itself doesn't read them.
+    pub fn bind_variable(
+        &mut self,
+        scope: &ModPath,
+        name: &str,
+        typ: Type,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
+    ) -> &mut Bind {
         let binds = self.binds.get_or_default_cow(scope.clone());
         let mut existing = true;
         let id = binds.get_or_insert_cow(CompactString::from(name), || {
@@ -374,6 +391,8 @@ impl Env {
             doc: None,
             name: CompactString::from(name),
             typ,
+            pos,
+            ori,
         })
     }
 

@@ -41,8 +41,16 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             .iter()
             .map(|(pat, spec)| {
                 let scope = scope.append(&format_compact!("sel{}", SelectId::new().0));
-                let pat = PatternNode::compile(ctx, flags, pat, &scope, top_id)
-                    .with_context(|| format!("in select at {}", spec.pos))?;
+                let pat = PatternNode::compile(
+                    ctx,
+                    flags,
+                    pat,
+                    &scope,
+                    top_id,
+                    spec.pos,
+                    spec.ori.clone(),
+                )
+                .with_context(|| format!("in select at {}", spec.pos))?;
                 let n = Cached::new(compile(ctx, flags, spec.clone(), &scope, top_id)?);
                 Ok((pat, n))
             })

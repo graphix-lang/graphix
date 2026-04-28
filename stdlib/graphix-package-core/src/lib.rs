@@ -34,6 +34,7 @@ use triomphe::Arc as TArc;
 pub(crate) mod buffer;
 pub(crate) mod math;
 pub(crate) mod opt;
+pub(crate) mod queuefn;
 
 // ── Cast context for typed deserialization ────────────────────────
 
@@ -2383,6 +2384,7 @@ graphix_derive::defpackage! {
         Shr,
         Filter as Filter<GXRt<X>, X::UserEvent>,
         Queue,
+        queuefn::QueueFn as queuefn::QueueFn<GXRt<X>, X::UserEvent>,
         Hold,
         Seq,
         Throttle,

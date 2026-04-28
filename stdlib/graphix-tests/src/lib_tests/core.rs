@@ -316,6 +316,136 @@ run!(queue, QUEUE, |v: Result<&Value>| {
     }
 });
 
+const QUEUEFN_IMMEDIATE: &str = r#"
+{
+  let qf = queuefn(#trigger: never(), |x: i64| -> i64 x * 10);
+  qf(7)
+}
+"#;
+
+run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::I64(70)) => true,
+        _ => false,
+    }
+});
+
+const QUEUEFN_QUEUE_POP: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64| -> i64 x * 10);
+  let out = qf(array::iter([1, 2, 3, 4]));
+  feedback <- out;
+  array::group(out, |n, _| n == 4)
+}
+"#;
+
+run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(10), Value::I64(20), Value::I64(30), Value::I64(40)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const QUEUEFN_MULTI_ARG: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64, y: i64| -> i64 x + y * 100);
+  let xs = array::iter([1, 3, 5]);
+  let ys = array::iter([2, 4, 6]);
+  let out = qf(xs, ys);
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(201), Value::I64(403), Value::I64(605)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
+{
+  let multiplier = 100;
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64| -> i64 x * multiplier);
+  let out = qf(array::iter([1, 2, 3]));
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+// Verify #count writes when the queue grows. The wrapper writes count
+// every time it pushes (pops happen via the queuefn node when triggered).
+// With #trigger=never(), nothing pops, so depth ramps up.
+const QUEUEFN_COUNT_REF: &str = r#"
+{
+  let depth = 0;
+  let qf = queuefn(#count: &depth, #trigger: never(), |x: i64| -> i64 x * 10);
+  qf(1);  // immediate (pop_count=1), no push
+  qf(2);  // push, depth -> 1
+  qf(3);  // push, depth -> 2
+  // depth observer sees [0 (let init), 1, 2]
+  array::group(depth, |n, _| n == 3)
+}
+"#;
+
+run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(0), Value::I64(1), Value::I64(2)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+// Verify the wrapped fn is called when the wrapper output is fed back to
+// the trigger. Each pop allows the next to fire, so all queued
+// invocations eventually drain.
+const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64| -> i64 x + 1);
+  let out = qf(array::iter([10, 20, 30, 40, 50]));
+  feedback <- out;
+  array::group(out, |n, _| n == 5)
+}
+"#;
+
+run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(11), Value::I64(21), Value::I64(31), Value::I64(41), Value::I64(51)] => {
+                true
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+// CR estokes: need a queuefn test that tests the trigger arriving before the fn
+// is called incrementing pop_cnt
+
 const COUNT: &str = r#"
 {
   let a = [0, 1, 2, 3];

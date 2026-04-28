@@ -4,8 +4,15 @@ version = "0.7.0"
 edition = "2024"
 
 [dependencies]
-graphix-compiler = { path = "../graphix-compiler" }
-lsp-types = "0.97"
+graphix-compiler = { version = "0.7.0", path = "../graphix-compiler" }
+lsp-types = { workspace = true }
+lsp-server = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
+fxhash = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

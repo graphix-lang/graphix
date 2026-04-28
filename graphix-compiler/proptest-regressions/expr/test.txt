@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4c7f34eb3b6233791ee9006147f8b1beff96005e7dfb7639ae2bbd66f22c2b06 # shrinks to s = CheckedAdd { lhs: Constant(Z64(8144762444)), rhs: Ref { name: ModPath(Path("/qg78k_51__3i_/a_s/a_r3/o_s_18_2")) } }
+cc f494875b4641cea60bad345356c3cf44e2f669c2f936ed738088591cf43c416f # shrinks to s = CheckedAdd { lhs: Constant(I8(0)), rhs: Constant(Error(Decimal(12998370412496492886440804352))) }
+cc ef5f0d612b321f6b80f334ec573e1bdf58d0ce469447757e5f1b345c2a17495d # shrinks to s = CheckedMul { lhs: Constant(I64(406548)), rhs: Ref { name: ModPath(Path("/load")) } }
+cc 2621980e37f57f137891202fdc880f98458d173fe2ee37486c60d4b34bbcdfe0 # shrinks to s = CheckedAdd { lhs: Constant(I8(0)), rhs: Constant(Decimal(1726051208537645572449697792)) }

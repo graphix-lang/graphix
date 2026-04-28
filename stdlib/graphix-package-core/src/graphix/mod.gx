@@ -24,6 +24,7 @@ let product = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_
 let sum = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_sum;
 let uniq = |v: 'a| -> 'a 'core_uniq;
 let queue = |#clock: Any, v: 'a| -> 'a 'core_queue;
+let queuefn = |#count: &[i64, null] = &null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
 let hold = |#clock: Any, v: 'a| -> 'a 'core_hold;
 let never = |@args: Any| -> 'a 'core_never;
 let dbg = |#dest: [`Stdout, `Stderr, Log] = `Stderr, v: 'a| -> 'a 'core_dbg;

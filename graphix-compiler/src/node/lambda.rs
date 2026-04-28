@@ -1,7 +1,7 @@
 use super::{compiler::compile, Nop};
 use crate::{
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId},
+    expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     node::pattern::StructPatternNode,
     typ::{FnArgType, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
@@ -9,6 +9,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
+use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use fxhash::FxHashSet;
@@ -164,7 +165,14 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         }
         let mut argpats = vec![];
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
-            let pattern = StructPatternNode::compile(ctx, &atyp.typ, &a.pattern, scope)?;
+            let pattern = StructPatternNode::compile(
+                ctx,
+                &atyp.typ,
+                &a.pattern,
+                scope,
+                body.pos,
+                body.ori.clone(),
+            )?;
             if pattern.is_refutable() {
                 bail!(
                     "refutable patterns are not allowed in lambda arguments {}",
@@ -471,6 +479,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 name: "faux".into(),
                 scope: def.scope.lexical.clone(),
                 typ: Type::empty_tvar(),
+                pos: SourcePosition::default(),
+                ori: Arc::new(Origin::default()),
             },
         );
         let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);

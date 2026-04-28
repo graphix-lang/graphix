@@ -285,6 +285,20 @@ pub struct Refs {
     bound: LPooled<FxHashSet<BindId>>,
 }
 
+pub use combine::stream::position::SourcePosition;
+
+/// A textual occurrence of a name at a specific source position that
+/// the compiler resolved to a particular `BindId`. Populated as a side
+/// effect of compilation so IDE tooling can answer
+/// `textDocument/references` without re-implementing name resolution.
+#[derive(Debug, Clone)]
+pub struct ReferenceSite {
+    pub pos: SourcePosition,
+    pub ori: Arc<expr::Origin>,
+    pub name: expr::ModPath,
+    pub bind_id: BindId,
+}
+
 impl Refs {
     pub fn clear(&mut self) {
         self.refed.clear();
@@ -757,6 +771,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// deferred type check closures, evaluated after all primary type checking
     pub deferred_checks:
         Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
+    /// Reference sites accumulated during compilation. Each is a
+    /// textual occurrence of a name and the `BindId` it resolved to.
+    /// Use `references.swap()` (via `mem::take`) at compile boundaries
+    /// to scope collection per check/compile.
+    pub references: Vec<ReferenceSite>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -786,6 +805,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             rt: user,
             lambda_defs: FxHashMap::default(),
             deferred_checks: Vec::new(),
+            references: Vec::new(),
         })
     }
 
@@ -797,6 +817,18 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
         Ok(())
+    }
+
+    /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin
+    /// as a first-class function value. The runtime handles the resulting
+    /// Value as a callable lambda — call sites resolve against the LambdaDef's
+    /// `init` to construct an Apply impl. Also registers the LambdaDef in
+    /// `lambda_defs` so deferred typechecking can find it.
+    pub fn wrap_lambda(&mut self, def: LambdaDef<R, E>) -> Value {
+        let id = def.id;
+        let v = self.lambdawrap.wrap(def);
+        self.lambda_defs.insert(id, v.clone());
+        v
     }
 
     /// Built in functions should call this when variables are set

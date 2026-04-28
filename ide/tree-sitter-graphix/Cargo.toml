@@ -1,0 +1,17 @@
+[package]
+name = "tree-sitter-graphix"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+tree-sitter-language = { workspace = true }
+
+[build-dependencies]
+cc = { workspace = true }
+
+[dev-dependencies]
+tree-sitter = { workspace = true }

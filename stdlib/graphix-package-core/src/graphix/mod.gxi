@@ -119,6 +119,29 @@ val uniq: fn('a) -> 'a;
 /// values from the queue when they are available.
 val queue: fn(#clock:Any, 'a) -> 'a;
 
+/// queuefn wraps a function f and returns a function with the same signature
+/// whose invocations are queued and released by an external trigger.
+///
+/// Each call site of queuefn creates a fresh queue. The wrapper has an
+/// internal pop_count initialized to 1, so the first invocation runs
+/// immediately. Subsequent invocations push their args onto the queue and
+/// emit nothing until #trigger fires; each #trigger update releases one
+/// queued invocation, or banks a pop slot if the queue is empty.
+///
+/// If #count is provided as a writable ref, the current queue depth is
+/// written through it whenever it changes. If null (default), depth is not
+/// reported.
+///
+/// When f re-emits, the queue and pop_count are NOT reset. Subsequent
+/// pops process queued args with the new f, regardless of which f was
+/// current when those args were queued. If you need a fresh queue when f
+/// changes, build it explicitly using `queue` instead.
+///
+/// Concurrent in-flight invocations are possible if #trigger fires before
+/// f finishes emitting a previous invocation's output — the wrapper
+/// emits whatever any in-flight invocation produces.
+val queuefn: fn(?#count:&[i64, null], #trigger:Any, 'a) -> 'a;
+
 /// hold the most recent value of v interally until clock updates. If v updates
 /// more than once before clock updates, older values of v will be discarded,
 /// only the most recent value will be retained. If clock updates when no v is held

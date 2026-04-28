@@ -5,6 +5,7 @@ use futures::{channel::mpsc, future::try_join_all, StreamExt};
 use fxhash::{FxBuildHasher, FxHashMap};
 use graphix_compiler::{
     compile,
+    env::Env,
     expr::{self, Expr, ExprId, ExprKind, ModuleResolver, Origin, Source},
     node::{genn, lambda::LambdaDef},
     typ::Type,
@@ -433,8 +434,12 @@ impl<X: GXExt> GX<X> {
         Ok((ori, exprs))
     }
 
-    async fn check(&mut self, source: &Source) -> Result<()> {
+    async fn check(&mut self, source: &Source) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
+        // Stash any references collected before this check so we can
+        // restore them — ReferenceSite is a side-channel for IDE
+        // tooling and we want each `check` to scope its own collection.
+        let prev_refs = std::mem::take(&mut self.ctx.references);
         let go = async {
             let st = Instant::now();
             info!("parse time: {:?}", st.elapsed());
@@ -458,13 +463,18 @@ impl<X: GXExt> GX<X> {
                     }
                 }
             }
+            // Snapshot the env after a successful compile so the caller
+            // can see any bindings/types the module would have introduced.
+            let env = self.ctx.env.clone();
+            let references = std::mem::take(&mut self.ctx.references);
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok(())
+            Ok(crate::CheckResult { env, references })
         };
         let res = go.await;
         self.ctx.env = env;
+        self.ctx.references = prev_refs;
         res
     }
 

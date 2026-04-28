@@ -42,8 +42,15 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 Some(typ) => typ.scope_refs(&scope.lexical),
                 None => Type::empty_tvar(),
             };
-            let pattern = StructPatternNode::compile(ctx, &typ, pattern, scope)
-                .with_context(|| format!("at {}", spec.pos))?;
+            let pattern = StructPatternNode::compile(
+                ctx,
+                &typ,
+                pattern,
+                scope,
+                spec.pos,
+                spec.ori.clone(),
+            )
+            .with_context(|| format!("at {}", spec.pos))?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
             if !typ.contains(&ctx.env, ntyp)? {
@@ -70,8 +77,15 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     typ
                 }
             };
-            let pattern = StructPatternNode::compile(ctx, &typ, pattern, scope)
-                .with_context(|| format!("at {}", spec.pos))?;
+            let pattern = StructPatternNode::compile(
+                ctx,
+                &typ,
+                pattern,
+                scope,
+                spec.pos,
+                spec.ori.clone(),
+            )
+            .with_context(|| format!("at {}", spec.pos))?;
             (node, pattern, typ)
         };
         if pattern.is_refutable() {
@@ -160,10 +174,17 @@ impl Ref {
         match ctx.env.lookup_bind(&scope.lexical, name) {
             None => bail!("at {} {name} not defined", spec.pos),
             Some((_, bind)) => {
-                ctx.rt.ref_var(bind.id, top_id);
+                let bind_id = bind.id;
                 let typ = bind.typ.clone();
+                ctx.references.push(crate::ReferenceSite {
+                    pos: spec.pos,
+                    ori: spec.ori.clone(),
+                    name: name.clone(),
+                    bind_id,
+                });
+                ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);
-                Ok(Box::new(Self { spec, typ, id: bind.id, top_id }))
+                Ok(Box::new(Self { spec, typ, id: bind_id, top_id }))
             }
         }
     }

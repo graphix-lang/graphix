@@ -546,6 +546,12 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             None => bail!("at {} {name} is undefined", spec.pos),
             Some((_, env::Bind { id, .. })) => *id,
         };
+        ctx.references.push(crate::ReferenceSite {
+            pos: spec.pos,
+            ori: spec.ori.clone(),
+            name: name.clone(),
+            bind_id: id,
+        });
         let node = compile(ctx, flags, value.clone(), scope, top_id)?;
         Ok(Box::new(Self { spec, node, id }))
     }
@@ -612,6 +618,12 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             None => bail!("at {} {name} is undefined", spec.pos),
             Some((_, env::Bind { id, .. })) => *id,
         };
+        ctx.references.push(crate::ReferenceSite {
+            pos: spec.pos,
+            ori: spec.ori.clone(),
+            name: name.clone(),
+            bind_id: src_id,
+        });
         ctx.rt.ref_var(src_id, top_id);
         let rhs = Cached::new(compile(ctx, flags, value.clone(), scope, top_id)?);
         Ok(Box::new(Self { spec, rhs, src_id, target_id: None, top_id }))

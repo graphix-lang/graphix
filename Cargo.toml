@@ -44,6 +44,8 @@ handlebars = "6"
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
 indexmap = "2"
 log = "0.4"
+lsp-server = "0.7"
+lsp-types = "0.97"
 netidx-core = { version = "0.31.0", path = "../netidx/netidx-core" }
 netidx-derive = { version = "0.31.0", path = "../netidx/netidx-derive" }
 netidx-protocols = { version = "0.31.0", path = "../netidx/netidx-protocols" }
@@ -98,6 +100,10 @@ walkdir = "2.5"
 which = "8"
 arboard = "3"
 winit = { version = "0.30", features = ["rwh_06"] }
+tree-sitter = "0.24"
+tree-sitter-language = "0.1"
+tree-sitter-graphix = { version = "0.1.0", path = "ide/tree-sitter-graphix" }
+cc = "1"
 
 # iced GUI framework (sub-crates used directly for low-level control)
 iced_core = "0.14"
@@ -134,5 +140,6 @@ members = [
     "stdlib/graphix-package-pack",
     "stdlib/graphix-package-sqlite",
     "stdlib/graphix-package-hbs",
-    "stdlib/graphix-tests"
+    "stdlib/graphix-tests",
+    "ide/tree-sitter-graphix"
 ]
