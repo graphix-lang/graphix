@@ -192,11 +192,18 @@ types to construct the wrapper LambdaDef's signature and the inner
    builtin must fail gracefully (emit nothing) when the underlying state
    is gone. Sleep should clear the queue and reset pop_count.
 
-4. **Ordering across multi-arg updates.** When several args of a wrapper
-   call fire in the same cycle, one tuple is enqueued. When they fire in
-   different cycles, each partial update produces a fresh tuple snapshot
-   of the other args' currently-cached values. Document clearly: queueing
-   is keyed per-update-cycle, not per-arg-stream.
+4. **Ordering across multi-arg updates.** Queueing is per-cycle delta:
+   each cycle, the wrapper captures only the args that actually fired
+   that cycle as a `Vec<(BindId, Value)>`, queues that delta, and on
+   pop re-fires only those bids. Args that did not fire in the
+   originating cycle are not re-fired on pop. This preserves callsite
+   semantics — the wrapped fn is unable to observe queueing. In
+   particular, a wrapped fn with a trigger/clock arg (`tick ~ x`) will
+   only emit when its trigger arg actually fires, both with and
+   without queueing, and a partial update (one arg firing alone) does
+   not produce a spurious "all args fired" event for the wrapped fn.
+   See `queuefn_delta_per_cycle` and `queuefn_trigger_arg` in
+   `graphix-tests`.
 
 5. **Concurrent in-flight invocations.** Already noted — interleaved
    outputs are accepted semantics, not a bug.
@@ -248,8 +255,21 @@ on top of the existing `queue` builtin.
 ### Open follow-ups
 - [ ] Sleep/delete cleanup for wrappers — current impl only cleans the
   queuefn node's `fid`. Wrapper apply impls clean their own `pred`.
-- [ ] Documented gotcha: queueing-by-update-cycle vs by-arg-stream
-  (already captured in this doc; needs to make it into the book chapter).
 - [ ] Book chapter — likely under core queueing docs alongside `queue`.
-- [ ] Language tests in `graphix-tests` for the cases covered by manual
-  smoke tests above.
+
+### Resolved (2026-04-29 review)
+- Per-cycle delta semantics: replaced the original "snapshot all
+  cached args on each push" approach with a delta model where each
+  queue entry holds only the `(BindId, Value)` pairs that actually
+  fired that cycle. Pops now re-fire only the originating bids, so
+  the wrapped fn sees exactly the same per-cycle arg pattern it
+  would see without queueing. Added `queuefn_trigger_arg`,
+  `queuefn_trigger_before_fn`, and `queuefn_delta_per_cycle`
+  language tests covering trigger-style args, banking pop_count,
+  and the asymmetric-fires case.
+- Container types: `QueueEntry.updates` and the per-cycle delta in
+  `WrapperApply` are `LPooled<Vec<(BindId, Value)>>`; arg_bids is
+  `Arc<[BindId]>` (set once at wrapper construction).
+- Shared state: `triomphe::Arc<Mutex<QueueState>>` (no Weak needed,
+  no cycles). `std::sync::Arc` is still required for the `InitFn`
+  closure since that's what the trait alias demands.

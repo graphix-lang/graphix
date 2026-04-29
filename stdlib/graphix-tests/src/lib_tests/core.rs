@@ -443,8 +443,100 @@ run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
     }
 });
 
-// CR estokes: need a queuefn test that tests the trigger arriving before the fn
-// is called incrementing pop_cnt
+// Trigger arriving before any wrapper invocations should bank pop_count, so
+// later calls dispatch immediately rather than queueing.
+const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
+{
+  // Three triggers arrive on init via array::iter — they bank pop_count
+  // (queue is empty at each tick) so subsequent calls dispatch immediately.
+  let trigs: Any = array::iter([null, null, null]);
+  let qf = queuefn(#trigger: trigs, |x: i64| -> i64 x * 10);
+  let xs = array::iter([1, 2, 3]);
+  array::group(qf(xs), |n, _| n == 3)
+}
+"#;
+
+run!(
+    queuefn_trigger_before_fn,
+    QUEUEFN_TRIGGER_BEFORE_FN,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [Value::I64(10), Value::I64(20), Value::I64(30)] => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);
+
+// Verify a wrapped fn with a trigger-style arg (`tick ~ x + 1000`) is not
+// fooled by queueing: each tick/x pair emits exactly once, no spurious
+// emissions when one of the two fires alone.
+const QUEUEFN_TRIGGER_ARG: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(
+    #trigger: feedback,
+    |#tick: Any, x: i64| -> i64 tick ~ x + 1000
+  );
+  let ticks: Any = array::iter([null, null, null]);
+  let xs = array::iter([10, 20, 30]);
+  let out = qf(#tick: ticks, xs);
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(
+    queuefn_trigger_arg,
+    QUEUEFN_TRIGGER_ARG,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [Value::I64(1010), Value::I64(1020), Value::I64(1030)] => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);
+
+// Verify the per-cycle delta semantics. Wrapped fn only emits when its tick
+// arg fires (`tick ~ x + 1000`). Two ticks pair with two of three x values;
+// the third x fires alone and gets queued without a tick. On pop, NEW impl
+// sets only bid_x; pred sees x without a fresh tick, so no spurious emit.
+// Total emits should be 2. (Old impl re-fires a cached tick on every pop and
+// would emit a third spurious 1030.) After a delay, sample the count.
+const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
+{
+  use sys;
+  let feedback: Any = never();
+  let qf = queuefn(
+    #trigger: feedback,
+    |#tick: Any, x: i64| -> i64 tick ~ x + 1000
+  );
+  let ticks: Any = array::iter([null, null]);
+  let xs = array::iter([10, 20, 30]);
+  let out = qf(#tick: ticks, xs);
+  feedback <- out;
+  let count = 0;
+  count <- out ~ count + 1;
+  let done: Any = sys::time::timer(duration:200.ms, false);
+  done ~ count
+}
+"#;
+
+run!(
+    queuefn_delta_per_cycle,
+    QUEUEFN_DELTA_PER_CYCLE,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::I64(2)) => true,
+            _ => false,
+        }
+    }
+);
 
 const COUNT: &str = r#"
 {

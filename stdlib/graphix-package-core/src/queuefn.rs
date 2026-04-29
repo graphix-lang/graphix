@@ -11,19 +11,18 @@ use graphix_compiler::{
 };
 use netidx::subscriber::Value;
 use parking_lot::Mutex;
-use smallvec::SmallVec;
+use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug, marker::PhantomData, sync::Arc as SArc};
 use triomphe::Arc;
 
-// CR estokes: LPool these smallvecs, functions often have an unpredictable
-// number of arguments and the top end is more than we'd want to SmallVec
 #[derive(Debug)]
 struct QueueEntry {
-    /// Per-call-site arg bindings. When this entry is dispatched, the queuefn
-    /// node writes the args into these bindings via `ctx.rt.set_var`, which
-    /// causes the call site's `pred` to fire on the next cycle.
-    arg_bids: SmallVec<[BindId; 4]>,
-    args: SmallVec<[Value; 4]>,
+    /// The (BindId, Value) pairs for the args that fired in the originating
+    /// cycle. On dispatch, only these bids are written via `ctx.rt.set_var`;
+    /// args that did not fire then are not re-fired now. This matches normal
+    /// call site semantics where pred sees only the args that actually
+    /// updated this cycle.
+    updates: LPooled<Vec<(BindId, Value)>>,
 }
 
 #[derive(Debug, Default)]
@@ -51,10 +50,8 @@ impl QueueState {
     }
 }
 
-// CR estokes: Why an SArc, do we need a weak reference to this?
-type StateRef = SArc<Mutex<QueueState>>;
+type StateRef = Arc<Mutex<QueueState>>;
 
-// CR estokes: SmallVec -> LPooled<Vec>
 /// Per-call-site Apply impl for the wrapper lambda. Each invocation of the
 /// wrapper at a user call site goes through this. Push/pop coordination is
 /// done via `state` shared with the owning `QueueFn` node.
@@ -62,32 +59,11 @@ type StateRef = SArc<Mutex<QueueState>>;
 struct WrapperApply<R: Rt, E: UserEvent> {
     state: StateRef,
     /// One bind per fn arg, owned by this call site. `pred` references these
-    /// to read the args at invocation time.
-    arg_bids: SmallVec<[BindId; 4]>,
+    /// to read the args at invocation time. Indexed positionally (`arg_bids[i]`
+    /// corresponds to `from[i]`).
+    arg_bids: Arc<[BindId]>,
     /// Compiled call to `f` using `arg_bids` as inputs.
     pred: Node<R, E>,
-    /// Most-recently-seen value of each user-supplied arg expression. Used
-    /// to assemble a complete arg tuple even when args fire in different
-    /// cycles.
-    // CR estokes: My instinct is that queuefn shouldn't change the semantics vs
-    // callsite, and caching the args and waiting to update until we have them
-    // all is a fundamental change in semantics. Moreover it creates complex
-    // semantics for the user to know, because once we've accumulated a copy of
-    // all the args their function will be presented with spurious updates for
-    // args that didn't update, and depending on the semantics of the function
-    // they are wrapping that might matter a lot.
-    //
-    // consider for example queueing a function with a #trigger or #clock
-    // argument, it will totally break.
-    //
-    // So IMHO the goal should be that the function we are queueing should not
-    // be able to observe that it's being queued, the timing and structure of the
-    // arguments we pass should be exactly the same as if it wasn't queued, except
-    // for the fact that arguments are only released on queuefn's trigger.
-    //
-    // We should add a function with a trigger or a clock to the queuefn test
-    // suite and ensure it behaves correctly.
-    cached_args: SmallVec<[Option<Value>; 4]>,
     typ: Arc<FnType>,
 }
 
@@ -98,35 +74,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        let mut any_arg_fired = false;
+        let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
             if let Some(v) = n.update(ctx, event) {
-                if i < self.cached_args.len() {
-                    self.cached_args[i] = Some(v);
+                if let Some(bid) = self.arg_bids.get(i) {
+                    delta.push((*bid, v));
                 }
-                any_arg_fired = true;
             }
         }
-        if any_arg_fired && self.cached_args.iter().all(|s| s.is_some()) {
+        if !delta.is_empty() {
             let count_write = {
                 let mut s = self.state.lock();
                 if s.pop_count > 0 {
                     s.pop_count -= 1;
                     drop(s);
-                    for (bid, slot) in self.arg_bids.iter().zip(self.cached_args.iter()) {
-                        if let Some(v) = slot {
-                            ctx.cached.insert(*bid, v.clone());
-                            event.variables.insert(*bid, v.clone());
-                        }
+                    for (bid, v) in delta.drain(..) {
+                        ctx.cached.insert(bid, v.clone());
+                        event.variables.insert(bid, v);
                     }
                     None
                 } else {
-                    let args: SmallVec<[Value; 4]> =
-                        self.cached_args.iter().filter_map(|s| s.clone()).collect();
-                    // CR estokes: Can arg_bids ever change? If so probably only
-                    // rarely, good candidate for an Arc
-                    s.queue
-                        .push_back(QueueEntry { arg_bids: self.arg_bids.clone(), args });
+                    s.queue.push_back(QueueEntry { updates: delta });
                     let depth = s.depth();
                     if let Some(bid) = s.count_ref {
                         if depth != s.last_written_depth {
@@ -170,9 +138,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.sleep(ctx);
-        for slot in self.cached_args.iter_mut() {
-            *slot = None;
-        }
     }
 }
 
@@ -217,7 +182,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
         ctx.rt.ref_var(fid, top_id);
         let ftyp = resolved.and_then(|r| extract_fn_arg_type(r, 2));
         Ok(Box::new(Self {
-            state: SArc::new(Mutex::new(QueueState::new())),
+            state: Arc::new(Mutex::new(QueueState::new())),
             fid,
             ftyp,
             lambda: None,
@@ -358,9 +323,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                     }
                 }
             };
-            if let Some(entry) = popped {
-                for (bid, v) in entry.arg_bids.iter().zip(entry.args.into_iter()) {
-                    ctx.rt.set_var(*bid, v);
+            if let Some(mut entry) = popped {
+                for (bid, v) in entry.updates.drain(..) {
+                    ctx.rt.set_var(bid, v);
                 }
             }
         }
@@ -405,14 +370,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 fn build_wrapper_apply<R: Rt, E: UserEvent>(
     scope: &Scope,
     ctx: &mut ExecCtx<R, E>,
-    args: &mut [Node<R, E>],
+    _args: &mut [Node<R, E>],
     state: StateRef,
     fid: BindId,
     ftyp: Arc<FnType>,
     tid: ExprId,
 ) -> Result<Box<dyn Apply<R, E>>> {
     let scope = scope.append(&format_compact!("qfn{}", LambdaId::new().inner()));
-    let mut arg_bids: SmallVec<[BindId; 4]> = SmallVec::new();
+    let mut arg_bids: Vec<BindId> = Vec::with_capacity(ftyp.args.len());
     let mut arg_nodes: Vec<Node<R, E>> = Vec::with_capacity(ftyp.args.len());
     for (i, a) in ftyp.args.iter().enumerate() {
         let (id, n) = genn::bind(
@@ -427,8 +392,7 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
     }
     let fnode = genn::reference(ctx, fid, Type::Fn(ftyp.clone()), tid);
     let pred = genn::apply(fnode, scope, arg_nodes, &ftyp, tid);
-    let cached_args: SmallVec<[Option<Value>; 4]> = args.iter().map(|_| None).collect();
-    Ok(Box::new(WrapperApply { state, arg_bids, pred, cached_args, typ: ftyp }))
+    Ok(Box::new(WrapperApply { state, arg_bids: arg_bids.into(), pred, typ: ftyp }))
 }
 
 /// Extract the FnType from `ft.args[idx]`, expanding refs if needed.
