@@ -502,6 +502,48 @@ run!(
     }
 );
 
+// The point of queuefn is to protect an async-side-effecting fn from being
+// re-entered before its current invocation has produced a result. This test
+// puts an actual netidx subscription inside the wrapped lambda: each call
+// subscribes to a different path. Without queuefn, all three iter values
+// would fire same-cycle and three subscribes would race; with queuefn they
+// serialize via feedback (each subscription's value triggers the next pop).
+const QUEUEFN_NET_SUBSCRIBE: &str = r#"
+{
+  use sys;
+  sys::net::publish("/local/q_async/a", 100);
+  sys::net::publish("/local/q_async/b", 200);
+  sys::net::publish("/local/q_async/c", 300);
+  let feedback: Any = never();
+  let qf = queuefn(
+    #trigger: feedback,
+    |path: string| -> i64 sys::net::subscribe(path)?
+  );
+  let p: string = array::iter([
+    "/local/q_async/a",
+    "/local/q_async/b",
+    "/local/q_async/c"
+  ]);
+  let out = qf(p);
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(
+    queuefn_net_subscribe,
+    QUEUEFN_NET_SUBSCRIBE,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);
+
 // Verify the per-cycle delta semantics. Wrapped fn only emits when its tick
 // arg fires (`tick ~ x + 1000`). Two ticks pair with two of three x values;
 // the third x fires alone and gets queued without a tick. On pop, NEW impl
