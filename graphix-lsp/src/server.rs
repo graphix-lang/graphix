@@ -14,8 +14,8 @@ use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, HoverProviderCapability,
-    InitializeParams, OneOf, PublishDiagnosticsParams, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    InitializeParams, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,9 +36,22 @@ where
     Ok(())
 }
 
-fn server_capabilities() -> ServerCapabilities {
+/// Pick a position encoding the client supports. Our cursor logic
+/// counts Unicode scalars (Rust `char`s), which matches UTF-32
+/// exactly. UTF-16 (the LSP default) only diverges from char count on
+/// non-BMP characters (emoji, some math symbols), so when the client
+/// can speak UTF-32 we prefer it; otherwise we fall through and accept
+/// the default UTF-16, knowing positions on lines containing non-BMP
+/// chars may be off by a column.
+fn select_position_encoding(init: &InitializeParams) -> Option<PositionEncodingKind> {
+    let offered = init.capabilities.general.as_ref()?.position_encodings.as_ref()?;
+    offered.iter().find(|e| **e == PositionEncodingKind::UTF32).cloned()
+}
+
+fn server_capabilities(position_encoding: Option<PositionEncodingKind>) -> ServerCapabilities {
     use lsp_types::{SaveOptions, TextDocumentSyncOptions};
     ServerCapabilities {
+        position_encoding,
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -63,9 +76,25 @@ fn run_server<F>(connection: Connection, make_backend: F) -> Result<()>
 where
     F: FnOnce(&InitializeParams) -> Result<Arc<dyn LspBackend>>,
 {
-    let init_value =
-        connection.initialize(serde_json::to_value(server_capabilities())?)?;
+    // Two-phase init so we can read the client's `positionEncodings`
+    // list before committing to one in our own capabilities response.
+    let (req_id, init_value) = connection.initialize_start()?;
     let init_params: InitializeParams = serde_json::from_value(init_value)?;
+    let encoding = select_position_encoding(&init_params);
+    info!(
+        "negotiated position encoding: {}",
+        encoding
+            .as_ref()
+            .map(|e| e.as_str())
+            .unwrap_or("utf-16 (default)"),
+    );
+    connection.initialize_finish(
+        req_id,
+        serde_json::to_value(lsp_types::InitializeResult {
+            capabilities: server_capabilities(encoding),
+            server_info: None,
+        })?,
+    )?;
     let backend = make_backend(&init_params)?;
     info!("graphix lsp server initialized");
     let workspace_roots = workspace_roots_from(&init_params);

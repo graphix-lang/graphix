@@ -5,8 +5,10 @@ use graphix_compiler::{
     expr::{ModPath, Source},
     typ::Type,
     ModuleRefSite, ReferenceSite, ScopeMapEntry, SourcePosition, TypeRefSite,
+    MODULE_REF_SITE_POOL, REFERENCE_SITE_POOL, SCOPE_MAP_ENTRY_POOL, TYPE_REF_SITE_POOL,
 };
 use lsp_types::Uri;
+use poolshark::{global::GPooled, local::LPooled};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -26,14 +28,14 @@ pub struct Document {
     /// Resolved name reference sites observed during the most
     /// recent successful check, used to answer
     /// `textDocument/references` and prepareRename.
-    pub references: Vec<ReferenceSite>,
+    pub references: GPooled<Vec<ReferenceSite>>,
     /// Module reference sites (`use foo;`, `mod foo;`).
-    pub module_references: Vec<ModuleRefSite>,
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
     /// Type-name reference sites (uses of `Foo` in type positions).
-    pub type_references: Vec<TypeRefSite>,
+    pub type_references: GPooled<Vec<TypeRefSite>>,
     /// Per-Expr scope map from the latest compile. Used to answer
     /// cursor → scope queries.
-    pub scope_map: Vec<ScopeMapEntry>,
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
 }
 
 impl Document {
@@ -42,10 +44,10 @@ impl Document {
             version,
             text,
             env: None,
-            references: Vec::new(),
-            module_references: Vec::new(),
-            type_references: Vec::new(),
-            scope_map: Vec::new(),
+            references: REFERENCE_SITE_POOL.take(),
+            module_references: MODULE_REF_SITE_POOL.take(),
+            type_references: TYPE_REF_SITE_POOL.take(),
+            scope_map: SCOPE_MAP_ENTRY_POOL.take(),
         }
     }
 }
@@ -54,10 +56,10 @@ impl Document {
 /// but doesn't depend on graphix-rt directly.
 pub struct TypecheckResult {
     pub env: Env,
-    pub references: Vec<ReferenceSite>,
-    pub module_references: Vec<ModuleRefSite>,
-    pub type_references: Vec<TypeRefSite>,
-    pub scope_map: Vec<ScopeMapEntry>,
+    pub references: GPooled<Vec<ReferenceSite>>,
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
+    pub type_references: GPooled<Vec<TypeRefSite>>,
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -91,13 +93,12 @@ pub trait LspBackend: Send + Sync + 'static {
 /// One project's last-known typecheck result, keyed by the project
 /// index in `ServerState.workspace.projects`. `None` while we
 /// haven't run the project compile yet (or it failed).
-#[derive(Debug, Clone)]
 pub struct ProjectResult {
     pub env: Env,
-    pub references: Vec<ReferenceSite>,
-    pub module_references: Vec<ModuleRefSite>,
-    pub type_references: Vec<TypeRefSite>,
-    pub scope_map: Vec<ScopeMapEntry>,
+    pub references: GPooled<Vec<ReferenceSite>>,
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
+    pub type_references: GPooled<Vec<TypeRefSite>>,
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
 }
 
 /// Core language intelligence state.
@@ -277,10 +278,10 @@ impl ServerState {
             Err(e) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = None;
-                    d.references.clear();
-                    d.module_references.clear();
-                    d.type_references.clear();
-                    d.scope_map.clear();
+                    d.references = REFERENCE_SITE_POOL.take();
+                    d.module_references = MODULE_REF_SITE_POOL.take();
+                    d.type_references = TYPE_REF_SITE_POOL.take();
+                    d.scope_map = SCOPE_MAP_ENTRY_POOL.take();
                 }
                 error_to_diagnostics(&e, &text)
             }
@@ -309,13 +310,13 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(uri) {
-            for e in &doc.scope_map {
+            for e in doc.scope_map.iter() {
                 consider(e);
             }
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for e in &r.scope_map {
+                for e in r.scope_map.iter() {
                     consider(e);
                 }
             }
@@ -509,12 +510,12 @@ impl ServerState {
                 }
             }
         }
-        locs.sort_by_key(|l| {
-            (
-                l.uri.as_str().to_string(),
-                l.range.start.line,
-                l.range.start.character,
-            )
+        locs.sort_by(|a, b| {
+            a.uri
+                .as_str()
+                .cmp(b.uri.as_str())
+                .then(a.range.start.line.cmp(&b.range.start.line))
+                .then(a.range.start.character.cmp(&b.range.start.character))
         });
         locs.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
         locs
@@ -557,8 +558,8 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<ModPath> {
         let doc = self.documents.get(uri)?;
-        for r in &doc.references {
-            if position_in_ref(position, &doc.text, r) {
+        for r in doc.references.iter() {
+            if position_in_ref(position, r) {
                 return Some(r.name.clone());
             }
         }
@@ -578,7 +579,7 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<ModPath> {
         let doc = self.documents.get(uri)?;
-        for m in &doc.module_references {
+        for m in doc.module_references.iter() {
             if position_in_module_ref(position, m) {
                 return Some(m.canonical.clone());
             }
@@ -600,7 +601,7 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for m in &doc.module_references {
+            for m in doc.module_references.iter() {
                 if &m.canonical == canonical {
                     push(m, out);
                 }
@@ -608,7 +609,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for m in &r.module_references {
+                for m in r.module_references.iter() {
                     if &m.canonical == canonical {
                         push(m, out);
                     }
@@ -625,14 +626,14 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<(ModPath, ModPath)> {
         let doc = self.documents.get(uri)?;
-        for t in &doc.type_references {
+        for t in doc.type_references.iter() {
             if position_in_type_ref(position, t) {
                 return Some((t.canonical_scope.clone(), t.name.clone()));
             }
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in &r.type_references {
+                for t in r.type_references.iter() {
                     if origin_matches_uri(&t.ori, uri)
                         && position_in_type_ref(position, t)
                     {
@@ -657,7 +658,7 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for t in &doc.type_references {
+            for t in doc.type_references.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
                     push(t, out);
                 }
@@ -665,7 +666,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in &r.type_references {
+                for t in r.type_references.iter() {
                     if &t.canonical_scope == canonical_scope && &t.name == name {
                         push(t, out);
                     }
@@ -686,7 +687,7 @@ impl ServerState {
     ) -> Option<lsp_types::Location> {
         let take = |t: &TypeRefSite| ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for t in &doc.type_references {
+            for t in doc.type_references.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
                     return take(t);
                 }
@@ -694,7 +695,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in &r.type_references {
+                for t in r.type_references.iter() {
                     if &t.canonical_scope == canonical_scope && &t.name == name {
                         return take(t);
                     }
@@ -712,7 +713,7 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
         let doc = self.documents.get(uri)?;
-        for t in &doc.type_references {
+        for t in doc.type_references.iter() {
             if position_in_type_ref(position, t) {
                 return ref_to_location(uri, &t.def_ori, t.def_pos);
             }
@@ -720,7 +721,7 @@ impl ServerState {
         // Also try any project's type_references (cross-file).
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in &r.type_references {
+                for t in r.type_references.iter() {
                     // Match by file ori source equality on the use side
                     // (the use site lives in this URI).
                     if origin_matches_uri(&t.ori, uri)
@@ -740,8 +741,8 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<(SourcePosition, graphix_compiler::expr::Origin)> {
         let doc = self.documents.get(uri)?;
-        for r in &doc.references {
-            if position_in_ref(position, &doc.text, r) {
+        for r in doc.references.iter() {
+            if position_in_ref(position, r) {
                 return Some((r.def_pos, graphix_compiler::expr::Origin::clone(&r.def_ori)));
             }
         }
@@ -771,15 +772,16 @@ impl ServerState {
         // canonical path that DOES have a def_ori — likely the
         // `mod foo;` declaration in the project's main file.
         let canonical = &target.canonical;
-        let mut search: Vec<&ModuleRefSite> = Vec::new();
-        search.extend(&doc.module_references);
+        let mut search: LPooled<Vec<&ModuleRefSite>> = LPooled::take();
+        search.extend(doc.module_references.iter());
         for r in &self.project_results {
             if let Some(r) = r {
-                search.extend(&r.module_references);
+                search.extend(r.module_references.iter());
             }
         }
         search
-            .into_iter()
+            .iter()
+            .copied()
             .find(|m| &m.canonical == canonical && m.def_ori.is_some())
             .and_then(|m| {
                 module_origin_to_location(uri, m.def_ori.as_ref().unwrap())
@@ -950,24 +952,35 @@ fn project_error_to_diagnostic(
     (uri, diag)
 }
 
+/// Char count of `name` as it would be rendered by `Display` (e.g.
+/// `array::map` → 10), computed without allocating a String.
+fn modpath_display_chars(name: &ModPath) -> u32 {
+    use netidx::path::Path as NPath;
+    use std::borrow::Borrow;
+    let s: &str = name.borrow();
+    let levels = NPath::levels(s);
+    let parts: usize = NPath::parts(s).map(|p| p.chars().count()).sum();
+    (parts + 2 * levels.saturating_sub(1)) as u32
+}
+
 /// Check whether a 0-indexed LSP position falls inside a reference
 /// site's textual span. We use the printed length of the name as a
 /// rough span — `array::map` covers 10 characters from `pos`.
-fn position_in_ref(pos: lsp_types::Position, _text: &str, r: &ReferenceSite) -> bool {
-    span_covers(pos, r.pos, r.name.to_string().chars().count() as u32)
+fn position_in_ref(pos: lsp_types::Position, r: &ReferenceSite) -> bool {
+    span_covers(pos, r.pos, modpath_display_chars(&r.name))
 }
 
 /// Same idea for a module reference. The pos points at the `mod` or
 /// `use` keyword, so we extend the span to cover the keyword + name.
 fn position_in_module_ref(pos: lsp_types::Position, m: &ModuleRefSite) -> bool {
     // The keyword is "use" or "mod" (3 chars) + 1 space + name length.
-    let name_len = m.name.to_string().chars().count() as u32;
-    span_covers(pos, m.pos, 4 + name_len)
+    // Falls down on `use   foo;` (multi-space) — pessimistic, not wrong.
+    span_covers(pos, m.pos, 4 + modpath_display_chars(&m.name))
 }
 
 /// Type references record the position of the type name itself.
 fn position_in_type_ref(pos: lsp_types::Position, t: &TypeRefSite) -> bool {
-    span_covers(pos, t.pos, t.name.to_string().chars().count() as u32)
+    span_covers(pos, t.pos, modpath_display_chars(&t.name))
 }
 
 /// True if the given Origin's source path matches the requesting URI.
@@ -1076,7 +1089,7 @@ fn lookup_matching_via_by_id(
     let part_str: &str = part.as_ref();
     let prefix_basename = part_str.trim_start_matches('/');
     let mut out = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     for (scope_path, defs) in &env.ide_binds {
         let bind_scope: &str = scope_path.as_ref();
         let visible = cursor_scope_str == bind_scope
@@ -1091,7 +1104,7 @@ fn lookup_matching_via_by_id(
             if !prefix_basename.is_empty() && !name.starts_with(prefix_basename) {
                 continue;
             }
-            if seen.insert(name.to_string()) {
+            if seen.insert(name.as_str()) {
                 out.push((name.clone(), bind.clone()));
             }
         }
@@ -1111,9 +1124,9 @@ fn is_pathsep(chars: &[char], i: usize) -> bool {
 /// Return the full path-like token at `position`, including any `::`
 /// separators (e.g. `array::map`).
 fn get_word_at_position(text: &str, position: lsp_types::Position) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let chars: Vec<char> = line.chars().collect();
+    let line = text.lines().nth(position.line as usize)?;
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(line.chars());
     let col = (position.character as usize).min(chars.len());
     let mut start = col;
     let mut end = col;
@@ -1145,9 +1158,9 @@ fn get_word_at_position(text: &str, position: lsp_types::Position) -> Option<Str
 /// cursor, used as the completion query. Empty if the cursor isn't right
 /// after an identifier or `::`.
 fn token_before_cursor(text: &str, position: lsp_types::Position) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let chars: Vec<char> = line.chars().collect();
+    let line = text.lines().nth(position.line as usize)?;
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(line.chars());
     let col = (position.character as usize).min(chars.len());
     let mut start = col;
     while start > 0 {

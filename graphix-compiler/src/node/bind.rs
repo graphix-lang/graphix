@@ -178,14 +178,16 @@ impl Ref {
                 let typ = bind.typ.clone();
                 let def_pos = bind.pos;
                 let def_ori = bind.ori.clone();
-                ctx.references.push(crate::ReferenceSite {
-                    pos: spec.pos,
-                    ori: spec.ori.clone(),
-                    name: name.clone(),
-                    bind_id,
-                    def_pos,
-                    def_ori,
-                });
+                if ctx.env.lsp_mode {
+                    ctx.references.push(crate::ReferenceSite {
+                        pos: spec.pos,
+                        ori: spec.ori.clone(),
+                        name: name.clone(),
+                        bind_id,
+                        def_pos,
+                        def_ori,
+                    });
+                }
                 ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);
                 Ok(Box::new(Self { spec, typ, id: bind_id, top_id }))

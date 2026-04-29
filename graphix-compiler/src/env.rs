@@ -74,8 +74,12 @@ pub struct Env {
     /// → scope completion: it exposes lambda parameters and other
     /// short-lived bindings that `binds` drops at scope teardown
     /// and `unbind_variable` removes from `by_id`. Not consulted by
-    /// the compiler.
+    /// the compiler. Only populated when `lsp_mode` is set.
     pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
+    /// True iff the compiler should populate IDE side-channels
+    /// (`ide_binds`, `TYPE_REF_SINK`, etc.). Toggled by the LSP
+    /// runtime; normal compiles leave it unset and pay no IDE cost.
+    pub lsp_mode: bool,
 }
 
 impl Env {
@@ -89,6 +93,7 @@ impl Env {
             typedefs,
             catch,
             ide_binds,
+            lsp_mode: _,
         } = self;
         *by_id = Map::new();
         *binds = Map::new();
@@ -115,6 +120,7 @@ impl Env {
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             ide_binds: self.ide_binds.clone(),
+            lsp_mode: self.lsp_mode,
         }
     }
 
@@ -128,6 +134,7 @@ impl Env {
             catch: self.catch.clone(),
             ide_binds: self.ide_binds.clone(),
             byref_chain: self.byref_chain.clone(),
+            lsp_mode: self.lsp_mode,
         }
     }
 
@@ -375,13 +382,15 @@ impl Env {
                 bail!("unused type parameter {dec} in definition of {name}")
             }
         }
-        // Capture every type-name occurrence inside the typedef
-        // body for IDE find-references. This catches uses that
-        // never go through `Type::lookup_ref` directly (e.g.
-        // `Foo` inside `type Pair = (Foo, Foo)` — typedef bodies
-        // are stored, not type-checked against anything). Done
-        // before we mutably borrow `self.typedefs` below.
-        typ.record_ide_refs(self, scope);
+        if self.lsp_mode {
+            // Capture every type-name occurrence inside the typedef
+            // body for IDE find-references. This catches uses that
+            // never go through `Type::lookup_ref` directly (e.g.
+            // `Foo` inside `type Pair = (Foo, Foo)` — typedef bodies
+            // are stored, not type-checked against anything). Done
+            // before we mutably borrow `self.typedefs` below.
+            typ.record_ide_refs(self, scope);
+        }
         let defs = self.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(name.into(), TypeDef { params, typ, doc, pos, ori });
         Ok(())
@@ -427,13 +436,11 @@ impl Env {
             pos,
             ori,
         });
-        // IDE side-channel: an append-only mirror so cursor → scope
-        // completion can see lambda parameters and other short-lived
-        // bindings the runtime cleans up. Cloned on insert; never
-        // removed.
-        let ide_clone = bind.clone();
-        let ide_defs = self.ide_binds.get_or_default_cow(scope.clone());
-        ide_defs.insert_cow(CompactString::from(name), ide_clone);
+        if self.lsp_mode {
+            let ide_clone = bind.clone();
+            let ide_defs = self.ide_binds.get_or_default_cow(scope.clone());
+            ide_defs.insert_cow(CompactString::from(name), ide_clone);
+        }
         self.by_id.get_mut_cow(id).unwrap()
     }
 

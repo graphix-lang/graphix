@@ -225,22 +225,13 @@ fn bfs_from_root(
         // Resolve every external `mod foo` declared in either the
         // .gx or its .gxi sibling and queue the targets.
         let to_walk = [&file, &file.with_extension("gxi"), &file.with_extension("gx")];
-        let mut seen_decls: Vec<&ArcStr> = Vec::new();
-        let mut decl_storage: Vec<ArcStr> = Vec::new();
         for f in to_walk {
-            if let Some(wf) = files.get(f) {
-                for name in &wf.mod_decls {
-                    decl_storage.push(name.clone());
+            let Some(wf) = files.get(f) else { continue };
+            for name in &wf.mod_decls {
+                if let Some(target) = resolve_mod(&base, &rel, name, files) {
+                    let new_rel = rel.join(name.as_str());
+                    stack.push((target, new_rel));
                 }
-            }
-        }
-        for name in &decl_storage {
-            seen_decls.push(name);
-        }
-        for name in &decl_storage {
-            if let Some(target) = resolve_mod(&base, &rel, name, files) {
-                let new_rel = rel.join(name.as_str());
-                stack.push((target, new_rel));
             }
         }
     }

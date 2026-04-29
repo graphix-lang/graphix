@@ -354,9 +354,23 @@ pub struct TypeRefSite {
     pub def_ori: Arc<expr::Origin>,
 }
 
+/// Pools backing the IDE side-channel collections. `GPooled` so the
+/// buffers can return to the same pool after crossing the
+/// runtime-task → LSP-thread boundary as part of `CheckResult`. Sized
+/// generously since the LSP recompiles on every keystroke and these
+/// can grow into the tens of thousands of entries on large modules.
+pub static REFERENCE_SITE_POOL: LazyLock<Pool<Vec<ReferenceSite>>> =
+    LazyLock::new(|| Pool::new(64, 65536));
+pub static MODULE_REF_SITE_POOL: LazyLock<Pool<Vec<ModuleRefSite>>> =
+    LazyLock::new(|| Pool::new(64, 65536));
+pub static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
+    LazyLock::new(|| Pool::new(64, 65536));
+pub static SCOPE_MAP_ENTRY_POOL: LazyLock<Pool<Vec<ScopeMapEntry>>> =
+    LazyLock::new(|| Pool::new(64, 65536));
+
 thread_local! {
-    static TYPE_REF_SINK: std::cell::RefCell<Vec<TypeRefSite>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static TYPE_REF_SINK: std::cell::RefCell<GPooled<Vec<TypeRefSite>>> =
+        std::cell::RefCell::new(TYPE_REF_SITE_POOL.take());
 }
 
 /// Push a `TypeRefSite` to the active thread-local sink. Called by
@@ -368,14 +382,18 @@ pub fn push_type_ref(site: TypeRefSite) {
     TYPE_REF_SINK.with(|s| s.borrow_mut().push(site));
 }
 
-pub fn take_type_refs() -> Vec<TypeRefSite> {
-    TYPE_REF_SINK.with(|s| std::mem::take(&mut *s.borrow_mut()))
+/// Drain the sink, replacing it with a fresh pooled vec from
+/// `TYPE_REF_SITE_POOL`. Use this rather than `mem::take` — `Default`
+/// for `GPooled` routes to the unsized thread-local registry, not our
+/// named pool.
+pub fn take_type_refs() -> GPooled<Vec<TypeRefSite>> {
+    TYPE_REF_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), TYPE_REF_SITE_POOL.take()))
 }
 
 /// Replace the sink with `prev`, returning whatever was already in
 /// the sink. Used by the runtime's check to scope the collection
 /// per check cycle.
-pub fn swap_type_refs(prev: Vec<TypeRefSite>) -> Vec<TypeRefSite> {
+pub fn swap_type_refs(prev: GPooled<Vec<TypeRefSite>>) -> GPooled<Vec<TypeRefSite>> {
     TYPE_REF_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), prev))
 }
 
@@ -853,16 +871,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
         Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
     /// Reference sites accumulated during compilation. Each is a
     /// textual occurrence of a name and the `BindId` it resolved to.
-    /// Use `references.swap()` (via `mem::take`) at compile boundaries
-    /// to scope collection per check/compile.
-    pub references: Vec<ReferenceSite>,
+    /// At compile boundaries, swap with a fresh `REFERENCE_SITE_POOL`
+    /// container via `mem::replace` (not `mem::take` — `Default`
+    /// routes to the unsized thread-local registry, not our named
+    /// pool). Only populated when `env.lsp_mode` is set.
+    pub references: GPooled<Vec<ReferenceSite>>,
     /// Module reference sites — `use foo;` and `mod foo;` mentions.
     /// Same scoping rules as `references`.
-    pub module_references: Vec<ModuleRefSite>,
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
     /// Per-compile scope map. `compile()` pushes one entry every
     /// time it's invoked, recording the scope it was called with.
     /// IDE tooling reads this to answer `cursor → scope` queries.
-    pub scope_map: Vec<ScopeMapEntry>,
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -892,9 +912,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             rt: user,
             lambda_defs: FxHashMap::default(),
             deferred_checks: Vec::new(),
-            references: Vec::new(),
-            module_references: Vec::new(),
-            scope_map: Vec::new(),
+            references: REFERENCE_SITE_POOL.take(),
+            module_references: MODULE_REF_SITE_POOL.take(),
+            scope_map: SCOPE_MAP_ENTRY_POOL.take(),
         })
     }
 

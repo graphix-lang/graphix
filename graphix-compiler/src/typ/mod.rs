@@ -232,15 +232,17 @@ impl Type {
                 // source (parser-populated pos/ori), record it so
                 // tooling can answer find-references / go-to-def on
                 // type names.
-                if let (Some(pos), Some(ori)) = (pos, ori) {
-                    crate::push_type_ref(crate::TypeRefSite {
-                        pos: *pos,
-                        ori: ori.clone(),
-                        name: name.clone(),
-                        canonical_scope,
-                        def_pos,
-                        def_ori,
-                    });
+                if env.lsp_mode {
+                    if let (Some(pos), Some(ori)) = (pos, ori) {
+                        crate::push_type_ref(crate::TypeRefSite {
+                            pos: *pos,
+                            ori: ori.clone(),
+                            name: name.clone(),
+                            canonical_scope,
+                            def_pos,
+                            def_ori,
+                        });
+                    }
                 }
                 let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
                 for ((tv, ct), arg) in def_params.iter().zip(params.iter()) {
@@ -260,6 +262,8 @@ impl Type {
     /// IDE side-channel. Used at typedef-registration time so
     /// references inside typedef bodies (which the type system
     /// never auto-derefs) still show up in find-references results.
+    /// Caller is responsible for gating on `env.lsp_mode`; this
+    /// method recurses unconditionally once entered.
     pub fn record_ide_refs(&self, env: &Env, fallback_scope: &ModPath) {
         match self {
             Type::Ref(tr) => {

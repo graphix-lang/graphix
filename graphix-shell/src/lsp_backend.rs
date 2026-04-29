@@ -64,6 +64,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<Arc<dyn LspBackend>> {
         .flags(BitFlags::from(flags))
         .root(res.root)
         .resolvers(resolvers)
+        .lsp_mode(true)
         .build()
         .context("building runtime config")?
         .start()

@@ -132,8 +132,10 @@ impl<X: GXExt> GX<X> {
             },
         };
         let event = Event::new(cfg.ctx.rt.ext.empty_event());
+        let mut ctx = cfg.ctx;
+        ctx.env.lsp_mode = cfg.lsp_mode;
         let mut t = Self {
-            ctx: cfg.ctx,
+            ctx,
             event,
             nodes: IndexMap::default(),
             callables: HashMap::default(),
@@ -439,16 +441,27 @@ impl<X: GXExt> GX<X> {
         resolver_override: Option<Vec<ModuleResolver>>,
     ) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
-        // Stash any references collected before this check so we can
-        // restore them — ReferenceSite is a side-channel for IDE
-        // tooling and we want each `check` to scope its own collection.
-        let prev_refs = std::mem::take(&mut self.ctx.references);
-        let prev_modrefs = std::mem::take(&mut self.ctx.module_references);
-        let prev_scopemap = std::mem::take(&mut self.ctx.scope_map);
-        // The compiler pushes `TypeRefSite`s to a thread-local during
-        // `Type::lookup_ref` deref; clear it for this check and stash
-        // anything that was already there.
-        let prev_typrefs = graphix_compiler::swap_type_refs(Vec::new());
+        // IDE side-channels: stash anything collected before this
+        // check so we can restore it after, scoping collection per
+        // call. When `lsp_mode` is unset these are always empty, but
+        // the swaps stay cheap (one pool fetch + pointer swap each).
+        // Don't use `mem::take` here — `GPooled::default` routes to
+        // poolshark's unsized thread-local registry, not our named
+        // sized pools.
+        let prev_refs = std::mem::replace(
+            &mut self.ctx.references,
+            graphix_compiler::REFERENCE_SITE_POOL.take(),
+        );
+        let prev_modrefs = std::mem::replace(
+            &mut self.ctx.module_references,
+            graphix_compiler::MODULE_REF_SITE_POOL.take(),
+        );
+        let prev_scopemap = std::mem::replace(
+            &mut self.ctx.scope_map,
+            graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
+        );
+        let prev_typrefs =
+            graphix_compiler::swap_type_refs(graphix_compiler::TYPE_REF_SITE_POOL.take());
         let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
             Some(v) => Arc::from(v),
             None => self.resolvers.clone(),
@@ -479,10 +492,19 @@ impl<X: GXExt> GX<X> {
             // Snapshot the env after a successful compile so the caller
             // can see any bindings/types the module would have introduced.
             let env = self.ctx.env.clone();
-            let references = std::mem::take(&mut self.ctx.references);
-            let module_references = std::mem::take(&mut self.ctx.module_references);
+            let references = std::mem::replace(
+                &mut self.ctx.references,
+                graphix_compiler::REFERENCE_SITE_POOL.take(),
+            );
+            let module_references = std::mem::replace(
+                &mut self.ctx.module_references,
+                graphix_compiler::MODULE_REF_SITE_POOL.take(),
+            );
             let type_references = graphix_compiler::take_type_refs();
-            let scope_map = std::mem::take(&mut self.ctx.scope_map);
+            let scope_map = std::mem::replace(
+                &mut self.ctx.scope_map,
+                graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
+            );
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
@@ -499,8 +521,6 @@ impl<X: GXExt> GX<X> {
         self.ctx.references = prev_refs;
         self.ctx.module_references = prev_modrefs;
         self.ctx.scope_map = prev_scopemap;
-        // Restore prior thread-local sink content (drops anything
-        // type system internals pushed during delete).
         graphix_compiler::swap_type_refs(prev_typrefs);
         res
     }

@@ -36,15 +36,17 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
-    // IDE side-channel: record the scope this compile descent was
-    // entered with. `compiler::compile` is the recursive dispatcher
-    // — every Expr in the source tree comes through here with the
-    // scope the compiler chose for it.
-    ctx.scope_map.push(crate::ScopeMapEntry {
-        pos: spec.pos,
-        ori: spec.ori.clone(),
-        scope: scope.clone(),
-    });
+    if ctx.env.lsp_mode {
+        // IDE side-channel: record the scope this compile descent
+        // was entered with. `compiler::compile` is the recursive
+        // dispatcher — every Expr in the source tree comes through
+        // here with the scope the compiler chose for it.
+        ctx.scope_map.push(crate::ScopeMapEntry {
+            pos: spec.pos,
+            ori: spec.ori.clone(),
+            scope: scope.clone(),
+        });
+    }
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
@@ -93,19 +95,21 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
             // the resolver, so their `ori` points at the file the
             // module body lives in — exactly what go-to-definition
             // wants.
-            let def_ori = match value {
-                ModuleKind::Resolved { exprs, .. } => {
-                    exprs.first().map(|e| e.ori.clone())
-                }
-                _ => None,
-            };
-            ctx.module_references.push(crate::ModuleRefSite {
-                pos: spec.pos,
-                ori: spec.ori.clone(),
-                name: crate::expr::ModPath::from([name.as_str()]),
-                canonical: scope.lexical.clone(),
-                def_ori,
-            });
+            if ctx.env.lsp_mode {
+                let def_ori = match value {
+                    ModuleKind::Resolved { exprs, .. } => {
+                        exprs.first().map(|e| e.ori.clone())
+                    }
+                    _ => None,
+                };
+                ctx.module_references.push(crate::ModuleRefSite {
+                    pos: spec.pos,
+                    ori: spec.ori.clone(),
+                    name: crate::expr::ModPath::from([name.as_str()]),
+                    canonical: scope.lexical.clone(),
+                    def_ori,
+                });
+            }
             match value {
                 ModuleKind::Unresolved { .. } => {
                     bail!("external modules are not allowed in this context")

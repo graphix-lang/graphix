@@ -143,14 +143,17 @@ pub struct CompRes<X: GXExt> {
 /// Result of a typecheck-only compile pass. Carries the env as it
 /// would be after the source was compiled, plus the set of resolved
 /// name references and module references encountered during
-/// compilation.
-#[derive(Debug, Clone)]
+/// compilation. The IDE-side collections are `GPooled` so the buffers
+/// return to the runtime-side named pools after crossing the LSP
+/// thread boundary, keeping the recompile-per-keystroke loop
+/// allocation-free in steady state.
+#[derive(Debug)]
 pub struct CheckResult {
     pub env: Env,
-    pub references: Vec<graphix_compiler::ReferenceSite>,
-    pub module_references: Vec<graphix_compiler::ModuleRefSite>,
-    pub type_references: Vec<graphix_compiler::TypeRefSite>,
-    pub scope_map: Vec<graphix_compiler::ScopeMapEntry>,
+    pub references: GPooled<Vec<graphix_compiler::ReferenceSite>>,
+    pub module_references: GPooled<Vec<graphix_compiler::ModuleRefSite>>,
+    pub type_references: GPooled<Vec<graphix_compiler::TypeRefSite>>,
+    pub scope_map: GPooled<Vec<graphix_compiler::ScopeMapEntry>>,
 }
 
 pub struct Ref<X: GXExt> {
@@ -673,6 +676,12 @@ pub struct GXConfig<X: GXExt> {
     /// The set of compiler flags. Default empty.
     #[builder(default)]
     flags: BitFlags<CFlag>,
+    /// If true, populate IDE side-channels (`ide_binds`,
+    /// references, module references, scope map, type-ref sink) on
+    /// every compile and check. Carries a per-compile cost; only
+    /// the LSP backend should set it.
+    #[builder(default)]
+    lsp_mode: bool,
 }
 
 impl<X: GXExt> GXConfig<X> {

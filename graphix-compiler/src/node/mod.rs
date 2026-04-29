@@ -221,20 +221,23 @@ impl Use {
         ctx.env
             .use_in_scope(scope, name)
             .map_err(|e| anyhow!("at {} {e:?}", spec.pos))?;
-        // Record the `use foo;` site for IDE tooling so find-references
-        // and go-to-definition on a module name return all known import
-        // sites and the file the module lives in.
-        let canonical = ctx
-            .env
-            .canonical_modpath(&scope.lexical, name)
-            .unwrap_or_else(|| name.clone());
-        ctx.module_references.push(crate::ModuleRefSite {
-            pos: spec.pos,
-            ori: spec.ori.clone(),
-            name: name.clone(),
-            canonical,
-            def_ori: None,
-        });
+        if ctx.env.lsp_mode {
+            // Record the `use foo;` site for IDE tooling so
+            // find-references and go-to-definition on a module name
+            // return all known import sites and the file the module
+            // lives in.
+            let canonical = ctx
+                .env
+                .canonical_modpath(&scope.lexical, name)
+                .unwrap_or_else(|| name.clone());
+            ctx.module_references.push(crate::ModuleRefSite {
+                pos: spec.pos,
+                ori: spec.ori.clone(),
+                name: name.clone(),
+                canonical,
+                def_ori: None,
+            });
+        }
         Ok(Box::new(Self { spec, scope: scope.clone(), name: name.clone() }))
     }
 }
@@ -568,14 +571,16 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             None => bail!("at {} {name} is undefined", spec.pos),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
-        ctx.references.push(crate::ReferenceSite {
-            pos: spec.pos,
-            ori: spec.ori.clone(),
-            name: name.clone(),
-            bind_id: id,
-            def_pos,
-            def_ori,
-        });
+        if ctx.env.lsp_mode {
+            ctx.references.push(crate::ReferenceSite {
+                pos: spec.pos,
+                ori: spec.ori.clone(),
+                name: name.clone(),
+                bind_id: id,
+                def_pos,
+                def_ori,
+            });
+        }
         let node = compile(ctx, flags, value.clone(), scope, top_id)?;
         Ok(Box::new(Self { spec, node, id }))
     }
@@ -643,14 +648,16 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 None => bail!("at {} {name} is undefined", spec.pos),
                 Some((_, b)) => (b.id, b.pos, b.ori.clone()),
             };
-        ctx.references.push(crate::ReferenceSite {
-            pos: spec.pos,
-            ori: spec.ori.clone(),
-            name: name.clone(),
-            bind_id: src_id,
-            def_pos,
-            def_ori,
-        });
+        if ctx.env.lsp_mode {
+            ctx.references.push(crate::ReferenceSite {
+                pos: spec.pos,
+                ori: spec.ori.clone(),
+                name: name.clone(),
+                bind_id: src_id,
+                def_pos,
+                def_ori,
+            });
+        }
         ctx.rt.ref_var(src_id, top_id);
         let rhs = Cached::new(compile(ctx, flags, value.clone(), scope, top_id)?);
         Ok(Box::new(Self { spec, rhs, src_id, target_id: None, top_id }))
