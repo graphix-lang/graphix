@@ -69,11 +69,27 @@ pub struct Env {
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     pub catch: Map<ModPath, BindId>,
+    /// Append-only mirror of every `(scope, name) → BindId` ever
+    /// created via `bind_variable`. Used by IDE tooling for cursor
+    /// → scope completion: it exposes lambda parameters and other
+    /// short-lived bindings that `binds` drops at scope teardown
+    /// and `unbind_variable` removes from `by_id`. Not consulted by
+    /// the compiler.
+    pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
 }
 
 impl Env {
     pub(super) fn clear(&mut self) {
-        let Self { by_id, binds, byref_chain, used, modules, typedefs, catch } = self;
+        let Self {
+            by_id,
+            binds,
+            byref_chain,
+            used,
+            modules,
+            typedefs,
+            catch,
+            ide_binds,
+        } = self;
         *by_id = Map::new();
         *binds = Map::new();
         *byref_chain = Map::new();
@@ -81,11 +97,14 @@ impl Env {
         *modules = Set::new();
         *typedefs = Map::new();
         *catch = Map::new();
+        *ide_binds = Map::new();
     }
 
     // restore the lexical environment to the state it was in at the
     // snapshot `other`, but leave the bind and type environment
-    // alone.
+    // alone. `ide_binds` is preserved across restoration so IDE
+    // tooling sees lambda parameters / let bindings that were
+    // introduced inside the restored region.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
         Self {
             binds: other.binds,
@@ -95,6 +114,7 @@ impl Env {
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
+            ide_binds: self.ide_binds.clone(),
         }
     }
 
@@ -106,6 +126,7 @@ impl Env {
             typedefs: mem::take(&mut other.typedefs),
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
+            ide_binds: self.ide_binds.clone(),
             byref_chain: self.byref_chain.clone(),
         }
     }
@@ -396,7 +417,7 @@ impl Env {
         if existing {
             *id = BindId::new();
         }
-        self.by_id.get_or_insert_cow(*id, || Bind {
+        let bind = self.by_id.get_or_insert_cow(*id, || Bind {
             export: true,
             id: *id,
             scope: scope.clone(),
@@ -405,7 +426,15 @@ impl Env {
             typ,
             pos,
             ori,
-        })
+        });
+        // IDE side-channel: an append-only mirror so cursor → scope
+        // completion can see lambda parameters and other short-lived
+        // bindings the runtime cleans up. Cloned on insert; never
+        // removed.
+        let ide_clone = bind.clone();
+        let ide_defs = self.ide_binds.get_or_default_cow(scope.clone());
+        ide_defs.insert_cow(CompactString::from(name), ide_clone);
+        self.by_id.get_mut_cow(id).unwrap()
     }
 
     /// make the specified name an alias for `id`

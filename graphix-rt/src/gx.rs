@@ -444,6 +444,7 @@ impl<X: GXExt> GX<X> {
         // tooling and we want each `check` to scope its own collection.
         let prev_refs = std::mem::take(&mut self.ctx.references);
         let prev_modrefs = std::mem::take(&mut self.ctx.module_references);
+        let prev_scopemap = std::mem::take(&mut self.ctx.scope_map);
         // The compiler pushes `TypeRefSite`s to a thread-local during
         // `Type::lookup_ref` deref; clear it for this check and stash
         // anything that was already there.
@@ -481,6 +482,7 @@ impl<X: GXExt> GX<X> {
             let references = std::mem::take(&mut self.ctx.references);
             let module_references = std::mem::take(&mut self.ctx.module_references);
             let type_references = graphix_compiler::take_type_refs();
+            let scope_map = std::mem::take(&mut self.ctx.scope_map);
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
@@ -489,12 +491,14 @@ impl<X: GXExt> GX<X> {
                 references,
                 module_references,
                 type_references,
+                scope_map,
             })
         };
         let res = go.await;
         self.ctx.env = env;
         self.ctx.references = prev_refs;
         self.ctx.module_references = prev_modrefs;
+        self.ctx.scope_map = prev_scopemap;
         // Restore prior thread-local sink content (drops anything
         // type system internals pushed during delete).
         graphix_compiler::swap_type_refs(prev_typrefs);

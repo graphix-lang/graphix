@@ -326,6 +326,17 @@ pub struct ModuleRefSite {
     pub def_ori: Option<Arc<expr::Origin>>,
 }
 
+/// One entry in the per-compile scope map: the compiler descended
+/// into an `Expr` at this `(pos, ori)` while in this `scope`. IDE
+/// tooling answers `cursor → scope` by finding the entry with the
+/// greatest `pos` ≤ the cursor in the same file.
+#[derive(Debug, Clone)]
+pub struct ScopeMapEntry {
+    pub pos: SourcePosition,
+    pub ori: Arc<expr::Origin>,
+    pub scope: Scope,
+}
+
 /// A textual occurrence of a type reference (e.g. `Foo` in `let x: Foo`).
 /// Captured by the compiler when a `Type::Ref` carrying parse-time
 /// position info gets dereferenced. `def_pos`/`def_ori` point at the
@@ -848,6 +859,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Module reference sites — `use foo;` and `mod foo;` mentions.
     /// Same scoping rules as `references`.
     pub module_references: Vec<ModuleRefSite>,
+    /// Per-compile scope map. `compile()` pushes one entry every
+    /// time it's invoked, recording the scope it was called with.
+    /// IDE tooling reads this to answer `cursor → scope` queries.
+    pub scope_map: Vec<ScopeMapEntry>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -879,6 +894,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             deferred_checks: Vec::new(),
             references: Vec::new(),
             module_references: Vec::new(),
+            scope_map: Vec::new(),
         })
     }
 

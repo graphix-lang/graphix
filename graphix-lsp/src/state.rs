@@ -4,7 +4,7 @@ use graphix_compiler::{
     env::Env,
     expr::{ModPath, Source},
     typ::Type,
-    ModuleRefSite, ReferenceSite, SourcePosition, TypeRefSite,
+    ModuleRefSite, ReferenceSite, ScopeMapEntry, SourcePosition, TypeRefSite,
 };
 use lsp_types::Uri;
 use std::{
@@ -31,6 +31,9 @@ pub struct Document {
     pub module_references: Vec<ModuleRefSite>,
     /// Type-name reference sites (uses of `Foo` in type positions).
     pub type_references: Vec<TypeRefSite>,
+    /// Per-Expr scope map from the latest compile. Used to answer
+    /// cursor → scope queries.
+    pub scope_map: Vec<ScopeMapEntry>,
 }
 
 impl Document {
@@ -42,6 +45,7 @@ impl Document {
             references: Vec::new(),
             module_references: Vec::new(),
             type_references: Vec::new(),
+            scope_map: Vec::new(),
         }
     }
 }
@@ -53,6 +57,7 @@ pub struct TypecheckResult {
     pub references: Vec<ReferenceSite>,
     pub module_references: Vec<ModuleRefSite>,
     pub type_references: Vec<TypeRefSite>,
+    pub scope_map: Vec<ScopeMapEntry>,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -92,6 +97,7 @@ pub struct ProjectResult {
     pub references: Vec<ReferenceSite>,
     pub module_references: Vec<ModuleRefSite>,
     pub type_references: Vec<TypeRefSite>,
+    pub scope_map: Vec<ScopeMapEntry>,
 }
 
 /// Core language intelligence state.
@@ -177,12 +183,14 @@ impl ServerState {
                     references,
                     module_references,
                     type_references,
+                    scope_map,
                 }) => {
                     results.push(Some(ProjectResult {
                         env,
                         references,
                         module_references,
                         type_references,
+                        scope_map,
                     }));
                 }
                 Err(e) => {
@@ -255,12 +263,14 @@ impl ServerState {
                 references,
                 module_references,
                 type_references,
+                scope_map,
             }) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = Some(env);
                     d.references = references;
                     d.module_references = module_references;
                     d.type_references = type_references;
+                    d.scope_map = scope_map;
                 }
                 Vec::new()
             }
@@ -270,10 +280,47 @@ impl ServerState {
                     d.references.clear();
                     d.module_references.clear();
                     d.type_references.clear();
+                    d.scope_map.clear();
                 }
                 error_to_diagnostics(&e, &text)
             }
         }
+    }
+
+    /// Find the lexical scope at `position` in `uri` using the
+    /// compiler-emitted scope map. Picks the entry with the greatest
+    /// `pos` ≤ cursor in the same file as the requesting URI. Walks
+    /// the active doc first (most-fresh data), then any project's
+    /// scope map. Returns root scope if nothing matches — that's
+    /// the natural default at top of file or in unparsed regions.
+    pub fn scope_at(&self, uri: &Uri, position: lsp_types::Position) -> ModPath {
+        let mut best: Option<ScopeMapEntry> = None;
+        let mut consider = |e: &ScopeMapEntry| {
+            if !origin_matches_uri(&e.ori, uri) {
+                return;
+            }
+            if !pos_le(e.pos, position) {
+                return;
+            }
+            match &best {
+                None => best = Some(e.clone()),
+                Some(b) if pos_lt(b.pos, e.pos) => best = Some(e.clone()),
+                _ => (),
+            }
+        };
+        if let Some(doc) = self.documents.get(uri) {
+            for e in &doc.scope_map {
+                consider(e);
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for e in &r.scope_map {
+                    consider(e);
+                }
+            }
+        }
+        best.map(|e| e.scope.lexical).unwrap_or_else(ModPath::root)
     }
 
     /// Pick the most-specific env we have for `uri`. Order:
@@ -304,29 +351,32 @@ impl ServerState {
             return Vec::new();
         };
         let prefix = token_before_cursor(&doc.text, position).unwrap_or_default();
-        let scope = ModPath::root();
+        // Use the compiler-emitted scope map to find what scope the
+        // cursor is in. This makes lambda parameters, let bindings,
+        // and other locally-scoped names visible in completion.
+        let scope = self.scope_at(uri, position);
         let part = modpath_from_typed(&prefix);
         let env = self.env_for(uri);
+        let matched = lookup_matching_via_by_id(env, &scope, &part);
         let mut items = Vec::new();
-        for (name, bind_id) in env.lookup_matching(&scope, &part) {
-            if let Some(bind) = env.by_id.get(&bind_id) {
-                let kind = if matches!(&bind.typ, Type::Fn(_)) {
-                    lsp_types::CompletionItemKind::FUNCTION
-                } else {
-                    lsp_types::CompletionItemKind::VARIABLE
-                };
-                items.push(lsp_types::CompletionItem {
-                    label: name.to_string(),
-                    kind: Some(kind),
-                    detail: Some(format!("{}", bind.typ)),
-                    documentation: bind
-                        .doc
-                        .as_ref()
-                        .map(|d| lsp_types::Documentation::String(d.to_string())),
-                    ..Default::default()
-                });
-            }
+        for (name, bind) in matched {
+            let kind = if matches!(&bind.typ, Type::Fn(_)) {
+                lsp_types::CompletionItemKind::FUNCTION
+            } else {
+                lsp_types::CompletionItemKind::VARIABLE
+            };
+            items.push(lsp_types::CompletionItem {
+                label: name.to_string(),
+                kind: Some(kind),
+                detail: Some(format!("{}", bind.typ)),
+                documentation: bind
+                    .doc
+                    .as_ref()
+                    .map(|d| lsp_types::Documentation::String(d.to_string())),
+                ..Default::default()
+            });
         }
+        // Module completions still use the env's `modules` set.
         for module in env.lookup_matching_modules(&scope, &part) {
             items.push(lsp_types::CompletionItem {
                 label: module.to_string(),
@@ -934,6 +984,30 @@ fn origin_matches_uri(ori: &graphix_compiler::expr::Origin, uri: &Uri) -> bool {
     }
 }
 
+/// True if `a` (1-indexed compiler pos) is ≤ `b` (0-indexed LSP pos).
+fn pos_le(a: SourcePosition, b: lsp_types::Position) -> bool {
+    let a_line = a.line.saturating_sub(1).max(0) as u32;
+    if a_line < b.line {
+        return true;
+    }
+    if a_line > b.line {
+        return false;
+    }
+    let a_col = a.column.saturating_sub(1).max(0) as u32;
+    a_col <= b.character
+}
+
+/// Strict less-than between two 1-indexed compiler positions.
+fn pos_lt(a: SourcePosition, b: SourcePosition) -> bool {
+    if a.line < b.line {
+        return true;
+    }
+    if a.line > b.line {
+        return false;
+    }
+    a.column < b.column
+}
+
 fn span_covers(pos: lsp_types::Position, start: SourcePosition, len: u32) -> bool {
     let line0 = start.line.saturating_sub(1).max(0) as u32;
     if pos.line != line0 {
@@ -981,6 +1055,48 @@ fn ref_to_location(
         uri: target_uri,
         range: lsp_types::Range { start: p, end: p },
     })
+}
+
+/// Like `Env::lookup_matching` but walks `env.by_id` directly so
+/// that bindings whose lexical entries were dropped at scope
+/// teardown (e.g. lambda parameters) are still visible to IDE
+/// queries. A bind is "visible" from `cursor_scope` if its scope is
+/// `cursor_scope` itself or any ancestor.
+/// Like `Env::lookup_matching` but walks `env.ide_binds` so
+/// short-lived bindings (lambda params, let bindings inside
+/// scopes that get torn down) are still visible to IDE queries.
+/// A bind is visible from `cursor_scope` if the bind's scope is
+/// `cursor_scope` itself, an ancestor, or a sibling-via-`use`.
+fn lookup_matching_via_by_id(
+    env: &Env,
+    cursor_scope: &ModPath,
+    part: &ModPath,
+) -> Vec<(compact_str::CompactString, graphix_compiler::env::Bind)> {
+    let cursor_scope_str: &str = cursor_scope.as_ref();
+    let part_str: &str = part.as_ref();
+    let prefix_basename = part_str.trim_start_matches('/');
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (scope_path, defs) in &env.ide_binds {
+        let bind_scope: &str = scope_path.as_ref();
+        let visible = cursor_scope_str == bind_scope
+            || (cursor_scope_str.starts_with(bind_scope)
+                && cursor_scope_str.as_bytes().get(bind_scope.len()) == Some(&b'/'))
+            || bind_scope.is_empty()
+            || bind_scope == "/";
+        if !visible {
+            continue;
+        }
+        for (name, bind) in defs {
+            if !prefix_basename.is_empty() && !name.starts_with(prefix_basename) {
+                continue;
+            }
+            if seen.insert(name.to_string()) {
+                out.push((name.clone(), bind.clone()));
+            }
+        }
+    }
+    out
 }
 
 fn is_id_char(c: char) -> bool {

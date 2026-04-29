@@ -36,6 +36,15 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
+    // IDE side-channel: record the scope this compile descent was
+    // entered with. `compiler::compile` is the recursive dispatcher
+    // — every Expr in the source tree comes through here with the
+    // scope the compiler chose for it.
+    ctx.scope_map.push(crate::ScopeMapEntry {
+        pos: spec.pos,
+        ori: spec.ori.clone(),
+        scope: scope.clone(),
+    });
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
