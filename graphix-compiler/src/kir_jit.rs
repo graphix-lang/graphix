@@ -351,6 +351,106 @@ pub fn unpack_u64_to_reg(
     }
 }
 
+// ─── Async JIT compile ───────────────────────────────────────────
+//
+// A single shared worker thread processes JIT compile requests off
+// the runtime path. KirNode holds an `Arc<AsyncJitSlot>` whose
+// internal `OnceLock` is empty until the worker fills it. The
+// runtime thread's `update` pays one atomic load per call to check
+// — once filled, it dispatches to native code; until then, it
+// interprets. No atomic swap needed: `OnceLock` is set-once.
+//
+// Why not a thread pool: even one worker keeps codegen entirely off
+// the runtime path, which is the win we want. A pool helps only if
+// many compile requests pile up at startup; for typical programs
+// (handful of fusable lambdas), a single worker drains in
+// background well before any kernel is hot.
+
+/// Set-once JIT slot. KirNode reads via `fetch()` on every update
+/// (one atomic load); the worker calls `fill()` once when the kernel
+/// finishes compiling. Failures (cranelift unsupported op, OOM, …)
+/// leave the slot empty forever — the interpreter keeps running.
+#[derive(Default)]
+pub struct AsyncJitSlot {
+    slot: std::sync::OnceLock<std::sync::Arc<WrappedKernel>>,
+}
+
+impl AsyncJitSlot {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { slot: std::sync::OnceLock::new() })
+    }
+
+    /// Fast path checked on every KirNode update. Returns `None`
+    /// while the worker is still compiling, `Some(_)` once the
+    /// slot has been filled.
+    pub fn fetch(&self) -> Option<std::sync::Arc<WrappedKernel>> {
+        self.slot.get().cloned()
+    }
+}
+
+struct CompileRequest {
+    kernel: std::sync::Arc<crate::kernel_ir::KirKernel>,
+    slot: std::sync::Arc<AsyncJitSlot>,
+    name: arcstr::ArcStr,
+}
+
+static JIT_WORKER: std::sync::LazyLock<std::sync::mpsc::SyncSender<CompileRequest>> =
+    std::sync::LazyLock::new(|| {
+        // Bounded channel with generous buffer so a flurry of
+        // Lambda::compiles at program startup don't block.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<CompileRequest>(1024);
+        std::thread::Builder::new()
+            .name("graphix-jit-compile".to_string())
+            .spawn(move || {
+                while let Ok(req) = rx.recv() {
+                    match compile_kernel_with_wrapper(&req.kernel) {
+                        Ok(wrapped) => {
+                            // OnceLock::set returns Err if already
+                            // set; we never re-fill, so the only way
+                            // to hit that is two requests aliasing
+                            // the same slot — shouldn't happen, but
+                            // ignore if it does.
+                            let _ = req.slot.slot.set(std::sync::Arc::new(wrapped));
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "kir_jit (async): compile failed for {}: \
+                                 {e:#}; KirNode will stay on interpreter",
+                                req.name
+                            );
+                            // Slot stays empty — KirNode keeps
+                            // interpreting forever. Acceptable
+                            // graceful degradation.
+                        }
+                    }
+                }
+            })
+            .expect("spawn kir_jit worker thread");
+        tx
+    });
+
+/// Queue an async JIT compile of `kernel`. Returns immediately with
+/// an empty [`AsyncJitSlot`]; the worker fills it when codegen
+/// completes (typically tens to a few hundred ms later, depending
+/// on kernel size). KirNode polls the slot on each update and swaps
+/// from interpreter to native dispatch transparently.
+pub fn submit_async_compile(
+    kernel: std::sync::Arc<crate::kernel_ir::KirKernel>,
+    name: arcstr::ArcStr,
+) -> std::sync::Arc<AsyncJitSlot> {
+    let slot = AsyncJitSlot::new();
+    let req = CompileRequest { kernel, slot: slot.clone(), name };
+    if JIT_WORKER.try_send(req).is_err() {
+        // Channel full or worker dead. We log once (TODO: throttle)
+        // and return the empty slot — KirNode just keeps interpreting.
+        log::warn!(
+            "kir_jit (async): worker queue full or thread gone; \
+             skipping JIT for this kernel"
+        );
+    }
+    slot
+}
+
 // ─── Function shape ──────────────────────────────────────────────
 
 fn compile_into_function(b: &mut FunctionBuilder, kernel: &KirKernel) -> Result<()> {

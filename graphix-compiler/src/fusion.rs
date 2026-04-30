@@ -1638,7 +1638,12 @@ fn prim_type_to_graphix(p: PrimType) -> Type {
 /// terms of already-known constants, record `(name, KnownConst)` into
 /// `consts`. The KIR stored on the KnownConst is the full emitted
 /// expression — both backends fold it as appropriate at lowering.
-fn record_const_binding(
+///
+/// Used by both the AOT rewrite pass and `Bind::compile` (the
+/// runtime path), since the runtime fusion attempts in
+/// `Lambda::compile` need the same const visibility the AOT pass
+/// already had.
+pub fn record_const_binding(
     name: &ArcStr,
     value: &Expr,
     consts: &mut std::collections::BTreeMap<ArcStr, KnownConst>,

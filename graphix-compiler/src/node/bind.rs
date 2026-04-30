@@ -121,6 +121,18 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if let Some(prior) = saved_binding {
             ctx.current_binding_name = prior;
         }
+        // Record outer-scope const bindings so subsequent inner-
+        // lambda fusion attempts (e.g. unannotated callbacks) can
+        // inline references to this name as a literal. No-op for
+        // non-const-foldable values like subscriptions or runtime
+        // computations.
+        if let Some(name) = b.pattern.single_bind() {
+            crate::fusion::record_const_binding(
+                name,
+                &b.value,
+                &mut ctx.fusion_known_consts,
+            );
+        }
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }

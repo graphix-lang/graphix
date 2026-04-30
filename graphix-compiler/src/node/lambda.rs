@@ -392,12 +392,22 @@ impl Lambda {
         // matters for the process lifetime — runtime A/B benches
         // (KirNode vs GXLambda) toggle it before launching graphix.
         let kir_enabled = std::env::var_os("GRAPHIX_NO_KIR").is_none();
-        // GRAPHIX_JIT=1 routes the fused kernel through the cranelift
-        // JIT (compile-time native codegen, then native dispatch via
-        // the uniform wrapper). M4b v1 — no background thread, but
-        // each Lambda::compile produces ONE compiled kernel that all
-        // call sites share via Arc.
+        // GRAPHIX_JIT=1: synchronous JIT compile at Lambda::compile.
+        // Predictable (fully native by the time we run the program)
+        // but pays codegen cost up-front; with many fusable
+        // lambdas this delays startup.
+        //
+        // GRAPHIX_JIT_ASYNC=1: queue compile to a background worker
+        // thread. KirNode interprets until the worker fills the
+        // async slot, then transparently swaps to native dispatch.
+        // No startup penalty; first-N invocations of each kernel
+        // run interpreted (still much faster than the node graph).
+        //
+        // If both are set, sync wins (more predictable). If neither,
+        // no JIT.
         let jit_enabled = std::env::var_os("GRAPHIX_JIT").is_some();
+        let jit_async = !jit_enabled
+            && std::env::var_os("GRAPHIX_JIT_ASYNC").is_some();
         // Eager fusion: try to build the KIR kernel (and JIT-compile
         // it if requested) at compile time, while we have the user's
         // annotations on the argspec. The result is shared via Arc
@@ -406,10 +416,44 @@ impl Lambda {
         // that don't fully annotate get `None` here and fall through
         // to the deferred path (which retries fusion at first call
         // using the typechecker-resolved FnType).
+        // FusedSlot carries the kernel, an optional sync JIT
+        // wrapper, an optional async JIT slot (filled by the
+        // background worker), and the KernelRegistry snapshot the
+        // runtime interpreter walks for KirOp::Call.
+        //
+        // Sync wrapper takes precedence over async slot at construct-
+        // ion time: if sync JIT is enabled we don't even submit an
+        // async request. If neither is set, KirNode runs through
+        // the interpreter.
         type FusedSlot = Option<(
             SArc<crate::kernel_ir::KirKernel>,
             Option<SArc<crate::kir_jit::WrappedKernel>>,
+            Option<SArc<crate::kir_jit::AsyncJitSlot>>,
+            SArc<crate::kir_interp::KernelRegistry>,
         )>;
+        // Snapshot the fusion-visibility state at compile time, both
+        // for the eager attempt below and for the deferred attempt
+        // captured into the init closure. These are clones of the
+        // BTreeMaps; not free but typically small (handful of
+        // entries).
+        let snapshot_consts = ctx.fusion_known_consts.clone();
+        let snapshot_kernels_full = ctx.fusion_known_kernels.clone();
+        let known_signatures: std::collections::BTreeMap<
+            ArcStr,
+            crate::kernel_ir::KnownFusedFn,
+        > = snapshot_kernels_full
+            .iter()
+            .map(|(k, v)| (k.clone(), v.signature.clone()))
+            .collect();
+        // Build the runtime kernel registry once. `KirNode::Call`
+        // dispatch reads it; cheap to share via Arc.
+        let runtime_registry: SArc<crate::kir_interp::KernelRegistry> = {
+            let mut reg = crate::kir_interp::KernelRegistry::default();
+            for (name, entry) in snapshot_kernels_full.iter() {
+                reg.kernels.insert(name.clone(), entry.kernel.clone());
+            }
+            SArc::new(reg)
+        };
         let precomputed: FusedSlot = if kir_enabled {
             match &l.body {
                 Either::Left(_) => {
@@ -422,14 +466,22 @@ impl Lambda {
                     match crate::fusion::build_kir_kernel(
                         synth_name.as_str(),
                         l,
-                        &Default::default(),
-                        &Default::default(),
+                        &known_signatures,
+                        &snapshot_consts,
                     ) {
-                        Some((kernel, _sig))
-                            if !crate::kernel_ir::kernel_contains_call(&kernel) =>
-                        {
+                        Some((kernel, sig)) => {
+                            // The kernel may legitimately contain
+                            // `KirOp::Call` now — the interpreter
+                            // resolves them via runtime_registry.
+                            // The JIT path can't yet (cross-module
+                            // calls aren't wired), so we only build
+                            // a wrapper for call-free kernels.
                             let kernel_arc = SArc::new(kernel);
-                            let wrapped = if jit_enabled {
+                            let jit_safe =
+                                !crate::kernel_ir::kernel_contains_call(
+                                    &kernel_arc,
+                                );
+                            let wrapped = if jit_enabled && jit_safe {
                                 match crate::kir_jit::compile_kernel_with_wrapper(
                                     &kernel_arc,
                                 ) {
@@ -447,7 +499,38 @@ impl Lambda {
                             } else {
                                 None
                             };
-                            Some((kernel_arc, wrapped))
+                            let async_slot = if jit_async
+                                && jit_safe
+                                && wrapped.is_none()
+                            {
+                                Some(crate::kir_jit::submit_async_compile(
+                                    kernel_arc.clone(),
+                                    synth_name.clone(),
+                                ))
+                            } else {
+                                None
+                            };
+                            // Publish under the binding name so later
+                            // siblings in the same scope (and inner
+                            // lambdas they contain) can lower
+                            // calls/refs to this kernel.
+                            if let Some(binding_name) =
+                                ctx.current_binding_name.as_ref()
+                            {
+                                ctx.fusion_known_kernels.insert(
+                                    binding_name.clone(),
+                                    crate::FusedKernelEntry {
+                                        signature: sig,
+                                        kernel: kernel_arc.clone(),
+                                    },
+                                );
+                            }
+                            Some((
+                                kernel_arc,
+                                wrapped,
+                                async_slot,
+                                runtime_registry.clone(),
+                            ))
                         }
                         _ => None,
                     }
@@ -494,6 +577,15 @@ impl Lambda {
         } else {
             None
         };
+        // Snapshots threaded into the deferred fusion attempt — same
+        // shape as the eager attempt, just deferred until first call
+        // when the typechecker has resolved the lambda's argspec.
+        // Always clone (cheap; usually small maps), even when
+        // deferred isn't needed, so we don't pay branchy capture
+        // logic in the closure.
+        let deferred_consts = snapshot_consts.clone();
+        let deferred_known_signatures = known_signatures.clone();
+        let deferred_registry = runtime_registry.clone();
         let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, resolved, tid| {
             // restore the lexical environment to the state it was in
             // when the closure was created
@@ -505,18 +597,30 @@ impl Lambda {
                     // gets its own per-call-site arg buffer but the
                     // expensive bits (kernel build, native codegen)
                     // were already done.
-                    if let Some((kernel_arc, wrapped)) = &precomputed {
+                    if let Some((kernel_arc, wrapped, async_slot, registry)) =
+                        &precomputed
+                    {
                         if args.len() == kernel_arc.params.len() {
                             let n_args = args.len();
-                            let kn = match wrapped {
-                                Some(w) => crate::kir_interp::KirNode::with_jit(
+                            let kn = match (wrapped, async_slot) {
+                                (Some(w), _) => crate::kir_interp::KirNode::with_jit(
                                     kernel_arc.clone(),
                                     n_args,
                                     SArc::clone(w),
+                                    SArc::clone(registry),
                                 ),
-                                None => crate::kir_interp::KirNode::new(
+                                (None, Some(s)) => {
+                                    crate::kir_interp::KirNode::with_async_jit(
+                                        kernel_arc.clone(),
+                                        n_args,
+                                        SArc::clone(s),
+                                        SArc::clone(registry),
+                                    )
+                                }
+                                (None, None) => crate::kir_interp::KirNode::new(
                                     kernel_arc.clone(),
                                     n_args,
+                                    SArc::clone(registry),
                                 ),
                             };
                             return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
@@ -553,17 +657,22 @@ impl Lambda {
                                 let attempt = crate::fusion::build_kir_kernel(
                                     synth.as_str(),
                                     &*patched,
-                                    &Default::default(),
-                                    &Default::default(),
+                                    &deferred_known_signatures,
+                                    &deferred_consts,
                                 );
                                 let slot: FusedSlot = match attempt {
-                                    Some((kernel, _sig))
-                                        if !crate::kernel_ir::kernel_contains_call(
-                                            &kernel,
-                                        ) =>
-                                    {
+                                    Some((kernel, _sig)) => {
                                         let kernel_arc = SArc::new(kernel);
-                                        let wrapped = if jit_enabled {
+                                        // JIT only when no calls
+                                        // (cross-module dispatch is
+                                        // not yet wired); the
+                                        // interpreter handles Call
+                                        // via the registry.
+                                        let wrapped = if jit_enabled
+                                            && !crate::kernel_ir::kernel_contains_call(
+                                                &kernel_arc,
+                                            )
+                                        {
                                             match crate::kir_jit::compile_kernel_with_wrapper(
                                                 &kernel_arc,
                                             ) {
@@ -580,7 +689,30 @@ impl Lambda {
                                         } else {
                                             None
                                         };
-                                        Some((kernel_arc, wrapped))
+                                        // Async deferred-fusion JIT
+                                        // is supported the same way
+                                        // as eager — when sync didn't
+                                        // produce a wrapper we may
+                                        // still queue a background
+                                        // compile.
+                                        let async_slot = if jit_async
+                                            && wrapped.is_none()
+                                        {
+                                            Some(
+                                                crate::kir_jit::submit_async_compile(
+                                                    kernel_arc.clone(),
+                                                    synth.clone(),
+                                                ),
+                                            )
+                                        } else {
+                                            None
+                                        };
+                                        Some((
+                                            kernel_arc,
+                                            wrapped,
+                                            async_slot,
+                                            deferred_registry.clone(),
+                                        ))
                                     }
                                     _ => None,
                                 };
@@ -592,16 +724,24 @@ impl Lambda {
                             }
                         };
                         drop(state);
-                        if let Some((kernel_arc, wrapped)) = slot {
+                        if let Some((kernel_arc, wrapped, async_slot, registry)) =
+                            slot
+                        {
                             if args.len() == kernel_arc.params.len() {
                                 let n_args = args.len();
-                                let kn = match wrapped {
-                                    Some(w) => crate::kir_interp::KirNode::with_jit(
-                                        kernel_arc, n_args, w,
-                                    ),
-                                    None => crate::kir_interp::KirNode::new(
-                                        kernel_arc, n_args,
-                                    ),
+                                let kn = match (wrapped, async_slot) {
+                                    (Some(w), _) =>
+                                        crate::kir_interp::KirNode::with_jit(
+                                            kernel_arc, n_args, w, registry,
+                                        ),
+                                    (None, Some(s)) =>
+                                        crate::kir_interp::KirNode::with_async_jit(
+                                            kernel_arc, n_args, s, registry,
+                                        ),
+                                    (None, None) =>
+                                        crate::kir_interp::KirNode::new(
+                                            kernel_arc, n_args, registry,
+                                        ),
                                 };
                                 return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
                             }

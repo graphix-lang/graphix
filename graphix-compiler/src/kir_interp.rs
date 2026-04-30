@@ -30,8 +30,9 @@ use crate::{
     },
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
 };
+use arcstr::ArcStr;
 use netidx::subscriber::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 // ─── Runtime register value ──────────────────────────────────────
 
@@ -203,8 +204,24 @@ enum BodyResult {
 // ─── Public entry points ─────────────────────────────────────────
 
 /// Evaluate a [`KirKernel`] given a slice of typed argument values.
-/// Returns the kernel's return value as a [`RegValue`].
+/// Returns the kernel's return value as a [`RegValue`]. Uses an
+/// empty registry — kernels that contain `KirOp::Call` will panic
+/// when they hit one. Use [`eval_kernel_with_registry`] when the
+/// kernel may dispatch into other fused kernels.
 pub fn eval_kernel(kernel: &KirKernel, args: &[RegValue]) -> RegValue {
+    let empty = KernelRegistry::default();
+    eval_kernel_with_registry(kernel, args, &empty)
+}
+
+/// Evaluate a [`KirKernel`], resolving any `KirOp::Call` against
+/// `registry`. The registry maps source-level binding names to
+/// `Arc<KirKernel>`s; the interpreter recursively evaluates the
+/// callee with the supplied args.
+pub fn eval_kernel_with_registry(
+    kernel: &KirKernel,
+    args: &[RegValue],
+    registry: &KernelRegistry,
+) -> RegValue {
     debug_assert_eq!(
         args.len(),
         kernel.params.len(),
@@ -221,7 +238,7 @@ pub fn eval_kernel(kernel: &KirKernel, args: &[RegValue]) -> RegValue {
         env.push(p.name.clone(), *v);
     }
     loop {
-        match eval_body(&mut env, &kernel.body) {
+        match eval_body(&mut env, &kernel.body, registry) {
             BodyResult::Return(v) => return v,
             BodyResult::TailCall => {
                 // Loop back to the top of the body. params have been
@@ -233,15 +250,19 @@ pub fn eval_kernel(kernel: &KirKernel, args: &[RegValue]) -> RegValue {
 
 // ─── Body / expression evaluation ────────────────────────────────
 
-fn eval_body(env: &mut InterpEnv, stmts: &[KirStmt]) -> BodyResult {
+fn eval_body(
+    env: &mut InterpEnv,
+    stmts: &[KirStmt],
+    registry: &KernelRegistry,
+) -> BodyResult {
     for stmt in stmts {
         match stmt {
             KirStmt::Let(l) => {
-                let v = eval_expr(env, &l.value);
+                let v = eval_expr(env, &l.value, registry);
                 env.push(l.local.clone(), v);
             }
             KirStmt::Return(e) => {
-                return BodyResult::Return(eval_expr(env, e));
+                return BodyResult::Return(eval_expr(env, e, registry));
             }
             KirStmt::TailCall { args } => {
                 // Evaluate all args first so an arg expression that
@@ -250,14 +271,12 @@ fn eval_body(env: &mut InterpEnv, stmts: &[KirStmt]) -> BodyResult {
                 let mut new_vals: smallvec::SmallVec<[RegValue; 8]> =
                     smallvec::SmallVec::with_capacity(args.len());
                 for a in args {
-                    new_vals.push(eval_expr(env, a));
+                    new_vals.push(eval_expr(env, a, registry));
                 }
                 debug_assert_eq!(new_vals.len(), env.param_count);
                 for (i, v) in new_vals.iter().enumerate() {
                     env.set_param(i, *v);
                 }
-                // Drop everything pushed past the params (let-bindings
-                // and arm-bindings introduced before this tail call).
                 env.truncate(env.param_count);
                 return BodyResult::TailCall;
             }
@@ -265,18 +284,11 @@ fn eval_body(env: &mut InterpEnv, stmts: &[KirStmt]) -> BodyResult {
                 for arm in arms {
                     let matches = match &arm.cond {
                         None => true,
-                        Some(cond) => eval_expr(env, cond).as_bool(),
+                        Some(cond) => eval_expr(env, cond, registry).as_bool(),
                     };
                     if matches {
                         let mark = env.mark();
-                        let r = eval_body(env, &arm.body);
-                        // For Return we leave the env as-is (caller
-                        // will return). For TailCall the body already
-                        // truncated. For fallthrough into a non-
-                        // returning body we'd want to truncate here,
-                        // but our bodies always end with Return or
-                        // TailCall, so the truncation is mostly
-                        // defensive.
+                        let r = eval_body(env, &arm.body, registry);
                         if matches!(r, BodyResult::Return(_)) {
                             env.truncate(mark);
                         }
@@ -296,55 +308,63 @@ fn eval_body(env: &mut InterpEnv, stmts: &[KirStmt]) -> BodyResult {
     );
 }
 
-fn eval_expr(env: &mut InterpEnv, e: &KirExpr) -> RegValue {
+fn eval_expr(env: &mut InterpEnv, e: &KirExpr, registry: &KernelRegistry) -> RegValue {
     match &e.op {
         KirOp::Const(c) => RegValue::from_const(*c),
         KirOp::Local(name) => env
             .lookup(name)
             .unwrap_or_else(|| panic!("undefined local `{name}` — KIR is malformed")),
         KirOp::Bin { op, lhs, rhs } => {
-            let l = eval_expr(env, lhs);
-            let r = eval_expr(env, rhs);
+            let l = eval_expr(env, lhs, registry);
+            let r = eval_expr(env, rhs, registry);
             eval_bin(*op, l, r)
         }
         KirOp::Cmp { op, lhs, rhs } => {
-            let l = eval_expr(env, lhs);
-            let r = eval_expr(env, rhs);
+            let l = eval_expr(env, lhs, registry);
+            let r = eval_expr(env, rhs, registry);
             eval_cmp(*op, l, r)
         }
         KirOp::BoolBin { op, lhs, rhs } => {
             // Short-circuit to match Rust && / ||.
-            let l = eval_expr(env, lhs).as_bool();
+            let l = eval_expr(env, lhs, registry).as_bool();
             let result = match op {
-                BoolOp::And => l && eval_expr(env, rhs).as_bool(),
-                BoolOp::Or => l || eval_expr(env, rhs).as_bool(),
+                BoolOp::And => l && eval_expr(env, rhs, registry).as_bool(),
+                BoolOp::Or => l || eval_expr(env, rhs, registry).as_bool(),
             };
             RegValue::Bool(result)
         }
-        KirOp::Not(inner) => RegValue::Bool(!eval_expr(env, inner).as_bool()),
+        KirOp::Not(inner) => {
+            RegValue::Bool(!eval_expr(env, inner, registry).as_bool())
+        }
         KirOp::Cast { inner, target } => {
-            let v = eval_expr(env, inner);
+            let v = eval_expr(env, inner, registry);
             eval_cast(v, *target)
         }
-        KirOp::Call { fn_name: _, args: _ } => {
-            // Cross-kernel calls require a kernel registry that maps
-            // `fn_name` → KirKernel. Wired up in M4 alongside
-            // Lambda::compile integration; the v1 interpreter aborts
-            // here. The Rust-source backend handles cross-kernel calls
-            // fine because the AOT crate has direct Rust function
-            // references — only the interpreter needs the registry.
-            panic!(
-                "KirOp::Call not supported in interpreter v1 — needs \
-                 kernel registry (M4)"
-            );
+        KirOp::Call { fn_name, args } => {
+            // Look up the callee in the registry, evaluate args (in
+            // the caller's env), then recursively eval the callee
+            // with its own fresh env. The callee shares the same
+            // registry — its body might call further kernels.
+            let callee = registry.kernels.get(fn_name).unwrap_or_else(|| {
+                panic!(
+                    "KirOp::Call to `{fn_name}` not in kernel registry \
+                     — Lambda::compile should have populated this"
+                )
+            });
+            let mut call_args: smallvec::SmallVec<[RegValue; 8]> =
+                smallvec::SmallVec::with_capacity(args.len());
+            for a in args {
+                call_args.push(eval_expr(env, a, registry));
+            }
+            eval_kernel_with_registry(callee, &call_args, registry)
         }
         KirOp::Block { lets, tail } => {
             let mark = env.mark();
             for l in lets {
-                let v = eval_expr(env, &l.value);
+                let v = eval_expr(env, &l.value, registry);
                 env.push(l.local.clone(), v);
             }
-            let result = eval_expr(env, tail);
+            let result = eval_expr(env, tail, registry);
             env.truncate(mark);
             result
         }
@@ -352,10 +372,10 @@ fn eval_expr(env: &mut InterpEnv, e: &KirExpr) -> RegValue {
             for (cond, body) in arms {
                 let matches = match cond {
                     None => true,
-                    Some(c) => eval_expr(env, c).as_bool(),
+                    Some(c) => eval_expr(env, c, registry).as_bool(),
                 };
                 if matches {
-                    return eval_expr(env, body);
+                    return eval_expr(env, body, registry);
                 }
             }
             panic!("if-chain fell through without a match — KIR is malformed");
@@ -477,6 +497,22 @@ fn eval_cast(v: RegValue, target: PrimType) -> RegValue {
     }
 }
 
+// ─── Cross-kernel call dispatch ──────────────────────────────────
+
+/// Runtime lookup table for `KirOp::Call`. Each kernel that fuses at
+/// `Lambda::compile` time gets registered here under its source-level
+/// binding name; an inner lambda whose body calls one of those names
+/// produces a `KirOp::Call`, and the interpreter walks this map to
+/// dispatch.
+///
+/// The registry is built once per Lambda::compile (snapshot of the
+/// fusion-visibility scope at that point) and shared via `Arc` into
+/// every `KirNode` the lambda's init produces.
+#[derive(Debug, Default)]
+pub struct KernelRegistry {
+    pub kernels: BTreeMap<ArcStr, Arc<KirKernel>>,
+}
+
 // ─── KirNode: the Apply<R, E> wrapper ────────────────────────────
 
 /// Wraps a [`KirKernel`] as an [`Apply<R, E>`] so the runtime can call
@@ -492,19 +528,28 @@ fn eval_cast(v: RegValue, target: PrimType) -> RegValue {
 /// also keep their data-side type-parameter-free.
 pub struct KirNode {
     /// The IR. `Arc` so structurally-identical kernels can share
-    /// state (and, in M4b follow-ups, share the JIT-compiled
-    /// function pointer via an IR-hash cache).
+    /// state (and, in M4e, share the JIT-compiled function pointer
+    /// via an IR-hash cache).
     kernel: Arc<KirKernel>,
     /// Per-cycle input cache, parallel to the `from` slice the runtime
     /// passes into `update`. `None` means "haven't seen a value yet";
     /// the kernel runs once every slot is `Some`.
     args: Box<[Option<Value>]>,
-    /// JIT-compiled wrapper, when available. `None` means run via the
-    /// interpreter; `Some(_)` means dispatch into native code via the
-    /// uniform `(args*, out*)` ABI. M4b v1 fills this synchronously
-    /// at construction; M4b v2 will move compilation to a background
-    /// thread with an atomic swap into this slot.
+    /// Synchronously-compiled JIT wrapper, when available. Filled at
+    /// `Lambda::compile` time when `GRAPHIX_JIT=1` is set. Update
+    /// dispatch checks this first.
     jit: Option<Arc<crate::kir_jit::WrappedKernel>>,
+    /// Async JIT slot. Filled by the global background worker once
+    /// it finishes compiling. `update` polls the slot on each call;
+    /// before it's filled the interpreter runs, after it the JIT'd
+    /// wrapper does. Set when `GRAPHIX_JIT_ASYNC=1` is set.
+    async_jit: Option<Arc<crate::kir_jit::AsyncJitSlot>>,
+    /// Fused kernels visible at this lambda's compile site, shared
+    /// across all instantiations of the lambda. The interpreter uses
+    /// this to dispatch `KirOp::Call`. Empty registry is fine —
+    /// kernels that don't reference any cross-kernel calls just
+    /// never look up.
+    registry: Arc<KernelRegistry>,
 }
 
 impl std::fmt::Debug for KirNode {
@@ -522,29 +567,62 @@ impl KirNode {
     /// input slots (which must equal `kernel.params.len()` — the input
     /// slice the runtime passes into `update` is the kernel's
     /// arguments in order). Runs through the interpreter; use
-    /// [`Self::with_jit`] to dispatch into native code instead.
-    pub fn new(kernel: Arc<KirKernel>, n_args: usize) -> Self {
+    /// [`Self::with_jit`] for synchronous JIT or [`Self::with_async_jit`]
+    /// for background-compiled JIT.
+    pub fn new(
+        kernel: Arc<KirKernel>,
+        n_args: usize,
+        registry: Arc<KernelRegistry>,
+    ) -> Self {
         debug_assert_eq!(n_args, kernel.params.len());
         Self {
             kernel,
             args: vec![None; n_args].into_boxed_slice(),
             jit: None,
+            async_jit: None,
+            registry,
         }
     }
 
     /// Construct a KirNode whose `update` dispatches into a JIT'd
-    /// kernel via `wrapped`. The interpreter never runs in this
-    /// configuration — even if the wrapper traps, we don't fall back.
+    /// kernel via `wrapped`. JIT path is only used for kernels that
+    /// don't contain `KirOp::Call` — for kernels with cross-kernel
+    /// calls, lambda.rs only takes this path when the wrapper has
+    /// been built without them. The registry is still kept so the
+    /// (currently-untaken) interpreter fallback could resolve calls.
     pub fn with_jit(
         kernel: Arc<KirKernel>,
         n_args: usize,
         wrapped: Arc<crate::kir_jit::WrappedKernel>,
+        registry: Arc<KernelRegistry>,
     ) -> Self {
         debug_assert_eq!(n_args, kernel.params.len());
         Self {
             kernel,
             args: vec![None; n_args].into_boxed_slice(),
             jit: Some(wrapped),
+            async_jit: None,
+            registry,
+        }
+    }
+
+    /// Construct a KirNode that interprets initially and atomic-
+    /// swaps to a JIT'd wrapper when the async worker finishes
+    /// compiling. The slot has already been queued for compilation
+    /// by `kir_jit::submit_async_compile` before this is called.
+    pub fn with_async_jit(
+        kernel: Arc<KirKernel>,
+        n_args: usize,
+        slot: Arc<crate::kir_jit::AsyncJitSlot>,
+        registry: Arc<KernelRegistry>,
+    ) -> Self {
+        debug_assert_eq!(n_args, kernel.params.len());
+        Self {
+            kernel,
+            args: vec![None; n_args].into_boxed_slice(),
+            jit: None,
+            async_jit: Some(slot),
+            registry,
         }
     }
 }
@@ -588,8 +666,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode {
             });
             reg_args.push(r);
         }
-        let result = match &self.jit {
-            None => eval_kernel(&self.kernel, &reg_args),
+        // Pick a JIT wrapper if available. Sync JIT wins (already
+        // compiled at Lambda::compile); else check the async slot
+        // which atomic-fills when the worker thread finishes.
+        let wrapper = match &self.jit {
+            Some(w) => Some(w.clone()),
+            None => self.async_jit.as_ref().and_then(|s| s.fetch()),
+        };
+        let result = match wrapper.as_ref() {
+            None => eval_kernel_with_registry(
+                &self.kernel,
+                &reg_args,
+                &self.registry,
+            ),
             Some(wrapped) => {
                 // Pack RegValues into raw u64 slots, call through the
                 // wrapper, unpack the result. `slots` is on the stack

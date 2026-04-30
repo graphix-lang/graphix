@@ -47,4 +47,5 @@ run() {
 
 run "node graph (GRAPHIX_NO_KIR=1)" env GRAPHIX_NO_KIR=1
 run "kir interpreter (default)" env
-run "kir JIT (GRAPHIX_JIT=1)" env GRAPHIX_JIT=1
+run "kir JIT sync (GRAPHIX_JIT=1)" env GRAPHIX_JIT=1
+run "kir JIT async (GRAPHIX_JIT_ASYNC=1)" env GRAPHIX_JIT_ASYNC=1

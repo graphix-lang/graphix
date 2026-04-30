@@ -446,10 +446,22 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         module: bool,
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R, E>> {
-        let children = exprs
+        // Snapshot fusion-visibility state so binds *inside* this
+        // block don't leak their consts/kernels into the outer
+        // scope. Top-level programs come through Module compilation
+        // which uses this same path; siblings within the module's
+        // expr list see each other (the saved state is at module
+        // entry, restored at module exit), which matches the
+        // env-shape Bind::compile already arranges.
+        let saved_consts = ctx.fusion_known_consts.clone();
+        let saved_kernels = ctx.fusion_known_kernels.clone();
+        let result: Result<Box<[Node<R, E>]>> = exprs
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
-            .collect::<Result<Box<[Node<R, E>]>>>()?;
+            .collect();
+        ctx.fusion_known_consts = saved_consts;
+        ctx.fusion_known_kernels = saved_kernels;
+        let children = result?;
         Ok(Box::new(Self { module, spec, children }))
     }
 }

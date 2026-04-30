@@ -899,6 +899,43 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// as recursive. Cleared (or restored) at every Bind boundary, so
     /// stray reads pick up `None` rather than a stale outer name.
     pub current_binding_name: Option<ArcStr>,
+    /// Compile-time-known primitive constants visible in the current
+    /// lexical scope. Populated by `Bind::compile` when a binding's
+    /// value evaluates to a constant (or a constant-foldable
+    /// expression over already-known constants). Snapshotted by
+    /// `Lambda::compile` and threaded into `fusion::build_kir_kernel`
+    /// so an unannotated callback like `|idx| idx * scale` that
+    /// references an outer-scope `let scale = 2.0` can fuse with the
+    /// constant inlined as a literal. Saved/restored at Block /
+    /// Module boundaries so a binding inside a block doesn't leak
+    /// into outer scope.
+    pub fusion_known_consts:
+        std::collections::BTreeMap<ArcStr, crate::kernel_ir::KnownConst>,
+    /// Fused kernels visible in the current lexical scope, keyed by
+    /// binding name. Populated by `Lambda::compile` after a
+    /// successful eager-fusion attempt for a named lambda. Used in
+    /// two places:
+    ///
+    /// - At compile time, threaded into nested `build_kir_kernel`
+    ///   calls so an inner lambda referencing `iterate(...)` can
+    ///   lower the call as `KirOp::Call` (rather than failing).
+    /// - At runtime, the snapshot becomes the [`crate::kir_interp::KernelRegistry`]
+    ///   the interpreter walks when it hits a `KirOp::Call`.
+    ///
+    /// Saved/restored at Block / Module boundaries.
+    pub fusion_known_kernels: std::collections::BTreeMap<ArcStr, FusedKernelEntry>,
+}
+
+/// A fused kernel published into [`ExecCtx::fusion_known_kernels`]
+/// under its source-level binding name. Carries enough information
+/// for compile-time call lowering (`signature`, used by
+/// `fusion::emit_known_fused_call` to validate arities/types) and for
+/// runtime dispatch (`kernel`, used by the interpreter's
+/// `KirOp::Call` lookup).
+#[derive(Debug, Clone)]
+pub struct FusedKernelEntry {
+    pub signature: crate::kernel_ir::KnownFusedFn,
+    pub kernel: sync::Arc<crate::kernel_ir::KirKernel>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -933,6 +970,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             fn_types: IntMap::default(),
             current_binding_name: None,
+            fusion_known_consts: std::collections::BTreeMap::new(),
+            fusion_known_kernels: std::collections::BTreeMap::new(),
         })
     }
 
