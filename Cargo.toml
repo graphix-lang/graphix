@@ -112,6 +112,11 @@ tree-sitter = "0.26"
 tree-sitter-language = "0.1"
 tree-sitter-graphix = { version = "0.9.0", path = "ide/tree-sitter-graphix" }
 cc = "1"
+cranelift-codegen = "0.131"
+cranelift-frontend = "0.131"
+cranelift-jit = "0.131"
+cranelift-module = "0.131"
+cranelift-native = "0.131"
 
 # iced GUI framework (sub-crates used directly for low-level control)
 iced_core = "0.14"

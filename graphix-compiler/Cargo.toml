@@ -23,6 +23,11 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 combine = { workspace = true }
 compact_str = { workspace = true }
+cranelift-codegen = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-jit = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-native = { workspace = true }
 derive_builder = { workspace = true }
 enumflags2 = { workspace = true }
 escaping = { workspace = true }

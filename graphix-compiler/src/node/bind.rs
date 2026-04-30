@@ -45,6 +45,21 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         b: &expr::BindExpr,
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern, typ, value } = b;
+        // Side-channel for fusion: when value is a Lambda (directly,
+        // not wrapped), publish the binding name on ctx so
+        // `Lambda::compile` can capture it and use it as the
+        // synthetic `fn_name` during fusion. Required for self-
+        // recursion detection (`let rec X = |...| X(...)`). Restored
+        // at the end of the bind so sibling/outer Binds aren't
+        // affected.
+        let saved_binding = if matches!(&value.kind, ExprKind::Lambda(_)) {
+            Some(std::mem::replace(
+                &mut ctx.current_binding_name,
+                pattern.single_bind().cloned(),
+            ))
+        } else {
+            None
+        };
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -103,6 +118,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             .with_context(|| expr::ErrorContext(spec.clone()))?;
             (node, pattern, typ)
         };
+        if let Some(prior) = saved_binding {
+            ctx.current_binding_name = prior;
+        }
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }

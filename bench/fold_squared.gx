@@ -1,0 +1,13 @@
+// Sums squares over a 1M-element array via array::fold with an
+// unannotated callback. Eager fusion can't type `|acc, x|`; the
+// deferred path retries at first call using the resolved FnType.
+// With M4c the body fuses through KirNode (interp or JIT); without
+// it, the callback runs through GXLambda.
+use array;
+
+let n = 1000000;
+let xs = array::init(n, |idx: i64| idx);
+let total = array::fold(xs, 0, |acc, x| acc + x * x);
+
+println("sum_of_squares([n]) = [total]");
+sys::exit(0)

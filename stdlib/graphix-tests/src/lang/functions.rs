@@ -189,6 +189,83 @@ run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// Fusion smoke test: a fully-annotated arithmetic lambda. With the
+// KIR path wired through Lambda::compile, this should run via
+// KirNode (tree-walking interpreter over typed primitives) instead
+// of GXLambda (node-graph walker). Output equality is the
+// regression check; the speed benefit is exercised in M5.
+const KIR_FUSED_ARITH: &str = r#"
+{
+    let f = |a: i64, b: i64| -> i64 a * a + b * b;
+    f(3, 4)
+}
+"#;
+
+run!(kir_fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
+    Ok(Value::I64(25)) => true,
+    _ => false,
+});
+
+// Fusion smoke test: tail-recursive countdown with full annotations
+// and the binding-name hint. Self-call in tail position lowers to
+// `KirStmt::TailCall` + `loop` back-edge, runs through KirNode.
+const KIR_FUSED_TAIL_LOOP: &str = r#"
+{
+    let rec countdown = |n: i64, acc: i64| -> i64
+        select n {
+            0 => acc,
+            _ => countdown(n - 1, acc + n)
+        };
+    countdown(100, 0)
+}
+"#;
+
+run!(kir_fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
+    // 1 + 2 + ... + 100 = 5050
+    Ok(Value::I64(5050)) => true,
+    _ => false,
+});
+
+// Fusion smoke test: a mandelbrot-shape kernel. Same iterate as the
+// unit tests, exercised through the runtime's Apply path.
+const KIR_FUSED_MANDELBROT: &str = r#"
+{
+    let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
+        select i {
+            0 => 0,
+            _ if zr * zr + zi * zi > 4.0 => i,
+            _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
+        };
+    iterate(0.0, 0.0, 1.0, 0.0, 10)
+}
+"#;
+
+run!(kir_fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
+    // c=1+0i: trace 0 → 1 → 2 → 5 → escape; |5|² = 25 > 4 at i=7.
+    Ok(Value::I64(7)) => true,
+    _ => false,
+});
+
+// Deferred fusion: an unannotated callback `|x| x * 2` passed to a
+// HOF. Eager fusion fails (no type on `x`); the deferred path
+// re-attempts at first call using the typechecker-resolved FnType
+// from the call site, fills in `x: i64`, and fuses. Output equality
+// is the regression check; `array::fold` exercises a per-element
+// invocation pattern that's the realistic deferred-fusion target.
+const KIR_FUSED_DEFERRED_MAP: &str = r#"
+{
+    use array;
+    let xs = array::init(100, |idx: i64| idx);
+    array::fold(xs, 0, |acc, x| acc + x * 2)
+}
+"#;
+
+run!(kir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
+    // sum_{i=0}^{99} 2i = 2 * 99*100/2 = 9900
+    Ok(Value::I64(9900)) => true,
+    _ => false,
+});
+
 const LAMBDAMATCH0: &str = r#"
 {
   type T = { foo: Array<f64>, bar: i64, baz: f64 };

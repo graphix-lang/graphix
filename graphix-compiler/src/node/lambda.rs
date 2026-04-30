@@ -387,11 +387,226 @@ impl Lambda {
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
+        // Honour GRAPHIX_NO_KIR=1 by skipping the KirNode path
+        // entirely. Captured at compile time so the env var only
+        // matters for the process lifetime — runtime A/B benches
+        // (KirNode vs GXLambda) toggle it before launching graphix.
+        let kir_enabled = std::env::var_os("GRAPHIX_NO_KIR").is_none();
+        // GRAPHIX_JIT=1 routes the fused kernel through the cranelift
+        // JIT (compile-time native codegen, then native dispatch via
+        // the uniform wrapper). M4b v1 — no background thread, but
+        // each Lambda::compile produces ONE compiled kernel that all
+        // call sites share via Arc.
+        let jit_enabled = std::env::var_os("GRAPHIX_JIT").is_some();
+        // Eager fusion: try to build the KIR kernel (and JIT-compile
+        // it if requested) at compile time, while we have the user's
+        // annotations on the argspec. The result is shared via Arc
+        // into the InitFn so every call site reuses the same kernel
+        // — no per-instantiation rebuild, no per-call JIT. Lambdas
+        // that don't fully annotate get `None` here and fall through
+        // to the deferred path (which retries fusion at first call
+        // using the typechecker-resolved FnType).
+        type FusedSlot = Option<(
+            SArc<crate::kernel_ir::KirKernel>,
+            Option<SArc<crate::kir_jit::WrappedKernel>>,
+        )>;
+        let precomputed: FusedSlot = if kir_enabled {
+            match &l.body {
+                Either::Left(_) => {
+                    let synth_name = match ctx.current_binding_name.as_ref() {
+                        Some(n) => n.clone(),
+                        None => ArcStr::from(
+                            format_compact!("kir_{}", id.0).as_str(),
+                        ),
+                    };
+                    match crate::fusion::build_kir_kernel(
+                        synth_name.as_str(),
+                        l,
+                        &Default::default(),
+                        &Default::default(),
+                    ) {
+                        Some((kernel, _sig))
+                            if !crate::kernel_ir::kernel_contains_call(&kernel) =>
+                        {
+                            let kernel_arc = SArc::new(kernel);
+                            let wrapped = if jit_enabled {
+                                match crate::kir_jit::compile_kernel_with_wrapper(
+                                    &kernel_arc,
+                                ) {
+                                    Ok(w) => Some(SArc::new(w)),
+                                    Err(e) => {
+                                        log::warn!(
+                                            "kir_jit: compile failed for {}: \
+                                             {e:#}; falling back to \
+                                             interpreter",
+                                            synth_name
+                                        );
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            Some((kernel_arc, wrapped))
+                        }
+                        _ => None,
+                    }
+                }
+                Either::Right(_) => None,
+            }
+        } else {
+            None
+        };
+        // Deferred fusion state: when the eager attempt fails
+        // (unannotated argspec), the InitFn re-attempts at first
+        // call using the call-site `resolved` FnType to fill in the
+        // missing types. Result is cached so the second call site
+        // doesn't re-fuse + re-JIT.
+        //
+        // Polymorphic lambdas: this caches the FIRST resolved type
+        // seen. If a later call site uses different types, we'd
+        // dispatch into the wrong native code — a known v1 limit.
+        // Detect-and-skip-cache for type mismatch is a follow-up.
+        #[derive(Clone)]
+        enum DeferredState {
+            Pending,
+            Failed,
+            Ready(FusedSlot),
+        }
+        let deferred_state: SArc<Mutex<DeferredState>> =
+            if kir_enabled && precomputed.is_none() {
+                SArc::new(Mutex::new(DeferredState::Pending))
+            } else {
+                // No deferred path needed. Use a permanently-Failed
+                // state so the closure's lookup just no-ops.
+                SArc::new(Mutex::new(DeferredState::Failed))
+            };
+        let l_for_deferred = if kir_enabled && precomputed.is_none() {
+            Some(l.clone())
+        } else {
+            None
+        };
+        let synth_name_for_deferred = if l_for_deferred.is_some() {
+            Some(match ctx.current_binding_name.as_ref() {
+                Some(n) => n.clone(),
+                None => ArcStr::from(format_compact!("kir_{}", id.0).as_str()),
+            })
+        } else {
+            None
+        };
         let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, resolved, tid| {
             // restore the lexical environment to the state it was in
             // when the closure was created
             ctx.with_restored(_env.clone(), |ctx| match body.clone() {
                 Either::Left(body) => {
+                    // Fast path: precomputed fusion result. Every
+                    // call site clones the shared Arc<KirKernel> and
+                    // (when JIT-on) Arc<WrappedKernel>. The KirNode
+                    // gets its own per-call-site arg buffer but the
+                    // expensive bits (kernel build, native codegen)
+                    // were already done.
+                    if let Some((kernel_arc, wrapped)) = &precomputed {
+                        if args.len() == kernel_arc.params.len() {
+                            let n_args = args.len();
+                            let kn = match wrapped {
+                                Some(w) => crate::kir_interp::KirNode::with_jit(
+                                    kernel_arc.clone(),
+                                    n_args,
+                                    SArc::clone(w),
+                                ),
+                                None => crate::kir_interp::KirNode::new(
+                                    kernel_arc.clone(),
+                                    n_args,
+                                ),
+                            };
+                            return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
+                        }
+                    }
+                    // Deferred path: when the eager attempt failed
+                    // (e.g. an unannotated callback like `|idx| ...`
+                    // passed to array::map), retry now that the
+                    // typechecker has handed us a resolved FnType.
+                    // Patch the lambda's argspec from `resolved` and
+                    // try fusion again. Cache the result so later
+                    // call sites of the same LambdaDef skip the
+                    // work.
+                    if let (
+                        Some(l_def),
+                        Some(synth),
+                        Some(rft),
+                    ) = (
+                        l_for_deferred.as_ref(),
+                        synth_name_for_deferred.as_ref(),
+                        resolved,
+                    ) {
+                        let mut state = deferred_state.lock();
+                        let slot: FusedSlot = match &*state {
+                            DeferredState::Ready(slot) => slot.clone(),
+                            DeferredState::Failed => None,
+                            DeferredState::Pending => {
+                                let mut patched =
+                                    triomphe::Arc::new(l_def.clone());
+                                crate::fusion::apply_fntype_to_lambda(
+                                    &mut patched,
+                                    rft,
+                                );
+                                let attempt = crate::fusion::build_kir_kernel(
+                                    synth.as_str(),
+                                    &*patched,
+                                    &Default::default(),
+                                    &Default::default(),
+                                );
+                                let slot: FusedSlot = match attempt {
+                                    Some((kernel, _sig))
+                                        if !crate::kernel_ir::kernel_contains_call(
+                                            &kernel,
+                                        ) =>
+                                    {
+                                        let kernel_arc = SArc::new(kernel);
+                                        let wrapped = if jit_enabled {
+                                            match crate::kir_jit::compile_kernel_with_wrapper(
+                                                &kernel_arc,
+                                            ) {
+                                                Ok(w) => Some(SArc::new(w)),
+                                                Err(e) => {
+                                                    log::warn!(
+                                                        "kir_jit (deferred): {}: \
+                                                         {e:#}; using interpreter",
+                                                        synth
+                                                    );
+                                                    None
+                                                }
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        Some((kernel_arc, wrapped))
+                                    }
+                                    _ => None,
+                                };
+                                *state = match &slot {
+                                    Some(_) => DeferredState::Ready(slot.clone()),
+                                    None => DeferredState::Failed,
+                                };
+                                slot
+                            }
+                        };
+                        drop(state);
+                        if let Some((kernel_arc, wrapped)) = slot {
+                            if args.len() == kernel_arc.params.len() {
+                                let n_args = args.len();
+                                let kn = match wrapped {
+                                    Some(w) => crate::kir_interp::KirNode::with_jit(
+                                        kernel_arc, n_args, w,
+                                    ),
+                                    None => crate::kir_interp::KirNode::new(
+                                        kernel_arc, n_args,
+                                    ),
+                                };
+                                return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
+                            }
+                        }
+                    }
                     let scope = Scope {
                         dynamic: scope.dynamic.clone(),
                         lexical: _scope.lexical.clone(),

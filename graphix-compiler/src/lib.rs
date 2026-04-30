@@ -12,6 +12,9 @@ extern crate serde_derive;
 pub mod env;
 pub mod expr;
 pub mod fusion;
+pub mod kernel_ir;
+pub mod kir_interp;
+pub mod kir_jit;
 pub mod node;
 pub mod typ;
 
@@ -887,6 +890,15 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// derived types. Only populated by code that cares — nodes that
     /// don't write entries just leave it alone.
     pub fn_types: IntMap<crate::expr::ExprId, crate::typ::FnType>,
+    /// Side channel for fusion's self-recursion detection: when
+    /// `Bind::compile` descends into a `let X = lambda` form, it
+    /// stashes `Some(X)` here before recursing, restoring the prior
+    /// value after. `Lambda::compile` reads it, captures it into the
+    /// init closure, and uses it as the synthetic `fn_name` for the
+    /// fusion attempt — so a body that calls `X(...)` is recognised
+    /// as recursive. Cleared (or restored) at every Bind boundary, so
+    /// stray reads pick up `None` rather than a stale outer name.
+    pub current_binding_name: Option<ArcStr>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -920,6 +932,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             fn_types: IntMap::default(),
+            current_binding_name: None,
         })
     }
 

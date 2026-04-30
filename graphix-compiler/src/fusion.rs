@@ -1,206 +1,56 @@
-//! Node fusion: emit Rust source for pure-expression subtrees so
-//! rustc can specialize them instead of leaving them as a tree of
-//! `Box<dyn Update>` interpreter nodes.
+//! Node fusion: identify pure-expression / pure-function subtrees and
+//! lower them into the typed kernel IR ([`crate::kernel_ir`]). The
+//! resulting [`KirExpr`] / [`KirKernel`] then has two backends:
 //!
-//! This is Step 3 of the plan at
-//! `~/.claude/plans/ethereal-humming-summit.md`. The emitter starts
-//! with pure arithmetic / comparison / bool subtrees over primitive
-//! Graphix types, and grows outward:
+//! - **Rust source** — the AOT path (`graphix compile`) calls
+//!   [`kernel_ir::kir_to_rust_kernel`] to produce a free function and
+//!   wraps it in a Cargo crate that rustc compiles.
 //!
-//! - `emit_expr` — a pure expression subtree → Rust expression.
-//! - `emit_body` — a function body with `select` arms, `let`-bindings,
-//!   and self-recursive tail calls → a Rust statement block that uses
-//!   `return` / `continue` appropriately.
-//! - `emit_function_kernel` — takes a whole fully-typed lambda and
-//!   emits a standalone Rust function plus an `Apply<R, E>` builtin
-//!   shim that can be registered like any other package builtin.
+//! - **Cranelift IR** — the JIT path (future, see `crate::jit`) lowers
+//!   the same KIR to CLIF for in-process JIT compilation.
 //!
-//! The mandelbrot `iterate` function is the driving example: primitive
-//! arg types, a `select` on an integer, a guard using arithmetic, and
-//! a self-recursive tail call with updated args — the classic
-//! "pure-function loop" pattern. Successfully emitting a loop-form
-//! kernel for that is the gating test for the whole pipeline.
+//! This module is the front end (Graphix `Expr` → KIR) plus the
+//! AOT-side packaging glue: the Apply shim / `BuiltIn` impl / Cargo
+//! scaffolding that drops a fused kernel into a generated package.
+//! The IR types and Rust-source backend live in [`crate::kernel_ir`].
+//!
+//! Driving examples are mandelbrot's `iterate` (primitive args, a
+//! `select` with arithmetic guards, a self-recursive tail call) and
+//! naive `fib` (primitive args, non-tail self recursion lowered as
+//! direct Rust recursion).
 
 use crate::{
     env::Env,
     expr::{Expr, ExprKind, ModPath, Pattern, StructurePattern},
+    kernel_ir::{
+        self as kir, kir_to_rust_expr, kir_to_rust_kernel, ConstVal, KirExpr, KirKernel,
+        KirOp, KirStmt, Let, SelectArm,
+    },
     typ::Type,
-    BindId, Scope,
+    Scope,
 };
 use arcstr::ArcStr;
-use netidx_value::{Typ, Value};
 use std::fmt::Write;
 
-/// Every primitive Graphix type whose payload the fusion emitter knows
-/// how to extract from a `Value` with `get_as_unchecked`. Intentionally
-/// narrow for the first slice — strings, decimals, datetimes, bytes
-/// etc. require owned/refcounted accessors and different patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrimType {
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-    F32,
-    F64,
-    Bool,
-}
-
-impl PrimType {
-    /// Name of the corresponding Rust primitive.
-    pub fn rust_name(self) -> &'static str {
-        match self {
-            PrimType::I8 => "i8",
-            PrimType::I16 => "i16",
-            PrimType::I32 => "i32",
-            PrimType::I64 => "i64",
-            PrimType::U8 => "u8",
-            PrimType::U16 => "u16",
-            PrimType::U32 => "u32",
-            PrimType::U64 => "u64",
-            PrimType::F32 => "f32",
-            PrimType::F64 => "f64",
-            PrimType::Bool => "bool",
-        }
-    }
-
-    /// Name of the `Value` variant that carries this primitive.
-    pub fn value_variant(self) -> &'static str {
-        match self {
-            PrimType::I8 => "I8",
-            PrimType::I16 => "I16",
-            PrimType::I32 => "I32",
-            PrimType::I64 => "I64",
-            PrimType::U8 => "U8",
-            PrimType::U16 => "U16",
-            PrimType::U32 => "U32",
-            PrimType::U64 => "U64",
-            PrimType::F32 => "F32",
-            PrimType::F64 => "F64",
-            PrimType::Bool => "Bool",
-        }
-    }
-
-    fn from_typ(t: Typ) -> Option<PrimType> {
-        Some(match t {
-            Typ::I8 => PrimType::I8,
-            Typ::I16 => PrimType::I16,
-            Typ::I32 => PrimType::I32,
-            Typ::I64 => PrimType::I64,
-            Typ::U8 => PrimType::U8,
-            Typ::U16 => PrimType::U16,
-            Typ::U32 => PrimType::U32,
-            Typ::U64 => PrimType::U64,
-            Typ::F32 => PrimType::F32,
-            Typ::F64 => PrimType::F64,
-            Typ::Bool => PrimType::Bool,
-            _ => return None,
-        })
-    }
-
-    /// Derive a [`PrimType`] from a fully-resolved Graphix [`Type`].
-    /// Returns `None` for anything that isn't a single-variant numeric
-    /// or bool primitive — union of variants, unbound TVar, or
-    /// non-primitive types all disqualify the subtree from fusion.
-    /// Bound TVars are transparently deref'd: after typecheck, a
-    /// TVar bound to `i64` looks like a plain `i64` to the fusion
-    /// emitter. Graphix's scripting mode allows TVars to remain
-    /// unbound at the end of typecheck (inferred from context only
-    /// as the program runs), in which case we can't emit specialized
-    /// Rust for that position and the caller should either annotate
-    /// or accept falling back to the interpreter.
-    pub fn from_type(t: &Type) -> Option<PrimType> {
-        t.with_deref(|resolved| match resolved? {
-            Type::Primitive(flags) => {
-                let mut iter = flags.iter();
-                let first = iter.next()?;
-                if iter.next().is_some() {
-                    return None;
-                }
-                Self::from_typ(first)
-            }
-            _ => None,
-        })
-    }
-
-    pub fn is_numeric(self) -> bool {
-        !matches!(self, PrimType::Bool)
-    }
-
-    pub fn is_integer(self) -> bool {
-        matches!(
-            self,
-            PrimType::I8
-                | PrimType::I16
-                | PrimType::I32
-                | PrimType::I64
-                | PrimType::U8
-                | PrimType::U16
-                | PrimType::U32
-                | PrimType::U64
-        )
-    }
-
-    pub fn is_float(self) -> bool {
-        matches!(self, PrimType::F32 | PrimType::F64)
-    }
-}
-
-/// One input to a fused kernel — a bound variable read by one or more
-/// `Ref` nodes inside the subtree. `rust_name` is used in the emitted
-/// body so generated identifiers are deterministic and don't collide
-/// with Rust keywords.
-#[derive(Debug, Clone)]
-pub struct Input {
-    pub name: ArcStr,
-    pub prim: PrimType,
-    pub bind_id: Option<BindId>,
-    pub rust_name: String,
-}
-
-/// Signature of a function the emitter has already seen fuse
-/// successfully. Used when one fused kernel calls another — the call
-/// site lowers to a direct Rust call to the target's `body_fn_name`.
-#[derive(Debug, Clone)]
-pub struct KnownFusedFn {
-    /// Rust name of the free fn (e.g. "fused_iterate_body"). Must be
-    /// visible from the emitted kernel (same crate).
-    pub body_fn_name: String,
-    /// Positional argument types in declaration order. Currently only
-    /// all-positional primitive-typed args are supported.
-    pub arg_types: Vec<PrimType>,
-    /// Return primitive type.
-    pub return_type: PrimType,
-}
-
-/// A compile-time-known primitive value bound to a Graphix-level
-/// name. Used to inline references to outer-scope `let x = <literal>`
-/// bindings as Rust literals, so a fused kernel can reach variables
-/// outside its immediate arg list.
-#[derive(Debug, Clone)]
-pub struct KnownConst {
-    pub prim: PrimType,
-    /// Rust source form — e.g. "100i64", "-2.5f64", "true".
-    pub rust_src: String,
-}
+// Re-export the canonical KIR types so existing callers (graphix-shell,
+// graphix-package-bench, in-tree tests) keep compiling. The IR's
+// definitive home is `crate::kernel_ir`; these aliases exist purely to
+// keep the public API surface stable across the move.
+pub use crate::kernel_ir::{Input, KnownConst, KnownFusedFn, PrimType};
 
 /// Lookup table the emitter consults whenever it sees a `Ref` — tells
 /// us the variable's primitive type and the name to use in generated
-/// Rust. Also carries a small registry of already-fused functions so a
-/// kernel body can direct-call another fused kernel instead of
-/// round-tripping through the interpreted CallSite.
+/// code. Also carries a small registry of already-fused functions so a
+/// kernel body can direct-call another fused kernel instead of round-
+/// tripping through the interpreted CallSite, plus a registry of
+/// compile-time-known primitive constants for inlining.
 #[derive(Debug, Clone, Default)]
 pub struct FusionCtx {
     pub inputs: Vec<Input>,
     /// Other kernels already fused in the current pass. Used by
-    /// `emit_expr` to lower `Apply { fn: Ref(name) }` to a direct Rust
-    /// call when `name` is in this map. The map is keyed by the
-    /// Graphix-level name (e.g. "iterate") so rewrites done earlier in
-    /// the walk are visible to fusions done later.
+    /// `emit_expr` to lower `Apply { fn: Ref(name) }` to a direct call
+    /// when `name` is in this map. Keyed by the Graphix-level name so
+    /// rewrites done earlier in the walk are visible to later fusions.
     pub known_fns: std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     /// Compile-time-known primitive constants, inlined at Ref sites.
     /// Populated by the rewrite pass from `let <name> = <literal>;`
@@ -222,17 +72,6 @@ impl FusionCtx {
     }
 }
 
-/// Emitted Rust for a sub-expression, plus the primitive type it
-/// evaluates to. The caller uses the type to decide whether a parent
-/// operator is legal (e.g. `+` requires numeric operands of the same
-/// type) and to choose the right `Value` variant when wrapping the
-/// kernel's final result.
-#[derive(Debug, Clone)]
-pub struct EmittedExpr {
-    pub src: String,
-    pub typ: PrimType,
-}
-
 fn ident_of(path: &ModPath) -> Option<&str> {
     // A Ref we can fuse must be a bare identifier (no module path),
     // because we read its value from a local binding in the kernel.
@@ -245,182 +84,130 @@ fn ident_of(path: &ModPath) -> Option<&str> {
     Some(base)
 }
 
-fn constant_prim(v: &Value) -> Option<(PrimType, String)> {
-    use std::fmt::Display;
-    fn lit<T: Display>(v: T, suffix: &str) -> String {
-        format!("{v}{suffix}")
-    }
-    Some(match v {
-        Value::I8(x) => (PrimType::I8, lit(x, "i8")),
-        Value::I16(x) => (PrimType::I16, lit(x, "i16")),
-        Value::I32(x) | Value::Z32(x) => (PrimType::I32, lit(x, "i32")),
-        Value::I64(x) | Value::Z64(x) => (PrimType::I64, lit(x, "i64")),
-        Value::U8(x) => (PrimType::U8, lit(x, "u8")),
-        Value::U16(x) => (PrimType::U16, lit(x, "u16")),
-        Value::U32(x) | Value::V32(x) => (PrimType::U32, lit(x, "u32")),
-        Value::U64(x) | Value::V64(x) => (PrimType::U64, lit(x, "u64")),
-        Value::F32(x) => (PrimType::F32, format!("{x}f32")),
-        Value::F64(x) => (PrimType::F64, format!("{x}f64")),
-        Value::Bool(b) => (PrimType::Bool, format!("{b}")),
-        _ => return None,
-    })
-}
+// ─── Expression-position emitters ────────────────────────────────
 
-fn arith(lhs: &EmittedExpr, rhs: &EmittedExpr, op: &str) -> Option<EmittedExpr> {
-    if lhs.typ != rhs.typ || !lhs.typ.is_numeric() {
-        return None;
-    }
-    Some(EmittedExpr {
-        src: format!("({} {} {})", lhs.src, op, rhs.src),
-        typ: lhs.typ,
-    })
-}
-
-fn cmp(lhs: &EmittedExpr, rhs: &EmittedExpr, op: &str) -> Option<EmittedExpr> {
-    if lhs.typ != rhs.typ {
-        return None;
-    }
-    Some(EmittedExpr {
-        src: format!("({} {} {})", lhs.src, op, rhs.src),
-        typ: PrimType::Bool,
-    })
-}
-
-fn bool_op(lhs: &EmittedExpr, rhs: &EmittedExpr, op: &str) -> Option<EmittedExpr> {
-    if lhs.typ != PrimType::Bool || rhs.typ != PrimType::Bool {
-        return None;
-    }
-    Some(EmittedExpr {
-        src: format!("({} {} {})", lhs.src, op, rhs.src),
-        typ: PrimType::Bool,
-    })
-}
-
-/// Emit a `select` at expression position as a Rust `if/else if/else`
-/// chain. Every arm body must itself emit as a primitive expression,
-/// and every arm body must have the same primitive type (Rust's if-
-/// expression requires consistent branch types). The final arm, if
-/// unconditional, becomes a bare `else { ... }`; otherwise we close
-/// with `else { unreachable!() }` — Graphix typecheck enforces
-/// exhaustiveness so this is a safety-net, not a hot path.
+/// Emit a `select` at expression position as a [`KirOp::IfChain`].
+/// Every arm body must itself emit as a primitive expression, and
+/// every arm body must have the same primitive type (since the chain
+/// evaluates to a single value).
 fn emit_select_as_expr(
     s: &crate::expr::SelectExpr,
     ctx: &FusionCtx,
-) -> Option<EmittedExpr> {
+) -> Option<KirExpr> {
     let scrut = emit_expr(&s.arg, ctx)?;
     let n = s.arms.len();
     if n == 0 {
         return None;
     }
-    let mut out = String::new();
+    let mut arms: Vec<(Option<KirExpr>, KirExpr)> = Vec::with_capacity(n);
     let mut unified_typ: Option<PrimType> = None;
     for (i, (pat, body)) in s.arms.iter().enumerate() {
         let is_last = i == n - 1;
         let mut arm_ctx = ctx.clone();
-        let cond =
+        let cond_kir =
             emit_arm_condition(&scrut, &pat.structure_predicate, &mut arm_ctx)?;
-        let guard_src = match &pat.guard {
+        let guard_kir = match &pat.guard {
             None => None,
             Some(g) => {
                 let g = emit_expr(g, &arm_ctx)?;
                 if g.typ != PrimType::Bool {
                     return None;
                 }
-                Some(g.src)
+                Some(g)
             }
         };
-        let combined = match (cond, guard_src) {
-            (None, None) => None,
-            (Some(c), None) => Some(c),
-            (None, Some(g)) => Some(g),
-            (Some(c), Some(g)) => Some(format!("({c}) && ({g})")),
-        };
-        let body_ev = emit_expr(body, &arm_ctx)?;
+        let combined = combine_cond_and_guard(cond_kir, guard_kir);
+        let body_kir = emit_expr(body, &arm_ctx)?;
         match unified_typ {
-            Some(t) if t != body_ev.typ => return None,
-            None => unified_typ = Some(body_ev.typ),
+            Some(t) if t != body_kir.typ => return None,
+            None => unified_typ = Some(body_kir.typ),
             _ => (),
         }
+        // First arm with no condition + only one arm total: just emit
+        // the body as the unconditional branch.
         match (i, &combined) {
-            (0, Some(c)) => {
-                out.push_str(&format!("if {c} {{ {} }}", body_ev.src));
+            (0, None) if is_last => {
+                arms.push((None, body_kir));
             }
-            (0, None) => {
-                // First and only or first unconditional — just emit
-                // the body, wrapped in a block for uniformity.
-                out.push_str(&format!("{{ {} }}", body_ev.src));
+            (_, _) if !is_last && combined.is_none() => {
+                // Unconditional non-last arm. Subsequent arms are dead;
+                // keep emitting them, but mark this one as
+                // unconditional so the renderer doesn't add an `if`.
+                arms.push((None, body_kir));
             }
-            (_, Some(c)) if !is_last => {
-                out.push_str(&format!(" else if {c} {{ {} }}", body_ev.src));
-            }
-            (_, Some(c)) => {
-                // Last arm conditional — keep the condition and close
-                // with an `else { unreachable!() }` for exhaustiveness.
-                out.push_str(&format!(" else if {c} {{ {} }}", body_ev.src));
-                out.push_str(" else { unreachable!(\"select fallthrough\") }");
-            }
-            (_, None) => {
-                // Unconditional non-first arm — becomes `else { ... }`.
-                out.push_str(&format!(" else {{ {} }}", body_ev.src));
+            _ => {
+                arms.push((combined, body_kir));
             }
         }
     }
     let typ = unified_typ?;
-    Some(EmittedExpr { src: format!("({out})"), typ })
+    Some(KirExpr { op: KirOp::IfChain { arms }, typ })
 }
 
-/// Emit an `Apply` call whose target is a Ref to a function already
-/// in `ctx.known_fns`. The call lowers to a direct Rust call against
-/// the target's `body_fn_name`. Returns `None` if the target isn't
-/// known, the arg arity/typing doesn't match, or any arg expression
-/// can't itself be fused.
+/// Compose a structure-predicate condition (which may be `None` =
+/// "always matches") with an optional guard expression into a single
+/// optional bool [`KirExpr`].
+fn combine_cond_and_guard(
+    cond: Option<KirExpr>,
+    guard: Option<KirExpr>,
+) -> Option<KirExpr> {
+    match (cond, guard) {
+        (None, None) => None,
+        (Some(c), None) => Some(c),
+        (None, Some(g)) => Some(g),
+        (Some(c), Some(g)) => kir::bool_op(c, g, kir::BoolOp::And),
+    }
+}
+
+/// Emit an `Apply` call whose target is a Ref to a function already in
+/// `ctx.known_fns`. Lowers to a [`KirOp::Call`].
 fn emit_known_fused_call(
     a: &crate::expr::ApplyExpr,
     ctx: &FusionCtx,
-) -> Option<EmittedExpr> {
+) -> Option<KirExpr> {
     let name = match &a.function.kind {
         ExprKind::Ref { name } => ident_of(name)?,
         _ => return None,
     };
     let fn_info = ctx.find_fn(name)?.clone();
-    // All-positional, matching arity.
     if a.args.len() != fn_info.arg_types.len() {
         return None;
     }
     if a.args.iter().any(|(label, _)| label.is_some()) {
         return None;
     }
-    let mut parts = Vec::with_capacity(a.args.len());
+    let mut kargs = Vec::with_capacity(a.args.len());
     for ((_, expr), expected) in a.args.iter().zip(&fn_info.arg_types) {
         let e = emit_expr(expr, ctx)?;
         if e.typ != *expected {
             return None;
         }
-        parts.push(e.src);
+        kargs.push(e);
     }
-    Some(EmittedExpr {
-        src: format!("{}({})", fn_info.body_fn_name, parts.join(", ")),
+    Some(KirExpr {
+        op: KirOp::Call { fn_name: ArcStr::from(name), args: kargs },
         typ: fn_info.return_type,
     })
 }
 
 /// Emit a Graphix `{ let x = ...; let y = ...; body }` block as a
-/// Rust block expression. Each non-last statement must be a
-/// `let`-binding whose value emits as a primitive expression; the
-/// final statement provides the block's value.
-fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<EmittedExpr> {
+/// [`KirOp::Block`]. Each non-last statement must be a `let`-binding
+/// whose value emits as a primitive expression; the final statement
+/// provides the block's value.
+fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
     if exprs.is_empty() {
         return None;
     }
     let mut local_ctx = ctx.clone();
+    let mut lets: Vec<Let> = Vec::new();
     let last = exprs.len() - 1;
-    let mut lets = String::new();
     for (i, e) in exprs.iter().enumerate() {
         if i == last {
             let body = emit_expr(e, &local_ctx)?;
-            return Some(EmittedExpr {
-                src: format!("{{ {}{} }}", lets, body.src),
-                typ: body.typ,
+            let typ = body.typ;
+            return Some(KirExpr {
+                op: KirOp::Block { lets, tail: Box::new(body) },
+                typ,
             });
         }
         match &e.kind {
@@ -430,15 +217,11 @@ fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<EmittedExpr> {
                 }
                 let name = b.pattern.single_bind()?;
                 let value = emit_expr(&b.value, &local_ctx)?;
-                lets.push_str(&format!(
-                    "let mut {}: {} = {}; ",
-                    name,
-                    value.typ.rust_name(),
-                    value.src
-                ));
+                let prim = value.typ;
+                lets.push(Let { local: name.clone(), value });
                 local_ctx.inputs.push(Input {
                     name: name.clone(),
-                    prim: value.typ,
+                    prim,
                     bind_id: None,
                     rust_name: name.to_string(),
                 });
@@ -450,15 +233,15 @@ fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<EmittedExpr> {
     None
 }
 
-/// Emit Rust source for a single sub-expression. Returns `None` if
-/// any sub-tree is something the emitter doesn't handle yet — that
-/// short-circuits the whole parent, so the caller falls back to the
-/// interpreted path.
-pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<EmittedExpr> {
+/// Emit a sub-expression as a [`KirExpr`]. Returns `None` if any sub-
+/// tree is something the emitter doesn't handle yet — that short-
+/// circuits the whole parent, so the caller falls back to the
+/// interpreted path (or, in AOT mode, refuses fusion).
+pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
     match &expr.kind {
         ExprKind::Constant(v) => {
-            let (typ, src) = constant_prim(v)?;
-            Some(EmittedExpr { src, typ })
+            let c = ConstVal::from_value(v)?;
+            Some(kir::const_expr(c))
         }
         ExprKind::Ref { name } => {
             let ident = ident_of(name)?;
@@ -466,83 +249,78 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<EmittedExpr> {
             // the known-constants registry (outer-scope `let x = <lit>;`
             // bindings inlined at compile time).
             if let Some(input) = ctx.find(ident) {
-                return Some(EmittedExpr {
-                    src: input.rust_name.clone(),
-                    typ: input.prim,
-                });
+                return Some(kir::local(input.name.clone(), input.prim));
             }
             if let Some(c) = ctx.find_const(ident) {
-                return Some(EmittedExpr {
-                    src: c.rust_src.clone(),
-                    typ: c.prim,
-                });
+                // Inlining a known-const: clone the stored KIR. The
+                // const's expr is closed (no free locals), so cloning
+                // it into this position is always sound.
+                return Some(c.expr.clone());
             }
             None
         }
         ExprKind::ExplicitParens(inner) => emit_expr(inner, ctx),
-        ExprKind::Add { lhs, rhs } => arith(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "+"),
-        ExprKind::Sub { lhs, rhs } => arith(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "-"),
-        ExprKind::Mul { lhs, rhs } => arith(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "*"),
-        ExprKind::Div { lhs, rhs } => arith(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "/"),
-        ExprKind::Mod { lhs, rhs } => arith(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "%"),
-        ExprKind::Eq { lhs, rhs } => cmp(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "=="),
-        ExprKind::Ne { lhs, rhs } => cmp(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "!="),
-        ExprKind::Lt { lhs, rhs } => cmp(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "<"),
-        ExprKind::Gt { lhs, rhs } => cmp(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, ">"),
-        ExprKind::Lte { lhs, rhs } => cmp(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "<="),
-        ExprKind::Gte { lhs, rhs } => cmp(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, ">="),
-        ExprKind::And { lhs, rhs } => {
-            bool_op(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "&&")
+        ExprKind::Add { lhs, rhs } => {
+            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Add)
         }
-        ExprKind::Or { lhs, rhs } => {
-            bool_op(&emit_expr(lhs, ctx)?, &emit_expr(rhs, ctx)?, "||")
+        ExprKind::Sub { lhs, rhs } => {
+            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Sub)
         }
-        ExprKind::Not { expr } => {
-            let inner = emit_expr(expr, ctx)?;
-            if inner.typ != PrimType::Bool {
-                return None;
-            }
-            Some(EmittedExpr { src: format!("(!{})", inner.src), typ: PrimType::Bool })
+        ExprKind::Mul { lhs, rhs } => {
+            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Mul)
         }
-        // A Select at an expression position lowers to a Rust
-        // `if/else-if/else` chain, with the final arm collapsed into
-        // an unconditional `else` when it is `_`/`name`/unconditional
-        // + no guard. Each arm body must itself emit as a primitive
-        // expression of the same type.
+        ExprKind::Div { lhs, rhs } => {
+            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Div)
+        }
+        ExprKind::Mod { lhs, rhs } => {
+            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Mod)
+        }
+        ExprKind::Eq { lhs, rhs } => {
+            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Eq)
+        }
+        ExprKind::Ne { lhs, rhs } => {
+            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Ne)
+        }
+        ExprKind::Lt { lhs, rhs } => {
+            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Lt)
+        }
+        ExprKind::Gt { lhs, rhs } => {
+            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Gt)
+        }
+        ExprKind::Lte { lhs, rhs } => {
+            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Lte)
+        }
+        ExprKind::Gte { lhs, rhs } => {
+            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Gte)
+        }
+        ExprKind::And { lhs, rhs } => kir::bool_op(
+            emit_expr(lhs, ctx)?,
+            emit_expr(rhs, ctx)?,
+            kir::BoolOp::And,
+        ),
+        ExprKind::Or { lhs, rhs } => kir::bool_op(
+            emit_expr(lhs, ctx)?,
+            emit_expr(rhs, ctx)?,
+            kir::BoolOp::Or,
+        ),
+        ExprKind::Not { expr } => kir::not(emit_expr(expr, ctx)?),
+        // A Select at expression position lowers to an if-chain.
         ExprKind::Select(s) => emit_select_as_expr(s, ctx),
-        // A Do block at an expression position lowers to a Rust block
-        // expression: each leading `let` is a `let`, and the final
-        // expression provides the value. Non-Bind non-last statements
-        // abort fusion.
+        // A Do block at expression position lowers to a Block.
         ExprKind::Do { exprs } => emit_do_as_expr(exprs, ctx),
-        // Direct call to an already-fused function becomes a Rust
-        // function call against the kernel's `_body` symbol. This is
-        // what lets one fused kernel compose with another — the shim
-        // roundtrip (Value pack → CachedVals → match → Value unpack)
-        // is bypassed entirely inside fused code.
+        // Direct call to an already-fused function — lowered to a Call.
         ExprKind::Apply(a) => emit_known_fused_call(a, ctx),
-        // `cast<T>(expr)` between primitives is a Rust `(expr as T)`.
-        // Non-primitive casts (e.g. to string, variant) can't fuse.
+        // `cast<T>(expr)` between primitives → KirOp::Cast.
         ExprKind::TypeCast { expr, typ } => {
             let target = PrimType::from_type(typ)?;
-            let inner = emit_expr(expr, ctx)?;
-            // Bool casts in Rust need a match rather than `as`; skip
-            // that case until we meet it in practice.
-            if target == PrimType::Bool || inner.typ == PrimType::Bool {
-                return None;
-            }
-            Some(EmittedExpr {
-                src: format!("({} as {})", inner.src, target.rust_name()),
-                typ: target,
-            })
+            kir::cast(emit_expr(expr, ctx)?, target)
         }
         // `$` (or-never) and `?` (qop) on a post-typecheck expression
         // assert that the inner value succeeded. For a fused kernel
         // the types were proven at compile time, so we just emit the
-        // inner expression. If the runtime would actually error (e.g.
-        // an array index out of bounds), our fusion candidate-selection
-        // will reject the expression upstream — we only emit fused
-        // code for operations that can't fail.
+        // inner expression. If the runtime would actually error, our
+        // fusion candidate-selection rejects the expression upstream —
+        // we only emit fused code for operations that can't fail.
         ExprKind::OrNever(inner) | ExprKind::Qop(inner) => emit_expr(inner, ctx),
         // Deliberately not-yet-supported: Bind (at non-statement
         // position), Lambda, checked arithmetic, Sample, and anything
@@ -552,79 +330,60 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<EmittedExpr> {
     }
 }
 
-/// Information about a self-recursive function, used by `emit_body` to
-/// detect tail calls and lower them to a loop `continue`.
+// ─── Body-position emitters ──────────────────────────────────────
+
+/// Information about a self-recursive function, used by the body
+/// emitter to detect tail calls and lower them to a [`KirStmt::TailCall`].
 ///
-/// When `self_info` is `Some`, the caller wraps the emitted body in a
-/// `loop { ... }` and every `continue` transfers control back to the
-/// loop head with the args mutated in place. When it is `None`, tail
-/// positions simply `return` their computed value.
+/// When `self_info` is `Some`, the kernel emitter wraps the body in a
+/// `loop { ... }` and every tail call updates the loop variables and
+/// continues. When it is `None`, tail positions emit a [`KirStmt::Return`].
 #[derive(Debug, Clone)]
 pub struct SelfInfo {
     /// The graphix name being bound to the lambda (e.g. "iterate").
     pub name: ArcStr,
     /// Arg names in signature order. Must match the lambda's argspec.
-    /// These are the mutable loop variables updated by each tail call.
+    /// These are the loop variables updated by each tail call.
     pub params: Vec<Input>,
 }
 
-/// Emit a sequence of Rust statements that evaluate `expr` as the body
-/// of a function. Handles:
-///
-/// - Pure expressions: wrapped in `return <expr>;` (the "tail" emit).
-/// - Self-recursive tail calls (when `self_info` is `Some`): lowered
-///   to temp-assign + direct-assign + `continue`.
-/// - `select` over primitive scrutinees: lowered to a sequence of
-///   `if`-guards, one per arm, each ending in a return or continue.
-/// - `let`-style bindings inside a Do block: lowered to Rust `let`s
-///   that introduce new primitive-typed inputs visible to the tail.
+/// Emit a sequence of [`KirStmt`]s evaluating `expr` as a function
+/// body. Handles pure expressions (lowered to `Return`), self-tail
+/// calls (lowered to `TailCall`), `select` over primitive scrutinees,
+/// and `let`-style bindings.
 ///
 /// Returns `None` if any sub-expression isn't in the supported subset.
-///
-/// The emitted source does NOT include the outer `fn` signature or
-/// `loop { ... }` wrapper — the caller is responsible for that.
 pub fn emit_body(
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-) -> Option<String> {
-    let mut out = String::new();
-    emit_body_into(&mut out, expr, ctx, self_info, 0)?;
+) -> Option<Vec<KirStmt>> {
+    let mut out = Vec::new();
+    emit_body_into(&mut out, expr, ctx, self_info)?;
     Some(out)
 }
 
-fn indent_str(out: &mut String, indent: usize) {
-    for _ in 0..indent {
-        out.push_str("    ");
-    }
-}
-
 fn emit_body_into(
-    out: &mut String,
+    out: &mut Vec<KirStmt>,
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-    indent: usize,
 ) -> Option<()> {
     match &expr.kind {
-        ExprKind::Do { exprs } => emit_do(out, exprs, ctx, self_info, indent),
-        ExprKind::ExplicitParens(inner) => {
-            emit_body_into(out, inner, ctx, self_info, indent)
-        }
-        ExprKind::Select(s) => emit_select(out, s, ctx, self_info, indent),
-        _ => emit_tail(out, expr, ctx, self_info, indent),
+        ExprKind::Do { exprs } => emit_do(out, exprs, ctx, self_info),
+        ExprKind::ExplicitParens(inner) => emit_body_into(out, inner, ctx, self_info),
+        ExprKind::Select(s) => emit_select(out, s, ctx, self_info),
+        _ => emit_tail(out, expr, ctx, self_info),
     }
 }
 
-/// Emit a Do block as function-body statements: each non-last expr
-/// becomes a Rust statement (Bind, or value discarded); the last one
-/// is a tail expression.
+/// Emit a Do block as a sequence of body statements: each non-last
+/// expr becomes a `Let` (or skipped NoOp); the last is the tail.
 fn emit_do(
-    out: &mut String,
+    out: &mut Vec<KirStmt>,
     exprs: &[Expr],
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-    indent: usize,
 ) -> Option<()> {
     if exprs.is_empty() {
         return None;
@@ -635,17 +394,14 @@ fn emit_do(
     let last = exprs.len() - 1;
     for (i, e) in exprs.iter().enumerate() {
         if i == last {
-            emit_body_into(out, e, &local_ctx, self_info, indent)?;
+            emit_body_into(out, e, &local_ctx, self_info)?;
         } else {
             // Everything before the last must be a binding (we can't
             // fuse arbitrary statement sequences — Graphix blocks only
             // return the last expr's value). A plain expression with a
             // side-effect would be unfusable anyway.
             match &e.kind {
-                ExprKind::Bind(b) => {
-                    emit_bind_stmt(out, b, &mut local_ctx, indent)?;
-                }
-                // Tolerate a no-op filler (e.g. a trailing `;` quirk).
+                ExprKind::Bind(b) => emit_bind_stmt(out, b, &mut local_ctx)?,
                 ExprKind::NoOp => {}
                 _ => return None,
             }
@@ -654,197 +410,128 @@ fn emit_do(
     Some(())
 }
 
-/// Emit a `let`-style binding as a Rust `let <name> = <expr>;` and
-/// extend the ctx so later emissions can see the new input.
+/// Emit a `let`-style binding as a [`KirStmt::Let`] and extend the
+/// ctx so later emissions can see the new input.
 fn emit_bind_stmt(
-    out: &mut String,
+    out: &mut Vec<KirStmt>,
     b: &crate::expr::BindExpr,
     ctx: &mut FusionCtx,
-    indent: usize,
 ) -> Option<()> {
-    // Only simple single-name non-recursive bindings in the fusable
-    // subset — recursive lets, destructuring, and anything with a
-    // non-primitive value all fall back to the interpreter.
     if b.rec {
         return None;
     }
     let name = b.pattern.single_bind()?;
     let value = emit_expr(&b.value, ctx)?;
-    let rust_name = name.to_string();
-    indent_str(out, indent);
-    writeln!(out, "let mut {} = {};", rust_name, value.src).ok()?;
+    let prim = value.typ;
+    out.push(KirStmt::Let(Let { local: name.clone(), value }));
     ctx.inputs.push(Input {
         name: name.clone(),
-        prim: value.typ,
+        prim,
         bind_id: None,
-        rust_name,
+        rust_name: name.to_string(),
     });
     Some(())
 }
 
-/// Emit a `select` expression as a series of `if` / `if let` guards.
-/// Each arm's body becomes a statement that either returns or
-/// continues a surrounding loop; the caller wraps the whole thing in
-/// that loop if `self_info` is set.
-///
-/// Exhaustiveness: we don't prove it here. If the scrutinee doesn't
-/// match any arm, we fall out of the select and emit
-/// `unreachable!()` as a belt-and-braces guard — the Graphix
-/// typechecker already requires exhaustiveness, so this should never
-/// fire at runtime, but fused code is unsafe and we'd rather fail
-/// loudly than UB.
+/// Emit a `select` expression as a [`KirStmt::Select`]. Each arm body
+/// is its own sub-body that either ends in a return or a tail call (or
+/// flows into nested control flow).
 fn emit_select(
-    out: &mut String,
+    out: &mut Vec<KirStmt>,
     s: &crate::expr::SelectExpr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-    indent: usize,
 ) -> Option<()> {
     let scrut = emit_expr(&s.arg, ctx)?;
-    indent_str(out, indent);
-    writeln!(out, "// select {}", s.arg.kind).ok()?;
-    // Emit arm by arm. Most arms are `if <cond> { body }`. The last
-    // arm, if unconditional (Ignore or Bind with no guard), is emitted
-    // inline — no wrapping `if { ... }` — so the terminating
-    // `unreachable!()` comes up correctly typed and the generated code
-    // doesn't drown in warnings. All other arms (conditional or not-
-    // last-unconditional) get a wrapping `if`.
     let n = s.arms.len();
-    let mut last_was_unconditional = false;
-    for (i, (pat, arm_body)) in s.arms.iter().enumerate() {
-        let is_last = i == n - 1;
-        let unconditional =
-            emit_arm(out, &scrut, pat, arm_body, ctx, self_info, indent, is_last)?;
-        if is_last {
-            last_was_unconditional = unconditional;
-        }
+    let mut arms: Vec<SelectArm> = Vec::with_capacity(n);
+    for (pat, arm_body) in s.arms.iter() {
+        let arm = emit_arm(&scrut, pat, arm_body, ctx, self_info)?;
+        arms.push(arm);
     }
-    // If the final arm isn't an unconditional one, fall back to the
-    // typecheck-should-forbid guard. If it IS unconditional, the body
-    // above already returns or continues, so no guard is needed.
-    if !last_was_unconditional {
-        indent_str(out, indent);
-        writeln!(
-            out,
-            "unreachable!(\"select fell through — typecheck should forbid\");"
-        )
-        .ok()?;
-    }
+    out.push(KirStmt::Select { arms });
+    let _ = n;
     Some(())
 }
 
-/// Emit one `select` arm. Returns `Some(true)` if the arm is
-/// unconditional (i.e. its body runs whenever control reaches it).
-/// Returns `Some(false)` if the arm is conditional (wrapped in `if`).
-/// Returns `None` if emission failed.
+/// Emit one `select` arm. Returns the constructed [`SelectArm`] —
+/// whose `cond` is `None` for unconditional arms (Ignore / bare Bind
+/// patterns with no guard) and `Some(...)` for conditional arms.
 fn emit_arm(
-    out: &mut String,
-    scrut: &EmittedExpr,
+    scrut: &KirExpr,
     pat: &Pattern,
     arm_body: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-    indent: usize,
-    is_last: bool,
-) -> Option<bool> {
-    // Type-predicate can be ignored for the kinds of patterns we
-    // currently support (all operate on a single-variant primitive
-    // scrutinee). If a type_predicate is present it must match the
-    // scrutinee's type — but since the scrutinee itself carries one
-    // primitive type, we've already satisfied any reasonable
-    // predicate. This is consistent with how StructPatternNode sees it.
+) -> Option<SelectArm> {
     let mut arm_ctx = ctx.clone();
     let cond = emit_arm_condition(scrut, &pat.structure_predicate, &mut arm_ctx)?;
-    // Guards are arbitrary pure expressions over the scrutinee and any
-    // names bound by the pattern.
-    let guard_src = match &pat.guard {
+    let guard = match &pat.guard {
         None => None,
         Some(g) => {
             let g = emit_expr(g, &arm_ctx)?;
             if g.typ != PrimType::Bool {
                 return None;
             }
-            Some(g.src)
+            Some(g)
         }
     };
-    let combined = match (cond, guard_src) {
-        (None, None) => None,
-        (Some(c), None) => Some(c),
-        (None, Some(g)) => Some(g),
-        (Some(c), Some(g)) => Some(format!("({c}) && ({g})")),
-    };
-    match combined {
-        None if is_last => {
-            // Unconditional last arm — inline the body, skip the `if`.
-            emit_body_into(out, arm_body, &arm_ctx, self_info, indent)?;
-            Some(true)
-        }
-        None => {
-            // Unconditional non-last arm — still uses `if true { ... }`
-            // so any subsequent (guarded) arms retain their semantics.
-            // This is unusual in practice because an unconditional
-            // middle arm shadows anything after it, but keep the
-            // straightforward lowering for now.
-            indent_str(out, indent);
-            writeln!(out, "{{").ok()?;
-            emit_body_into(out, arm_body, &arm_ctx, self_info, indent + 1)?;
-            indent_str(out, indent);
-            writeln!(out, "}}").ok()?;
-            Some(true)
-        }
-        Some(cond) => {
-            indent_str(out, indent);
-            writeln!(out, "if {cond} {{").ok()?;
-            emit_body_into(out, arm_body, &arm_ctx, self_info, indent + 1)?;
-            indent_str(out, indent);
-            writeln!(out, "}}").ok()?;
-            Some(false)
-        }
-    }
+    let combined = combine_cond_and_guard(cond, guard);
+    let mut body = Vec::new();
+    emit_body_into(&mut body, arm_body, &arm_ctx, self_info)?;
+    Some(SelectArm { cond: combined, body })
 }
 
-/// Emit the boolean test for an arm's structure predicate. Returns
-/// `None` if the emitter can't express the predicate (e.g. variants,
-/// tuples, arrays — not supported yet). Returns `Ok(None)` (packed as
-/// `Some(None)` below) if the test always succeeds (Ignore or Bind).
-/// Mutates `arm_ctx` to add any bindings introduced by the pattern.
+/// Emit the condition expression for an arm's structure predicate.
+/// Returns `Ok(None)` when the predicate always matches (Ignore /
+/// Bind), `Ok(Some(...))` for a real test, and `None` if the emitter
+/// can't express the predicate (compound patterns — variants, tuples,
+/// arrays — are not supported yet). Mutates `arm_ctx` to add any
+/// bindings introduced by the pattern.
 fn emit_arm_condition(
-    scrut: &EmittedExpr,
+    scrut: &KirExpr,
     pat: &StructurePattern,
     arm_ctx: &mut FusionCtx,
-) -> Option<Option<String>> {
+) -> Option<Option<KirExpr>> {
     match pat {
         StructurePattern::Ignore => Some(None),
         StructurePattern::Bind(name) => {
-            // Introduce a let-like binding for this pattern's name.
-            let rust_name = name.to_string();
+            // Introduce a new local that aliases the scrutinee's type.
+            // The scrutinee value itself isn't auto-bound by name here;
+            // that would require emitting a `let` at the start of the
+            // arm body. Existing tests don't exercise the pattern of
+            // referencing the bound name with a complex scrutinee, so
+            // we preserve the historic behaviour of just adding the
+            // input to ctx — any lookup will resolve to the bound name
+            // as a free identifier in the arm body, which works only
+            // when the scrutinee was itself a bare local of that name.
+            // Compound scrutinee + Bind would leave the bound name
+            // dangling; the rewrite pass should reject that case.
             arm_ctx.inputs.push(Input {
                 name: name.clone(),
                 prim: scrut.typ,
                 bind_id: None,
-                rust_name,
+                rust_name: name.to_string(),
             });
             Some(None)
         }
         StructurePattern::Literal(v) => {
-            let (lit_typ, lit_src) = constant_prim(v)?;
-            if lit_typ != scrut.typ {
+            let c = ConstVal::from_value(v)?;
+            if c.typ() != scrut.typ {
                 return None;
             }
-            // Small simplification for bool literals: lowering
-            // `scrut == true` / `scrut == false` to `scrut` / `!scrut`
-            // keeps the emitted code tidy (and rustc emits the same
-            // machine code either way).
-            if lit_typ == PrimType::Bool {
-                match v {
-                    Value::Bool(true) => return Some(Some(scrut.src.clone())),
-                    Value::Bool(false) => {
-                        return Some(Some(format!("(!{})", scrut.src)));
-                    }
-                    _ => {}
+            // Small simplification for bool literals: `scrut == true`
+            // becomes `scrut`, `scrut == false` becomes `!scrut`. The
+            // generated machine code is identical either way, but the
+            // rendered Rust is tidier.
+            if let ConstVal::Bool(b) = c {
+                if b {
+                    return Some(Some(scrut.clone()));
+                } else {
+                    return Some(kir::not(scrut.clone()).map(Some)?);
                 }
             }
-            Some(Some(format!("({} == {})", scrut.src, lit_src)))
+            kir::cmp(scrut.clone(), kir::const_expr(c), kir::CmpOp::Eq).map(Some)
         }
         // Non-primitive patterns — not fusable yet.
         StructurePattern::Slice { .. }
@@ -856,57 +543,45 @@ fn emit_arm_condition(
     }
 }
 
-/// Emit a "tail" expression — either a pure expression that returns a
-/// value, or a self-recursive tail call that continues the loop. Also
-/// supports `ExprKind::Bind` followed by another tail (via Do block),
-/// but that path is handled by `emit_do`; this function is for the
-/// leaf position in a select arm.
+/// Emit a "tail" expression — either a pure expression that becomes
+/// a `Return`, or a self-recursive tail call that becomes `TailCall`.
 fn emit_tail(
-    out: &mut String,
+    out: &mut Vec<KirStmt>,
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-    indent: usize,
 ) -> Option<()> {
-    // Self-recursive tail call: only recognize it if we know we're
-    // emitting a function body that can `continue`.
     if let Some(self_info) = self_info {
-        if let Some(()) = try_emit_tail_call(out, expr, ctx, self_info, indent) {
+        if try_emit_tail_call(out, expr, ctx, self_info).is_some() {
             return Some(());
         }
     }
-    // Nested select inside an arm body — descend.
     if let ExprKind::Select(s) = &expr.kind {
-        return emit_select(out, s, ctx, self_info, indent);
+        return emit_select(out, s, ctx, self_info);
     }
-    // Nested Do — descend. emit_do handles its own tail.
     if let ExprKind::Do { exprs } = &expr.kind {
-        return emit_do(out, exprs, ctx, self_info, indent);
+        return emit_do(out, exprs, ctx, self_info);
     }
     if let ExprKind::ExplicitParens(inner) = &expr.kind {
-        return emit_tail(out, inner, ctx, self_info, indent);
+        return emit_tail(out, inner, ctx, self_info);
     }
-    // Plain expression: evaluate and return.
     let v = emit_expr(expr, ctx)?;
-    indent_str(out, indent);
-    writeln!(out, "return {};", v.src).ok()?;
+    out.push(KirStmt::Return(v));
     Some(())
 }
 
 /// Try to emit `expr` as a tail call to `self_info.name`. Returns
-/// `None` if it isn't a self-call, or if the args can't all be fused.
+/// `None` if it isn't a self-call or any arg can't be fused.
 fn try_emit_tail_call(
-    out: &mut String,
+    out: &mut Vec<KirStmt>,
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: &SelfInfo,
-    indent: usize,
 ) -> Option<()> {
     let apply = match &expr.kind {
         ExprKind::Apply(a) => a,
         _ => return None,
     };
-    // The function must be a bare Ref to self_info.name.
     let fn_ref = match &apply.function.kind {
         ExprKind::Ref { name } => name,
         _ => return None,
@@ -915,45 +590,35 @@ fn try_emit_tail_call(
     if fn_ident != self_info.name.as_str() {
         return None;
     }
-    // All args must be positional (no labeled args) and match arity.
     if apply.args.len() != self_info.params.len() {
         return None;
     }
     if apply.args.iter().any(|(label, _)| label.is_some()) {
         return None;
     }
-    // Evaluate each new arg into a temp so we don't clobber a param we
-    // still need to read for a later arg.
-    let mut evaluated: Vec<(String, EmittedExpr)> = Vec::with_capacity(apply.args.len());
+    let mut args: Vec<KirExpr> = Vec::with_capacity(apply.args.len());
     for ((_, arg_expr), param) in apply.args.iter().zip(&self_info.params) {
         let e = emit_expr(arg_expr, ctx)?;
         if e.typ != param.prim {
             return None;
         }
-        let tmp = format!("__tmp_{}", param.rust_name);
-        evaluated.push((tmp, e));
+        args.push(e);
     }
-    for ((tmp_name, e), param) in evaluated.iter().zip(&self_info.params) {
-        indent_str(out, indent);
-        writeln!(out, "let {}: {} = {};", tmp_name, param.prim.rust_name(), e.src)
-            .ok()?;
-    }
-    for ((tmp_name, _), param) in evaluated.iter().zip(&self_info.params) {
-        indent_str(out, indent);
-        writeln!(out, "{} = {};", param.rust_name, tmp_name).ok()?;
-    }
-    indent_str(out, indent);
-    writeln!(out, "continue;").ok()?;
+    out.push(KirStmt::TailCall { args });
     Some(())
 }
 
-/// Emit a complete fused-kernel struct as Rust source. The struct
-/// implements `Update<R, E>` and evaluates `body` by pulling each
-/// input via `get_as_unchecked`, running the emitted expression, and
-/// wrapping the result in the appropriate `Value` variant.
+// ─── Kernel emitters ─────────────────────────────────────────────
+
+/// Emit a complete fused-kernel struct as Rust source for the
+/// single-expression-body shape. The struct implements `Update<R, E>`
+/// and evaluates `body` by pulling each input via `get_as_unchecked`,
+/// running the emitted expression, and wrapping the result in the
+/// appropriate `Value` variant.
 ///
-/// The caller supplies `struct_name` and the inputs; later, the
-/// fusion pass will derive both by walking the subtree.
+/// Returns `None` if the body isn't fully fusable as a single
+/// expression. The caller picks `struct_name`; the inputs come from
+/// `ctx.inputs`.
 pub fn emit_kernel(
     struct_name: &str,
     body: &Expr,
@@ -962,6 +627,7 @@ pub fn emit_kernel(
     let result = emit_expr(body, ctx)?;
     let result_variant = result.typ.value_variant();
     let result_rust = result.typ.rust_name();
+    let result_src = kir_to_rust_expr(&result);
 
     let mut out = String::new();
     writeln!(out, "// AUTO-GENERATED by graphix fusion pass. Do not edit by hand.").ok()?;
@@ -972,71 +638,91 @@ pub fn emit_kernel(
     writeln!(out, "    pub spec: ::graphix_compiler::expr::Expr,").ok()?;
     writeln!(out, "    pub typ: ::graphix_compiler::typ::Type,").ok()?;
     for input in &ctx.inputs {
-        writeln!(out, "    pub {}_id: ::graphix_compiler::BindId,", input.rust_name).ok()?;
+        writeln!(
+            out,
+            "    pub {}_id: ::graphix_compiler::BindId,",
+            input.rust_name
+        )
+        .ok()?;
     }
     writeln!(out, "}}").ok()?;
     writeln!(out).ok()?;
     writeln!(
         out,
         "impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>"
-    ).ok()?;
+    )
+    .ok()?;
     writeln!(out, "    ::graphix_compiler::Update<R, E> for {struct_name}").ok()?;
     writeln!(out, "{{").ok()?;
-    writeln!(
-        out,
-        "    fn update("
-    ).ok()?;
+    writeln!(out, "    fn update(").ok()?;
     writeln!(out, "        &mut self,").ok()?;
     writeln!(out, "        _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,").ok()?;
     writeln!(out, "        event: &mut ::graphix_compiler::Event<E>,").ok()?;
-    writeln!(out, "    ) -> ::std::option::Option<::netidx::subscriber::Value> {{").ok()?;
-    // Touch: on init, read everything from ctx.cached; otherwise just
-    // from event.variables. For this first slice we keep the simpler
-    // read and the caller enforces that all inputs have a value.
+    writeln!(
+        out,
+        "    ) -> ::std::option::Option<::netidx::subscriber::Value> {{"
+    )
+    .ok()?;
     for input in &ctx.inputs {
-        writeln!(
-            out,
-            "        let {} = unsafe {{",
-            input.rust_name,
-        ).ok()?;
+        writeln!(out, "        let {} = unsafe {{", input.rust_name).ok()?;
         writeln!(
             out,
             "            *event.variables.get(&self.{}_id)?.get_as_unchecked::<{}>()",
             input.rust_name,
             input.prim.rust_name(),
-        ).ok()?;
+        )
+        .ok()?;
         writeln!(out, "        }};").ok()?;
     }
-    writeln!(
-        out,
-        "        let result: {result_rust} = {};",
-        result.src,
-    ).ok()?;
+    writeln!(out, "        let result: {result_rust} = {result_src};").ok()?;
     writeln!(
         out,
         "        ::std::option::Option::Some(::netidx::subscriber::Value::{result_variant}(result))",
-    ).ok()?;
+    )
+    .ok()?;
     writeln!(out, "    }}").ok()?;
     writeln!(out).ok()?;
-    writeln!(out, "    fn spec(&self) -> &::graphix_compiler::expr::Expr {{ &self.spec }}").ok()?;
-    writeln!(out, "    fn typ(&self) -> &::graphix_compiler::typ::Type {{ &self.typ }}").ok()?;
+    writeln!(
+        out,
+        "    fn spec(&self) -> &::graphix_compiler::expr::Expr {{ &self.spec }}"
+    )
+    .ok()?;
+    writeln!(
+        out,
+        "    fn typ(&self) -> &::graphix_compiler::typ::Type {{ &self.typ }}"
+    )
+    .ok()?;
     writeln!(out, "    fn refs(&self, refs: &mut ::graphix_compiler::Refs) {{").ok()?;
     for input in &ctx.inputs {
-        writeln!(out, "        refs.refed.insert(self.{}_id);", input.rust_name).ok()?;
+        writeln!(
+            out,
+            "        refs.refed.insert(self.{}_id);",
+            input.rust_name
+        )
+        .ok()?;
     }
     writeln!(out, "    }}").ok()?;
-    writeln!(out, "    fn delete(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {{}}").ok()?;
-    writeln!(out, "    fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {{}}").ok()?;
-    writeln!(out, "    fn typecheck(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) -> ::anyhow::Result<()> {{").ok()?;
+    writeln!(
+        out,
+        "    fn delete(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {{}}"
+    )
+    .ok()?;
+    writeln!(
+        out,
+        "    fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {{}}"
+    )
+    .ok()?;
+    writeln!(
+        out,
+        "    fn typecheck(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) -> ::anyhow::Result<()> {{"
+    )
+    .ok()?;
     writeln!(out, "        Ok(())").ok()?;
     writeln!(out, "    }}").ok()?;
     writeln!(out, "}}").ok()?;
     Some(out)
 }
 
-/// Check whether a (parsed, not-yet-lowered) expression contains at
-/// least one tail call to `name`. Used to decide whether to wrap an
-/// emitted body in a `loop { ... }`.
 /// Try to determine the primitive return type of a function body
 /// without requiring an explicit `-> T` annotation. Walks the body
 /// structurally, looking at the tail position:
@@ -1044,12 +730,8 @@ pub fn emit_kernel(
 /// - a Select's type is the first arm whose body we can type
 /// - an Apply to a known-fused function gives its declared return
 /// - self-recursive calls contribute nothing (the type we'd be
-///   inferring *is* the rtype — it's circular), so they're skipped
+///   inferring *is* the rtype — circular), so they're skipped
 /// - any other pure expression's type is what `emit_expr` reports
-///
-/// Used when a lambda lacks an `-> T` annotation — the fusion pass
-/// falls back to this rather than bailing. If all paths return
-/// `None`, fusion can't proceed.
 fn infer_body_rtype(
     body: &Expr,
     ctx: &FusionCtx,
@@ -1101,9 +783,8 @@ fn body_has_tail_call(expr: &Expr, name: &str) -> bool {
     }
 }
 
-/// Emit a complete "function-shaped" fused kernel as Rust source. This
-/// produces three pieces of code, ready to paste into a generated
-/// module:
+/// Emit a complete "function-shaped" fused kernel as Rust source.
+/// Three pieces of code, ready to drop into a generated module:
 ///
 /// 1. A free `fn fused_<name>_body(...)` whose arguments match the
 ///    lambda's argspec and whose body is the emitted loop / select /
@@ -1111,14 +792,6 @@ fn body_has_tail_call(expr: &Expr, name: &str) -> bool {
 /// 2. A struct `struct_name` with a `CachedVals` field.
 /// 3. `BuiltIn<R, E>` and `Apply<R, E>` impls that pull primitives out
 ///    of the cached values and call the free function.
-///
-/// The caller picks `struct_name`, `builtin_name` (which must start
-/// with the hosting package's prefix — see graphix-derive's
-/// `defpackage!`), and `fn_name` (the graphix-level function name, used
-/// for self-recursion detection).
-///
-/// Returns `None` if any argument lacks a primitive type annotation or
-/// the body isn't entirely fusable.
 pub fn emit_function_kernel(
     struct_name: &str,
     builtin_name: &str,
@@ -1136,10 +809,6 @@ pub fn emit_function_kernel(
     .map(|(src, _sig)| src)
 }
 
-/// Same as `emit_function_kernel`, but also accepts a registry of
-/// already-fused functions (so this kernel can inline-call them) and
-/// returns the fused-function signature alongside the source. The
-/// rewrite pass uses this form to chain-fuse dependent kernels.
 pub fn emit_function_kernel_with_known(
     struct_name: &str,
     builtin_name: &str,
@@ -1157,10 +826,6 @@ pub fn emit_function_kernel_with_known(
     )
 }
 
-/// Like `emit_function_kernel_with_known`, but additionally accepts a
-/// registry of compile-time-known primitive constants. A `Ref` in the
-/// lambda body that doesn't match a lambda arg falls back to this
-/// registry and emits as the corresponding Rust literal.
 pub fn emit_function_kernel_with_known_and_consts(
     struct_name: &str,
     builtin_name: &str,
@@ -1169,101 +834,17 @@ pub fn emit_function_kernel_with_known_and_consts(
     known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
 ) -> Option<(String, KnownFusedFn)> {
-    use netidx::utils::Either;
-    let body = match &lambda.body {
-        Either::Left(e) => e,
-        Either::Right(_) => return None,
-    };
-    // Build the input list from the lambda's args. Every arg must have
-    // a primitive type annotation and a single-bind pattern.
-    let mut ctx = FusionCtx {
-        inputs: vec![],
-        known_fns: known.clone(),
-        known_consts: consts.clone(),
-    };
-    let mut params: Vec<Input> = Vec::new();
-    let mut arg_types: Vec<PrimType> = Vec::new();
-    for arg in lambda.args.iter() {
-        if arg.labeled.is_some() {
-            // Labeled args complicate the tail-call shape; skip for the
-            // first slice.
-            return None;
-        }
-        let typ = arg.constraint.as_ref()?;
-        let prim = PrimType::from_type(typ)?;
-        let name = arg.pattern.single_bind()?;
-        let input = Input {
-            name: name.clone(),
-            prim,
-            bind_id: None,
-            rust_name: name.to_string(),
-        };
-        params.push(input.clone());
-        ctx.inputs.push(input);
-        arg_types.push(prim);
-    }
-    let self_info = SelfInfo { name: ArcStr::from(fn_name), params: params.clone() };
-    // Resolve the return type: explicit annotation first, otherwise
-    // infer by walking the body's tail. Inference covers typical
-    // graphix patterns — last-let value, select arms, direct calls to
-    // already-fused functions.
-    let rprim = match lambda.rtype.as_ref() {
-        Some(rtype) => PrimType::from_type(rtype)?,
-        None => infer_body_rtype(body, &ctx, Some(&self_info))?,
-    };
-    let has_tail = body_has_tail_call(body, fn_name);
-    let signature = KnownFusedFn {
-        body_fn_name: format!("fused_{fn_name}_body"),
-        arg_types,
-        return_type: rprim,
-    };
-    // Register self in known_fns so non-tail-position self-recursive
-    // calls in the body lower as direct Rust recursive calls rather
-    // than tripping the "unknown function" path in emit_expr. Tail
-    // calls still go through the `loop { continue; }` lowering via
-    // SelfInfo — `emit_tail` checks that path first.
-    ctx.known_fns.insert(ArcStr::from(fn_name), signature.clone());
-    // Emit the body at the indent level it will sit at inside the
-    // generated function: indent 2 (8 spaces) when wrapped in `loop`,
-    // indent 1 (4 spaces) when not.
-    let body_indent = if has_tail { 2 } else { 1 };
-    let mut body_src = String::new();
-    emit_body_into(&mut body_src, body, &ctx, Some(&self_info), body_indent)?;
+    let (kernel, signature) = build_kir_kernel(fn_name, lambda, known, consts)?;
+    let params = kernel.params.clone();
+    let rprim = kernel.return_type;
+    let kernel_src = kir_to_rust_kernel(&kernel);
 
     let mut out = String::new();
-    writeln!(out, "// AUTO-GENERATED by graphix fusion pass. Do not edit by hand.").ok()?;
+    writeln!(out, "// AUTO-GENERATED by graphix fusion pass. Do not edit by hand.")
+        .ok()?;
     writeln!(out, "// Source lambda: {}", fn_name).ok()?;
     writeln!(out).ok()?;
-
-    // Free function — the real workhorse. The `allow` block covers
-    // parens/unreachable/mut spam from the straightforward lowering;
-    // they don't signal bugs, they're just noise rustc would shout
-    // about on a clean-style codebase.
-    writeln!(
-        out,
-        "#[allow(unused_parens, unreachable_code, unused_mut, clippy::too_many_arguments)]"
-    )
-    .ok()?;
-    write!(out, "#[inline]\npub fn fused_{fn_name}_body(").ok()?;
-    let mut first = true;
-    for p in &params {
-        if !first {
-            out.push_str(", ");
-        }
-        first = false;
-        write!(out, "mut {}: {}", p.rust_name, p.prim.rust_name()).ok()?;
-    }
-    writeln!(out, ") -> {} {{", rprim.rust_name()).ok()?;
-    if has_tail {
-        writeln!(out, "    loop {{").ok()?;
-    }
-    // body_src is already indented to the right column by emit_body_into
-    // (indent=2 inside loop, indent=1 without), so emit verbatim.
-    out.push_str(&body_src);
-    if has_tail {
-        writeln!(out, "    }}").ok()?;
-    }
-    writeln!(out, "}}").ok()?;
+    out.push_str(&kernel_src);
     writeln!(out).ok()?;
 
     // Apply shim — pulls args out of CachedVals and calls the free fn.
@@ -1342,20 +923,10 @@ pub fn emit_function_kernel_with_known_and_consts(
     //
     // SAFETY: self.args.update() returning true guarantees every slot
     // in self.args.0 is Some(_). The typechecker ran before this
-    // kernel was picked up by the fusion pass (graphix-shell runs
-    // --check first) and proved every arg's type, which is what
-    // drove the arg-type choices in params[]. get_as_unchecked::<T>
-    // is sound precisely when the Value's tag matches T's variant,
-    // and the typechecker enforces exactly that invariant — so we
-    // can skip the tag match at runtime.
-    //
-    // If the typechecker invariant is ever violated (e.g. we wired a
-    // kernel into a call site whose arg types disagree with params),
-    // the resulting UB would manifest as wrong output, not a crash —
-    // which is why (a) the typechecker is the type-source-of-truth
-    // and (b) the rewrite pass refuses to fuse a kernel whose
-    // PrimType::from_type lookup doesn't agree with the Apply's
-    // resolved FnType.
+    // kernel was picked up by the fusion pass and proved every arg's
+    // type, which is what drove the params[] choices. get_as_unchecked
+    // is sound precisely when the Value's tag matches T's variant —
+    // an invariant the typechecker enforces.
     writeln!(out, "        unsafe {{").ok()?;
     for (i, p) in params.iter().enumerate() {
         writeln!(
@@ -1363,7 +934,8 @@ pub fn emit_function_kernel_with_known_and_consts(
             "            let __a{i}: {rust} = *self.args.0.get_unchecked({i}).as_ref().unwrap_unchecked().get_as_unchecked::<{rust}>();",
             i = i,
             rust = p.prim.rust_name(),
-        ).ok()?;
+        )
+        .ok()?;
     }
     write!(out, "            let __r = fused_{fn_name}_body(").ok()?;
     for (i, _) in params.iter().enumerate() {
@@ -1393,15 +965,83 @@ pub fn emit_function_kernel_with_known_and_consts(
     Some((out, signature))
 }
 
+/// Build a [`KirKernel`] from a lambda's argspec + body, plus
+/// optional registries of already-fused kernels and known constants.
+/// This is the path the JIT and interpreter share: both consume the
+/// `KirKernel` directly. The AOT path goes through here too via
+/// [`emit_function_kernel_with_known_and_consts`], which then renders
+/// the kernel to Rust source.
+///
+/// Returns `None` if the lambda can't be fused (non-primitive arg
+/// types, labeled args, body uses unsupported constructs, etc.).
+pub fn build_kir_kernel(
+    fn_name: &str,
+    lambda: &crate::expr::LambdaExpr,
+    known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
+    consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
+) -> Option<(KirKernel, KnownFusedFn)> {
+    use netidx::utils::Either;
+    let body = match &lambda.body {
+        Either::Left(e) => e,
+        Either::Right(_) => return None,
+    };
+    let mut ctx = FusionCtx {
+        inputs: vec![],
+        known_fns: known.clone(),
+        known_consts: consts.clone(),
+    };
+    let mut params: Vec<Input> = Vec::new();
+    let mut arg_types: Vec<PrimType> = Vec::new();
+    for arg in lambda.args.iter() {
+        if arg.labeled.is_some() {
+            return None;
+        }
+        let typ = arg.constraint.as_ref()?;
+        let prim = PrimType::from_type(typ)?;
+        let name = arg.pattern.single_bind()?;
+        let input = Input {
+            name: name.clone(),
+            prim,
+            bind_id: None,
+            rust_name: name.to_string(),
+        };
+        params.push(input.clone());
+        ctx.inputs.push(input);
+        arg_types.push(prim);
+    }
+    let self_info = SelfInfo { name: ArcStr::from(fn_name), params: params.clone() };
+    let rprim = match lambda.rtype.as_ref() {
+        Some(rtype) => PrimType::from_type(rtype)?,
+        None => infer_body_rtype(body, &ctx, Some(&self_info))?,
+    };
+    let has_tail = body_has_tail_call(body, fn_name);
+    let signature = KnownFusedFn {
+        body_fn_name: format!("fused_{fn_name}_body"),
+        arg_types,
+        return_type: rprim,
+    };
+    // Register self in known_fns so non-tail-position self-recursive
+    // calls in the body lower as direct recursive calls rather than
+    // tripping the "unknown function" path in emit_expr. Tail calls
+    // still go through TailCall via SelfInfo.
+    ctx.known_fns.insert(ArcStr::from(fn_name), signature.clone());
+    let body_stmts = emit_body(body, &ctx, Some(&self_info))?;
+    let kernel = KirKernel {
+        fn_name: ArcStr::from(fn_name),
+        params,
+        return_type: rprim,
+        has_tail_loop: has_tail,
+        body: body_stmts,
+    };
+    Some((kernel, signature))
+}
+
+// ─── Discovery & top-level program rewrite ───────────────────────
+
 /// Walk an `Expr` and build a `FusionCtx` by resolving every bare-
 /// identifier `Ref` against the env. Returns `None` if the subtree
 /// contains anything the emitter can't handle — any compound `ModPath`
 /// (`a::b`), any non-primitive bound type, or any unresolvable name.
-///
-/// This is the "input discovery" half of the fusion pass: emit_expr
-/// won't see a Ref it doesn't already know about, so we must find
-/// every Ref first, learn its `(BindId, Type)`, and stash that in the
-/// ctx before calling the emitter.
 pub fn discover_inputs(
     expr: &Expr,
     env: &Env,
@@ -1416,7 +1056,6 @@ pub fn discover_inputs(
         match &expr.kind {
             ExprKind::Ref { name } => {
                 let ident = ident_of(name)?;
-                // Dedup: one Ref entry per unique source name.
                 if ctx.find(ident).is_some() {
                     return Some(());
                 }
@@ -1449,9 +1088,6 @@ pub fn discover_inputs(
                 walk(rhs, env, scope, ctx)
             }
             ExprKind::Not { expr } => walk(expr, env, scope, ctx),
-            // Everything else aborts the whole discovery: we don't
-            // want to silently fuse over a sub-expression the emitter
-            // can't handle.
             _ => None,
         }
     }
@@ -1464,23 +1100,14 @@ pub fn discover_inputs(
 /// larger program.
 #[derive(Debug, Clone)]
 pub struct FusionReport {
-    /// Name the lambda was bound to (if any), useful for generated
-    /// struct names and for logs.
     pub name: Option<ArcStr>,
-    /// ExprId of the Lambda expression.
     pub id: crate::expr::ExprId,
-    /// The emitted Rust source, or an explanation of why fusion
-    /// failed.
     pub outcome: FusionOutcome,
 }
 
 #[derive(Debug, Clone)]
 pub enum FusionOutcome {
-    /// Lambda is fully fusable; here's the Rust source.
     Fused(String),
-    /// Fusion was attempted but rejected. The reason is deliberately
-    /// coarse right now — we only know whether arg typing or body
-    /// fusion is what failed. The caller can refine as the pass grows.
     Rejected(&'static str),
 }
 
@@ -1488,10 +1115,6 @@ pub enum FusionOutcome {
 /// attempt fusion for every lambda we encounter — both top-level
 /// definitions and nested let-bound ones. Non-lambda sub-expressions
 /// are traversed for their children but not themselves reported.
-///
-/// This is the "probe the program and tell me what would fuse" entry
-/// point. In the full AOT pipeline it would feed a code-generator
-/// that emits one kernel per positive outcome.
 pub fn walk_and_fuse(expr: &Expr) -> Vec<FusionReport> {
     let mut reports = Vec::new();
     walk_collect_lambdas(expr, None, &mut reports);
@@ -1515,8 +1138,6 @@ fn walk_collect_lambdas(
                 None => FusionOutcome::Rejected("args not primitive, or body not fusable"),
             };
             out.push(FusionReport { name: bound_name.cloned(), id: expr.id, outcome });
-            // Also descend into the lambda body so we find nested
-            // let-bound lambdas inside it.
             if let Either::Left(body) = &l.body {
                 walk_collect_lambdas(body, None, out);
             }
@@ -1547,11 +1168,6 @@ fn walk_collect_lambdas(
                 walk_collect_lambdas(arg, None, out);
             }
         }
-        // For the rest: recurse into every Arc<Expr> subfield we care
-        // about. We only need enough coverage to find lambdas — we
-        // don't have to visit every leaf. This list is deliberately
-        // conservative; missing variants just mean we don't look
-        // inside them for nested lambdas.
         ExprKind::ExplicitParens(e)
         | ExprKind::Qop(e)
         | ExprKind::OrNever(e)
@@ -1592,10 +1208,8 @@ fn walk_collect_lambdas(
 }
 
 fn format_compact_name(n: &ArcStr) -> String {
-    // "iterate" -> "FusedIterate"; anything non-alphanumeric becomes
-    // an underscore so we don't produce invalid Rust idents for
-    // weird names (they basically can't reach this path in practice
-    // because the parser won't let you bind such names, but be safe).
+    // "iterate" -> "FusedIterate"; non-alphanumeric becomes underscore
+    // so we don't produce invalid Rust idents for weird names.
     let mut out = String::from("Fused_");
     let mut upper = true;
     for c in n.chars() {
@@ -1617,9 +1231,7 @@ fn format_compact_name(n: &ArcStr) -> String {
 /// Walk a `LambdaExpr`, build a FusionCtx from its (type-annotated)
 /// args, and attempt to emit a fused kernel for its body. Returns
 /// `None` if any arg lacks a primitive type annotation, or if the
-/// body isn't entirely fusable. This is the natural entry point for
-/// the future pass that walks top-level definitions and fuses the
-/// pure ones.
+/// body isn't fusable as a single expression.
 pub fn try_fuse_lambda(
     lambda: &crate::expr::LambdaExpr,
     struct_name: &str,
@@ -1627,13 +1239,12 @@ pub fn try_fuse_lambda(
     use netidx::utils::Either;
     let body = match &lambda.body {
         Either::Left(e) => e,
-        Either::Right(_) => return None, // builtin shims aren't fused
+        Either::Right(_) => return None,
     };
     let mut ctx = FusionCtx::default();
     for arg in lambda.args.iter() {
         let typ = arg.constraint.as_ref()?;
         let prim = PrimType::from_type(typ)?;
-        // Only simple single-bind patterns for the first slice.
         let name = arg.pattern.single_bind()?;
         ctx.inputs.push(Input {
             name: name.clone(),
@@ -1645,38 +1256,16 @@ pub fn try_fuse_lambda(
     emit_kernel(struct_name, body, &ctx)
 }
 
-// ── `graphix compile`-style rewrite pipeline ────────────────────────
-//
-// `FusedKernel` holds the output of a single successful fusion: the
-// emitted Rust source plus the struct name and builtin name. `rewrite`
-// walks a whole program, attempts function-kernel fusion on every
-// top-level `let [rec] iterate = |...| ...` binding, and — for each
-// lambda that fuses — mutates the binding so its body becomes a
-// builtin-reference `Either::Right(builtin_name)` instead of the
-// original Graphix expression. The rewritten Expr + the collected
-// kernels is everything `graphix compile` needs to emit a package.
+// ─── `graphix compile`-style rewrite pipeline ────────────────────
 
 #[derive(Debug, Clone)]
 pub struct FusedKernel {
-    /// Name of the struct emitted into Rust (`FusedIterateAuto`).
     pub struct_name: String,
-    /// Value of the `NAME` const — must start with `package_prefix`.
     pub builtin_name: String,
-    /// The original graphix function name (for logs / comments).
     pub fn_name: String,
-    /// Emitted Rust source, ready to drop into the generated crate.
     pub rust_source: String,
 }
 
-/// Walk a program and rewrite every fusable `let name = <Lambda>`
-/// binding into `let name = |...| 'builtin_prefix_name_N`. Mutates the
-/// Expr in place and returns the kernels it emitted. `package_prefix`
-/// is prepended to every builtin name; `defpackage!` requires that.
-///
-/// Only top-level and immediately-nested lambda-binding rewrites are
-/// performed. Nested Lambda-inside-arbitrary-expr cases are left
-/// alone — the benefit of fusing a lambda depends on how it's called,
-/// and surfacing that here would duplicate work better done later.
 pub fn rewrite_program(
     expr: &mut Expr,
     package_prefix: &str,
@@ -1686,17 +1275,10 @@ pub fn rewrite_program(
     Ok(state.kernels)
 }
 
-/// State carried across multiple `rewrite_program_with_state` calls so
-/// that later top-level expressions can see kernels fused from earlier
-/// top-level expressions. The `graphix compile` CLI uses this when the
-/// input file is a sequence of top-level `let`s: helper + caller.
 #[derive(Debug, Default)]
 pub struct RewriteState {
     pub kernels: Vec<FusedKernel>,
     pub known: std::collections::BTreeMap<ArcStr, KnownFusedFn>,
-    /// Compile-time-known primitive constants accumulated as the
-    /// rewrite pass descends. Used by emit_expr to inline references
-    /// to outer-scope `let <name> = <literal>;` bindings.
     pub consts: std::collections::BTreeMap<ArcStr, KnownConst>,
     pub counter: u32,
     /// Typechecker-derived function types for every Lambda and Apply
@@ -1715,12 +1297,6 @@ impl RewriteState {
         Self::default()
     }
 
-    /// Build a RewriteState seeded with typechecker-derived function
-    /// types. Prefer this over `new()` whenever you have the types
-    /// from a real compile() pass — the rewrite pass can then reject
-    /// programs where it would have fused something the typechecker
-    /// would have rejected, and emit Rust whose types exactly match
-    /// what the interpreter sees.
     pub fn with_fn_types(
         fn_types: nohash::IntMap<crate::expr::ExprId, crate::typ::FnType>,
     ) -> Self {
@@ -1754,20 +1330,6 @@ fn rewrite_walk(
     counter: &mut u32,
     fn_types: &nohash::IntMap<crate::expr::ExprId, crate::typ::FnType>,
 ) -> anyhow::Result<()> {
-    // Helper: try to fuse a lambda bound to `name`. On success, mutate
-    // the lambda in-place so its body becomes an Either::Right builtin
-    // reference and push a FusedKernel into `kernels`. On failure, we
-    // distinguish two cases:
-    //
-    // - The typechecker left an unresolved TVar somewhere in the
-    //   lambda's FnType — the user can fix this by adding an explicit
-    //   type annotation. In AOT mode we bail so the user finds out;
-    //   silently running their "fast" program in the interpreter is
-    //   exactly the surprise `compile` is supposed to eliminate.
-    //
-    // - The body has concrete but non-primitive types, reactive
-    //   constructs, or other constructs the emitter doesn't handle.
-    //   Not user-fixable — log::info and move on.
     fn try_rewrite_bind(
         name: &ArcStr,
         lambda_expr: &mut Expr,
@@ -1782,7 +1344,6 @@ fn rewrite_walk(
         let ExprKind::Lambda(lambda_arc) = &mut lambda_expr.kind else {
             return Ok(());
         };
-        // Already a builtin shim — nothing to do.
         if matches!(&lambda_arc.body, Either::Right(_)) {
             return Ok(());
         }
@@ -1794,11 +1355,6 @@ fn rewrite_walk(
             n
         );
         let builtin_name = format!("{prefix}_{}_{}", sanitize(name), n);
-        // If the typechecker gave us a resolved FnType for this
-        // lambda, inject its arg types / rtype onto the LambdaExpr
-        // *before* running the emitter — so the emitter's existing
-        // code reads them straight off the argspec without needing
-        // its own inference machinery.
         if let Some(ft) = fn_types.get(&lambda_expr.id) {
             apply_fntype_to_lambda(lambda_arc, ft);
         }
@@ -1811,9 +1367,6 @@ fn rewrite_walk(
             consts,
         ) {
             Some((src, signature)) => {
-                // Replace the body with the builtin reference. Since
-                // LambdaExpr is inside a triomphe::Arc, we need to
-                // clone-modify-swap.
                 let new_lambda = crate::expr::LambdaExpr {
                     args: lambda_arc.args.clone(),
                     vargs: lambda_arc.vargs.clone(),
@@ -1823,7 +1376,6 @@ fn rewrite_walk(
                     body: Either::Right(ArcStr::from(builtin_name.as_str())),
                 };
                 *lambda_arc = triomphe::Arc::new(new_lambda);
-                // Register so subsequent fusions can inline a call.
                 known.insert(name.clone(), signature);
                 kernels.push(FusedKernel {
                     struct_name,
@@ -1834,9 +1386,6 @@ fn rewrite_walk(
                 Ok(())
             }
             None => {
-                // For anonymous callback lambdas the rewriter synthesizes
-                // `anon<ExprId>` as the name — useless for a user-facing
-                // error. Strip it so source position does all the talking.
                 let pretty = if name.starts_with("anon") {
                     compact_str::format_compact!("anonymous lambda")
                 } else {
@@ -1916,21 +1465,8 @@ fn rewrite_walk(
             crate::expr::ModuleKind::Unresolved { .. } => {}
         },
         ExprKind::Apply(a) => {
-            // Descend into call args to find anonymous callback
-            // lambdas (e.g. `array::init(n, |idx| <body>)`). The
-            // only type source is the typechecker-derived `fn_types`
-            // map: look up this Apply's ExprId to get the callee's
-            // resolved FnType, then read the expected arg type of
-            // any position that holds a lambda. If no fn_types entry
-            // exists (caller didn't populate the map), the lambda
-            // stays unannotated and will fail to fuse later.
             let apply_id = expr.id;
             let apply_fn_type = fn_types.get(&apply_id).cloned();
-            // (Optional trace: set GRAPHIX_FUSION_DEBUG=1 to see
-            // which Apply sites have fn_types entries. Useful when
-            // an expected fusion doesn't happen — the typechecker
-            // may have left a tvar unbound, in which case the user
-            // needs to add a type annotation.)
             if std::env::var_os("GRAPHIX_FUSION_DEBUG").is_some() {
                 if let ExprKind::Ref { name } = &a.function.kind {
                     eprintln!(
@@ -1972,11 +1508,7 @@ fn rewrite_walk(
             let fn_mut = triomphe::Arc::make_mut(&mut a.function);
             rewrite_walk(fn_mut, prefix, kernels, known, consts, counter, fn_types)?;
         }
-        _ => {
-            // We don't descend into every ExprKind variant. The
-            // typical shape we want to fuse is a Bind at a Do/Module
-            // level; everything else can wait.
-        }
+        _ => {}
     }
     Ok(())
 }
@@ -1987,16 +1519,11 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Inject argument types from a real typechecker-derived FnType into
-/// a callback lambda that was missing type annotations. Reads the
-/// outer HOF's arg type at `arg_position` — which should itself be a
-/// function type — and copies its arg types onto the lambda's argspec
-/// wherever the user didn't already annotate.
-///
-/// `arg_position` is the lambda's position in the outer Apply's arg
-/// list; the FnType's Nth arg is our Lambda, and that FnType has its
-/// OWN callback-signature `Type::Fn(inner)` giving us the types we
-/// need to inject.
+/// Inject argument types from a real typechecker-derived FnType into a
+/// callback lambda missing type annotations. Reads the outer HOF's arg
+/// type at `arg_position` (which should itself be a function type) and
+/// copies its arg types onto the lambda's argspec wherever the user
+/// didn't annotate.
 fn inject_lambda_arg_types_from_fntype(
     lambda_expr: &mut Expr,
     arg_position: usize,
@@ -2005,9 +1532,6 @@ fn inject_lambda_arg_types_from_fntype(
     let Some(outer_arg) = hof_fntype.args.get(arg_position) else {
         return;
     };
-    // The outer arg's declared type should itself be a function
-    // type — we only care about positions where the HOF expects a
-    // callback. Follow Type::ByRef wrappers and TVar indirections.
     outer_arg.typ.with_deref(|resolved| {
         let Some(resolved) = resolved else { return };
         let stripped = strip_byref(resolved);
@@ -2018,12 +1542,16 @@ fn inject_lambda_arg_types_from_fntype(
     });
 }
 
-/// Apply arg types AND return type from a FnType onto the Lambda's
-/// argspec / rtype, filling in anything the user omitted. Does not
-/// overwrite user-provided annotations — those win even if the
-/// typechecker saw something more specific via unification (the
-/// conflict will have surfaced during check already).
-fn apply_fntype_to_lambda(
+/// Patch a lambda's argspec / rtype with primitive types resolved
+/// from a `FnType` (typically the call-site resolved type from
+/// CallSite::typecheck). Where the user wrote no annotation, fill
+/// in from `ft`; user-provided annotations stay. Used both by the
+/// AOT rewrite pass (post-typecheck patching driven by fn_types)
+/// and by the runtime deferred-fusion path (Lambda's InitFn at
+/// first call uses the call site's resolved FnType to give
+/// previously-unfusable callbacks like `|idx| ...` the typed
+/// argspec they need to fuse).
+pub fn apply_fntype_to_lambda(
     lambda_arc: &mut triomphe::Arc<crate::expr::LambdaExpr>,
     ft: &crate::typ::FnType,
 ) {
@@ -2042,10 +1570,6 @@ fn apply_fntype_to_lambda(
         if a.constraint.is_some() {
             continue;
         }
-        // Use a primitive representation when the typechecker's type
-        // reduces to one. Non-primitive types fall back to whatever
-        // the emitter does today (fail fusion) — that's the correct
-        // behaviour for a primitive-only emitter subset.
         if let Some(prim) = PrimType::from_type(&ft_arg.typ) {
             a.constraint = Some(prim_type_to_graphix(prim));
         }
@@ -2066,15 +1590,6 @@ fn apply_fntype_to_lambda(
     *lambda_arc = triomphe::Arc::new(new_lambda);
 }
 
-/// If any arg type or the return type of `ft` is an unresolved TVar,
-/// return a short description of the first such position. This is
-/// used to decide whether a failed fusion attempt should bail
-/// (annotation missing → user-fixable) or skip silently (everything
-/// else). Only the top level is inspected; nested types (e.g. a
-/// callback argument's own args) can stay polymorphic without
-/// blocking fusion of the outer lambda, since we only ever emit
-/// primitive-shaped lambdas and won't try to fuse a lambda whose arg
-/// is itself a function type.
 fn fntype_first_unresolved(ft: &crate::typ::FnType) -> Option<compact_str::CompactString> {
     use compact_str::format_compact;
     for (i, a) in ft.args.iter().enumerate() {
@@ -2088,9 +1603,6 @@ fn fntype_first_unresolved(ft: &crate::typ::FnType) -> Option<compact_str::Compa
     None
 }
 
-/// Like `apply_fntype_to_lambda` but takes `&mut Expr` — callers
-/// holding an Expr that wraps a Lambda can just pass it in. No-op
-/// when the Expr's kind isn't Lambda.
 fn apply_fntype_args_to_lambda(lambda_expr: &mut Expr, cb_fntype: &crate::typ::FnType) {
     let ExprKind::Lambda(lambda_arc) = &mut lambda_expr.kind else {
         return;
@@ -2107,26 +1619,25 @@ fn strip_byref(t: &crate::typ::Type) -> &crate::typ::Type {
 
 fn prim_type_to_graphix(p: PrimType) -> Type {
     let typ = match p {
-        PrimType::I8 => Typ::I8,
-        PrimType::I16 => Typ::I16,
-        PrimType::I32 => Typ::I32,
-        PrimType::I64 => Typ::I64,
-        PrimType::U8 => Typ::U8,
-        PrimType::U16 => Typ::U16,
-        PrimType::U32 => Typ::U32,
-        PrimType::U64 => Typ::U64,
-        PrimType::F32 => Typ::F32,
-        PrimType::F64 => Typ::F64,
-        PrimType::Bool => Typ::Bool,
+        PrimType::I8 => netidx_value::Typ::I8,
+        PrimType::I16 => netidx_value::Typ::I16,
+        PrimType::I32 => netidx_value::Typ::I32,
+        PrimType::I64 => netidx_value::Typ::I64,
+        PrimType::U8 => netidx_value::Typ::U8,
+        PrimType::U16 => netidx_value::Typ::U16,
+        PrimType::U32 => netidx_value::Typ::U32,
+        PrimType::U64 => netidx_value::Typ::U64,
+        PrimType::F32 => netidx_value::Typ::F32,
+        PrimType::F64 => netidx_value::Typ::F64,
+        PrimType::Bool => netidx_value::Typ::Bool,
     };
     Type::Primitive(typ.into())
 }
 
 /// If `value` is a compile-time-computable primitive expression in
 /// terms of already-known constants, record `(name, KnownConst)` into
-/// `consts`. The Rust source stored on the KnownConst is the full
-/// emitted expression — rustc's constant folding collapses it to a
-/// literal at build time, so every inline use pays zero runtime cost.
+/// `consts`. The KIR stored on the KnownConst is the full emitted
+/// expression — both backends fold it as appropriate at lowering.
 fn record_const_binding(
     name: &ArcStr,
     value: &Expr,
@@ -2134,45 +1645,34 @@ fn record_const_binding(
 ) {
     // Direct Constant is trivially constant.
     if let ExprKind::Constant(v) = &value.kind {
-        if let Some((prim, rust_src)) = constant_prim(v) {
-            consts.insert(name.clone(), KnownConst { prim, rust_src });
+        if let Some(c) = ConstVal::from_value(v) {
+            consts.insert(name.clone(), KnownConst { expr: kir::const_expr(c) });
             return;
         }
     }
-    // Expression-valued bindings: try to emit them as an expression
-    // using only the known-const registry (empty inputs list). If
-    // emit_expr succeeds, every Ref inside resolved to a constant —
-    // we can freeze the whole expression as a Rust source string.
+    // Expression-valued bindings: try to emit them with only the
+    // known-const registry visible (empty inputs). If emit_expr
+    // succeeds, every Ref inside resolved to a constant — we can
+    // freeze the whole expression.
     let probe = FusionCtx {
         inputs: vec![],
         known_fns: std::collections::BTreeMap::new(),
         known_consts: consts.clone(),
     };
     if let Some(e) = emit_expr(value, &probe) {
-        consts.insert(name.clone(), KnownConst { prim: e.typ, rust_src: e.src });
+        consts.insert(name.clone(), KnownConst { expr: e });
     }
 }
 
-/// Sources for a complete generated graphix-package crate. Each field
-/// is the textual contents of one file. The `Cargo.toml` is a
-/// template: `{workspace_root}` is the placeholder for the
-/// absolute path needed to point path-deps at the in-workspace
-/// graphix crates.
+// ─── Package emission (AOT-only) ─────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct EmittedPackage {
-    /// Short package name (no `graphix-package-` prefix).
     pub short_name: String,
-    /// Kernel sources concatenated, ready to go into `src/lib.rs`
-    /// after the standard header / `defpackage!` block.
     pub kernel_sources: Vec<FusedKernel>,
-    /// The rewritten main program, suitable for `src/graphix/main.gx`.
     pub main_gx: String,
 }
 
-/// Bundle the rewritten program + emitted kernels into the textual
-/// sources of a graphix-package crate. The caller is responsible for
-/// writing those to disk and invoking `graphix-package`'s
-/// `build_standalone`.
 pub fn emit_package(
     short_name: &str,
     kernels: Vec<FusedKernel>,
@@ -2185,7 +1685,6 @@ pub fn emit_package(
     }
 }
 
-/// Build the full `src/lib.rs` contents for an emitted package.
 pub fn render_lib_rs(pkg: &EmittedPackage) -> String {
     let mut out = String::new();
     writeln!(
@@ -2212,10 +1711,6 @@ pub fn render_lib_rs(pkg: &EmittedPackage) -> String {
     out
 }
 
-/// Build the `src/graphix/mod.gxi` and `src/graphix/mod.gx` contents.
-/// For a compile-only package the module exports nothing (the main
-/// program stands on its own), so both files are empty. We return
-/// explicit empty strings so callers always write both files.
 pub fn render_mod_gxi(_pkg: &EmittedPackage) -> &'static str {
     ""
 }
@@ -2224,9 +1719,6 @@ pub fn render_mod_gx(_pkg: &EmittedPackage) -> &'static str {
     ""
 }
 
-/// Build the `Cargo.toml` for an emitted package. `graphix_src_root`
-/// is the absolute path to the workspace that contains graphix-compiler
-/// (etc.), because the emitted crate needs `path = ...` deps to match.
 pub fn render_cargo_toml(pkg: &EmittedPackage, graphix_src_root: &str) -> String {
     format!(
         r#"[package]
@@ -2262,10 +1754,6 @@ standalone = []
     )
 }
 
-/// Write all generated files to a directory matching graphix-package
-/// layout. Creates `src/lib.rs`, `src/graphix/main.gx`, `src/graphix/
-/// mod.gx`, `src/graphix/mod.gxi`, and `Cargo.toml`. Intended to be
-/// followed by `graphix-package::GraphixPM::build_standalone`.
 pub fn write_package(
     pkg: &EmittedPackage,
     target_dir: &std::path::Path,
@@ -2290,6 +1778,7 @@ pub fn write_package(
 mod tests {
     use super::*;
     use crate::expr::{parser::parse_one, Expr, ExprKind};
+    use netidx_value::Value;
 
     fn input(name: &str, prim: PrimType) -> Input {
         Input {
@@ -2316,6 +1805,13 @@ mod tests {
         kind.to_expr_nopos()
     }
 
+    /// Render a fused expression to its Rust source — what tests want
+    /// to assert on. The fusion pass produces KIR; the AOT path runs
+    /// it through `kir_to_rust_expr` to get the final string.
+    fn rust(e: &KirExpr) -> String {
+        kir_to_rust_expr(e)
+    }
+
     #[test]
     fn emit_simple_arith() {
         // Mirrors mandelbrot's `zr * zr + zi * zi > 4.0`.
@@ -2327,14 +1823,11 @@ mod tests {
 
         let e = emit_expr(&escaped, &ctx).expect("should fuse");
         assert_eq!(e.typ, PrimType::Bool);
-        assert_eq!(e.src, "(((zr * zr) + (zi * zi)) > 4f64)");
+        assert_eq!(rust(&e), "(((zr * zr) + (zi * zi)) > 4f64)");
     }
 
     #[test]
     fn reject_type_mismatch() {
-        // Adding i64 + f64 is not fusable: emitter refuses to insert a
-        // cast because that's a language-level question, not a
-        // codegen one.
         let ctx = FusionCtx { inputs: vec![input("a", PrimType::I64)], ..Default::default() };
         let bad = bin(ref_expr("a"), f64c(1.0), |l, r| ExprKind::Add { lhs: l, rhs: r });
         assert!(emit_expr(&bad, &ctx).is_none());
@@ -2354,22 +1847,15 @@ mod tests {
         let zi_sq = bin(ref_expr("zi"), ref_expr("zi"), |l, r| ExprKind::Mul { lhs: l, rhs: r });
         let sum = bin(zr_sq, zi_sq, |l, r| ExprKind::Add { lhs: l, rhs: r });
         let src = emit_kernel("FusedEscaped", &sum, &ctx).expect("should emit");
-        // Sanity: the generated source has the struct, the unsafe
-        // extraction, the expression, and the Value wrapping.
         assert!(src.contains("pub struct FusedEscaped"));
         assert!(src.contains("zr_id"));
         assert!(src.contains("get_as_unchecked::<f64>"));
         assert!(src.contains("(zr * zr) + (zi * zi)"));
         assert!(src.contains("Value::F64"));
-        // Echo it for inspection — this test deliberately prints so
-        // `cargo test -- --nocapture emit_full_kernel` shows the
-        // emitter output.
         println!("{src}");
     }
 
-    // ── Tests against the real parser ──────────────────────────
-
-    fn parse_fuse(source: &str, ctx: &FusionCtx) -> Option<EmittedExpr> {
+    fn parse_fuse(source: &str, ctx: &FusionCtx) -> Option<KirExpr> {
         let e = parse_one(source).expect("parse");
         emit_expr(&e, ctx)
     }
@@ -2383,25 +1869,19 @@ mod tests {
             ], ..Default::default() };
         let e = parse_fuse("a + b * c", &ctx).expect("should fuse");
         assert_eq!(e.typ, PrimType::I64);
-        // The source-level precedence becomes `a + (b * c)` after parsing;
-        // our emitter keeps that structure.
-        assert_eq!(e.src, "(a + (b * c))");
+        assert_eq!(rust(&e), "(a + (b * c))");
     }
 
     #[test]
     fn parser_mandelbrot_escape_test() {
-        // The fusable inner part of mandelbrot's iterate guard.
         let ctx = FusionCtx { inputs: vec![input("zr", PrimType::F64), input("zi", PrimType::F64)], ..Default::default() };
         let e = parse_fuse("zr * zr + zi * zi > 4.0", &ctx).expect("should fuse");
         assert_eq!(e.typ, PrimType::Bool);
-        assert_eq!(e.src, "(((zr * zr) + (zi * zi)) > 4f64)");
+        assert_eq!(rust(&e), "(((zr * zr) + (zi * zi)) > 4f64)");
     }
 
     #[test]
     fn parser_lambda_full_kernel() {
-        // `|zr: f64, zi: f64, cr: f64| zr * zr - zi * zi + cr` — the
-        // new-zr step of mandelbrot's iterate recurrence. It's a pure
-        // f64 lambda and should fully fuse.
         let e = parse_one("|zr: f64, zi: f64, cr: f64| zr * zr - zi * zi + cr")
             .expect("parse");
         let lambda = match &e.kind {
@@ -2419,9 +1899,6 @@ mod tests {
 
     #[test]
     fn parser_lambda_with_let_now_fuses() {
-        // Let-bindings inside a lambda body are fusable; the emitter
-        // treats each `let x = ...` as a Rust `let x = ...` and makes
-        // `x` visible to the tail.
         let e = parse_one("|a: f64, b: f64| -> f64 { let c = a + b; c * 2.0 }")
             .expect("parse");
         let lambda = match &e.kind {
@@ -2430,7 +1907,6 @@ mod tests {
         };
         let src = emit_function_kernel("FusedScaled", "pkg_scaled", "scaled", &lambda)
             .expect("should fuse via emit_function_kernel");
-        // The emitted function body: `let mut c = ...; return c * 2.0;`
         assert!(src.contains("let mut c = (a + b)"), "source: {src}");
         assert!(src.contains("return (c * 2f64);"), "source: {src}");
         println!("{src}");
@@ -2438,8 +1914,6 @@ mod tests {
 
     #[test]
     fn parser_lambda_without_annotation_is_rejected() {
-        // Without an `: f64` annotation on `a`, we don't know the
-        // primitive type and can't pick a Value variant — refuse.
         let e = parse_one("|a, b: f64| a + b").expect("parse");
         let lambda = match &e.kind {
             ExprKind::Lambda(l) => l.clone(),
@@ -2450,10 +1924,6 @@ mod tests {
 
     #[test]
     fn mandelbrot_iterate_fuses_end_to_end() {
-        // The real target of this session's work: produce a complete
-        // Rust kernel for mandelbrot's iterate function and sanity-
-        // check that it has the expected overall shape (loop, tail
-        // call with tmp vars, escape guard, base case).
         let src = r#"
             |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
                 select i {
@@ -2474,28 +1944,20 @@ mod tests {
             &lambda,
         )
         .expect("should fuse mandelbrot iterate");
-        // Structural expectations:
         assert!(out.contains("fused_iterate_body"), "{out}");
         assert!(out.contains("loop {"), "{out}");
-        // Base case: i == 0 → return 0
         assert!(out.contains("(i == 0i64)"), "{out}");
         assert!(out.contains("return 0i64;"), "{out}");
-        // Escape guard: zr*zr + zi*zi > 4.0 → return i
         assert!(out.contains("((zr * zr) + (zi * zi)) > 4f64"), "{out}");
         assert!(out.contains("return i;"), "{out}");
-        // Tail call: assign tmps then update loop vars then continue
         assert!(out.contains("let __tmp_zr: f64"), "{out}");
         assert!(out.contains("let __tmp_i: i64"), "{out}");
         assert!(out.contains("zr = __tmp_zr;"), "{out}");
         assert!(out.contains("i = __tmp_i;"), "{out}");
         assert!(out.contains("continue;"), "{out}");
-        // Apply shim
         assert!(out.contains("pub struct FusedIterateKernel"), "{out}");
         assert!(out.contains("impl<R: ::graphix_compiler::Rt"), "{out}");
         assert!(out.contains("const NAME: &'static str = \"pkg_iterate\";"), "{out}");
-        // Invocation bits: unsafe fast-path extracts primitives
-        // directly via get_as_unchecked::<T> after args.update returns
-        // true (which guarantees every slot is Some).
         assert!(out.contains("get_as_unchecked::<f64>"), "{out}");
         assert!(out.contains("get_as_unchecked::<i64>"), "{out}");
         assert!(out.contains("::netidx::subscriber::Value::I64(__r)"), "{out}");
@@ -2504,14 +1966,6 @@ mod tests {
 
     #[test]
     fn walk_mandelbrot_and_report() {
-        // `iterate` from the mandelbrot benchmark — walker should find
-        // it. But note: `walk_and_fuse` currently goes through
-        // `try_fuse_lambda` which uses `emit_kernel` (the
-        // single-expression shape), not `emit_function_kernel` (the
-        // function-shaped one). The Select-based body isn't a single
-        // expression, so walk_and_fuse still rejects it via that path —
-        // the function-shaped emission is exercised directly in the
-        // "end-to-end" test above.
         let src = r#"
             let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
                 select i {
@@ -2525,9 +1979,6 @@ mod tests {
         assert_eq!(reports.len(), 1, "should see exactly the iterate lambda");
         let r = &reports[0];
         assert_eq!(r.name.as_ref().map(|s| s.as_str()), Some("iterate"));
-        // The old emit_kernel-based try_fuse_lambda only handles single-
-        // expression bodies; the function-shape emit_function_kernel
-        // is what handles Select.
         match &r.outcome {
             FusionOutcome::Rejected(_) => {}
             FusionOutcome::Fused(_) => {
@@ -2538,12 +1989,6 @@ mod tests {
 
     #[test]
     fn walk_finds_fusable_siblings() {
-        // Two top-level lambdas — both have primitive arg types, but
-        // one body is a single expression (fuses via try_fuse_lambda
-        // and emit_kernel) and the other has a let-binding (requires
-        // emit_function_kernel). walk_and_fuse currently routes through
-        // try_fuse_lambda, so only the first one is "fused" from its
-        // perspective.
         let src = r#"{
             let hyp2 = |a: f64, b: f64| a * a + b * b;
             let scaled = |a: f64, b: f64| -> f64 { let c = a + b; c * 2.0 };
@@ -2567,13 +2012,9 @@ mod tests {
             }
             _ => panic!("hyp2 should fuse"),
         }
-        // `scaled` with a let-binding now fuses too — emit_expr learned
-        // to lower `Do` blocks to Rust block expressions, so even the
-        // single-expression path through try_fuse_lambda handles it.
         match &named(&reports, "scaled").outcome {
             FusionOutcome::Fused(src) => {
                 assert!(src.contains("pub struct Fused_Scaled"), "{src}");
-                // Do-block lowered to a Rust block with a let
                 assert!(src.contains("let mut c"), "{src}");
             }
             _ => panic!("scaled should fuse via the single-expr path now"),
@@ -2582,9 +2023,6 @@ mod tests {
 
     #[test]
     fn clamp_via_cli_parse_path_fuses() {
-        // Reproduce the exact CLI path: parse a top-level `let clamp
-        // = ...;` and feed through the same fusion pipeline the
-        // `graphix compile` subcommand uses.
         use crate::expr::parser as p;
         use crate::expr::{Origin, Source};
         use arcstr::ArcStr;
@@ -2602,8 +2040,7 @@ mod tests {
         for e in exprs.iter() {
             if let ExprKind::Bind(b) = &e.kind {
                 if let ExprKind::Lambda(l) = &b.value.kind {
-                    let out =
-                        emit_function_kernel("T", "t_clamp", "clamp", l);
+                    let out = emit_function_kernel("T", "t_clamp", "clamp", l);
                     assert!(
                         out.is_some(),
                         "clamp parsed via parser::parse should fuse"
@@ -2617,9 +2054,6 @@ mod tests {
 
     #[test]
     fn select_as_expression_fuses() {
-        // `select` nested inside a `let`-bound value must lower to a
-        // Rust if/else-if/else expression so the outer `let` still
-        // works. This is the `clamp` shape.
         let e = parse_one(
             "|x: i64, lo: i64, hi: i64| -> i64 {
                 let lo_clamped = select x < lo { true => lo, false => x };
@@ -2633,40 +2067,26 @@ mod tests {
         };
         let src = emit_function_kernel("FusedClamp", "pkg_clamp", "clamp", &lambda)
             .expect("clamp should fuse");
-        // let-bound select becomes a Rust let with an if-expression.
-        // Bool literal patterns collapse from `(cond == true)` /
-        // `(cond == false)` to `cond` / `(!cond)`.
         assert!(src.contains("let mut lo_clamped"), "{src}");
         assert!(src.contains("if (x < lo)"), "{src}");
-        // The returning select at the end becomes a chain of
-        // if-statements (not an if-expression, since this is at body
-        // position).
         assert!(src.contains("if (lo_clamped > hi)"), "{src}");
         println!("{src}");
     }
 
     #[test]
     fn select_bool_literal_arms_fuse_cleanly() {
-        // A 2-arm Select over a bool scrutinee should produce valid,
-        // compilable Rust. This is the `abs` shape: `select x > 0.0
-        // { true => x, false => 0.0 - x }`.
         let ctx = FusionCtx { inputs: vec![input("x", PrimType::F64)], ..Default::default() };
         let e = parse_one("select x > 0.0 { true => x, false => 0.0 - x }")
             .expect("parse");
         let e = emit_expr(&e, &ctx).expect("should fuse");
         assert_eq!(e.typ, PrimType::F64);
-        // The `true`-arm pattern simplifies to the raw bool expression;
-        // the `false`-arm to its negation.
-        assert!(e.src.contains("if (x > 0f64)"), "{}", e.src);
-        assert!(e.src.contains("else if (!(x > 0f64))"), "{}", e.src);
+        let s = rust(&e);
+        assert!(s.contains("if (x > 0f64)"), "{s}");
+        assert!(s.contains("else if (!(x > 0f64))"), "{s}");
     }
 
     #[test]
     fn annotated_callback_in_apply_fuses() {
-        // An annotated callback passed as an Apply arg should fuse
-        // via the anon-lambda descent path. (The unannotated-in-HOF
-        // case requires typechecker-derived fn_types and is covered
-        // end-to-end by the differential corpus.)
         use crate::expr::parser as p;
         use crate::expr::{Origin, Source};
         use arcstr::ArcStr;
@@ -2701,8 +2121,6 @@ mod tests {
 
     #[test]
     fn return_type_inferred_when_annotation_missing() {
-        // A named lambda with no `-> T`: rtype is inferred from the
-        // body's tail expression.
         let e = parse_one("|a: i64, b: i64| a + b").expect("parse");
         let lambda = match &e.kind {
             ExprKind::Lambda(l) => l.clone(),
@@ -2710,17 +2128,12 @@ mod tests {
         };
         let src = emit_function_kernel("FusedSum", "pkg_sum", "sum", &lambda)
             .expect("unannotated rtype should still fuse");
-        // Return type inferred as i64; the Apply shim wraps with I64.
         assert!(src.contains("Value::I64(__r)"), "{src}");
         assert!(src.contains("-> i64"), "{src}");
     }
 
     #[test]
     fn anonymous_callback_lambda_fuses() {
-        // An anonymous `|idx|` passed as an argument to some HOF
-        // should still be fused — the rewrite pass synthesizes a
-        // name from the lambda's ExprId. The outer HOF call sees a
-        // shim lambda that dispatches to native code.
         use crate::expr::parser as p;
         use crate::expr::{Origin, Source};
         use arcstr::ArcStr;
@@ -2737,7 +2150,6 @@ mod tests {
             let mut e = e.clone();
             rewrite_program_with_state(&mut e, "anon", &mut state).expect("rewrite");
         }
-        // The anon lambda should have fused (uses scale from outer).
         let fused = state
             .kernels
             .iter()
@@ -2753,11 +2165,6 @@ mod tests {
 
     #[test]
     fn outer_scope_constant_is_inlined() {
-        // `max_iter` is a top-level `let max_iter = 64;`. The lambda
-        // below references it but doesn't take it as an arg. With
-        // const-inlining wired up, the fusion pass recognizes the
-        // constant and emits it as a Rust literal `64i64` at the Ref
-        // site.
         use crate::expr::parser as p;
         use crate::expr::{Origin, Source};
         use arcstr::ArcStr;
@@ -2792,9 +2199,6 @@ mod tests {
 
     #[test]
     fn type_cast_and_qop_fuse() {
-        // `cast<f64>(px)$` lowers to `(px as f64)` — the cast is a
-        // Rust primitive cast, and `$` is a typecheck-proven assertion
-        // that the value exists, stripped by the emitter.
         let ctx = FusionCtx {
             inputs: vec![input("px", PrimType::I64), input("dx", PrimType::F64)],
             ..Default::default()
@@ -2802,13 +2206,12 @@ mod tests {
         let e = parse_one("cast<f64>(px)$ * dx").expect("parse");
         let out = emit_expr(&e, &ctx).expect("should fuse");
         assert_eq!(out.typ, PrimType::F64);
-        assert!(out.src.contains("(px as f64)"), "{}", out.src);
+        let s = rust(&out);
+        assert!(s.contains("(px as f64)"), "{s}");
     }
 
     #[test]
     fn cast_non_primitive_rejected() {
-        // Cast to/from bool uses a match in Rust, not `as`. Until we
-        // add that, we refuse to fuse bool casts.
         let ctx = FusionCtx {
             inputs: vec![input("x", PrimType::Bool)],
             ..Default::default()
@@ -2819,11 +2222,6 @@ mod tests {
 
     #[test]
     fn cross_function_fusion_state_threads_across_top_level() {
-        // Across TWO top-level `let`s (not inside one Do block) — as
-        // the `graphix compile` CLI sees them after parse(). The
-        // shared RewriteState must carry the first fusion's
-        // signature through to the second's emission so the second
-        // can inline a direct call.
         use crate::expr::parser as p;
         use crate::expr::{Origin, Source};
         use arcstr::ArcStr;
@@ -2855,10 +2253,6 @@ mod tests {
 
     #[test]
     fn non_tail_self_recursion_fuses_as_rust_recursion() {
-        // Naive fibonacci — the recursion sits in the middle of an
-        // Add, not in tail position. With self registered in
-        // known_fns inside emit_function_kernel, emit_expr lowers the
-        // self-calls as direct Rust recursive calls.
         let e = parse_one(
             "|n: i64| -> i64 select n {
                 0 => 0,
@@ -2873,24 +2267,15 @@ mod tests {
         };
         let src = emit_function_kernel("FusedFib", "pkg_fib", "fib", &lambda)
             .expect("naive fib should fuse as recursive Rust");
-        // Contains the recursive call as a direct Rust function call,
-        // not an interpreter-dispatched Apply.
         assert!(src.contains("fused_fib_body"), "{src}");
-        // The body has TWO recursive calls (n-1, n-2) in a single Add.
         let call_count = src.matches("fused_fib_body(").count();
         assert!(call_count >= 2, "expected 2+ recursive calls, got {call_count}");
-        // AND we should NOT have wrapped in loop{} (since no tail call).
-        // NB: the emitted call-in-match-arm looks like `return (...);`
-        //     so we check for `return (fused_fib_body(...)`.
         assert!(!src.contains("loop {"), "non-tail fib shouldn't use loop: {src}");
         println!("{src}");
     }
 
     #[test]
     fn cross_function_fusion_inlines_known_callee() {
-        // `helper` fuses first; then `caller` sees `helper` in the
-        // known-fns registry and can inline a direct Rust call to
-        // `fused_helper_body` rather than bailing on the Apply.
         let src = r#"{
             let helper = |a: f64, b: f64| -> f64 a + b;
             let caller = |x: f64, y: f64| -> f64 helper(x, y) * 2.0;
@@ -2899,8 +2284,6 @@ mod tests {
         let mut e = parse_one(src).expect("parse");
         let kernels = rewrite_program(&mut e, "cross").expect("rewrite");
         assert_eq!(kernels.len(), 2, "both lambdas should fuse, got: {kernels:?}");
-        // The `caller` kernel must contain a direct call to
-        // `fused_helper_body` (not a fallback/interpreted path).
         let caller = kernels
             .iter()
             .find(|k| k.fn_name == "caller")
@@ -2914,10 +2297,6 @@ mod tests {
 
     #[test]
     fn rewrite_mandelbrot_produces_builtin_ref() {
-        // Feed rewrite_program the exact mandelbrot top-level. The
-        // iterate binding should come out as a lambda whose body is
-        // `Either::Right(<builtin name>)`, and we should get one
-        // FusedKernel back with Rust source that references it.
         let src = r#"{
             let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
                 select i {
@@ -2939,15 +2318,11 @@ mod tests {
         );
         assert!(k.rust_source.contains("fused_iterate_body"));
         assert!(k.rust_source.contains("continue;"));
-        // Verify the rewritten expression pretty-prints using the
-        // `'builtin_name` form for iterate's body.
         let printed = format!("{}", e.kind);
         assert!(
             printed.contains(&format!("'{}", k.builtin_name)),
             "expected rewritten source to contain 'builtin ref, got:\n{printed}"
         );
-        // And it should NOT still contain the original select-based
-        // body for iterate.
         assert!(
             !printed.contains("_ if zr * zr + zi * zi > 4"),
             "iterate body was not replaced:\n{printed}"
@@ -2956,7 +2331,6 @@ mod tests {
 
     #[test]
     fn render_lib_rs_has_defpackage_and_kernel() {
-        // Full pipeline: parse → rewrite → render Rust package.
         let src = r#"{
             let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
                 select i {
@@ -2976,23 +2350,16 @@ mod tests {
             lib_rs.contains("FusedIterate1") || lib_rs.contains("FusedIterate"),
             "{lib_rs}"
         );
-        // mod.gxi and mod.gx are empty for compile-only packages
         assert_eq!(render_mod_gxi(&pkg), "");
         assert_eq!(render_mod_gx(&pkg), "");
     }
 
     #[test]
     fn unresolved_tvar_is_refused() {
-        // A lambda whose FnType has an unresolved TVar in arg
-        // position can't be lowered to native code. AOT mode treats
-        // this as an error so the user gets a signal — silently
-        // running in the interpreter would defeat the point of
-        // `graphix compile`.
         use crate::typ::{FnArgType, FnType, Type};
         use triomphe::Arc as TArc;
         let src = "let rec f = |x| x";
         let mut e = parse_one(src).expect("parse");
-        // Find the lambda's ExprId inside the Bind.
         let lambda_id = match &e.kind {
             ExprKind::Bind(b) => match &b.value.kind {
                 ExprKind::Lambda(_) => b.value.id,
@@ -3000,9 +2367,6 @@ mod tests {
             },
             _ => panic!("expected bind"),
         };
-        // Construct a FnType whose arg type and return type are both
-        // unbound TVars — exactly what the typechecker would leave
-        // behind for `|x| x` in a module that never calls it.
         let ft = FnType {
             args: TArc::from_iter([FnArgType {
                 label: None,
