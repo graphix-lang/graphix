@@ -1,0 +1,32 @@
+# Graphix language entry for Helix.
+#
+# Append the blocks below to ~/.config/helix/languages.toml.
+# (The install.sh script in this directory will do this for you,
+# idempotently, plus copy the queries into your runtime path.)
+
+[[language]]
+name = "graphix"
+scope = "source.graphix"
+file-types = ["gx", "gxi"]
+comment-token = "//"
+indent = { tab-width = 4, unit = "    " }
+language-servers = ["graphix-lsp"]
+auto-format = false
+injection-regex = "graphix"
+roots = ["Cargo.toml", ".git"]
+
+[language-server.graphix-lsp]
+command = "graphix"
+args = ["lsp"]
+
+# Pick ONE of the [[grammar]] blocks below.
+
+# --- Option A: build from a local checkout (recommended for development) ---
+# [[grammar]]
+# name = "graphix"
+# source = { path = "/absolute/path/to/graphix/ide/tree-sitter-graphix" }
+
+# --- Option B: build from the published git repo ---
+[[grammar]]
+name = "graphix"
+source = { git = "https://github.com/graphix-lang/graphix", rev = "main", subpath = "ide/tree-sitter-graphix" }

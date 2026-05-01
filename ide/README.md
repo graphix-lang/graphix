@@ -54,6 +54,17 @@ cargo install --path graphix-shell
    (add-to-list 'eglot-server-programs '(graphix-mode . ("graphix" "lsp")))
    ```
 
+#### Helix
+
+```bash
+cd editors/helix && ./install.sh
+```
+
+The install script copies tree-sitter queries to
+`~/.config/helix/runtime/queries/graphix/`, appends the language/server/
+grammar blocks to `~/.config/helix/languages.toml`, and runs
+`helix --grammar build`. See `editors/helix/README.md` for details.
+
 #### Zed
 
 See `editors/zed/README.md` for Zed-specific instructions.
@@ -108,6 +119,7 @@ ide/
     ├── vscode/             # VS Code extension
     ├── nvim/               # Neovim configuration
     ├── emacs/              # Emacs major mode
+    ├── helix/              # Helix install script + queries
     └── zed/                # Zed configuration
 ```
 

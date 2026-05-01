@@ -123,9 +123,23 @@ struct ShellLspBackend {
     _keep_netidx: Arc<InternalOnly>,
     /// Stdlib + GRAPHIX_MODPATH-derived resolvers (anything that
     /// should be in scope regardless of which project we're
-    /// checking). Project-specific `Files(<project_root>)` is
-    /// appended on each `typecheck_project` call.
+    /// checking). The file's parent directory is appended on each
+    /// check so sibling modules resolve like `graphix --check file.gx`.
     base_resolvers: Vec<ModuleResolver>,
+}
+
+impl ShellLspBackend {
+    /// Build the resolver chain for checking `file`. Appends a
+    /// `Files(file.parent())` resolver to `base_resolvers` so
+    /// sibling-module imports work the same way they do when running
+    /// the file directly. With `None`, returns only the base chain.
+    fn resolvers_for(&self, file: Option<&Path>) -> Vec<ModuleResolver> {
+        let mut resolvers = self.base_resolvers.clone();
+        if let Some(parent) = file.and_then(|p| p.parent()) {
+            resolvers.push(ModuleResolver::Files(parent.to_path_buf()));
+        }
+        resolvers
+    }
 }
 
 impl LspBackend for ShellLspBackend {
@@ -134,9 +148,15 @@ impl LspBackend for ShellLspBackend {
     }
 
     fn typecheck(&self, source: Source, text: ArcStr) -> Result<TypecheckResult> {
-        let _ = source; // The LSP always holds live document text.
+        let file = match &source {
+            Source::File(p) => Some(p.as_path()),
+            _ => None,
+        };
         let CheckResult { env, references, module_references, type_references, scope_map } =
-            self.rt_handle.block_on(self.gx.check(Source::Internal(text)))?;
+            self.rt_handle.block_on(
+                self.gx
+                    .check_with_resolvers(Source::Internal(text), self.resolvers_for(file)),
+            )?;
         Ok(TypecheckResult {
             env,
             references,
@@ -147,15 +167,10 @@ impl LspBackend for ShellLspBackend {
     }
 
     fn typecheck_project(&self, root: &Path) -> Result<TypecheckResult> {
-        let mut resolvers: Vec<ModuleResolver> = self.base_resolvers.clone();
-        if let Some(parent) = root.parent() {
-            resolvers.push(ModuleResolver::Files(parent.to_path_buf()));
-        }
-        let CheckResult { env, references, module_references, type_references, scope_map } = self
-            .rt_handle
-            .block_on(self.gx.check_with_resolvers(
+        let CheckResult { env, references, module_references, type_references, scope_map } =
+            self.rt_handle.block_on(self.gx.check_with_resolvers(
                 Source::File(root.to_path_buf()),
-                resolvers,
+                self.resolvers_for(Some(root)),
             ))?;
         Ok(TypecheckResult {
             env,

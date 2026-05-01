@@ -6,7 +6,7 @@ use sys;
 use sys::net;
 mod icon;
 
-let publish_host = |#name, #status, #cpu, #mem| {
+let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
     sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
     sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
     sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);

@@ -73,8 +73,9 @@
 (type_variable) @type.parameter
 
 ; Functions
+; The `apply` node has no named field for its callee — match positionally.
 (apply
-  function: (reference
+  (reference
     (module_path
       (identifier) @function)))
 

@@ -431,7 +431,14 @@ async fn resolve(
         let _ = implementation; // implementation lives on the inner exprs
         return Ok(Expr { id, ori: parent, pos, kind });
     }
-    bail!("module {name} could not be found {errors:?}")
+    let mut msg = format_compact!("module {name} could not be found");
+    use std::fmt::Write as _;
+    let mut first = true;
+    for e in errors.iter() {
+        let _ = write!(&mut msg, "{}{e}", if first { ": " } else { "; " });
+        first = false;
+    }
+    bail!("{msg}")
 }
 
 impl Expr {

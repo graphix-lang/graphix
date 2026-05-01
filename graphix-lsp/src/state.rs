@@ -369,7 +369,7 @@ impl ServerState {
             items.push(lsp_types::CompletionItem {
                 label: name.to_string(),
                 kind: Some(kind),
-                detail: Some(format!("{}", bind.typ)),
+                detail: Some(format_bind_type(&bind.typ)),
                 documentation: bind
                     .doc
                     .as_ref()
@@ -401,7 +401,8 @@ impl ServerState {
         let env = self.env_for(uri);
 
         if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
-            let mut contents = format!("```graphix\n{}: {}\n```", word, bind.typ);
+            let mut contents =
+                format!("```graphix\n{}: {}\n```", word, format_bind_type(&bind.typ));
             if let Some(doc) = &bind.doc {
                 contents.push_str("\n\n");
                 contents.push_str(doc);
@@ -1114,6 +1115,26 @@ fn lookup_matching_via_by_id(
 
 fn is_id_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Format a binding's type for display (completion detail, hover, etc.).
+///
+/// Two passes happen here, and the order matters. `replace_auto_constrained`
+/// (Fn types only) folds auto-named TVars from the function's constraint
+/// table into the surface — this catches polymorphic functions whose
+/// concrete arg types only appear as constraints, never written into the
+/// TVar's storage. `resolve_tvars` then walks the whole type and
+/// dereferences any TVar whose RwLock has been written by unification —
+/// this catches non-function bindings (`let tbl = …`) and any inner TVars
+/// the first pass left behind. resolve_tvars empties the constraint
+/// table, so it must run second.
+fn format_bind_type(typ: &Type) -> String {
+    use triomphe::Arc;
+    let folded = match typ {
+        Type::Fn(ft) => Type::Fn(Arc::new(ft.replace_auto_constrained())),
+        t => t.clone(),
+    };
+    format!("{}", folded.resolve_tvars())
 }
 
 /// True when `chars[i]` and `chars[i+1]` form a `::` segment separator.
