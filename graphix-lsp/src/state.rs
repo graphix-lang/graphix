@@ -360,14 +360,22 @@ impl ServerState {
         let env = self.env_for(uri);
         let matched = lookup_matching_via_by_id(env, &scope, &part);
         let mut items = Vec::new();
+        // Track binding labels so we can hide a same-named module entry
+        // below — when a name is both a function (via `use foo;`) and
+        // the module it came from, the function form is more useful in
+        // a completion popup. The module is still reachable via
+        // qualified-path completion (`column::Column`).
+        let mut binding_labels: HashSet<String> = HashSet::new();
         for (name, bind) in matched {
             let kind = if matches!(&bind.typ, Type::Fn(_)) {
                 lsp_types::CompletionItemKind::FUNCTION
             } else {
                 lsp_types::CompletionItemKind::VARIABLE
             };
+            let label = name.to_string();
+            binding_labels.insert(label.clone());
             items.push(lsp_types::CompletionItem {
-                label: name.to_string(),
+                label,
                 kind: Some(kind),
                 detail: Some(format_bind_type(&bind.typ)),
                 documentation: bind
@@ -379,8 +387,12 @@ impl ServerState {
         }
         // Module completions still use the env's `modules` set.
         for module in env.lookup_matching_modules(&scope, &part) {
+            let label = module.to_string();
+            if binding_labels.contains(&label) {
+                continue;
+            }
             items.push(lsp_types::CompletionItem {
-                label: module.to_string(),
+                label,
                 kind: Some(lsp_types::CompletionItemKind::MODULE),
                 ..Default::default()
             });
@@ -395,25 +407,36 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<lsp_types::Hover> {
         let doc = self.documents.get(uri)?;
-        let word = get_word_at_position(&doc.text, position)?;
-        let scope = ModPath::root();
-        let name: ModPath = word.split("::").collect();
         let env = self.env_for(uri);
 
-        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
-            let mut contents =
-                format!("```graphix\n{}: {}\n```", word, format_bind_type(&bind.typ));
-            if let Some(doc) = &bind.doc {
-                contents.push_str("\n\n");
-                contents.push_str(doc);
+        // First, try resolving via a recorded reference site at the
+        // cursor. This is the only path that works for bindings that
+        // aren't reachable by name from the cursor's scope — lambda
+        // parameters, lets inside nested blocks, and the variable
+        // tokens inside string interpolations all show up here.
+        for r in doc.references.iter() {
+            if position_in_ref(position, r) {
+                if let Some(bind) = bind_for_id(env, r.bind_id) {
+                    return Some(bind_hover(&r.name.to_string(), bind));
+                }
             }
-            return Some(lsp_types::Hover {
-                contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
-                    kind: lsp_types::MarkupKind::Markdown,
-                    value: contents,
-                }),
-                range: None,
-            });
+        }
+
+        // Cursor on a binding's declaration (lambda param, let name,
+        // etc.). Declarations don't appear in `doc.references`, so
+        // scan ide_binds for a Bind whose `pos` covers the cursor.
+        if let Some(bind) = bind_at_decl(env, uri, position) {
+            return Some(bind_hover(bind.name.as_str(), bind));
+        }
+
+        let word = get_word_at_position(&doc.text, position)?;
+        // Use the cursor's lexical scope so locally-bound names
+        // (let inside a function, etc.) are resolved correctly.
+        let scope = self.scope_at(uri, position);
+        let name: ModPath = word.split("::").collect();
+
+        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
+            return Some(bind_hover(&word, bind));
         }
 
         if let Some(typedef) = env.lookup_typedef(&scope, &name) {
@@ -993,7 +1016,13 @@ fn origin_matches_uri(ori: &graphix_compiler::expr::Origin, uri: &Uri) -> bool {
             Some(u) => &u == uri,
             None => false,
         },
-        Source::Internal(_) | Source::Unspecified => true,
+        // The LSP feeds the active document as `Source::Internal(text)`,
+        // and the VFS resolver wraps every stdlib module in
+        // `Source::Internal(name)` too. Both look the same on `source`
+        // alone, so we use `parent` to discriminate: only the document
+        // the LSP passed to `check_with_resolvers` has `parent = None`.
+        // VFS- (and File-) loaded children all carry `Some(parent_ori)`.
+        Source::Internal(_) | Source::Unspecified => ori.parent.is_none(),
         Source::Netidx(_) => false,
     }
 }
@@ -1081,33 +1110,24 @@ fn ref_to_location(
 /// scopes that get torn down) are still visible to IDE queries.
 /// A bind is visible from `cursor_scope` if the bind's scope is
 /// `cursor_scope` itself, an ancestor, or a sibling-via-`use`.
+///
+/// Goes through `env.lookup_matching` which walks the scope's `used`
+/// list via `find_visible` — that's how names brought in by `use foo;`
+/// become reachable. Walking `ide_binds` directly (as we used to)
+/// missed those.
 fn lookup_matching_via_by_id(
     env: &Env,
     cursor_scope: &ModPath,
     part: &ModPath,
 ) -> Vec<(compact_str::CompactString, graphix_compiler::env::Bind)> {
-    let cursor_scope_str: &str = cursor_scope.as_ref();
-    let part_str: &str = part.as_ref();
-    let prefix_basename = part_str.trim_start_matches('/');
     let mut out = Vec::new();
-    let mut seen: HashSet<&str> = HashSet::new();
-    for (scope_path, defs) in &env.ide_binds {
-        let bind_scope: &str = scope_path.as_ref();
-        let visible = cursor_scope_str == bind_scope
-            || (cursor_scope_str.starts_with(bind_scope)
-                && cursor_scope_str.as_bytes().get(bind_scope.len()) == Some(&b'/'))
-            || bind_scope.is_empty()
-            || bind_scope == "/";
-        if !visible {
+    let mut seen: HashSet<compact_str::CompactString> = HashSet::new();
+    for (name, bind_id) in env.lookup_matching(cursor_scope, part) {
+        if !seen.insert(name.clone()) {
             continue;
         }
-        for (name, bind) in defs {
-            if !prefix_basename.is_empty() && !name.starts_with(prefix_basename) {
-                continue;
-            }
-            if seen.insert(name.as_str()) {
-                out.push((name.clone(), bind.clone()));
-            }
+        if let Some(bind) = env.by_id.get(&bind_id) {
+            out.push((name, bind.clone()));
         }
     }
     out
@@ -1115,6 +1135,70 @@ fn lookup_matching_via_by_id(
 
 fn is_id_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Build the hover popup payload for a binding. Markdown body is a
+/// graphix code fence with `name: type`, then any doc comment.
+fn bind_hover(name: &str, bind: &graphix_compiler::env::Bind) -> lsp_types::Hover {
+    let mut contents = format!("```graphix\n{}: {}\n```", name, format_bind_type(&bind.typ));
+    if let Some(d) = &bind.doc {
+        contents.push_str("\n\n");
+        contents.push_str(d);
+    }
+    lsp_types::Hover {
+        contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: contents,
+        }),
+        range: None,
+    }
+}
+
+/// Find a binding whose declaration position covers the cursor.
+/// Catches hovers on function parameters and let-binding names —
+/// declarations don't appear in `doc.references`, but they're recorded
+/// in `ide_binds` along with `(pos, ori, name)`. Filtering by the
+/// active URI keeps multi-file workspace checks from cross-talking.
+fn bind_at_decl<'a>(
+    env: &'a Env,
+    uri: &Uri,
+    position: lsp_types::Position,
+) -> Option<&'a graphix_compiler::env::Bind> {
+    for (_, defs) in &env.ide_binds {
+        for (_, b) in defs {
+            if !origin_matches_uri(&b.ori, uri) {
+                continue;
+            }
+            if span_covers(position, b.pos, b.name.len() as u32) {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+/// Look up a bind by id, falling back to a linear scan of `ide_binds`.
+///
+/// `env.by_id` loses lambda parameters once their parent callsite is
+/// dropped — but `unbind_variable` doesn't touch `ide_binds`, so the
+/// IDE-only mirror still has the type and doc. ide_binds is keyed by
+/// (scope, name) not by BindId, so we have to scan; n is small enough
+/// at IDE speeds that this is fine.
+fn bind_for_id(
+    env: &Env,
+    id: graphix_compiler::BindId,
+) -> Option<&graphix_compiler::env::Bind> {
+    if let Some(b) = env.by_id.get(&id) {
+        return Some(b);
+    }
+    for (_, defs) in &env.ide_binds {
+        for (_, b) in defs {
+            if b.id == id {
+                return Some(b);
+            }
+        }
+    }
+    None
 }
 
 /// Format a binding's type for display (completion detail, hover, etc.).
