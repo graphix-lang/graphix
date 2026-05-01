@@ -2,20 +2,20 @@ type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
 /// Read text from the system clipboard. Fires each time `trigger` updates.
-val read_text: fn(Any) -> Result<string, `ClipboardError(string)>;
+val read_text: fn(trigger: Any) -> Result<string, `ClipboardError(string)>;
 /// Write text to the system clipboard.
-val write_text: fn(string) -> Result<null, `ClipboardError(string)>;
+val write_text: fn(text: string) -> Result<null, `ClipboardError(string)>;
 /// Read an RGBA8 image from the system clipboard.
-val read_image: fn(Any) -> Result<ClipboardImage, `ClipboardError(string)>;
+val read_image: fn(trigger: Any) -> Result<ClipboardImage, `ClipboardError(string)>;
 /// Write an RGBA8 image to the system clipboard.
-val write_image: fn(ClipboardImage) -> Result<null, `ClipboardError(string)>;
+val write_image: fn(image: ClipboardImage) -> Result<null, `ClipboardError(string)>;
 /// Read HTML from the system clipboard.
-val read_html: fn(Any) -> Result<string, `ClipboardError(string)>;
+val read_html: fn(trigger: Any) -> Result<string, `ClipboardError(string)>;
 /// Write HTML to the system clipboard.
-val write_html: fn(HtmlContent) -> Result<null, `ClipboardError(string)>;
+val write_html: fn(content: HtmlContent) -> Result<null, `ClipboardError(string)>;
 /// Read file paths from the system clipboard.
-val read_files: fn(Any) -> Result<Array<string>, `ClipboardError(string)>;
+val read_files: fn(trigger: Any) -> Result<Array<string>, `ClipboardError(string)>;
 /// Write file paths to the system clipboard.
-val write_files: fn(Array<string>) -> Result<null, `ClipboardError(string)>;
+val write_files: fn(files: Array<string>) -> Result<null, `ClipboardError(string)>;
 /// Clear the system clipboard.
-val clear: fn(Any) -> Result<null, `ClipboardError(string)>
+val clear: fn(trigger: Any) -> Result<null, `ClipboardError(string)>

@@ -22,8 +22,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get: fn(T) -> i64
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64
     "#,
     "/test/inner.gx" => r#"
         type T = i64;
@@ -42,8 +42,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Handle;
-        val make: fn(string) -> Handle;
-        val get_name: fn(Handle) -> string
+        val make: fn(x: string) -> Handle;
+        val get_name: fn(h: Handle) -> string
     "#,
     "/test/inner.gx" => r#"
         type Handle = { value: string };
@@ -62,7 +62,7 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Point = { x: i64, y: i64 };
-        val add: fn(i64, i64) -> i64     "#,
+        val add: fn(a: i64, b: i64) -> i64     "#,
     "/test/inner.gx" => r#"
         let add = |a: i64, b: i64| -> i64 a + b
     "#
@@ -85,9 +85,9 @@ run!(
     "/test/inner.gxi" => r#"
         type A;
         type B;
-        val make_a: fn(i64) -> A;
-        val make_b: fn(i64) -> B;
-        val combine: fn(A, B) -> i64     "#,
+        val make_a: fn(x: i64) -> A;
+        val make_b: fn(y: i64) -> B;
+        val combine: fn(a: A, b: B) -> i64     "#,
     "/test/inner.gx" => r#"
         type A = { x: i64 };
         type B = { y: i64 };
@@ -110,8 +110,8 @@ run!(
     "#,
     "/test/mod_a.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get: fn(T) -> i64     "#,
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64     "#,
     "/test/mod_a.gx" => r#"
         type T = { value: i64 };
         let make = |x: i64| -> T { value: x };
@@ -119,8 +119,8 @@ run!(
     "#,
     "/test/mod_b.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get: fn(T) -> i64     "#,
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64     "#,
     "/test/mod_b.gx" => r#"
         type T = i64;
         let make = |x: i64| -> T x;
@@ -140,8 +140,8 @@ run!(
     "/test/inner.gxi" => r#"
         type First;
         type Pair = { first: First, second: string };
-        val make_pair: fn(i64, string) -> Pair;
-        val get_first: fn(Pair) -> i64
+        val make_pair: fn(a: i64, b: string) -> Pair;
+        val get_first: fn(p: Pair) -> i64
     "#,
     "/test/inner.gx" => r#"
         type First = i64;
@@ -166,8 +166,8 @@ run!(
     "/test/inner.gxi" => r#"
         type T;
         type Option = [`Some(T), `None];
-        val some: fn(i64) -> Option;
-        val get_or_default: fn(Option, i64) -> i64
+        val some: fn(x: i64) -> Option;
+        val get_or_default: fn(opt: Option, default: i64) -> i64
     "#,
     "/test/inner.gx" => r#"
         type T = { value: i64 };
@@ -191,8 +191,8 @@ run!(
     "/test/inner.gxi" => r#"
         type Elem;
         type Pair = (Elem, Elem);
-        val make_pair: fn(i64, i64) -> Pair;
-        val sum_pair: fn(Pair) -> i64     "#,
+        val make_pair: fn(a: i64, b: i64) -> Pair;
+        val sum_pair: fn(p: Pair) -> i64     "#,
     "/test/inner.gx" => r#"
         type Elem = i64;
         let make_pair = |a: i64, b: i64| -> Pair (a, b);
@@ -211,8 +211,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Elem;
-        val make_array: fn(Array<i64>) -> Array<Elem>;
-        val sum_array: fn(Array<Elem>) -> i64     "#,
+        val make_array: fn(arr: Array<i64>) -> Array<Elem>;
+        val sum_array: fn(arr: Array<Elem>) -> i64     "#,
     "/test/inner.gx" => r#"
         type Elem = i64;
         let make_array = |arr: Array<i64>| -> Array<Elem> arr;
@@ -236,9 +236,9 @@ run!(
     "/test/inner.gxi" => r#"
         type Elem;
         type List = [`Cons(Elem, List), `Nil];
-        val cons: fn(i64, List) -> List;
+        val cons: fn(x: i64, rest: List) -> List;
         val nil: fn() -> List;
-        val sum: fn(List) -> i64     "#,
+        val sum: fn(list: List) -> i64     "#,
     "/test/inner.gx" => r#"
         type Elem = i64;
         let cons = |x: i64, rest: List| -> List `Cons(x, rest);
@@ -272,9 +272,9 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Counter;
-        val make: fn(i64) -> Counter;
-        val get: fn(Counter) -> i64;
-        val increment: fn(&Counter) -> null     "#,
+        val make: fn(x: i64) -> Counter;
+        val get: fn(c: Counter) -> i64;
+        val increment: fn(c: &Counter) -> null     "#,
     "/test/inner.gx" => r#"
         type Counter = i64;
         let make = |x: i64| -> Counter x;
@@ -303,8 +303,8 @@ run!(
     "#,
     "/test/outer/inner.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get: fn(T) -> i64
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64
     "#,
     "/test/outer/inner.gx" => r#"
         type T = { v: i64 };
@@ -332,8 +332,8 @@ run!(
             sandbox whitelist [core];
             sig {
                 type T;
-                val make: fn(i64) -> T;
-                val double: fn(T) -> i64             };
+                val make: fn(x: i64) -> T;
+                val double: fn(t: T) -> i64             };
             source sys::net::subscribe("/local/dyn_test")?
         };
         let result = select status {
@@ -392,7 +392,7 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type T;
-        val make: fn(i64) -> T
+        val make: fn(x: i64) -> T
     "#,
     "/test/inner.gx" => r#"
         type T = string;
@@ -410,7 +410,7 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type T<'a: Number>;
-        val make: fn('a) -> T<'a>
+        val make: fn(x: 'a) -> T<'a>
     "#,
     "/test/inner.gx" => r#"
         type T<'a> = { val: 'a };
@@ -431,8 +431,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Box<'a: Number>;
-        val wrap: fn('a) -> Box<'a>;
-        val unwrap: fn(Box<'a>) -> 'a
+        val wrap: fn(x: 'a) -> Box<'a>;
+        val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
         type Box<'a: Number> = { value: 'a };
@@ -453,8 +453,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Box<'a: Number>;
-        val wrap: fn('a) -> Box<'a>;
-        val unwrap: fn(Box<'a>) -> 'a
+        val wrap: fn(x: 'a) -> Box<'a>;
+        val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
         type Box<'a: Number> = { value: 'a };
@@ -492,7 +492,7 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type T;
-        val get: fn(T) -> i64
+        val get: fn(t: T) -> i64
     "#,
     "/test/inner.gx" => r#"
         type T = string;
@@ -515,8 +515,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Box<'a>;
-        val wrap: fn('a) -> Box<'a>;
-        val unwrap: fn(Box<'a>) -> 'a
+        val wrap: fn(x: 'a) -> Box<'a>;
+        val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
         type Box<'a> = { value: 'a };
@@ -537,8 +537,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Box<'a>;
-        val wrap: fn('a) -> Box<'a>;
-        val unwrap: fn(Box<'a>) -> 'a
+        val wrap: fn(x: 'a) -> Box<'a>;
+        val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
         type Box<'a> = { value: 'a };
@@ -561,8 +561,8 @@ run!(
     "/test/inner.gxi" => r#"
         type NumWrapper<'a: Number>;
         type IntWrapper = NumWrapper<i64>;
-        val wrap: fn(i64) -> IntWrapper;
-        val double: fn(IntWrapper) -> i64     "#,
+        val wrap: fn(x: i64) -> IntWrapper;
+        val double: fn(w: IntWrapper) -> i64     "#,
     "/test/inner.gx" => r#"
         type NumWrapper<'a: Number> = 'a;
         let wrap = |x: i64| -> IntWrapper x;
@@ -582,8 +582,8 @@ run!(
     "/test/inner.gxi" => r#"
         type Box<'a>;
         type IntBoxArray = Array<Box<i64>>;
-        val wrap: fn('a) -> Box<'a>;
-        val sum_boxes: fn(IntBoxArray) -> i64     "#,
+        val wrap: fn(x: 'a) -> Box<'a>;
+        val sum_boxes: fn(boxes: IntBoxArray) -> i64     "#,
     "/test/inner.gx" => r#"
         type Box<'a> = { value: 'a };
         let wrap = |x: 'a| -> Box<'a> { value: x };
@@ -603,9 +603,9 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Pair<'a, 'b>;
-        val make: fn('a, 'b) -> Pair<'a, 'b>;
-        val get_first: fn(Pair<'a, 'b>) -> 'a;
-        val get_second: fn(Pair<'a, 'b>) -> 'b
+        val make: fn(a: 'a, b: 'b) -> Pair<'a, 'b>;
+        val get_first: fn(p: Pair<'a, 'b>) -> 'a;
+        val get_second: fn(p: Pair<'a, 'b>) -> 'b
     "#,
     "/test/inner.gx" => r#"
         type Pair<'a, 'b> = { first: 'a, second: 'b };
@@ -632,9 +632,9 @@ run!(
     "/test/inner.gxi" => r#"
         type Key;
         type KeyMap = Map<Key, string>;
-        val make_key: fn(i64) -> Key;
+        val make_key: fn(x: i64) -> Key;
         val make_map: fn() -> KeyMap;
-        val lookup: fn(KeyMap, Key) -> string throws Error<ErrChain<`MapKeyError(string)>>
+        val lookup: fn(m: KeyMap, k: Key) -> string throws Error<ErrChain<`MapKeyError(string)>>
     "#,
     "/test/inner.gx" => r#"
         type Key = i64;
@@ -658,8 +658,8 @@ run!(
         type Val;
         type ValMap = Map<string, Val>;
         val make_map: fn() -> ValMap;
-        val get: fn(ValMap, string) -> Val throws Error<ErrChain<`MapKeyError(string)>>;
-        val unwrap: fn(Val) -> i64
+        val get: fn(m: ValMap, k: string) -> Val throws Error<ErrChain<`MapKeyError(string)>>;
+        val unwrap: fn(v: Val) -> i64
     "#,
     "/test/inner.gx" => r#"
         type Val = { inner: i64 };
@@ -684,10 +684,10 @@ run!(
         type K;
         type V;
         type KVMap = Map<K, V>;
-        val make_key: fn(string) -> K;
-        val make_map: fn(K, i64) -> KVMap;
-        val lookup: fn(KVMap, K) -> V throws Error<ErrChain<`MapKeyError(string)>>;
-        val get_val: fn(V) -> i64
+        val make_key: fn(s: string) -> K;
+        val make_map: fn(k: K, n: i64) -> KVMap;
+        val lookup: fn(m: KVMap, k: K) -> V throws Error<ErrChain<`MapKeyError(string)>>;
+        val get_val: fn(v: V) -> i64
     "#,
     "/test/inner.gx" => r#"
         type K = { name: string };
@@ -719,7 +719,7 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type ErrPayload;
-        val risky: fn(i64) -> i64 throws Error<ErrChain<`CustomError(ErrPayload)>>
+        val risky: fn(x: i64) -> i64 throws Error<ErrChain<`CustomError(ErrPayload)>>
     "#,
     "/test/inner.gx" => r#"
         type ErrPayload = { code: i64, msg: string };
@@ -744,8 +744,8 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get_value: fn(T) -> i64 throws Error<ErrChain<`ArrayIndexError(string)>>
+        val make: fn(x: i64) -> T;
+        val get_value: fn(t: T) -> i64 throws Error<ErrChain<`ArrayIndexError(string)>>
     "#,
     "/test/inner.gx" => r#"
         type T = { value: i64 };
@@ -778,8 +778,8 @@ run!(
     "#,
     "/test/mod_a.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get: fn(T) -> i64     "#,
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64     "#,
     "/test/mod_a.gx" => r#"
         type T = { value: i64 };
         let make = |x: i64| -> T { value: x };
@@ -787,8 +787,8 @@ run!(
     "#,
     "/test/mod_b.gxi" => r#"
         type T;
-        val make: fn(i64) -> T;
-        val get: fn(T) -> i64     "#,
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64     "#,
     "/test/mod_b.gx" => r#"
         type T = i64;
         let make = |x: i64| -> T x;

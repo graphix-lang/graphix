@@ -78,8 +78,8 @@ pub fn apply<R: Rt, E: UserEvent>(
         .zip(typ.args.iter())
         .enumerate()
         .map(|(i, (node, farg))| {
-            let key = match &farg.label {
-                Some((name, _)) => ArgKey::Named(name.clone()),
+            let key = match farg.label() {
+                Some(name) => ArgKey::Named(name.clone()),
                 None => ArgKey::Positional(i),
             };
             (

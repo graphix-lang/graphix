@@ -4,7 +4,7 @@ use crate::{
         ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
         StructurePattern,
     },
-    typ::{FnArgType, TVar, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
 use arcstr::literal;
 use netidx::{publisher::Typ, utils::Either};
@@ -969,7 +969,10 @@ fn labeled_argument_lambda() {
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
                 FnArgType {
-                    label: Some(("foo".into(), true)),
+                    kind: FnArgKind::Labeled {
+                        name: "foo".into(),
+                        has_default: true,
+                    },
                     typ: Type::Ref (TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
@@ -977,11 +980,23 @@ fn labeled_argument_lambda() {
                      ..Default::default()}),
                 },
                 FnArgType {
-                    label: Some(("bar".into(), true)),
+                    kind: FnArgKind::Labeled {
+                        name: "bar".into(),
+                        has_default: true,
+                    },
                     typ: Type::Primitive(Typ::String.into()),
                 },
-                FnArgType { label: Some(("a".into(), false)), typ: Type::Any },
-                FnArgType { label: None, typ: Type::Any },
+                FnArgType {
+                    kind: FnArgKind::Labeled {
+                        name: "a".into(),
+                        has_default: false,
+                    },
+                    typ: Type::Any,
+                },
+                FnArgType {
+                    kind: FnArgKind::Positional { name: Some("baz".into()) },
+                    typ: Type::Any,
+                },
             ]),
             vargs: None,
             rtype: Type::Primitive(Typ::String.into()),
@@ -1035,7 +1050,7 @@ fn labeled_argument_lambda() {
     }))
     .to_expr_nopos();
     let s = r#"
-let a: fn(?#foo: Number, ?#bar: string, #a: Any, Any) -> string =
+let a: fn(?#foo: Number, ?#bar: string, #a: Any, baz: Any) -> string =
   |#foo: Number = 3, #bar = "hello", #a, baz| 'foo
 "#;
     let pe = parse_one(s).unwrap();

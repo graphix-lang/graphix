@@ -1,6 +1,6 @@
 let combo_box = |
   #selected: &[string, null] = &null,
-  #on_select: fn(string) -> Any = |_| null,
+  #on_select: fn(s: string) -> Any = |_| null,
   #placeholder: &string = &"Type to search...",
   #width: &Length = &`Fill,
   #disabled: &bool = &false,

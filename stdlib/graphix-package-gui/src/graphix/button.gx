@@ -1,5 +1,5 @@
 let button = |
-  #on_press: fn(null) -> Any = |_| null,
+  #on_press: fn(e: null) -> Any = |_| null,
   #width: &Length = &`Shrink,
   #height: &Length = &`Shrink,
   #padding: &Padding = &`All(5.0),

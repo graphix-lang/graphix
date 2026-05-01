@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgType, FnType, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, FnType, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -265,8 +265,13 @@ fn typexp() -> impl Strategy<Value = Type> {
             ),
             (
                 collection::vec(
-                    (option::of(random_fname()), any::<bool>(), inner.clone()),
-                    (1, 10)
+                    (
+                        option::of(random_fname()),
+                        random_fname(),
+                        any::<bool>(),
+                        inner.clone(),
+                    ),
+                    (1, 10),
                 ),
                 option::of(inner.clone()),
                 inner.clone(),
@@ -274,11 +279,18 @@ fn typexp() -> impl Strategy<Value = Type> {
                 option::of(inner.clone())
             )
                 .prop_map(|(mut args, vargs, rtype, constraints, throws)| {
-                    args.sort_by(|(k0, _, _), (k1, _, _)| k1.cmp(k0));
-                    let args = args.into_iter().map(|(name, optional, typ)| FnArgType {
-                        label: name.map(|n| (n, optional)),
-                        typ,
-                    });
+                    args.sort_by(|(k0, _, _, _), (k1, _, _, _)| k1.cmp(k0));
+                    let args =
+                        args.into_iter().map(|(label, pos_name, optional, typ)| {
+                            let kind = match label {
+                                Some(n) => FnArgKind::Labeled {
+                                    name: n,
+                                    has_default: optional,
+                                },
+                                None => FnArgKind::Positional { name: Some(pos_name) },
+                            };
+                            FnArgType { kind, typ }
+                        });
                     let explicit_throws = throws.is_some();
                     let throws = throws.unwrap_or(Type::Bottom);
                     Type::Fn(Arc::new(FnType {

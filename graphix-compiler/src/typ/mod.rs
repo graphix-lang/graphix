@@ -28,7 +28,7 @@ mod setops;
 mod tval;
 mod tvar;
 
-pub use fntyp::{FnArgType, FnType};
+pub use fntyp::{FnArgKind, FnArgType, FnType};
 pub use tval::TVal;
 pub use tvar::TVar;
 

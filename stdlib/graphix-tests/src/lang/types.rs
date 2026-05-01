@@ -67,7 +67,7 @@ run!(inferred_rtype, INFERRED_RTYPE, |v: Result<&Value>| match v {
 
 const LAMBDA_CONSTRAINT: &str = r#"
 {
-  let f = |f: fn(string, string) -> string, a| f("foo", a);
+  let f = |f: fn(s1: string, s2: string) -> string, a| f("foo", a);
   f(|x, y: Number| "[x] and [y]", "foo")
 }
 "#;
@@ -230,7 +230,7 @@ run!(rectypes2, RECTYPES2, |v: Result<&Value>| match v {
 
 const TYPEDEF_TVAR_OK: &str = r#"
 {
-  type T<'a, 'b> = { foo: 'a, bar: 'b, f: fn('a, 'b, 'c) -> 'a };
+  type T<'a, 'b> = { foo: 'a, bar: 'b, f: fn(a: 'a, b: 'b, c: 'c) -> 'a };
   0
 }
 "#;

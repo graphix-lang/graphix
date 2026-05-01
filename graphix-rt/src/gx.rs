@@ -556,7 +556,7 @@ impl<X: GXExt> GX<X> {
         let args = lb.typ.args.iter();
         let args = args
             .map(|a| {
-                if a.label.as_ref().map(|(_, opt)| *opt).unwrap_or(false) {
+                if a.has_default() {
                     bail!("can't call lambda with an optional argument from rust")
                 } else {
                     Ok(BindId::new())

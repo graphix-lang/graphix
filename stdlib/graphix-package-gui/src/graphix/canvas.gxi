@@ -31,5 +31,5 @@ val canvas: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#background: &[Color, null],
-  &Array<CanvasShape>
+  shapes: &Array<CanvasShape>
 ) -> Widget

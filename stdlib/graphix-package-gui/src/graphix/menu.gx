@@ -10,7 +10,7 @@ let shortcut = |#ctrl = false, #shift = false, #alt = false, #logo = false, key:
     };
 
 let action = |
-  #on_click: fn(null) -> Any = |_| null,
+  #on_click: fn(e: null) -> Any = |_| null,
   #shortcut: &[Shortcut, null] = &null,
   #disabled: &bool = &false,
   label: &string

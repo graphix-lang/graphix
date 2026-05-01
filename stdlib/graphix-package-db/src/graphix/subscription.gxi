@@ -2,10 +2,10 @@
 type Subscription<'k, 'v>;
 
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], Tree<'k, 'v>) -> Subscription<'k, 'v>;
+val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Subscription<'k, 'v>;
 
 /// Fires reactively when inserts occur on the subscription.
-val on_insert: fn(Subscription<'k, 'v>) -> Result<Array<{key: 'k, value: 'v}>, `DbErr(string)>;
+val on_insert: fn(sub: Subscription<'k, 'v>) -> Result<Array<{key: 'k, value: 'v}>, `DbErr(string)>;
 
 /// Fires reactively when removes occur on the subscription.
-val on_remove: fn(Subscription<'k, 'v>) -> Result<Array<{key: 'k}>, `DbErr(string)>;
+val on_remove: fn(sub: Subscription<'k, 'v>) -> Result<Array<{key: 'k}>, `DbErr(string)>;

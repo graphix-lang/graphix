@@ -63,5 +63,5 @@ val block: fn(
   ?#title_position: &[Position, null],
   ?#title_alignment: &[Alignment, null],
   ?#size: &[Size, null],
-  &Tui
+  child: &Tui
 ) -> Tui;

@@ -2,8 +2,8 @@ type TextInput = {
   disabled: &bool,
   value: &string,
   placeholder: &string,
-  on_input: &fn(string) -> Any,
-  on_submit: &fn(null) -> Any,
+  on_input: &fn(s: string) -> Any,
+  on_submit: &fn(e: null) -> Any,
   is_secure: &bool,
   width: &Length,
   padding: &Padding,
@@ -13,13 +13,13 @@ type TextInput = {
 
 val text_input: fn(
   ?#placeholder: &string,
-  ?#on_input: fn(string) -> Any,
-  ?#on_submit: fn(null) -> Any,
+  ?#on_input: fn(s: string) -> Any,
+  ?#on_submit: fn(e: null) -> Any,
   ?#is_secure: &bool,
   ?#width: &Length,
   ?#padding: &Padding,
   ?#size: &[f64, null],
   ?#font: &[Font, null],
   ?#disabled: &bool,
-  &string
+  value: &string
 ) -> Widget

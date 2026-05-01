@@ -10,4 +10,4 @@ mod dirs;
 val args: fn() -> Array<string>;
 
 /// join parts to path using the OS specific path separator
-val join_path: fn(string, @args: [string, Array<string>]) -> string;
+val join_path: fn(path: string, @args: [string, Array<string>]) -> string;

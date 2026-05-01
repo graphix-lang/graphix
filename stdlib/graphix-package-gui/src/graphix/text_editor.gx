@@ -1,6 +1,6 @@
 let text_editor = |
   #placeholder: &string = &"",
-  #on_edit: fn(string) -> Any = |_| null,
+  #on_edit: fn(s: string) -> Any = |_| null,
   #width: &[f64, null] = &null,
   #height: &[f64, null] = &null,
   #padding: &Padding = &`All(5.0),

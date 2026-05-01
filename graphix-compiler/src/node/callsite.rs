@@ -3,7 +3,7 @@ use crate::{
     deref_typ,
     expr::{ErrorContext, Expr, ExprId},
     node::lambda::LambdaDef,
-    typ::{FnType, Type},
+    typ::{FnArgKind, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
     Scope, TypecheckPhase, Update, UserEvent,
 };
@@ -172,7 +172,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // Build arg_refs in function-signature order
         let mut pos_idx = 0;
         for (i, farg) in f.typ.args.iter().enumerate() {
-            if let Some((name, default)) = &farg.label {
+            if let FnArgKind::Labeled { name, has_default: default } = &farg.kind {
                 match self.args.get(&ArgKey::Named(name.clone())) {
                     Some(arg) => {
                         let typ = arg
@@ -406,10 +406,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 let mut labeled: LPooled<FxHashSet<ArcStr>> = LPooled::take();
                 for arg in ftype.args.iter() {
-                    if let Some((name, default)) = &arg.label {
+                    if let FnArgKind::Labeled { name, has_default } = &arg.kind {
                         labeled.insert(name.clone());
                         match self.args.get(&ArgKey::Named(name.clone())) {
-                            None if !*default => {
+                            None if !*has_default => {
                                 bail!("missing required argument {name}")
                             }
                             None => {
@@ -436,7 +436,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 // Check we have enough positional args
                 let n_positional_required =
-                    ftype.args.iter().filter(|a| a.label.is_none()).count();
+                    ftype.args.iter().filter(|a| a.is_positional()).count();
                 let n_positional_provided = self
                     .args
                     .keys()
@@ -452,7 +452,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // Typecheck positional args in order
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
-            let key = if let Some((name, _)) = &farg.label {
+            let key = if let FnArgKind::Labeled { name, .. } = &farg.kind {
                 ArgKey::Named(name.clone())
             } else {
                 let key = loop {

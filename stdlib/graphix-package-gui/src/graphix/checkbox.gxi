@@ -2,7 +2,7 @@ type Checkbox = {
   disabled: &bool,
   is_checked: &bool,
   label: &string,
-  on_toggle: &fn(bool) -> Any,
+  on_toggle: &fn(b: bool) -> Any,
   width: &Length,
   size: &[f64, null],
   spacing: &[f64, null]
@@ -10,10 +10,10 @@ type Checkbox = {
 
 val checkbox: fn(
   ?#label: &string,
-  ?#on_toggle: fn(bool) -> Any,
+  ?#on_toggle: fn(b: bool) -> Any,
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],
   ?#disabled: &bool,
-  &bool
+  is_checked: &bool
 ) -> Widget

@@ -13,5 +13,5 @@ val column: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#halign: &HAlign,
-  &Array<Widget>
+  children: &Array<Widget>
 ) -> Widget

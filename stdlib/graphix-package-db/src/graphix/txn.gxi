@@ -6,31 +6,31 @@ type Txn;
 type TxnTree<'k, 'v>;
 
 /// Begin a multi-tree transaction on a database.
-val begin: fn(Db) -> Result<Txn, `DbErr(string)>;
+val begin: fn(db: Db) -> Result<Txn, `DbErr(string)>;
 
 /// Open a tree within the transaction. Pass null for the default tree.
 /// All trees must be opened before any data operations on any tree in
 /// the transaction.
-val tree: fn(Txn, [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
+val tree: fn(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
 
 /// Get a value within the transaction.
-val get: fn(TxnTree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
+val get: fn(t: TxnTree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;
 
 /// Insert a key-value pair within the transaction.
-val insert: fn(TxnTree<'k, 'v>, 'k, 'v) -> Result<['v, null], `DbErr(string)>;
+val insert: fn(t: TxnTree<'k, 'v>, key: 'k, value: 'v) -> Result<['v, null], `DbErr(string)>;
 
 /// Remove a key within the transaction.
-val remove: fn(TxnTree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
+val remove: fn(t: TxnTree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;
 
 /// Atomically apply a batch of inserts and removes within the transaction.
-val batch: fn(TxnTree<'k, 'v>, Array<[`Insert('k, 'v), `Remove('k)]>) -> Result<null, `DbErr(string)>;
+val batch: fn(t: TxnTree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>) -> Result<null, `DbErr(string)>;
 
 /// Commit the transaction. All writes become visible atomically.
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error
-val commit: fn(Txn) -> Result<null, `DbErr(string)>;
+val commit: fn(txn: Txn) -> Result<null, `DbErr(string)>;
 
 /// Abort the transaction. No changes are applied.
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error
-val rollback: fn(Txn) -> Result<null, `DbErr(string)>;
+val rollback: fn(txn: Txn) -> Result<null, `DbErr(string)>;

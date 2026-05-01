@@ -61,7 +61,11 @@ fn server_capabilities(position_encoding: Option<PositionEncodingKind>) -> Serve
             },
         )),
         completion_provider: Some(CompletionOptions {
-            trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+            trigger_characters: Some(vec![
+                ".".to_string(),
+                ":".to_string(),
+                "#".to_string(),
+            ]),
             ..Default::default()
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -98,7 +102,15 @@ where
     let backend = make_backend(&init_params)?;
     info!("graphix lsp server initialized");
     let workspace_roots = workspace_roots_from(&init_params);
-    let mut state = ServerState::new(backend);
+    let snippet_support = init_params
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|td| td.completion.as_ref())
+        .and_then(|c| c.completion_item.as_ref())
+        .and_then(|ci| ci.snippet_support)
+        .unwrap_or(false);
+    let mut state = ServerState::new(backend, snippet_support);
     let initial = state.set_workspace_roots(workspace_roots);
     for (uri, diags) in initial {
         publish_diagnostics(&connection, uri, diags, 0)?;

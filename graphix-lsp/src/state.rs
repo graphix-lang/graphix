@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     env::Env,
     expr::{ModPath, Source},
-    typ::Type,
+    typ::{FnArgKind, FnType, Type},
     ModuleRefSite, ReferenceSite, ScopeMapEntry, SourcePosition, TypeRefSite,
     MODULE_REF_SITE_POOL, REFERENCE_SITE_POOL, SCOPE_MAP_ENTRY_POOL, TYPE_REF_SITE_POOL,
 };
@@ -124,10 +124,14 @@ pub struct ServerState {
     /// next cycle for files that recovered, so editors don't show
     /// stale red squiggles.
     pub last_project_diag_uris: HashSet<Uri>,
+    /// Whether the client advertised `completionItem.snippetSupport`.
+    /// Drives whether function completions emit a snippet body that
+    /// expands `name(${1}, ${2})$0` on accept.
+    pub snippet_support: bool,
 }
 
 impl ServerState {
-    pub fn new(backend: Arc<dyn LspBackend>) -> Self {
+    pub fn new(backend: Arc<dyn LspBackend>, snippet_support: bool) -> Self {
         let env = backend.env();
         Self {
             env,
@@ -137,6 +141,7 @@ impl ServerState {
             workspace: Default::default(),
             project_results: Vec::new(),
             last_project_diag_uris: HashSet::new(),
+            snippet_support,
         }
     }
 
@@ -351,15 +356,58 @@ impl ServerState {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
+        let scope = self.scope_at(uri, position);
+        let env = self.env_for(uri);
+        let mut items = Vec::new();
+        // Special-case: cursor is inside `#…` — the user is naming a
+        // labeled arg, not picking from the global namespace. Emit only
+        // the callee's labeled args (filtered by what's been typed) and
+        // wire up a text_edit so accepting the completion replaces the
+        // typed `#…` instead of appending to it.
+        if let Some(label_ctx) = label_prefix(&doc.text, position) {
+            if let Some(callee) = call_context(&doc.text, position) {
+                let basename =
+                    callee.rsplit("::").next().unwrap_or(&callee).to_string();
+                let callee_path = modpath_from_typed(&callee);
+                for (name, bind) in lookup_matching_via_by_id(env, &scope, &callee_path)
+                {
+                    if name.as_str() != basename {
+                        continue;
+                    }
+                    if let Type::Fn(fnt) = &bind.typ {
+                        push_labeled_arg_completions(
+                            &mut items,
+                            fnt,
+                            Some(label_ctx.range),
+                        );
+                    }
+                    break;
+                }
+            }
+            return items;
+        }
         let prefix = token_before_cursor(&doc.text, position).unwrap_or_default();
         // Use the compiler-emitted scope map to find what scope the
         // cursor is in. This makes lambda parameters, let bindings,
         // and other locally-scoped names visible in completion.
-        let scope = self.scope_at(uri, position);
         let part = modpath_from_typed(&prefix);
-        let env = self.env_for(uri);
         let matched = lookup_matching_via_by_id(env, &scope, &part);
-        let mut items = Vec::new();
+        // If the cursor sits inside an open call's argument list, prepend
+        // the callee's labeled args as completion items so users discover
+        // optional named params.
+        if let Some(callee) = call_context(&doc.text, position) {
+            let basename = callee.rsplit("::").next().unwrap_or(&callee).to_string();
+            let callee_path = modpath_from_typed(&callee);
+            for (name, bind) in lookup_matching_via_by_id(env, &scope, &callee_path) {
+                if name.as_str() != basename {
+                    continue;
+                }
+                if let Type::Fn(fnt) = &bind.typ {
+                    push_labeled_arg_completions(&mut items, fnt, None);
+                }
+                break;
+            }
+        }
         // Track binding labels so we can hide a same-named module entry
         // below — when a name is both a function (via `use foo;`) and
         // the module it came from, the function form is more useful in
@@ -367,13 +415,19 @@ impl ServerState {
         // qualified-path completion (`column::Column`).
         let mut binding_labels: HashSet<String> = HashSet::new();
         for (name, bind) in matched {
-            let kind = if matches!(&bind.typ, Type::Fn(_)) {
-                lsp_types::CompletionItemKind::FUNCTION
-            } else {
-                lsp_types::CompletionItemKind::VARIABLE
+            let (kind, snippet) = match &bind.typ {
+                Type::Fn(fnt) => (
+                    lsp_types::CompletionItemKind::FUNCTION,
+                    self.snippet_support.then(|| fn_snippet(name.as_str(), fnt)),
+                ),
+                _ => (lsp_types::CompletionItemKind::VARIABLE, None),
             };
             let label = name.to_string();
             binding_labels.insert(label.clone());
+            let (insert_text, insert_text_format) = match snippet {
+                Some(s) => (Some(s), Some(lsp_types::InsertTextFormat::SNIPPET)),
+                None => (None, None),
+            };
             items.push(lsp_types::CompletionItem {
                 label,
                 kind: Some(kind),
@@ -382,6 +436,8 @@ impl ServerState {
                     .doc
                     .as_ref()
                     .map(|d| lsp_types::Documentation::String(d.to_string())),
+                insert_text,
+                insert_text_format,
                 ..Default::default()
             });
         }
@@ -1135,6 +1191,203 @@ fn lookup_matching_via_by_id(
 
 fn is_id_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Build an LSP snippet body for a function completion. Each required
+/// arg becomes a `${N:placeholder}` tab-stop. The placeholder is the
+/// arg's source-level name (`FnArgType::name`) when present; otherwise
+/// it falls back to `a0`, `a1`, … for positional args and the label
+/// name for labeled args. Labeled args with defaults are skipped —
+/// they're offered separately when the cursor is inside the call. The
+/// final `$0` lands the cursor outside the parens after the user tabs
+/// through the placeholders.
+fn fn_snippet(name: &str, fnt: &FnType) -> String {
+    use std::fmt::Write;
+    let mut body = String::new();
+    body.push_str(name);
+    body.push('(');
+    let mut idx = 1u32;
+    let mut positional = 0u32;
+    let mut first = true;
+    for arg in fnt.args.iter() {
+        match &arg.kind {
+            FnArgKind::Labeled { has_default: true, .. } => continue,
+            FnArgKind::Labeled { name: label, has_default: false } => {
+                if !first {
+                    body.push_str(", ");
+                }
+                let _ = write!(body, "#{label}: ${{{idx}:{label}}}");
+                idx += 1;
+                first = false;
+            }
+            FnArgKind::Positional { name } => {
+                if !first {
+                    body.push_str(", ");
+                }
+                match name.as_deref() {
+                    Some(n) => {
+                        let _ = write!(body, "${{{idx}:{n}}}");
+                    }
+                    None => {
+                        let _ = write!(body, "${{{idx}:a{positional}}}");
+                    }
+                }
+                idx += 1;
+                positional += 1;
+                first = false;
+            }
+        }
+    }
+    body.push_str(")$0");
+    body
+}
+
+/// If the cursor sits inside an open `(`'s argument list, return the
+/// callee path (e.g. `foo`, `array::map`). Returns `None` if the cursor
+/// isn't inside a call, or the enclosing bracket is `[`/`{`, or the
+/// scan hits a statement boundary first.
+///
+/// String literals are not parsed — a stray `(` inside a string can
+/// produce a false positive in pathological cases, but the common case
+/// (calls in code) is handled correctly.
+fn call_context(text: &str, position: lsp_types::Position) -> Option<String> {
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(text.chars());
+    // Translate (line, character) into a byte/char offset in the flat
+    // char vector. We treat character as a UTF-16 code unit count
+    // (default LSP encoding) but for ASCII-heavy graphix source this
+    // is equivalent to char count.
+    let mut offset = 0usize;
+    let mut line = 0u32;
+    let mut col = 0u32;
+    while offset < chars.len() {
+        if line == position.line && col == position.character {
+            break;
+        }
+        let c = chars[offset];
+        if c == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+        offset += 1;
+    }
+    let mut depth = 0i32;
+    let mut i = offset;
+    while i > 0 {
+        i -= 1;
+        let c = chars[i];
+        match c {
+            ')' | ']' | '}' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    // Found the enclosing open-paren. Walk back over
+                    // whitespace, then read the callee path.
+                    let mut j = i;
+                    while j > 0 && chars[j - 1].is_whitespace() {
+                        j -= 1;
+                    }
+                    let mut start = j;
+                    while start > 0 {
+                        if is_id_char(chars[start - 1]) {
+                            start -= 1;
+                        } else if start >= 2 && is_pathsep(&chars, start - 2) {
+                            start -= 2;
+                        } else {
+                            break;
+                        }
+                    }
+                    if start == j {
+                        return None;
+                    }
+                    return Some(chars[start..j].iter().collect());
+                }
+                depth -= 1;
+            }
+            '[' | '{' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ';' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Append a `#label` completion item per labeled arg of `fnt`.
+///
+/// When `replace` is `Some`, accepting a completion replaces that range
+/// in the document — used when the user is mid-`#…` and we want to
+/// substitute the typed `#` rather than insert another one. When
+/// `None`, accepting just inserts at the cursor (used when labeled args
+/// are offered passively alongside other completions).
+fn push_labeled_arg_completions(
+    items: &mut Vec<lsp_types::CompletionItem>,
+    fnt: &FnType,
+    replace: Option<lsp_types::Range>,
+) {
+    for arg in fnt.args.iter() {
+        let Some(label) = arg.label() else {
+            continue;
+        };
+        let label_text = format!("#{label}");
+        let insert = format!("#{label}: ");
+        let text_edit = replace.map(|range| {
+            lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                range,
+                new_text: insert.clone(),
+            })
+        });
+        items.push(lsp_types::CompletionItem {
+            label: label_text,
+            kind: Some(lsp_types::CompletionItemKind::FIELD),
+            detail: Some(format!("{}", arg.typ.clone().resolve_tvars())),
+            insert_text: text_edit.is_none().then_some(insert),
+            text_edit,
+            ..Default::default()
+        });
+    }
+}
+
+/// Cursor-context returned by `label_prefix` — the `#`-prefixed token
+/// the user is currently typing, plus the editable range that should
+/// be replaced when a label completion is accepted.
+struct LabelCtx {
+    range: lsp_types::Range,
+}
+
+/// If the cursor sits inside a `#…` token (right after a `#`, or inside
+/// the identifier following one), return the range of `#…` so a
+/// `text_edit` can replace it cleanly. Returns `None` if the cursor
+/// isn't in a label-completion position.
+fn label_prefix(text: &str, position: lsp_types::Position) -> Option<LabelCtx> {
+    let line = text.lines().nth(position.line as usize)?;
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(line.chars());
+    let col = (position.character as usize).min(chars.len());
+    let mut start = col;
+    while start > 0 && is_id_char(chars[start - 1]) {
+        start -= 1;
+    }
+    if start == 0 || chars[start - 1] != '#' {
+        return None;
+    }
+    // Don't trigger on `?#…` — that's only valid in fn type signatures
+    // and an unrelated edit position.
+    if start >= 2 && chars[start - 2] == '?' {
+        return None;
+    }
+    let hash_col = (start - 1) as u32;
+    Some(LabelCtx {
+        range: lsp_types::Range {
+            start: lsp_types::Position { line: position.line, character: hash_col },
+            end: position,
+        },
+    })
 }
 
 /// Build the hover popup payload for a binding. Markdown body is a

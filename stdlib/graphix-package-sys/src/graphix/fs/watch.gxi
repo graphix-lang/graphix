@@ -66,7 +66,7 @@ type Watch;
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
-    Any
+    trigger: Any
 ) -> Result<Watcher, `WatchError(string)>;
 
 /// Watch path for events matching #interest using the given watcher.
@@ -84,7 +84,7 @@ val create: fn(
 ///
 /// Filesystem watches are a limited operating system resource, like file
 /// descriptors, or handles.
-val watch: fn(?#interest: Array<Interest>, Watcher, string)
+val watch: fn(?#interest: Array<Interest>, watcher: Watcher, path: string)
     -> Result<Watch, `WatchError(string)>;
 
 /// The path of the filesystem object involved in the most recent

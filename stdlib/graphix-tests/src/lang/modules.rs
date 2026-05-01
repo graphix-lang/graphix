@@ -16,8 +16,8 @@ const DYNAMIC_MODULE0: &str = r#"
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
-            val add: fn(i64) -> i64;
-            val sub: fn(i64) -> i64;
+            val add: fn(x: i64) -> i64;
+            val sub: fn(x: i64) -> i64;
             val cfg: Array<i64>
         };
         source sys::net::subscribe("/local/foo")?
@@ -46,8 +46,8 @@ const DYNAMIC_MODULE1: &str = r#"
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
-            val add: fn(i64) -> i64;
-            val sub: fn(i64) -> i64;
+            val add: fn(x: i64) -> i64;
+            val sub: fn(x: i64) -> i64;
             val cfg: Array<i64>
         };
         source sys::net::subscribe("/local/foo")?
@@ -71,7 +71,7 @@ const DYNAMIC_MODULE2: &str = r#"
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
-            val add: fn<'a: Number>('a) -> 'a
+            val add: fn<'a: Number>(x: 'a) -> 'a
         };
         source sys::net::subscribe("/local/foo")?
     };

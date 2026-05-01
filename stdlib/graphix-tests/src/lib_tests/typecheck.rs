@@ -65,7 +65,7 @@ run!(
 run!(
     late_bind_multi_json,
     r#"{
-    let apply = |f: fn([string, bytes]) -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>, data| f(data);
+    let apply = |f: fn(x: [string, bytes]) -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>, data| f(data);
     let a: i64 = apply(json::read, json::write_str(42)$)?;
     let b: i64 = apply(json::read, json::write_str(42)$)?;
     a + b
@@ -78,7 +78,7 @@ run!(
 run!(
     late_bind_mixed_deser,
     r#"{
-    let apply = |f: fn(bytes) -> Result<i64, [`JsonErr(string), `PackErr(string), `IOErr(string), `InvalidCast(string)]>, data| f(data);
+    let apply = |f: fn(x: bytes) -> Result<i64, [`JsonErr(string), `PackErr(string), `IOErr(string), `InvalidCast(string)]>, data| f(data);
     let a: i64 = apply(json::read, json::write_bytes(42)$)?;
     let b: i64 = apply(pack::read, pack::write_bytes(42)$)?;
     a + b

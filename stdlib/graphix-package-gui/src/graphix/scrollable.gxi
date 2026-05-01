@@ -1,15 +1,15 @@
 type Scrollable = {
   child: &Widget,
   direction: &ScrollDirection,
-  on_scroll: &fn({x: f64, y: f64}) -> Any,
+  on_scroll: &fn(pos: {x: f64, y: f64}) -> Any,
   width: &Length,
   height: &Length
 };
 
 val scrollable: fn(
   ?#direction: &ScrollDirection,
-  ?#on_scroll: fn({x: f64, y: f64}) -> Any,
+  ?#on_scroll: fn(pos: {x: f64, y: f64}) -> Any,
   ?#width: &Length,
   ?#height: &Length,
-  &Widget
+  child: &Widget
 ) -> Widget

@@ -119,7 +119,7 @@ val chart: fn(
   ?#legend_position: &[LegendPosition, null],
   ?#legend_style: &[LegendStyle, null],
   ?#mesh: &[MeshStyle, null],
-  &Array<Dataset>
+  datasets: &Array<Dataset>
 ) -> Widget;
 
 val line: fn(
@@ -127,7 +127,7 @@ val line: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &[Array<(f64, f64)>, Array<(datetime, f64)>]
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val scatter: fn(
@@ -135,14 +135,14 @@ val scatter: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &[Array<(f64, f64)>, Array<(datetime, f64)>]
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val bar: fn(
   ?#color: [Color, null],
   ?#label: [string, null],
   ?#margin: [f64, null],
-  &Array<(string, f64)>
+  data: &Array<(string, f64)>
 ) -> Dataset;
 
 val area: fn(
@@ -150,7 +150,7 @@ val area: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &[Array<(f64, f64)>, Array<(datetime, f64)>]
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val dashed_line: fn(
@@ -160,7 +160,7 @@ val dashed_line: fn(
   ?#point_size: [f64, null],
   ?#dash: f64,
   ?#gap: f64,
-  &[Array<(f64, f64)>, Array<(datetime, f64)>]
+  data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
 
 val candlestick: fn(
@@ -168,7 +168,7 @@ val candlestick: fn(
   ?#loss_color: [Color, null],
   ?#bar_width: [f64, null],
   ?#label: [string, null],
-  &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>]
+  data: &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>]
 ) -> Dataset;
 
 val error_bar: fn(
@@ -176,7 +176,7 @@ val error_bar: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>]
+  data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>]
 ) -> Dataset;
 
 val mesh_style: fn(
@@ -198,7 +198,7 @@ val pie: fn(
   ?#start_angle: [f64, null],
   ?#show_percentages: [bool, null],
   ?#label_offset: [f64, null],
-  &Array<(string, f64)>
+  data: &Array<(string, f64)>
 ) -> Dataset;
 
 val scatter3d: fn(
@@ -206,7 +206,7 @@ val scatter3d: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<(f64, f64, f64)>
+  data: &Array<(f64, f64, f64)>
 ) -> Dataset;
 
 val line3d: fn(
@@ -214,14 +214,14 @@ val line3d: fn(
   ?#label: [string, null],
   ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
-  &Array<(f64, f64, f64)>
+  data: &Array<(f64, f64, f64)>
 ) -> Dataset;
 
 val surface: fn(
   ?#color: [Color, null],
   ?#label: [string, null],
   ?#color_by_z: [bool, null],
-  &Array<Array<(f64, f64, f64)>>
+  data: &Array<Array<(f64, f64, f64)>>
 ) -> Dataset;
 
 val legend_style: fn(

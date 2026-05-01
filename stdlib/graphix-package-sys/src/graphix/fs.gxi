@@ -39,31 +39,31 @@ mod tempdir;
 /// - path is not a file
 /// - path is not valid utf8
 /// - an OS specific error occurs while trying to read path
-val read_all: fn(string) -> Result<string, `IOError(string)>;
+val read_all: fn(path: string) -> Result<string, `IOError(string)>;
 
 /// Read the specified file into memory as a bytes and return it, or an
 /// error if,
 /// - path is not a file
 /// - an OS specific error occurs while trying to read path
-val read_all_bin: fn(string) -> Result<bytes, `IOError(string)>;
+val read_all_bin: fn(path: string) -> Result<bytes, `IOError(string)>;
 
 /// Write data to path. If path does not exist it will be created. If path exists it
 /// will be truncated and it's contents will be replaced with data.
-val write_all: fn(#path: string, string) -> Result<null, `IOError(string)>;
+val write_all: fn(#path: string, data: string) -> Result<null, `IOError(string)>;
 
 /// Write data to path. If path does not exist it will be created. If path exists it
 /// will be truncated and it's contents will be replaced with data.
-val write_all_bin: fn(#path: string, bytes) -> Result<null, `IOError(string)>;
+val write_all_bin: fn(#path: string, data: bytes) -> Result<null, `IOError(string)>;
 
 /// if path is a file then return path
 /// otherwise return an IOError.
-val is_file: fn(string) -> Result<string, `IOError(string)>;
+val is_file: fn(path: string) -> Result<string, `IOError(string)>;
 
 /// if path is a directory then return path, otherwise return an IOError.
-val is_dir: fn(string) -> Result<string, `IOError(string)>;
+val is_dir: fn(path: string) -> Result<string, `IOError(string)>;
 
 /// Return the metadata for a filesystem object, or an error.
-val metadata: fn(?#follow_symlinks: bool, string) -> Result<Metadata, `IOError(string)>;
+val metadata: fn(?#follow_symlinks: bool, path: string) -> Result<Metadata, `IOError(string)>;
 
 /// readdir reads a directory and returns an array of directory entries.
 val readdir: fn(
@@ -73,28 +73,28 @@ val readdir: fn(
     ?#follow_symlinks: bool,
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
-    string
+    path: string
 ) -> Result<Array<DirEntry>, `IOError(string)>;
 
 /// create a directory. If all is true (default false) create all intermediate
 /// directories as well.
-val create_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
+val create_dir: fn(?#all: bool, path: string) -> Result<null, `IOError(string)>;
 
 /// remove a directory. If all is true (default false) then recursively remove
 /// the contents as well.
-val remove_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
+val remove_dir: fn(?#all: bool, path: string) -> Result<null, `IOError(string)>;
 
 /// remove a file
-val remove_file: fn(string) -> Result<null, `IOError(string)>;
+val remove_file: fn(path: string) -> Result<null, `IOError(string)>;
 
 /// Open a file with the specified mode, returning an I/O stream.
-val open: fn(Mode, string) -> Result<io::Stream<`File>, `IOError(string)>;
+val open: fn(mode: Mode, path: string) -> Result<io::Stream<`File>, `IOError(string)>;
 
 /// Seek to a position in the file. Returns the new position.
-val seek: fn(io::Stream<`File>, SeekFrom) -> Result<u64, `IOError(string)>;
+val seek: fn(stream: io::Stream<`File>, pos: SeekFrom) -> Result<u64, `IOError(string)>;
 
 /// Get metadata for the open file.
-val fstat: fn(io::Stream<`File>) -> Result<Metadata, `IOError(string)>;
+val fstat: fn(stream: io::Stream<`File>) -> Result<Metadata, `IOError(string)>;
 
 /// Truncate or extend the file to the specified length.
-val truncate: fn(io::Stream<`File>, u64) -> Result<null, `IOError(string)>;
+val truncate: fn(stream: io::Stream<`File>, len: u64) -> Result<null, `IOError(string)>;

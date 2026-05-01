@@ -3,7 +3,7 @@ use crate::{
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     node::pattern::StructPatternNode,
-    typ::{FnArgType, FnType, Type},
+    typ::{FnArgKind, FnArgType, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, Update, UserEvent,
 };
@@ -350,14 +350,20 @@ impl Lambda {
             }
         }
         let typ = {
-            let args = Arc::from_iter(argspec.iter().map(|a| FnArgType {
-                label: a.labeled.as_ref().and_then(|dv| {
-                    a.pattern.single_bind().map(|n| (n.clone(), dv.is_some()))
-                }),
-                typ: match a.constraint.as_ref() {
+            let args = Arc::from_iter(argspec.iter().map(|a| {
+                let kind = match (a.labeled.as_ref(), a.pattern.single_bind()) {
+                    (Some(default), Some(name)) => FnArgKind::Labeled {
+                        name: name.clone(),
+                        has_default: default.is_some(),
+                    },
+                    (Some(_), None) => FnArgKind::Positional { name: None },
+                    (None, name) => FnArgKind::Positional { name: name.cloned() },
+                };
+                let typ = match a.constraint.as_ref() {
                     Some(t) => t.clone(),
                     None => Type::empty_tvar(),
-                },
+                };
+                FnArgType { kind, typ }
             }));
             let vargs = match vargs {
                 Some(Some(t)) => Some(t.clone()),
@@ -378,7 +384,12 @@ impl Lambda {
             })
         };
         typ.alias_tvars(&mut LPooled::take());
-        if needs_callsite {
+        // The `needs_callsite` insert lets the deferred-check pass find the
+        // builtin's `check` Apply by lambda id. Under `lsp_mode` we also
+        // insert for non-callsite lambdas so IDE tooling can recover the
+        // originating LambdaId from a Type::Fn — `Mutex<None>` `check`
+        // makes the deferred path a no-op for these.
+        if needs_callsite || ctx.env.lsp_mode {
             typ.lambda_ids.write().insert(id);
         }
         let _typ = typ.clone();

@@ -1641,7 +1641,8 @@
               "name": "fn_type_label"
             },
             {
-              "type": "BLANK"
+              "type": "SYMBOL",
+              "name": "fn_type_arg_name"
             }
           ]
         },
@@ -1670,6 +1671,19 @@
           "type": "STRING",
           "value": "#"
         },
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
+        {
+          "type": "STRING",
+          "value": ":"
+        }
+      ]
+    },
+    "fn_type_arg_name": {
+      "type": "SEQ",
+      "members": [
         {
           "type": "SYMBOL",
           "name": "identifier"

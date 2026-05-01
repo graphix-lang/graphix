@@ -46,7 +46,7 @@ type ColumnSpec = {
     typ: ColumnType,
     display_name: [string, null],
     source: &Source,
-    on_resize: &[fn(f64) -> Any, null],
+    on_resize: &[fn(width: f64) -> Any, null],
     width: &[f64, null]
 };
 
@@ -110,7 +110,7 @@ val text_column: fn(
     ?#on_edit: [fn(#path: string, #value: Any) -> Any, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 
@@ -120,7 +120,7 @@ val toggle_column: fn(
     ?#on_edit: [fn(#path: string, #value: bool) -> Any, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 
@@ -132,7 +132,7 @@ val combo_column: fn(
     ?#on_edit: [fn(#path: string, #value: string) -> Any, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 
@@ -145,7 +145,7 @@ val spin_column: fn(
     ?#on_edit: [fn(#path: string, #value: f64) -> Any, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 
@@ -154,7 +154,7 @@ val progress_column: fn(
     #name: string,
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 
@@ -165,7 +165,7 @@ val button_column: fn(
     ?#on_click: [fn(#path: string, #value: Any) -> Any, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 
@@ -182,6 +182,6 @@ val sparkline_column: fn(
     ?#max: [f64, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(width: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;

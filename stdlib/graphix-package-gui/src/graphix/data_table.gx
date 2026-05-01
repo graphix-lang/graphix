@@ -19,7 +19,7 @@ let text_column = |
   #on_edit: [fn(#path: string, #value: Any) -> Any, null] = null,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,
@@ -32,7 +32,7 @@ let toggle_column = |
   #on_edit: [fn(#path: string, #value: bool) -> Any, null] = null,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,
@@ -46,7 +46,7 @@ let combo_column = |
   #on_edit: [fn(#path: string, #value: string) -> Any, null] = null,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,
@@ -62,7 +62,7 @@ let spin_column = |
   #on_edit: [fn(#path: string, #value: f64) -> Any, null] = null,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,
@@ -74,7 +74,7 @@ let progress_column = |
   #name: string,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,
@@ -87,7 +87,7 @@ let button_column = |
   #on_click: [fn(#path: string, #value: Any) -> Any, null] = null,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,
@@ -102,7 +102,7 @@ let sparkline_column = |
   #max: [f64, null] = null,
   #display_name: [string, null] = null,
   #source: &Source = &`Netidx(null),
-  #on_resize: &[fn(f64) -> Any, null] = &null,
+  #on_resize: &[fn(width: f64) -> Any, null] = &null,
   #width: &[f64, null] = &null
 | -> ColumnSpec {
     name,

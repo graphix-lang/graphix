@@ -8,7 +8,7 @@ repository = "https://github.com/graphix-lang/graphix"
 
 [grammars.graphix]
 repository = "https://github.com/graphix-lang/graphix"
-rev = "7f29a0d361f49df910edb1bd02ec3f7d5e37599b"
+rev = "8b95864b5982246afe1504d77bdc5765a7801d8d"
 path = "ide/tree-sitter-graphix"
 
 [language_servers.graphix-lsp]

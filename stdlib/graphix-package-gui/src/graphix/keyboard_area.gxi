@@ -7,12 +7,12 @@ type KeyEvent = {
 
 type KeyboardArea = {
   child: &Widget,
-  on_key_press: &fn(KeyEvent) -> Any,
-  on_key_release: &fn(KeyEvent) -> Any
+  on_key_press: &fn(e: KeyEvent) -> Any,
+  on_key_release: &fn(e: KeyEvent) -> Any
 };
 
 val keyboard_area: fn(
-  ?#on_key_press: fn(KeyEvent) -> Any,
-  ?#on_key_release: fn(KeyEvent) -> Any,
-  &Widget
+  ?#on_key_press: fn(e: KeyEvent) -> Any,
+  ?#on_key_release: fn(e: KeyEvent) -> Any,
+  child: &Widget
 ) -> Widget

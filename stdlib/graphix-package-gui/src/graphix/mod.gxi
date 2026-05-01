@@ -103,7 +103,7 @@ val window: fn(
   ?#size: &Size,
   ?#theme: &Theme,
   ?#icon: &ImageSource,
-  &Widget
+  content: &Widget
 ) -> Window;
 
 mod style;

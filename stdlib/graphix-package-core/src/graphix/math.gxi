@@ -1,127 +1,127 @@
 /// Sine. Argument in radians.
-val sin: fn(f64) -> f64;
+val sin: fn(x: f64) -> f64;
 
 /// Cosine. Argument in radians.
-val cos: fn(f64) -> f64;
+val cos: fn(x: f64) -> f64;
 
 /// Tangent. Argument in radians.
-val tan: fn(f64) -> f64;
+val tan: fn(x: f64) -> f64;
 
 /// Inverse sine. Result in radians, [-π/2, π/2].
-val asin: fn(f64) -> f64;
+val asin: fn(x: f64) -> f64;
 
 /// Inverse cosine. Result in radians, [0, π].
-val acos: fn(f64) -> f64;
+val acos: fn(x: f64) -> f64;
 
 /// Inverse tangent. Result in radians, (-π/2, π/2).
-val atan: fn(f64) -> f64;
+val atan: fn(x: f64) -> f64;
 
 /// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
-val atan2: fn(f64, f64) -> f64;
+val atan2: fn(y: f64, x: f64) -> f64;
 
 /// Hyperbolic sine.
-val sinh: fn(f64) -> f64;
+val sinh: fn(x: f64) -> f64;
 
 /// Hyperbolic cosine.
-val cosh: fn(f64) -> f64;
+val cosh: fn(x: f64) -> f64;
 
 /// Hyperbolic tangent.
-val tanh: fn(f64) -> f64;
+val tanh: fn(x: f64) -> f64;
 
 /// Inverse hyperbolic sine.
-val asinh: fn(f64) -> f64;
+val asinh: fn(x: f64) -> f64;
 
 /// Inverse hyperbolic cosine.
-val acosh: fn(f64) -> f64;
+val acosh: fn(x: f64) -> f64;
 
 /// Inverse hyperbolic tangent.
-val atanh: fn(f64) -> f64;
+val atanh: fn(x: f64) -> f64;
 
 /// `e^x`.
-val exp: fn(f64) -> f64;
+val exp: fn(x: f64) -> f64;
 
 /// `2^x`.
-val exp2: fn(f64) -> f64;
+val exp2: fn(x: f64) -> f64;
 
 /// `e^x - 1`. More accurate than `exp(x) - 1` near zero.
-val exp_m1: fn(f64) -> f64;
+val exp_m1: fn(x: f64) -> f64;
 
 /// Natural logarithm (base e).
-val ln: fn(f64) -> f64;
+val ln: fn(x: f64) -> f64;
 
 /// `ln(1 + x)`. More accurate than `ln(1 + x)` near zero.
-val ln_1p: fn(f64) -> f64;
+val ln_1p: fn(x: f64) -> f64;
 
 /// Logarithm base 2.
-val log2: fn(f64) -> f64;
+val log2: fn(x: f64) -> f64;
 
 /// Logarithm base 10.
-val log10: fn(f64) -> f64;
+val log10: fn(x: f64) -> f64;
 
 /// Logarithm with arbitrary base: `log(x, base) = ln(x) / ln(base)`.
-val log: fn(f64, f64) -> f64;
+val log: fn(x: f64, base: f64) -> f64;
 
 /// `x^y`.
-val pow: fn(f64, f64) -> f64;
+val pow: fn(x: f64, y: f64) -> f64;
 
 /// Square root.
-val sqrt: fn(f64) -> f64;
+val sqrt: fn(x: f64) -> f64;
 
 /// Cube root.
-val cbrt: fn(f64) -> f64;
+val cbrt: fn(x: f64) -> f64;
 
 /// `sqrt(x^2 + y^2)`, computed without overflow for large inputs.
-val hypot: fn(f64, f64) -> f64;
+val hypot: fn(x: f64, y: f64) -> f64;
 
 /// Largest integer less than or equal to `x`.
-val floor: fn(f64) -> f64;
+val floor: fn(x: f64) -> f64;
 
 /// Smallest integer greater than or equal to `x`.
-val ceil: fn(f64) -> f64;
+val ceil: fn(x: f64) -> f64;
 
 /// Round to the nearest integer, ties away from zero.
-val round: fn(f64) -> f64;
+val round: fn(x: f64) -> f64;
 
 /// Truncate toward zero.
-val trunc: fn(f64) -> f64;
+val trunc: fn(x: f64) -> f64;
 
 /// Fractional part: `x - trunc(x)`.
-val fract: fn(f64) -> f64;
+val fract: fn(x: f64) -> f64;
 
 /// Absolute value.
-val abs: fn(f64) -> f64;
+val abs: fn(x: f64) -> f64;
 
 /// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
-val signum: fn(f64) -> f64;
+val signum: fn(x: f64) -> f64;
 
 /// `x` with the sign of `y`.
-val copysign: fn(f64, f64) -> f64;
+val copysign: fn(x: f64, y: f64) -> f64;
 
 /// Smaller of two f64 values, returning the non-NaN operand if one is NaN.
 /// For n-ary polymorphic behaviour over `Number`, use the top-level `min` from core.
-val min: fn(f64, f64) -> f64;
+val min: fn(x: f64, y: f64) -> f64;
 
 /// Larger of two f64 values, returning the non-NaN operand if one is NaN.
 /// For n-ary polymorphic behaviour over `Number`, use the top-level `max` from core.
-val max: fn(f64, f64) -> f64;
+val max: fn(x: f64, y: f64) -> f64;
 
 /// Clamp `x` to the closed interval `[lo, hi]`.
-val clamp: fn(f64, f64, f64) -> f64;
+val clamp: fn(x: f64, lo: f64, hi: f64) -> f64;
 
 /// True if `x` is NaN.
-val is_nan: fn(f64) -> bool;
+val is_nan: fn(x: f64) -> bool;
 
 /// True if `x` is finite (not NaN, not infinite).
-val is_finite: fn(f64) -> bool;
+val is_finite: fn(x: f64) -> bool;
 
 /// True if `x` is positive or negative infinity.
-val is_infinite: fn(f64) -> bool;
+val is_infinite: fn(x: f64) -> bool;
 
 /// Convert radians to degrees.
-val to_degrees: fn(f64) -> f64;
+val to_degrees: fn(x: f64) -> f64;
 
 /// Convert degrees to radians.
-val to_radians: fn(f64) -> f64;
+val to_radians: fn(x: f64) -> f64;
 
 /// π ≈ 3.14159265358979…
 val pi: f64;

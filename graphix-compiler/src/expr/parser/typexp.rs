@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
-    typ::{AbstractId, FnArgType, FnType, TVar, Type, TypeRef},
+    typ::{AbstractId, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use combine::{
@@ -107,9 +107,24 @@ where
 {
     choice((string("?#").map(|_| true), string("#").map(|_| false))).then(|optional| {
         (fname().skip(sptoken(':')), typ()).map(move |(name, typ)| FnArgType {
-            label: Some((name.into(), optional)),
+            kind: FnArgKind::Labeled { name: name.into(), has_default: optional },
             typ,
         })
+    })
+}
+
+/// A positional fn-type arg. The name is required: `name: Type`. This
+/// surfaces in IDE hover and completion snippets, mirroring how labeled
+/// args carry their `#name`.
+fn fnpositional<I>() -> impl Parser<I, Output = FnArgType>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (fname().skip(sptoken(':')), typ()).map(|(name, typ)| FnArgType {
+        kind: FnArgKind::Positional { name: Some(name.into()) },
+        typ,
     })
 }
 
@@ -127,7 +142,7 @@ where
                 choice((
                     string("@args:").with(typ()).map(|e| Either::Right(e)),
                     fnlabeled().map(Either::Left),
-                    typ().map(|typ| Either::Left(FnArgType { label: None, typ })),
+                    fnpositional().map(Either::Left),
                 ))
             }),
             csep(),
@@ -170,13 +185,13 @@ where
             }));
             let mut anon = false;
             for a in args.iter() {
-                if anon && a.label.is_some() {
+                if anon && a.is_labeled() {
                     return unexpected_any(
                         "anonymous args must appear after labeled args",
                     )
                     .left();
                 }
-                anon |= a.label.is_none();
+                anon |= a.is_positional();
             }
             let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);

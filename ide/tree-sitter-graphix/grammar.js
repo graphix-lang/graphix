@@ -312,11 +312,15 @@ module.exports = grammar({
     ),
 
     fn_type_arg: $ => seq(
-      optional($.fn_type_label),
+      choice($.fn_type_label, $.fn_type_arg_name),
       $._type,
     ),
 
     fn_type_label: $ => seq(optional('?'), '#', $.identifier, ':'),
+
+    // Positional args in fn types must be named: `name: Type`. The
+    // colon disambiguates from a bare type expression.
+    fn_type_arg_name: $ => seq($.identifier, ':'),
 
     fn_type_varg: $ => seq('@', $.identifier, ':', $._type),
 

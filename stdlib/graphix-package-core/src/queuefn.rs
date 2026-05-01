@@ -205,12 +205,12 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                let name: ArcStr = match a.label.as_ref() {
-                    Some((n, _)) => n.clone(),
+                let name: ArcStr = match a.label() {
+                    Some(n) => n.clone(),
                     None => format_compact!("a{i}").as_str().into(),
                 };
                 Arg {
-                    labeled: a.label.as_ref().map(|_| None),
+                    labeled: a.is_labeled().then_some(None),
                     pattern: StructurePattern::Bind(name),
                     constraint: Some(a.typ.clone()),
                     pos: SourcePosition::default(),
