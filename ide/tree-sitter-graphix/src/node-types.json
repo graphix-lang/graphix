@@ -2686,7 +2686,7 @@
     }
   },
   {
-    "type": "labeled_param_with_default",
+    "type": "labeled_param",
     "named": true,
     "fields": {},
     "children": {
@@ -3183,7 +3183,7 @@
           "named": true
         },
         {
-          "type": "labeled_param_with_default",
+          "type": "labeled_param",
           "named": true
         },
         {

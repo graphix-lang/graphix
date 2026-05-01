@@ -177,7 +177,6 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'parameter
      '((labeled_param (identifier) @font-lock-variable-name-face)
-       (labeled_param_with_default (identifier) @font-lock-variable-name-face)
        (labeled_arg (identifier) @font-lock-variable-name-face)
        (labeled_arg_shorthand (identifier) @font-lock-variable-name-face)
        (variadic_param (identifier) @font-lock-variable-name-face))

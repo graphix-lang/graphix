@@ -320,8 +320,6 @@ module.exports = grammar({
 
     fn_type_varg: $ => seq('@', $.identifier, ':', $._type),
 
-    labeled_param: $ => seq('#', $.identifier),
-
     throws_clause: $ => seq('throws', $._type),
 
     constraints_clause: $ => prec.left(seq(
@@ -460,7 +458,7 @@ module.exports = grammar({
       $.variadic_param,
       // Labeled param with optional pattern: #foo or #foo x or #foo: Type or #foo: Type = default
       seq(
-        $.labeled_param_with_default,
+        $.labeled_param,
         optional($.structure_pattern),
       ),
       // Simple pattern: x or x: Type
@@ -472,7 +470,7 @@ module.exports = grammar({
 
     variadic_param: $ => seq('@', $.identifier, optional(seq(':', $._type))),
 
-    labeled_param_with_default: $ => prec.left(seq(
+    labeled_param: $ => prec.left(seq(
       optional('?'),
       '#',
       $.identifier,

@@ -1701,19 +1701,6 @@
         }
       ]
     },
-    "labeled_param": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "#"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "identifier"
-        }
-      ]
-    },
     "throws_clause": {
       "type": "SEQ",
       "members": [
@@ -2887,7 +2874,7 @@
           "members": [
             {
               "type": "SYMBOL",
-              "name": "labeled_param_with_default"
+              "name": "labeled_param"
             },
             {
               "type": "CHOICE",
@@ -2969,7 +2956,7 @@
         }
       ]
     },
-    "labeled_param_with_default": {
+    "labeled_param": {
       "type": "PREC_LEFT",
       "value": 0,
       "content": {
