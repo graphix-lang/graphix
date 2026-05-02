@@ -77,7 +77,7 @@ The interface file declares the public API of your package:
 
 ```graphix
 /// Check if a value is an error
-val my_builtin: fn(Any) -> bool;
+val my_builtin: fn(v: Any) -> bool;
 
 /// Logical OR of all arguments
 val my_cached: fn(@args: bool) -> bool;

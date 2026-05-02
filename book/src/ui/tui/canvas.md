@@ -52,7 +52,7 @@ val canvas: fn(
   ?#marker: &[Marker, null],
   #x_bounds: &{ max: f64, min: f64 },
   #y_bounds: &{ max: f64, min: f64 },
-  &Array<&CanvasShape>
+  a: &Array<&CanvasShape>
 ) -> Tui;
 ```
 

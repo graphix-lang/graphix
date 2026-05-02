@@ -13,12 +13,12 @@ val slider: fn(
   ?#min: &f64,
   ?#max: &f64,
   ?#step: &[f64, null],
-  ?#on_change: fn(f64) -> Any,
-  ?#on_release: fn(null) -> Any,
+  ?#on_change: fn(x: f64) -> Any,
+  ?#on_release: fn(a: null) -> Any,
   ?#width: &Length,
   ?#height: &[f64, null],
   ?#disabled: &bool,
-  &f64
+  x: &f64
 ) -> Widget
 ```
 
@@ -45,12 +45,12 @@ val vertical_slider: fn(
   ?#min: &f64,
   ?#max: &f64,
   ?#step: &[f64, null],
-  ?#on_change: fn(f64) -> Any,
-  ?#on_release: fn(null) -> Any,
+  ?#on_change: fn(x: f64) -> Any,
+  ?#on_release: fn(a: null) -> Any,
   ?#width: &[f64, null],
   ?#height: &Length,
   ?#disabled: &bool,
-  &f64
+  x: &f64
 ) -> Widget
 ```
 
@@ -73,7 +73,7 @@ val progress_bar: fn(
   ?#max: &f64,
   ?#width: &Length,
   ?#height: &[f64, null],
-  &f64
+  x: &f64
 ) -> Widget
 ```
 

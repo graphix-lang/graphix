@@ -23,7 +23,7 @@ val window: fn(
   ?#title: &string,
   ?#size: &Size,
   ?#theme: &Theme,
-  &Widget
+  a: &Widget
 ) -> Window;
 ```
 

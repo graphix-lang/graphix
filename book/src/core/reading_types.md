@@ -7,18 +7,20 @@ Throughout this book and in the standard library documentation, you'll encounter
 The simplest function signature looks like this:
 
 ```graphix
-val double: fn(i64) -> i64
+val double: fn(x: i64) -> i64
 ```
 
 This breaks down into:
 - `fn(...)` - this is a function
-- `i64` - takes one parameter of type i64 (64-bit integer)
+- `x: i64` - takes one parameter named `x` of type i64 (64-bit integer)
 - `-> i64` - returns a value of type i64
+
+Every positional parameter in a function type carries a name as well as a type. The name is documentation for the reader and is what your editor shows in hover and completion popups; it does not change the call (you still pass arguments positionally, in order).
 
 Another example:
 
 ```graphix
-val concat: fn(string, string) -> string
+val concat: fn(a: string, b: string) -> string
 ```
 
 Takes two strings, returns a string.
@@ -30,13 +32,13 @@ Type parameters (like generics in other languages) are written with a single quo
 ### Simple Type Parameters
 
 ```graphix
-val identity: fn('a) -> 'a
+val identity: fn(x: 'a) -> 'a
 ```
 
 This means: "takes a value of any type `'a` and returns a value of the same type `'a`". The `identity` function could work with integers, strings, or any other type.
 
 ```graphix
-val first: fn(Array<'a>) -> 'a
+val first: fn(a: Array<'a>) -> 'a
 ```
 
 This means: "takes an array of any type `'a` and returns a single element of type `'a`". If you pass an `Array<string>`, you get back a `string`. If you pass an `Array<i64>`, you get back an `i64`.
@@ -44,7 +46,7 @@ This means: "takes an array of any type `'a` and returns a single element of typ
 ### Multiple Type Parameters
 
 ```graphix
-val map: fn(Array<'a>, fn('a) -> 'b) -> Array<'b>
+val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b) -> Array<'b>
 ```
 
 This function takes:
@@ -59,7 +61,7 @@ The types `'a` and `'b` can be the same or different.
 Arguments prefixed with `?#` are optional and labeled:
 
 ```graphix
-val text: fn(?#style: Style, string) -> Widget
+val text: fn(?#style: Style, content: string) -> Widget
 ```
 
 This function can be called in two ways:
@@ -74,7 +76,7 @@ text(#style: my_style, "Hello")        // style is specified
 Labeled arguments can be provided in any order, but must come before positional arguments:
 
 ```graphix
-val widget: fn(?#width: i64, ?#height: i64, string) -> Widget
+val widget: fn(?#width: i64, ?#height: i64, content: string) -> Widget
 
 // All of these are valid:
 widget("text")
@@ -89,8 +91,8 @@ Arguments with `#` but no `?` are required but labeled:
 
 ```graphix
 val input_handler: fn(
-    #handle: fn(Event) -> Response,
-    &Widget
+    #handle: fn(e: Event) -> Response,
+    w: &Widget
 ) -> Widget
 ```
 
@@ -120,7 +122,7 @@ sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 Sometimes a function requires at least one argument:
 
 ```graphix
-val max: fn('a, @args: 'a) -> 'a
+val max: fn(first: 'a, @args: 'a) -> 'a
 ```
 
 The first `'a` is required, then any number of additional arguments of the same type.
@@ -130,7 +132,7 @@ The first `'a` is required, then any number of additional arguments of the same 
 An ampersand `&` before a type means "reference to" rather than the value itself:
 
 ```graphix
-val text: fn(&string) -> Widget
+val text: fn(content: &string) -> Widget
 ```
 
 This takes a *reference* to a string, not the string value directly. References are important for:
@@ -161,7 +163,7 @@ For a deeper dive, see [References](../udt/references.md).
 When a function can throw errors, the signature includes `throws`:
 
 ```graphix
-val divide: fn(i64, i64) -> i64 throws `DivideByZero
+val divide: fn(a: i64, b: i64) -> i64 throws `DivideByZero
 ```
 
 This function returns `i64` if successful, but might throw a `DivideByZero` error.
@@ -171,7 +173,7 @@ This function returns `i64` if successful, but might throw a `DivideByZero` erro
 A function can throw multiple error types:
 
 ```graphix
-val parse_and_divide: fn(string, string) -> i64 throws [`ParseError, `DivideByZero]
+val parse_and_divide: fn(num: string, denom: string) -> i64 throws [`ParseError, `DivideByZero]
 ```
 
 ### Generic Error Types
@@ -179,7 +181,7 @@ val parse_and_divide: fn(string, string) -> i64 throws [`ParseError, `DivideByZe
 Often error types are parameterized:
 
 ```graphix
-val filter: fn('a, fn('a) -> bool throws 'e) -> 'a throws 'e
+val filter: fn(v: 'a, f: fn(x: 'a) -> bool throws 'e) -> 'a throws 'e
 ```
 
 This means: the `filter` function itself doesn't throw errors, but if the function you pass to it throws errors of type `'e`, then `filter` will also throw those same errors.
@@ -195,7 +197,7 @@ type Result<'r, 'e> = ['r, Error<'e>]
 So a function signature like:
 
 ```graphix
-val parse: fn(string) -> Result<i64, `ParseError>
+val parse: fn(s: string) -> Result<i64, `ParseError>
 ```
 
 Returns either an `i64` (success) or an `Error<`ParseError>` (failure).
@@ -207,7 +209,7 @@ See [Error Handling](./error.md) for complete details on working with errors.
 Square brackets `[...]` denote a set type - the value can be any one of the types in the set:
 
 ```graphix
-val process: fn([i64, string]) -> string
+val process: fn(x: [i64, string]) -> string
 ```
 
 This function accepts either an `i64` or a `string`, and returns a `string`.
@@ -217,14 +219,14 @@ This function accepts either an `i64` or a `string`, and returns a `string`.
 The pattern `[T, null]` means "T or nothing":
 
 ```graphix
-val find: fn(Array<string>, string) -> [string, null]
+val find: fn(haystack: Array<string>, needle: string) -> [string, null]
 ```
 
 Returns a string if found, `null` if not found. This is aliased as `Option<T>`:
 
 ```graphix
 type Option<'a> = ['a, null]
-val find: fn(Array<string>, string) -> Option<string>
+val find: fn(haystack: Array<string>, needle: string) -> Option<string>
 ```
 
 ### Nested Sets
@@ -274,7 +276,7 @@ val f: fn<
   '_2069: Number,
   '_2067: Number,
   '_2071: Number
->('_2067, '_2069) -> '_2071
+>(x: '_2067, y: '_2069) -> '_2071
 ```
 
 The compiler has inferred a bunch of properties here,
@@ -295,7 +297,7 @@ shell also telling you what type variables are currently bound to, or
 
 ```graphix
 〉f
--: fn<'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number>('_2067: unbound, '_2069: unbound) -> '_2071: unbound
+-: fn<'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number>(x: '_2067: unbound, y: '_2069: unbound) -> '_2071: unbound
 ```
 
 The constraint `'_2069: unbound: Number` is read as. _2069 is not
@@ -315,7 +317,7 @@ val table: fn(
     ?#selected: &i64,
     ?#row_highlight_style: &Style,
     ?#highlight_symbol: &string,
-    &Array<&Row>
+    rows: &Array<&Row>
 ) -> Widget
 ```
 
@@ -324,7 +326,7 @@ Breaking it down:
 - `?#selected: &i64` - optional labeled argument, reference to selected index
 - `?#row_highlight_style: &Style` - optional labeled argument, reference to a Style
 - `?#highlight_symbol: &string` - optional labeled argument, reference to symbol string
-- `&Array<&Row>` - required unlabeled argument, reference to array of row references
+- `rows: &Array<&Row>` - required positional argument, reference to array of row references
 - `-> Widget` - returns a Widget
 
 All parameters are references because the table needs to react to changes without rebuilding.
@@ -332,12 +334,12 @@ All parameters are references because the table needs to react to changes withou
 ### Example 2: Filter Function
 
 ```graphix
-val filter: fn('a, fn('a) -> bool throws 'e) -> 'a throws 'e
+val filter: fn(v: 'a, pred: fn(x: 'a) -> bool throws 'e) -> 'a throws 'e
 ```
 
 Breaking it down:
-- `'a` - a value of any type
-- `fn('a) -> bool throws 'e` - a predicate function that:
+- `v: 'a` - a value of any type
+- `pred: fn(x: 'a) -> bool throws 'e` - a predicate function that:
   - Takes the same type `'a`
   - Returns bool
   - Might throw errors of type `'e`
@@ -347,12 +349,12 @@ Breaking it down:
 ### Example 3: Queue Function
 
 ```graphix
-val queue: fn(#clock: Any, 'a) -> 'a
+val queue: fn(#clock: Any, v: 'a) -> 'a
 ```
 
 Breaking it down:
 - `#clock: Any` - required labeled argument of any type, just used as an event source
-- `'a` - a value of any type
+- `v: 'a` - a value of any type
 - `-> 'a` - returns values of the same type
 
 Call it like: `queue(#clock: my_timer, my_value)`
@@ -360,12 +362,12 @@ Call it like: `queue(#clock: my_timer, my_value)`
 ### Example 4: Array Map
 
 ```graphix
-val map: fn(Array<'a>, fn('a) -> 'b throws 'e) -> Array<'b> throws 'e
+val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e
 ```
 
 Breaking it down:
-- `Array<'a>` - array of any type `'a`
-- `fn('a) -> 'b throws 'e` - transformation function that:
+- `a: Array<'a>` - array of any type `'a`
+- `f: fn(x: 'a) -> 'b throws 'e` - transformation function that:
   - Takes type `'a` (array element type)
   - Returns type `'b` (result element type)
   - Might throw errors of type `'e`
@@ -376,15 +378,16 @@ Breaking it down:
 
 | Notation | Meaning | Example |
 |----------|---------|---------|
-| `'a`, `'b`, `'e` | Type parameter (generic) | `fn('a) -> 'a` |
-| `'_23`, `'_24`, `'_25` | Inferred type parameter (generic) | `fn('_23) -> '_23` |
+| `'a`, `'b`, `'e` | Type parameter (generic) | `fn(x: 'a) -> 'a` |
+| `'_23`, `'_24`, `'_25` | Inferred type parameter (generic) | `fn(x: '_23) -> '_23` |
+| `name: T` | Named positional argument | `fn(x: i64) -> i64` |
 | `?#param` | Optional labeled argument | `fn(?#x: i64 = 0)` |
 | `#param` | Required labeled argument | `fn(#x: i64)` |
 | `@args` | Variadic (any number of args) | `fn(@args: i64)` |
-| `&T` | Reference to type T | `fn(&string)` |
+| `&T` | Reference to type T | `fn(s: &string)` |
 | `throws 'e` | Can throw errors of type 'e | `fn() -> i64 throws 'e` |
 | `[T, U]` | T or U (set/union type) | `[i64, null]` |
-| `->` | Returns | `fn(i64) -> string` |
+| `->` | Returns | `fn(x: i64) -> string` |
 | `Array<T>` | Array of T | `Array<string>` |
 | `Map<K, V>` | Map with keys K, values V | `Map<string, i64>` |
 | `Error<'e>` | Error containing type 'e | `Error<\`ParseError>` |

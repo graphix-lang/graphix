@@ -13,7 +13,7 @@ val text: fn(
   ?#height: &Length,
   ?#halign: &HAlign,
   ?#valign: &VAlign,
-  &string
+  s: &string
 ) -> Widget
 ```
 

@@ -10,7 +10,7 @@ val gauge: fn(
   ?#label: &[Span, null],
   ?#style: &[Style, null],
   ?#use_unicode: &[bool, null],
-  &f64
+  x: &f64
 ) -> Tui;
 ```
 

@@ -8,7 +8,7 @@ The `stack` widget layers children on top of each other. The first child is draw
 val stack: fn(
   ?#width: &Length,
   ?#height: &Length,
-  &Array<Widget>
+  a: &Array<Widget>
 ) -> Widget
 ```
 

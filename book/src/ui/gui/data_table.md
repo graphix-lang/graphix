@@ -59,7 +59,7 @@ type ColumnSpec = {
     typ: ColumnType,
     display_name: [string, null],
     source: &Source,
-    on_resize: &[fn(f64) -> Any, null],
+    on_resize: &[fn(x: f64) -> Any, null],
     width: &[f64, null]
 };
 
@@ -84,7 +84,7 @@ val text_column: fn(
     ?#on_edit: [fn(#path: string, #value: Any) -> Any, null],
     ?#display_name: [string, null],
     ?#source: &Source,
-    ?#on_resize: &[fn(f64) -> Any, null],
+    ?#on_resize: &[fn(x: f64) -> Any, null],
     ?#width: &[f64, null]
 ) -> ColumnSpec;
 // (toggle_column, combo_column, spin_column, progress_column,
@@ -187,7 +187,7 @@ Widths are controlled by two refs per column:
   column auto-sizes to its content, with a per-column cap (default
   300px).
 
-- **`on_resize: &[fn(f64) -> Any, null]`** -- Fired while the user
+- **`on_resize: &[fn(x: f64) -> Any, null]`** -- Fired while the user
   drags a column header's right edge. The callable receives the new
   pixel width. The reference is a `&` field so the callable can be
   swapped, nulled, or initialized reactively.

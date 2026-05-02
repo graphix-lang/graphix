@@ -13,7 +13,7 @@ val list: fn(
   ?#scroll: &[i64, null],
   ?#selected: &[i64, null],
   ?#style: &[Style, null],
-  &Array<Line>
+  a: &Array<Line>
 ) -> Tui;
 ```
 

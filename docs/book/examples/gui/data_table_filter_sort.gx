@@ -14,7 +14,8 @@ use sys::net;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
-// let the user pick a row filter mode and a sort direction live.
+// let the user pick a row filter mode. Sorting is driven entirely
+// from the table itself — click a header to cycle its sort order.
 sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
 sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
 sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
@@ -31,12 +32,11 @@ sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
 let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 
 // Filter controls: a regex pattern and whether it includes or excludes.
-// Unlike earlier versions where the widget carried a FilterSpec, the
-// caller now reshapes the Table in graphix before passing it in.
+// The caller reshapes the Table in graphix before passing it in.
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
-let tbl: sys::net::Table = raw_tbl;
+let tbl: Table = raw_tbl;
 tbl <- select str::len(pattern) {
     n if n == 0 => raw_tbl,
     _ => {
@@ -51,11 +51,69 @@ tbl <- select str::len(pattern) {
     }
 };
 
-// Sort controls: pick a column and direction.
-let sort_col: string = "name";
-let sort_dir: SortDirection = `Ascending;
+// Sort state: an array of (column, direction) pairs applied in order.
+// The first entry is the primary sort, subsequent entries break ties.
+// `cycle_sort` rotates a column through the three states a spreadsheet
+// user expects: absent → ascending → descending → absent.
+//
+// Clicking a column that isn't in `sort_by` appends it as ascending,
+// so sort_by grows as the user clicks new columns — that's how multi-
+// column sort is demonstrated. The first click on a column that is
+// already sorted flips its direction; a second click removes it.
 let sort_by: Array<SortBy> = [];
-sort_by <- [{ column: sort_col, direction: sort_dir }];
+
+// CR claude for estokes: the `column ~ { ... }` sampling and the
+// `matches[0]$` + separate `let dir = m0.direction` split are both
+// workarounds for sharp edges in graphix reactivity / parsing:
+//
+//   1. Without `column ~` on the RHS of `sort_by <-`, the compiled
+//      dataflow evaluates `array::filter(sort_by, ...)` at its
+//      initial empty sort_by value and never re-fires on callback
+//      invocation — so the callback appears to do nothing.
+//      The lang reference already documents that `~` is required in
+//      callbacks to sample current state at event time; this example
+//      makes that concrete.
+//
+//   2. `array::find` hits a MapQ fast-path in graphix-package-core
+//      (`MapQ::update`, around lib.rs:679) that returns the empty
+//      input array for an empty collection instead of calling
+//      `finish()`. For HOFs whose element-returning `finish()` would
+//      produce a different type than the collection (find → Option,
+//      find_map → Option), the fast-path returns the wrong type —
+//      so `array::find(<empty>, pred)` emits `[]` instead of `null`
+//      and the null arm of the outer select never fires. The
+//      `array::filter` + `array::len` pair below sidesteps this
+//      because filter's natural "empty → empty" happens to match
+//      its output type.
+//
+//   3. `matches[0]$.direction` fails to parse — the `$` error-drop
+//      postfix followed immediately by `.field` confuses the parser
+//      into reporting the outer callsite as unexpected, which is a
+//      red herring. Binding `matches[0]$` to a local first parses
+//      cleanly.
+//
+// Also, every lambda needs `|sb: SortBy|` annotations (and the `map`
+// callback needs `-> SortBy`) because graphix narrows sort_by's
+// element type based on the `direction: `Ascending` literal in the
+// push arm and then rejects `sb.direction` elsewhere as non-matching.
+let cycle_sort = |#column: string|
+    sort_by <- column ~ {
+        let matches = array::filter(sort_by, |sb: SortBy| sb.column == column);
+        let n = array::len(matches);
+        let m0 = matches[0]$;
+        let dir: SortDirection = m0.direction;
+        select n {
+            0 => array::push(sort_by, { column: column, direction: `Ascending }),
+            _ => select dir {
+                `Ascending => array::map(sort_by, |s: SortBy| -> SortBy
+                    select s.column == column {
+                        true => { s with direction: `Descending },
+                        false => s
+                    }),
+                `Descending => array::filter(sort_by, |s: SortBy| s.column != column)
+            }
+        }
+    };
 
 let controls = row(
     #spacing: &10.0,
@@ -78,22 +136,6 @@ let controls = row(
                 `Exclude => "Exclude matches"
             },
             &["Include matches", "Exclude matches"]
-        ),
-        pick_list(
-            #on_select: |v: string| sort_col <- v,
-            #selected: &sort_col,
-            &["name", "env"]
-        ),
-        pick_list(
-            #on_select: |v: string| sort_dir <- select v {
-                "Ascending" => `Ascending,
-                _ => `Descending
-            },
-            #selected: &select sort_dir {
-                `Ascending => "Ascending",
-                `Descending => "Descending"
-            },
-            &["Ascending", "Descending"]
         )
     ]
 );
@@ -105,9 +147,11 @@ let layout = column(
     #height: &`Fill,
     &[
         text(#size: &20.0, &"Interactive filter + sort"),
+        text(#size: &12.0, &"Click a column header to cycle its sort; click more than one for tie-broken multi-column sort."),
         controls,
         data_table(
             #sort_by: &sort_by,
+            #on_header_click: |#column: string| cycle_sort(#column: column),
             #table: &tbl
         )
     ]

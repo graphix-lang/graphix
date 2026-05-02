@@ -405,9 +405,16 @@ impl FnType {
         FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
     }
 
-    /// replace automatically constrained type variables with their
-    /// constraint type. This is only useful for making nicer display
-    /// types in IDEs and shells.
+    /// Replace automatically constrained type variables (those with
+    /// underscore-prefixed names like `'_23`) with their constraint type.
+    /// This is only useful for making nicer display types in IDEs and
+    /// shells.
+    ///
+    /// Ordering: when combining with `Type::resolve_tvars` to fully
+    /// pretty a function signature, call `replace_auto_constrained`
+    /// FIRST and `resolve_tvars` SECOND. `resolve_tvars` empties the
+    /// constraint table, so reversing the order leaves the auto
+    /// constraints with nothing to fold against.
     pub fn replace_auto_constrained(&self) -> Self {
         let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
         let Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids } =

@@ -7,7 +7,7 @@ Encodes a string as a QR code image. The QR code updates reactively when the inp
 ```graphix
 val qr_code: fn(
   ?#cell_size: &[f64, null],
-  &string
+  s: &string
 ) -> Widget
 ```
 

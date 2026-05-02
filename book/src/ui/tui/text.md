@@ -8,7 +8,7 @@ The `text` widget renders styled text in the terminal. It's a fundamental buildi
 val text: fn(
   ?#style: &Style,
   ?#alignment: &[Alignment, null],
-  &[Array<Line>, string]
+  v: &[Array<Line>, string]
 ) -> Tui;
 ```
 

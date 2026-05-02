@@ -23,8 +23,8 @@ sys::net::publish(path, source)$;
 let status = mod foo dynamic {
     sandbox whitelist [core];
     sig {
-        val add: fn(i64) -> i64;
-        val sub: fn(i64) -> i64;
+        val add: fn(x: i64) -> i64;
+        val sub: fn(x: i64) -> i64;
         val cfg: Array<i64>
     };
     source cast<string>(sys::net::subscribe(path)$)$
@@ -63,7 +63,7 @@ module, they are required to be defined in order, sandbox, sig, and source,
     accessible
 - a `sig` statement is the type signature of the module. This is a special
   syntax for writing module type signatures. There are four possible statements,
-  - a val statement defines a value and it's type, `val add: fn(i64) -> i64` is
+  - a val statement defines a value and it's type, `val add: fn(x: i64) -> i64` is
     an example of a val statement, it need not be a function it can be any type
   - a type statement defines a type in the loaded module, e.g. `type T = { foo:
     string, bar: string }` val statements that come after a type statement may

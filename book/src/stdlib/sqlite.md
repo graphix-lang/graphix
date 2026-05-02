@@ -12,29 +12,29 @@ type SqlVal = [i64, f64, string, bytes, null];
 type Connection;
 
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
-val open: fn(string) -> Result<Connection, `SqliteError(string)>;
+val open: fn(s: string) -> Result<Connection, `SqliteError(string)>;
 
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
-val exec: fn(Connection, string, Array<SqlVal>) -> Result<u64, `SqliteError(string)>;
+val exec: fn(a: Connection, s: string, a2: Array<SqlVal>) -> Result<u64, `SqliteError(string)>;
 
 /// Execute multiple semicolon-separated statements (no params). Good for schema setup.
-val exec_batch: fn(Connection, string) -> Result<null, `SqliteError(string)>;
+val exec_batch: fn(a: Connection, s: string) -> Result<null, `SqliteError(string)>;
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array<{...}> for typed structs, or Array<Map<string, SqlVal>> for raw maps.
-val query: fn(Connection, string, Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
+val query: fn(a: Connection, s: string, a2: Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
 
 /// Begin a transaction.
-val begin: fn(Connection) -> Result<null, `SqliteError(string)>;
+val begin: fn(a: Connection) -> Result<null, `SqliteError(string)>;
 
 /// Commit the current transaction.
-val commit: fn(Connection) -> Result<null, `SqliteError(string)>;
+val commit: fn(a: Connection) -> Result<null, `SqliteError(string)>;
 
 /// Rollback the current transaction.
-val rollback: fn(Connection) -> Result<null, `SqliteError(string)>;
+val rollback: fn(a: Connection) -> Result<null, `SqliteError(string)>;
 
 /// Close the connection explicitly (optional — connections close on drop).
-val close: fn(Connection) -> Result<null, `SqliteError(string)>;
+val close: fn(a: Connection) -> Result<null, `SqliteError(string)>;
 ```
 
 ## Type-directed queries

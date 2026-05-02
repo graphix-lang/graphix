@@ -8,7 +8,7 @@ Graphix has a powerful static type system, but you'll rarely write type annotati
 
 The **[Fundamental Types](./fundamental_types.md)** section covers the built-in numeric types (`i64`, `f64`, `u32`, etc.), booleans, strings, durations, and more. You'll learn how arithmetic works across different numeric types, how string interpolation works with `[...]` brackets, and why division by zero doesn't crash your program.
 
-**[Reading Type Signatures](./reading_types.md)** teaches you how to read the type annotations you'll see throughout the documentation. Function types like `fn(Array<'a>, fn('a) -> 'b) -> Array<'b>` tell you exactly what a function expects and returns, including what errors it might throw.
+**[Reading Type Signatures](./reading_types.md)** teaches you how to read the type annotations you'll see throughout the documentation. Function types like `fn(a: Array<'a>, f: fn(x: 'a) -> 'b) -> Array<'b>` tell you exactly what a function expects and returns, including what errors it might throw.
 
 ## Binding Values and Building Blocks
 

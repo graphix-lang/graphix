@@ -38,13 +38,13 @@ let len = |l: List<'a>| {
 };
 
 // map f over the list
-let rec map = |l: List<'a>, f: fn('a) -> 'b| -> List<'b> select l {
+let rec map = |l: List<'a>, f: fn(x: 'a) -> 'b| -> List<'b> select l {
   `Cons(v, tl) => `Cons(f(v), map(tl, f)),
   `Nil => `Nil
 };
 
 // fold f over the list
-let rec fold = |l: List<'a>, init: 'b, f: fn('b, 'a) -> 'b| -> 'b select l {
+let rec fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b| -> 'b select l {
   `Cons(v, tl) => fold(tl, f(init, v), f),
   `Nil => init
 }

@@ -45,13 +45,13 @@ type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
 mod watch;
 mod tempdir;
 
-val read_all: fn(string) -> Result<string, `IOError(string)>;
-val read_all_bin: fn(string) -> Result<bytes, `IOError(string)>;
-val write_all: fn(#path: string, string) -> Result<null, `IOError(string)>;
-val write_all_bin: fn(#path: string, bytes) -> Result<null, `IOError(string)>;
-val is_file: fn(string) -> Result<string, `IOError(string)>;
-val is_dir: fn(string) -> Result<string, `IOError(string)>;
-val metadata: fn(?#follow_symlinks: bool, string) -> Result<Metadata, `IOError(string)>;
+val read_all: fn(s: string) -> Result<string, `IOError(string)>;
+val read_all_bin: fn(s: string) -> Result<bytes, `IOError(string)>;
+val write_all: fn(#path: string, s: string) -> Result<null, `IOError(string)>;
+val write_all_bin: fn(#path: string, b: bytes) -> Result<null, `IOError(string)>;
+val is_file: fn(s: string) -> Result<string, `IOError(string)>;
+val is_dir: fn(s: string) -> Result<string, `IOError(string)>;
+val metadata: fn(?#follow_symlinks: bool, s: string) -> Result<Metadata, `IOError(string)>;
 
 val readdir: fn(
     ?#max_depth: i64,
@@ -60,12 +60,12 @@ val readdir: fn(
     ?#follow_symlinks: bool,
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
-    string
+    s: string
 ) -> Result<Array<DirEntry>, `IOError(string)>;
 
-val create_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
-val remove_dir: fn(?#all: bool, string) -> Result<null, `IOError(string)>;
-val remove_file: fn(string) -> Result<null, `IOError(string)>;
+val create_dir: fn(?#all: bool, s: string) -> Result<null, `IOError(string)>;
+val remove_dir: fn(?#all: bool, s: string) -> Result<null, `IOError(string)>;
+val remove_file: fn(s: string) -> Result<null, `IOError(string)>;
 
 /// Open a file with the specified mode, returning an I/O stream.
 ///
@@ -76,16 +76,16 @@ val remove_file: fn(string) -> Result<null, `IOError(string)>;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(Mode, string) -> Result<io::Stream<`File>, `IOError(string)>;
+val open: fn(a: Mode, s: string) -> Result<io::Stream<`File>, `IOError(string)>;
 
 /// Seek to a position in the file. Returns the new position.
-val seek: fn(io::Stream<`File>, SeekFrom) -> Result<u64, `IOError(string)>;
+val seek: fn(stream: io::Stream<`File>, pos: SeekFrom) -> Result<u64, `IOError(string)>;
 
 /// Get metadata for the open file.
-val fstat: fn(io::Stream<`File>) -> Result<Metadata, `IOError(string)>;
+val fstat: fn(stream: io::Stream<`File>) -> Result<Metadata, `IOError(string)>;
 
 /// Truncate or extend the file to the specified length.
-val truncate: fn(io::Stream<`File>, u64) -> Result<null, `IOError(string)>;
+val truncate: fn(stream: io::Stream<`File>, len: u64) -> Result<null, `IOError(string)>;
 ```
 
 Once a file is opened with `sys::fs::open`, use `sys::io::read`,
@@ -143,10 +143,10 @@ type Watch;
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
-    Any
+    v: Any
 ) -> Result<Watcher, `WatchError(string)>;
 
-val watch: fn(?#interest: Array<Interest>, Watcher, string)
+val watch: fn(?#interest: Array<Interest>, a: Watcher, s: string)
     -> Result<Watch, `WatchError(string)>;
 
 val path: fn(@args: [Watch, Array<Watch>, Map<'k, Watch>])
@@ -161,11 +161,11 @@ val events: fn(@args: [Watch, Array<Watch>, Map<'k, Watch>])
 ```graphix
 type T;
 
-val path: fn(T) -> string;
+val path: fn(a: T) -> string;
 
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
-    Any
+    v: Any
 ) -> Result<T, `IOError(string)>;
 ```

@@ -16,15 +16,15 @@ val table_column: fn(
   ?#width: &Length,
   ?#halign: &HAlign,
   ?#valign: &VAlign,
-  &Widget
+  a: &Widget
 ) -> TableColumn;
 
 val table: fn(
   ?#width: &Length,
   ?#padding: &[f64, null],
   ?#separator: &[f64, null],
-  &Array<TableColumn>,
-  &Array<Array<Widget>>
+  a: &Array<TableColumn>,
+  a2: &Array<Array<Widget>>
 ) -> Widget
 ```
 

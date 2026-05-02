@@ -1547,3 +1547,81 @@ fn modpath_from_typed(s: &str) -> ModPath {
     let parts: Vec<&str> = s.split("::").collect();
     parts.into_iter().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcstr::literal;
+    use graphix_compiler::expr::Origin;
+    use std::str::FromStr;
+    use triomphe::Arc;
+
+    fn ori(source: Source, parent: Option<Arc<Origin>>) -> Origin {
+        Origin { parent, source, text: literal!("") }
+    }
+
+    /// The LSP feeds the active document as `Source::Internal(text)` with
+    /// no parent. VFS-loaded stdlib modules also have `Source::Internal`
+    /// but carry a parent pointing at the loader's origin. Diagnostics
+    /// for the active URI must match the first form and reject the
+    /// second — otherwise stdlib errors leak into the active doc's
+    /// squiggles.
+    #[test]
+    fn origin_matches_uri_internal_active_doc_only() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let active = ori(Source::Internal(literal!("let x = 1")), None);
+        assert!(origin_matches_uri(&active, &uri));
+
+        let parent = Arc::new(ori(Source::Internal(literal!("loader")), None));
+        let vfs_child = ori(Source::Internal(literal!("array")), Some(parent));
+        assert!(!origin_matches_uri(&vfs_child, &uri));
+    }
+
+    /// File-loaded modules should only match when the path round-trips
+    /// to the requesting URI. A different file path must not match.
+    #[test]
+    fn origin_matches_uri_file_paths() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let active_file =
+            ori(Source::File(PathBuf::from("/tmp/active.gx")), None);
+        assert!(origin_matches_uri(&active_file, &uri));
+
+        let other_file =
+            ori(Source::File(PathBuf::from("/tmp/other.gx")), None);
+        assert!(!origin_matches_uri(&other_file, &uri));
+
+        // A File-sourced child whose path matches the URI still matches —
+        // it's the same physical file, regardless of how it was reached.
+        let parent = Arc::new(ori(Source::Internal(literal!("loader")), None));
+        let active_via_parent = ori(
+            Source::File(PathBuf::from("/tmp/active.gx")),
+            Some(parent),
+        );
+        assert!(origin_matches_uri(&active_via_parent, &uri));
+    }
+
+    /// Netidx-sourced origins never match a file URI — they live in a
+    /// separate namespace.
+    #[test]
+    fn origin_matches_uri_netidx_never_matches() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let n = ori(
+            Source::Netidx(netidx::path::Path::from("/foo")),
+            None,
+        );
+        assert!(!origin_matches_uri(&n, &uri));
+    }
+
+    /// `Source::Unspecified` follows the same parent rule as `Internal`:
+    /// only the top-level (parent=None) origin counts as the active doc.
+    #[test]
+    fn origin_matches_uri_unspecified_follows_parent_rule() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let top = ori(Source::Unspecified, None);
+        assert!(origin_matches_uri(&top, &uri));
+
+        let parent = Arc::new(ori(Source::Unspecified, None));
+        let child = ori(Source::Unspecified, Some(parent));
+        assert!(!origin_matches_uri(&child, &uri));
+    }
+}

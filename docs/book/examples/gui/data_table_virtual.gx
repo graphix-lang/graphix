@@ -15,38 +15,38 @@ net::publish("/local/graphix/data_table_virtual/nr0/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
 
-// In the Table record defining the structure of a data table, rows that are not
-// absolute netidx paths are treated "virtual". The data_table will not attempt
-// to subscribe to virtual rows, all values in virtual rows come from the
-// column_types default_value refs. A uniform default propagates one string to
-// every row; a per-row &Any map lets each row have its own value that updates
-// reactively. Columns can also be virtual, any column with a column type will
-// become a column regardless of whether it appears in the table description.
-//
-// Virtual rows and columns can be mixed with rows and columns in netidx.
-// Everything is ultimatly defined by the Table record delived to data_table.
-let tbl = net::list_table("/local/graphix/data_table_virtual")$;
-let tbl = uniq({
-    rows: array::concat(tbl.rows, ["vr0", "vr1", "vr2"]),
-    columns: array::concat(["region"], tbl.columns)
-});
+// Rows that aren't absolute netidx paths are virtual — the data_table
+// skips subscribing for them, and cell values come from the column's
+// `source` (uniform string or per-row Map). Columns can be bare-string
+// (Netidx-sourced text, the same as `sys::net::list_table` returns) or
+// full ColumnSpecs declared inline. Mixing the two is fine: the
+// `Table` type's `columns: Array<[string, ColumnSpec]>` union element
+// lets `sys::net::list_table` flow straight through.
+let raw = net::list_table("/local/graphix/data_table_virtual")$;
 
 let score: Map<string, f64> = {};
 
-let types = {
-    // Every row sees the same literal for "region".
-    "region" => text_column(
-        #display_name: "Region",
-        #default_value: &"production"
-    ),
-    // Virtual column: no matching key in tbl.columns, but has a
-    // per-row default_value, so the table synthesizes it.
-    "score" => progress_column(
-        #display_name: "Score",
-        #default_value: &score,
-        #width: &f64:180.0
-    )
-};
+// `array::map` with an explicit `-> [string, ColumnSpec]` return
+// type widens each bare-string entry into the union element. After
+// that, `array::concat` and `array::push` operate on uniformly-typed
+// `Array<[string, ColumnSpec]>`s.
+let widened: Array<[string, ColumnSpec]> =
+    array::map(raw.columns, |n: string| -> [string, ColumnSpec] n);
+let region: ColumnSpec = text_column(
+    #name: "region",
+    #display_name: "Region",
+    #source: &"production"
+);
+let score_col: ColumnSpec = progress_column(
+    #name: "score",
+    #display_name: "Score",
+    #source: &score,
+    #width: &f64:180.0
+);
+let tbl: Table = uniq({
+    rows: array::concat(raw.rows, ["vr0", "vr1", "vr2"]),
+    columns: array::push_front(array::push(widened, score_col), region)
+});
 
 let layout = column(
     #spacing: &14.0,
@@ -54,8 +54,8 @@ let layout = column(
     #width: &`Fill,
     #height: &`Fill,
     &[
-        text(#size: &20.0, &"Virtual rows"),
-        text(&"Move the sliders to drive change the score in the three virtual rows"),
+        text(#size: &20.0, &"Virtual rows and columns"),
+        text(&"Move the sliders to change the score in the three virtual rows."),
         slider(
             #on_change: |v: f64| score <- v ~ map::insert(score, "vr0", v),
             #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
@@ -71,7 +71,7 @@ let layout = column(
             #min: &f64:0.0, #max: &f64:1.0, #step: &f64:0.01,
             &map::get_or(score, "vr2", 0.)
         ),
-        data_table(#column_types: &types, #table: &tbl)
+        data_table(#table: &tbl)
     ]
 );
 

@@ -17,7 +17,7 @@ type SparklineBar = {
 
 val sparkline_bar: fn(
   ?#style: [Style, null],
-  [f64, null]
+  v: [f64, null]
 ) -> SparklineBar;
 
 val sparkline: fn(
@@ -26,7 +26,7 @@ val sparkline: fn(
   ?#direction: &[RenderDirection, null],
   ?#max: &[i64, null],
   ?#style: &[Style, null],
-  &Array<[SparklineBar, f64, null]>
+  a: &Array<[SparklineBar, f64, null]>
 ) -> Tui;
 ```
 

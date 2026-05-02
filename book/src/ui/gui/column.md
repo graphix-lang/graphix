@@ -11,7 +11,7 @@ val column: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#halign: &HAlign,
-  &Array<Widget>
+  a: &Array<Widget>
 ) -> Widget
 ```
 

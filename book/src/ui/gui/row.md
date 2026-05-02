@@ -11,7 +11,7 @@ val row: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#valign: &VAlign,
-  &Array<Widget>
+  a: &Array<Widget>
 ) -> Widget
 ```
 

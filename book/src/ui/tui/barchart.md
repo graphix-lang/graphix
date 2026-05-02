@@ -18,7 +18,7 @@ val bar: fn(
   ?#style: &[Style, null],
   ?#text_value: &[string, null],
   ?#value_style: &[Style, null],
-  &i64
+  n: &i64
 ) -> Bar;
 
 type BarGroup = {
@@ -28,7 +28,7 @@ type BarGroup = {
 
 val bar_group: fn(
   ?#label: [Line, null],
-  Array<Bar>
+  a: Array<Bar>
 ) -> BarGroup;
 
 val bar_chart: fn(
@@ -41,7 +41,7 @@ val bar_chart: fn(
   ?#max: &[i64, null],
   ?#style: &[Style, null],
   ?#value_style: &[Style, null],
-  &Array<BarGroup>
+  a: &Array<BarGroup>
 ) -> Tui;
 ```
 

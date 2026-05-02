@@ -1,3 +1,5 @@
+// demonstrates using a default value for netidx subscriptions to show
+// a dummy value when a subscription isn't available.
 use gui;
 use gui::data_table;
 use gui::column;
@@ -6,7 +8,7 @@ use sys;
 use sys::net;
 mod icon;
 
-let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
+let publish_host = |#name, #status, #cpu, #mem| {
     sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
     sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
     sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
@@ -16,8 +18,18 @@ publish_host(#name: "host-01", #status: `Up, #cpu: 12.4, #mem: 37.1);
 publish_host(#name: "host-02", #status: `Up, #cpu: 88.2, #mem: 62.0);
 publish_host(#name: "host-03", #status: `Degraded, #cpu: 4.1, #mem: 19.8);
 
+// publish and unpublish host-04 every 2 seconds
+select count(time::timer(2, true)) {
+    i if i % 2 == 0 => publish_host(#name:"host-04", #status:`Up, #cpu:99.9, #mem:100.0),
+    i => never()
+};
+
 // list_table inspects the resolver to discover children of this path.
 let tbl = sys::net::list_table("/local/graphix/data_table_basic")$;
+let tbl = uniq({
+    rows: array::dedup(array::push(tbl.rows, "/local/graphix/data_table_basic/host-04")),
+    columns: array::map(tbl.columns, |s| text_column(#name:s, #source:&`Netidx("#SUB")))
+});
 
 let layout = column(
     #spacing: &12.0,

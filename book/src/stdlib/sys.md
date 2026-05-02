@@ -21,5 +21,5 @@ and stdio.
 val args: fn() -> Array<string>;
 
 /// join parts to path using the OS specific path separator
-val join_path: fn(string, @args: [string, Array<string>]) -> string;
+val join_path: fn(s: string, @args: [string, Array<string>]) -> string;
 ```

@@ -145,8 +145,8 @@ Use `tui::input_handler::input_handler` to wrap a widget with event handling:
 ```graphix
 val input_handler: fn(
   ?#enabled: &[bool, null],
-  #handle: &fn(Event) -> [`Stop, `Continue] throws 'e,
-  &Tui
+  #handle: &fn(a: Event) -> [`Stop, `Continue] throws 'e,
+  a: &Tui
 ) -> Tui throws 'e;
 ```
 

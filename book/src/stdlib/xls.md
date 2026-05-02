@@ -8,10 +8,10 @@ values.
 use sys::io;
 
 /// List sheet names in a workbook.
-val sheets: fn([bytes, Stream<'a>]) -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]>;
+val sheets: fn(v: [bytes, Stream<'a>]) -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]>;
 
 /// Read a sheet by name as a 2D array of rows.
-val read: fn([bytes, Stream<'a>], string) -> Result<Array<Array<PrimNoErr>>, [`XlsErr(string), `IOErr(string)]>;
+val read: fn(v: [bytes, Stream<'a>], s: string) -> Result<Array<Array<PrimNoErr>>, [`XlsErr(string), `IOErr(string)]>;
 ```
 
 ## Example

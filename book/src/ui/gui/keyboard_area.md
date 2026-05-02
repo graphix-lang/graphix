@@ -13,9 +13,9 @@ type KeyEvent = {
 };
 
 val keyboard_area: fn(
-  ?#on_key_press: fn(KeyEvent) -> Any,
-  ?#on_key_release: fn(KeyEvent) -> Any,
-  &Widget
+  ?#on_key_press: fn(a: KeyEvent) -> Any,
+  ?#on_key_release: fn(a: KeyEvent) -> Any,
+  a: &Widget
 ) -> Widget
 ```
 

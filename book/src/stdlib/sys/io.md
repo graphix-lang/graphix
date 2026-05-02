@@ -14,28 +14,28 @@ type Stream<'a: [`File, `Tcp, `Tls, `Stdio]>;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
-val read: fn(Stream<'a>, u64) -> Result<bytes, `IOError(string)>;
+val read: fn(a: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
 
 /// Read exactly n bytes from the stream. Returns fewer bytes only
 /// if EOF is reached before n bytes have been read.
-val read_exact: fn(Stream<'a>, u64) -> Result<bytes, `IOError(string)>;
+val read_exact: fn(a: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
 
 /// Write bytes to the stream. Returns the number of bytes written,
 /// which may be less than the full length of data.
-val write: fn(Stream<'a>, bytes) -> Result<u64, `IOError(string)>;
+val write: fn(a: Stream<'a>, b: bytes) -> Result<u64, `IOError(string)>;
 
 /// Write all bytes to the stream, looping until complete.
-val write_exact: fn(Stream<'a>, bytes) -> Result<null, `IOError(string)>;
+val write_exact: fn(a: Stream<'a>, b: bytes) -> Result<null, `IOError(string)>;
 
 /// Flush any buffered writes.
-val flush: fn(Stream<'a>) -> Result<null, `IOError(string)>;
+val flush: fn(a: Stream<'a>) -> Result<null, `IOError(string)>;
 
 /// Return a handle to standard input.
-val stdin: fn(Any) -> Stream<`Stdio>;
+val stdin: fn(v: Any) -> Stream<`Stdio>;
 
 /// Return a handle to standard output.
-val stdout: fn(Any) -> Stream<`Stdio>;
+val stdout: fn(v: Any) -> Stream<`Stdio>;
 
 /// Return a handle to standard error.
-val stderr: fn(Any) -> Stream<`Stdio>;
+val stderr: fn(v: Any) -> Stream<`Stdio>;
 ```

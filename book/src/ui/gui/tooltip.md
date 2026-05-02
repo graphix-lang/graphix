@@ -9,7 +9,7 @@ val tooltip: fn(
   #tip: &Widget,
   ?#position: &TooltipPosition,
   ?#gap: &[f64, null],
-  &Widget
+  a: &Widget
 ) -> Widget
 ```
 
