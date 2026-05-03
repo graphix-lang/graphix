@@ -112,7 +112,18 @@ module.exports = grammar({
     ),
 
     // Comments
-    line_comment: $ => token(seq('//', /[^\/\n]/, /.*/)),
+    //
+    // line_comment matches `//` plus any rest-of-line. The rest is
+    // optional, so a bare `//` line (just two slashes before EOL) still
+    // tokenizes as a comment — the real graphix parser accepts that.
+    //
+    // doc_comment is more specific (`///` prefix) and is preferred by
+    // tree-sitter's longest-match rule wherever it appears in the
+    // grammar (currently only inside sig items). Outside sig context
+    // line_comment will absorb `///`-style lines as ordinary comments,
+    // which is a small over-acceptance compared to the strict parser
+    // but gives editors sensible highlighting for in-progress code.
+    line_comment: $ => token(seq('//', /[^\n]*/)),
 
     doc_comment: $ => token(seq('///', /.*/)),
 

@@ -9,7 +9,7 @@
 
 ;;; Commentary:
 
-;; Major modes for editing Graphix source files (.gx).
+;; Major modes for editing Graphix source files (.gx and .gxi).
 ;;
 ;; Two modes are provided:
 ;;
@@ -305,7 +305,7 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
 ;;; ---- File association ----
 
 ;;;###autoload
-(add-to-list 'auto-mode-alist '("\\.gx\\'" . graphix-mode))
+(add-to-list 'auto-mode-alist '("\\.gxi?\\'" . graphix-mode))
 
 ;;; ---- LSP integration ----
 

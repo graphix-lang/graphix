@@ -52,6 +52,7 @@ netidx-protocols = { version = "0.31.0", path = "../netidx/netidx-protocols" }
 netidx-value = { version = "0.31.6", path = "../netidx/netidx-value" }
 netidx = { version = "0.31.0", default-features = false, path = "../netidx/netidx" }
 parking_lot = "0.12.1"
+percent-encoding = "2"
 poolshark = { version = "0.2.7" }
 rand = "0.10"
 ratatui = { version = "0.30", features = ["widget-calendar"] }

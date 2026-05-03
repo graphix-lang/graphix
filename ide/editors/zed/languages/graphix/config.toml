@@ -1,6 +1,6 @@
 name = "Graphix"
 grammar = "graphix"
-path_suffixes = ["gx"]
+path_suffixes = ["gx", "gxi"]
 line_comments = ["//"]
 autoclose_before = ";:.,=}])>"
 brackets = [

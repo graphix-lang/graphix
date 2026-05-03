@@ -8,7 +8,10 @@ mod diagnostics;
 mod server;
 mod state;
 pub mod handlers;
+pub mod position;
+pub mod uri;
 pub mod workspace;
 
+pub use position::PositionEncoding;
 pub use server::serve;
 pub use state::{Document, LspBackend, ServerState, TypecheckResult};

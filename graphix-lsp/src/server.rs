@@ -95,7 +95,7 @@ where
     connection.initialize_finish(
         req_id,
         serde_json::to_value(lsp_types::InitializeResult {
-            capabilities: server_capabilities(encoding),
+            capabilities: server_capabilities(encoding.clone()),
             server_info: None,
         })?,
     )?;
@@ -110,10 +110,13 @@ where
         .and_then(|c| c.completion_item.as_ref())
         .and_then(|ci| ci.snippet_support)
         .unwrap_or(false);
-    let mut state = ServerState::new(backend, snippet_support);
+    let position_encoding = crate::position::PositionEncoding::from_kind(encoding.as_ref());
+    let mut state = ServerState::new(backend, snippet_support, position_encoding);
     let initial = state.set_workspace_roots(workspace_roots);
     for (uri, diags) in initial {
-        publish_diagnostics(&connection, uri, diags, 0)?;
+        // No editor-tracked version yet at startup — these are project
+        // diagnostics for files the user may not have open.
+        publish_diagnostics(&connection, uri, diags, None)?;
     }
     for msg in &connection.receiver {
         match msg {
@@ -191,7 +194,7 @@ fn handle_notification(
                 params.text_document.text,
                 version,
             );
-            publish_diagnostics(connection, uri, diagnostics, version)?;
+            publish_diagnostics(connection, uri, diagnostics, Some(version))?;
         }
         "textDocument/didChange" => {
             let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
@@ -200,7 +203,7 @@ fn handle_notification(
             if let Some(change) = params.content_changes.into_iter().next() {
                 let diagnostics =
                     handlers::diagnostics::did_change(state, uri.clone(), change.text, version);
-                publish_diagnostics(connection, uri, diagnostics, version)?;
+                publish_diagnostics(connection, uri, diagnostics, Some(version))?;
             }
         }
         "textDocument/didClose" => {
@@ -214,12 +217,14 @@ fn handle_notification(
             // recompile every project so cross-file errors and
             // references update.
             let updates = state.recheck_workspace();
-            // Publish per-file diagnostics. Skip the active doc if
-            // it's the file the user just saved — its own per-doc
-            // check already publishes diagnostics for it on each
-            // change.
+            // Publish per-file diagnostics. For files the editor has
+            // open we use the tracked document version so the client
+            // can match the diagnostics to the correct revision; for
+            // closed files we send None (the spec lets clients accept
+            // unversioned diagnostics for files they aren't tracking).
             for (uri, diags) in updates {
-                publish_diagnostics(connection, uri, diags, 0)?;
+                let version = state.documents.get(&uri).map(|d| d.version);
+                publish_diagnostics(connection, uri, diags, version)?;
             }
         }
         _ => {
@@ -259,19 +264,18 @@ fn workspace_roots_from(init: &InitializeParams) -> Vec<PathBuf> {
 }
 
 fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    let s = uri.as_str();
-    s.strip_prefix("file://").map(PathBuf::from)
+    crate::uri::uri_to_path(uri)
 }
 
 fn publish_diagnostics(
     connection: &Connection,
     uri: Uri,
     diagnostics: Vec<lsp_types::Diagnostic>,
-    version: i32,
+    version: Option<i32>,
 ) -> Result<()> {
     let notification = Notification::new(
         "textDocument/publishDiagnostics".to_string(),
-        PublishDiagnosticsParams { uri, diagnostics, version: Some(version) },
+        PublishDiagnosticsParams { uri, diagnostics, version },
     );
     connection.sender.send(Message::Notification(notification))?;
     Ok(())

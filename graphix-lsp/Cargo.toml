@@ -13,6 +13,7 @@ compact_str = { workspace = true }
 fxhash = { workspace = true }
 log = { workspace = true }
 netidx = { workspace = true }
+percent-encoding = { workspace = true }
 poolshark = { workspace = true }
 serde_json = { workspace = true }
 triomphe = { workspace = true }

@@ -16,7 +16,8 @@ programming language in Zed editor.
 2. Ensure `graphix` is on your PATH (the LSP server is launched via
    `graphix lsp`).
 
-3. Restart Zed. The extension will detect `.gx` files automatically.
+3. Restart Zed. The extension will detect `.gx` and `.gxi` files
+   automatically.
 
 ## Features
 
@@ -25,3 +26,17 @@ programming language in Zed editor.
 - Local variable tracking (locals.scm)
 - LSP support: diagnostics, completions, hover, go-to-definition
 - Bracket matching and auto-closing
+
+## Maintenance
+
+The query files under `languages/graphix/` (`highlights.scm`,
+`indents.scm`, `locals.scm`) are copies of the canonical queries in
+`ide/tree-sitter-graphix/queries/`. Zed packages each extension as a
+self-contained directory, so symlinks pointing outside the extension
+tree don't survive packaging. When the upstream queries change,
+re-copy them:
+
+```bash
+cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
+   ide/editors/zed/languages/graphix/
+```

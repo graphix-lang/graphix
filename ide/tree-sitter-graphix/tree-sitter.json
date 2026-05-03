@@ -6,7 +6,8 @@
       "scope": "source.graphix",
       "path": ".",
       "file-types": [
-        "gx"
+        "gx",
+        "gxi"
       ],
       "highlights": "queries/highlights.scm",
       "locals": "queries/locals.scm"

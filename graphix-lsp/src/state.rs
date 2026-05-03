@@ -128,10 +128,18 @@ pub struct ServerState {
     /// Drives whether function completions emit a snippet body that
     /// expands `name(${1}, ${2})$0` on accept.
     pub snippet_support: bool,
+    /// Position encoding negotiated with the client. Drives how we
+    /// interpret incoming `Position.character` and how we serialize
+    /// outgoing positions.
+    pub position_encoding: crate::position::PositionEncoding,
 }
 
 impl ServerState {
-    pub fn new(backend: Arc<dyn LspBackend>, snippet_support: bool) -> Self {
+    pub fn new(
+        backend: Arc<dyn LspBackend>,
+        snippet_support: bool,
+        position_encoding: crate::position::PositionEncoding,
+    ) -> Self {
         let env = backend.env();
         Self {
             env,
@@ -142,6 +150,7 @@ impl ServerState {
             project_results: Vec::new(),
             last_project_diag_uris: HashSet::new(),
             snippet_support,
+            position_encoding,
         }
     }
 
@@ -201,7 +210,7 @@ impl ServerState {
                 }
                 Err(e) => {
                     let (uri, diag) =
-                        project_error_to_diagnostic(&e, &project.root);
+                        self.project_error_to_diagnostic(&e, &project.root);
                     diags_by_uri.entry(uri).or_default().push(diag);
                     results.push(None);
                 }
@@ -221,6 +230,51 @@ impl ServerState {
         self.last_project_diag_uris =
             out.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k.clone()).collect();
         out
+    }
+
+    /// Translate an incoming LSP position (whose `character` is in the
+    /// negotiated encoding's units) into a position where `character`
+    /// is a char count — the unit our cursor helpers expect. Returns
+    /// the input unchanged when we have no document text to consult.
+    fn normalize_position(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> lsp_types::Position {
+        if matches!(self.position_encoding, crate::position::PositionEncoding::Utf32) {
+            return position;
+        }
+        let Some(doc) = self.documents.get(uri) else {
+            return position;
+        };
+        let Some(line_text) = doc.text.lines().nth(position.line as usize) else {
+            return position;
+        };
+        let character = crate::position::position_to_char_col(
+            line_text,
+            position,
+            self.position_encoding,
+        ) as u32;
+        lsp_types::Position { line: position.line, character }
+    }
+
+    /// Build an LSP position from a char-based (line, column) the
+    /// compiler reports, encoding `column` according to the negotiated
+    /// position encoding. `text` is the source the position refers to —
+    /// for cross-file locations this is the *target* file's text, not
+    /// the requesting document's.
+    fn lsp_position_from_char_col(
+        &self,
+        text: &str,
+        line: u32,
+        char_col: usize,
+    ) -> lsp_types::Position {
+        crate::position::char_col_to_position_in_text(
+            text,
+            line,
+            char_col,
+            self.position_encoding,
+        )
     }
 
     /// Indices of projects that contain the file at `uri`.
@@ -288,7 +342,7 @@ impl ServerState {
                     d.type_references = TYPE_REF_SITE_POOL.take();
                     d.scope_map = SCOPE_MAP_ENTRY_POOL.take();
                 }
-                error_to_diagnostics(&e, &text)
+                error_to_diagnostics(&e, &text, self.position_encoding)
             }
         }
     }
@@ -300,6 +354,15 @@ impl ServerState {
     /// scope map. Returns root scope if nothing matches — that's
     /// the natural default at top of file or in unparsed regions.
     pub fn scope_at(&self, uri: &Uri, position: lsp_types::Position) -> ModPath {
+        let position = self.normalize_position(uri, position);
+        self.scope_at_char(uri, position)
+    }
+
+    /// `scope_at` for callers that already hold a char-encoded position
+    /// (i.e. one that's been through `normalize_position`). Public state
+    /// methods that have already normalized their input use this to
+    /// avoid double-translating the position.
+    fn scope_at_char(&self, uri: &Uri, position: lsp_types::Position) -> ModPath {
         let mut best: Option<ScopeMapEntry> = None;
         let mut consider = |e: &ScopeMapEntry| {
             if !origin_matches_uri(&e.ori, uri) {
@@ -353,10 +416,11 @@ impl ServerState {
         uri: &Uri,
         position: lsp_types::Position,
     ) -> Vec<lsp_types::CompletionItem> {
+        let position = self.normalize_position(uri, position);
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
-        let scope = self.scope_at(uri, position);
+        let scope = self.scope_at_char(uri, position);
         let env = self.env_for(uri);
         let mut items = Vec::new();
         // Special-case: cursor is inside `#…` — the user is naming a
@@ -462,6 +526,7 @@ impl ServerState {
         uri: &Uri,
         position: lsp_types::Position,
     ) -> Option<lsp_types::Hover> {
+        let position = self.normalize_position(uri, position);
         let doc = self.documents.get(uri)?;
         let env = self.env_for(uri);
 
@@ -488,7 +553,9 @@ impl ServerState {
         let word = get_word_at_position(&doc.text, position)?;
         // Use the cursor's lexical scope so locally-bound names
         // (let inside a function, etc.) are resolved correctly.
-        let scope = self.scope_at(uri, position);
+        // `position` is already char-encoded — call the inner
+        // helper directly so we don't normalize twice.
+        let scope = self.scope_at_char(uri, position);
         let name: ModPath = word.split("::").collect();
 
         if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
@@ -526,6 +593,7 @@ impl ServerState {
         position: lsp_types::Position,
         include_declaration: bool,
     ) -> Vec<lsp_types::Location> {
+        let position = self.normalize_position(uri, position);
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
@@ -618,12 +686,12 @@ impl ServerState {
             if r.bind_id != bind_id {
                 continue;
             }
-            if let Some(loc) = ref_to_location(requesting_uri, &r.ori, r.pos) {
+            if let Some(loc) = self.ref_to_location(requesting_uri, &r.ori, r.pos) {
                 out.push(loc);
             }
         }
         if include_declaration {
-            if let Some(loc) = ref_to_location(requesting_uri, &bind.ori, bind.pos) {
+            if let Some(loc) = self.ref_to_location(requesting_uri, &bind.ori, bind.pos) {
                 out.push(loc);
             }
         }
@@ -676,7 +744,7 @@ impl ServerState {
         out: &mut Vec<lsp_types::Location>,
     ) {
         let push = |m: &ModuleRefSite, out: &mut Vec<lsp_types::Location>| {
-            if let Some(loc) = ref_to_location(requesting_uri, &m.ori, m.pos) {
+            if let Some(loc) = self.ref_to_location(requesting_uri, &m.ori, m.pos) {
                 out.push(loc);
             }
         };
@@ -733,7 +801,7 @@ impl ServerState {
         out: &mut Vec<lsp_types::Location>,
     ) {
         let push = |t: &TypeRefSite, out: &mut Vec<lsp_types::Location>| {
-            if let Some(loc) = ref_to_location(requesting_uri, &t.ori, t.pos) {
+            if let Some(loc) = self.ref_to_location(requesting_uri, &t.ori, t.pos) {
                 out.push(loc);
             }
         };
@@ -765,7 +833,7 @@ impl ServerState {
         name: &ModPath,
         requesting_uri: &Uri,
     ) -> Option<lsp_types::Location> {
-        let take = |t: &TypeRefSite| ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
+        let take = |t: &TypeRefSite| self.ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
         if let Some(doc) = self.documents.get(requesting_uri) {
             for t in doc.type_references.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
@@ -795,7 +863,7 @@ impl ServerState {
         let doc = self.documents.get(uri)?;
         for t in doc.type_references.iter() {
             if position_in_type_ref(position, t) {
-                return ref_to_location(uri, &t.def_ori, t.def_pos);
+                return self.ref_to_location(uri, &t.def_ori, t.def_pos);
             }
         }
         // Also try any project's type_references (cross-file).
@@ -807,7 +875,7 @@ impl ServerState {
                     if origin_matches_uri(&t.ori, uri)
                         && position_in_type_ref(position, t)
                     {
-                        return ref_to_location(uri, &t.def_ori, t.def_pos);
+                        return self.ref_to_location(uri, &t.def_ori, t.def_pos);
                     }
                 }
             }
@@ -846,7 +914,7 @@ impl ServerState {
             .find(|m| position_in_module_ref(position, m))?;
         // Prefer this site's own def_ori if the resolver attached one.
         if let Some(ori) = target.def_ori.as_ref() {
-            return module_origin_to_location(uri, ori);
+            return self.module_origin_to_location(uri, ori);
         }
         // Otherwise look at any other module ref with the same
         // canonical path that DOES have a def_ori — likely the
@@ -864,7 +932,7 @@ impl ServerState {
             .copied()
             .find(|m| &m.canonical == canonical && m.def_ori.is_some())
             .and_then(|m| {
-                module_origin_to_location(uri, m.def_ori.as_ref().unwrap())
+                self.module_origin_to_location(uri, m.def_ori.as_ref().unwrap())
             })
     }
 
@@ -889,8 +957,8 @@ impl ServerState {
                     continue;
                 }
                 let line = bind.pos.line.saturating_sub(1).max(0) as u32;
-                let col = bind.pos.column.saturating_sub(1).max(0) as u32;
-                let pos = lsp_types::Position { line, character: col };
+                let char_col = bind.pos.column.saturating_sub(1).max(0) as usize;
+                let pos = self.lsp_position_from_char_col(&doc.text, line, char_col);
                 let range = lsp_types::Range { start: pos, end: pos };
                 let kind = if matches!(&bind.typ, Type::Fn(_)) {
                     lsp_types::SymbolKind::FUNCTION
@@ -922,6 +990,7 @@ impl ServerState {
         uri: &Uri,
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
+        let position = self.normalize_position(uri, position);
         // First try the references list — each ReferenceSite carries
         // the bind's declaration site. This works for all bindings,
         // including lambda parameters that the env's by_id map no
@@ -929,7 +998,7 @@ impl ServerState {
         if let Some((def_pos, def_ori)) =
             self.def_site_at_position(uri, position)
         {
-            return ref_to_location(uri, &def_ori, def_pos);
+            return self.ref_to_location(uri, &def_ori, def_pos);
         }
         // Try module references — `use foo;` and `mod foo;` sites
         // carry the file the module body lives in.
@@ -956,8 +1025,8 @@ impl ServerState {
                 Source::Netidx(_) => return None,
             };
             let line = bind.pos.line.saturating_sub(1).max(0) as u32;
-            let column = bind.pos.column.saturating_sub(1).max(0) as u32;
-            let pos = lsp_types::Position { line, character: column };
+            let char_col = bind.pos.column.saturating_sub(1).max(0) as usize;
+            let pos = self.lsp_position_from_char_col(&bind.ori.text, line, char_col);
             return Some(lsp_types::Location {
                 uri: target_uri,
                 range: lsp_types::Range { start: pos, end: pos },
@@ -973,8 +1042,8 @@ impl ServerState {
             Source::Netidx(_) => return None,
         };
         let line = typedef.pos.line.saturating_sub(1).max(0) as u32;
-        let column = typedef.pos.column.saturating_sub(1).max(0) as u32;
-        let pos = lsp_types::Position { line, character: column };
+        let char_col = typedef.pos.column.saturating_sub(1).max(0) as usize;
+        let pos = self.lsp_position_from_char_col(&typedef.ori.text, line, char_col);
         Some(lsp_types::Location {
             uri: target_uri,
             range: lsp_types::Range { start: pos, end: pos },
@@ -991,45 +1060,64 @@ fn uri_to_source(uri: &Uri) -> Source {
 }
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    let s = uri.as_str();
-    if s.starts_with("file://") {
-        Some(PathBuf::from(&s[7..]))
-    } else {
-        None
-    }
+    crate::uri::uri_to_path(uri)
 }
 
-fn path_to_uri(path: &PathBuf) -> Option<Uri> {
-    let uri_str = format!("file://{}", path.display());
-    Uri::from_str(&uri_str).ok()
+fn path_to_uri(path: &Path) -> Option<Uri> {
+    crate::uri::path_to_uri(path)
 }
 
 /// Turn a project compile error into a (uri, diagnostic) pair. The
 /// uri is the file the error originated in (extracted from the
 /// chain) — falling back to the project root if attribution failed.
-fn project_error_to_diagnostic(
-    err: &anyhow::Error,
-    project_root: &Path,
-) -> (Uri, lsp_types::Diagnostic) {
-    let loc = error_location(err);
-    let target_path = loc.file.unwrap_or_else(|| project_root.to_path_buf());
-    let uri = path_to_uri(&target_path).unwrap_or_else(|| {
-        // Path → URI conversion shouldn't fail for absolute paths,
-        // but if it does we fall back to the project root URI rather
-        // than dropping the diagnostic on the floor.
-        path_to_uri(&project_root.to_path_buf())
-            .or_else(|| Uri::from_str("file:///").ok())
-            .expect("file:/// is a valid URI")
-    });
-    let pos = loc.position.unwrap_or_default();
-    let diag = lsp_types::Diagnostic {
-        range: lsp_types::Range { start: pos, end: pos },
-        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-        source: Some("graphix".to_string()),
-        message: error_leaf_message(err),
-        ..Default::default()
-    };
-    (uri, diag)
+impl ServerState {
+    fn project_error_to_diagnostic(
+        &self,
+        err: &anyhow::Error,
+        project_root: &Path,
+    ) -> (Uri, lsp_types::Diagnostic) {
+        let loc = error_location(err);
+        let target_path = loc.file.unwrap_or_else(|| project_root.to_path_buf());
+        let uri = path_to_uri(&target_path).unwrap_or_else(|| {
+            // Path → URI conversion shouldn't fail for absolute paths,
+            // but if it does we fall back to the project root URI rather
+            // than dropping the diagnostic on the floor.
+            path_to_uri(project_root)
+                .or_else(|| Uri::from_str("file:///").ok())
+                .expect("file:/// is a valid URI")
+        });
+        let char_pos = loc.position.unwrap_or_default();
+        // Translate the char-based position into the negotiated
+        // encoding. We read the target file's text from the open-
+        // document map when we're tracking it; otherwise we read it
+        // from disk so non-ASCII positions still translate correctly
+        // for closed files. Disk-read failures fall back to the
+        // unencoded position — for ASCII-only sources (the common
+        // case) this is identical anyway.
+        let pos = match self.documents.get(&uri) {
+            Some(doc) => self.lsp_position_from_char_col(
+                &doc.text,
+                char_pos.line,
+                char_pos.character as usize,
+            ),
+            None => match std::fs::read_to_string(&target_path) {
+                Ok(text) => self.lsp_position_from_char_col(
+                    &text,
+                    char_pos.line,
+                    char_pos.character as usize,
+                ),
+                Err(_) => char_pos,
+            },
+        };
+        let diag = lsp_types::Diagnostic {
+            range: lsp_types::Range { start: pos, end: pos },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            source: Some("graphix".to_string()),
+            message: error_leaf_message(err),
+            ..Default::default()
+        };
+        (uri, diag)
+    }
 }
 
 /// Char count of `name` as it would be rendered by `Display` (e.g.
@@ -1116,44 +1204,63 @@ fn span_covers(pos: lsp_types::Position, start: SourcePosition, len: u32) -> boo
     pos.character >= col0 && pos.character <= col0 + len
 }
 
-/// Map a module reference's `def_ori` (file the module body was
-/// loaded from) to an LSP Location pointing at the file's start.
-fn module_origin_to_location(
-    requesting_uri: &Uri,
-    ori: &graphix_compiler::expr::Origin,
-) -> Option<lsp_types::Location> {
-    let target_uri = match &ori.source {
-        Source::File(p) => path_to_uri(p)?,
-        Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
-        Source::Netidx(_) => return None,
-    };
-    let pos = lsp_types::Position { line: 0, character: 0 };
-    Some(lsp_types::Location {
-        uri: target_uri,
-        range: lsp_types::Range { start: pos, end: pos },
-    })
-}
+impl ServerState {
+    /// Map a module reference's `def_ori` (file the module body was
+    /// loaded from) to an LSP Location pointing at the file's start.
+    fn module_origin_to_location(
+        &self,
+        requesting_uri: &Uri,
+        ori: &graphix_compiler::expr::Origin,
+    ) -> Option<lsp_types::Location> {
+        let target_uri = match &ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
+            Source::Netidx(_) => return None,
+        };
+        let pos = lsp_types::Position { line: 0, character: 0 };
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: pos, end: pos },
+        })
+    }
 
-/// Map a (Origin, SourcePosition) pair to an LSP Location. For
-/// in-document origins (everything the LSP feeds is `Source::Internal`),
-/// fall back to the requesting URI.
-fn ref_to_location(
-    requesting_uri: &Uri,
-    ori: &graphix_compiler::expr::Origin,
-    pos: SourcePosition,
-) -> Option<lsp_types::Location> {
-    let target_uri = match &ori.source {
-        Source::File(p) => path_to_uri(p)?,
-        Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
-        Source::Netidx(_) => return None,
-    };
-    let line = pos.line.saturating_sub(1).max(0) as u32;
-    let column = pos.column.saturating_sub(1).max(0) as u32;
-    let p = lsp_types::Position { line, character: column };
-    Some(lsp_types::Location {
-        uri: target_uri,
-        range: lsp_types::Range { start: p, end: p },
-    })
+    /// Map a (Origin, SourcePosition) pair to an LSP Location. For
+    /// in-document origins (everything the LSP feeds is `Source::Internal`),
+    /// fall back to the requesting URI. The position's column is
+    /// translated from char-based to the negotiated LSP encoding using
+    /// the target file's text — so the line at `pos.line` of *that*
+    /// file is what determines column units.
+    fn ref_to_location(
+        &self,
+        requesting_uri: &Uri,
+        ori: &graphix_compiler::expr::Origin,
+        pos: SourcePosition,
+    ) -> Option<lsp_types::Location> {
+        let target_uri = match &ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
+            Source::Netidx(_) => return None,
+        };
+        let line = pos.line.saturating_sub(1).max(0) as u32;
+        let char_col = pos.column.saturating_sub(1).max(0) as usize;
+        // Look up the target file's text to translate char-col → encoded
+        // column. For cross-file references we use the open document if
+        // we're tracking it; otherwise we fall back to ori.text (the
+        // text the compiler saw at parse time).
+        let target_text: &str = match &ori.source {
+            Source::File(_) => self
+                .documents
+                .get(&target_uri)
+                .map(|d| d.text.as_str())
+                .unwrap_or(&ori.text),
+            _ => &ori.text,
+        };
+        let p = self.lsp_position_from_char_col(target_text, line, char_col);
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: p, end: p },
+        })
+    }
 }
 
 /// Like `Env::lookup_matching` but walks `env.by_id` directly so
@@ -1253,10 +1360,9 @@ fn fn_snippet(name: &str, fnt: &FnType) -> String {
 fn call_context(text: &str, position: lsp_types::Position) -> Option<String> {
     let mut chars: LPooled<Vec<char>> = LPooled::take();
     chars.extend(text.chars());
-    // Translate (line, character) into a byte/char offset in the flat
-    // char vector. We treat character as a UTF-16 code unit count
-    // (default LSP encoding) but for ASCII-heavy graphix source this
-    // is equivalent to char count.
+    // `position.character` here is a char count — callers in
+    // `ServerState` normalize incoming LSP positions through
+    // `normalize_position` before reaching this helper.
     let mut offset = 0usize;
     let mut line = 0u32;
     let mut col = 0u32;

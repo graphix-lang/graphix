@@ -157,11 +157,7 @@
           },
           {
             "type": "PATTERN",
-            "value": "[^\\/\\n]"
-          },
-          {
-            "type": "PATTERN",
-            "value": ".*"
+            "value": "[^\\n]*"
           }
         ]
       }

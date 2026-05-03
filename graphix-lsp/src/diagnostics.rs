@@ -6,6 +6,7 @@
 //! ("at: line: L, column: C in file <path>, in: …"). We surface the deepest
 //! position and source-file info we can find.
 
+use crate::position::PositionEncoding;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use std::path::PathBuf;
 
@@ -19,10 +20,23 @@ pub struct ErrorLocation {
 
 /// Build a single LSP `Diagnostic` from an anyhow error. `text` is
 /// the source text the error pertains to and is used to clamp
-/// out-of-range positions back inside the document.
-pub fn error_to_diagnostics(err: &anyhow::Error, text: &str) -> Vec<Diagnostic> {
+/// out-of-range positions back inside the document. `encoding`
+/// controls how the (line, char-col) pair the error reports is
+/// translated into the LSP `Position`'s `character` units.
+pub fn error_to_diagnostics(
+    err: &anyhow::Error,
+    text: &str,
+    encoding: PositionEncoding,
+) -> Vec<Diagnostic> {
     let loc = error_location(err);
-    let pos = clamp_position(loc.position.unwrap_or_default(), text);
+    let char_pos = loc.position.unwrap_or_default();
+    let pos = clamp_position(char_pos, text);
+    let pos = crate::position::char_col_to_position_in_text(
+        text,
+        pos.line,
+        pos.character as usize,
+        encoding,
+    );
     vec![Diagnostic {
         range: Range { start: pos, end: pos },
         severity: Some(DiagnosticSeverity::ERROR),

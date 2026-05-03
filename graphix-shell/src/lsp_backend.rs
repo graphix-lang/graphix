@@ -113,8 +113,7 @@ fn project_roots(init: &InitializeParams) -> Vec<PathBuf> {
 }
 
 fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    let s = uri.as_str();
-    s.strip_prefix("file://").map(PathBuf::from)
+    graphix_lsp::uri::uri_to_path(uri)
 }
 
 struct ShellLspBackend {

@@ -32,11 +32,12 @@
 
 local M = {}
 
---- Register the graphix filetype for .gx files.
+--- Register the graphix filetype for .gx and .gxi files.
 function M.setup_filetype()
   vim.filetype.add({
     extension = {
       gx = "graphix",
+      gxi = "graphix",
     },
   })
 end

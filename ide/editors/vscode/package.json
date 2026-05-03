@@ -23,7 +23,8 @@
                     "graphix"
                 ],
                 "extensions": [
-                    ".gx"
+                    ".gx",
+                    ".gxi"
                 ],
                 "configuration": "./language-configuration.json"
             }
