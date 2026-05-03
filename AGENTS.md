@@ -221,8 +221,8 @@ Map<string, i64>                  // map
 [i64, null]                       // option type (value or null)
 Error<`MyErr>                     // error
 &i64                              // reference
-fn(i64) -> string                 // function
-fn(i64) -> string throws `E      // function that throws
+fn(x: i64) -> string              // function (positional args MUST be named)
+fn(x: i64) -> string throws `E    // function that throws
 
 // type aliases
 type Point = {x: f64, y: f64}
@@ -306,6 +306,14 @@ let f = |@args: i64| args         // args is Array<i64>
 // calling
 f(1)  g(1, 2)  module::func(x)
 ```
+
+**Function type syntax (`fn(...)`)**: positional parameters in a
+function *type* MUST carry a parameter name in addition to the type.
+The name is documentation (used for hover/completion popups) — calls
+are still positional. So `fn(x: i64, y: i64) -> i64`, never `fn(i64,
+i64) -> i64`. Older docs may still show the unnamed form; treat the
+named form as the only valid syntax. Labeled (`#`) and variadic
+(`@args`) parameters already required a name and are unchanged.
 
 ### Select — Pattern Matching (only control flow construct)
 
@@ -456,10 +464,10 @@ automatically — don't duplicate them in the `.gx` file.
 ```graphix
 // math.gxi
 /// Add two numbers
-val add: fn(i64, i64) -> i64;
+val add: fn(a: i64, b: i64) -> i64;
 
 /// Subtract
-val sub: fn(i64, i64) -> i64;
+val sub: fn(a: i64, b: i64) -> i64;
 
 type Constants = { pi: f64, e: f64 };
 val constants: Constants;
@@ -487,9 +495,9 @@ must use exported functions.
 ```graphix
 // counter.gxi
 type Counter;                     // opaque — no definition exposed
-val make: fn(i64) -> Counter;
-val get: fn(Counter) -> i64;
-val increment: fn(#trig: Any, &Counter) -> null;
+val make: fn(initial: i64) -> Counter;
+val get: fn(c: Counter) -> i64;
+val increment: fn(#trig: Any, c: &Counter) -> null;
 ```
 
 ```graphix
@@ -1171,4 +1179,4 @@ Widget test access pattern: the `GuiWidget` trait gains a `#[cfg(test)] fn as_an
 
 `InternalOnly` in the test ctx DOES spin up a real in-process resolver server, so `sys::net::publish` / `subscribe` round-trips work end-to-end. However, when driving many updates rapidly (e.g. via `seq(0, N)?`), netidx publisher coalescing means the subscriber only sees a few values. For multi-point sparkline subscription tests, space updates with one-shot `sys::time::timer(duration, false)` calls — a repeating timer (`true`) keeps `drain()` looping forever because batches always arrive within its reset window.
 
-ColumnSpec `on_resize` field fix: the .gxi types it as `&[fn(f64) -> Any, null]` (a ref), so the runtime struct value is a u64 BindId, not the callable directly. `parse_column_specs` must extract it as a bid (like `default_value` and `width`) and then `compile_ref` + `compile_callable_opt` to get the actual callable. The widget also tracks the inner ref in `on_resize_refs` so callable swaps at runtime recompile.
+ColumnSpec `on_resize` field fix: the .gxi types it as `&[fn(width: f64) -> Any, null]` (a ref), so the runtime struct value is a u64 BindId, not the callable directly. `parse_column_specs` must extract it as a bid (like `default_value` and `width`) and then `compile_ref` + `compile_callable_opt` to get the actual callable. The widget also tracks the inner ref in `on_resize_refs` so callable swaps at runtime recompile.

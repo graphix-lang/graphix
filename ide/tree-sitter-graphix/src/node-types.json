@@ -5788,7 +5788,7 @@
       },
       "type": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "abstract_type",
@@ -6076,6 +6076,10 @@
         },
         {
           "type": "select",
+          "named": true
+        },
+        {
+          "type": "sig_item",
           "named": true
         },
         {

@@ -4,5 +4,6 @@
 vim.filetype.add({
     extension = {
         gx = "graphix",
+        gxi = "graphix",
     },
 })

@@ -1,1 +1,1 @@
-autocmd BufRead,BufNewFile *.gx setfiletype graphix
+autocmd BufRead,BufNewFile *.gx,*.gxi setfiletype graphix

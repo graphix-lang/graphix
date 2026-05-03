@@ -72,14 +72,46 @@ module.exports = grammar({
     [$.string, $.value_string],
     [$.value_string, $.interpolation],
     [$.module],
+    // Top-level keywords that overlap between expression and sig form:
+    // `mod foo` parses as either a bodyless module declaration
+    // (expression form) or a sig_module (interface form). Likewise
+    // `use ...` and `type ... = ...`. Tree-sitter chooses the
+    // expression form by default; the interface form wins only when
+    // the surrounding file shape commits to it (e.g. another `val`
+    // item, or a leading doc_comment).
+    [$.module, $.sig_module],
+    [$.use, $.sig_use],
+    [$.type_def, $.sig_type_def],
   ],
 
   word: $ => $.identifier,
 
   rules: {
-    source_file: $ => seq(
-      optional($._expression),
-      repeat(seq(';', optional($._expression))),
+    // The grammar accepts two top-level shapes: implementation files
+    // (`.gx`) which are sequences of expressions, and interface files
+    // (`.gxi`) which are sequences of sig items (val/type/mod/use,
+    // optionally doc-commented). Tree-sitter is file-extension-agnostic;
+    // a file is parsed as whichever shape matches its contents.
+    //
+    // For files that are valid under both shapes (e.g. `mod foo;`), the
+    // implementation form takes precedence by ordering — that's the
+    // common case. A file that contains a `val` keyword or a doc
+    // comment commits to the interface shape.
+    source_file: $ => choice(
+      // Implementation file: empty or a sequence of expressions
+      // separated by `;` (this is also the start-rule "empty" arm).
+      seq(
+        optional($._expression),
+        repeat(seq(';', optional($._expression))),
+      ),
+      // Interface file: at least one sig item. Inlined here because
+      // tree-sitter forbids non-start rules that match the empty
+      // string, and only the start rule may.
+      seq(
+        $.sig_item,
+        repeat(seq(';', $.sig_item)),
+        optional(';'),
+      ),
     ),
 
     _expression: $ => choice(
@@ -113,17 +145,22 @@ module.exports = grammar({
 
     // Comments
     //
-    // line_comment matches `//` plus any rest-of-line. The rest is
-    // optional, so a bare `//` line (just two slashes before EOL) still
-    // tokenizes as a comment — the real graphix parser accepts that.
+    // line_comment is two alternatives:
+    //   1. a bare `//` (empty comment terminating at EOL)
+    //   2. `//` followed by a non-slash, non-newline char and any rest
     //
-    // doc_comment is more specific (`///` prefix) and is preferred by
-    // tree-sitter's longest-match rule wherever it appears in the
-    // grammar (currently only inside sig items). Outside sig context
-    // line_comment will absorb `///`-style lines as ordinary comments,
-    // which is a small over-acceptance compared to the strict parser
-    // but gives editors sensible highlighting for in-progress code.
-    line_comment: $ => token(seq('//', /[^\n]*/)),
+    // The non-slash requirement on the third character is what stops
+    // line_comment from absorbing `///foo` — that lets doc_comment
+    // (which is in `rules`, not `extras`) win wherever it's reachable
+    // in the grammar via tree-sitter's longest-match rule. In contexts
+    // where doc_comment isn't reachable, `///foo` still parses as `//`
+    // (line comment) followed by `/foo` (an error) — matching the
+    // strict graphix parser, which rejects doc comments outside sig
+    // items.
+    line_comment: $ => token(choice(
+      '//',
+      seq('//', /[^\/\n]/, optional(/[^\n]*/)),
+    )),
 
     doc_comment: $ => token(seq('///', /.*/)),
 
@@ -195,13 +232,14 @@ module.exports = grammar({
       $.sig_use,
     ),
 
+    // sig_type_def covers both concrete (`type Foo = T`) and abstract
+    // (`type Foo;` — body deliberately hidden) interface declarations.
     sig_type_def: $ => seq(
       optional($.doc_comment),
       'type',
       field('name', $.type_identifier),
       optional($.type_params),
-      '=',
-      field('type', $._type),
+      optional(seq('=', field('type', $._type))),
     ),
 
     sig_bind: $ => seq(

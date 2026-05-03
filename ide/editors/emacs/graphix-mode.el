@@ -243,7 +243,7 @@ Falls back to this mode when tree-sitter is not available.
     "Tree-sitter indentation rules for Graphix.")
 
   (defvar graphix--treesit-grammar-recipe
-    '(graphix "https://github.com/estokes/graphix"
+    '(graphix "https://github.com/graphix-lang/graphix"
               nil                        ; tag
               "ide/tree-sitter-graphix/src") ; source dir
     "Tree-sitter grammar recipe for Graphix.")

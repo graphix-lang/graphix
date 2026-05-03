@@ -4,43 +4,85 @@
   "word": "identifier",
   "rules": {
     "source_file": {
-      "type": "SEQ",
+      "type": "CHOICE",
       "members": [
         {
-          "type": "CHOICE",
+          "type": "SEQ",
           "members": [
             {
-              "type": "SYMBOL",
-              "name": "_expression"
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "_expression"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
             },
             {
-              "type": "BLANK"
+              "type": "REPEAT",
+              "content": {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ";"
+                  },
+                  {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "_expression"
+                      },
+                      {
+                        "type": "BLANK"
+                      }
+                    ]
+                  }
+                ]
+              }
             }
           ]
         },
         {
-          "type": "REPEAT",
-          "content": {
-            "type": "SEQ",
-            "members": [
-              {
-                "type": "STRING",
-                "value": ";"
-              },
-              {
-                "type": "CHOICE",
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "sig_item"
+            },
+            {
+              "type": "REPEAT",
+              "content": {
+                "type": "SEQ",
                 "members": [
                   {
-                    "type": "SYMBOL",
-                    "name": "_expression"
+                    "type": "STRING",
+                    "value": ";"
                   },
                   {
-                    "type": "BLANK"
+                    "type": "SYMBOL",
+                    "name": "sig_item"
                   }
                 ]
               }
-            ]
-          }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ";"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            }
+          ]
         }
       ]
     },
@@ -149,15 +191,36 @@
     "line_comment": {
       "type": "TOKEN",
       "content": {
-        "type": "SEQ",
+        "type": "CHOICE",
         "members": [
           {
             "type": "STRING",
             "value": "//"
           },
           {
-            "type": "PATTERN",
-            "value": "[^\\n]*"
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "//"
+              },
+              {
+                "type": "PATTERN",
+                "value": "[^\\/\\n]"
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "PATTERN",
+                    "value": "[^\\n]*"
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              }
+            ]
           }
         ]
       }
@@ -649,16 +712,29 @@
           ]
         },
         {
-          "type": "STRING",
-          "value": "="
-        },
-        {
-          "type": "FIELD",
-          "name": "type",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_type"
-          }
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "="
+                },
+                {
+                  "type": "FIELD",
+                  "name": "type",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_type"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },
@@ -5269,6 +5345,18 @@
     ],
     [
       "module"
+    ],
+    [
+      "module",
+      "sig_module"
+    ],
+    [
+      "use",
+      "sig_use"
+    ],
+    [
+      "type_def",
+      "sig_type_def"
     ]
   ],
   "precedences": [
