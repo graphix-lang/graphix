@@ -14,6 +14,63 @@ use ratatui::{
 use time::{Date, Month};
 use tokio::try_join;
 
+/// Build a [`Date`] from a possibly-out-of-range (year, month, day)
+/// triple. Returns the coerced date and the original `(year, month,
+/// day)` if any clamping happened, so the caller can warn once.
+///
+/// Clamping rules: month → `[1, 12]`, day → `[1, days_in_month]`,
+/// year → the i32 range. The result is always a valid `Date` for any
+/// finite input, so widgets that depend on `Date` can render without
+/// panicking on user input that came from unchecked arithmetic.
+fn coerce_date(year: i64, month: i64, day: i64) -> (Date, Option<(i64, i64, i64)>) {
+    let mut clamped = false;
+    let y = year.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    if y as i64 != year {
+        clamped = true;
+    }
+    let m_clamped = month.clamp(1, 12);
+    if m_clamped != month {
+        clamped = true;
+    }
+    let m = Month::try_from(m_clamped as u8).unwrap_or(Month::January);
+    // `time` accepts year-month-aware day ranges, so we have to query
+    // the month's length to clamp day correctly.
+    let last_day = month_length(y, m) as i64;
+    let d_clamped = day.clamp(1, last_day);
+    if d_clamped != day {
+        clamped = true;
+    }
+    // After clamping all three components we should always succeed,
+    // but if `time` rejects it for another reason fall back to
+    // 1970-01-01 — better than panicking.
+    let date = Date::from_calendar_date(y, m, d_clamped as u8)
+        .unwrap_or_else(|_| Date::from_calendar_date(1970, Month::January, 1).unwrap());
+    if clamped {
+        (date, Some((year, month, day)))
+    } else {
+        (date, None)
+    }
+}
+
+fn month_length(year: i32, month: Month) -> u8 {
+    // Walk from the first of the month forward to find the next
+    // first; the day before is the last of `month`. Avoids
+    // hand-rolling leap-year math.
+    let first = Date::from_calendar_date(year, month, 1)
+        .unwrap_or_else(|_| Date::from_calendar_date(2000, Month::January, 1).unwrap());
+    let next = first.replace_month(month.next()).unwrap_or_else(|_| {
+        // December → January next year. If that overflows, fall back
+        // to a 31-day default — cosmetic, the widget still renders.
+        first
+    });
+    if month == Month::December {
+        31
+    } else {
+        let days = (next - first).whole_days();
+        days.clamp(28, 31) as u8
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DateV(Date);
 
@@ -21,9 +78,10 @@ impl FromValue for DateV {
     fn from_value(v: Value) -> Result<Self> {
         // graphix structs are stored sorted by field name (day, month, year)
         let [(_, day), (_, month), (_, year)] = v.cast_to::<[(ArcStr, i64); 3]>()?;
-        let month = Month::try_from(month as u8)
-            .map_err(|_| anyhow::anyhow!("invalid month {month}"))?;
-        let date = Date::from_calendar_date(year as i32, month, day as u8)?;
+        let (date, clamped) = coerce_date(year, month, day);
+        if let Some((y, m, d)) = clamped {
+            log::warn!("calendar date ({y}, {m}, {d}) coerced to {date}");
+        }
         Ok(Self(date))
     }
 }

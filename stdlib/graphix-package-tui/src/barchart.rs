@@ -1,4 +1,4 @@
-use super::{into_borrowed_line, DirectionV, LineV, StyleV, TuiW, TuiWidget};
+use super::{into_borrowed_line, validate, DirectionV, LineV, StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -19,8 +19,9 @@ struct BarW<X: GXExt> {
     label: TRef<X, Option<LineV>>,
     style: TRef<X, Option<StyleV>>,
     text_value: TRef<X, Option<ArcStr>>,
-    value: TRef<X, u64>,
+    value: TRef<X, i64>,
     value_style: TRef<X, Option<StyleV>>,
+    last_warned_value: Option<i64>,
 }
 
 impl<X: GXExt> BarW<X> {
@@ -40,6 +41,7 @@ impl<X: GXExt> BarW<X> {
             text_value: TRef::new(text_value)?,
             value: TRef::new(value)?,
             value_style: TRef::new(value_style)?,
+            last_warned_value: None,
         })
     }
 
@@ -52,8 +54,10 @@ impl<X: GXExt> BarW<X> {
         Ok(())
     }
 
-    fn build<'a>(&'a self) -> Bar<'a> {
-        let mut bar = Bar::default().value(self.value.t.unwrap_or(0));
+    fn build<'a>(&'a mut self) -> Bar<'a> {
+        let raw = self.value.t.unwrap_or(0);
+        let v = validate::clamp_u64("bar", "value", &mut self.last_warned_value, raw);
+        let mut bar = Bar::default().value(v);
         if let Some(Some(LineV(l))) = &self.label.t {
             bar = bar.label(into_borrowed_line(l));
         }
@@ -93,15 +97,19 @@ pub(super) struct BarChartW<X: GXExt> {
     gx: GXHandle<X>,
     data_ref: Ref<X>,
     data: Vec<BarGroupW<X>>,
-    bar_gap: TRef<X, Option<u16>>,
+    bar_gap: TRef<X, Option<i64>>,
     bar_style: TRef<X, Option<StyleV>>,
-    bar_width: TRef<X, Option<u16>>,
+    bar_width: TRef<X, Option<i64>>,
     direction: TRef<X, Option<DirectionV>>,
-    group_gap: TRef<X, Option<u16>>,
+    group_gap: TRef<X, Option<i64>>,
     label_style: TRef<X, Option<StyleV>>,
-    max: TRef<X, Option<u64>>,
+    max: TRef<X, Option<i64>>,
     style: TRef<X, Option<StyleV>>,
     value_style: TRef<X, Option<StyleV>>,
+    last_warned_bar_gap: Option<i64>,
+    last_warned_bar_width: Option<i64>,
+    last_warned_group_gap: Option<i64>,
+    last_warned_max: Option<i64>,
 }
 
 impl<X: GXExt> BarChartW<X> {
@@ -133,18 +141,18 @@ impl<X: GXExt> BarChartW<X> {
             gx.compile_ref(value_style)
         }?;
         let bar_gap =
-            TRef::<X, Option<u16>>::new(bar_gap).context("barchart tref bar_gap")?;
+            TRef::<X, Option<i64>>::new(bar_gap).context("barchart tref bar_gap")?;
         let bar_style = TRef::<X, Option<StyleV>>::new(bar_style)
             .context("barchart tref bar_style")?;
         let bar_width =
-            TRef::<X, Option<u16>>::new(bar_width).context("barchart tref bar_width")?;
+            TRef::<X, Option<i64>>::new(bar_width).context("barchart tref bar_width")?;
         let direction = TRef::<X, Option<DirectionV>>::new(direction)
             .context("barchart tref direction")?;
         let group_gap =
-            TRef::<X, Option<u16>>::new(group_gap).context("barchart tref group_gap")?;
+            TRef::<X, Option<i64>>::new(group_gap).context("barchart tref group_gap")?;
         let label_style = TRef::<X, Option<StyleV>>::new(label_style)
             .context("barchart tref label_style")?;
-        let max = TRef::<X, Option<u64>>::new(max).context("barchart tref max")?;
+        let max = TRef::<X, Option<i64>>::new(max).context("barchart tref max")?;
         let style =
             TRef::<X, Option<StyleV>>::new(style).context("barchart tref style")?;
         let value_style = TRef::<X, Option<StyleV>>::new(value_style)
@@ -162,6 +170,10 @@ impl<X: GXExt> BarChartW<X> {
             max,
             style,
             value_style,
+            last_warned_bar_gap: None,
+            last_warned_bar_width: None,
+            last_warned_group_gap: None,
+            last_warned_max: None,
         };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(v).await?;
@@ -198,6 +210,10 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             max,
             style,
             value_style,
+            last_warned_bar_gap: _,
+            last_warned_bar_width: _,
+            last_warned_group_gap: _,
+            last_warned_max: _,
         } = self;
         bar_gap.update(id, &v).context("barchart update bar_gap")?;
         bar_style.update(id, &v).context("barchart update bar_style")?;
@@ -233,13 +249,27 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             max,
             style,
             value_style,
+            last_warned_bar_gap,
+            last_warned_bar_width,
+            last_warned_group_gap,
+            last_warned_max,
         } = self;
         let mut chart = BarChart::default();
         if let Some(Some(g)) = bar_gap.t {
-            chart = chart.bar_gap(g);
+            chart = chart.bar_gap(validate::clamp_u16(
+                "bar_chart",
+                "bar_gap",
+                last_warned_bar_gap,
+                g,
+            ));
         }
         if let Some(Some(w)) = bar_width.t {
-            chart = chart.bar_width(w);
+            chart = chart.bar_width(validate::clamp_u16(
+                "bar_chart",
+                "bar_width",
+                last_warned_bar_width,
+                w,
+            ));
         }
         if let Some(Some(s)) = &bar_style.t {
             chart = chart.bar_style(s.0);
@@ -254,13 +284,19 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             chart = chart.style(s.0);
         }
         if let Some(Some(m)) = max.t {
-            chart = chart.max(m);
+            chart =
+                chart.max(validate::clamp_u64("bar_chart", "max", last_warned_max, m));
         }
         if let Some(Some(d)) = direction.t {
             chart = chart.direction(d.0);
         }
         if let Some(Some(gap)) = group_gap.t {
-            chart = chart.group_gap(gap);
+            chart = chart.group_gap(validate::clamp_u16(
+                "bar_chart",
+                "group_gap",
+                last_warned_group_gap,
+                gap,
+            ));
         }
         for group in data.iter_mut() {
             let mut bars: SmallVec<[Bar; 8]> = smallvec![];
@@ -268,7 +304,7 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             if let Some(LineV(l)) = &group.label {
                 g = g.label(into_borrowed_line(l));
             }
-            for bar in &group.bars {
+            for bar in group.bars.iter_mut() {
                 bars.push(bar.build());
             }
             let g = g.bars(&bars);

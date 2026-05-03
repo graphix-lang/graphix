@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-2589e228.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-5c78f6d5.js"></script>
@@ -245,9 +245,28 @@ input_handler(
 <pre><code class="language-graphix">use tui;
 use tui::paragraph;
 use tui::text;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated log entry every second, then
+// subscribe to display the rolling window. Drop the publish to point
+// the viewer at any other string publisher.
+let tick = time::timer(duration:1.s, true);
+let n = count(tick);
+let messages = [
+    "request handled",
+    "cache miss",
+    "user signed in",
+    "background job complete",
+    "config reloaded",
+];
+let log_source = "";
+log_source &lt;- tick ~ "[n] [rand::pick(tick ~ messages)]";
+sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
-let new_entry: string = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")?;
 
 log_entries &lt;- array::window(
     #n: 100,

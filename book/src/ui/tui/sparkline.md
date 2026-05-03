@@ -68,19 +68,23 @@ val sparkline: fn(
 
 ### Sparkline from Netidx
 
-```graphix
-{{#include ../../examples/tui/sparkline_rolling.gx}}
-```
+This example is self-contained: it both publishes and subscribes to a
+simulated CPU value over netidx, so you can run it without any
+external publisher. Drop the `publish` call and point the subscribe at
+a real path to chart live data instead — for example, the output of:
 
-![Rolling Sparkline](./media/sparkline_rolling.gif)
-
-showing the output of the below shell pipeline during a netidx build,
 ```
 top | \
 grep --line-buffered Cpu | \
 awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
 netidx publisher
 ```
+
+```graphix
+{{#include ../../examples/tui/sparkline_rolling.gx}}
+```
+
+![Rolling Sparkline](./media/sparkline_rolling.gif)
 
 ## Use Cases
 

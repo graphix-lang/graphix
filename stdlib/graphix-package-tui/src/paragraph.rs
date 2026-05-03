@@ -1,5 +1,6 @@
 use super::{
-    into_borrowed_lines, AlignmentV, LinesV, ScrollV, StyleV, TRef, TuiW, TuiWidget,
+    into_borrowed_lines, validate, AlignmentV, LinesV, ScrollV, StyleV, TRef, TuiW,
+    TuiWidget,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -21,6 +22,8 @@ pub(super) struct ParagraphW<X: GXExt> {
     scroll: TRef<X, ScrollV>,
     style: TRef<X, StyleV>,
     trim: TRef<X, bool>,
+    last_warned_scroll_x: Option<i64>,
+    last_warned_scroll_y: Option<i64>,
 }
 
 impl<X: GXExt> ParagraphW<X> {
@@ -41,7 +44,15 @@ impl<X: GXExt> ParagraphW<X> {
             TRef::new(scroll).context("paragraph tref scroll")?;
         let style: TRef<X, StyleV> = TRef::new(style).context("paragraph tref style")?;
         let trim: TRef<X, bool> = TRef::new(trim).context("paragraph tref trim")?;
-        Ok(Box::new(Self { alignment, lines, scroll, style, trim }))
+        Ok(Box::new(Self {
+            alignment,
+            lines,
+            scroll,
+            style,
+            trim,
+            last_warned_scroll_x: None,
+            last_warned_scroll_y: None,
+        }))
     }
 }
 
@@ -60,7 +71,22 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
             p = p.wrap(Wrap { trim });
         }
         if let Some(s) = self.scroll.t {
-            p = p.scroll(s.0)
+            // ScrollV stores (y, x) as i64 pair; ratatui wants (u16, u16).
+            // Out-of-range values clamp to the visual cap with one warn
+            // per distinct bad value.
+            let y = validate::clamp_u16(
+                "paragraph",
+                "scroll.y",
+                &mut self.last_warned_scroll_y,
+                s.0.0,
+            );
+            let x = validate::clamp_u16(
+                "paragraph",
+                "scroll.x",
+                &mut self.last_warned_scroll_x,
+                s.0.1,
+            );
+            p = p.scroll((y, x))
         }
         frame.render_widget(p, rect);
         Ok(())
@@ -71,7 +97,15 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
     }
 
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self { alignment, lines, scroll, style, trim } = self;
+        let Self {
+            alignment,
+            lines,
+            scroll,
+            style,
+            trim,
+            last_warned_scroll_x: _,
+            last_warned_scroll_y: _,
+        } = self;
         alignment.update(id, &v).context("paragraph update alignment")?;
         lines.update(id, &v).context("paragraph update lines")?;
         scroll.update(id, &v).context("paragraph update scroll")?;

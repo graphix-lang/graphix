@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2589e228.js";
+            window.path_to_searchindex_js = "searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-5c78f6d5.js"></script>
@@ -5318,9 +5318,21 @@ list(#selected: &amp;selected_item, &amp;items)
 <pre><code class="language-graphix">use tui;
 use tui::gauge;
 use tui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
 
-// Subscribe to live data
-let temperature: f64 = sys::net::subscribe("/sensors/temperature")?;
+// Self-contained: publish a simulated temperature reading once a
+// second, then subscribe to it for display. Drop the publish to
+// point the gauge at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+let temp_source = 7000.0;
+temp_source &lt;- tick ~ 7000.0 + 2500.0 * math::sin(t / 5.0);
+sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
+
+let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
 
 // Will display updates automatically when data changes
 gauge(
@@ -6451,9 +6463,28 @@ input_handler(
 <pre><code class="language-graphix">use tui;
 use tui::paragraph;
 use tui::text;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated log entry every second, then
+// subscribe to display the rolling window. Drop the publish to point
+// the viewer at any other string publisher.
+let tick = time::timer(duration:1.s, true);
+let n = count(tick);
+let messages = [
+    "request handled",
+    "cache miss",
+    "user signed in",
+    "background job complete",
+    "config reloaded",
+];
+let log_source = "";
+log_source &lt;- tick ~ "[n] [rand::pick(tick ~ messages)]";
+sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
-let new_entry: string = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")?;
 
 log_entries &lt;- array::window(
     #n: 100,
@@ -7481,11 +7512,33 @@ layout(
 </code></pre>
 <p><img src="ui/tui/media/sparkline_dashboard.png" alt="Multi Sparkline Dashboard"></p>
 <h3 id="sparkline-from-netidx"><a class="header" href="#sparkline-from-netidx">Sparkline from Netidx</a></h3>
+<p>This example is self-contained: it both publishes and subscribes to a
+simulated CPU value over netidx, so you can run it without any
+external publisher. Drop the <code>publish</code> call and point the subscribe at
+a real path to chart live data instead — for example, the output of:</p>
+<pre><code>top | \
+grep --line-buffered Cpu | \
+awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
+netidx publisher
+</code></pre>
 <pre><code class="language-graphix">use tui;
 use tui::sparkline;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated CPU value once a second, then
+// subscribe to it for a rolling 60-sample sparkline. Drop the
+// publish to point the chart at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+let cpu_source = 50.0;
+cpu_source &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 7.0);
+sys::net::publish("/local/graphix/sparkline_rolling/cpu", cpu_source);
 
 let data: Array&lt;f64&gt; = [];
-let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/graphix/sparkline_rolling/cpu")?;
 
 data &lt;- array::window(
     #n: 60,
@@ -7496,12 +7549,6 @@ data &lt;- array::window(
 sparkline(#max: &amp;100, &amp;data)
 </code></pre>
 <p><img src="ui/tui/media/sparkline_rolling.gif" alt="Rolling Sparkline"></p>
-<p>showing the output of the below shell pipeline during a netidx build,</p>
-<pre><code>top | \
-grep --line-buffered Cpu | \
-awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
-netidx publisher
-</code></pre>
 <h2 id="use-cases-1"><a class="header" href="#use-cases-1">Use Cases</a></h2>
 <p>Sparklines are ideal for:</p>
 <ul>
