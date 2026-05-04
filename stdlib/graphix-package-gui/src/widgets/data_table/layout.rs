@@ -94,18 +94,14 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// String shown for a cell that has no live subscription value
-    /// (either because the column is non-Netidx-sourced, or because
-    /// the subscription is pending / went `Unsubscribed`). For
-    /// Netidx columns this is the placeholder string carried in
-    /// `` `Netidx(placeholder) `` (or empty when absent); for
-    /// stored-source columns it's the uniform string or per-row
-    /// lookup against the row basename.
+    /// (either because the column is non-Netidx-sourced, the row is
+    /// virtual, or the subscription is pending / went
+    /// `Unsubscribed`). The lookup runs against the source's
+    /// fallback — uniform value for every row, or per-row map keyed
+    /// by row basename.
     pub(super) fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
         let Some(c) = self.columns.get(col_name) else { return ArcStr::new() };
         let Some(entry) = c.source.as_ref() else { return ArcStr::new() };
-        if let Some(p) = entry.parsed.netidx_placeholder() {
-            return p.clone();
-        }
         entry
             .parsed
             .lookup(row_name)

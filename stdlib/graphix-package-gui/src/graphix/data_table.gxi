@@ -27,19 +27,25 @@ type ColumnType = [
 
 /// Where a column's per-cell values come from.
 ///
-/// - `` `Netidx(placeholder) ``: subscribe to
-///   `<row_path>/<column_name>` for each row. The placeholder
-///   (`null` or a string) is rendered until the subscription
-///   resolves and any time it goes `Unsubscribed` afterward, so the
-///   user can tell "not yet subscribed" / "lost" apart from a real
-///   blank value.
+/// - `` `Netidx(fallback) ``: subscribe to `<row_path>/<column_name>`
+///   for every absolute-path row. The fallback is the value rendered
+///   for cells whose subscription is pending or `Unsubscribed`, AND
+///   for virtual rows (non-absolute paths), which never subscribe.
+///   It is one of:
+///     - `null`: no fallback — cells render blank until the
+///       subscription resolves, and virtual rows render blank.
+///     - `string`: a uniform placeholder used for every cell.
+///     - `Map<string, Any>`: per-row fallback keyed by row basename
+///       — virtual rows pick up their map entry, and absolute rows
+///       fall back to it before the subscription delivers a value.
 /// - `string`: a uniform default — every cell renders this text. No
 ///   subscription. Useful for static fields and computed columns
 ///   where one value applies to all rows.
 /// - `Map<string, Any>`: per-row defaults keyed by row basename. No
-///   subscription. Useful for "calculated" virtual columns whose
-///   values are derived in graphix.
-type Source = [`Netidx([null, string]), string, Map<string, Any>];
+///   subscription on any row. Useful for purely "calculated"
+///   columns whose values are derived in graphix and shouldn't
+///   ever subscribe.
+type Source = [`Netidx([null, string, Map<string, Any>]), string, Map<string, Any>];
 
 type ColumnSpec = {
     name: string,
@@ -81,8 +87,9 @@ type DataTable = {
 /// Rows that are absolute netidx paths trigger live subscriptions to
 /// `<row_path>/<column_name>` for every column whose `source` is
 /// `` `Netidx ``. Rows that are not absolute paths are virtual — they
-/// display only the per-column source values (uniform `string` or
-/// per-row `Map<string, Any>`).
+/// never subscribe and render the column source's fallback value
+/// (either the `Netidx` payload's per-row map / uniform string, or
+/// the bare `string` / `Map<string, Any>` source).
 ///
 /// The caller owns the shape of the Table: row order, column order,
 /// hidden vs. shown, virtual vs. subscribed — all of that lives in

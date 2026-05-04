@@ -146,6 +146,33 @@ let result = data_table(#table: &tbl)
     Ok(())
 }
 
+/// `` `Netidx(map) `` carries a per-row fallback used for virtual
+/// rows (those without an absolute netidx path) and any pending
+/// subscriptions. This is the data_table_virtual idiom: mix
+/// netidx-driven rows with map-driven virtual rows under one
+/// column. With no absolute rows in this test, every cell renders
+/// from the map.
+#[tokio::test(flavor = "current_thread")]
+async fn netidx_source_map_fallback() -> Result<()> {
+    let code = r#"
+use gui; use gui::data_table; use sys;
+let m = {"r0" => "alpha", "r1" => "beta"};
+let tbl = { rows: ["r0", "r1"], columns: [
+        { name: "score", typ: `Text({ on_edit: null }),
+            display_name: null,
+            source: &`Netidx(m),
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let h = dt(code).await?;
+    let snap = h.dt_snapshot();
+    let i = snap.col_names.iter().position(|n| n == "score").unwrap();
+    assert_eq!(snap.grid[0][i], "alpha");
+    assert_eq!(snap.grid[1][i], "beta");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_per_row() -> Result<()> {
     let code = r#"

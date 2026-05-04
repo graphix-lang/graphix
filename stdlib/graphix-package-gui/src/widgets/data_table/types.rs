@@ -393,20 +393,26 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
 }
 
 /// Parse the columns array of a `Table` value. Returns the specs in
-/// the user-supplied order; duplicate names are kept in their first
-/// position (later duplicates are dropped silently — a column key is
-/// the dedup primitive).
+/// the user-supplied order; for duplicate names, the column appears
+/// in the position of the first occurrence but the *last* spec wins.
+/// This lets callers append explicit `ColumnSpec` overrides to a
+/// `sys::net::list_table`-derived bare-string columns list without
+/// having to filter the original out first.
 pub(super) fn parse_table_columns(v: &Value) -> Vec<ColumnSpec> {
     let raw = match v.clone().cast_to::<Vec<Value>>() {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
     let mut out: Vec<ColumnSpec> = Vec::with_capacity(raw.len());
-    let mut seen: FxHashSet<ArcStr> = FxHashSet::default();
+    let mut idx: FxHashMap<ArcStr, usize> = FxHashMap::default();
     for item in raw {
         let Some(spec) = parse_column_entry(item) else { continue };
-        if seen.insert(spec.name.clone()) {
-            out.push(spec);
+        match idx.get(&spec.name) {
+            Some(&i) => out[i] = spec,
+            None => {
+                idx.insert(spec.name.clone(), out.len());
+                out.push(spec);
+            }
         }
     }
     out
@@ -431,81 +437,86 @@ pub(super) fn row_basename(p: &Path) -> &str {
 /// `PerRow` uses `FxHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
 /// enables the cheap lookup.
 ///
-/// `Netidx { placeholder }` means the column subscribes to
-/// `<row_path>/<col_name>` for every row; cell values come from
-/// netidx. The placeholder (`Some(text)` or `None`) is what's
-/// rendered before the subscription resolves and any time it goes
-/// `Unsubscribed` afterward, so the user can distinguish "not yet
-/// subscribed" from a real blank value. The other variants are pure
-/// display data with no subscription.
+/// `Netidx(fallback)` means the column subscribes to
+/// `<row_path>/<col_name>` for every absolute row. The fallback
+/// is what's rendered for cells whose subscription is still
+/// pending or `Unsubscribed`, AND for virtual rows (non-absolute
+/// paths) that never subscribe. `Static(fallback)` means no
+/// subscription on any row — the fallback IS the cell's value.
 pub(super) enum Source {
-    Netidx { placeholder: Option<ArcStr> },
+    Netidx(Fallback),
+    Static(Fallback),
+}
+
+/// Where placeholder / fallback values come from. Shared between
+/// `Source::Netidx` (used for pending subs and virtual rows) and
+/// `Source::Static` (used for every cell).
+pub(super) enum Fallback {
+    None,
     Uniform(Value),
     PerRow(FxHashMap<ArcStr, Value>),
+}
+
+impl Fallback {
+    fn from_value(v: Value) -> Self {
+        match v {
+            Value::Null => Fallback::None,
+            v @ Value::Map(_) => match v.cast_to::<FxHashMap<ArcStr, Value>>() {
+                Ok(m) => Fallback::PerRow(m),
+                Err(e) => {
+                    warn!("source Map had non-string keys: {e}");
+                    Fallback::None
+                }
+            },
+            v => Fallback::Uniform(v),
+        }
+    }
+
+    /// Per-row stored value, or `None` for `Fallback::None`.
+    /// `Uniform` returns the same value for every row;
+    /// `PerRow` looks up by row basename.
+    pub(super) fn lookup(&self, row_name: &str) -> Option<&Value> {
+        match self {
+            Fallback::None => None,
+            Fallback::Uniform(v) => Some(v),
+            Fallback::PerRow(m) => m.get(row_name),
+        }
+    }
 }
 
 impl Source {
     fn parse(v: Option<&Value>) -> Self {
         match v {
             // Missing / null source ref → default Netidx with no
-            // placeholder (bare-string columns inflate to this via
+            // fallback (bare-string columns inflate to this via
             // the parser).
-            None | Some(Value::Null) => Source::Netidx { placeholder: None },
+            None | Some(Value::Null) => Source::Netidx(Fallback::None),
             // Variant with payload arrives as a 2-element tuple
             // (tag, payload) — `\`Netidx(p)` casts to ("Netidx", p).
             Some(v) => match v.clone().cast_to::<(ArcStr, Value)>() {
                 Ok((tag, payload)) if tag.as_str() == "Netidx" => {
-                    let placeholder = match payload {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    };
-                    Source::Netidx { placeholder }
+                    Source::Netidx(Fallback::from_value(payload))
                 }
-                _ => match v {
-                    v @ Value::Map(_) => {
-                        // `source` is typed
-                        // `&[\`Netidx(_), string, Map<string, Any>]`
-                        // in the .gxi, so a `Value::Map` here is
-                        // guaranteed to have string keys.
-                        match v.clone().cast_to::<FxHashMap<ArcStr, Value>>() {
-                            Ok(per_row) => Source::PerRow(per_row),
-                            Err(e) => {
-                                warn!("source Map had non-string keys: {e}");
-                                Source::Netidx { placeholder: None }
-                            }
-                        }
-                    }
-                    v => Source::Uniform(v.clone()),
-                },
+                // Bare string / Map at top level → no subscription.
+                _ => Source::Static(Fallback::from_value(v.clone())),
             },
         }
     }
 
     /// True when this source drives a netidx subscription. The
-    /// subscription path is `<row_path>/<col_name>` per row;
-    /// non-Netidx sources skip subscription and render from their
-    /// stored value.
+    /// subscription path is `<row_path>/<col_name>` per absolute row;
+    /// non-Netidx sources skip subscription on every row.
     pub(super) fn is_netidx(&self) -> bool {
-        matches!(self, Source::Netidx { .. })
+        matches!(self, Source::Netidx(_))
     }
 
-    /// Placeholder text rendered while a Netidx subscription is
-    /// pending or Unsubscribed. `None` for non-Netidx sources or
-    /// Netidx columns that didn't supply a placeholder.
-    pub(super) fn netidx_placeholder(&self) -> Option<&ArcStr> {
-        match self {
-            Source::Netidx { placeholder } => placeholder.as_ref(),
-            _ => None,
-        }
-    }
-
-    /// Per-row stored value for non-Netidx sources, or `None` for
-    /// Netidx (cells come from subscriptions instead).
+    /// Per-row fallback value used when a cell has no live
+    /// subscription value. For `Netidx` this covers virtual rows and
+    /// pending / `Unsubscribed` cells; for `Static` it covers every
+    /// cell.
     pub(super) fn lookup(&self, row_name: &str) -> Option<&Value> {
         match self {
-            Source::Netidx { .. } => None,
-            Source::Uniform(v) => Some(v),
-            Source::PerRow(m) => m.get(row_name),
+            Source::Netidx(f) | Source::Static(f) => f.lookup(row_name),
         }
     }
 }

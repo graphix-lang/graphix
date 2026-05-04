@@ -76,7 +76,9 @@ let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
         #name: "cpu",
         #history_seconds: f64:30.0,
         #display_name: "CPU",
-        #width: &220.0
+        #width: &220.0,
+        #min:0.,
+        #max:100.
     ),
     "uptime" => progress_column(
         #name: "uptime",
