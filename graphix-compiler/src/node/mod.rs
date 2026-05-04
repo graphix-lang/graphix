@@ -1,5 +1,5 @@
 use crate::{
-    expr::{Expr, ExprId, ExprKind, ModPath},
+    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     typ::{TVal, TVar, Type},
     BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent, CAST_ERR,
 };
@@ -34,6 +34,23 @@ macro_rules! wrap {
                 anyhow::Context::context(e, $crate::expr::ErrorContext($n.spec().clone()))
             }
         }
+    };
+}
+
+/// Compile-time `bail!` that attaches an `ErrorContext` carrying the
+/// expression's `Origin` and `SourcePosition`. The LSP recovers both by
+/// downcasting `ErrorContext` out of the anyhow chain — no message-string
+/// scraping. Use this instead of `bail!("at {} …", spec.pos)` in compile
+/// paths where the spec `Expr` is in scope.
+#[macro_export]
+macro_rules! bailat {
+    ($spec:expr, $($arg:tt)*) => {
+        return ::std::result::Result::Err(
+            <::anyhow::Error>::context(
+                ::anyhow::anyhow!($($arg)*),
+                $crate::expr::ErrorContext(::std::clone::Clone::clone(&$spec)),
+            )
+        )
     };
 }
 
@@ -220,7 +237,8 @@ impl Use {
     ) -> Result<Node<R, E>> {
         ctx.env
             .use_in_scope(scope, name)
-            .map_err(|e| anyhow!("at {} {e:?}", spec.pos))?;
+            .map_err(|e| anyhow!("{e:?}"))
+            .with_context(|| ErrorContext(spec.clone()))?;
         if ctx.env.lsp_mode {
             // Record the `use foo;` site for IDE tooling so
             // find-references and go-to-definition on a module name
@@ -568,7 +586,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     ) -> Result<Node<R, E>> {
         let (id, def_pos, def_ori) = match ctx.env.lookup_bind(&scope.lexical, name)
         {
-            None => bail!("at {} {name} is undefined", spec.pos),
+            None => bailat!(spec, "{name} is undefined"),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
         if ctx.env.lsp_mode {
@@ -645,7 +663,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     ) -> Result<Node<R, E>> {
         let (src_id, def_pos, def_ori) =
             match ctx.env.lookup_bind(&scope.lexical, name) {
-                None => bail!("at {} {name} is undefined", spec.pos),
+                None => bailat!(spec, "{name} is undefined"),
                 Some((_, b)) => (b.id, b.pos, b.ori.clone()),
             };
         if ctx.env.lsp_mode {

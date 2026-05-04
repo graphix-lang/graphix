@@ -1,12 +1,12 @@
 //! Convert anyhow errors from the graphix compiler into LSP diagnostics.
 //!
-//! The compiler reports errors as anyhow chains, with position information
-//! either embedded in the leaf parser-error message ("Parse error at line:
-//! L, column: C") or in the displayed `ErrorContext`
-//! ("at: line: L, column: C in file <path>, in: …"). We surface the deepest
-//! position and source-file info we can find.
+//! Compile-time errors are wrapped in `ErrorContext(Expr)` and parser
+//! errors in `ParserContext`; both carry the originating `Origin` and
+//! `SourcePosition` directly. We walk the anyhow chain and `downcast_ref`
+//! to recover them — no message-string scraping.
 
 use crate::position::PositionEncoding;
+use graphix_compiler::expr::{ErrorContext, ParserContext, Source};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use std::path::PathBuf;
 
@@ -47,97 +47,47 @@ pub fn error_to_diagnostics(
 }
 
 /// Walk the error chain and pick the most specific position +
-/// source file we can find. Inner ErrorContext wraps appear closer
-/// to the leaf, so iterating from leaf outward gets the deepest
-/// span first.
+/// source file we can find.
+///
+/// `ErrorContext` (compile-time) and `ParserContext` (parser) carry
+/// `Origin` + `SourcePosition` structurally. anyhow stores them inside
+/// `ContextError<C, E>` wrappers, so `<&dyn Error>::downcast_ref` (which
+/// matches the actual chain-entry type) doesn't see them — instead we
+/// use `anyhow::Error::downcast_ref`, which walks the context chain via
+/// anyhow's vtable and returns the outermost matching `C`. For our
+/// migration the relevant wraps live at the top of the chain, so the
+/// outermost match is the right one.
 pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
-    let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
-    let mut loc = ErrorLocation::default();
-    for s in chain.iter().rev() {
-        if loc.file.is_none() {
-            if let Some(p) = extract_file(s) {
-                loc.file = Some(p);
-            }
-        }
-        if loc.position.is_none() {
-            if let Some(p) = extract_position(s) {
-                loc.position = Some(p);
-            }
-        }
-        if loc.file.is_some() && loc.position.is_some() {
-            break;
-        }
+    if let Some(ec) = err.downcast_ref::<ErrorContext>() {
+        return location_from_origin_pos(&ec.0.ori.source, ec.0.pos);
     }
-    loc
+    if let Some(pc) = err.downcast_ref::<ParserContext>() {
+        return location_from_origin_pos(&pc.ori.source, pc.pos);
+    }
+    ErrorLocation::default()
 }
 
-/// Trim the chain's leaf entry to a clean inline message —
-/// strip both the `at: …` position prefix and the trailing
-/// `, in: <snippet>` for legibility.
+/// Compose an `ErrorLocation` from the compiler's 1-based
+/// (line, column) and the originating `Source`. LSP wants 0-based
+/// positions, so we subtract 1.
+fn location_from_origin_pos(
+    source: &Source,
+    pos: graphix_compiler::SourcePosition,
+) -> ErrorLocation {
+    let line = (pos.line.saturating_sub(1).max(0)) as u32;
+    let character = (pos.column.saturating_sub(1).max(0)) as u32;
+    let file = match source {
+        Source::File(p) => Some(p.clone()),
+        _ => None,
+    };
+    ErrorLocation { position: Some(Position { line, character }), file }
+}
+
+/// Use the chain's leaf as the diagnostic message. With structured
+/// `ErrorContext` / `ParserContext` carrying position info, the leaf
+/// is just the human-readable failure text (e.g. `"raw not defined"`).
 pub fn error_leaf_message(err: &anyhow::Error) -> String {
-    let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
-    let leaf = chain.last().cloned().unwrap_or_else(|| "error".into());
-    strip_context_prefix(&leaf).to_string()
-}
-
-/// Extract `in file <path>` from an `at: … in file PATH, in: …`
-/// chain entry, if present.
-fn extract_file(s: &str) -> Option<PathBuf> {
-    let i = s.find(" in file ")?;
-    let rest = &s[i + " in file ".len()..];
-    let end = rest.find(", in: ").unwrap_or(rest.len());
-    let path = rest[..end].trim();
-    if path.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(path))
-    }
-}
-
-fn strip_context_prefix(s: &str) -> &str {
-    if let Some(rest) = s.strip_prefix("at: ") {
-        // "at: line: L, column: C, in: …" → "…" (the `in:` payload)
-        if let Some(idx) = rest.find(", in: ") {
-            return &rest[idx + ", in: ".len()..];
-        }
-    }
-    s
-}
-
-/// Try to extract `line:column` (1-based) from a single chain entry.
-fn extract_position(s: &str) -> Option<Position> {
-    if let Some(p) = parse_combine_error_pos(s) {
-        return Some(p);
-    }
-    if let Some(p) = parse_context_pos(s) {
-        return Some(p);
-    }
-    None
-}
-
-/// Match combine's parse error: `Parse error at line: L, column: C`
-/// or compile errors via `ErrorContext`: `at: line: L, column: C, in: …`.
-/// SourcePosition formats as `line: L, column: C` so both forms share the
-/// same suffix.
-fn parse_combine_error_pos(s: &str) -> Option<Position> {
-    let i = s.find("Parse error at ")?;
-    parse_line_col_at(&s[i + "Parse error at ".len()..])
-}
-
-fn parse_context_pos(s: &str) -> Option<Position> {
-    let i = s.find("at: ")?;
-    parse_line_col_at(&s[i + "at: ".len()..])
-}
-
-fn parse_line_col_at(s: &str) -> Option<Position> {
-    let s = s.strip_prefix("line: ")?;
-    let (line_s, rest) = s.split_once(',')?;
-    let line: u32 = line_s.trim().parse().ok()?;
-    let col_marker = rest.find("column: ")?;
-    let col_s = &rest[col_marker + "column: ".len()..];
-    let end = col_s.find(|c: char| !c.is_ascii_digit()).unwrap_or(col_s.len());
-    let col: u32 = col_s[..end].parse().ok()?;
-    Some(Position { line: line.saturating_sub(1), character: col.saturating_sub(1) })
+    err.chain().last().map(|c| c.to_string()).unwrap_or_else(|| "error".into())
 }
 
 fn clamp_position(p: Position, text: &str) -> Position {
@@ -156,32 +106,73 @@ fn clamp_position(p: Position, text: &str) -> Position {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
+    use arcstr::literal;
+    use graphix_compiler::{
+        expr::{Expr, ExprKind, Origin},
+        SourcePosition,
+    };
+    use std::str::FromStr;
+    use triomphe::Arc;
 
-    #[test]
-    fn parses_combine_error() {
-        let p = parse_combine_error_pos("Parse error at line: 3, column: 7\nfoo").unwrap();
-        assert_eq!(p, Position { line: 2, character: 6 });
+    fn ori(path: &str) -> Arc<Origin> {
+        Arc::new(Origin {
+            parent: None,
+            source: Source::File(PathBuf::from_str(path).unwrap()),
+            text: literal!(""),
+        })
     }
 
-    #[test]
-    fn parses_context_pos() {
-        let p =
-            parse_context_pos("at: line: 12, column: 4, in: let x = ...").unwrap();
-        assert_eq!(p, Position { line: 11, character: 3 });
+    fn expr_at(line: i32, column: i32, ori: Arc<Origin>) -> Expr {
+        // ExprKind::NoOp is the smallest concrete expr available — we
+        // only care about pos and ori for ErrorContext.
+        let pos = SourcePosition { line, column };
+        let mut e = ExprKind::NoOp.to_expr(pos);
+        e.ori = ori;
+        e
     }
 
+    /// A compile bail wrapped via the new `bailat!` macro produces an
+    /// anyhow chain whose outer entry is an `ErrorContext` carrying the
+    /// originating expr. `error_location` should pull the position and
+    /// file straight out of it.
     #[test]
-    fn parses_context_pos_with_file() {
-        let p = parse_context_pos(
-            "at: line: 12, column: 4 in file /tmp/foo.gx, in: let x = ...",
-        )
-        .unwrap();
-        assert_eq!(p, Position { line: 11, character: 3 });
+    fn error_location_from_compile_error_context() {
+        let o = ori("/tmp/foo.gx");
+        let e = expr_at(12, 4, o.clone());
+        let err = anyhow!("name not defined").context(ErrorContext(e));
+        let loc = error_location(&err);
+        assert_eq!(loc.position, Some(Position { line: 11, character: 3 }));
+        assert_eq!(loc.file, Some(PathBuf::from("/tmp/foo.gx")));
     }
 
+    /// Parser failures wrap their error in `ParserContext`. The LSP
+    /// recovers position + file the same way it does for compile errors.
     #[test]
-    fn extracts_file_from_chain_entry() {
-        let s = "at: line: 12, column: 4 in file /tmp/foo.gx, in: let x = ...";
-        assert_eq!(extract_file(s), Some(PathBuf::from("/tmp/foo.gx")));
+    fn error_location_from_parser_context() {
+        let o = ori("/tmp/bar.gx");
+        let pc = ParserContext { ori: o.clone(), pos: SourcePosition { line: 3, column: 7 } };
+        let err = anyhow!("unexpected token").context(pc);
+        let loc = error_location(&err);
+        assert_eq!(loc.position, Some(Position { line: 2, character: 6 }));
+        assert_eq!(loc.file, Some(PathBuf::from("/tmp/bar.gx")));
+    }
+
+    /// When multiple `ErrorContext` wraps stack up, anyhow's vtable
+    /// returns the outermost — i.e. the most recently attached context.
+    /// For compile-time wraps that's the parent expression's position
+    /// rather than the failing leaf, which is acceptable: the user is
+    /// taken to a containing expression rather than a missing token, but
+    /// the diagnostic still lands inside the user's code.
+    #[test]
+    fn error_location_picks_outermost_context() {
+        let o = ori("/tmp/foo.gx");
+        let inner = expr_at(20, 26, o.clone());
+        let outer = expr_at(1, 1, o.clone());
+        let err = anyhow!("raw not defined")
+            .context(ErrorContext(inner))
+            .context(ErrorContext(outer));
+        let loc = error_location(&err);
+        assert_eq!(loc.position, Some(Position { line: 0, character: 0 }));
     }
 }

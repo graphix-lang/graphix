@@ -106,3 +106,5 @@ version.texi
 /src/target/
 no_llvm_build
 /ide/tree-sitter-graphix/node_modules
+.claude/scheduled_tasks.lock
+

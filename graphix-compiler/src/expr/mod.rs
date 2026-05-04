@@ -407,6 +407,10 @@ impl Origin {
         ]
         .into()
     }
+
+    pub fn from_str(s: &str) -> Self {
+        Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
+    }
 }
 
 #[derive(Clone)]
@@ -634,6 +638,54 @@ impl Expr {
 
 pub struct ErrorContext(pub Expr);
 
+impl fmt::Debug for ErrorContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Debug-print like Display so anyhow's `{:?}` rendering of the
+        // chain stays readable. The full Expr tree is too large to dump.
+        fmt::Display::fmt(self, f)
+    }
+}
+
+// Implementing `std::error::Error` makes `ErrorContext` downcastable
+// from `&dyn Error` chain entries, which is how the LSP recovers the
+// originating `Origin` and `SourcePosition` from a compile error
+// without scraping message strings.
+impl std::error::Error for ErrorContext {}
+
+/// Anyhow-context companion for parser errors. The combine library
+/// formats its own message (which we keep as the chain leaf for human
+/// readability), but the cursor position lives in a structured field
+/// rather than the message string. Wrapping with this lets the LSP
+/// downcast and recover position + origin without parsing.
+pub struct ParserContext {
+    pub ori: Arc<Origin>,
+    pub pos: SourcePosition,
+}
+
+impl fmt::Debug for ParserContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for ParserContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.ori.source {
+            Source::File(p) => {
+                write!(f, "parse error at {} in file {}", self.pos, p.display())
+            }
+            Source::Netidx(p) => {
+                write!(f, "parse error at {} in netidx {p}", self.pos)
+            }
+            Source::Internal(_) | Source::Unspecified => {
+                write!(f, "parse error at {}", self.pos)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParserContext {}
+
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use std::fmt::Write;
@@ -664,11 +716,9 @@ impl fmt::Display for ErrorContext {
                     self.0.pos,
                     p.display()
                 ),
-                Source::Netidx(p) => write!(
-                    f,
-                    "at: {} in netidx {p}, in: {snippet}{suffix}",
-                    self.0.pos
-                ),
+                Source::Netidx(p) => {
+                    write!(f, "at: {} in netidx {p}, in: {snippet}{suffix}", self.0.pos)
+                }
                 Source::Internal(_) | Source::Unspecified => {
                     write!(f, "at: {}, in: {snippet}{suffix}", self.0.pos)
                 }

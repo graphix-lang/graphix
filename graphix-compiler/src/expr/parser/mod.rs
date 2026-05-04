@@ -1,7 +1,8 @@
 use crate::{
     expr::{
-        set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, Pattern, SelectExpr,
-        Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
+        set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
+        Pattern, SelectExpr, Sig, SigItem, Source, StructExpr, StructWithExpr,
+        TryCatchExpr,
     },
     typ::{FnType, Type},
 };
@@ -752,7 +753,10 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
             .skip(eof())
             .easy_parse(position::Stream::new(&*ori.text))
             .map(|(r, _)| r)
-            .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
+            .map_err(|e| {
+                let pc = ParserContext { ori: ori.clone(), pos: e.position };
+                anyhow::Error::msg(format!("{e}")).context(pc)
+            })?;
     Ok(Arc::from_iter(r.drain(..)))
 }
 
@@ -768,7 +772,10 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
         .skip(eof())
         .easy_parse(position::Stream::new(&*ori.text))
         .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{}", e)))?;
+        .map_err(|e| {
+            anyhow::anyhow!("{e}")
+                .context(ParserContext { ori: ori.clone(), pos: e.position })
+        })?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
 }
 
@@ -779,7 +786,12 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
         .skip(eof())
         .easy_parse(position::Stream::new(&*s))
         .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{e}")))
+        .map_err(|e| {
+            anyhow::anyhow!("{e}").context(ParserContext {
+                ori: Arc::new(Origin::from_str(s)),
+                pos: e.position,
+            })
+        })
 }
 
 #[cfg(test)]
@@ -789,7 +801,12 @@ pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
         .skip(eof())
         .easy_parse(position::Stream::new(&*s))
         .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{e}")))
+        .map_err(|e| {
+            anyhow::anyhow!("{e}").context(ParserContext {
+                ori: Arc::new(Origin::from_str(s)),
+                pos: e.position,
+            })
+        })
 }
 
 /// Parse one fntype expression
@@ -799,7 +816,12 @@ pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
         .skip(eof())
         .easy_parse(position::Stream::new(s))
         .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{e}")))
+        .map_err(|e| {
+            anyhow::anyhow!("{e}").context(ParserContext {
+                ori: Arc::new(Origin::from_str(s)),
+                pos: e.position,
+            })
+        })
 }
 
 /// Parse one type expression
@@ -809,7 +831,12 @@ pub fn parse_type(s: &str) -> anyhow::Result<Type> {
         .skip(eof())
         .easy_parse(position::Stream::new(s))
         .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{e}")))
+        .map_err(|e| {
+            anyhow::anyhow!("{e}").context(ParserContext {
+                ori: Arc::new(Origin::from_str(s)),
+                pos: e.position,
+            })
+        })
 }
 
 pub(super) fn parse_modpath(s: &str) -> anyhow::Result<ModPath> {
@@ -818,5 +845,10 @@ pub(super) fn parse_modpath(s: &str) -> anyhow::Result<ModPath> {
         .skip(eof())
         .easy_parse(position::Stream::new(s))
         .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{e}")))
+        .map_err(|e| {
+            anyhow::anyhow!("{e}").context(ParserContext {
+                ori: Arc::new(Origin::from_str(s)),
+                pos: e.position,
+            })
+        })
 }

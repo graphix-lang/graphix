@@ -1,5 +1,6 @@
 use super::pattern::StructPatternNode;
 use crate::{
+    bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -32,7 +33,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         let expr::BindExpr { rec, pattern, typ, value } = b;
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
-                bail!("at {} can't use rec on a complex pattern", spec.pos)
+                bailat!(spec, "can't use rec on a complex pattern")
             }
             match value {
                 Expr { kind: ExprKind::Lambda(_), .. } => (),
@@ -50,12 +51,12 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 spec.pos,
                 spec.ori.clone(),
             )
-            .with_context(|| format!("at {}", spec.pos))?;
+            .with_context(|| expr::ErrorContext(spec.clone()))?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
             if !typ.contains(&ctx.env, ntyp)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("at {} error {} can't be matched by {typ}", ntyp, spec.pos)
+                    bailat!(spec, "error {} can't be matched by {typ}", ntyp)
                 })?
             }
             (node, pattern, typ)
@@ -68,9 +69,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     let ptyp = pattern.infer_type_predicate(&ctx.env)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
-                            bail!(
-                                "at {} match error {typ} can't be matched by {ptyp}",
-                                spec.pos
+                            bailat!(
+                                spec,
+                                "match error {typ} can't be matched by {ptyp}"
                             )
                         })?
                     }
@@ -85,11 +86,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 spec.pos,
                 spec.ori.clone(),
             )
-            .with_context(|| format!("at {}", spec.pos))?;
+            .with_context(|| expr::ErrorContext(spec.clone()))?;
             (node, pattern, typ)
         };
         if pattern.is_refutable() {
-            bail!("at {} refutable patterns are not allowed in let", spec.pos);
+            bailat!(spec, "refutable patterns are not allowed in let");
         }
         Ok(Box::new(Self { spec, typ, pattern, node }))
     }
@@ -172,7 +173,7 @@ impl Ref {
         name: &ModPath,
     ) -> Result<Node<R, E>> {
         match ctx.env.lookup_bind(&scope.lexical, name) {
-            None => bail!("at {} {name} not defined", spec.pos),
+            None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
                 let bind_id = bind.id;
                 let typ = bind.typ.clone();
