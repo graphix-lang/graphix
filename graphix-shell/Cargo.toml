@@ -69,6 +69,8 @@ log = { workspace = true }
 lsp-types = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
+parking_lot = { workspace = true }
 poolshark = { workspace = true }
 reedline = { workspace = true }
 tokio = { workspace = true }
+triomphe = { workspace = true }

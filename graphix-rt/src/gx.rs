@@ -115,7 +115,10 @@ impl<X: GXExt> GX<X> {
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
         let resolvers_default = |r: &mut Vec<ModuleResolver>| match dirs::data_dir() {
             None => (),
-            Some(dd) => r.push(ModuleResolver::Files(dd.join("graphix"))),
+            Some(dd) => r.push(ModuleResolver::Files {
+                base: dd.join("graphix"),
+                overrides: None,
+            }),
         };
         match std::env::var("GRAPHIX_MODPATH") {
             Err(_) => resolvers_default(&mut cfg.resolvers),
@@ -462,6 +465,11 @@ impl<X: GXExt> GX<X> {
         );
         let prev_typrefs =
             graphix_compiler::swap_type_refs(graphix_compiler::TYPE_REF_SITE_POOL.take());
+        let prev_sig_links =
+            graphix_compiler::swap_sig_links(graphix_compiler::SIG_LINK_POOL.take());
+        let prev_module_internals = graphix_compiler::swap_module_internal_views(
+            graphix_compiler::MODULE_INTERNAL_VIEW_POOL.take(),
+        );
         let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
             Some(v) => Arc::from(v),
             None => self.resolvers.clone(),
@@ -471,9 +479,10 @@ impl<X: GXExt> GX<X> {
             info!("parse time: {:?}", st.elapsed());
             let scope = Scope::root();
             let (ori, exprs) = self.load_exprs(source).await?;
-            let exprs =
-                try_join_all(exprs.iter().map(|e| e.resolve_modules(&resolvers_for_call)))
-                    .await?;
+            let exprs = try_join_all(
+                exprs.iter().map(|e| e.resolve_modules(&resolvers_for_call)),
+            )
+            .await?;
             info!("resolve time: {:?}", st.elapsed());
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             for e in exprs.iter() {
@@ -501,6 +510,8 @@ impl<X: GXExt> GX<X> {
                 graphix_compiler::MODULE_REF_SITE_POOL.take(),
             );
             let type_references = graphix_compiler::take_type_refs();
+            let sig_links = graphix_compiler::take_sig_links();
+            let module_internals = graphix_compiler::take_module_internal_views();
             let scope_map = std::mem::replace(
                 &mut self.ctx.scope_map,
                 graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
@@ -514,6 +525,8 @@ impl<X: GXExt> GX<X> {
                 module_references,
                 type_references,
                 scope_map,
+                sig_links,
+                module_internals,
             })
         };
         let res = go.await;
@@ -522,6 +535,8 @@ impl<X: GXExt> GX<X> {
         self.ctx.module_references = prev_modrefs;
         self.ctx.scope_map = prev_scopemap;
         graphix_compiler::swap_type_refs(prev_typrefs);
+        graphix_compiler::swap_sig_links(prev_sig_links);
+        graphix_compiler::swap_module_internal_views(prev_module_internals);
         res
     }
 

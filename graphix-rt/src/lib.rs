@@ -154,6 +154,17 @@ pub struct CheckResult {
     pub module_references: GPooled<Vec<graphix_compiler::ModuleRefSite>>,
     pub type_references: GPooled<Vec<graphix_compiler::TypeRefSite>>,
     pub scope_map: GPooled<Vec<graphix_compiler::ScopeMapEntry>>,
+    /// Sig-to-impl bind id pairs from `val foo` ↔ `let foo = …` matches.
+    /// Populated only in `lsp_mode`. IDE consumers chase from a sig site
+    /// to the implementation for goto-def, and union references across
+    /// both bind ids for find-references.
+    pub sig_links: GPooled<Vec<graphix_compiler::SigImplLink>>,
+    /// Per-module clones of the impl-side env. The top-level `env` field
+    /// captures the project's *external* view (sig types visible to
+    /// consumers); each `ModuleInternalView` here gives the *internal*
+    /// view (impl bindings shadowed in the module body) for one module
+    /// scope. Populated only in `lsp_mode`.
+    pub module_internals: GPooled<Vec<graphix_compiler::ModuleInternalView>>,
 }
 
 pub struct Ref<X: GXExt> {
@@ -527,6 +538,43 @@ impl<X: GXExt> GXHandle<X> {
     /// (`textDocument/references`). The runtime's live environment
     /// is not altered — to keep the bindings live, use `compile` or
     /// `load`.
+    ///
+    /// # Error position info
+    ///
+    /// Compile and parse failures attach a structured context to the
+    /// returned `anyhow::Error` carrying the originating `Origin` and
+    /// `SourcePosition`. IDE tooling and other consumers should
+    /// `downcast_ref` the error rather than scraping the chain's
+    /// message strings:
+    ///
+    /// - [`graphix_compiler::expr::ErrorContext`] — wraps compile-time
+    ///   failures (`bailat!`-style bails and `wrap!`-attached typecheck
+    ///   errors). Carries the failing `Expr`, from which `pos` and
+    ///   `ori` are read.
+    /// - [`graphix_compiler::expr::ParserContext`] — wraps combine
+    ///   parser failures with `Origin` + `SourcePosition` fields.
+    ///
+    /// `anyhow::Error::downcast_ref` walks the context chain via
+    /// anyhow's vtable and returns the outermost match, which for the
+    /// runtime's compile path is the right one.
+    ///
+    /// # IDE / LSP usage
+    ///
+    /// `CheckResult` carries IDE side-channels populated only when
+    /// `env.lsp_mode` is set: `references`, `module_references`,
+    /// `type_references`, `scope_map`, `sig_links`, and
+    /// `module_internals`. The first four record where the compiler saw
+    /// each name and where it resolved; `sig_links` ties `val foo` in a
+    /// `.gxi` to its `let foo = …` impl in the paired `.gx`;
+    /// `module_internals` carries each module's impl-side env so IDE
+    /// queries inside a module body can chase impl bind metadata that
+    /// isn't visible from the project's external view.
+    ///
+    /// To check editor buffers without saving, layer a
+    /// [`ModuleResolver::BufferOverride`] into the resolver chain — its
+    /// override map shadows the on-disk version per path while
+    /// preserving `Source::File` origins, so reference matching and
+    /// goto-def land on the same file paths as a disk check would.
     pub async fn check(&self, path: Source) -> Result<CheckResult> {
         Ok(self
             .exec(|tx| ToGX::Check { path, resolvers: None, res: tx })

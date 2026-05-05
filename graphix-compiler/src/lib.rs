@@ -354,6 +354,31 @@ pub struct TypeRefSite {
     pub def_ori: Arc<expr::Origin>,
 }
 
+/// Maps a `val foo: T` declaration in a `.gxi` interface to its
+/// `let foo = …` implementation site in the paired `.gx`. Populated by
+/// `check_sig` whenever it matches a sig proxy bind to its impl bind.
+/// Used by IDE tooling to (a) goto-def from a sig val site to the impl,
+/// and (b) union find-references results across both `BindId`s.
+/// Only populated when `env.lsp_mode` is set.
+#[derive(Debug, Clone)]
+pub struct SigImplLink {
+    pub scope: expr::ModPath,
+    pub name: compact_str::CompactString,
+    pub sig_id: BindId,
+    pub impl_id: BindId,
+}
+
+/// Per-module snapshot of the *internal* env (the impl's view, where
+/// implementation bindings shadow sig proxies). The CheckResult's
+/// top-level `env` is the *external* view across the project; this
+/// per-module entry lets IDE queries on names inside a module reach
+/// the impl bind metadata. Only populated when `env.lsp_mode` is set.
+#[derive(Debug, Clone)]
+pub struct ModuleInternalView {
+    pub scope: expr::ModPath,
+    pub env: env::Env,
+}
+
 /// Pools backing the IDE side-channel collections. `GPooled` so the
 /// buffers can return to the same pool after crossing the
 /// runtime-task → LSP-thread boundary as part of `CheckResult`. Sized
@@ -367,10 +392,18 @@ pub static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
     LazyLock::new(|| Pool::new(64, 65536));
 pub static SCOPE_MAP_ENTRY_POOL: LazyLock<Pool<Vec<ScopeMapEntry>>> =
     LazyLock::new(|| Pool::new(64, 65536));
+pub static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
+    LazyLock::new(|| Pool::new(32, 4096));
+pub static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
+    LazyLock::new(|| Pool::new(32, 4096));
 
 thread_local! {
     static TYPE_REF_SINK: std::cell::RefCell<GPooled<Vec<TypeRefSite>>> =
         std::cell::RefCell::new(TYPE_REF_SITE_POOL.take());
+    static SIG_LINK_SINK: std::cell::RefCell<GPooled<Vec<SigImplLink>>> =
+        std::cell::RefCell::new(SIG_LINK_POOL.take());
+    static MODULE_INTERNAL_VIEW_SINK: std::cell::RefCell<GPooled<Vec<ModuleInternalView>>> =
+        std::cell::RefCell::new(MODULE_INTERNAL_VIEW_POOL.take());
 }
 
 /// Push a `TypeRefSite` to the active thread-local sink. Called by
@@ -387,7 +420,8 @@ pub fn push_type_ref(site: TypeRefSite) {
 /// for `GPooled` routes to the unsized thread-local registry, not our
 /// named pool.
 pub fn take_type_refs() -> GPooled<Vec<TypeRefSite>> {
-    TYPE_REF_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), TYPE_REF_SITE_POOL.take()))
+    TYPE_REF_SINK
+        .with(|s| std::mem::replace(&mut *s.borrow_mut(), TYPE_REF_SITE_POOL.take()))
 }
 
 /// Replace the sink with `prev`, returning whatever was already in
@@ -395,6 +429,39 @@ pub fn take_type_refs() -> GPooled<Vec<TypeRefSite>> {
 /// per check cycle.
 pub fn swap_type_refs(prev: GPooled<Vec<TypeRefSite>>) -> GPooled<Vec<TypeRefSite>> {
     TYPE_REF_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), prev))
+}
+
+/// Push a `SigImplLink` to the active thread-local sink. Called by
+/// `check_sig` in lsp_mode when it matches a sig proxy bind to its
+/// implementation bind.
+pub fn push_sig_link(link: SigImplLink) {
+    SIG_LINK_SINK.with(|s| s.borrow_mut().push(link));
+}
+
+pub fn take_sig_links() -> GPooled<Vec<SigImplLink>> {
+    SIG_LINK_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), SIG_LINK_POOL.take()))
+}
+
+pub fn swap_sig_links(prev: GPooled<Vec<SigImplLink>>) -> GPooled<Vec<SigImplLink>> {
+    SIG_LINK_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), prev))
+}
+
+/// Push a per-module internal-view snapshot. Called by
+/// `Module::compile_static` after `compile_inner` succeeds, in lsp_mode.
+pub fn push_module_internal_view(view: ModuleInternalView) {
+    MODULE_INTERNAL_VIEW_SINK.with(|s| s.borrow_mut().push(view));
+}
+
+pub fn take_module_internal_views() -> GPooled<Vec<ModuleInternalView>> {
+    MODULE_INTERNAL_VIEW_SINK.with(|s| {
+        std::mem::replace(&mut *s.borrow_mut(), MODULE_INTERNAL_VIEW_POOL.take())
+    })
+}
+
+pub fn swap_module_internal_views(
+    prev: GPooled<Vec<ModuleInternalView>>,
+) -> GPooled<Vec<ModuleInternalView>> {
+    MODULE_INTERNAL_VIEW_SINK.with(|s| std::mem::replace(&mut *s.borrow_mut(), prev))
 }
 
 impl Refs {

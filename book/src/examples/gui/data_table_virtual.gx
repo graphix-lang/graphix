@@ -16,26 +16,29 @@ net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
 
 let score: Map<string, f64> = {};
-let tbl = net::list_table("/local/graphix/data_table_virtual")$;
-let columns = array::map(raw.columns, |n| select n {
-    "score" => progress_column(
-        #name: "score",
-        #display_name: "Score",
-        #source: &`Netidx(score),
-        #width: &f64:180.0
-    ),
-    n => n
-});
-let columns = array::push_front(columns, text_column(
-    #name: "region",
-    #display_name: "Region",
-    #source: &"production"
-));
-// rows that aren't absolute paths won't attempt to subscribe
-// but will be looked up in the score map for a default value.
-// that lets us add virtual rows that don't exist in netidx
-let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
-let tbl: Table = uniq({ rows, columns });
+
+let tbl = {
+    let raw = net::list_table("/local/graphix/data_table_virtual")$;
+    let columns = array::map(raw.columns, |n| select n {
+        "score" => progress_column(
+            #name: "score",
+            #display_name: "Score",
+            #source: &`Netidx(score),
+            #width: &f64:180.0
+        ),
+        n => n
+    });
+    let columns = array::push_front(columns, text_column(
+        #name: "region",
+        #display_name: "Region",
+        #source: &"production"
+    ));
+    // rows that aren't absolute paths won't attempt to subscribe
+    // but will be looked up in the score map for a default value.
+    // that lets us add virtual rows that don't exist in netidx
+    let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
+    uniq({ rows, columns })
+};
 
 let layout = column(
     #spacing: &14.0,

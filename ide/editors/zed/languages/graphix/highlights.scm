@@ -16,6 +16,7 @@
   "mod"
   "use"
   "type"
+  "val"
   "fn"
   "cast"
   "any"
@@ -103,6 +104,14 @@
 ; Module / type definitions
 (module name: (identifier) @namespace)
 (type_def name: (type_identifier) @type)
+
+; Sig items (interface declarations in `.gxi` files; legal anywhere at
+; the top level under the unified grammar). Captures mirror the impl-
+; side rules so colors are consistent across file kinds.
+(sig_bind name: (identifier) @variable)
+(sig_type_def name: (type_identifier) @type)
+(sig_module name: (identifier) @namespace)
+(sig_use path: (module_path . (identifier) @namespace))
 
 ; -- Struct fields --------------------------------------------------
 (struct_field         name: (identifier) @variable.other.member)

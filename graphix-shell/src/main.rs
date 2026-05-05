@@ -347,8 +347,10 @@ fn tokio_main(
                         None => (),
                         Some(p) => {
                             let p = PathBuf::from(p);
-                            shell =
-                                shell.module_resolvers(vec![ModuleResolver::Files(p)]);
+                            shell = shell.module_resolvers(vec![ModuleResolver::Files {
+                                base: p,
+                                overrides: None,
+                            }]);
                         }
                     };
                     Source::File(path)

@@ -10,7 +10,7 @@ pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
 pub use pattern::{Pattern, StructurePattern};
 use regex::Regex;
-pub use resolver::ModuleResolver;
+pub use resolver::{BufferOverrides, ModuleResolver};
 use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,

@@ -1,8 +1,7 @@
 use crate::{
     expr::{
         set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
-        Pattern, SelectExpr, Sig, SigItem, Source, StructExpr, StructWithExpr,
-        TryCatchExpr,
+        Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
     },
     typ::{FnType, Type},
 };

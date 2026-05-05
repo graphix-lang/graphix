@@ -3,28 +3,29 @@
 
 use crate::deps;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use fxhash::FxHashMap;
 use graphix_compiler::{
     env::Env,
-    expr::{ModuleResolver, Source},
+    expr::{BufferOverrides, ModuleResolver, Source},
     CFlag, ExecCtx,
 };
 use graphix_lsp::{LspBackend, TypecheckResult};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use lsp_types::{InitializeParams, Uri};
 use netidx::InternalOnly;
+use parking_lot::Mutex;
 use poolshark::global::GPooled;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::Arc as StdArc,
 };
 use tokio::{
     runtime::{Handle, Runtime},
     sync::mpsc,
     task,
 };
+use triomphe::Arc;
 
 /// Build a tokio runtime, stand up a graphix runtime with the
 /// in-process netidx and the full stdlib loaded, and run the LSP
@@ -39,7 +40,7 @@ pub fn run() -> Result<()> {
     result
 }
 
-async fn build_backend(roots: Vec<PathBuf>) -> Result<Arc<dyn LspBackend>> {
+async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let netidx = InternalOnly::new().await.context("starting internal netidx")?;
     let publisher = netidx.publisher().clone();
     let subscriber = netidx.subscriber().clone();
@@ -50,10 +51,10 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<Arc<dyn LspBackend>> {
         .context("registering stdlib modules")?;
     let mut resolvers: Vec<ModuleResolver> = vec![ModuleResolver::VFS(vfs)];
     // Cache the stdlib (+ later, GRAPHIX_MODPATH) layer so per-project
-    // checks can prepend it under their own Files resolver.
+    // checks can prepend it under their own BufferOverride resolver.
     let base_resolvers = resolvers.clone();
     for root in roots {
-        resolvers.push(ModuleResolver::Files(root));
+        resolvers.push(ModuleResolver::Files { base: root, overrides: None });
     }
     let flags = CFlag::WarnUnhandled | CFlag::WarnUnused;
     // We don't consume runtime events in the LSP — drain them on a task
@@ -70,12 +71,14 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<Arc<dyn LspBackend>> {
         .start()
         .await
         .context("loading stdlib")?;
-    let _keep_netidx = Arc::new(netidx);
-    Ok(Arc::new(ShellLspBackend {
+    let _keep_netidx = StdArc::new(netidx);
+    let buffer_overrides: BufferOverrides = Arc::new(Mutex::new(FxHashMap::default()));
+    Ok(StdArc::new(ShellLspBackend {
         gx,
         rt_handle: Handle::current(),
         _keep_netidx,
         base_resolvers,
+        buffer_overrides,
     }))
 }
 
@@ -119,23 +122,33 @@ fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
 struct ShellLspBackend {
     gx: GXHandle<NoExt>,
     rt_handle: Handle,
-    _keep_netidx: Arc<InternalOnly>,
-    /// Stdlib + GRAPHIX_MODPATH-derived resolvers (anything that
-    /// should be in scope regardless of which project we're
-    /// checking). The file's parent directory is appended on each
-    /// check so sibling modules resolve like `graphix --check file.gx`.
+    _keep_netidx: StdArc<InternalOnly>,
+    /// Stdlib + GRAPHIX_MODPATH-derived resolvers. Anything that should
+    /// be in scope regardless of which project we're checking. The
+    /// per-call `BufferOverride` (rooted at the file's parent dir) is
+    /// appended in `typecheck_project`.
     base_resolvers: Vec<ModuleResolver>,
+    /// Shared open-buffer override map. Mutated by the LSP on every
+    /// `did_open` / `did_change` / `did_close`. Layered into every
+    /// resolver chain, so unsaved edits in any open buffer are visible
+    /// to all check calls.
+    buffer_overrides: BufferOverrides,
 }
 
 impl ShellLspBackend {
-    /// Build the resolver chain for checking `file`. Appends a
-    /// `Files(file.parent())` resolver to `base_resolvers` so
-    /// sibling-module imports work the same way they do when running
-    /// the file directly. With `None`, returns only the base chain.
-    fn resolvers_for(&self, file: Option<&Path>) -> Vec<ModuleResolver> {
+    /// Build the resolver chain for checking a project rooted at
+    /// `file`. Appends a `BufferOverride` whose base is the file's
+    /// parent dir — the override map shadows on-disk text per path,
+    /// and falls through to the disk for anything not in the map.
+    /// Sibling-module imports work the same way they do when running
+    /// the file directly, plus the editor-buffer view is honored.
+    fn resolvers_for(&self, file: &Path) -> Vec<ModuleResolver> {
         let mut resolvers = self.base_resolvers.clone();
-        if let Some(parent) = file.and_then(|p| p.parent()) {
-            resolvers.push(ModuleResolver::Files(parent.to_path_buf()));
+        if let Some(parent) = file.parent() {
+            resolvers.push(ModuleResolver::Files {
+                base: parent.to_path_buf(),
+                overrides: Some(self.buffer_overrides.clone()),
+            });
         }
         resolvers
     }
@@ -146,37 +159,31 @@ impl LspBackend for ShellLspBackend {
         self.rt_handle.block_on(self.gx.get_env()).unwrap_or_default()
     }
 
-    fn typecheck(&self, source: Source, text: ArcStr) -> Result<TypecheckResult> {
-        let file = match &source {
-            Source::File(p) => Some(p.as_path()),
-            _ => None,
-        };
-        let CheckResult { env, references, module_references, type_references, scope_map } =
-            self.rt_handle.block_on(
-                self.gx
-                    .check_with_resolvers(Source::Internal(text), self.resolvers_for(file)),
-            )?;
-        Ok(TypecheckResult {
-            env,
-            references,
-            module_references,
-            type_references,
-            scope_map,
-        })
+    fn buffer_overrides(&self) -> BufferOverrides {
+        self.buffer_overrides.clone()
     }
 
     fn typecheck_project(&self, root: &Path) -> Result<TypecheckResult> {
-        let CheckResult { env, references, module_references, type_references, scope_map } =
-            self.rt_handle.block_on(self.gx.check_with_resolvers(
-                Source::File(root.to_path_buf()),
-                self.resolvers_for(Some(root)),
-            ))?;
+        let CheckResult {
+            env,
+            references,
+            module_references,
+            type_references,
+            scope_map,
+            sig_links,
+            module_internals,
+        } = self.rt_handle.block_on(self.gx.check_with_resolvers(
+            Source::File(root.to_path_buf()),
+            self.resolvers_for(root),
+        ))?;
         Ok(TypecheckResult {
             env,
             references,
             module_references,
             type_references,
             scope_map,
+            sig_links,
+            module_internals,
         })
     }
 }

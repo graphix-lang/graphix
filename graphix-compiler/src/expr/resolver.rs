@@ -20,25 +20,22 @@ use netidx::{
     utils::Either,
 };
 use netidx_value::Value;
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr, time::Duration};
-use tokio::{join, task, time::Instant, try_join};
+use tokio::{io::AsyncReadExt, join, task, time::Instant, try_join};
 use triomphe::Arc;
+
+pub type BufferOverrides = Arc<Mutex<FxHashMap<PathBuf, ArcStr>>>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleResolver {
     VFS(FxHashMap<Path, ArcStr>),
-    Files(PathBuf),
+    Files { base: PathBuf, overrides: Option<BufferOverrides> },
     Netidx { subscriber: Subscriber, base: Path, timeout: Option<Duration> },
 }
 
 impl ModuleResolver {
-    /// Parse a comma separated list of module resolvers. Netidx
-    /// resolvers are of the form, netidx:/path/in/netidx, and
-    /// filesystem resolvers are of the form file:/path/in/fs
-    ///
-    /// This format is intended to be used in an environment variable,
-    /// for example.
     pub fn parse_env(
         subscriber: Subscriber,
         timeout: Option<Duration>,
@@ -53,7 +50,7 @@ impl ModuleResolver {
                 res.push(r);
             } else if let Some(s) = l.strip_prefix("file:") {
                 let base = PathBuf::from_str(s)?;
-                let r = Self::Files(base);
+                let r = Self::Files { base, overrides: None };
                 res.push(r);
             } else {
                 bail!("expected netidx: or file:")
@@ -110,6 +107,7 @@ async fn resolve_from_files(
     parent: &Arc<Origin>,
     name: &Path,
     base: &PathBuf,
+    overrides: Option<&BufferOverrides>,
     errors: &mut Vec<anyhow::Error>,
 ) -> Resolution {
     macro_rules! ori {
@@ -121,20 +119,32 @@ async fn resolve_from_files(
             }
         };
     }
+    async fn read(overrides: Option<&BufferOverrides>, path: &PathBuf) -> Result<ArcStr> {
+        match overrides.and_then(|o| o.lock().get(path).cloned()) {
+            Some(s) => Ok(s),
+            None => {
+                let mut buf: LPooled<Vec<u8>> = LPooled::take();
+                let mut f = tokio::fs::File::open(path).await?;
+                f.read_to_end(&mut *buf).await?;
+                let s = str::from_utf8(&*buf)?;
+                Ok(ArcStr::from(s))
+            }
+        }
+    }
     let mut impl_path = base.clone();
     for part in Path::parts(&name) {
         impl_path.push(part);
     }
     impl_path.set_extension("gx");
     let mut intf_path = impl_path.with_extension("gxi");
-    let implementation = match tokio::fs::read_to_string(&impl_path).await {
+    let implementation = match read(overrides, &impl_path).await {
         Ok(s) => ori!(s, impl_path),
         Err(_) => {
             impl_path.set_extension("");
             impl_path.push("mod.gx");
             intf_path.set_extension("");
             intf_path.push("mod.gxi");
-            match tokio::fs::read_to_string(&impl_path).await {
+            match read(overrides, &impl_path).await {
                 Ok(s) => ori!(s, impl_path.clone()),
                 Err(e) => {
                     errors.push(anyhow::Error::from(e));
@@ -143,7 +153,7 @@ async fn resolve_from_files(
             }
         }
     };
-    let interface = match tokio::fs::read_to_string(&intf_path).await {
+    let interface = match read(overrides, &intf_path).await {
         Ok(s) => Some(ori!(s, intf_path)),
         Err(_) => None,
     };
@@ -380,8 +390,17 @@ async fn resolve(
             ModuleResolver::VFS(vfs) => {
                 check!(resolve_from_vfs(&scope, &parent, &name, vfs))
             }
-            ModuleResolver::Files(base) => {
-                check!(resolve_from_files(&parent, &name, base, &mut errors).await)
+            ModuleResolver::Files { base, overrides } => {
+                check!(
+                    resolve_from_files(
+                        &parent,
+                        &name,
+                        base,
+                        overrides.as_ref(),
+                        &mut errors
+                    )
+                    .await
+                )
             }
             ModuleResolver::Netidx { subscriber, base, timeout } => {
                 let r = resolve_from_netidx(
@@ -569,9 +588,15 @@ impl Expr {
             } => Box::pin(async move {
                 let prepend = match &self.ori.source {
                     Source::Unspecified | Source::Internal(_) => None,
-                    Source::File(p) => {
-                        p.parent().map(|p| Arc::new(ModuleResolver::Files(p.into())))
-                    }
+                    Source::File(p) => p.parent().map(|p| {
+                        let overrides = resolvers.iter().find_map(|m| match m {
+                            ModuleResolver::Files { overrides: Some(o), .. } => {
+                                Some(o.clone())
+                            }
+                            _ => None,
+                        });
+                        Arc::new(ModuleResolver::Files { base: p.into(), overrides })
+                    }),
                     Source::Netidx(p) => resolvers.iter().find_map(|m| match m {
                         ModuleResolver::Netidx { subscriber, timeout, .. } => {
                             Some(Arc::new(ModuleResolver::Netidx {
@@ -580,7 +605,7 @@ impl Expr {
                                 timeout: *timeout,
                             }))
                         }
-                        ModuleResolver::Files(_) | ModuleResolver::VFS(_) => None,
+                        ModuleResolver::Files { .. } | ModuleResolver::VFS(_) => None,
                     }),
                 };
                 let exprs = try_join_all(exprs.iter().map(|e| async {

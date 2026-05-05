@@ -2,10 +2,11 @@ use crate::diagnostics::{error_leaf_message, error_location, error_to_diagnostic
 use arcstr::ArcStr;
 use graphix_compiler::{
     env::Env,
-    expr::{ModPath, Source},
+    expr::{BufferOverrides, ModPath, Source},
     typ::{FnArgKind, FnType, Type},
-    ModuleRefSite, ReferenceSite, ScopeMapEntry, SourcePosition, TypeRefSite,
-    MODULE_REF_SITE_POOL, REFERENCE_SITE_POOL, SCOPE_MAP_ENTRY_POOL, TYPE_REF_SITE_POOL,
+    ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry, SigImplLink,
+    SourcePosition, TypeRefSite, MODULE_INTERNAL_VIEW_POOL, MODULE_REF_SITE_POOL,
+    REFERENCE_SITE_POOL, SCOPE_MAP_ENTRY_POOL, SIG_LINK_POOL, TYPE_REF_SITE_POOL,
 };
 use lsp_types::Uri;
 use poolshark::{global::GPooled, local::LPooled};
@@ -36,6 +37,11 @@ pub struct Document {
     /// Per-Expr scope map from the latest compile. Used to answer
     /// cursor → scope queries.
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    /// Sig→impl bind id pairs from the most recent check. Used by
+    /// goto-def on a `val foo` in a `.gxi` to chase to the impl.
+    pub sig_links: GPooled<Vec<SigImplLink>>,
+    /// Per-module impl-side env snapshots from the most recent check.
+    pub module_internals: GPooled<Vec<ModuleInternalView>>,
 }
 
 impl Document {
@@ -48,6 +54,8 @@ impl Document {
             module_references: MODULE_REF_SITE_POOL.take(),
             type_references: TYPE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
+            sig_links: SIG_LINK_POOL.take(),
+            module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
         }
     }
 }
@@ -60,6 +68,13 @@ pub struct TypecheckResult {
     pub module_references: GPooled<Vec<ModuleRefSite>>,
     pub type_references: GPooled<Vec<TypeRefSite>>,
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    /// Sig→impl bind id pairs. Carries through from the runtime so the
+    /// LSP can chase from a sig val site to its `let foo = …` impl site
+    /// for goto-def, and union references across both bind ids.
+    pub sig_links: GPooled<Vec<SigImplLink>>,
+    /// Per-module impl-side env snapshots. The top-level `env` is the
+    /// project's external view; these hold each module's internal view.
+    pub module_internals: GPooled<Vec<ModuleInternalView>>,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -73,21 +88,20 @@ pub trait LspBackend: Send + Sync + 'static {
     /// used as a fallback when a document has no successful check
     /// result yet.
     fn env(&self) -> Env;
-    /// Type-check the given document text. On success, return the
-    /// env as it would be after compiling the document plus the
-    /// list of name reference sites the compiler observed.
-    fn typecheck(
-        &self,
-        source: Source,
-        text: ArcStr,
-    ) -> anyhow::Result<TypecheckResult>;
-    /// Type-check a project from disk, reading `root` and walking
-    /// every `mod foo;` declaration via a `Files(<root>.parent())`
-    /// resolver. Used by the workspace-wide recheck path to find
-    /// cross-file errors and references. Reads files from disk —
-    /// unsaved active-doc edits are not seen here (use `typecheck`
-    /// for that).
+    /// Type-check a project rooted at `root`. The returned
+    /// `TypecheckResult` covers every file reachable from `root` via
+    /// `mod foo;`. The backend's resolver chain layers a
+    /// `BufferOverride` for the workspace's open buffers so unsaved
+    /// edits in any file participate in the check — there is no
+    /// disk-only path. Pass `root = file_path` for a stray document
+    /// that isn't part of a known project.
     fn typecheck_project(&self, root: &Path) -> anyhow::Result<TypecheckResult>;
+    /// The shared open-buffer override map. The LSP server clones the
+    /// returned `BufferOverrides` and mutates it on every `did_open` /
+    /// `did_change` / `did_close`. The same `Arc<Mutex<…>>` is held by
+    /// the backend's resolver chain, so changes are visible to the next
+    /// check call without rebuilding any structure.
+    fn buffer_overrides(&self) -> BufferOverrides;
 }
 
 /// One project's last-known typecheck result, keyed by the project
@@ -99,6 +113,8 @@ pub struct ProjectResult {
     pub module_references: GPooled<Vec<ModuleRefSite>>,
     pub type_references: GPooled<Vec<TypeRefSite>>,
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    pub sig_links: GPooled<Vec<SigImplLink>>,
+    pub module_internals: GPooled<Vec<ModuleInternalView>>,
 }
 
 /// Core language intelligence state.
@@ -199,6 +215,8 @@ impl ServerState {
                     module_references,
                     type_references,
                     scope_map,
+                    sig_links,
+                    module_internals,
                 }) => {
                     results.push(Some(ProjectResult {
                         env,
@@ -206,6 +224,8 @@ impl ServerState {
                         module_references,
                         type_references,
                         scope_map,
+                        sig_links,
+                        module_internals,
                     }));
                 }
                 Err(e) => {
@@ -292,38 +312,76 @@ impl ServerState {
         self.documents.insert(uri, Document::new(text, version));
     }
 
-    /// Update the text of an already-opened document.
+    /// Update the text of an already-opened document. Mirrors the
+    /// new text into the shared `BufferOverride` map so the next check
+    /// (in any project) sees the unsaved edit.
     pub fn update_document(&mut self, uri: &Uri, text: String, version: i32) {
+        let arc_text = ArcStr::from(text.as_str());
         if let Some(doc) = self.documents.get_mut(uri) {
             doc.text = text;
             doc.version = version;
         } else {
             self.documents.insert(uri.clone(), Document::new(text, version));
         }
+        if let Some(path) = uri_to_path(uri) {
+            self.backend.buffer_overrides().lock().insert(path, arc_text);
+        }
     }
 
-    /// Stop tracking a document.
+    /// Stop tracking a document. Drops the buffer override so disk text
+    /// applies again on the next check.
     pub fn close_document(&mut self, uri: &Uri) {
         self.documents.remove(uri);
+        if let Some(path) = uri_to_path(uri) {
+            self.backend.buffer_overrides().lock().remove(&path);
+        }
+    }
+
+    /// Find a project root for `uri`, falling back to the file path
+    /// itself for stray docs not part of any known project.
+    fn project_root_for(&self, uri: &Uri) -> Option<PathBuf> {
+        if let Some(idx) = self.projects_containing(uri).next() {
+            return Some(self.workspace.projects[idx].root.clone());
+        }
+        uri_to_path(uri)
     }
 
     /// Parse and type-check the document and return any diagnostics.
-    /// On success, capture the post-check env and reference sites on
-    /// the document so completions, hover, and references see user
-    /// bindings.
+    ///
+    /// Runs a project-style check rooted at the doc's project (or the
+    /// doc itself for stray files). The shared `BufferOverride` map
+    /// makes every open buffer's unsaved text visible to the check, so
+    /// cross-file diagnostics, references, types, and goto-def reflect
+    /// the editor's view without saving. Per-doc fields are populated
+    /// from the result.
     pub fn check_document(&mut self, uri: &Uri) -> Vec<lsp_types::Diagnostic> {
+        // Make sure the latest buffer text is in the override map. Edits
+        // typically arrive via `update_document` which already mirrors
+        // them, but `did_open` lands here without a prior change.
+        if let Some(doc) = self.documents.get(uri) {
+            if let Some(path) = uri_to_path(uri) {
+                self.backend
+                    .buffer_overrides()
+                    .lock()
+                    .insert(path, ArcStr::from(doc.text.as_str()));
+            }
+        }
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
-        let source = uri_to_source(uri);
         let text = ArcStr::from(doc.text.as_str());
-        match self.backend.typecheck(source, text.clone()) {
+        let Some(root) = self.project_root_for(uri) else {
+            return Vec::new();
+        };
+        match self.backend.typecheck_project(&root) {
             Ok(TypecheckResult {
                 env,
                 references,
                 module_references,
                 type_references,
                 scope_map,
+                sig_links,
+                module_internals,
             }) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = Some(env);
@@ -331,6 +389,8 @@ impl ServerState {
                     d.module_references = module_references;
                     d.type_references = type_references;
                     d.scope_map = scope_map;
+                    d.sig_links = sig_links;
+                    d.module_internals = module_internals;
                 }
                 Vec::new()
             }
@@ -341,6 +401,8 @@ impl ServerState {
                     d.module_references = MODULE_REF_SITE_POOL.take();
                     d.type_references = TYPE_REF_SITE_POOL.take();
                     d.scope_map = SCOPE_MAP_ENTRY_POOL.take();
+                    d.sig_links = SIG_LINK_POOL.take();
+                    d.module_internals = MODULE_INTERNAL_VIEW_POOL.take();
                 }
                 error_to_diagnostics(&e, &text, self.position_encoding)
             }
@@ -615,6 +677,8 @@ impl ServerState {
         self.collect_refs_from(
             doc.env.as_ref(),
             &doc.references,
+            &doc.sig_links,
+            &doc.module_internals,
             &scope,
             &name,
             include_declaration,
@@ -628,6 +692,8 @@ impl ServerState {
                 self.collect_refs_from(
                     Some(&r.env),
                     &r.references,
+                    &r.sig_links,
+                    &r.module_internals,
                     &scope,
                     &name,
                     include_declaration,
@@ -673,6 +739,8 @@ impl ServerState {
         &self,
         env: Option<&Env>,
         references: &[ReferenceSite],
+        sig_links: &[SigImplLink],
+        module_internals: &[ModuleInternalView],
         scope: &ModPath,
         name: &ModPath,
         include_declaration: bool,
@@ -681,9 +749,24 @@ impl ServerState {
     ) {
         let Some(env) = env else { return };
         let Some((_, bind)) = env.lookup_bind(scope, name) else { return };
-        let bind_id = bind.id;
+        let starter_id = bind.id;
+        // Sig val proxies live in the project's external env; impl
+        // bindings live in the per-module internal env. find-references
+        // should return both sides — walk sig_links and union the
+        // matching pair so reference lookups don't depend on which side
+        // the user clicked.
+        let mut ids: Vec<graphix_compiler::BindId> = Vec::with_capacity(2);
+        ids.push(starter_id);
+        for l in sig_links {
+            if l.sig_id == starter_id && !ids.contains(&l.impl_id) {
+                ids.push(l.impl_id);
+            }
+            if l.impl_id == starter_id && !ids.contains(&l.sig_id) {
+                ids.push(l.sig_id);
+            }
+        }
         for r in references {
-            if r.bind_id != bind_id {
+            if !ids.contains(&r.bind_id) {
                 continue;
             }
             if let Some(loc) = self.ref_to_location(requesting_uri, &r.ori, r.pos) {
@@ -691,8 +774,24 @@ impl ServerState {
             }
         }
         if include_declaration {
+            // Sig declaration site comes from the external env's bind.
             if let Some(loc) = self.ref_to_location(requesting_uri, &bind.ori, bind.pos) {
                 out.push(loc);
+            }
+            // Impl declaration site is in the module's internal env —
+            // chase any unioned id that isn't `starter_id`.
+            for id in ids.iter().skip(1) {
+                if let Some(impl_bind) =
+                    module_internals.iter().find_map(|v| v.env.by_id.get(id))
+                {
+                    if let Some(loc) = self.ref_to_location(
+                        requesting_uri,
+                        &impl_bind.ori,
+                        impl_bind.pos,
+                    ) {
+                        out.push(loc);
+                    }
+                }
             }
         }
     }
@@ -883,6 +982,88 @@ impl ServerState {
         None
     }
 
+    /// If the cursor sits on a sig `val foo: T;` declaration site in
+    /// a `.gxi`, chase via `sig_links` to the implementation bind in
+    /// the paired `.gx` and return its location. Returns `None` when
+    /// the cursor isn't on a sig val site or there's no matching
+    /// implementation. Type/module/use sig items follow normal
+    /// goto-def (typedef site / `mod foo;` body / etc.).
+    fn sig_to_impl_definition(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let env = self.env_for(uri);
+        let bind = bind_at_decl(env, uri, position)?;
+        let sig_id = bind.id;
+        // Only sig val proxies show up here — typedefs and modules
+        // aren't in `ide_binds` as `Bind`s. So if there's a sig_link
+        // with this sig_id, we're at a sig val site.
+        let impl_id = self.sig_link_impl_for(uri, sig_id)?;
+        let impl_bind = bind_for_id(env, impl_id).or_else(|| {
+            // The impl bind lives in the module's internal env, not the
+            // top-level external env. Walk module_internals for it.
+            self.module_internals_for(uri)
+                .into_iter()
+                .find_map(|view| view.env.by_id.get(&impl_id))
+        })?;
+        let target_uri = match &impl_bind.ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => uri.clone(),
+            Source::Netidx(_) => return None,
+        };
+        let line = impl_bind.pos.line.saturating_sub(1).max(0) as u32;
+        let char_col = impl_bind.pos.column.saturating_sub(1).max(0) as usize;
+        let pos = self.lsp_position_from_char_col(&impl_bind.ori.text, line, char_col);
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: pos, end: pos },
+        })
+    }
+
+    /// Look up the impl bind id for a given sig bind id by walking the
+    /// active doc's `sig_links` plus every project's. Sig and impl ids
+    /// are minted per compile, so stale lookups across compiles don't
+    /// match — but find-references is consulted on the latest check.
+    fn sig_link_impl_for(&self, uri: &Uri, sig_id: graphix_compiler::BindId) -> Option<graphix_compiler::BindId> {
+        if let Some(doc) = self.documents.get(uri) {
+            for l in doc.sig_links.iter() {
+                if l.sig_id == sig_id {
+                    return Some(l.impl_id);
+                }
+            }
+        }
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                for l in r.sig_links.iter() {
+                    if l.sig_id == sig_id {
+                        return Some(l.impl_id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Return the per-module internal-view env snapshots for any
+    /// project containing `uri`, plus the active doc's snapshots.
+    fn module_internals_for<'a>(&'a self, uri: &Uri) -> Vec<&'a ModuleInternalView> {
+        let mut out = Vec::new();
+        if let Some(doc) = self.documents.get(uri) {
+            for v in doc.module_internals.iter() {
+                out.push(v);
+            }
+        }
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                for v in r.module_internals.iter() {
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+
     fn def_site_at_position(
         &self,
         uri: &Uri,
@@ -991,6 +1172,12 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
         let position = self.normalize_position(uri, position);
+        // Sig val site → implementation site. If the cursor sits on a
+        // `val foo: T;` declaration in a `.gxi`, chase via `sig_links`
+        // to the impl bind in the paired `.gx` and return that location.
+        if let Some(loc) = self.sig_to_impl_definition(uri, position) {
+            return Some(loc);
+        }
         // First try the references list — each ReferenceSite carries
         // the bind's declaration site. This works for all bindings,
         // including lambda parameters that the env's by_id map no
@@ -1048,14 +1235,6 @@ impl ServerState {
             uri: target_uri,
             range: lsp_types::Range { start: pos, end: pos },
         })
-    }
-}
-
-fn uri_to_source(uri: &Uri) -> Source {
-    if let Some(path) = uri_to_path(uri) {
-        Source::File(path)
-    } else {
-        Source::Unspecified
     }
 }
 

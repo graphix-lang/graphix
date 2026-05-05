@@ -87,26 +87,22 @@ module.exports = grammar({
   word: $ => $.identifier,
 
   rules: {
-    // The grammar accepts two top-level shapes: implementation files
-    // (`.gx`) which are sequences of expressions, and interface files
-    // (`.gxi`) which are sequences of sig items (val/type/mod/use,
-    // optionally doc-commented). Tree-sitter is file-extension-agnostic;
-    // a file is parsed as whichever shape matches its contents.
+    // The grammar accepts two top-level shapes via `choice`:
+    // implementation files (`.gx`) — sequences of expressions, possibly
+    // empty — and interface files (`.gxi`) — sequences of sig items
+    // separated by `;`. Tree-sitter is file-extension-agnostic; a file
+    // is parsed as whichever shape matches its contents.
     //
-    // For files that are valid under both shapes (e.g. `mod foo;`), the
-    // implementation form takes precedence by ordering — that's the
-    // common case. A file that contains a `val` keyword or a doc
-    // comment commits to the interface shape.
+    // Doc-comment prefixes (`///`) are allowed on every kind of top-
+    // level item (sig and impl alike) so multi-line doc comments before
+    // a `let`, `mod`, `type`, or `use` parse correctly even though the
+    // language compiler only accepts them in `.gxi` files. Tree-sitter
+    // is permissive on syntax; semantics are the compiler's job.
     source_file: $ => choice(
-      // Implementation file: empty or a sequence of expressions
-      // separated by `;` (this is also the start-rule "empty" arm).
       seq(
         optional($._expression),
         repeat(seq(';', optional($._expression))),
       ),
-      // Interface file: at least one sig item. Inlined here because
-      // tree-sitter forbids non-start rules that match the empty
-      // string, and only the start rule may.
       seq(
         $.sig_item,
         repeat(seq(';', $.sig_item)),
@@ -234,8 +230,10 @@ module.exports = grammar({
 
     // sig_type_def covers both concrete (`type Foo = T`) and abstract
     // (`type Foo;` — body deliberately hidden) interface declarations.
+    // Doc comments are repeated rather than optional so multi-line
+    // `///` blocks (each `///` line is its own token) attach cleanly.
     sig_type_def: $ => seq(
-      optional($.doc_comment),
+      repeat($.doc_comment),
       'type',
       field('name', $.type_identifier),
       optional($.type_params),
@@ -243,7 +241,7 @@ module.exports = grammar({
     ),
 
     sig_bind: $ => seq(
-      optional($.doc_comment),
+      repeat($.doc_comment),
       'val',
       field('name', $.identifier),
       ':',
@@ -251,13 +249,13 @@ module.exports = grammar({
     ),
 
     sig_module: $ => seq(
-      optional($.doc_comment),
+      repeat($.doc_comment),
       'mod',
       field('name', $.identifier),
     ),
 
     sig_use: $ => seq(
-      optional($.doc_comment),
+      repeat($.doc_comment),
       'use',
       field('path', $.module_path),
     ),
