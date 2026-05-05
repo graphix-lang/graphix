@@ -52,7 +52,7 @@ use arcstr::ArcStr;
 use cranelift_codegen::{
     ir::{
         condcodes::{FloatCC, IntCC},
-        types, AbiParam, Block, BlockArg, InstBuilder, MemFlags, Signature,
+        types, AbiParam, Block, BlockArg, FuncRef, InstBuilder, MemFlags, Signature,
         Type as ClifType, Value as ClifValue,
     },
     settings::{self, Configurable},
@@ -61,6 +61,7 @@ use cranelift_codegen::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use std::collections::BTreeMap;
 
 // ─── JIT context ─────────────────────────────────────────────────
 
@@ -168,7 +169,7 @@ fn define_typed_kernel(
     {
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        compile_into_function(&mut builder, kernel)?;
+        compile_into_function(&mut builder, kernel, &BTreeMap::new())?;
         builder.finalize();
     }
 
@@ -194,15 +195,19 @@ fn define_typed_kernel(
 /// unpack helpers ([`pack_reg_to_u64`], [`unpack_u64_to_reg`]) handle
 /// the Rust-side bit-fiddling.
 ///
-/// Owns its `JitCtx` so the mmap'd code stays valid for the wrapper's
-/// lifetime. Cloning shares that state via `Arc` at the user level.
+/// Owns its `JitCtx` (for the local-module path) or holds `None` (for
+/// the shared-module path, where a static [`SHARED_JIT`] keeps the
+/// mmap'd code alive forever).
 pub struct WrappedKernel {
     /// Type-erased entry point. Cast via transmute to the
     /// canonical `WrapperFn` signature for invocation.
     pub wrapper_fn_ptr: *const u8,
-    /// Owns the JIT module so the code stays mapped. Order matters:
-    /// the function pointer is only valid as long as `_ctx` is alive.
-    _ctx: JitCtx,
+    /// `Some(_)` for kernels compiled into a private JIT module (no
+    /// cross-kernel calls); the ctx keeps the mmap'd code alive. `None`
+    /// for kernels compiled into [`SHARED_JIT`] — that static keeps
+    /// them mapped for the program's lifetime, so no per-kernel
+    /// ownership is needed.
+    _ctx: Option<JitCtx>,
 }
 
 unsafe impl Send for WrappedKernel {}
@@ -225,6 +230,9 @@ impl WrappedKernel {
 /// the runtime can dispatch into native code without knowing the
 /// kernel's specific param/return types. Returns a [`WrappedKernel`]
 /// owning the JIT context (and thus the mapped code).
+///
+/// Doesn't support kernels containing `KirOp::Call` — use
+/// [`compile_kernel_with_callees`] for those.
 pub fn compile_kernel_with_wrapper(kernel: &KirKernel) -> Result<WrappedKernel> {
     let mut ctx = JitCtx::new()?;
     let (typed_id, _) = define_typed_kernel(&mut ctx, kernel)?;
@@ -233,7 +241,207 @@ pub fn compile_kernel_with_wrapper(kernel: &KirKernel) -> Result<WrappedKernel> 
         .finalize_definitions()
         .context("finalize_definitions (wrapper)")?;
     let wrapper_fn_ptr = ctx.module.get_finalized_function(wrapper_id);
-    Ok(WrappedKernel { wrapper_fn_ptr, _ctx: ctx })
+    Ok(WrappedKernel { wrapper_fn_ptr, _ctx: Some(ctx) })
+}
+
+// ─── Shared JIT module: cross-kernel CLIF calls ──────────────────
+//
+// All kernels with `KirOp::Call` go into a single global JIT module so
+// that one kernel's compiled code can `call` another's directly via a
+// CLIF `call` instruction. The module is never dropped — fn pointers
+// it produces are valid for the program's lifetime.
+//
+// `by_kernel` keys by Arc identity so the same `Arc<KirKernel>`
+// referenced from multiple parent kernels reuses one compilation.
+// Names alone aren't unique enough — two distinct programs can both
+// have a binding `foo` with different KIR.
+
+struct SharedJit {
+    ctx: JitCtx,
+    /// Per-kernel cache: Arc<KirKernel> raw pointer → cached entry.
+    /// We keep the Arc alive in the entry so the raw pointer key
+    /// stays valid for the lifetime of the static. Without it,
+    /// Arc-allocator reuse could land a different KIR at the same
+    /// address and we'd return a stale FuncId pointing at code with
+    /// the wrong signature.
+    by_kernel: BTreeMap<usize, CachedKernel>,
+}
+
+#[derive(Clone)]
+struct CachedKernel {
+    func_id: FuncId,
+    signature: Signature,
+    /// Holds the Arc alive so its raw pointer can't be reused by a
+    /// later allocation.
+    _kernel: std::sync::Arc<KirKernel>,
+}
+
+unsafe impl Send for SharedJit {}
+
+static SHARED_JIT: std::sync::LazyLock<parking_lot::Mutex<SharedJit>> =
+    std::sync::LazyLock::new(|| {
+        parking_lot::Mutex::new(SharedJit {
+            ctx: JitCtx::new().expect("init shared JitCtx"),
+            by_kernel: BTreeMap::new(),
+        })
+    });
+
+/// JIT-compile `kernel` alongside any kernels it calls (`callees`),
+/// returning a [`WrappedKernel`] whose code can directly CLIF-call
+/// the callees via `call` instructions (no interpreter dispatch on
+/// the cross-kernel boundary). Used by lazy fusion when a kernel
+/// body contains `KirOp::Call`.
+///
+/// `callees` must be the *transitive* closure: every kernel reachable
+/// from `kernel` through `KirOp::Call`, by name. Each value is the
+/// `Arc<KirKernel>` for that name. Each callee's KirKernel is keyed
+/// by Arc identity in a global cache (`SharedJit::by_kernel`); the
+/// same Arc referenced from multiple parents compiles once.
+///
+/// Compile is two-phase: every kernel in the closure is *declared*
+/// (gets a `FuncId`) before any are *defined* (body compiled). This
+/// supports transitive fan-out — kernel A calls B calls C all in the
+/// shared module — and trivially supports mutual recursion (each body
+/// can reference any other body's pre-declared `FuncId`).
+///
+/// On failure, the caller should fall back to the interpreter — the
+/// kernel still has correct semantics there, just slower at the
+/// cross-kernel boundary.
+pub fn compile_kernel_with_callees(
+    kernel: &std::sync::Arc<KirKernel>,
+    callees: &BTreeMap<ArcStr, std::sync::Arc<KirKernel>>,
+) -> Result<WrappedKernel> {
+    let mut shared = SHARED_JIT.lock();
+    // Phase 1 — declare every kernel in the closure (parent + all
+    // transitively-reachable callees). Cached entries reuse their
+    // `FuncId`; fresh ones get a freshly-declared FuncId and queue
+    // for phase-2 body definition.
+    //
+    // The parent and any callee with name == parent's fn_name share
+    // the same FuncId; that's how self-recursion via `KirOp::Call`
+    // resolves to a CLIF call back to the parent.
+    let kernel_name = kernel.fn_name.clone();
+    let mut funcids: BTreeMap<ArcStr, (FuncId, Signature)> = BTreeMap::new();
+    let mut to_define: Vec<std::sync::Arc<KirKernel>> = Vec::new();
+    let parent_entry = ensure_declared(&mut shared, kernel, &mut to_define)?;
+    funcids.insert(kernel_name.clone(), parent_entry.clone());
+    for (name, k) in callees {
+        if name.as_str() == kernel_name.as_str() {
+            funcids.insert(name.clone(), parent_entry.clone());
+            continue;
+        }
+        let entry = ensure_declared(&mut shared, k, &mut to_define)?;
+        funcids.insert(name.clone(), entry);
+    }
+    // Phase 2 — define each freshly-declared body. Bodies that came
+    // back from the cache already had `define_function` called for
+    // them on a prior compile and need no re-definition. New bodies
+    // can reference any other declared FuncId (including each other,
+    // for mutual recursion).
+    for k in &to_define {
+        define_kernel_body(&mut shared.ctx, k, &funcids)?;
+    }
+    // Phase 3 — compile the uniform wrapper for the parent and
+    // finalize the module so the new code is mapped read-execute.
+    let wrapper_id = define_wrapper(&mut shared.ctx, kernel, parent_entry.0)?;
+    shared
+        .ctx
+        .module
+        .finalize_definitions()
+        .context("finalize_definitions (shared)")?;
+    let wrapper_fn_ptr = shared.ctx.module.get_finalized_function(wrapper_id);
+    // _ctx: None — the shared module is kept alive by the static.
+    Ok(WrappedKernel { wrapper_fn_ptr, _ctx: None })
+}
+
+/// Phase-1 helper: ensure `k` has a `FuncId` declared in the shared
+/// module. Cached kernels (by `Arc::as_ptr` identity) reuse their
+/// existing entry. Freshly-declared kernels are pushed onto
+/// `to_define` so phase 2 compiles their body.
+fn ensure_declared(
+    shared: &mut SharedJit,
+    k: &std::sync::Arc<KirKernel>,
+    to_define: &mut Vec<std::sync::Arc<KirKernel>>,
+) -> Result<(FuncId, Signature)> {
+    let key = std::sync::Arc::as_ptr(k) as usize;
+    if let Some(e) = shared.by_kernel.get(&key) {
+        return Ok((e.func_id, e.signature.clone()));
+    }
+    let symbol = shared.ctx.next_symbol(&k.fn_name);
+    let mut sig = Signature::new(shared.ctx.module.isa().default_call_conv());
+    for p in &k.params {
+        sig.params.push(AbiParam::new(prim_to_clif(p.prim)));
+    }
+    sig.returns.push(AbiParam::new(prim_to_clif(k.return_type)));
+    let fid = shared
+        .ctx
+        .module
+        .declare_function(&symbol, Linkage::Local, &sig)
+        .context("declare_function (shared declare)")?;
+    shared.by_kernel.insert(
+        key,
+        CachedKernel {
+            func_id: fid,
+            signature: sig.clone(),
+            _kernel: k.clone(),
+        },
+    );
+    to_define.push(k.clone());
+    Ok((fid, sig))
+}
+
+/// Phase-2 helper: compile `kernel`'s body and call `define_function`
+/// on its pre-declared `FuncId`. `funcids` must contain entries for
+/// the kernel itself and every callee its body references via
+/// `KirOp::Call`.
+fn define_kernel_body(
+    jit: &mut JitCtx,
+    kernel: &KirKernel,
+    funcids: &BTreeMap<ArcStr, (FuncId, Signature)>,
+) -> Result<()> {
+    let (func_id, sig) =
+        funcids.get(&kernel.fn_name).cloned().ok_or_else(|| {
+            anyhow!(
+                "define_kernel_body: missing FuncId for kernel `{}` \
+                 (phase-1 declare must have populated `funcids` first)",
+                kernel.fn_name
+            )
+        })?;
+    jit.func_ctx.func.signature = sig;
+    jit.func_ctx.func.name =
+        cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
+    {
+        // Declare each Call site's callee as a FuncRef in this
+        // function. Done before constructing the FunctionBuilder
+        // because both `declare_func_in_func` and `FunctionBuilder::new`
+        // borrow `jit.func_ctx.func` mutably.
+        let needed = crate::kernel_ir::collect_call_sites(kernel);
+        let mut callee_refs: BTreeMap<ArcStr, FuncRef> = BTreeMap::new();
+        for name in needed {
+            let target_fid = funcids.get(&name).map(|(f, _)| *f).ok_or_else(
+                || {
+                    anyhow!(
+                        "define_kernel_body: kernel `{}` calls `{name}` \
+                         but no entry in funcids",
+                        kernel.fn_name
+                    )
+                },
+            )?;
+            let fref = jit
+                .module
+                .declare_func_in_func(target_fid, &mut jit.func_ctx.func);
+            callee_refs.insert(name, fref);
+        }
+        let mut builder =
+            FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
+        compile_into_function(&mut builder, kernel, &callee_refs)?;
+        builder.finalize();
+    }
+    jit.module
+        .define_function(func_id, &mut jit.func_ctx)
+        .context("define_function (shared body)")?;
+    jit.module.clear_context(&mut jit.func_ctx);
+    Ok(())
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a
@@ -453,7 +661,11 @@ pub fn submit_async_compile(
 
 // ─── Function shape ──────────────────────────────────────────────
 
-fn compile_into_function(b: &mut FunctionBuilder, kernel: &KirKernel) -> Result<()> {
+fn compile_into_function(
+    b: &mut FunctionBuilder,
+    kernel: &KirKernel,
+    callee_refs: &BTreeMap<ArcStr, FuncRef>,
+) -> Result<()> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -489,7 +701,7 @@ fn compile_into_function(b: &mut FunctionBuilder, kernel: &KirKernel) -> Result<
         None
     };
 
-    let lower = LowerCtx { loop_head, param_count };
+    let lower = LowerCtx { loop_head, param_count, callee_refs };
     compile_body(b, &kernel.body, &mut env, &lower)?;
 
     if let Some(head) = loop_head {
@@ -506,13 +718,19 @@ fn compile_into_function(b: &mut FunctionBuilder, kernel: &KirKernel) -> Result<
 
 /// Per-function lowering context: things that don't change across
 /// statements within a single body.
-struct LowerCtx {
+struct LowerCtx<'a> {
     /// `Some(block)` when the kernel has a tail loop; TailCall jumps
     /// here. `None` for non-tail-recursive kernels.
     loop_head: Option<Block>,
     /// Number of formal parameters — `env.locals[..param_count]` are
     /// the params. Used by TailCall to know which Variables to assign.
     param_count: usize,
+    /// `KirOp::Call { fn_name }` resolves through this map to a CLIF
+    /// `FuncRef`. The caller must `declare_func_in_func` each callee's
+    /// `FuncId` against the current function before constructing the
+    /// FunctionBuilder, then pass the resulting refs in here. Empty
+    /// for kernels with no `KirOp::Call` sites.
+    callee_refs: &'a BTreeMap<ArcStr, FuncRef>,
 }
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
@@ -565,13 +783,13 @@ fn compile_body(
     for stmt in stmts {
         match stmt {
             KirStmt::Let(l) => {
-                let v = compile_expr(b, &l.value, env)?;
+                let v = compile_expr(b, &l.value, env, ctx)?;
                 let var = b.declare_var(prim_to_clif(l.value.typ));
                 b.def_var(var, v);
                 env.bind(l.local.clone(), var, l.value.typ);
             }
             KirStmt::Return(e) => {
-                let v = compile_expr(b, e, env)?;
+                let v = compile_expr(b, e, env, ctx)?;
                 b.ins().return_(&[v]);
                 return Ok(());
             }
@@ -584,7 +802,7 @@ fn compile_body(
                 // value, not one we already overwrote).
                 let mut new_vals = Vec::with_capacity(args.len());
                 for a in args {
-                    new_vals.push(compile_expr(b, a, env)?);
+                    new_vals.push(compile_expr(b, a, env, ctx)?);
                 }
                 debug_assert_eq!(new_vals.len(), ctx.param_count);
                 for (i, v) in new_vals.iter().enumerate() {
@@ -643,7 +861,7 @@ fn compile_select_stmt(
                 None
             }
             Some(cond) => {
-                let cv = compile_expr(b, cond, env)?;
+                let cv = compile_expr(b, cond, env, ctx)?;
                 if is_last {
                     let trap_block = b.create_block();
                     b.ins().brif(cv, body_block, &[], trap_block, &[]);
@@ -682,6 +900,7 @@ fn compile_expr(
     b: &mut FunctionBuilder,
     e: &KirExpr,
     env: &mut JitEnv,
+    ctx: &LowerCtx,
 ) -> Result<ClifValue> {
     match &e.op {
         KirOp::Const(c) => Ok(compile_const(b, *c)),
@@ -692,13 +911,13 @@ fn compile_expr(
             Ok(b.use_var(var))
         }
         KirOp::Bin { op, lhs, rhs } => {
-            let l = compile_expr(b, lhs, env)?;
-            let r = compile_expr(b, rhs, env)?;
+            let l = compile_expr(b, lhs, env, ctx)?;
+            let r = compile_expr(b, rhs, env, ctx)?;
             Ok(compile_bin(b, *op, lhs.typ, l, r))
         }
         KirOp::Cmp { op, lhs, rhs } => {
-            let l = compile_expr(b, lhs, env)?;
-            let r = compile_expr(b, rhs, env)?;
+            let l = compile_expr(b, lhs, env, ctx)?;
+            let r = compile_expr(b, rhs, env, ctx)?;
             Ok(compile_cmp(b, *op, lhs.typ, l, r))
         }
         KirOp::BoolBin { op, lhs, rhs } => {
@@ -709,40 +928,70 @@ fn compile_expr(
             // Rust `&&`/`||` short-circuit. No correctness diff for
             // pure code; if we ever fuse expressions with side-effects
             // we'll need to revisit.
-            let l = compile_expr(b, lhs, env)?;
-            let r = compile_expr(b, rhs, env)?;
+            let l = compile_expr(b, lhs, env, ctx)?;
+            let r = compile_expr(b, rhs, env, ctx)?;
             Ok(match op {
                 BoolOp::And => b.ins().band(l, r),
                 BoolOp::Or => b.ins().bor(l, r),
             })
         }
         KirOp::Not(inner) => {
-            let v = compile_expr(b, inner, env)?;
+            let v = compile_expr(b, inner, env, ctx)?;
             // Bool is I8 in CLIF; XOR with 1 flips the low bit.
             let one = b.ins().iconst(types::I8, 1);
             Ok(b.ins().bxor(v, one))
         }
         KirOp::Cast { inner, target } => {
-            let v = compile_expr(b, inner, env)?;
+            let v = compile_expr(b, inner, env, ctx)?;
             Ok(compile_cast(b, v, inner.typ, *target))
         }
-        KirOp::Call { fn_name: _, args: _ } => Err(anyhow!(
-            "KirOp::Call not supported in JIT v1 (cross-kernel calls \
-             land in M4 with the kernel registry)"
-        )),
+        KirOp::Call { fn_name, args } => {
+            // Cross-kernel call: look up the callee's `FuncRef` (the
+            // caller declared it in the function via
+            // `module.declare_func_in_func` before constructing the
+            // builder). Empty `callee_refs` means this kernel was
+            // compiled through the local-ctx path (which doesn't
+            // support Calls); the build should have routed through
+            // `compile_kernel_with_callees` instead.
+            let func_ref = ctx.callee_refs.get(fn_name).ok_or_else(|| {
+                anyhow!(
+                    "KIR malformed: KirOp::Call to `{fn_name}` but \
+                     callee_refs has no entry for it (forgot to use \
+                     compile_kernel_with_callees?)"
+                )
+            })?;
+            let mut clif_args = Vec::with_capacity(args.len());
+            for a in args {
+                clif_args.push(compile_expr(b, a, env, ctx)?);
+            }
+            let inst = b.ins().call(*func_ref, &clif_args);
+            let results = b.inst_results(inst);
+            if results.len() != 1 {
+                return Err(anyhow!(
+                    "KIR malformed: callee `{fn_name}` returned \
+                     {} values; KIR expects exactly 1",
+                    results.len()
+                ));
+            }
+            Ok(results[0])
+        }
         KirOp::Block { lets, tail } => {
             let mark = env.mark();
             for l in lets {
-                let v = compile_expr(b, &l.value, env)?;
+                let v = compile_expr(b, &l.value, env, ctx)?;
                 let var = b.declare_var(prim_to_clif(l.value.typ));
                 b.def_var(var, v);
                 env.bind(l.local.clone(), var, l.value.typ);
             }
-            let result = compile_expr(b, tail, env)?;
+            let result = compile_expr(b, tail, env, ctx)?;
             env.truncate(mark);
             Ok(result)
         }
-        KirOp::IfChain { arms } => compile_ifchain(b, arms, e.typ, env),
+        KirOp::IfChain { arms } => compile_ifchain(b, arms, e.typ, env, ctx),
+        KirOp::DynCall { .. } => Err(anyhow!(
+            "KirOp::DynCall not supported in JIT v1 (kernel falls back \
+             to interpreter; M4g v3 lifts this if perf needs it)"
+        )),
     }
 }
 
@@ -751,6 +1000,7 @@ fn compile_ifchain(
     arms: &[(Option<KirExpr>, KirExpr)],
     result_type: PrimType,
     env: &mut JitEnv,
+    ctx: &LowerCtx,
 ) -> Result<ClifValue> {
     if arms.is_empty() {
         return Err(anyhow!("KIR malformed: empty if-chain"));
@@ -769,7 +1019,7 @@ fn compile_ifchain(
                 None
             }
             Some(c) => {
-                let cv = compile_expr(b, c, env)?;
+                let cv = compile_expr(b, c, env, ctx)?;
                 if is_last {
                     let trap_block = b.create_block();
                     b.ins().brif(cv, body_block, &[], trap_block, &[]);
@@ -789,7 +1039,7 @@ fn compile_ifchain(
         b.switch_to_block(body_block);
         b.seal_block(body_block);
         let mark = env.mark();
-        let v = compile_expr(b, body, env)?;
+        let v = compile_expr(b, body, env, ctx)?;
         env.truncate(mark);
         b.ins().jump(merge, &[BlockArg::Value(v)]);
         match next_block {
@@ -1049,6 +1299,7 @@ mod tests {
                 input("b", PrimType::I64),
                 input("c", PrimType::I64),
             ],
+            fn_params: vec![],
             return_type: PrimType::I64,
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
@@ -1088,6 +1339,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("scaled"),
             params: vec![input("a", PrimType::F64), input("b", PrimType::F64)],
+            fn_params: vec![],
             return_type: PrimType::F64,
             has_tail_loop: false,
             body: vec![KirStmt::Return(block)],
@@ -1119,6 +1371,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("range_check"),
             params: vec![input("x", PrimType::F64), input("y", PrimType::F64)],
+            fn_params: vec![],
             return_type: PrimType::Bool,
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
@@ -1137,6 +1390,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("itof"),
             params: vec![input("i", PrimType::I64)],
+            fn_params: vec![],
             return_type: PrimType::F64,
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
@@ -1250,6 +1504,7 @@ mod tests {
                 input("ci", PrimType::F64),
                 input("i", PrimType::I64),
             ],
+            fn_params: vec![],
             return_type: PrimType::I64,
             has_tail_loop: true,
             body: vec![KirStmt::Select { arms: vec![arm0, arm1, arm2] }],
@@ -1297,6 +1552,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("countdown"),
             params: vec![input("n", PrimType::I64)],
+            fn_params: vec![],
             return_type: PrimType::I64,
             has_tail_loop: true,
             body: vec![KirStmt::Select { arms: vec![arm0, arm1] }],
@@ -1342,6 +1598,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("sign"),
             params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
             return_type: PrimType::I64,
             has_tail_loop: false,
             body: vec![KirStmt::Return(chain)],
@@ -1403,6 +1660,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("inc"),
             params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
             return_type: PrimType::I64,
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
@@ -1410,5 +1668,278 @@ mod tests {
         let (_ctx, p) = jit(&kernel);
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(p) };
         assert_eq!(f(i64::MAX), i64::MIN);
+    }
+
+    /// Cross-kernel CLIF call via the shared module path. The parent
+    /// kernel `caller` invokes `square(x) + 10`. Verifies that the
+    /// `KirOp::Call` lowering threads correctly through the shared JIT
+    /// module and that the wrapper still yields the right end-to-end
+    /// result.
+    #[test]
+    fn shared_module_cross_kernel_call() {
+        use crate::kir_interp::RegValue;
+        use std::sync::Arc;
+        // square(x: i64) -> i64 { x * x }
+        let square = Arc::new(KirKernel {
+            fn_name: ArcStr::from("square"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(
+                arith(
+                    loc("x", PrimType::I64),
+                    loc("x", PrimType::I64),
+                    BinOp::Mul,
+                )
+                .unwrap(),
+            )],
+        });
+        // caller(n: i64) -> i64 { square(n) + 10 }
+        let call_expr = KirExpr {
+            op: KirOp::Call {
+                fn_name: ArcStr::from("square"),
+                args: vec![loc("n", PrimType::I64)],
+            },
+            typ: PrimType::I64,
+        };
+        let body = arith(call_expr, const_expr(ConstVal::I64(10)), BinOp::Add)
+            .unwrap();
+        let caller = Arc::new(KirKernel {
+            fn_name: ArcStr::from("caller"),
+            params: vec![input("n", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        });
+        let mut callees = BTreeMap::new();
+        callees.insert(ArcStr::from("square"), square);
+        let wrapped = compile_kernel_with_callees(&caller, &callees)
+            .expect("compile_kernel_with_callees");
+        let f = unsafe { wrapped.fn_ptr() };
+        let args = [pack_reg_to_u64(&RegValue::I64(7))];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(unpack_u64_to_reg(out, caller.return_type), RegValue::I64(59));
+    }
+
+    /// Non-tail self-recursion via `KirOp::Call` (e.g. naive fib's
+    /// `fib(n-1) + fib(n-2)`). The shared-module path declares the
+    /// parent's `FuncId` first, then routes any Call site whose name
+    /// matches the parent back to that FuncId. Verifies the wrapper
+    /// returns the right answer for a small fib input.
+    #[test]
+    fn shared_module_self_recursion() {
+        use crate::kir_interp::RegValue;
+        use std::sync::Arc;
+        // fib(n) = if n < 2 { n } else { fib(n-1) + fib(n-2) }
+        let fib_call = |which: i64| KirExpr {
+            op: KirOp::Call {
+                fn_name: ArcStr::from("fib"),
+                args: vec![arith(
+                    loc("n", PrimType::I64),
+                    const_expr(ConstVal::I64(which)),
+                    BinOp::Sub,
+                )
+                .unwrap()],
+            },
+            typ: PrimType::I64,
+        };
+        let recursive_body =
+            arith(fib_call(1), fib_call(2), BinOp::Add).unwrap();
+        let arms = vec![
+            SelectArm {
+                cond: Some(
+                    cmp(
+                        loc("n", PrimType::I64),
+                        const_expr(ConstVal::I64(2)),
+                        CmpOp::Lt,
+                    )
+                    .unwrap(),
+                ),
+                body: vec![KirStmt::Return(loc("n", PrimType::I64))],
+            },
+            SelectArm {
+                cond: None,
+                body: vec![KirStmt::Return(recursive_body)],
+            },
+        ];
+        let fib = Arc::new(KirKernel {
+            fn_name: ArcStr::from("fib"),
+            params: vec![input("n", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Select { arms }],
+        });
+        // Lazy fusion would put the parent's own kernel in the
+        // registry to support self-recursion in the interpreter.
+        // Mirror that — the JIT path skips it and uses the parent's
+        // own FuncId.
+        let mut callees = BTreeMap::new();
+        callees.insert(ArcStr::from("fib"), fib.clone());
+        let wrapped = compile_kernel_with_callees(&fib, &callees)
+            .expect("compile fib with self-recursion");
+        let f = unsafe { wrapped.fn_ptr() };
+        // fib(10) = 55, fib(15) = 610.
+        let mut out = 0u64;
+        let args = [pack_reg_to_u64(&RegValue::I64(10))];
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(55));
+        let mut out = 0u64;
+        let args = [pack_reg_to_u64(&RegValue::I64(15))];
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(610));
+    }
+
+    /// Three-level chain: outer → middle → leaf, all in the shared
+    /// module via a single `compile_kernel_with_callees` call. The
+    /// caller passes the *transitive* closure (outer + middle + leaf);
+    /// the two-phase declare-then-define lets middle's body reference
+    /// leaf's FuncId even though leaf wasn't declared at the time we
+    /// started middle's compile. Tests that the M4d v3 transitive
+    /// fan-out path works end-to-end.
+    #[test]
+    fn shared_module_transitive_fan_out() {
+        use crate::kir_interp::RegValue;
+        use std::sync::Arc;
+        // leaf(x) = x + 1
+        let leaf = Arc::new(KirKernel {
+            fn_name: ArcStr::from("leaf"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(
+                arith(
+                    loc("x", PrimType::I64),
+                    const_expr(ConstVal::I64(1)),
+                    BinOp::Add,
+                )
+                .unwrap(),
+            )],
+        });
+        // middle(x) = leaf(x) * 2
+        let middle = Arc::new(KirKernel {
+            fn_name: ArcStr::from("middle"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(
+                arith(
+                    KirExpr {
+                        op: KirOp::Call {
+                            fn_name: ArcStr::from("leaf"),
+                            args: vec![loc("x", PrimType::I64)],
+                        },
+                        typ: PrimType::I64,
+                    },
+                    const_expr(ConstVal::I64(2)),
+                    BinOp::Mul,
+                )
+                .unwrap(),
+            )],
+        });
+        // outer(x) = middle(x) - 3
+        let outer = Arc::new(KirKernel {
+            fn_name: ArcStr::from("outer"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(
+                arith(
+                    KirExpr {
+                        op: KirOp::Call {
+                            fn_name: ArcStr::from("middle"),
+                            args: vec![loc("x", PrimType::I64)],
+                        },
+                        typ: PrimType::I64,
+                    },
+                    const_expr(ConstVal::I64(3)),
+                    BinOp::Sub,
+                )
+                .unwrap(),
+            )],
+        });
+        let mut callees = BTreeMap::new();
+        callees.insert(ArcStr::from("middle"), middle);
+        callees.insert(ArcStr::from("leaf"), leaf);
+        let wrapped = compile_kernel_with_callees(&outer, &callees)
+            .expect("compile transitive chain");
+        let f = unsafe { wrapped.fn_ptr() };
+        // outer(10) = ((10 + 1) * 2) - 3 = 19
+        let args = [pack_reg_to_u64(&RegValue::I64(10))];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(19));
+    }
+
+    /// Same callee Arc invoked via two separate parent kernels. The
+    /// `by_kernel` cache should compile `square` exactly once and let
+    /// both parents share it. Verifies both parents return the right
+    /// answer (so the shared callee is correctly addressable from each).
+    #[test]
+    fn shared_module_callee_dedup() {
+        use crate::kir_interp::RegValue;
+        use std::sync::Arc;
+        let square = Arc::new(KirKernel {
+            fn_name: ArcStr::from("square"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            return_type: PrimType::I64,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(
+                arith(
+                    loc("x", PrimType::I64),
+                    loc("x", PrimType::I64),
+                    BinOp::Mul,
+                )
+                .unwrap(),
+            )],
+        });
+        let make_caller = |add_const: i64| {
+            let call_expr = KirExpr {
+                op: KirOp::Call {
+                    fn_name: ArcStr::from("square"),
+                    args: vec![loc("n", PrimType::I64)],
+                },
+                typ: PrimType::I64,
+            };
+            let body = arith(
+                call_expr,
+                const_expr(ConstVal::I64(add_const)),
+                BinOp::Add,
+            )
+            .unwrap();
+            Arc::new(KirKernel {
+                fn_name: ArcStr::from("caller"),
+                params: vec![input("n", PrimType::I64)],
+                fn_params: vec![],
+                return_type: PrimType::I64,
+                has_tail_loop: false,
+                body: vec![KirStmt::Return(body)],
+            })
+        };
+        let caller_a = make_caller(1);
+        let caller_b = make_caller(100);
+        let mut callees = BTreeMap::new();
+        callees.insert(ArcStr::from("square"), square.clone());
+        let wa = compile_kernel_with_callees(&caller_a, &callees)
+            .expect("compile a");
+        let wb = compile_kernel_with_callees(&caller_b, &callees)
+            .expect("compile b");
+        let fa = unsafe { wa.fn_ptr() };
+        let fb = unsafe { wb.fn_ptr() };
+        let args = [pack_reg_to_u64(&RegValue::I64(5))];
+        let (mut oa, mut ob) = (0u64, 0u64);
+        unsafe {
+            fa(args.as_ptr(), &mut oa);
+            fb(args.as_ptr(), &mut ob);
+        }
+        assert_eq!(unpack_u64_to_reg(oa, PrimType::I64), RegValue::I64(26));
+        assert_eq!(unpack_u64_to_reg(ob, PrimType::I64), RegValue::I64(125));
     }
 }

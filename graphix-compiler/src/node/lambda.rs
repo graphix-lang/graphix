@@ -408,168 +408,45 @@ impl Lambda {
         let jit_enabled = std::env::var_os("GRAPHIX_JIT").is_some();
         let jit_async = !jit_enabled
             && std::env::var_os("GRAPHIX_JIT_ASYNC").is_some();
-        // Eager fusion: try to build the KIR kernel (and JIT-compile
-        // it if requested) at compile time, while we have the user's
-        // annotations on the argspec. The result is shared via Arc
-        // into the InitFn so every call site reuses the same kernel
-        // — no per-instantiation rebuild, no per-call JIT. Lambdas
-        // that don't fully annotate get `None` here and fall through
-        // to the deferred path (which retries fusion at first call
-        // using the typechecker-resolved FnType).
-        // FusedSlot carries the kernel, an optional sync JIT
-        // wrapper, an optional async JIT slot (filled by the
-        // background worker), and the KernelRegistry snapshot the
-        // runtime interpreter walks for KirOp::Call.
+        // Lazy fusion. We capture the lambda + a snapshot of the
+        // current `fusion_known_consts` map into the InitFn closure
+        // and run the actual fusion at first call. Cross-kernel
+        // calls resolve through `ctx.fusion_lambdas` via
+        // `fusion::lazy_resolve_kernel`, which builds callee kernels
+        // on demand the first time they're referenced. Cycles are
+        // broken by the per-entry `InProgress` cache state.
         //
-        // Sync wrapper takes precedence over async slot at construct-
-        // ion time: if sync JIT is enabled we don't even submit an
-        // async request. If neither is set, KirNode runs through
-        // the interpreter.
-        type FusedSlot = Option<(
+        // The result is cached on a `Mutex<LazyState>` shared across
+        // all call sites of this LambdaDef, so the work happens once
+        // — kernels build, JIT compiles (sync) or queues (async),
+        // and subsequent invocations just clone Arcs.
+        //
+        // [`LazySlot`] is what the cached state holds when fusion
+        // succeeded: the kernel, an optional sync JIT wrapper, an
+        // optional async slot the worker fills later, and the
+        // KernelRegistry the interpreter uses for KirOp::Call
+        // dispatch. Sync wrapper wins over async slot when both
+        // would be applicable (in practice we only set one).
+        type LazySlot = Option<(
             SArc<crate::kernel_ir::KirKernel>,
             Option<SArc<crate::kir_jit::WrappedKernel>>,
             Option<SArc<crate::kir_jit::AsyncJitSlot>>,
             SArc<crate::kir_interp::KernelRegistry>,
         )>;
-        // Snapshot the fusion-visibility state at compile time, both
-        // for the eager attempt below and for the deferred attempt
-        // captured into the init closure. These are clones of the
-        // BTreeMaps; not free but typically small (handful of
-        // entries).
-        let snapshot_consts = ctx.fusion_known_consts.clone();
-        let snapshot_kernels_full = ctx.fusion_known_kernels.clone();
-        let known_signatures: std::collections::BTreeMap<
-            ArcStr,
-            crate::kernel_ir::KnownFusedFn,
-        > = snapshot_kernels_full
-            .iter()
-            .map(|(k, v)| (k.clone(), v.signature.clone()))
-            .collect();
-        // Build the runtime kernel registry once. `KirNode::Call`
-        // dispatch reads it; cheap to share via Arc.
-        let runtime_registry: SArc<crate::kir_interp::KernelRegistry> = {
-            let mut reg = crate::kir_interp::KernelRegistry::default();
-            for (name, entry) in snapshot_kernels_full.iter() {
-                reg.kernels.insert(name.clone(), entry.kernel.clone());
-            }
-            SArc::new(reg)
-        };
-        let precomputed: FusedSlot = if kir_enabled {
-            match &l.body {
-                Either::Left(_) => {
-                    let synth_name = match ctx.current_binding_name.as_ref() {
-                        Some(n) => n.clone(),
-                        None => ArcStr::from(
-                            format_compact!("kir_{}", id.0).as_str(),
-                        ),
-                    };
-                    match crate::fusion::build_kir_kernel(
-                        synth_name.as_str(),
-                        l,
-                        &known_signatures,
-                        &snapshot_consts,
-                    ) {
-                        Some((kernel, sig)) => {
-                            // The kernel may legitimately contain
-                            // `KirOp::Call` now — the interpreter
-                            // resolves them via runtime_registry.
-                            // The JIT path can't yet (cross-module
-                            // calls aren't wired), so we only build
-                            // a wrapper for call-free kernels.
-                            let kernel_arc = SArc::new(kernel);
-                            let jit_safe =
-                                !crate::kernel_ir::kernel_contains_call(
-                                    &kernel_arc,
-                                );
-                            let wrapped = if jit_enabled && jit_safe {
-                                match crate::kir_jit::compile_kernel_with_wrapper(
-                                    &kernel_arc,
-                                ) {
-                                    Ok(w) => Some(SArc::new(w)),
-                                    Err(e) => {
-                                        log::warn!(
-                                            "kir_jit: compile failed for {}: \
-                                             {e:#}; falling back to \
-                                             interpreter",
-                                            synth_name
-                                        );
-                                        None
-                                    }
-                                }
-                            } else {
-                                None
-                            };
-                            let async_slot = if jit_async
-                                && jit_safe
-                                && wrapped.is_none()
-                            {
-                                Some(crate::kir_jit::submit_async_compile(
-                                    kernel_arc.clone(),
-                                    synth_name.clone(),
-                                ))
-                            } else {
-                                None
-                            };
-                            // Publish under the binding name so later
-                            // siblings in the same scope (and inner
-                            // lambdas they contain) can lower
-                            // calls/refs to this kernel.
-                            if let Some(binding_name) =
-                                ctx.current_binding_name.as_ref()
-                            {
-                                ctx.fusion_known_kernels.insert(
-                                    binding_name.clone(),
-                                    crate::FusedKernelEntry {
-                                        signature: sig,
-                                        kernel: kernel_arc.clone(),
-                                    },
-                                );
-                            }
-                            Some((
-                                kernel_arc,
-                                wrapped,
-                                async_slot,
-                                runtime_registry.clone(),
-                            ))
-                        }
-                        _ => None,
-                    }
-                }
-                Either::Right(_) => None,
-            }
-        } else {
-            None
-        };
-        // Deferred fusion state: when the eager attempt fails
-        // (unannotated argspec), the InitFn re-attempts at first
-        // call using the call-site `resolved` FnType to fill in the
-        // missing types. Result is cached so the second call site
-        // doesn't re-fuse + re-JIT.
-        //
-        // Polymorphic lambdas: this caches the FIRST resolved type
-        // seen. If a later call site uses different types, we'd
-        // dispatch into the wrong native code — a known v1 limit.
-        // Detect-and-skip-cache for type mismatch is a follow-up.
         #[derive(Clone)]
-        enum DeferredState {
+        enum LazyState {
             Pending,
             Failed,
-            Ready(FusedSlot),
+            Ready(LazySlot),
         }
-        let deferred_state: SArc<Mutex<DeferredState>> =
-            if kir_enabled && precomputed.is_none() {
-                SArc::new(Mutex::new(DeferredState::Pending))
-            } else {
-                // No deferred path needed. Use a permanently-Failed
-                // state so the closure's lookup just no-ops.
-                SArc::new(Mutex::new(DeferredState::Failed))
-            };
-        let l_for_deferred = if kir_enabled && precomputed.is_none() {
-            Some(l.clone())
+        let lazy_state: SArc<Mutex<LazyState>> = if kir_enabled {
+            SArc::new(Mutex::new(LazyState::Pending))
         } else {
-            None
+            // KIR disabled — never attempt fusion.
+            SArc::new(Mutex::new(LazyState::Failed))
         };
-        let synth_name_for_deferred = if l_for_deferred.is_some() {
+        let lambda_for_lazy = if kir_enabled { Some(l.clone()) } else { None };
+        let synth_name = if kir_enabled {
             Some(match ctx.current_binding_name.as_ref() {
                 Some(n) => n.clone(),
                 None => ArcStr::from(format_compact!("kir_{}", id.0).as_str()),
@@ -577,110 +454,195 @@ impl Lambda {
         } else {
             None
         };
-        // Snapshots threaded into the deferred fusion attempt — same
-        // shape as the eager attempt, just deferred until first call
-        // when the typechecker has resolved the lambda's argspec.
-        // Always clone (cheap; usually small maps), even when
-        // deferred isn't needed, so we don't pay branchy capture
-        // logic in the closure.
-        let deferred_consts = snapshot_consts.clone();
-        let deferred_known_signatures = known_signatures.clone();
-        let deferred_registry = runtime_registry.clone();
+        // Const snapshot for inlining outer-scope `let x = <literal>;`
+        // bindings inside fusable bodies. Captured at compile time
+        // because Block::compile saves/restores the live map at
+        // scope boundaries — by the time the InitFn fires the
+        // outer-scope consts may have been restored away.
+        let consts_snapshot = ctx.fusion_known_consts.clone();
         let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, resolved, tid| {
             // restore the lexical environment to the state it was in
             // when the closure was created
             ctx.with_restored(_env.clone(), |ctx| match body.clone() {
                 Either::Left(body) => {
-                    // Fast path: precomputed fusion result. Every
-                    // call site clones the shared Arc<KirKernel> and
-                    // (when JIT-on) Arc<WrappedKernel>. The KirNode
-                    // gets its own per-call-site arg buffer but the
-                    // expensive bits (kernel build, native codegen)
-                    // were already done.
-                    if let Some((kernel_arc, wrapped, async_slot, registry)) =
-                        &precomputed
-                    {
-                        if args.len() == kernel_arc.params.len() {
-                            let n_args = args.len();
-                            let kn = match (wrapped, async_slot) {
-                                (Some(w), _) => crate::kir_interp::KirNode::with_jit(
-                                    kernel_arc.clone(),
-                                    n_args,
-                                    SArc::clone(w),
-                                    SArc::clone(registry),
-                                ),
-                                (None, Some(s)) => {
-                                    crate::kir_interp::KirNode::with_async_jit(
-                                        kernel_arc.clone(),
-                                        n_args,
-                                        SArc::clone(s),
-                                        SArc::clone(registry),
-                                    )
-                                }
-                                (None, None) => crate::kir_interp::KirNode::new(
-                                    kernel_arc.clone(),
-                                    n_args,
-                                    SArc::clone(registry),
-                                ),
-                            };
-                            return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
-                        }
-                    }
-                    // Deferred path: when the eager attempt failed
-                    // (e.g. an unannotated callback like `|idx| ...`
-                    // passed to array::map), retry now that the
-                    // typechecker has handed us a resolved FnType.
-                    // Patch the lambda's argspec from `resolved` and
-                    // try fusion again. Cache the result so later
-                    // call sites of the same LambdaDef skip the
-                    // work.
-                    if let (
-                        Some(l_def),
-                        Some(synth),
-                        Some(rft),
-                    ) = (
-                        l_for_deferred.as_ref(),
-                        synth_name_for_deferred.as_ref(),
+                    // Lazy fusion: build the kernel + JIT wrapper at
+                    // first call, cache, reuse for subsequent calls.
+                    // Resolves cross-kernel callees through
+                    // `ctx.fusion_lambdas` via `lazy_resolve_kernel`,
+                    // which builds each callee's kernel on demand.
+                    if let (Some(lambda), Some(synth), Some(rft)) = (
+                        lambda_for_lazy.as_ref(),
+                        synth_name.as_ref(),
                         resolved,
                     ) {
-                        let mut state = deferred_state.lock();
-                        let slot: FusedSlot = match &*state {
-                            DeferredState::Ready(slot) => slot.clone(),
-                            DeferredState::Failed => None,
-                            DeferredState::Pending => {
+                        let mut state = lazy_state.lock();
+                        let slot: LazySlot = match &*state {
+                            LazyState::Ready(slot) => slot.clone(),
+                            LazyState::Failed => None,
+                            LazyState::Pending => {
+                                // Patch the argspec from the call
+                                // site's resolved FnType (no-op when
+                                // the user already annotated).
                                 let mut patched =
-                                    triomphe::Arc::new(l_def.clone());
+                                    triomphe::Arc::new(lambda.clone());
                                 crate::fusion::apply_fntype_to_lambda(
-                                    &mut patched,
-                                    rft,
+                                    &mut patched, rft,
                                 );
-                                let attempt = crate::fusion::build_kir_kernel(
-                                    synth.as_str(),
-                                    &*patched,
-                                    &deferred_known_signatures,
-                                    &deferred_consts,
-                                );
-                                let slot: FusedSlot = match attempt {
-                                    Some((kernel, _sig)) => {
-                                        let kernel_arc = SArc::new(kernel);
-                                        // JIT only when no calls
-                                        // (cross-module dispatch is
-                                        // not yet wired); the
-                                        // interpreter handles Call
-                                        // via the registry.
-                                        let wrapped = if jit_enabled
-                                            && !crate::kernel_ir::kernel_contains_call(
-                                                &kernel_arc,
+                                // Discover callees, lazy-resolve each
+                                // through ctx.fusion_lambdas. The
+                                // signatures feed `build_kir_kernel`
+                                // for compile-time call lowering;
+                                // the kernels feed the runtime
+                                // `KernelRegistry` for `KirOp::Call`
+                                // dispatch.
+                                let mut known_signatures: std::collections::BTreeMap<
+                                    ArcStr,
+                                    crate::kernel_ir::KnownFusedFn,
+                                > = std::collections::BTreeMap::new();
+                                let mut registry_kernels: std::collections::BTreeMap<
+                                    ArcStr,
+                                    SArc<crate::kernel_ir::KirKernel>,
+                                > = std::collections::BTreeMap::new();
+                                let mut binding_fn_inputs: Vec<
+                                    crate::kernel_ir::FnParam,
+                                > = Vec::new();
+                                if let netidx::utils::Either::Left(body) =
+                                    &patched.body
+                                {
+                                    // First, lazy-resolve every direct
+                                    // callee referenced from the body's
+                                    // source AST. This builds each
+                                    // callee's KirKernel.
+                                    let mut seen: std::collections::BTreeSet<ArcStr> =
+                                        std::collections::BTreeSet::new();
+                                    for (callee, apply_id) in
+                                        crate::fusion::discover_callee_names(body)
+                                    {
+                                        if !seen.insert(callee.clone()) {
+                                            continue;
+                                        }
+                                        if let Some((sig, kernel)) =
+                                            crate::fusion::lazy_resolve_kernel(
+                                                ctx,
+                                                &callee,
+                                                Some(apply_id),
                                             )
                                         {
-                                            match crate::kir_jit::compile_kernel_with_wrapper(
+                                            known_signatures
+                                                .insert(callee.clone(), sig);
+                                            registry_kernels
+                                                .insert(callee, kernel);
+                                        } else if let Some(fp) =
+                                            crate::fusion::resolve_binding_fn_input(
+                                                ctx,
+                                                &_scope,
+                                                &callee,
+                                            )
+                                        {
+                                            // Callee can't fuse but has a
+                                            // valid LambdaDef binding —
+                                            // register as DynCall Binding
+                                            // source so the parent kernel
+                                            // can dispatch through
+                                            // Apply::update.
+                                            binding_fn_inputs.push(fp);
+                                        }
+                                    }
+                                    // Then, walk transitively: for each
+                                    // kernel we just resolved, scan its
+                                    // KIR for further `KirOp::Call` and
+                                    // pull those in too. Required for
+                                    // the JIT shared-module path so the
+                                    // whole call graph is declared up
+                                    // front. The interpreter only
+                                    // strictly needs the immediate
+                                    // callees, but feeding it the full
+                                    // closure is harmless (just larger
+                                    // registries).
+                                    let mut work: Vec<ArcStr> =
+                                        registry_kernels.keys().cloned().collect();
+                                    while let Some(name) = work.pop() {
+                                        let inner_kernel = registry_kernels
+                                            .get(&name)
+                                            .expect("just-inserted")
+                                            .clone();
+                                        for inner_name in
+                                            crate::kernel_ir::collect_call_sites(
+                                                &inner_kernel,
+                                            )
+                                        {
+                                            // Skip the kernel-being-built's
+                                            // own name (self-recursion of
+                                            // the parent goes through the
+                                            // parent's own FuncId, not a
+                                            // separate registry entry).
+                                            if inner_name.as_str()
+                                                == synth.as_str()
+                                            {
+                                                continue;
+                                            }
+                                            if !seen.insert(inner_name.clone()) {
+                                                continue;
+                                            }
+                                            if let Some((sig, kernel)) =
+                                                crate::fusion::lazy_resolve_kernel(
+                                                    ctx,
+                                                    &inner_name,
+                                                    None,
+                                                )
+                                            {
+                                                known_signatures.insert(
+                                                    inner_name.clone(),
+                                                    sig,
+                                                );
+                                                registry_kernels.insert(
+                                                    inner_name.clone(),
+                                                    kernel,
+                                                );
+                                                work.push(inner_name);
+                                            }
+                                        }
+                                    }
+                                }
+                                let attempt =
+                                    crate::fusion::build_kir_kernel_with_binding_inputs(
+                                        synth.as_str(),
+                                        &*patched,
+                                        &known_signatures,
+                                        &consts_snapshot,
+                                        &binding_fn_inputs,
+                                    );
+                                let slot: LazySlot = match attempt {
+                                    Some((kernel, _sig)) => {
+                                        let kernel_arc = SArc::new(kernel);
+                                        let has_calls =
+                                            crate::kernel_ir::kernel_contains_call(
                                                 &kernel_arc,
-                                            ) {
+                                            );
+                                        // Sync JIT path. Kernels with
+                                        // `KirOp::Call` go through the
+                                        // shared-module path so the
+                                        // compiled code can directly
+                                        // CLIF-call its callees; leaf
+                                        // kernels use a private module
+                                        // for cheaper isolation.
+                                        let wrapped = if jit_enabled {
+                                            let res = if has_calls {
+                                                crate::kir_jit::compile_kernel_with_callees(
+                                                    &kernel_arc,
+                                                    &registry_kernels,
+                                                )
+                                            } else {
+                                                crate::kir_jit::compile_kernel_with_wrapper(
+                                                    &kernel_arc,
+                                                )
+                                            };
+                                            match res {
                                                 Ok(w) => Some(SArc::new(w)),
                                                 Err(e) => {
                                                     log::warn!(
-                                                        "kir_jit (deferred): {}: \
-                                                         {e:#}; using interpreter",
+                                                        "kir_jit: {}: {e:#}; \
+                                                         using interpreter",
                                                         synth
                                                     );
                                                     None
@@ -689,14 +651,19 @@ impl Lambda {
                                         } else {
                                             None
                                         };
-                                        // Async deferred-fusion JIT
-                                        // is supported the same way
-                                        // as eager — when sync didn't
-                                        // produce a wrapper we may
-                                        // still queue a background
-                                        // compile.
+                                        // Async JIT path: leaf kernels
+                                        // only for now. Kernels with
+                                        // calls would need the shared
+                                        // module on the worker thread,
+                                        // which the bg compile path
+                                        // doesn't yet thread (M4e v2
+                                        // territory). Until then they
+                                        // run interpreted, with the
+                                        // registry resolving the call
+                                        // boundary.
                                         let async_slot = if jit_async
                                             && wrapped.is_none()
+                                            && !has_calls
                                         {
                                             Some(
                                                 crate::kir_jit::submit_async_compile(
@@ -707,18 +674,23 @@ impl Lambda {
                                         } else {
                                             None
                                         };
+                                        let registry = SArc::new(
+                                            crate::kir_interp::KernelRegistry {
+                                                kernels: registry_kernels,
+                                            },
+                                        );
                                         Some((
                                             kernel_arc,
                                             wrapped,
                                             async_slot,
-                                            deferred_registry.clone(),
+                                            registry,
                                         ))
                                     }
                                     _ => None,
                                 };
                                 *state = match &slot {
-                                    Some(_) => DeferredState::Ready(slot.clone()),
-                                    None => DeferredState::Failed,
+                                    Some(_) => LazyState::Ready(slot.clone()),
+                                    None => LazyState::Failed,
                                 };
                                 slot
                             }
@@ -727,26 +699,50 @@ impl Lambda {
                         if let Some((kernel_arc, wrapped, async_slot, registry)) =
                             slot
                         {
-                            if args.len() == kernel_arc.params.len() {
+                            // KirNode arity = prim params + fn params.
+                            // For kernels without HOF args fn_params is
+                            // empty, so this matches the legacy check.
+                            let total_params = kernel_arc.params.len()
+                                + kernel_arc.fn_params.len();
+                            if args.len() == total_params {
                                 let n_args = args.len();
+                                let kn_scope = scope.clone();
                                 let kn = match (wrapped, async_slot) {
                                     (Some(w), _) =>
                                         crate::kir_interp::KirNode::with_jit(
-                                            kernel_arc, n_args, w, registry,
+                                            kernel_arc,
+                                            n_args,
+                                            w,
+                                            registry,
+                                            kn_scope,
+                                            tid,
                                         ),
                                     (None, Some(s)) =>
                                         crate::kir_interp::KirNode::with_async_jit(
-                                            kernel_arc, n_args, s, registry,
+                                            kernel_arc,
+                                            n_args,
+                                            s,
+                                            registry,
+                                            kn_scope,
+                                            tid,
                                         ),
                                     (None, None) =>
                                         crate::kir_interp::KirNode::new(
-                                            kernel_arc, n_args, registry,
+                                            kernel_arc,
+                                            n_args,
+                                            registry,
+                                            kn_scope,
+                                            tid,
                                         ),
                                 };
                                 return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
                             }
                         }
                     }
+                    // Lazy fusion didn't produce a usable kernel —
+                    // either KIR disabled, no resolved type yet, or
+                    // body has unsupported constructs. Fall back to
+                    // the regular node-graph interpreter.
                     let scope = Scope {
                         dynamic: scope.dynamic.clone(),
                         lexical: _scope.lexical.clone(),

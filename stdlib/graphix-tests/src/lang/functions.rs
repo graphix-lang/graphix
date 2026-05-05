@@ -266,6 +266,102 @@ run!(kir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v
     _ => false,
 });
 
+// Lazy fusion correctness: a recursive lambda with NO annotations
+// should still produce correct output. The typechecker infers types
+// from the call site; lazy fusion uses fn_types via spec_id when
+// building the kernel. If lazy resolution falls back to the user's
+// argspec annotations alone, this test would still produce the
+// right value (just unfused), so it's a regression test for
+// correctness only — not for "fuses".
+const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
+{
+    let rec sum_to = |n, acc|
+        select n {
+            0 => acc,
+            _ => sum_to(n - 1, acc + n)
+        };
+    sum_to(100, 0)
+}
+"#;
+
+run!(kir_lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
+    // 1 + 2 + ... + 100 = 5050
+    Ok(Value::I64(5050)) => true,
+    _ => false,
+});
+
+// Three-level recursive fusion with NO annotations. Tests that
+// lazy fusion threads through arbitrarily nested call chains using
+// typechecker-inferred types alone.
+//
+//   inner(x)  = x * x + 1
+//   middle(x) = inner(x) + inner(x + 1)
+//   outer(x)  = middle(x) - middle(x - 1)
+//
+// outer(5):
+//   middle(5)  = inner(5) + inner(6) = 26 + 37 = 63
+//   middle(4)  = inner(4) + inner(5) = 17 + 26 = 43
+//   outer(5)   = 63 - 43 = 20
+const KIR_LAZY_THREE_LEVEL: &str = r#"
+{
+    let inner = |x| x * x + 1;
+    let middle = |x| inner(x) + inner(x + 1);
+    let outer = |x| middle(x) - middle(x - 1);
+    outer(5)
+}
+"#;
+
+run!(kir_lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
+    Ok(Value::I64(20)) => true,
+    _ => false,
+});
+
+// Higher-order function with a function-typed argument. Pre-DynCall
+// the kernel build for `combine` would fail because `f: fn(i64) ->
+// i64` isn't a primitive — so combine's body ran through GXLambda.
+// With DynCall, fusion registers `f` as a fn-typed param, the body
+// `f(x) + 1` lowers to KirOp::DynCall, and the interpreter
+// dispatches to the LambdaDef passed at the call site. Result is
+// 5*5 + 1 = 26.
+const KIR_DYNCALL_HOF: &str = r#"
+{
+    let square = |x: i64| -> i64 x * x;
+    let combine = |f: fn(i64) -> i64, x: i64| -> i64 f(x) + 1;
+    combine(square, 5)
+}
+"#;
+
+run!(kir_dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
+    Ok(Value::I64(26)) => true,
+    _ => false,
+});
+
+// Static-but-non-fusable callee. `helper` is a let-bound stable
+// lambda whose body uses a non-primitive intermediate (Array<i64>),
+// so its kernel build returns None and the lazy-fusion path
+// registers it as a `FnSource::Binding` DynCall slot. `outer`
+// fuses, lowering `helper(x)` to `KirOp::DynCall` against the
+// binding's BindId; at runtime KirNode reads ctx.cached[bind_id]
+// for the LambdaDef and dispatches via `Apply::update`. Result is
+// helper(5) + 1 = (5*5+5*5) + 1 = 51.
+const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
+{
+    use array;
+    let helper = |x: i64| -> i64 array::fold([x, x], 0, |a, b| a + b * b);
+    let outer = |x: i64| -> i64 helper(x) + 1;
+    outer(5)
+}
+"#;
+
+run!(
+    kir_dyncall_static_nonfusable,
+    KIR_DYNCALL_STATIC_NONFUSABLE,
+    |v: Result<&Value>| match v {
+        Ok(Value::I64(51)) => true,
+        _ => false,
+    }
+);
+
 const LAMBDAMATCH0: &str = r#"
 {
   type T = { foo: Array<f64>, bar: i64, baz: f64 };

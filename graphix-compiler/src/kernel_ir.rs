@@ -409,6 +409,31 @@ pub enum KirOp {
         fn_name: ArcStr,
         args: Vec<KirExpr>,
     },
+    /// Late-bound call into a function value the kernel doesn't know
+    /// statically. Resolved at runtime by the interpreter, which
+    /// reads the `fn_index`-th slot of the kernel's fn-args table
+    /// (populated by [`crate::kir_interp::KirNode`] from its incoming
+    /// args), invokes the resulting `LambdaDef`'s `Apply`, and
+    /// converts the result back to a `RegValue`.
+    ///
+    /// The JIT path doesn't support `DynCall` (kernels containing it
+    /// fall back to the interpreter). Lifts in M4g v3 if the perf
+    /// signal warrants it; for now the interpreter is fast enough
+    /// for the common HOF-callback patterns.
+    ///
+    /// Type info is carried on the op rather than re-derived at
+    /// runtime so the interpreter doesn't have to look up
+    /// `kernel.fn_params[fn_index]` on every call.
+    DynCall {
+        fn_index: u32,
+        args: Vec<KirExpr>,
+        /// Argument types parallel to `args` — used to convert each
+        /// `RegValue` into a `netidx::Value` before the dispatch.
+        arg_types: Vec<PrimType>,
+        /// Return type. Equals the wrapping `KirExpr.typ`; carried
+        /// here for RegValue conversion symmetry with `arg_types`.
+        return_type: PrimType,
+    },
     /// Expression-form block: `{ let a = ..; let b = ..; tail }`.
     /// All non-tail items are let-bindings; the tail provides the
     /// block's value.
@@ -469,15 +494,54 @@ pub struct KirKernel {
     /// Graphix-level function name (used for self-recursion detection
     /// and for naming the emitted Rust free function).
     pub fn_name: ArcStr,
-    /// Parameters in declaration order. Each is also visible as a
-    /// local in the body.
+    /// Primitive parameters in declaration order. Each is also visible
+    /// as a local in the body.
     pub params: Vec<Input>,
+    /// Function-typed parameters in declaration order. Distinct from
+    /// `params` because the interpreter holds them in a separate
+    /// fn-args table (the value is a `LambdaDef`, not a primitive).
+    /// `KirOp::DynCall { fn_index }` indexes into this table.
+    pub fn_params: Vec<FnParam>,
     pub return_type: PrimType,
     /// True iff the body contains a self-tail-call. Backends wrap the
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
     /// (CLIF) accordingly.
     pub has_tail_loop: bool,
     pub body: Vec<KirStmt>,
+}
+
+/// A function-typed kernel "parameter" — really a slot in the
+/// kernel's fn-args table. Each slot resolves to a `LambdaDef` at
+/// DynCall time; how that resolution happens depends on the
+/// [`FnSource`] tag.
+#[derive(Debug, Clone)]
+pub struct FnParam {
+    /// Graphix-level name. The fusion emitter looks up
+    /// `Apply{Ref(name)}` references against this list.
+    pub name: ArcStr,
+    /// Where to find the `LambdaDef` for this slot at runtime.
+    pub source: FnSource,
+    /// Argument prim types of the *callee* function — used to
+    /// convert RegValue→Value at DynCall sites.
+    pub arg_types: Vec<PrimType>,
+    /// Return prim type of the callee.
+    pub return_type: PrimType,
+}
+
+/// How a [`FnParam`]'s `LambdaDef` is sourced at DynCall time.
+#[derive(Debug, Clone)]
+pub enum FnSource {
+    /// HOF argument: the kernel's caller passes a `LambdaDef` value
+    /// at position `arg_pos` (zero-based, in the lambda's source-
+    /// order argument list, mixed with primitive args). KirNode's
+    /// runtime extracts it from the incoming `from` slice.
+    Param { arg_pos: u32 },
+    /// Statically-resolved binding: the `LambdaDef` lives in
+    /// `ctx.cached[bind_id]` (or, for unstable bindings,
+    /// `event.variables[bind_id]`). Set when fusion can't fuse the
+    /// callee inline (its body uses unsupported constructs) but can
+    /// still call it via Apply::update.
+    Binding { bind_id: crate::BindId },
 }
 
 // ─── Constructors that enforce KIR invariants ────────────────────
@@ -573,7 +637,7 @@ fn stmt_has_call(stmt: &KirStmt) -> bool {
 
 fn expr_has_call(e: &KirExpr) -> bool {
     match &e.op {
-        KirOp::Call { .. } => true,
+        KirOp::Call { .. } | KirOp::DynCall { .. } => true,
         KirOp::Const(_) | KirOp::Local(_) => false,
         KirOp::Bin { lhs, rhs, .. }
         | KirOp::Cmp { lhs, rhs, .. }
@@ -587,6 +651,123 @@ fn expr_has_call(e: &KirExpr) -> bool {
         KirOp::IfChain { arms } => arms
             .iter()
             .any(|(c, v)| c.as_ref().is_some_and(expr_has_call) || expr_has_call(v)),
+    }
+}
+
+/// True if the kernel's body contains any [`KirOp::DynCall`] —
+/// distinguishes "needs to dispatch through `Apply::update` at
+/// runtime" from "needs static cross-kernel calls" (which the JIT
+/// already handles). Kernels containing DynCall fall back to the
+/// interpreter; the JIT lowering returns Err.
+pub fn kernel_contains_dyncall(kernel: &KirKernel) -> bool {
+    kernel.body.iter().any(stmt_has_dyncall)
+}
+
+fn stmt_has_dyncall(s: &KirStmt) -> bool {
+    match s {
+        KirStmt::Let(l) => expr_has_dyncall(&l.value),
+        KirStmt::Return(e) => expr_has_dyncall(e),
+        KirStmt::TailCall { args } => args.iter().any(expr_has_dyncall),
+        KirStmt::Select { arms } => arms.iter().any(|a| {
+            a.cond.as_ref().is_some_and(expr_has_dyncall)
+                || a.body.iter().any(stmt_has_dyncall)
+        }),
+    }
+}
+
+fn expr_has_dyncall(e: &KirExpr) -> bool {
+    match &e.op {
+        KirOp::DynCall { .. } => true,
+        KirOp::Call { args, .. } => args.iter().any(expr_has_dyncall),
+        KirOp::Const(_) | KirOp::Local(_) => false,
+        KirOp::Bin { lhs, rhs, .. }
+        | KirOp::Cmp { lhs, rhs, .. }
+        | KirOp::BoolBin { lhs, rhs, .. } => {
+            expr_has_dyncall(lhs) || expr_has_dyncall(rhs)
+        }
+        KirOp::Not(inner) | KirOp::Cast { inner, .. } => expr_has_dyncall(inner),
+        KirOp::Block { lets, tail } => {
+            lets.iter().any(|l| expr_has_dyncall(&l.value))
+                || expr_has_dyncall(tail)
+        }
+        KirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
+            c.as_ref().is_some_and(expr_has_dyncall) || expr_has_dyncall(v)
+        }),
+    }
+}
+
+/// Walk a kernel body collecting the names of every `KirOp::Call` it
+/// contains. Used by the JIT path (to declare callee `FuncRef`s
+/// before lowering) and by the lazy-fusion path (to discover
+/// transitive callees of an already-built kernel).
+pub fn collect_call_sites(kernel: &KirKernel) -> std::collections::BTreeSet<ArcStr> {
+    let mut out = std::collections::BTreeSet::new();
+    for s in &kernel.body {
+        walk_call_sites_stmt(s, &mut out);
+    }
+    out
+}
+
+fn walk_call_sites_stmt(s: &KirStmt, out: &mut std::collections::BTreeSet<ArcStr>) {
+    match s {
+        KirStmt::Let(l) => walk_call_sites_expr(&l.value, out),
+        KirStmt::Return(e) => walk_call_sites_expr(e, out),
+        KirStmt::TailCall { args } => {
+            for a in args {
+                walk_call_sites_expr(a, out);
+            }
+        }
+        KirStmt::Select { arms } => {
+            for a in arms {
+                if let Some(c) = &a.cond {
+                    walk_call_sites_expr(c, out);
+                }
+                for s in &a.body {
+                    walk_call_sites_stmt(s, out);
+                }
+            }
+        }
+    }
+}
+
+fn walk_call_sites_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr>) {
+    match &e.op {
+        KirOp::Call { fn_name, args } => {
+            out.insert(fn_name.clone());
+            for a in args {
+                walk_call_sites_expr(a, out);
+            }
+        }
+        KirOp::DynCall { args, .. } => {
+            // No static name to record — DynCall resolves through the
+            // kernel's fn-args table at runtime, not the static-call
+            // FuncRef table. Just recurse into the arg expressions.
+            for a in args {
+                walk_call_sites_expr(a, out);
+            }
+        }
+        KirOp::Const(_) | KirOp::Local(_) => {}
+        KirOp::Bin { lhs, rhs, .. }
+        | KirOp::Cmp { lhs, rhs, .. }
+        | KirOp::BoolBin { lhs, rhs, .. } => {
+            walk_call_sites_expr(lhs, out);
+            walk_call_sites_expr(rhs, out);
+        }
+        KirOp::Not(inner) | KirOp::Cast { inner, .. } => walk_call_sites_expr(inner, out),
+        KirOp::Block { lets, tail } => {
+            for l in lets {
+                walk_call_sites_expr(&l.value, out);
+            }
+            walk_call_sites_expr(tail, out);
+        }
+        KirOp::IfChain { arms } => {
+            for (c, v) in arms {
+                if let Some(c) = c {
+                    walk_call_sites_expr(c, out);
+                }
+                walk_call_sites_expr(v, out);
+            }
+        }
     }
 }
 
@@ -665,6 +846,14 @@ fn write_rust_expr(out: &mut String, e: &KirExpr) {
                 write_rust_expr(out, a);
             }
             out.push(')');
+        }
+        KirOp::DynCall { .. } => {
+            // The Rust-source AOT backend doesn't support DynCall yet;
+            // fusion's classifier is supposed to refuse to lower a
+            // late-bound call into KIR for the AOT path. If we get
+            // here, that classifier was bypassed — emit a clearly
+            // wrong placeholder so the Rust compile fails loudly.
+            out.push_str("compile_error!(\"DynCall in AOT backend\")");
         }
         KirOp::Block { lets, tail } => {
             out.push_str("{ ");
@@ -1152,6 +1341,7 @@ mod tests {
         let kernel = KirKernel {
             fn_name: ArcStr::from("countdown"),
             params: vec![i],
+            fn_params: vec![],
             return_type: PrimType::I64,
             has_tail_loop: true,
             body,

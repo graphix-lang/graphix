@@ -133,6 +133,37 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 &mut ctx.fusion_known_consts,
             );
         }
+        // Lazy-fusion registry: when value is a Lambda, register it
+        // in `ctx.fusion_lambdas` keyed by binding name. The lazy
+        // path (`fusion::lazy_resolve_kernel`) looks here when an
+        // inner kernel's body calls this name. Build is on demand;
+        // we just record the lambda + a NotAttempted cache slot
+        // here.
+        //
+        // Skip registration when the binding is in
+        // `ctx.unstable_bindings` (i.e. the name is the target of a
+        // `<-` somewhere in the program). Cross-kernel `KirOp::Call`
+        // bakes the callee in at fusion time; if the binding gets
+        // rebound at runtime, fused callers would silently dispatch
+        // into stale native code. With the binding skipped, callers
+        // fail to lower the call as `KirOp::Call` and fall back to
+        // GXLambda — correct, just slower. (When `KirOp::DynCall`
+        // lands these become late-bound calls instead of fall-back.)
+        if let (Some(name), ExprKind::Lambda(la)) =
+            (b.pattern.single_bind(), &b.value.kind)
+        {
+            if !ctx.unstable_bindings.contains(name) {
+                let entry = std::sync::Arc::new(crate::FusionLazyEntry {
+                    fn_name: name.clone(),
+                    spec_id: b.value.id,
+                    lambda: la.clone(),
+                    cache: parking_lot::Mutex::new(
+                        crate::FusionLazyCache::NotAttempted,
+                    ),
+                });
+                ctx.fusion_lambdas.insert(name.clone(), entry);
+            }
+        }
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }

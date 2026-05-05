@@ -1,0 +1,19 @@
+// Three nested fusable lambdas, NO annotations. Tests that lazy
+// fusion's recursive resolution handles arbitrary nesting depth
+// using only typechecker-inferred types.
+//
+//   inner: x → x * x + 1            (used by middle)
+//   middle: x → inner(x) + inner(x + 1)  (used by outer)
+//   outer: x → middle(x) - middle(x - 1) (called from main)
+//
+// Without lazy resolution every layer would have to be explicitly
+// annotated. With it, the typechecker infers everything from the
+// top-level call site `outer(100)` and lazy-resolve threads the
+// types down through the call chain.
+let inner = |x| x * x + 1;
+let middle = |x| inner(x) + inner(x + 1);
+let outer = |x| middle(x) - middle(x - 1);
+
+let result = outer(100);
+println("three-level result = [result]");
+sys::exit(0)

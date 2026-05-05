@@ -1,0 +1,16 @@
+// Sum of squares over 10M i64 — a textbook reduction pattern that
+// LLVM should turn into a vectorized SIMD loop with multi-lane
+// accumulators. Cranelift doesn't have a vectorizer, so this is the
+// shape where we expect AOT (Rust source → rustc → LLVM) to pull
+// ahead of JIT (KIR → cranelift → native).
+//
+// If the AOT/JIT gap stays under 2× here, AOT is probably not worth
+// keeping. If it's 4-8×, AOT earns its place for numeric workloads.
+use array;
+
+let n = 1000000;
+let xs = array::init(n, |idx: i64| idx);
+let total = array::fold(xs, 0, |acc: i64, x: i64| acc + x * x);
+
+println("sum_of_squares([n]) = [total]");
+sys::exit(0)

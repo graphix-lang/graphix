@@ -911,31 +911,63 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// into outer scope.
     pub fusion_known_consts:
         std::collections::BTreeMap<ArcStr, crate::kernel_ir::KnownConst>,
-    /// Fused kernels visible in the current lexical scope, keyed by
-    /// binding name. Populated by `Lambda::compile` after a
-    /// successful eager-fusion attempt for a named lambda. Used in
-    /// two places:
-    ///
-    /// - At compile time, threaded into nested `build_kir_kernel`
-    ///   calls so an inner lambda referencing `iterate(...)` can
-    ///   lower the call as `KirOp::Call` (rather than failing).
-    /// - At runtime, the snapshot becomes the [`crate::kir_interp::KernelRegistry`]
-    ///   the interpreter walks when it hits a `KirOp::Call`.
-    ///
-    /// Saved/restored at Block / Module boundaries.
-    pub fusion_known_kernels: std::collections::BTreeMap<ArcStr, FusedKernelEntry>,
+    /// Let-bound lambdas registered by `Bind::compile`, keyed by
+    /// binding name. The lazy fusion path (`fusion::lazy_resolve_kernel`)
+    /// looks here when a kernel's body references `name(...)`, locks
+    /// the entry's cache, and builds the callee's kernel on demand.
+    /// Cycles are broken by the entry cache's `InProgress` state.
+    pub fusion_lambdas:
+        std::collections::BTreeMap<ArcStr, sync::Arc<FusionLazyEntry>>,
+    /// Names of bindings that are the target of a `<-` (Connect)
+    /// somewhere in the program. Lazy-fusion's cross-kernel call
+    /// resolution refuses to register these in `fusion_lambdas`
+    /// because a future rebind would silently dispatch into stale
+    /// native code. Populate via `fusion::scan_connect_targets` at
+    /// compile entry; empty by default. (Once `KirOp::DynCall` lands
+    /// the same names should produce DynCall sites instead of being
+    /// dropped.)
+    pub unstable_bindings: std::collections::BTreeSet<ArcStr>,
 }
 
-/// A fused kernel published into [`ExecCtx::fusion_known_kernels`]
-/// under its source-level binding name. Carries enough information
-/// for compile-time call lowering (`signature`, used by
-/// `fusion::emit_known_fused_call` to validate arities/types) and for
-/// runtime dispatch (`kernel`, used by the interpreter's
-/// `KirOp::Call` lookup).
+/// A let-bound lambda visible for cross-kernel-call resolution.
+/// Inserted by `Bind::compile` whenever it sees `let X = lambda`;
+/// looked up by the lazy fusion path when a kernel's body references
+/// `X(...)`. The cache builds at most once per entry, on demand.
+///
+/// `spec_id` is the `ExprId` of the wrapping `Expr` (the bind's
+/// value) — same key `Lambda::compile` uses when it inserts into
+/// `ctx.fn_types`. Lazy resolution looks up the lambda's resolved
+/// `FnType` there at build time, so unannotated callees (whose argspec
+/// `constraint` fields are all `None`) fuse correctly using the
+/// types the typechecker inferred from their call sites.
+#[derive(Debug)]
+pub struct FusionLazyEntry {
+    pub fn_name: ArcStr,
+    pub spec_id: crate::expr::ExprId,
+    pub lambda: triomphe::Arc<expr::LambdaExpr>,
+    pub cache: parking_lot::Mutex<FusionLazyCache>,
+}
+
 #[derive(Debug, Clone)]
-pub struct FusedKernelEntry {
-    pub signature: crate::kernel_ir::KnownFusedFn,
-    pub kernel: sync::Arc<crate::kernel_ir::KirKernel>,
+pub enum FusionLazyCache {
+    /// We haven't tried to fuse this lambda yet. Lazy build will
+    /// transition through `InProgress` and land at `Built` or
+    /// `Failed`.
+    NotAttempted,
+    /// A fusion attempt is already on the stack (we recursed into
+    /// this entry from itself or from a callee that calls back).
+    /// Treated as unresolved by the caller's fusion — breaks cycles
+    /// in mutually-recursive sets without infinite loop.
+    InProgress,
+    /// Fusion succeeded; signature for compile-time call lowering,
+    /// kernel for runtime dispatch.
+    Built {
+        signature: crate::kernel_ir::KnownFusedFn,
+        kernel: sync::Arc<crate::kernel_ir::KirKernel>,
+    },
+    /// Fusion failed (unannotated argspec, body uses unsupported
+    /// constructs, etc.). Future requests return None immediately.
+    Failed,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -971,7 +1003,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fn_types: IntMap::default(),
             current_binding_name: None,
             fusion_known_consts: std::collections::BTreeMap::new(),
-            fusion_known_kernels: std::collections::BTreeMap::new(),
+            fusion_lambdas: std::collections::BTreeMap::new(),
+            unstable_bindings: std::collections::BTreeSet::new(),
         })
     }
 

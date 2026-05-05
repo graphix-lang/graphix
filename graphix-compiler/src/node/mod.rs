@@ -447,20 +447,17 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R, E>> {
         // Snapshot fusion-visibility state so binds *inside* this
-        // block don't leak their consts/kernels into the outer
-        // scope. Top-level programs come through Module compilation
-        // which uses this same path; siblings within the module's
-        // expr list see each other (the saved state is at module
-        // entry, restored at module exit), which matches the
-        // env-shape Bind::compile already arranges.
+        // block don't leak their consts into the outer scope.
+        // (`fusion_lambdas` doesn't need save/restore — it's keyed
+        // by binding name and only used at runtime by the lazy
+        // resolver, which only runs when a kernel actually
+        // references one of those names.)
         let saved_consts = ctx.fusion_known_consts.clone();
-        let saved_kernels = ctx.fusion_known_kernels.clone();
         let result: Result<Box<[Node<R, E>]>> = exprs
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect();
         ctx.fusion_known_consts = saved_consts;
-        ctx.fusion_known_kernels = saved_kernels;
         let children = result?;
         Ok(Box::new(Self { module, spec, children }))
     }

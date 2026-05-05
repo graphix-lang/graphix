@@ -380,6 +380,17 @@ impl<X: GXExt> GX<X> {
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
+        // Pre-scan for `<-` (Connect) targets across the whole
+        // program so the lazy fusion path can refuse to register
+        // those bindings. Without this, fused callers would silently
+        // dispatch into stale native code after a runtime rebind.
+        self.ctx.unstable_bindings.clear();
+        for e in exprs.iter() {
+            graphix_compiler::fusion::scan_connect_targets(
+                e,
+                &mut self.ctx.unstable_bindings,
+            );
+        }
         let mut nodes = exprs
             .iter()
             .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))

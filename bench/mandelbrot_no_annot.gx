@@ -1,0 +1,47 @@
+// Mandelbrot with NO annotations on iterate or the outer callback.
+// The typechecker must infer all types from call sites; lazy fusion
+// must use the resolved FnType (via fn_types) when building each
+// kernel rather than relying on the user's argspec annotations.
+//
+// Expected behaviour: same checksum as mandelbrot_bench.gx, same
+// 49× speedup over node graph. If we see ~14× instead, that means
+// the outer callback isn't fusing because lazy_resolve isn't using
+// fn_types for unannotated callees.
+use array;
+use sys::time;
+
+let w = 100;
+let h = 75;
+let max_iter = 64;
+
+let xmin = -2.5;
+let xmax = 1.0;
+let ymin = -1.3125;
+let ymax = 1.3125;
+let dx = (xmax - xmin) / cast<f64>(w)$;
+let dy = (ymax - ymin) / cast<f64>(h)$;
+
+let start = cast<f64>(sys::time::now(once(null)))$;
+
+let rec iterate = |zr, zi, cr, ci, i|
+    select i {
+        0 => 0,
+        _ if zr * zr + zi * zi > 4.0 => i,
+        _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
+    };
+
+let counts = array::init(w * h, |idx| {
+    let px = idx % w;
+    let py = idx / w;
+    let cr = xmin + cast<f64>(px)$ * dx;
+    let ci = ymin + cast<f64>(py)$ * dy;
+    iterate(0.0, 0.0, cr, ci, max_iter)
+});
+
+let checksum = array::fold(counts, 0, |acc, n| acc + n);
+
+let finish = cast<f64>(sys::time::now(checksum))$;
+let elapsed = finish - start;
+
+println("mandelbrot-no-annot [w * h] pixels, checksum=[checksum], elapsed=[elapsed]s");
+sys::exit(elapsed ~ 0)
