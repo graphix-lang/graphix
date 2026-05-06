@@ -2,7 +2,7 @@
 val var: i64;
 
 /// a graphix function implemented in rust
-val example: fn(Any) -> bool;
+val example: fn(arg: Any) -> bool;
 
 /// a graphix function implemented in rust using the
 /// simplified API
