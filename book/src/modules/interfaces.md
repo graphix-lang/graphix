@@ -101,10 +101,7 @@ val constants: Constants;
 let add = |a, b| a + b;
 let sub = |a, b| a - b;
 
-let constants = Constants {
-    pi: 3.14159265359,
-    e: 2.71828182845
-};
+let constants = { pi: 3.14159265359, e: 2.71828182845 };
 
 let internal_helper = |x| x * 2
 ```

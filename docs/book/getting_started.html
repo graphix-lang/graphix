@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5c78f6d5.js"></script>
+        <script src="toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -279,19 +279,15 @@ want to exit the REPL press ctrl-d.</p>
 <pre><code class="language-graphix">use tui;
 use tui::text;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
+let counter = count(sys::time::timer(duration:1.s, true));
 
-text(&amp;"Count: [count]")
+text(&amp;"Count: [counter]")
 </code></pre>
 <p>This program demonstrates Graphix’s reactive nature:</p>
 <ul>
-<li>We start with <code>count = 0</code></li>
-<li><code>sys::time::timer(duration:1.s, true)</code> creates a timer that fires every second</li>
-<li>The <code>~</code> operator samples the right side when the left side updates</li>
-<li><code>count &lt;- ...</code> schedules an update to <code>count</code> for the next cycle</li>
-<li>Every second, <code>count</code> increments and the text automatically updates</li>
+<li><code>sys::time::timer(duration:1.s, true)</code> produces an event every second</li>
+<li><code>count</code> from the core library tallies the events into a reactive integer</li>
+<li><code>counter</code> updates whenever the timer fires, so the text widget rerenders</li>
 <li>The last expression creates a text widget displaying the count</li>
 </ul>
 <h2 id="running-your-file"><a class="header" href="#running-your-file">Running Your File</a></h2>
@@ -302,10 +298,8 @@ text(&amp;"Count: [count]")
 <p>To stop the program, press <code>Ctrl+C</code>.</p>
 <h2 id="a-simpler-example"><a class="header" href="#a-simpler-example">A Simpler Example</a></h2>
 <p>If you want to see the reactive behavior without the TUI, try this simpler version (<code>counter.gx</code>):</p>
-<pre><code class="language-graphix">let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
-"Count: [count]"
+<pre><code class="language-graphix">let counter = count(sys::time::timer(duration:1.s, true));
+"Count: [counter]"
 </code></pre>
 <p>Run it with <code>graphix counter.gx</code> and you’ll see the count printed to the console every second.</p>
 <h2 id="understanding-the-output"><a class="header" href="#understanding-the-output">Understanding the Output</a></h2>
@@ -321,7 +315,7 @@ count &lt;- timer ~ (count + 1);
 <li><strong>Programs run forever</strong> unless they explicitly exit - they’re reactive graphs that respond to events</li>
 </ul>
 <h3 id="the-dataflow-model"><a class="header" href="#the-dataflow-model">The Dataflow Model</a></h3>
-<p>The key insight: when <code>timer</code> updates, it triggers an update to <code>count</code> (via the <code>&lt;-</code> connect operator), which triggers an update to the text widget. The entire chain reacts automatically. You describe <em>what</em> should happen, not <em>when</em> or <em>how</em> to update things.</p>
+<p>The key insight: when the timer fires, <code>count</code> produces a new tally, which propagates to <code>counter</code>, which the text widget depends on, so the widget re-renders. The entire chain reacts automatically. You describe <em>what</em> should happen, not <em>when</em> or <em>how</em> to update things.</p>
 <p>This is very different from traditional imperative programming where you’d need loops and manual state management. In Graphix, you build a graph of dependencies and the runtime handles updates for you.</p>
 <h2 id="try-it-yourself"><a class="header" href="#try-it-yourself">Try It Yourself</a></h2>
 <p>Experiment with these ideas:</p>
@@ -346,7 +340,7 @@ count &lt;- timer ~ (count + 1);
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="install.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="editor.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -360,7 +354,7 @@ count &lt;- timer ~ (count + 1);
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="install.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="editor.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

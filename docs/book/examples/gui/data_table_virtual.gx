@@ -15,38 +15,30 @@ net::publish("/local/graphix/data_table_virtual/nr0/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
 
-// Rows that aren't absolute netidx paths are virtual — the data_table
-// skips subscribing for them, and cell values come from the column's
-// `source` (uniform string or per-row Map). Columns can be bare-string
-// (Netidx-sourced text, the same as `sys::net::list_table` returns) or
-// full ColumnSpecs declared inline. Mixing the two is fine: the
-// `Table` type's `columns: Array<[string, ColumnSpec]>` union element
-// lets `sys::net::list_table` flow straight through.
-let raw = net::list_table("/local/graphix/data_table_virtual")$;
-
 let score: Map<string, f64> = {};
 
-// `array::map` with an explicit `-> [string, ColumnSpec]` return
-// type widens each bare-string entry into the union element. After
-// that, `array::concat` and `array::push` operate on uniformly-typed
-// `Array<[string, ColumnSpec]>`s.
-let widened: Array<[string, ColumnSpec]> =
-    array::map(raw.columns, |n: string| -> [string, ColumnSpec] n);
-let region: ColumnSpec = text_column(
-    #name: "region",
-    #display_name: "Region",
-    #source: &"production"
-);
-let score_col: ColumnSpec = progress_column(
-    #name: "score",
-    #display_name: "Score",
-    #source: &score,
-    #width: &f64:180.0
-);
-let tbl: Table = uniq({
-    rows: array::concat(raw.rows, ["vr0", "vr1", "vr2"]),
-    columns: array::push_front(array::push(widened, score_col), region)
-});
+let tbl = {
+    let raw = net::list_table("/local/graphix/data_table_virtual")$;
+    let columns = array::map(raw.columns, |n| select n {
+        "score" => progress_column(
+            #name: "score",
+            #display_name: "Score",
+            #source: &`Netidx(score),
+            #width: &f64:180.0
+        ),
+        n => n
+    });
+    let columns = array::push_front(columns, text_column(
+        #name: "region",
+        #display_name: "Region",
+        #source: &"production"
+    ));
+    // rows that aren't absolute paths won't attempt to subscribe
+    // but will be looked up in the score map for a default value.
+    // that lets us add virtual rows that don't exist in netidx
+    let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
+    uniq({ rows, columns })
+};
 
 let layout = column(
     #spacing: &14.0,

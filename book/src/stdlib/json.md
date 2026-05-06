@@ -8,16 +8,16 @@ inferred from the type annotation at the call site.
 use sys::io;
 
 /// Parse JSON from a string, byte array, or I/O stream.
-val read: fn(v: [string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;
+val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, v: Any) -> Result<string, `JsonErr(string)>;
+val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `JsonErr(string)>;
 
 /// Serialize a value to JSON bytes.
-val write_bytes: fn(?#pretty: bool, v: Any) -> Result<bytes, `JsonErr(string)>;
+val write_bytes: fn(?#pretty: bool, value: Any) -> Result<bytes, `JsonErr(string)>;
 
 /// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, a: Stream<'a>, v: Any) -> Result<null, [`JsonErr(string), `IOErr(string)]>;
+val write_stream: fn(?#pretty: bool, stream: Stream<'a>, value: Any) -> Result<null, [`JsonErr(string), `IOErr(string)]>;
 ```
 
 ## Type-directed deserialization

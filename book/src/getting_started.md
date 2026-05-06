@@ -162,20 +162,16 @@ Now let's write a real Graphix program! Create a file called `hello.gx` with thi
 use tui;
 use tui::text;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count <- timer ~ (count + 1);
+let counter = count(sys::time::timer(duration:1.s, true));
 
-text(&"Count: [count]")
+text(&"Count: [counter]")
 ```
 
 This program demonstrates Graphix's reactive nature:
 
-- We start with `count = 0`
-- `sys::time::timer(duration:1.s, true)` creates a timer that fires every second
-- The `~` operator samples the right side when the left side updates
-- `count <- ...` schedules an update to `count` for the next cycle
-- Every second, `count` increments and the text automatically updates
+- `sys::time::timer(duration:1.s, true)` produces an event every second
+- `count` from the core library tallies the events into a reactive integer
+- `counter` updates whenever the timer fires, so the text widget rerenders
 - The last expression creates a text widget displaying the count
 
 ## Running Your File
@@ -195,10 +191,8 @@ To stop the program, press `Ctrl+C`.
 If you want to see the reactive behavior without the TUI, try this simpler version (`counter.gx`):
 
 ```graphix
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count <- timer ~ (count + 1);
-"Count: [count]"
+let counter = count(sys::time::timer(duration:1.s, true));
+"Count: [counter]"
 ```
 
 Run it with `graphix counter.gx` and you'll see the count printed to the console every second. 
@@ -215,7 +209,7 @@ In Graphix programs:
 
 ### The Dataflow Model
 
-The key insight: when `timer` updates, it triggers an update to `count` (via the `<-` connect operator), which triggers an update to the text widget. The entire chain reacts automatically. You describe *what* should happen, not *when* or *how* to update things.
+The key insight: when the timer fires, `count` produces a new tally, which propagates to `counter`, which the text widget depends on, so the widget re-renders. The entire chain reacts automatically. You describe *what* should happen, not *when* or *how* to update things.
 
 This is very different from traditional imperative programming where you'd need loops and manual state management. In Graphix, you build a graph of dependencies and the runtime handles updates for you.
 

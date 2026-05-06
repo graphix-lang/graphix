@@ -26,19 +26,19 @@ from a normal programming language. However a more complex example
 such as,
 
 ```graphix
-let x = cast<i64>(sys::net::subscribe("/foo")?)?;
+let x: i64 = sys::net::subscribe("/foo")?;
 print(x * 10)
 ```
 
 compiles to a graph like
 
 ```
-                                               const(10)
-                                                   │
-                                                   │
-                                                   ▼
+                                  const(10)
+                                      │
+                                      │
+                                      ▼
                                          
-const("/foo") ──> sys::net::subscribe ──> cast<i64> ──> * ──> print
+const("/foo") ──> sys::net::subscribe ──> * ──> print
                                          
 ```
 
@@ -69,7 +69,7 @@ features are,
 - expression oriented
 - strongly statically typed
 - type inference
-- structural type discipline with nomial abstract types
+- structural type discipline with nominal abstract types
 - parametric polymorphism
 - algebraic data types
 - pattern matching

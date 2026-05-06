@@ -7,16 +7,16 @@ Like `json::read`, `toml::read` uses type-directed deserialization.
 use sys::io;
 
 /// Parse TOML from a string, byte array, or I/O stream.
-val read: fn(v: [string, bytes, Stream<'a>]) -> Result<'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]>;
+val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, v: Any) -> Result<string, `TomlErr(string)>;
+val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `TomlErr(string)>;
 
 /// Serialize a value to TOML bytes.
-val write_bytes: fn(?#pretty: bool, v: Any) -> Result<bytes, `TomlErr(string)>;
+val write_bytes: fn(?#pretty: bool, value: Any) -> Result<bytes, `TomlErr(string)>;
 
 /// Serialize a value and write TOML to a stream.
-val write_stream: fn(?#pretty: bool, a: Stream<'a>, v: Any) -> Result<null, [`TomlErr(string), `IOErr(string)]>;
+val write_stream: fn(?#pretty: bool, stream: Stream<'a>, value: Any) -> Result<null, [`TomlErr(string), `IOErr(string)]>;
 ```
 
 ## Example

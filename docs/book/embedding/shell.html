@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-5c78f6d5.js"></script>
+        <script src="../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -186,18 +186,24 @@ can build a custom Graphix application. All installed packages are
 automatically registered, so your application gets the full standard library and
 any additional packages out of the box.</p>
 <h2 id="basic-application"><a class="header" href="#basic-application">Basic Application</a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use anyhow::Result;
+<p>The shell needs a <code>MainThreadHandle</code> so widgets that must run on the
+main thread (notably the GUI backend) can dispatch work back from the
+tokio runtime. The standard pattern is to spawn tokio on its own thread
+and pump the main-thread queue from <code>main</code>:</p>
+<pre class="playground"><code class="language-rust">use anyhow::Result;
 use graphix_compiler::expr::Source;
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{MainThreadHandle, Mode, ShellBuilder};
 use netidx::{
     publisher::{DesiredAuth, PublisherBuilder},
     subscriber::Subscriber,
 };
 
-pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt;()&gt; {
+async fn tokio_main(
+    cfg: netidx::config::Config,
+    auth: DesiredAuth,
+    run_on_main: MainThreadHandle,
+) -&gt; Result&lt;()&gt; {
     let publisher = PublisherBuilder::new(cfg.clone())
         .desired_auth(auth.clone())
         .build()
@@ -209,10 +215,31 @@ pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt
         .subscriber(subscriber)
         .no_init(true)
         .build()?
-        .run()
+        .run(run_on_main)
         .await
 }
-<span class="boring">}</span></code></pre>
+
+fn main() -&gt; Result&lt;()&gt; {
+    let cfg = netidx::config::Config::load_default()?;
+    let auth = DesiredAuth::Anonymous;
+    let (handle, main_rx) = MainThreadHandle::new();
+    let tokio_thread = std::thread::Builder::new()
+        .name("tokio".into())
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(tokio_main(cfg, auth, handle))
+        })
+        .expect("spawn tokio thread");
+    while let Ok(f) = main_rx.recv() {
+        f();
+    }
+    tokio_thread.join().expect("tokio thread panicked")
+}</code></pre>
+<p><code>MainThreadHandle::new()</code> returns the handle you pass to <code>.run()</code> and a
+receiver you drive on the main thread. The receiver yields closures the
+shell wants executed there; calling each in turn is enough.</p>
 <h2 id="module-resolvers"><a class="header" href="#module-resolvers">Module Resolvers</a></h2>
 <p>If you want to bundle additional Graphix source files into your binary (beyond
 what packages provide), you can add module resolvers. A VFS resolver maps
@@ -237,7 +264,7 @@ ShellBuilder::&lt;NoExt&gt;::default()
     .publisher(publisher)
     .subscriber(subscriber)
     .build()?
-    .run()
+    .run(run_on_main)
     .await
 <span class="boring">}</span></code></pre>
 <p>You can have as many module resolvers as you like. When loading modules they are
@@ -256,7 +283,7 @@ registration automatically through the <code>defpackage!</code> macro.</p>
     .publisher(publisher)
     .subscriber(subscriber)
     .build()?
-    .run()
+    .run(run_on_main)
     .await
 <span class="boring">}</span></code></pre>
 <p>This gives you a REPL with the standard library, all installed packages, and

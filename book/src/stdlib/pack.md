@@ -8,13 +8,13 @@ deserialization.
 use sys::io;
 
 /// Decode a value from packed binary bytes or stream.
-val read: fn(v: [bytes, Stream<'a>]) -> Result<'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]>;
+val read: fn(input: [bytes, Stream<'a>]) -> Result<'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]>;
 
 /// Encode a value to packed binary bytes.
-val write_bytes: fn(v: Any) -> Result<bytes, `PackErr(string)>;
+val write_bytes: fn(value: Any) -> Result<bytes, `PackErr(string)>;
 
 /// Encode a value and write to a stream.
-val write_stream: fn(a: Stream<'a>, v: Any) -> Result<null, [`PackErr(string), `IOErr(string)]>;
+val write_stream: fn(stream: Stream<'a>, value: Any) -> Result<null, [`PackErr(string), `IOErr(string)]>;
 ```
 
 The Pack format is a compact binary encoding native to netidx. It is

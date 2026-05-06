@@ -38,11 +38,11 @@ val client: fn(
     ?#default_headers: Array<(string, string)>,
     ?#redirect_limit: u32,
     ?#ca_cert: [bytes, null],
-    v: Any
+    trigger: Any
 ) -> Result<Client, `HTTPError(string)>;
 
 /// Get or create a shared default HTTP client.
-val default_client: fn(v: Any) -> Result<Client, `HTTPError(string)>;
+val default_client: fn(trigger: Any) -> Result<Client, `HTTPError(string)>;
 
 /// Make an HTTP request and return a text response.
 val request: fn(
@@ -50,8 +50,8 @@ val request: fn(
     ?#headers: Array<(string, string)>,
     ?#body: [string, null],
     ?#timeout: [duration, null],
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<Response, `HTTPError(string)>;
 
 /// Make an HTTP request and return a binary response.
@@ -60,18 +60,18 @@ val request_bin: fn(
     ?#headers: Array<(string, string)>,
     ?#body: [bytes, null],
     ?#timeout: [duration, null],
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<BinResponse, `HTTPError(string)>;
 
 /// Convenience: GET request with text response.
-val get: fn(a: Client, s: string) -> Result<Response, `HTTPError(string)>;
+val get: fn(client: Client, url: string) -> Result<Response, `HTTPError(string)>;
 
 /// Convenience: GET request with binary response.
-val get_bin: fn(a: Client, s: string) -> Result<BinResponse, `HTTPError(string)>;
+val get_bin: fn(client: Client, url: string) -> Result<BinResponse, `HTTPError(string)>;
 
 /// Return the bound address of a running server.
-val server_addr: fn(a: Server) -> string;
+val server_addr: fn(server: Server) -> string;
 
 /// Start an HTTP server.
 val serve: fn(
@@ -79,7 +79,7 @@ val serve: fn(
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
-    #handler: fn(a: Request) -> Response throws 'e
+    #handler: fn(req: Request) -> Response throws 'e
 ) -> Result<Server, `HTTPError(string)> throws 'e;
 ```
 
@@ -91,38 +91,38 @@ Convenience functions for JSON REST APIs with optional bearer token authenticati
 val get: fn(
     ?#bearer: [string, null],
     ?#headers: Array<(string, string)>,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<Response, `HTTPError(string)>;
 
 val post: fn(
     ?#bearer: [string, null],
     ?#headers: Array<(string, string)>,
     #body: string,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<Response, `HTTPError(string)>;
 
 val put: fn(
     ?#bearer: [string, null],
     ?#headers: Array<(string, string)>,
     #body: string,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<Response, `HTTPError(string)>;
 
 val delete: fn(
     ?#bearer: [string, null],
     ?#headers: Array<(string, string)>,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<Response, `HTTPError(string)>;
 
 val patch: fn(
     ?#bearer: [string, null],
     ?#headers: Array<(string, string)>,
     #body: string,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -> Result<Response, `HTTPError(string)>;
 ```

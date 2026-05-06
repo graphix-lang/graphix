@@ -12,29 +12,29 @@ type SqlVal = [i64, f64, string, bytes, null];
 type Connection;
 
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
-val open: fn(s: string) -> Result<Connection, `SqliteError(string)>;
+val open: fn(path: string) -> Result<Connection, `SqliteError(string)>;
 
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
-val exec: fn(a: Connection, s: string, a2: Array<SqlVal>) -> Result<u64, `SqliteError(string)>;
+val exec: fn(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<u64, `SqliteError(string)>;
 
 /// Execute multiple semicolon-separated statements (no params). Good for schema setup.
-val exec_batch: fn(a: Connection, s: string) -> Result<null, `SqliteError(string)>;
+val exec_batch: fn(conn: Connection, sql: string) -> Result<null, `SqliteError(string)>;
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array<{...}> for typed structs, or Array<Map<string, SqlVal>> for raw maps.
-val query: fn(a: Connection, s: string, a2: Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
+val query: fn(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
 
 /// Begin a transaction.
-val begin: fn(a: Connection) -> Result<null, `SqliteError(string)>;
+val begin: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
 
 /// Commit the current transaction.
-val commit: fn(a: Connection) -> Result<null, `SqliteError(string)>;
+val commit: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
 
 /// Rollback the current transaction.
-val rollback: fn(a: Connection) -> Result<null, `SqliteError(string)>;
+val rollback: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
 
 /// Close the connection explicitly (optional — connections close on drop).
-val close: fn(a: Connection) -> Result<null, `SqliteError(string)>;
+val close: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
 ```
 
 ## Type-directed queries

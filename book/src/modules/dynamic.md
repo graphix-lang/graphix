@@ -27,7 +27,7 @@ let status = mod foo dynamic {
         val sub: fn(x: i64) -> i64;
         val cfg: Array<i64>
     };
-    source cast<string>(sys::net::subscribe(path)$)$
+    source sys::net::subscribe(path)$
 };
 select status {
     error as e => never(dbg(e)),

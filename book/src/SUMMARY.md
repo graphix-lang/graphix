@@ -2,6 +2,7 @@
 
 - [Intro to Graphix](./intro.md)
 - [Installing Graphix](./install.md)
+- [Editor Setup](./editor.md)
 - [Getting Started](./getting_started.md)
 - [Core Language](./core/overview.md)
   - [Fundamental Types](./core/fundamental_types.md)

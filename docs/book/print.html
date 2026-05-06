@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5c78f6d5.js"></script>
+        <script src="toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -194,16 +194,16 @@ const(2) ──&gt; + &lt;── const(2)
 <p>The semantics of simple examples like this aren’t noticibly different
 from a normal programming language. However a more complex example
 such as,</p>
-<pre><code class="language-graphix">let x = cast&lt;i64&gt;(sys::net::subscribe("/foo")?)?;
+<pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")?;
 print(x * 10)
 </code></pre>
 <p>compiles to a graph like</p>
-<pre><code>                                               const(10)
-                                                   │
-                                                   │
-                                                   ▼
+<pre><code>                                  const(10)
+                                      │
+                                      │
+                                      ▼
                                          
-const("/foo") ──&gt; sys::net::subscribe ──&gt; cast&lt;i64&gt; ──&gt; * ──&gt; print
+const("/foo") ──&gt; sys::net::subscribe ──&gt; * ──&gt; print
                                          
 </code></pre>
 <p>Unlike the first example, the value of <code>sys::net::subscribe</code> isn’t a
@@ -228,7 +228,7 @@ features are,</p>
 <li>expression oriented</li>
 <li>strongly statically typed</li>
 <li>type inference</li>
-<li>structural type discipline with nomial abstract types</li>
+<li>structural type discipline with nominal abstract types</li>
 <li>parametric polymorphism</li>
 <li>algebraic data types</li>
 <li>pattern matching</li>
@@ -266,10 +266,184 @@ communicate with each other out of the box.</p>
 resolver configurations, see the <a href="https://netidx.github.io/netidx-book">netidx book</a>
 for details on setting up a netidx environment.</p>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="editor-setup"><a class="header" href="#editor-setup">Editor Setup</a></h1>
+<p>Graphix ships with a Language Server Protocol (LSP) implementation and
+tree-sitter grammar, so any editor with LSP support can give you
+diagnostics, completion, hover, and go-to-definition for <code>.gx</code> and <code>.gxi</code>
+files.</p>
+<p>The LSP server is built into the <code>graphix</code> binary itself — there is no
+separate <code>graphix-lsp</code> executable to install. Editors launch it by
+running:</p>
+<pre><code class="language-bash">graphix lsp
+</code></pre>
+<p>It speaks LSP over stdin/stdout, so make sure <code>graphix</code> is on the <code>PATH</code>
+that your editor sees.</p>
+<p>Editor-specific configurations live in
+<a href="https://github.com/graphix-lang/graphix/tree/main/ide/editors"><code>ide/editors/</code></a>
+in the source tree. The sections below summarize how to install each
+one. None of them are published to upstream package registries yet —
+the modes for Emacs, Helix, and Zed are intended for upstream submission
+in a future release, but until then they install from the repo.</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<p>Make sure the <code>graphix</code> binary is on your <code>PATH</code>:</p>
+<pre><code class="language-bash">cargo install graphix-shell
+# or, from a checkout:
+cargo install --path graphix-shell
+</code></pre>
+<p>Then verify:</p>
+<pre><code class="language-bash">graphix lsp --help
+</code></pre>
+<p>If your editor cannot find <code>graphix</code>, point its config at the absolute
+path of the binary (<code>~/.cargo/bin/graphix</code> on a typical Cargo install).</p>
+<h2 id="vs-code"><a class="header" href="#vs-code">VS Code</a></h2>
+<p>The extension lives in <code>ide/editors/vscode/</code>. It bundles a TextMate
+grammar for syntax highlighting and a thin client that launches
+<code>graphix lsp</code>.</p>
+<pre><code class="language-bash">cd ide/editors/vscode
+npm install
+npm run compile
+</code></pre>
+<p>Then either symlink the directory into <code>~/.vscode/extensions/graphix</code>
+or open it in VS Code and press <kbd>F5</kbd> to launch a development
+host.</p>
+<p>The extension exposes a single setting, <code>graphix.server.path</code>, which
+defaults to <code>graphix</code>. Override it if the binary is not on your
+editor’s <code>PATH</code>.</p>
+<h2 id="neovim"><a class="header" href="#neovim">Neovim</a></h2>
+<p>The Neovim plugin in <code>ide/editors/nvim/</code> registers the filetype, wires
+up the LSP via <code>nvim-lspconfig</code> (with a fallback to the built-in
+<code>vim.lsp.start</code> when lspconfig is missing), and registers the
+tree-sitter grammar.</p>
+<p>Drop the <code>nvim/</code> directory into your config or your plugin manager,
+then call:</p>
+<pre><code class="language-lua">require('graphix').setup()
+</code></pre>
+<p>To install the tree-sitter grammar, run <code>:TSInstall graphix</code> after
+<code>nvim-treesitter</code> has picked up the registered parser config.</p>
+<p>You can disable either piece independently:</p>
+<pre><code class="language-lua">require('graphix').setup({ lsp = true, treesitter = false })
+</code></pre>
+<h2 id="vim"><a class="header" href="#vim">Vim</a></h2>
+<p>For traditional Vim (8+), <code>ide/editors/vim/</code> provides regex-based
+syntax highlighting and filetype detection. Tree-sitter is Neovim-only,
+so this is the right config for plain Vim.</p>
+<pre><code class="language-bash">mkdir -p ~/.vim/pack/graphix/start
+ln -s "$PWD/ide/editors/vim" ~/.vim/pack/graphix/start/graphix
+</code></pre>
+<p>LSP setup depends on your client. With
+<a href="https://github.com/prabirshrestha/vim-lsp">vim-lsp</a>:</p>
+<pre><code class="language-vim">if executable('graphix')
+  au User lsp_setup call lsp#register_server(#{
+    \ name: 'graphix',
+    \ cmd: ['graphix', 'lsp'],
+    \ allowlist: ['graphix'],
+    \ })
+endif
+</code></pre>
+<p>With <a href="https://github.com/neoclide/coc.nvim">coc.nvim</a>, add to
+<code>coc-settings.json</code>:</p>
+<pre><code class="language-json">{
+  "languageserver": {
+    "graphix": {
+      "command": "graphix",
+      "args": ["lsp"],
+      "filetypes": ["graphix"]
+    }
+  }
+}
+</code></pre>
+<h2 id="emacs"><a class="header" href="#emacs">Emacs</a></h2>
+<p><code>ide/editors/emacs/graphix-mode.el</code> provides two modes:</p>
+<ul>
+<li><code>graphix-mode</code> — regex-based fallback for Emacs &lt; 29 or when the
+tree-sitter grammar is not installed.</li>
+<li><code>graphix-ts-mode</code> — tree-sitter mode for Emacs 29+. Selected
+automatically when the grammar is available.</li>
+</ul>
+<p>Drop the file on your <code>load-path</code> and require it:</p>
+<pre><code class="language-elisp">(require 'graphix-mode)
+
+;; Eglot (built-in, Emacs 29+):
+(add-to-list 'eglot-server-programs
+             '(graphix-mode . ("graphix" "lsp")))
+(add-hook 'graphix-mode-hook #'eglot-ensure)
+(add-hook 'graphix-ts-mode-hook #'eglot-ensure)
+</code></pre>
+<p>To install the tree-sitter grammar:</p>
+<pre><code>M-x graphix-ts-mode-install-grammar
+</code></pre>
+<p>This compiles the grammar from the GitHub repo via
+<code>treesit-install-language-grammar</code>. Once it succeeds, opening a <code>.gx</code>
+file will route to <code>graphix-ts-mode</code> automatically.</p>
+<p><code>lsp-mode</code> users can replace the <code>eglot-*</code> lines with the equivalent
+<code>lsp-mode</code> registration; the LSP command is the same.</p>
+<h2 id="helix"><a class="header" href="#helix">Helix</a></h2>
+<p>Helix has no plugin system, so language support has to be added by
+copying queries into your runtime path and appending blocks to
+<code>languages.toml</code>. The repo ships a script that does both:</p>
+<pre><code class="language-bash">cd ide/editors/helix
+./install.sh
+</code></pre>
+<p>The script:</p>
+<ol>
+<li>Copies tree-sitter queries to
+<code>~/.config/helix/runtime/queries/graphix/</code>.</li>
+<li>Appends <code>[[language]]</code>, <code>[language-server.graphix-lsp]</code>, and
+<code>[[grammar]]</code> blocks to <code>~/.config/helix/languages.toml</code> (idempotent
+— it skips if a graphix entry already exists).</li>
+<li>Runs <code>helix --grammar fetch &amp;&amp; helix --grammar build</code> to compile
+the parser.</li>
+</ol>
+<p>Re-running the script is safe; it overwrites the queries (so updates
+land) but leaves your <code>languages.toml</code> alone after the first install.</p>
+<p>To verify, open a <code>.gx</code> file and run <code>:tree-sitter-scopes</code>,
+<code>:lsp-restart</code>, or <code>helix --health graphix</code>.</p>
+<p>If you’re hacking on the grammar locally, edit the <code>[[grammar]]</code> block
+in your <code>languages.toml</code> to point at your checkout instead of the git
+URL. See <code>ide/editors/helix/README.md</code> for the exact form.</p>
+<h2 id="zed"><a class="header" href="#zed">Zed</a></h2>
+<p>The Zed extension lives in <code>ide/editors/zed/</code>. For development:</p>
+<pre><code class="language-bash">ln -s "$PWD/ide/editors/zed" ~/.config/zed/extensions/installed/graphix
+</code></pre>
+<p>Restart Zed. The extension auto-detects <code>.gx</code> and <code>.gxi</code> files,
+launches <code>graphix lsp</code>, and ships its own copy of the tree-sitter
+queries.</p>
+<p>The query files under <code>languages/graphix/</code> are duplicates of the
+canonical ones in <code>ide/tree-sitter-graphix/queries/</code> because Zed
+packages each extension as a self-contained directory. If you change
+the upstream queries, copy them across:</p>
+<pre><code class="language-bash">cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
+   ide/editors/zed/languages/graphix/
+</code></pre>
+<h2 id="what-the-lsp-currently-supports"><a class="header" href="#what-the-lsp-currently-supports">What the LSP currently supports</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Feature</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Diagnostics (parse + type errors)</td><td>✓</td></tr>
+<tr><td>Completions from the active environment</td><td>✓</td></tr>
+<tr><td>Hover with type and doc information</td><td>✓</td></tr>
+<tr><td>Go-to-definition</td><td>✓</td></tr>
+</tbody>
+</table>
+</div>
+<p>Find references, rename, code actions, and formatting are not yet
+implemented. File issues at
+<a href="https://github.com/graphix-lang/graphix/issues">graphix-lang/graphix</a>
+if something specific would unblock you.</p>
+<h2 id="reporting-editor-issues"><a class="header" href="#reporting-editor-issues">Reporting editor issues</a></h2>
+<p>Editor configs live in the same repo as the compiler, so bugs in
+syntax highlighting, indentation, or LSP behavior all belong in the
+same issue tracker. When filing one, mention which editor and which
+mode (<code>graphix-mode</code> vs <code>graphix-ts-mode</code>, vim vs nvim, etc.) you’re
+using, plus a minimal <code>.gx</code> snippet that triggers the problem.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
 <p>Welcome to Graphix! This tutorial will get you up and running in about 10-15 minutes. You’ll learn how to use the interactive REPL, write your first expressions, and create a simple reactive program.</p>
 <p>By the end of this guide, you’ll understand the basics of Graphix’s reactive dataflow model and be ready to explore the language in depth.</p>
-<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<h2 id="prerequisites-1"><a class="header" href="#prerequisites-1">Prerequisites</a></h2>
 <p>Make sure you’ve already <a href="#installing-graphix">installed Graphix</a>. You can verify your installation by running:</p>
 <pre><code class="language-bash">graphix --version
 </code></pre>
@@ -371,19 +545,15 @@ want to exit the REPL press ctrl-d.</p>
 <pre><code class="language-graphix">use tui;
 use tui::text;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
+let counter = count(sys::time::timer(duration:1.s, true));
 
-text(&amp;"Count: [count]")
+text(&amp;"Count: [counter]")
 </code></pre>
 <p>This program demonstrates Graphix’s reactive nature:</p>
 <ul>
-<li>We start with <code>count = 0</code></li>
-<li><code>sys::time::timer(duration:1.s, true)</code> creates a timer that fires every second</li>
-<li>The <code>~</code> operator samples the right side when the left side updates</li>
-<li><code>count &lt;- ...</code> schedules an update to <code>count</code> for the next cycle</li>
-<li>Every second, <code>count</code> increments and the text automatically updates</li>
+<li><code>sys::time::timer(duration:1.s, true)</code> produces an event every second</li>
+<li><code>count</code> from the core library tallies the events into a reactive integer</li>
+<li><code>counter</code> updates whenever the timer fires, so the text widget rerenders</li>
 <li>The last expression creates a text widget displaying the count</li>
 </ul>
 <h2 id="running-your-file"><a class="header" href="#running-your-file">Running Your File</a></h2>
@@ -394,10 +564,8 @@ text(&amp;"Count: [count]")
 <p>To stop the program, press <code>Ctrl+C</code>.</p>
 <h2 id="a-simpler-example"><a class="header" href="#a-simpler-example">A Simpler Example</a></h2>
 <p>If you want to see the reactive behavior without the TUI, try this simpler version (<code>counter.gx</code>):</p>
-<pre><code class="language-graphix">let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
-"Count: [count]"
+<pre><code class="language-graphix">let counter = count(sys::time::timer(duration:1.s, true));
+"Count: [counter]"
 </code></pre>
 <p>Run it with <code>graphix counter.gx</code> and you’ll see the count printed to the console every second.</p>
 <h2 id="understanding-the-output"><a class="header" href="#understanding-the-output">Understanding the Output</a></h2>
@@ -413,7 +581,7 @@ count &lt;- timer ~ (count + 1);
 <li><strong>Programs run forever</strong> unless they explicitly exit - they’re reactive graphs that respond to events</li>
 </ul>
 <h3 id="the-dataflow-model"><a class="header" href="#the-dataflow-model">The Dataflow Model</a></h3>
-<p>The key insight: when <code>timer</code> updates, it triggers an update to <code>count</code> (via the <code>&lt;-</code> connect operator), which triggers an update to the text widget. The entire chain reacts automatically. You describe <em>what</em> should happen, not <em>when</em> or <em>how</em> to update things.</p>
+<p>The key insight: when the timer fires, <code>count</code> produces a new tally, which propagates to <code>counter</code>, which the text widget depends on, so the widget re-renders. The entire chain reacts automatically. You describe <em>what</em> should happen, not <em>when</em> or <em>how</em> to update things.</p>
 <p>This is very different from traditional imperative programming where you’d need loops and manual state management. In Graphix, you build a graph of dependencies and the runtime handles updates for you.</p>
 <h2 id="try-it-yourself"><a class="header" href="#try-it-yourself">Try It Yourself</a></h2>
 <p>Experiment with these ideas:</p>
@@ -1704,7 +1872,7 @@ f(g, 42) // valid call
 are captured by the function definition, and remain valid no matter where the
 closure is called. For example,</p>
 <pre><code class="language-graphix">let f = {
-  let v = cast&lt;i64&gt;(sys::net::subscribe("/local/foo")$)$;
+  let v: i64 = sys::net::subscribe("/local/foo")$;
   |n| v + n
 };
 f(2)
@@ -1915,7 +2083,7 @@ and it’s output is connected to the call site itself. All the local
 variables are unique and invisible to the outside, and the types are
 resolved at compile time for each call site. Consider,</p>
 <pre><code class="language-graphix">let f = |x, y| x + y + y;
-let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")$)$;
+let n: i64 = sys::net::subscribe("/hev/stats/power")$;
 f(n, 1)
 </code></pre>
 <p>Here there is one call site for <code>f</code>, this builds a graph at the call
@@ -1926,7 +2094,7 @@ which causes <code>x + y + y</code> to update which causes the call site to
 return <code>x + y + y</code>, which causes the program to print <code>x + y + y</code></p>
 <p>Lets transform this program into something closer to the actual graph
 that is executed,</p>
-<pre><code class="language-graphix">let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")?)?;
+<pre><code class="language-graphix">let n: i64 = sys::net::subscribe("/hev/stats/power")?;
 n + 1 + 1
 </code></pre>
 <p>Here we’ve essentially inlined out <code>f</code> so that we can see the
@@ -2664,10 +2832,7 @@ val constants: Constants;
 <pre><code class="language-graphix">let add = |a, b| a + b;
 let sub = |a, b| a - b;
 
-let constants = Constants {
-    pi: 3.14159265359,
-    e: 2.71828182845
-};
+let constants = { pi: 3.14159265359, e: 2.71828182845 };
 
 let internal_helper = |x| x * 2
 </code></pre>
@@ -2926,7 +3091,7 @@ let status = mod foo dynamic {
         val sub: fn(x: i64) -&gt; i64;
         val cfg: Array&lt;i64&gt;
     };
-    source cast&lt;string&gt;(sys::net::subscribe(path)$)$
+    source sys::net::subscribe(path)$
 };
 select status {
     error as e =&gt; never(dbg(e)),
@@ -3467,7 +3632,7 @@ val take: fn(#n:Any, x: 'a) -&gt; 'a;
 val skip: fn(#n:Any, x: 'a) -&gt; 'a;
 
 /// seq will update j - i times, starting at i and ending at j - 1
-val seq: fn(n: i64, n2: i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
+val seq: fn(i: i64, j: i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -&gt; bool;
@@ -3599,11 +3764,11 @@ type Decode = [
 ];
 
 /// Encode values into bytes according to the spec.
-val encode: fn(a: Array&lt;Encode&gt;) -&gt; bytes;
+val encode: fn(spec: Array&lt;Encode&gt;) -&gt; bytes;
 
 /// Decode bytes into refs according to the spec.
 /// Returns the remaining bytes after all fields are consumed.
-val decode: fn(b: bytes, a: Array&lt;Decode&gt;) -&gt; Result&lt;bytes, `DecodeError(string)&gt;;
+val decode: fn(buf: bytes, spec: Array&lt;Decode&gt;) -&gt; Result&lt;bytes, `DecodeError(string)&gt;;
 </code></pre>
 <h2 id="coremath"><a class="header" href="#coremath">core::math</a></h2>
 <p>The <code>math</code> submodule wraps Rust’s <code>f64</code> math intrinsics (trigonometric,
@@ -3634,7 +3799,7 @@ val acos: fn(x: f64) -&gt; f64;
 val atan: fn(x: f64) -&gt; f64;
 
 /// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
-val atan2: fn(x: f64, x2: f64) -&gt; f64;
+val atan2: fn(y: f64, x: f64) -&gt; f64;
 
 /// Hyperbolic sine.
 val sinh: fn(x: f64) -&gt; f64;
@@ -3676,10 +3841,10 @@ val log2: fn(x: f64) -&gt; f64;
 val log10: fn(x: f64) -&gt; f64;
 
 /// Logarithm with arbitrary base: `log(x, base) = ln(x) / ln(base)`.
-val log: fn(x: f64, x2: f64) -&gt; f64;
+val log: fn(x: f64, base: f64) -&gt; f64;
 
 /// `x^y`.
-val pow: fn(x: f64, x2: f64) -&gt; f64;
+val pow: fn(x: f64, y: f64) -&gt; f64;
 
 /// Square root.
 val sqrt: fn(x: f64) -&gt; f64;
@@ -3688,7 +3853,7 @@ val sqrt: fn(x: f64) -&gt; f64;
 val cbrt: fn(x: f64) -&gt; f64;
 
 /// `sqrt(x^2 + y^2)`, computed without overflow for large inputs.
-val hypot: fn(x: f64, x2: f64) -&gt; f64;
+val hypot: fn(x: f64, y: f64) -&gt; f64;
 
 /// Largest integer less than or equal to `x`.
 val floor: fn(x: f64) -&gt; f64;
@@ -3712,20 +3877,20 @@ val abs: fn(x: f64) -&gt; f64;
 val signum: fn(x: f64) -&gt; f64;
 
 /// `x` with the sign of `y`.
-val copysign: fn(x: f64, x2: f64) -&gt; f64;
+val copysign: fn(x: f64, y: f64) -&gt; f64;
 
 /// Smaller of two f64 values, returning the non-NaN operand if one is
 /// NaN. For n-ary polymorphic behaviour over `Number`, use the
 /// top-level `min` from core.
-val min: fn(x: f64, x2: f64) -&gt; f64;
+val min: fn(x: f64, y: f64) -&gt; f64;
 
 /// Larger of two f64 values, returning the non-NaN operand if one is
 /// NaN. For n-ary polymorphic behaviour over `Number`, use the
 /// top-level `max` from core.
-val max: fn(x: f64, x2: f64) -&gt; f64;
+val max: fn(x: f64, y: f64) -&gt; f64;
 
 /// Clamp `x` to the closed interval `[lo, hi]`.
-val clamp: fn(x: f64, x2: f64, x3: f64) -&gt; f64;
+val clamp: fn(x: f64, lo: f64, hi: f64) -&gt; f64;
 
 /// True if `x` is NaN.
 val is_nan: fn(x: f64) -&gt; bool;
@@ -3887,13 +4052,13 @@ val flat_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, Array&lt;'b&gt;] th
 
 /// return the result of f applied to the init and every element of a in
 /// sequence. f(f(f(init, a[0]), a[1]), ...)
-val fold: fn(a: Array&lt;'a&gt;, y: 'b, f: fn(x: 'b, y: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(a: Array&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 
 /// each time v updates group places the value of v in an internal buffer
 /// and calls f with the length of the internal buffer and the value of v.
 /// If f returns true then group returns the internal buffer as an array
 /// otherwise group returns nothing.
-val group: fn(x: 'a, f: fn(n: i64, y: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+val group: fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// iter produces an update for every value in the array a. updates are produced
 /// in the order they appear in a.
@@ -3911,7 +4076,7 @@ val len: fn(a: Array&lt;'a&gt;) -&gt; i64;
 
 /// returns the concatenation of two or more arrays. O(N) where
 /// N is the size of the final array.
-val concat: fn(a: Array&lt;'a&gt;, @args: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val concat: fn(x: Array&lt;'a&gt;, @args: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array with the args added to the end. O(N)
 /// where N is the size of the final array
@@ -3961,7 +4126,10 @@ val enumerate: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;(i64, 'a)&gt;;
 /// element in the pair is from the first array and the second element in
 /// the pair is from the second array. The final array's length will be the
 /// minimum of the length of the input arrays
-val zip: fn(a: Array&lt;'a&gt;, a2: Array&lt;'b&gt;) -&gt; Array&lt;('a, 'b)&gt;;
+val zip: fn(a0: Array&lt;'a&gt;, a1: Array&lt;'b&gt;) -&gt; Array&lt;('a, 'b)&gt;;
+
+/// create an array of n elements where element i is f(i) for i in [0, n)
+val init: fn(n: i64, f: fn(i: i64) -&gt; 'a throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// given an array of pairs, return two arrays with the first array
 /// containing all the elements from the first pair element and second
@@ -3972,40 +4140,40 @@ val unzip: fn(a: Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;)
 <h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
 <pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
 /// the corresponding key value pair in the current map
-val map: fn(m: Map&lt;'k, 'v&gt;, f: fn(v: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val map: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return a new map containing only the key-value pairs where f applied to
 /// (key, value) returns true
-val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(v: ('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
+val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
 
 /// filter_map returns a new map containing the outputs of f
 /// that were not null
-val filter_map: fn(m: Map&lt;'k, 'v&gt;, f: fn(v: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val filter_map: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
-val fold: fn(m: Map&lt;'k, 'v&gt;, y: 'acc, f: fn(x: 'acc, v: ('k, 'v)) -&gt; 'acc throws 'e) -&gt; 'acc throws 'e;
+val fold: fn(m: Map&lt;'k, 'v&gt;, init: 'acc, f: fn(acc: 'acc, kv: ('k, 'v)) -&gt; 'acc throws 'e) -&gt; 'acc throws 'e;
 
 /// return the length of the map
 val len: fn(m: Map&lt;'k, 'v&gt;) -&gt; i64;
 
 /// get the value associated with the key k in the map m, or null if not present
-val get: fn(m: Map&lt;'k, 'v&gt;, y: 'k) -&gt; Option&lt;'v&gt;;
+val get: fn(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Option&lt;'v&gt;;
 
 /// get the value associated with the key k in the map m, or return the
 /// default value if k is not present in m
-val get_or: fn(m: Map&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; 'v;
+val get_or: fn(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v) -&gt; 'v;
 
 /// insert a new value into the map
-val insert: fn(m: Map&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Map&lt;'k, 'v&gt;;
+val insert: fn(m: Map&lt;'k, 'v&gt;, k: 'k, v: 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// update the value at k by applying f to the current value at k, or
 /// to the provided default if k is not present. returns the new map
 /// with k set to f's result. e.g. change(m, "count", 0, |n| n + 1)
-val change: fn(m: Map&lt;'k, 'v&gt;, y: 'k, z: 'v, f: fn(x: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
+val change: fn(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v, f: fn(v: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// remove the value associated with the specified key from the map
-val remove: fn(m: Map&lt;'k, 'v&gt;, y: 'k) -&gt; Map&lt;'k, 'v&gt;;
+val remove: fn(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Map&lt;'k, 'v&gt;;
 
 /// iter produces an update for every key-value pair in the map m.
 /// updates are produced in the order they appear in m.
@@ -4203,37 +4371,38 @@ val join_path: fn(s: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 <p>The <code>sys::io</code> module provides a unified <code>Stream</code> type for all I/O
 operations. The phantom type parameter constrains which stream kind is
 accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;<code>, and </code>stdin<code>/</code>stdout<code>/</code>stderr<code>return</code>Stream&lt;`Stdio&gt;`.</p>
-<pre><code class="language-graphix">/// An opaque handle to an I/O stream.
+<pre><code class="language-graphix">/// An opaque handle to an I/O stream. The phantom type parameter indicates
+/// the underlying stream kind, constraining which operations are valid.
 /// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS,
 /// Stream&lt;`Stdio&gt; for stdin/stdout/stderr.
 type Stream&lt;'a: [`File, `Tcp, `Tls, `Stdio]&gt;;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
-val read: fn(a: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val read: fn(stream: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
 /// Read exactly n bytes from the stream. Returns fewer bytes only
 /// if EOF is reached before n bytes have been read.
-val read_exact: fn(a: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val read_exact: fn(stream: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
 /// Write bytes to the stream. Returns the number of bytes written,
 /// which may be less than the full length of data.
-val write: fn(a: Stream&lt;'a&gt;, b: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
+val write: fn(stream: Stream&lt;'a&gt;, data: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
 
 /// Write all bytes to the stream, looping until complete.
-val write_exact: fn(a: Stream&lt;'a&gt;, b: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+val write_exact: fn(stream: Stream&lt;'a&gt;, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Flush any buffered writes.
-val flush: fn(a: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+val flush: fn(stream: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Return a handle to standard input.
-val stdin: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdin: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
 
 /// Return a handle to standard output.
-val stdout: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdout: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
 
 /// Return a handle to standard error.
-val stderr: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stderr: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysfs---filesystem-operations"><a class="header" href="#sysfs---filesystem-operations">sys::fs - Filesystem Operations</a></h1>
@@ -4279,14 +4448,29 @@ type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
 mod watch;
 mod tempdir;
 
-val read_all: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val read_all_bin: fn(s: string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
-val write_all: fn(#path: string, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val write_all_bin: fn(#path: string, b: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
-val is_file: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val is_dir: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val metadata: fn(?#follow_symlinks: bool, s: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+/// Read the specified file into memory as a utf8 string and return it.
+val read_all: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
 
+/// Read the specified file into memory as bytes and return it.
+val read_all_bin: fn(path: string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+
+/// Write data to path. If path does not exist it is created. If path exists it
+/// is truncated and replaced with data.
+val write_all: fn(#path: string, data: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Like write_all, but for binary data.
+val write_all_bin: fn(#path: string, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// If path is a regular file then return path, otherwise return an IOError.
+val is_file: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// If path is a directory then return path, otherwise return an IOError.
+val is_dir: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// Return metadata for a filesystem object.
+val metadata: fn(?#follow_symlinks: bool, path: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+
+/// Read a directory and return an array of directory entries.
 val readdir: fn(
     ?#max_depth: i64,
     ?#min_depth: i64,
@@ -4294,12 +4478,19 @@ val readdir: fn(
     ?#follow_symlinks: bool,
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
-    s: string
+    path: string
 ) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
 
-val create_dir: fn(?#all: bool, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val remove_dir: fn(?#all: bool, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val remove_file: fn(s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+/// Create a directory. If `all` is true (default false) create all intermediate
+/// directories as well.
+val create_dir: fn(?#all: bool, path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Remove a directory. If `all` is true (default false) recursively remove
+/// the contents as well.
+val remove_dir: fn(?#all: bool, path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Remove a file.
+val remove_file: fn(path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Open a file with the specified mode, returning an I/O stream.
 ///
@@ -4310,7 +4501,7 @@ val remove_file: fn(s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(a: Mode, s: string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
+val open: fn(mode: Mode, path: string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
 
 /// Seek to a position in the file. Returns the new position.
 val seek: fn(stream: io::Stream&lt;`File&gt;, pos: SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
@@ -4370,30 +4561,42 @@ type WatchEvent = {
 type Watcher;
 type Watch;
 
+/// Create a filesystem watcher.
+/// poll_interval defaults to 1s; poll_batch_size defaults to 100.
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
-    v: Any
+    trigger: Any
 ) -&gt; Result&lt;Watcher, `WatchError(string)&gt;;
 
-val watch: fn(?#interest: Array&lt;Interest&gt;, a: Watcher, s: string)
+/// Watch path for events matching #interest using the given watcher.
+val watch: fn(?#interest: Array&lt;Interest&gt;, watcher: Watcher, path: string)
     -&gt; Result&lt;Watch, `WatchError(string)&gt;;
 
+/// The path of the filesystem object involved in the most recent watch event.
+/// Accepts a single Watch, an Array of Watches, or a Map with Watch values.
 val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
     -&gt; Result&lt;string, `WatchError(string)&gt;;
 
+/// The full watch event including all paths and the event type.
 val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
     -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
 </code></pre>
 <h2 id="sysfstempdir"><a class="header" href="#sysfstempdir">sys::fs::tempdir</a></h2>
-<pre><code class="language-graphix">type T;
+<pre><code class="language-graphix">/// An opaque handle to a temporary directory. The directory is
+/// automatically deleted when the handle is dropped.
+type T;
 
-val path: fn(a: T) -&gt; string;
+/// Get the filesystem path of a TempDir.
+val path: fn(td: T) -&gt; string;
 
+/// Create a temporary directory.
+/// - #in: parent directory (default: system temp dir)
+/// - #name: prefix or suffix for the directory name
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
-    v: Any
+    trigger: Any
 ) -&gt; Result&lt;T, `IOError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -4445,83 +4648,123 @@ val accept: fn(#cert:bytes, #key:bytes, stream: io::Stream&lt;`Tcp&gt;)
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
-<a href="https://github.com/estokes/netidx">netidx</a>.</p>
-<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
-type ArgSpec = { name: string, doc: string, default: Any };
+<a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
+<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
+type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// write the value to the specified path
-val write: fn(s: string, v: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
-/// subscribe to the specified path
-val subscribe: fn(s: string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+/// subscribe to the specified path. The result type is driven by the
+/// annotation at the binding site — the runtime converts the published
+/// value into the requested type, returning `InvalidCast` if the
+/// conversion fails.
+val subscribe: fn(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// call the specified rpc
-val call: fn(s: string, a: Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+/// call the specified rpc. args must be a struct or null. The result
+/// type is driven by the annotation at the binding site.
+val call: fn(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
-/// Publish an rpc. When the rpc is called f will be called with the arguments
-/// sent by the caller, and whatever f returns will be sent back to the caller.
-/// If f does not return, the caller will hang waiting for a reply.
+/// Publish an rpc.
+/// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
+/// - the argument to f ('args) must be a struct with the same fields as 'spec,
+///   or null if 'spec is null
+/// - every field in 'args must contain the type of the corresponding default in 'spec
 val rpc: fn(
     #path:string,
     #doc:string,
-    #spec:Array&lt;ArgSpec&gt;,
-    #f:fn(a: Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+    #spec:'spec,
+    #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-/// list paths under the specified path. If #update is specified, then the list will
-/// be refreshed each time clock is triggered. If update is not specified, the list will
-/// be updated each second
-val list: fn(?#update:Any, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+/// list paths under the specified path. If #update is specified the
+/// list refreshes each time the trigger updates; otherwise it refreshes
+/// once per second.
+val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-/// list the table under the specified path. If #update is specified, then the table
-/// will be refreshed each time clock is triggered. If update is not specified, the table
-/// will be updated each second
-val list_table: fn(?#update:Any, s: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+/// list the table under the specified path. Refresh semantics match `list`.
+val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specified value at the specified path. Whenever the value updates,
-/// the new value will be sent to subscribers. If #on_write is specified, then if
-/// subscribers write to the value on_write will be called with the written value.
-/// on_write need not return anything.
-val publish: fn(?#on_write:fn(v: Any) -&gt; _ throws 'e, s: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// Publish the specified value at the specified path. Whenever the value
+/// updates, the new value is sent to subscribers. If #on_write is specified,
+/// writes from subscribers invoke on_write with the written value.
+val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers"><a class="header" href="#systime---timers">sys::time - Timers</a></h1>
 <pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
-val after_idle: fn(v: [duration, Number], y: 'a) -&gt; 'a;
+val after_idle: fn(timeout: [duration, Number], v: 'a) -&gt; 'a;
 
 /// timer will wait timeout and then update with the current time.
 /// If repeat is true, it will do this forever. If repeat is a number n,
 /// it will do this n times and then stop. If repeat is false, it will do
 /// this once.
-val timer: fn(v: [duration, Number], v2: [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
+val timer: fn(timeout: [duration, Number], repeat: [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
 
 /// return the current time each time trigger updates
-val now: fn(v: Any) -&gt; datetime;
+val now: fn(trigger: Any) -&gt; datetime;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysdirs"><a class="header" href="#sysdirs">sys::dirs</a></h1>
 <p>The <code>sys::dirs</code> module provides platform-aware paths to standard
 directories (home, config, data, etc.). Functions return <code>null</code> on
 platforms where the directory does not apply.</p>
-<pre><code class="language-graphix">val home_dir: fn() -&gt; [string, null];
+<pre><code class="language-graphix">/// the user's home directory
+val home_dir: fn() -&gt; [string, null];
+
+/// the application cache directory
 val cache_dir: fn() -&gt; [string, null];
+
+/// the application configuration directory (e.g. ~/.config on Linux)
 val config_dir: fn() -&gt; [string, null];
+
+/// the local application configuration directory
 val config_local_dir: fn() -&gt; [string, null];
+
+/// the application data directory
 val data_dir: fn() -&gt; [string, null];
+
+/// the local application data directory
 val data_local_dir: fn() -&gt; [string, null];
+
+/// the executables directory (Linux only, null on other platforms)
 val executable_dir: fn() -&gt; [string, null];
+
+/// the application preference directory
 val preference_dir: fn() -&gt; [string, null];
+
+/// the runtime directory (Linux only, null on other platforms)
 val runtime_dir: fn() -&gt; [string, null];
+
+/// the state directory (Linux only, null on other platforms)
 val state_dir: fn() -&gt; [string, null];
+
+/// the user's audio/music directory
 val audio_dir: fn() -&gt; [string, null];
+
+/// the user's desktop directory
 val desktop_dir: fn() -&gt; [string, null];
+
+/// the user's documents directory
 val document_dir: fn() -&gt; [string, null];
+
+/// the user's downloads directory
 val download_dir: fn() -&gt; [string, null];
+
+/// the fonts directory
 val font_dir: fn() -&gt; [string, null];
+
+/// the user's pictures directory
 val picture_dir: fn() -&gt; [string, null];
+
+/// the public share directory
 val public_dir: fn() -&gt; [string, null];
+
+/// the templates directory
 val template_dir: fn() -&gt; [string, null];
+
+/// the user's video directory
 val video_dir: fn() -&gt; [string, null];
 </code></pre>
 <p><code>executable_dir</code>, <code>runtime_dir</code>, and <code>state_dir</code> are Linux-only and
@@ -4563,11 +4806,11 @@ val client: fn(
     ?#default_headers: Array&lt;(string, string)&gt;,
     ?#redirect_limit: u32,
     ?#ca_cert: [bytes, null],
-    v: Any
+    trigger: Any
 ) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
 /// Get or create a shared default HTTP client.
-val default_client: fn(v: Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
+val default_client: fn(trigger: Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
 /// Make an HTTP request and return a text response.
 val request: fn(
@@ -4575,8 +4818,8 @@ val request: fn(
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [string, null],
     ?#timeout: [duration, null],
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 /// Make an HTTP request and return a binary response.
@@ -4585,18 +4828,18 @@ val request_bin: fn(
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [bytes, null],
     ?#timeout: [duration, null],
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
 
 /// Convenience: GET request with text response.
-val get: fn(a: Client, s: string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+val get: fn(client: Client, url: string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 /// Convenience: GET request with binary response.
-val get_bin: fn(a: Client, s: string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
+val get_bin: fn(client: Client, url: string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
 
 /// Return the bound address of a running server.
-val server_addr: fn(a: Server) -&gt; string;
+val server_addr: fn(server: Server) -&gt; string;
 
 /// Start an HTTP server.
 val serve: fn(
@@ -4604,7 +4847,7 @@ val serve: fn(
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
-    #handler: fn(a: Request) -&gt; Response throws 'e
+    #handler: fn(req: Request) -&gt; Response throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
 </code></pre>
 <h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
@@ -4612,39 +4855,39 @@ val serve: fn(
 <pre><code class="language-graphix">val get: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val post: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val put: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val delete: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val patch: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    a: Client,
-    s: string
+    client: Client,
+    url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -4655,16 +4898,16 @@ inferred from the type annotation at the call site.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// Parse JSON from a string, byte array, or I/O stream.
-val read: fn(v: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, v: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
-val write_bytes: fn(?#pretty: bool, v: Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 
 /// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="type-directed-deserialization"><a class="header" href="#type-directed-deserialization">Type-directed deserialization</a></h2>
 <p>The return type of <code>json::read</code> is determined by the type annotation on
@@ -4685,16 +4928,16 @@ Like <code>json::read</code>, <code>toml::read</code> uses type-directed deseria
 <pre><code class="language-graphix">use sys::io;
 
 /// Parse TOML from a string, byte array, or I/O stream.
-val read: fn(v: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, v: Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
-val write_bytes: fn(?#pretty: bool, v: Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
 
 /// Serialize a value and write TOML to a stream.
-val write_stream: fn(?#pretty: bool, a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">use toml;
@@ -4716,13 +4959,13 @@ deserialization.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// Decode a value from packed binary bytes or stream.
-val read: fn(v: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Encode a value to packed binary bytes.
-val write_bytes: fn(v: Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
+val write_bytes: fn(value: Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
 
 /// Encode a value and write to a stream.
-val write_stream: fn(a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`PackErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`PackErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <p>The Pack format is a compact binary encoding native to netidx. It is
 more space-efficient than JSON or TOML and supports the full range of
@@ -4735,10 +4978,10 @@ values.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// List sheet names in a workbook.
-val sheets: fn(v: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val sheets: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 
 /// Read a sheet by name as a 2D array of rows.
-val read: fn(v: [bytes, Stream&lt;'a&gt;], s: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val read: fn(input: [bytes, Stream&lt;'a&gt;], sheet: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
 <pre><code class="language-graphix">use xls;
@@ -4760,29 +5003,29 @@ type SqlVal = [i64, f64, string, bytes, null];
 type Connection;
 
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
-val open: fn(s: string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
+val open: fn(path: string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
 
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
-val exec: fn(a: Connection, s: string, a2: Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
+val exec: fn(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
 
 /// Execute multiple semicolon-separated statements (no params). Good for schema setup.
-val exec_batch: fn(a: Connection, s: string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val exec_batch: fn(conn: Connection, sql: string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array&lt;{...}&gt; for typed structs, or Array&lt;Map&lt;string, SqlVal&gt;&gt; for raw maps.
-val query: fn(a: Connection, s: string, a2: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
+val query: fn(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
 
 /// Begin a transaction.
-val begin: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val begin: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Commit the current transaction.
-val commit: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val commit: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Rollback the current transaction.
-val rollback: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val rollback: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Close the connection explicitly (optional — connections close on drop).
-val close: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val close: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 </code></pre>
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
@@ -4815,86 +5058,87 @@ type Db;
 type Tree&lt;'k, 'v&gt;;
 
 /// Open or create an embedded database at the given path.
-val open: fn(s: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
+val open: fn(path: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn(a: Db, v: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
-val get: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val get: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Insert a key-value pair. Returns the previous value, or null.
-val insert: fn(a: Tree&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val insert: fn(t: Tree&lt;'k, 'v&gt;, key: 'k, value: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Remove a key. Returns the previous value, or null.
-val remove: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val remove: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Check whether a key exists.
-val contains_key: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val contains_key: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
-/// Batch get values for an array of keys.
-val get_many: fn(a: Tree&lt;'k, 'v&gt;, a2: Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
+/// Batch get values for an array of keys. Returns values in input order, null for missing.
+val get_many: fn(t: Tree&lt;'k, 'v&gt;, keys: Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
 
 /// Get the first (minimum key) entry, or null if empty.
-val first: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val first: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the last (maximum key) entry, or null if empty.
-val last: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val last: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomically remove and return the minimum-key entry.
-val pop_min: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val pop_min: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomically remove and return the maximum-key entry.
-val pop_max: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val pop_max: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the entry with the greatest key strictly less than the given key.
-val get_lt: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val get_lt: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the entry with the smallest key strictly greater than the given key.
-val get_gt: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val get_gt: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
-/// Atomic compare-and-swap.
-val compare_and_swap: fn(a: Tree&lt;'k, 'v&gt;, y: 'k, v: ['v, null], v2: ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
+/// Atomic compare-and-swap. Returns null on success, or `Mismatch(current_value)
+/// if the current value didn't match.
+val compare_and_swap: fn(t: Tree&lt;'k, 'v&gt;, key: 'k, old: ['v, null], new: ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes.
-val batch: fn(a: Tree&lt;'k, 'v&gt;, a2: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val batch: fn(t: Tree&lt;'k, 'v&gt;, ops: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Number of entries in the tree (O(n) scan).
-val len: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val len: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the tree has no entries.
-val is_empty: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val is_empty: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Get the stored type metadata for a tree, or null if none.
-val get_type: fn(a: Db, v: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
+val get_type: fn(db: Db, name: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
 
 /// List the names of all trees in the database.
-val tree_names: fn(a: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
+val tree_names: fn(db: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
 
 /// Drop a named tree from the database.
-val drop_tree: fn(a: Db, s: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Generate a monotonically increasing unique u64 ID.
-val generate_id: fn(a: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val generate_id: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// Flush all pending writes to disk.
-val flush: fn(a: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val flush: fn(db: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Total size of the database on disk in bytes.
-val size_on_disk: fn(a: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val size_on_disk: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the database was recovered after a crash.
-val was_recovered: fn(a: Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val was_recovered: fn(db: Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// CRC32 checksum of all keys and values (O(n)).
-val checksum: fn(a: Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
+val checksum: fn(db: Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
 
 /// Export all database contents to a file.
-val export: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val export: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Import previously exported data from a file. The database must be empty.
-val import: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
 <p>Cursors iterate over tree entries reactively, advancing on each trigger.</p>
@@ -4902,20 +5146,21 @@ val import: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 type Cursor&lt;'k, 'v&gt;;
 
 /// Create a new cursor, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], a: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
+val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
-/// Create a cursor over a key range.
+/// Create a cursor over a key range. Both bounds are optional (null = unbounded).
 val range: fn(
     ?#start: [`Included('k), `Excluded('k), null],
     ?#end: [`Included('k), `Excluded('k), null],
-    a: Tree&lt;'k, 'v&gt;
+    t: Tree&lt;'k, 'v&gt;
 ) -&gt; Cursor&lt;'k, 'v&gt;;
 
-/// Read the next entry. Returns (key, value) or null when exhausted.
-val read: fn(a: Cursor&lt;'k, 'v&gt;, v: Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+/// Read the next entry. Advances on each trigger.
+/// Returns (key, value) or null when exhausted.
+val read: fn(c: Cursor&lt;'k, 'v&gt;, trigger: Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Read up to N entries at once.
-val read_many: fn(a: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
+val read_many: fn(c: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
 <p>Multi-tree ACID transactions. All trees must be opened before any data
@@ -4927,28 +5172,28 @@ type Txn;
 type TxnTree&lt;'k, 'v&gt;;
 
 /// Begin a multi-tree transaction.
-val begin: fn(a: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
+val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
-/// Open a tree within the transaction.
-val tree: fn(a: Txn, v: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+/// Open a tree within the transaction. Pass null for the default tree.
+val tree: fn(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
-val get: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val get: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Insert a key-value pair within the transaction.
-val insert: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val insert: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k, value: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Remove a key within the transaction.
-val remove: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val remove: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes within the transaction.
-val batch: fn(a: TxnTree&lt;'k, 'v&gt;, a2: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val batch: fn(t: TxnTree&lt;'k, 'v&gt;, ops: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Commit the transaction atomically.
-val commit: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val commit: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Abort the transaction.
-val rollback: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val rollback: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
 <p>Reactive subscriptions fire when entries are inserted or removed.</p>
@@ -4956,13 +5201,13 @@ val rollback: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 type Subscription&lt;'k, 'v&gt;;
 
 /// Subscribe to changes, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], a: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
+val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
 /// Fires reactively when inserts occur.
-val on_insert: fn(a: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
+val on_insert: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
 
 /// Fires reactively when removes occur.
-val on_remove: fn(a: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
+val on_remove: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="list"><a class="header" href="#list">list</a></h1>
@@ -4973,96 +5218,96 @@ O(1); indexed access is O(n).</p>
 type List&lt;'a&gt;;
 
 /// Return an empty list.
-val nil: fn(v: Any) -&gt; List&lt;'a&gt;;
+val nil: fn(trig: Any) -&gt; List&lt;'a&gt;;
 
 /// Prepend an element to the front of a list. O(1).
-val cons: fn(x: 'a, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val cons: fn(x: 'a, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list containing a single element.
 val singleton: fn(x: 'a) -&gt; List&lt;'a&gt;;
 
 /// Return the first element, or null if empty.
-val head: fn(a: List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
+val head: fn(l: List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
 
 /// Return the list without its first element, or null if empty.
-val tail: fn(a: List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
+val tail: fn(l: List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
 
 /// Return both the head and tail as a pair, or null if empty.
-val uncons: fn(a: List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
+val uncons: fn(l: List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
 
 /// Return true if the list is empty.
-val is_empty: fn(a: List&lt;'a&gt;) -&gt; bool;
+val is_empty: fn(l: List&lt;'a&gt;) -&gt; bool;
 
 /// Return the element at position n (0-indexed), or null. O(n).
-val nth: fn(a: List&lt;'a&gt;, n: i64) -&gt; Option&lt;'a&gt;;
+val nth: fn(l: List&lt;'a&gt;, n: i64) -&gt; Option&lt;'a&gt;;
 
 /// Return the number of elements. O(n).
-val len: fn(a: List&lt;'a&gt;) -&gt; i64;
+val len: fn(l: List&lt;'a&gt;) -&gt; i64;
 
 /// Return the list in reverse order. O(n).
-val reverse: fn(a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val reverse: fn(l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return the first n elements.
-val take: fn(n: i64, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val take: fn(n: i64, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return the list without its first n elements.
-val drop: fn(n: i64, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val drop: fn(n: i64, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Convert a list to an array.
-val to_array: fn(a: List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val to_array: fn(l: List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// Convert an array to a list.
 val from_array: fn(a: Array&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Concatenate two or more lists.
-val concat: fn(a: List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val concat: fn(l: List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Flatten a list of lists into a single list.
-val flatten: fn(a: List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
+val flatten: fn(l: List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
 
 /// Apply f to each element.
-val map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Keep elements where f returns true.
-val filter: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+val filter: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
 /// Keep non-null outputs of f.
-val filter_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Map and flatten: if f returns a list, inline its elements.
-val flat_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Left fold: f(f(f(init, a0), a1), ...).
-val fold: fn(a: List&lt;'a&gt;, y: 'b, f: fn(x: 'b, y: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(l: List&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 
 /// Return the first element where f returns true, or null.
-val find: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
+val find: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
 
 /// Return the first non-null output of f.
-val find_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
+val find_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
 
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn(?#dir: Direction, ?#numeric: bool, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
-val enumerate: fn(a: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
+val enumerate: fn(l: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
 
 /// Zip two lists into a list of pairs.
-val zip: fn(a: List&lt;'a&gt;, a2: List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
+val zip: fn(l0: List&lt;'a&gt;, l1: List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
 
 /// Unzip a list of pairs into a pair of lists.
-val unzip: fn(a: List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
+val unzip: fn(l: List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
 
 /// Create a list of n elements where element i is f(i).
-val init: fn(n: i64, f: fn(n: i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+val init: fn(n: i64, f: fn(i: i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
 /// Produce an update for every element in the list.
-val iter: fn(a: List&lt;'a&gt;) -&gt; 'a;
+val iter: fn(l: List&lt;'a&gt;) -&gt; 'a;
 
 /// Produce an update for each element, gated by clock updates.
-val iterq: fn(#clock: Any, a: List&lt;'a&gt;) -&gt; 'a;
+val iterq: fn(#clock: Any, l: List&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="args"><a class="header" href="#args">args</a></h1>
@@ -5107,10 +5352,10 @@ val option: fn(#name: string, ?#short: [string, null], ?#help: [string, null], ?
 val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -&gt; Arg;
 
 /// Create a command descriptor.
-val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array&lt;Command&gt;, a: Array&lt;Arg&gt;) -&gt; Command;
+val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array&lt;Command&gt;, args: Array&lt;Arg&gt;) -&gt; Command;
 
 /// Parse command-line arguments against the spec.
-val parse: fn(a: Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
+val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
 </code></pre>
 <h2 id="example-2"><a class="header" href="#example-2">Example</a></h2>
 <pre><code class="language-graphix">use args;
@@ -5144,7 +5389,7 @@ rendering.</p>
 <pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.
-val render: fn(?#strict: bool, ?#partials: 'a, s: string, y: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
+val render: fn(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example-3"><a class="header" href="#example-3">Example</a></h2>
 <pre><code class="language-graphix">use hbs;
@@ -5326,10 +5571,14 @@ use sys::time;
 // Self-contained: publish a simulated temperature reading once a
 // second, then subscribe to it for display. Drop the publish to
 // point the gauge at any other publisher.
+//
+// The gauge below renders `temperature / 100.0` as its ratio, so
+// `temperature` is published in the 0–100 range (the gauge clamps
+// anything outside [0, 1] and warns).
 let tick = time::timer(duration:1.s, true);
 let t = cast&lt;f64&gt;(count(tick))$;
-let temp_source = 7000.0;
-temp_source &lt;- tick ~ 7000.0 + 2500.0 * math::sin(t / 5.0);
+let temp_source = 50.0;
+temp_source &lt;- tick ~ 50.0 + 25.0 * math::sin(t / 5.0);
 sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
 
 let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
@@ -5837,14 +6086,14 @@ input_handler(
   day: i64
 };
 
-val date: fn(n: i64, n2: i64, n3: i64) -&gt; Date;
+val date: fn(year: i64, month: i64, day: i64) -&gt; Date;
 
 type CalendarEvent = {
   date: Date,
   style: Style
 };
 
-val calendar_event: fn(a: Style, a2: Date) -&gt; CalendarEvent;
+val calendar_event: fn(style: Style, date: Date) -&gt; CalendarEvent;
 
 val calendar: fn(
   ?#default_style: &amp;[Style, null],
@@ -5852,7 +6101,7 @@ val calendar: fn(
   ?#show_surrounding: &amp;[Style, null],
   ?#show_weekday: &amp;[Style, null],
   ?#events: &amp;[Array&lt;CalendarEvent&gt;, null],
-  a: &amp;Date
+  display_date: &amp;Date
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-3"><a class="header" href="#parameters-3">Parameters</a></h2>
@@ -12014,38 +12263,30 @@ net::publish("/local/graphix/data_table_virtual/nr0/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
 net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
 
-// Rows that aren't absolute netidx paths are virtual — the data_table
-// skips subscribing for them, and cell values come from the column's
-// `source` (uniform string or per-row Map). Columns can be bare-string
-// (Netidx-sourced text, the same as `sys::net::list_table` returns) or
-// full ColumnSpecs declared inline. Mixing the two is fine: the
-// `Table` type's `columns: Array&lt;[string, ColumnSpec]&gt;` union element
-// lets `sys::net::list_table` flow straight through.
-let raw = net::list_table("/local/graphix/data_table_virtual")$;
-
 let score: Map&lt;string, f64&gt; = {};
 
-// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return
-// type widens each bare-string entry into the union element. After
-// that, `array::concat` and `array::push` operate on uniformly-typed
-// `Array&lt;[string, ColumnSpec]&gt;`s.
-let widened: Array&lt;[string, ColumnSpec]&gt; =
-    array::map(raw.columns, |n: string| -&gt; [string, ColumnSpec] n);
-let region: ColumnSpec = text_column(
-    #name: "region",
-    #display_name: "Region",
-    #source: &amp;"production"
-);
-let score_col: ColumnSpec = progress_column(
-    #name: "score",
-    #display_name: "Score",
-    #source: &amp;score,
-    #width: &amp;f64:180.0
-);
-let tbl: Table = uniq({
-    rows: array::concat(raw.rows, ["vr0", "vr1", "vr2"]),
-    columns: array::push_front(array::push(widened, score_col), region)
-});
+let tbl = {
+    let raw = net::list_table("/local/graphix/data_table_virtual")$;
+    let columns = array::map(raw.columns, |n| select n {
+        "score" =&gt; progress_column(
+            #name: "score",
+            #display_name: "Score",
+            #source: &amp;`Netidx(score),
+            #width: &amp;f64:180.0
+        ),
+        n =&gt; n
+    });
+    let columns = array::push_front(columns, text_column(
+        #name: "region",
+        #display_name: "Region",
+        #source: &amp;"production"
+    ));
+    // rows that aren't absolute paths won't attempt to subscribe
+    // but will be looked up in the score map for a default value.
+    // that lets us add virtual rows that don't exist in netidx
+    let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
+    uniq({ rows, columns })
+};
 
 let layout = column(
     #spacing: &amp;14.0,
@@ -12165,7 +12406,9 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
         #name: "cpu",
         #history_seconds: f64:30.0,
         #display_name: "CPU",
-        #width: &amp;220.0
+        #width: &amp;220.0,
+        #min:0.,
+        #max:100.
     ),
     "uptime" =&gt; progress_column(
         #name: "uptime",
@@ -12533,8 +12776,9 @@ subscribe("/some/netidx/path")
 <p>Or access it without <code>use</code>:</p>
 <pre><code class="language-graphix">sys::net::subscribe("/some/netidx/path")
 </code></pre>
-<p>The standard library packages (<code>core</code>, <code>str</code>, <code>array</code>, <code>map</code>, <code>sys</code>, <code>http</code>,
-<code>re</code>, <code>rand</code>, <code>tui</code>) are pre-installed and available by default.</p>
+<p>The standard library packages (<code>core</code>, <code>str</code>, <code>array</code>, <code>map</code>, <code>re</code>, <code>rand</code>,
+<code>sys</code>, <code>http</code>, <code>json</code>, <code>toml</code>, <code>pack</code>, <code>xls</code>, <code>sqlite</code>, <code>db</code>, <code>list</code>, <code>args</code>,
+<code>hbs</code>, <code>tui</code>, <code>gui</code>) are pre-installed and available by default.</p>
 <h2 id="searching-for-packages"><a class="header" href="#searching-for-packages">Searching for Packages</a></h2>
 <p>Search crates.io for packages matching a query:</p>
 <pre><code>graphix package search http
@@ -13417,18 +13661,24 @@ can build a custom Graphix application. All installed packages are
 automatically registered, so your application gets the full standard library and
 any additional packages out of the box.</p>
 <h2 id="basic-application"><a class="header" href="#basic-application">Basic Application</a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use anyhow::Result;
+<p>The shell needs a <code>MainThreadHandle</code> so widgets that must run on the
+main thread (notably the GUI backend) can dispatch work back from the
+tokio runtime. The standard pattern is to spawn tokio on its own thread
+and pump the main-thread queue from <code>main</code>:</p>
+<pre class="playground"><code class="language-rust">use anyhow::Result;
 use graphix_compiler::expr::Source;
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{MainThreadHandle, Mode, ShellBuilder};
 use netidx::{
     publisher::{DesiredAuth, PublisherBuilder},
     subscriber::Subscriber,
 };
 
-pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt;()&gt; {
+async fn tokio_main(
+    cfg: netidx::config::Config,
+    auth: DesiredAuth,
+    run_on_main: MainThreadHandle,
+) -&gt; Result&lt;()&gt; {
     let publisher = PublisherBuilder::new(cfg.clone())
         .desired_auth(auth.clone())
         .build()
@@ -13440,10 +13690,31 @@ pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -&gt; Result&lt
         .subscriber(subscriber)
         .no_init(true)
         .build()?
-        .run()
+        .run(run_on_main)
         .await
 }
-<span class="boring">}</span></code></pre>
+
+fn main() -&gt; Result&lt;()&gt; {
+    let cfg = netidx::config::Config::load_default()?;
+    let auth = DesiredAuth::Anonymous;
+    let (handle, main_rx) = MainThreadHandle::new();
+    let tokio_thread = std::thread::Builder::new()
+        .name("tokio".into())
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(tokio_main(cfg, auth, handle))
+        })
+        .expect("spawn tokio thread");
+    while let Ok(f) = main_rx.recv() {
+        f();
+    }
+    tokio_thread.join().expect("tokio thread panicked")
+}</code></pre>
+<p><code>MainThreadHandle::new()</code> returns the handle you pass to <code>.run()</code> and a
+receiver you drive on the main thread. The receiver yields closures the
+shell wants executed there; calling each in turn is enough.</p>
 <h2 id="module-resolvers"><a class="header" href="#module-resolvers">Module Resolvers</a></h2>
 <p>If you want to bundle additional Graphix source files into your binary (beyond
 what packages provide), you can add module resolvers. A VFS resolver maps
@@ -13468,7 +13739,7 @@ ShellBuilder::&lt;NoExt&gt;::default()
     .publisher(publisher)
     .subscriber(subscriber)
     .build()?
-    .run()
+    .run(run_on_main)
     .await
 <span class="boring">}</span></code></pre>
 <p>You can have as many module resolvers as you like. When loading modules they are
@@ -13487,7 +13758,7 @@ registration automatically through the <code>defpackage!</code> macro.</p>
     .publisher(publisher)
     .subscriber(subscriber)
     .build()?
-    .run()
+    .run(run_on_main)
     .await
 <span class="boring">}</span></code></pre>
 <p>This gives you a REPL with the standard library, all installed packages, and

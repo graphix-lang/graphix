@@ -14,17 +14,26 @@ any additional packages out of the box.
 
 ## Basic Application
 
+The shell needs a `MainThreadHandle` so widgets that must run on the
+main thread (notably the GUI backend) can dispatch work back from the
+tokio runtime. The standard pattern is to spawn tokio on its own thread
+and pump the main-thread queue from `main`:
+
 ```rust
 use anyhow::Result;
 use graphix_compiler::expr::Source;
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{MainThreadHandle, Mode, ShellBuilder};
 use netidx::{
     publisher::{DesiredAuth, PublisherBuilder},
     subscriber::Subscriber,
 };
 
-pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -> Result<()> {
+async fn tokio_main(
+    cfg: netidx::config::Config,
+    auth: DesiredAuth,
+    run_on_main: MainThreadHandle,
+) -> Result<()> {
     let publisher = PublisherBuilder::new(cfg.clone())
         .desired_auth(auth.clone())
         .build()
@@ -36,10 +45,33 @@ pub async fn run(cfg: netidx::config::Config, auth: DesiredAuth) -> Result<()> {
         .subscriber(subscriber)
         .no_init(true)
         .build()?
-        .run()
+        .run(run_on_main)
         .await
 }
+
+fn main() -> Result<()> {
+    let cfg = netidx::config::Config::load_default()?;
+    let auth = DesiredAuth::Anonymous;
+    let (handle, main_rx) = MainThreadHandle::new();
+    let tokio_thread = std::thread::Builder::new()
+        .name("tokio".into())
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(tokio_main(cfg, auth, handle))
+        })
+        .expect("spawn tokio thread");
+    while let Ok(f) = main_rx.recv() {
+        f();
+    }
+    tokio_thread.join().expect("tokio thread panicked")
+}
 ```
+
+`MainThreadHandle::new()` returns the handle you pass to `.run()` and a
+receiver you drive on the main thread. The receiver yields closures the
+shell wants executed there; calling each in turn is enough.
 
 ## Module Resolvers
 
@@ -66,7 +98,7 @@ ShellBuilder::<NoExt>::default()
     .publisher(publisher)
     .subscriber(subscriber)
     .build()?
-    .run()
+    .run(run_on_main)
     .await
 ```
 
@@ -89,7 +121,7 @@ ShellBuilder::<NoExt>::default()
     .publisher(publisher)
     .subscriber(subscriber)
     .build()?
-    .run()
+    .run(run_on_main)
     .await
 ```
 

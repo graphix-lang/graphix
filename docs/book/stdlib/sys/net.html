@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-5c78f6d5.js"></script>
+        <script src="../../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -176,44 +176,47 @@
                     <main>
                         <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
-<a href="https://github.com/estokes/netidx">netidx</a>.</p>
-<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;(string, v64)&gt; };
-type ArgSpec = { name: string, doc: string, default: Any };
+<a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
+<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
+type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// write the value to the specified path
-val write: fn(s: string, v: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
-/// subscribe to the specified path
-val subscribe: fn(s: string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+/// subscribe to the specified path. The result type is driven by the
+/// annotation at the binding site — the runtime converts the published
+/// value into the requested type, returning `InvalidCast` if the
+/// conversion fails.
+val subscribe: fn(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// call the specified rpc
-val call: fn(s: string, a: Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+/// call the specified rpc. args must be a struct or null. The result
+/// type is driven by the annotation at the binding site.
+val call: fn(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
-/// Publish an rpc. When the rpc is called f will be called with the arguments
-/// sent by the caller, and whatever f returns will be sent back to the caller.
-/// If f does not return, the caller will hang waiting for a reply.
+/// Publish an rpc.
+/// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
+/// - the argument to f ('args) must be a struct with the same fields as 'spec,
+///   or null if 'spec is null
+/// - every field in 'args must contain the type of the corresponding default in 'spec
 val rpc: fn(
     #path:string,
     #doc:string,
-    #spec:Array&lt;ArgSpec&gt;,
-    #f:fn(a: Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+    #spec:'spec,
+    #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-/// list paths under the specified path. If #update is specified, then the list will
-/// be refreshed each time clock is triggered. If update is not specified, the list will
-/// be updated each second
-val list: fn(?#update:Any, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+/// list paths under the specified path. If #update is specified the
+/// list refreshes each time the trigger updates; otherwise it refreshes
+/// once per second.
+val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-/// list the table under the specified path. If #update is specified, then the table
-/// will be refreshed each time clock is triggered. If update is not specified, the table
-/// will be updated each second
-val list_table: fn(?#update:Any, s: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+/// list the table under the specified path. Refresh semantics match `list`.
+val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specified value at the specified path. Whenever the value updates,
-/// the new value will be sent to subscribers. If #on_write is specified, then if
-/// subscribers write to the value on_write will be called with the written value.
-/// on_write need not return anything.
-val publish: fn(?#on_write:fn(v: Any) -&gt; _ throws 'e, s: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+/// Publish the specified value at the specified path. Whenever the value
+/// updates, the new value is sent to subscribers. If #on_write is specified,
+/// writes from subscribers invoke on_write with the written value.
+val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
                     </main>

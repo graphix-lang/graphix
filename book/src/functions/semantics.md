@@ -18,7 +18,7 @@ resolved at compile time for each call site. Consider,
 
 ```graphix
 let f = |x, y| x + y + y;
-let n = cast<i64>(sys::net::subscribe("/hev/stats/power")$)$;
+let n: i64 = sys::net::subscribe("/hev/stats/power")$;
 f(n, 1)
 ```
 
@@ -33,7 +33,7 @@ Lets transform this program into something closer to the actual graph
 that is executed,
 
 ```graphix
-let n = cast<i64>(sys::net::subscribe("/hev/stats/power")?)?;
+let n: i64 = sys::net::subscribe("/hev/stats/power")?;
 n + 1 + 1
 ```
 

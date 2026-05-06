@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-5c78f6d5.js"></script>
+        <script src="../../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,37 +178,38 @@
 <p>The <code>sys::io</code> module provides a unified <code>Stream</code> type for all I/O
 operations. The phantom type parameter constrains which stream kind is
 accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;<code>, and </code>stdin<code>/</code>stdout<code>/</code>stderr<code>return</code>Stream&lt;`Stdio&gt;`.</p>
-<pre><code class="language-graphix">/// An opaque handle to an I/O stream.
+<pre><code class="language-graphix">/// An opaque handle to an I/O stream. The phantom type parameter indicates
+/// the underlying stream kind, constraining which operations are valid.
 /// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS,
 /// Stream&lt;`Stdio&gt; for stdin/stdout/stderr.
 type Stream&lt;'a: [`File, `Tcp, `Tls, `Stdio]&gt;;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
-val read: fn(a: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val read: fn(stream: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
 /// Read exactly n bytes from the stream. Returns fewer bytes only
 /// if EOF is reached before n bytes have been read.
-val read_exact: fn(a: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val read_exact: fn(stream: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
 /// Write bytes to the stream. Returns the number of bytes written,
 /// which may be less than the full length of data.
-val write: fn(a: Stream&lt;'a&gt;, b: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
+val write: fn(stream: Stream&lt;'a&gt;, data: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
 
 /// Write all bytes to the stream, looping until complete.
-val write_exact: fn(a: Stream&lt;'a&gt;, b: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+val write_exact: fn(stream: Stream&lt;'a&gt;, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Flush any buffered writes.
-val flush: fn(a: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+val flush: fn(stream: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Return a handle to standard input.
-val stdin: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdin: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
 
 /// Return a handle to standard output.
-val stdout: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdout: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
 
 /// Return a handle to standard error.
-val stderr: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stderr: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
 </code></pre>
 
                     </main>

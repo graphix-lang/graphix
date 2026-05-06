@@ -20,8 +20,9 @@ Or access it without `use`:
 sys::net::subscribe("/some/netidx/path")
 ```
 
-The standard library packages (`core`, `str`, `array`, `map`, `sys`, `http`,
-`re`, `rand`, `tui`) are pre-installed and available by default.
+The standard library packages (`core`, `str`, `array`, `map`, `re`, `rand`,
+`sys`, `http`, `json`, `toml`, `pack`, `xls`, `sqlite`, `db`, `list`, `args`,
+`hbs`, `tui`, `gui`) are pre-installed and available by default.
 
 ## Searching for Packages
 

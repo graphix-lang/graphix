@@ -45,14 +45,29 @@ type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
 mod watch;
 mod tempdir;
 
-val read_all: fn(s: string) -> Result<string, `IOError(string)>;
-val read_all_bin: fn(s: string) -> Result<bytes, `IOError(string)>;
-val write_all: fn(#path: string, s: string) -> Result<null, `IOError(string)>;
-val write_all_bin: fn(#path: string, b: bytes) -> Result<null, `IOError(string)>;
-val is_file: fn(s: string) -> Result<string, `IOError(string)>;
-val is_dir: fn(s: string) -> Result<string, `IOError(string)>;
-val metadata: fn(?#follow_symlinks: bool, s: string) -> Result<Metadata, `IOError(string)>;
+/// Read the specified file into memory as a utf8 string and return it.
+val read_all: fn(path: string) -> Result<string, `IOError(string)>;
 
+/// Read the specified file into memory as bytes and return it.
+val read_all_bin: fn(path: string) -> Result<bytes, `IOError(string)>;
+
+/// Write data to path. If path does not exist it is created. If path exists it
+/// is truncated and replaced with data.
+val write_all: fn(#path: string, data: string) -> Result<null, `IOError(string)>;
+
+/// Like write_all, but for binary data.
+val write_all_bin: fn(#path: string, data: bytes) -> Result<null, `IOError(string)>;
+
+/// If path is a regular file then return path, otherwise return an IOError.
+val is_file: fn(path: string) -> Result<string, `IOError(string)>;
+
+/// If path is a directory then return path, otherwise return an IOError.
+val is_dir: fn(path: string) -> Result<string, `IOError(string)>;
+
+/// Return metadata for a filesystem object.
+val metadata: fn(?#follow_symlinks: bool, path: string) -> Result<Metadata, `IOError(string)>;
+
+/// Read a directory and return an array of directory entries.
 val readdir: fn(
     ?#max_depth: i64,
     ?#min_depth: i64,
@@ -60,12 +75,19 @@ val readdir: fn(
     ?#follow_symlinks: bool,
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
-    s: string
+    path: string
 ) -> Result<Array<DirEntry>, `IOError(string)>;
 
-val create_dir: fn(?#all: bool, s: string) -> Result<null, `IOError(string)>;
-val remove_dir: fn(?#all: bool, s: string) -> Result<null, `IOError(string)>;
-val remove_file: fn(s: string) -> Result<null, `IOError(string)>;
+/// Create a directory. If `all` is true (default false) create all intermediate
+/// directories as well.
+val create_dir: fn(?#all: bool, path: string) -> Result<null, `IOError(string)>;
+
+/// Remove a directory. If `all` is true (default false) recursively remove
+/// the contents as well.
+val remove_dir: fn(?#all: bool, path: string) -> Result<null, `IOError(string)>;
+
+/// Remove a file.
+val remove_file: fn(path: string) -> Result<null, `IOError(string)>;
 
 /// Open a file with the specified mode, returning an I/O stream.
 ///
@@ -76,7 +98,7 @@ val remove_file: fn(s: string) -> Result<null, `IOError(string)>;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(a: Mode, s: string) -> Result<io::Stream<`File>, `IOError(string)>;
+val open: fn(mode: Mode, path: string) -> Result<io::Stream<`File>, `IOError(string)>;
 
 /// Seek to a position in the file. Returns the new position.
 val seek: fn(stream: io::Stream<`File>, pos: SeekFrom) -> Result<u64, `IOError(string)>;
@@ -140,18 +162,24 @@ type WatchEvent = {
 type Watcher;
 type Watch;
 
+/// Create a filesystem watcher.
+/// poll_interval defaults to 1s; poll_batch_size defaults to 100.
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
-    v: Any
+    trigger: Any
 ) -> Result<Watcher, `WatchError(string)>;
 
-val watch: fn(?#interest: Array<Interest>, a: Watcher, s: string)
+/// Watch path for events matching #interest using the given watcher.
+val watch: fn(?#interest: Array<Interest>, watcher: Watcher, path: string)
     -> Result<Watch, `WatchError(string)>;
 
+/// The path of the filesystem object involved in the most recent watch event.
+/// Accepts a single Watch, an Array of Watches, or a Map with Watch values.
 val path: fn(@args: [Watch, Array<Watch>, Map<'k, Watch>])
     -> Result<string, `WatchError(string)>;
 
+/// The full watch event including all paths and the event type.
 val events: fn(@args: [Watch, Array<Watch>, Map<'k, Watch>])
     -> Result<WatchEvent, `WatchError(string)>;
 ```
@@ -159,13 +187,19 @@ val events: fn(@args: [Watch, Array<Watch>, Map<'k, Watch>])
 ## sys::fs::tempdir
 
 ```graphix
+/// An opaque handle to a temporary directory. The directory is
+/// automatically deleted when the handle is dropped.
 type T;
 
-val path: fn(a: T) -> string;
+/// Get the filesystem path of a TempDir.
+val path: fn(td: T) -> string;
 
+/// Create a temporary directory.
+/// - #in: parent directory (default: system temp dir)
+/// - #name: prefix or suffix for the directory name
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
-    v: Any
+    trigger: Any
 ) -> Result<T, `IOError(string)>;
 ```

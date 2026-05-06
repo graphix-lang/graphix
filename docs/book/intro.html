@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5c78f6d5.js"></script>
+        <script src="toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -193,16 +193,16 @@ const(2) ──&gt; + &lt;── const(2)
 <p>The semantics of simple examples like this aren’t noticibly different
 from a normal programming language. However a more complex example
 such as,</p>
-<pre><code class="language-graphix">let x = cast&lt;i64&gt;(sys::net::subscribe("/foo")?)?;
+<pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")?;
 print(x * 10)
 </code></pre>
 <p>compiles to a graph like</p>
-<pre><code>                                               const(10)
-                                                   │
-                                                   │
-                                                   ▼
+<pre><code>                                  const(10)
+                                      │
+                                      │
+                                      ▼
                                          
-const("/foo") ──&gt; sys::net::subscribe ──&gt; cast&lt;i64&gt; ──&gt; * ──&gt; print
+const("/foo") ──&gt; sys::net::subscribe ──&gt; * ──&gt; print
                                          
 </code></pre>
 <p>Unlike the first example, the value of <code>sys::net::subscribe</code> isn’t a
@@ -227,7 +227,7 @@ features are,</p>
 <li>expression oriented</li>
 <li>strongly statically typed</li>
 <li>type inference</li>
-<li>structural type discipline with nomial abstract types</li>
+<li>structural type discipline with nominal abstract types</li>
 <li>parametric polymorphism</li>
 <li>algebraic data types</li>
 <li>pattern matching</li>

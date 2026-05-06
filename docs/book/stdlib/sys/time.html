@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-5c78f6d5.js"></script>
+        <script src="../../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,16 +177,16 @@
                         <h1 id="systime---timers"><a class="header" href="#systime---timers">sys::time - Timers</a></h1>
 <pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
-val after_idle: fn(v: [duration, Number], y: 'a) -&gt; 'a;
+val after_idle: fn(timeout: [duration, Number], v: 'a) -&gt; 'a;
 
 /// timer will wait timeout and then update with the current time.
 /// If repeat is true, it will do this forever. If repeat is a number n,
 /// it will do this n times and then stop. If repeat is false, it will do
 /// this once.
-val timer: fn(v: [duration, Number], v2: [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
+val timer: fn(timeout: [duration, Number], repeat: [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
 
 /// return the current time each time trigger updates
-val now: fn(v: Any) -&gt; datetime;
+val now: fn(trigger: Any) -&gt; datetime;
 </code></pre>
 
                     </main>

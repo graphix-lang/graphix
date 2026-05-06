@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-5c78f6d5.js"></script>
+        <script src="../../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,24 +178,61 @@
 <p>The <code>sys::dirs</code> module provides platform-aware paths to standard
 directories (home, config, data, etc.). Functions return <code>null</code> on
 platforms where the directory does not apply.</p>
-<pre><code class="language-graphix">val home_dir: fn() -&gt; [string, null];
+<pre><code class="language-graphix">/// the user's home directory
+val home_dir: fn() -&gt; [string, null];
+
+/// the application cache directory
 val cache_dir: fn() -&gt; [string, null];
+
+/// the application configuration directory (e.g. ~/.config on Linux)
 val config_dir: fn() -&gt; [string, null];
+
+/// the local application configuration directory
 val config_local_dir: fn() -&gt; [string, null];
+
+/// the application data directory
 val data_dir: fn() -&gt; [string, null];
+
+/// the local application data directory
 val data_local_dir: fn() -&gt; [string, null];
+
+/// the executables directory (Linux only, null on other platforms)
 val executable_dir: fn() -&gt; [string, null];
+
+/// the application preference directory
 val preference_dir: fn() -&gt; [string, null];
+
+/// the runtime directory (Linux only, null on other platforms)
 val runtime_dir: fn() -&gt; [string, null];
+
+/// the state directory (Linux only, null on other platforms)
 val state_dir: fn() -&gt; [string, null];
+
+/// the user's audio/music directory
 val audio_dir: fn() -&gt; [string, null];
+
+/// the user's desktop directory
 val desktop_dir: fn() -&gt; [string, null];
+
+/// the user's documents directory
 val document_dir: fn() -&gt; [string, null];
+
+/// the user's downloads directory
 val download_dir: fn() -&gt; [string, null];
+
+/// the fonts directory
 val font_dir: fn() -&gt; [string, null];
+
+/// the user's pictures directory
 val picture_dir: fn() -&gt; [string, null];
+
+/// the public share directory
 val public_dir: fn() -&gt; [string, null];
+
+/// the templates directory
 val template_dir: fn() -&gt; [string, null];
+
+/// the user's video directory
 val video_dir: fn() -&gt; [string, null];
 </code></pre>
 <p><code>executable_dir</code>, <code>runtime_dir</code>, and <code>state_dir</code> are Linux-only and

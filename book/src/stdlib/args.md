@@ -44,10 +44,10 @@ val option: fn(#name: string, ?#short: [string, null], ?#help: [string, null], ?
 val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -> Arg;
 
 /// Create a command descriptor.
-val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array<Command>, a: Array<Arg>) -> Command;
+val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array<Command>, args: Array<Arg>) -> Command;
 
 /// Parse command-line arguments against the spec.
-val parse: fn(a: Command) -> [ParseResult, Error<`ArgError(string)>];
+val parse: fn(cmd: Command) -> [ParseResult, Error<`ArgError(string)>];
 ```
 
 ## Example

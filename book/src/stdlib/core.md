@@ -83,7 +83,7 @@ val take: fn(#n:Any, x: 'a) -> 'a;
 val skip: fn(#n:Any, x: 'a) -> 'a;
 
 /// seq will update j - i times, starting at i and ending at j - 1
-val seq: fn(n: i64, n2: i64) -> Result<i64, `SeqError(string)>;
+val seq: fn(i: i64, j: i64) -> Result<i64, `SeqError(string)>;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -> bool;
@@ -219,11 +219,11 @@ type Decode = [
 ];
 
 /// Encode values into bytes according to the spec.
-val encode: fn(a: Array<Encode>) -> bytes;
+val encode: fn(spec: Array<Encode>) -> bytes;
 
 /// Decode bytes into refs according to the spec.
 /// Returns the remaining bytes after all fields are consumed.
-val decode: fn(b: bytes, a: Array<Decode>) -> Result<bytes, `DecodeError(string)>;
+val decode: fn(buf: bytes, spec: Array<Decode>) -> Result<bytes, `DecodeError(string)>;
 ```
 
 ## core::math
@@ -259,7 +259,7 @@ val acos: fn(x: f64) -> f64;
 val atan: fn(x: f64) -> f64;
 
 /// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
-val atan2: fn(x: f64, x2: f64) -> f64;
+val atan2: fn(y: f64, x: f64) -> f64;
 
 /// Hyperbolic sine.
 val sinh: fn(x: f64) -> f64;
@@ -301,10 +301,10 @@ val log2: fn(x: f64) -> f64;
 val log10: fn(x: f64) -> f64;
 
 /// Logarithm with arbitrary base: `log(x, base) = ln(x) / ln(base)`.
-val log: fn(x: f64, x2: f64) -> f64;
+val log: fn(x: f64, base: f64) -> f64;
 
 /// `x^y`.
-val pow: fn(x: f64, x2: f64) -> f64;
+val pow: fn(x: f64, y: f64) -> f64;
 
 /// Square root.
 val sqrt: fn(x: f64) -> f64;
@@ -313,7 +313,7 @@ val sqrt: fn(x: f64) -> f64;
 val cbrt: fn(x: f64) -> f64;
 
 /// `sqrt(x^2 + y^2)`, computed without overflow for large inputs.
-val hypot: fn(x: f64, x2: f64) -> f64;
+val hypot: fn(x: f64, y: f64) -> f64;
 
 /// Largest integer less than or equal to `x`.
 val floor: fn(x: f64) -> f64;
@@ -337,20 +337,20 @@ val abs: fn(x: f64) -> f64;
 val signum: fn(x: f64) -> f64;
 
 /// `x` with the sign of `y`.
-val copysign: fn(x: f64, x2: f64) -> f64;
+val copysign: fn(x: f64, y: f64) -> f64;
 
 /// Smaller of two f64 values, returning the non-NaN operand if one is
 /// NaN. For n-ary polymorphic behaviour over `Number`, use the
 /// top-level `min` from core.
-val min: fn(x: f64, x2: f64) -> f64;
+val min: fn(x: f64, y: f64) -> f64;
 
 /// Larger of two f64 values, returning the non-NaN operand if one is
 /// NaN. For n-ary polymorphic behaviour over `Number`, use the
 /// top-level `max` from core.
-val max: fn(x: f64, x2: f64) -> f64;
+val max: fn(x: f64, y: f64) -> f64;
 
 /// Clamp `x` to the closed interval `[lo, hi]`.
-val clamp: fn(x: f64, x2: f64, x3: f64) -> f64;
+val clamp: fn(x: f64, lo: f64, hi: f64) -> f64;
 
 /// True if `x` is NaN.
 val is_nan: fn(x: f64) -> bool;

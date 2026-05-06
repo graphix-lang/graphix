@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-5c78f6d5.js"></script>
+        <script src="../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -188,7 +188,7 @@ and it’s output is connected to the call site itself. All the local
 variables are unique and invisible to the outside, and the types are
 resolved at compile time for each call site. Consider,</p>
 <pre><code class="language-graphix">let f = |x, y| x + y + y;
-let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")$)$;
+let n: i64 = sys::net::subscribe("/hev/stats/power")$;
 f(n, 1)
 </code></pre>
 <p>Here there is one call site for <code>f</code>, this builds a graph at the call
@@ -199,7 +199,7 @@ which causes <code>x + y + y</code> to update which causes the call site to
 return <code>x + y + y</code>, which causes the program to print <code>x + y + y</code></p>
 <p>Lets transform this program into something closer to the actual graph
 that is executed,</p>
-<pre><code class="language-graphix">let n = cast&lt;i64&gt;(sys::net::subscribe("/hev/stats/power")?)?;
+<pre><code class="language-graphix">let n: i64 = sys::net::subscribe("/hev/stats/power")?;
 n + 1 + 1
 </code></pre>
 <p>Here we’ve essentially inlined out <code>f</code> so that we can see the

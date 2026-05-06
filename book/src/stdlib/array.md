@@ -19,13 +19,13 @@ val flat_map: fn(a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e) -> Arr
 
 /// return the result of f applied to the init and every element of a in
 /// sequence. f(f(f(init, a[0]), a[1]), ...)
-val fold: fn(a: Array<'a>, y: 'b, f: fn(x: 'b, y: 'a) -> 'b throws 'e) -> 'b throws 'e;
+val fold: fn(a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
 
 /// each time v updates group places the value of v in an internal buffer
 /// and calls f with the length of the internal buffer and the value of v.
 /// If f returns true then group returns the internal buffer as an array
 /// otherwise group returns nothing.
-val group: fn(x: 'a, f: fn(n: i64, y: 'a) -> bool throws 'e) -> Array<'a> throws 'e;
+val group: fn(v: 'a, f: fn(len: i64, x: 'a) -> bool throws 'e) -> Array<'a> throws 'e;
 
 /// iter produces an update for every value in the array a. updates are produced
 /// in the order they appear in a.
@@ -43,7 +43,7 @@ val len: fn(a: Array<'a>) -> i64;
 
 /// returns the concatenation of two or more arrays. O(N) where
 /// N is the size of the final array.
-val concat: fn(a: Array<'a>, @args: Array<'a>) -> Array<'a>;
+val concat: fn(x: Array<'a>, @args: Array<'a>) -> Array<'a>;
 
 /// return an array with the args added to the end. O(N)
 /// where N is the size of the final array
@@ -93,7 +93,10 @@ val enumerate: fn(a: Array<'a>) -> Array<(i64, 'a)>;
 /// element in the pair is from the first array and the second element in
 /// the pair is from the second array. The final array's length will be the
 /// minimum of the length of the input arrays
-val zip: fn(a: Array<'a>, a2: Array<'b>) -> Array<('a, 'b)>;
+val zip: fn(a0: Array<'a>, a1: Array<'b>) -> Array<('a, 'b)>;
+
+/// create an array of n elements where element i is f(i) for i in [0, n)
+val init: fn(n: i64, f: fn(i: i64) -> 'a throws 'e) -> Array<'a> throws 'e;
 
 /// given an array of pairs, return two arrays with the first array
 /// containing all the elements from the first pair element and second

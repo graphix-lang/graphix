@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Dynamic Modules - The Graphix Programming Language</title>
+        <title>Editor Setup - The Graphix Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -12,33 +12,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="../favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
-        <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-2459343d.css">
-        <link rel="stylesheet" href="../css/chrome-ae938929.css">
-        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
-        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
-        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "../";
+            const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6d83bb3c.js";
+            window.path_to_searchindex_js = "searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-885d6cb4.js"></script>
+        <script src="toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -105,7 +105,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
             </noscript>
             <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -140,7 +140,7 @@
                     <h1 class="menu-title">The Graphix Programming Language</h1>
 
                     <div class="right-buttons">
-                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
                             <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
                         </a>
 
@@ -174,104 +174,189 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="dynamic-modules"><a class="header" href="#dynamic-modules">Dynamic Modules</a></h1>
-<p>Graphix programs can dynamically load modules at runtime. The loaded code will
-be compiled, type checked, and the loader will return an error indicating any
-failure in that process. Because Graphix is a statically typed language we must
-know ahead of time what interface the dynamically loaded module will have. We do
-this by defining a module signature. We can also define what the dynamically
-loaded module is allowed to reference, in order to prevent it from just calling
-any function it likes (aka it’s sandboxed). Lets dive right in with an example,</p>
-<pre><code class="language-graphix">// the module source, which we will publish in netidx
-let path = "/local/foo";
-let source = "
-    let add = |x| x + 1;
-    let sub = |x| x - 1;
-    let cfg = \[1, 2, 3, 4, 5\];
-    let hidden = 42
-";
-sys::net::publish(path, source)$;
-
-// now load the module
-let status = mod foo dynamic {
-    sandbox whitelist [core];
-    sig {
-        val add: fn(x: i64) -&gt; i64;
-        val sub: fn(x: i64) -&gt; i64;
-        val cfg: Array&lt;i64&gt;
-    };
-    source sys::net::subscribe(path)$
-};
-select status {
-    error as e =&gt; never(dbg(e)),
-    null as _ =&gt; foo::add(foo::cfg[0]$)
+                        <h1 id="editor-setup"><a class="header" href="#editor-setup">Editor Setup</a></h1>
+<p>Graphix ships with a Language Server Protocol (LSP) implementation and
+tree-sitter grammar, so any editor with LSP support can give you
+diagnostics, completion, hover, and go-to-definition for <code>.gx</code> and <code>.gxi</code>
+files.</p>
+<p>The LSP server is built into the <code>graphix</code> binary itself — there is no
+separate <code>graphix-lsp</code> executable to install. Editors launch it by
+running:</p>
+<pre><code class="language-bash">graphix lsp
+</code></pre>
+<p>It speaks LSP over stdin/stdout, so make sure <code>graphix</code> is on the <code>PATH</code>
+that your editor sees.</p>
+<p>Editor-specific configurations live in
+<a href="https://github.com/graphix-lang/graphix/tree/main/ide/editors"><code>ide/editors/</code></a>
+in the source tree. The sections below summarize how to install each
+one. None of them are published to upstream package registries yet —
+the modes for Emacs, Helix, and Zed are intended for upstream submission
+in a future release, but until then they install from the repo.</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<p>Make sure the <code>graphix</code> binary is on your <code>PATH</code>:</p>
+<pre><code class="language-bash">cargo install graphix-shell
+# or, from a checkout:
+cargo install --path graphix-shell
+</code></pre>
+<p>Then verify:</p>
+<pre><code class="language-bash">graphix lsp --help
+</code></pre>
+<p>If your editor cannot find <code>graphix</code>, point its config at the absolute
+path of the binary (<code>~/.cargo/bin/graphix</code> on a typical Cargo install).</p>
+<h2 id="vs-code"><a class="header" href="#vs-code">VS Code</a></h2>
+<p>The extension lives in <code>ide/editors/vscode/</code>. It bundles a TextMate
+grammar for syntax highlighting and a thin client that launches
+<code>graphix lsp</code>.</p>
+<pre><code class="language-bash">cd ide/editors/vscode
+npm install
+npm run compile
+</code></pre>
+<p>Then either symlink the directory into <code>~/.vscode/extensions/graphix</code>
+or open it in VS Code and press <kbd>F5</kbd> to launch a development
+host.</p>
+<p>The extension exposes a single setting, <code>graphix.server.path</code>, which
+defaults to <code>graphix</code>. Override it if the binary is not on your
+editor’s <code>PATH</code>.</p>
+<h2 id="neovim"><a class="header" href="#neovim">Neovim</a></h2>
+<p>The Neovim plugin in <code>ide/editors/nvim/</code> registers the filetype, wires
+up the LSP via <code>nvim-lspconfig</code> (with a fallback to the built-in
+<code>vim.lsp.start</code> when lspconfig is missing), and registers the
+tree-sitter grammar.</p>
+<p>Drop the <code>nvim/</code> directory into your config or your plugin manager,
+then call:</p>
+<pre><code class="language-lua">require('graphix').setup()
+</code></pre>
+<p>To install the tree-sitter grammar, run <code>:TSInstall graphix</code> after
+<code>nvim-treesitter</code> has picked up the registered parser config.</p>
+<p>You can disable either piece independently:</p>
+<pre><code class="language-lua">require('graphix').setup({ lsp = true, treesitter = false })
+</code></pre>
+<h2 id="vim"><a class="header" href="#vim">Vim</a></h2>
+<p>For traditional Vim (8+), <code>ide/editors/vim/</code> provides regex-based
+syntax highlighting and filetype detection. Tree-sitter is Neovim-only,
+so this is the right config for plain Vim.</p>
+<pre><code class="language-bash">mkdir -p ~/.vim/pack/graphix/start
+ln -s "$PWD/ide/editors/vim" ~/.vim/pack/graphix/start/graphix
+</code></pre>
+<p>LSP setup depends on your client. With
+<a href="https://github.com/prabirshrestha/vim-lsp">vim-lsp</a>:</p>
+<pre><code class="language-vim">if executable('graphix')
+  au User lsp_setup call lsp#register_server(#{
+    \ name: 'graphix',
+    \ cmd: ['graphix', 'lsp'],
+    \ allowlist: ['graphix'],
+    \ })
+endif
+</code></pre>
+<p>With <a href="https://github.com/neoclide/coc.nvim">coc.nvim</a>, add to
+<code>coc-settings.json</code>:</p>
+<pre><code class="language-json">{
+  "languageserver": {
+    "graphix": {
+      "command": "graphix",
+      "args": ["lsp"],
+      "filetypes": ["graphix"]
+    }
+  }
 }
 </code></pre>
-<p>running this we get,</p>
-<pre><code>$ graphix test.gx
-2
+<h2 id="emacs"><a class="header" href="#emacs">Emacs</a></h2>
+<p><code>ide/editors/emacs/graphix-mode.el</code> provides two modes:</p>
+<ul>
+<li><code>graphix-mode</code> — regex-based fallback for Emacs &lt; 29 or when the
+tree-sitter grammar is not installed.</li>
+<li><code>graphix-ts-mode</code> — tree-sitter mode for Emacs 29+. Selected
+automatically when the grammar is available.</li>
+</ul>
+<p>Drop the file on your <code>load-path</code> and require it:</p>
+<pre><code class="language-elisp">(require 'graphix-mode)
+
+;; Eglot (built-in, Emacs 29+):
+(add-to-list 'eglot-server-programs
+             '(graphix-mode . ("graphix" "lsp")))
+(add-hook 'graphix-mode-hook #'eglot-ensure)
+(add-hook 'graphix-ts-mode-hook #'eglot-ensure)
 </code></pre>
-<p>In the first part of this program we just publish a string containing the source
-code of the module we want to ultimately load. The second part is where it gets
-interesting, lets break it down.</p>
-<p><code>mod foo dynamic</code> declares a dynamically loaded module named <code>foo</code>. In the rest
-of our code we can refer (statically) to <code>foo</code> as if it was a normal module that
-we loaded at compile time. There are three sections required to define a dynamic
-module, they are required to be defined in order, sandbox, sig, and source,</p>
-<ul>
-<li>a <code>sandbox</code> statement, of which there are three types
-<ul>
-<li><code>sandbox unrestricted;</code> no sandboxing, the dynamic module can access
-anything in it’s scope</li>
-<li><code>sandbox whitelist [item0, item1, ...]</code> the dynamic module may access ONLY
-the names explicitly listed. e.g. <code>sandbox whitelist [core::array];</code> would
-allow the dynamic module to access only <code>core::array</code> and nothing else.</li>
-<li><code>sandbox blacklist [item0, item1, ...]</code> the dynamic module may access
-anything except the names listed. <code>sandbox blacklist [super::secret::module];</code> everything except super secret module would be
-accessible</li>
-</ul>
-</li>
-<li>a <code>sig</code> statement is the type signature of the module. This is a special
-syntax for writing module type signatures. There are four possible statements,
-<ul>
-<li>a val statement defines a value and it’s type, <code>val add: fn(x: i64) -&gt; i64</code> is
-an example of a val statement, it need not be a function it can be any type</li>
-<li>a type statement defines a type in the loaded module, e.g. <code>type T = { foo: string, bar: string }</code> val statements that come after a type statement may
-use the defined type. The type statement is identical to the normal type
-statement in Graphix (so it can be polymorphic, recursive, etc).</li>
-<li>an abstract type statement declares a type without defining it, e.g. <code>type T;</code>
-The loaded module must provide a concrete definition, but that definition is
-hidden from the loading code. This provides encapsulation - see the
-<a href="./interfaces.html#abstract-types">Abstract Types</a> section for details.</li>
-<li>a mod statement defines a sub module of the dynamically loaded module. A sub
-module must have a sig. <code>mod m: sig { ... }</code> defines a sub module.</li>
-</ul>
-</li>
-<li>a <code>source</code> statement defines where the source code for the dynamic module will
-come from. It’s type must be a string.</li>
-</ul>
-<p>The <code>mod foo dynamic ...</code> expression returns a value of type,</p>
-<p><code>[null, Error&lt;`DynamicLoadError(string)&gt;]</code></p>
-<p>The runtime will try to load the module every time the source updates. If it
-succeeds it will update with <code>null</code>, if it fails it will update with an error
-indicating what went wrong. Regardless of the outcome the previous loaded
-module, if any, will be deleted. If compilation succeeded the new module will be
-initialized, possibly causing values it exports to update.</p>
-<p>Obviously the loaded module must match the type signature defined in the dynamic
-mod statement. However, the signature checking only cares that every item
-mentioned in the signature is present in the dynamic module and that the types
-match. If extra items are present in the dynamic module they will simply be
-ignored, and will be inaccessible to the loading program.</p>
+<p>To install the tree-sitter grammar:</p>
+<pre><code>M-x graphix-ts-mode-install-grammar
+</code></pre>
+<p>This compiles the grammar from the GitHub repo via
+<code>treesit-install-language-grammar</code>. Once it succeeds, opening a <code>.gx</code>
+file will route to <code>graphix-ts-mode</code> automatically.</p>
+<p><code>lsp-mode</code> users can replace the <code>eglot-*</code> lines with the equivalent
+<code>lsp-mode</code> registration; the LSP command is the same.</p>
+<h2 id="helix"><a class="header" href="#helix">Helix</a></h2>
+<p>Helix has no plugin system, so language support has to be added by
+copying queries into your runtime path and appending blocks to
+<code>languages.toml</code>. The repo ships a script that does both:</p>
+<pre><code class="language-bash">cd ide/editors/helix
+./install.sh
+</code></pre>
+<p>The script:</p>
+<ol>
+<li>Copies tree-sitter queries to
+<code>~/.config/helix/runtime/queries/graphix/</code>.</li>
+<li>Appends <code>[[language]]</code>, <code>[language-server.graphix-lsp]</code>, and
+<code>[[grammar]]</code> blocks to <code>~/.config/helix/languages.toml</code> (idempotent
+— it skips if a graphix entry already exists).</li>
+<li>Runs <code>helix --grammar fetch &amp;&amp; helix --grammar build</code> to compile
+the parser.</li>
+</ol>
+<p>Re-running the script is safe; it overwrites the queries (so updates
+land) but leaves your <code>languages.toml</code> alone after the first install.</p>
+<p>To verify, open a <code>.gx</code> file and run <code>:tree-sitter-scopes</code>,
+<code>:lsp-restart</code>, or <code>helix --health graphix</code>.</p>
+<p>If you’re hacking on the grammar locally, edit the <code>[[grammar]]</code> block
+in your <code>languages.toml</code> to point at your checkout instead of the git
+URL. See <code>ide/editors/helix/README.md</code> for the exact form.</p>
+<h2 id="zed"><a class="header" href="#zed">Zed</a></h2>
+<p>The Zed extension lives in <code>ide/editors/zed/</code>. For development:</p>
+<pre><code class="language-bash">ln -s "$PWD/ide/editors/zed" ~/.config/zed/extensions/installed/graphix
+</code></pre>
+<p>Restart Zed. The extension auto-detects <code>.gx</code> and <code>.gxi</code> files,
+launches <code>graphix lsp</code>, and ships its own copy of the tree-sitter
+queries.</p>
+<p>The query files under <code>languages/graphix/</code> are duplicates of the
+canonical ones in <code>ide/tree-sitter-graphix/queries/</code> because Zed
+packages each extension as a self-contained directory. If you change
+the upstream queries, copy them across:</p>
+<pre><code class="language-bash">cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
+   ide/editors/zed/languages/graphix/
+</code></pre>
+<h2 id="what-the-lsp-currently-supports"><a class="header" href="#what-the-lsp-currently-supports">What the LSP currently supports</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Feature</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Diagnostics (parse + type errors)</td><td>✓</td></tr>
+<tr><td>Completions from the active environment</td><td>✓</td></tr>
+<tr><td>Hover with type and doc information</td><td>✓</td></tr>
+<tr><td>Go-to-definition</td><td>✓</td></tr>
+</tbody>
+</table>
+</div>
+<p>Find references, rename, code actions, and formatting are not yet
+implemented. File issues at
+<a href="https://github.com/graphix-lang/graphix/issues">graphix-lang/graphix</a>
+if something specific would unblock you.</p>
+<h2 id="reporting-editor-issues"><a class="header" href="#reporting-editor-issues">Reporting editor issues</a></h2>
+<p>Editor configs live in the same repo as the compiler, so bugs in
+syntax highlighting, indentation, or LSP behavior all belong in the
+same issue tracker. When filing one, mention which editor and which
+mode (<code>graphix-mode</code> vs <code>graphix-ts-mode</code>, vim vs nvim, etc.) you’re
+using, plus a minimal <code>.gx</code> snippet that triggers the problem.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../modules/interfaces.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="install.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../shell.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="getting_started.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -281,11 +366,11 @@ ignored, and will be inaccessible to the loading program.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../modules/interfaces.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="install.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../shell.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="getting_started.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -305,16 +390,16 @@ ignored, and will be inaccessible to the loading program.</p>
         </script>
 
 
-        <script src="../elasticlunr-ef4e11c1.min.js"></script>
-        <script src="../mark-09e88c2c.min.js"></script>
-        <script src="../searcher-c2a407aa.js"></script>
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
 
-        <script src="../clipboard-1626706a.min.js"></script>
-        <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-a0b12cfe.js"></script>
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="theme/graphix-highlight-d71af7ae.js"></script>
 
 
 

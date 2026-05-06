@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
+            window.path_to_searchindex_js = "../../searchindex-6d83bb3c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-5c78f6d5.js"></script>
+        <script src="../../toc-885d6cb4.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,14 +183,14 @@
   day: i64
 };
 
-val date: fn(n: i64, n2: i64, n3: i64) -&gt; Date;
+val date: fn(year: i64, month: i64, day: i64) -&gt; Date;
 
 type CalendarEvent = {
   date: Date,
   style: Style
 };
 
-val calendar_event: fn(a: Style, a2: Date) -&gt; CalendarEvent;
+val calendar_event: fn(style: Style, date: Date) -&gt; CalendarEvent;
 
 val calendar: fn(
   ?#default_style: &amp;[Style, null],
@@ -198,7 +198,7 @@ val calendar: fn(
   ?#show_surrounding: &amp;[Style, null],
   ?#show_weekday: &amp;[Style, null],
   ?#events: &amp;[Array&lt;CalendarEvent&gt;, null],
-  a: &amp;Date
+  display_date: &amp;Date
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

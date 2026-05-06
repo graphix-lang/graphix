@@ -124,9 +124,7 @@
 <span class="keyword">use</span> tui::block;
 <span class="keyword">use</span> tui::text;
 
-<span class="keyword">let</span> counter = <span class="number">0</span>;
-<span class="keyword">let</span> clock = time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>);
-counter <span class="operator">&lt;-</span> clock <span class="operator">~</span> (counter + <span class="number">1</span>);
+<span class="keyword">let</span> counter = count(time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>));
 
 block(
   <span class="operator">#</span>border: <span class="operator">&amp;</span>`All,
@@ -384,9 +382,7 @@ block(
 <span class="keyword">use</span> tui::block;
 <span class="keyword">use</span> tui::text;
 
-<span class="keyword">let</span> counter = <span class="number">0</span>;
-<span class="keyword">let</span> clock = time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>);
-counter <span class="operator">&lt;-</span> clock <span class="operator">~</span> (counter + <span class="number">1</span>);
+<span class="keyword">let</span> counter = count(time::timer(duration:<span class="number">1.</span>s, <span class="boolean">true</span>));
 
 block(
   <span class="operator">#</span>border: <span class="operator">&amp;</span>`All,
@@ -396,11 +392,13 @@ block(
 )</code></pre>
                                 </div>
                                 <p class="example-description">
-                                    The <code>&lt;-</code> operator sets up a
-                                    reactive binding. When
-                                    <code>clock</code> fires,
-                                    <code>counter</code> automatically updates
-                                    with the new value. The
+                                    <code>time::timer</code> fires every second,
+                                    and <code>count</code> tallies its events
+                                    into a reactive value. <code>counter</code>
+                                    automatically updates whenever the timer
+                                    ticks, and the
+                                    <code>text</code> widget rerenders because
+                                    it depends on it. The
                                     <code>block</code> widget wraps the content
                                     with borders, a title, and styling.
                                 </p>
@@ -425,14 +423,16 @@ block(
                             </div>
                             <div class="tab-pane" id="network" data-tab-group="examples">
                                 <div class="code-window">
-                                    <pre><code><span class="keyword">let</span> value = cast<span class="operator">&lt;</span>i64<span class="operator">&gt;</span>(net::subscribe(<span class="string">"/sensor/temperature"</span>)<span class="operator">?</span>)<span class="operator">?</span>;
+                                    <pre><code><span class="keyword">let</span> value: i64 = net::subscribe(<span class="string">"/sensor/temperature"</span>)<span class="operator">?</span>;
 <span class="keyword">let</span> fahrenheit = value <span class="operator">*</span> ((<span class="number">9</span> <span class="operator">/</span> <span class="number">5</span>) + <span class="number">32</span>);
 
 text(<span class="operator">&amp;</span><span class="string">"Temperature: [fahrenheit]°F"</span>)</code></pre>
                                 </div>
                                 <p class="example-description">
                                     Subscribe to network data streams with
-                                    <code>net::subscribe</code>. Values update
+                                    <code>net::subscribe</code>. The annotated
+                                    type drives the conversion — no explicit
+                                    <code>cast</code> needed. Values update
                                     reactively as new data arrives.
                                 </p>
                             </div>
