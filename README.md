@@ -19,9 +19,7 @@ use tui;
 use tui::block;
 use tui::text;
 
-let counter = 0;
-let clock = time::timer(duration:1.s, true);
-counter <- clock ~ (counter + 1);
+let counter = count(time::timer(duration:1.s, true));
 
 block(
   #border: &`All,
