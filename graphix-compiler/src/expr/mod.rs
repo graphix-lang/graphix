@@ -10,7 +10,7 @@ pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
 pub use pattern::{Pattern, StructurePattern};
 use regex::Regex;
-pub use resolver::{BufferOverrides, ModuleResolver};
+pub use resolver::{add_interface_modules, BufferOverrides, ModuleResolver};
 use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -71,14 +71,9 @@ pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
-    /// Source position of the argument in its declaring lambda.
-    /// Used by IDE tooling for go-to-definition; the compiler
-    /// itself doesn't read it.
     pub pos: SourcePosition,
 }
 
-// Equality ignores `pos` — it's purely IDE metadata, not part of the
-// expression's identity. Same convention as `Expr::eq`.
 impl PartialEq for Arg {
     fn eq(&self, rhs: &Self) -> bool {
         self.labeled == rhs.labeled
@@ -129,11 +124,7 @@ pub enum SigKind {
 pub struct SigItem {
     pub doc: Doc,
     pub kind: SigKind,
-    /// Source position where this item was declared. IDE metadata,
-    /// ignored for equality.
     pub pos: SourcePosition,
-    /// File / origin this sig item was parsed from. IDE metadata,
-    /// ignored for equality. `None` for synthetic items.
     pub ori: Option<Arc<Origin>>,
 }
 
@@ -640,23 +631,12 @@ pub struct ErrorContext(pub Expr);
 
 impl fmt::Debug for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Debug-print like Display so anyhow's `{:?}` rendering of the
-        // chain stays readable. The full Expr tree is too large to dump.
         fmt::Display::fmt(self, f)
     }
 }
 
-// Implementing `std::error::Error` makes `ErrorContext` downcastable
-// from `&dyn Error` chain entries, which is how the LSP recovers the
-// originating `Origin` and `SourcePosition` from a compile error
-// without scraping message strings.
 impl std::error::Error for ErrorContext {}
 
-/// Anyhow-context companion for parser errors. The combine library
-/// formats its own message (which we keep as the chain leaf for human
-/// readability), but the cursor position lives in a structured field
-/// rather than the message string. Wrapping with this lets the LSP
-/// downcast and recover position + origin without parsing.
 pub struct ParserContext {
     pub ori: Arc<Origin>,
     pub pos: SourcePosition,
@@ -696,9 +676,6 @@ impl fmt::Display for ErrorContext {
         BUF.with_borrow_mut(|buf| {
             buf.clear();
             write!(buf, "{}", self.0).unwrap();
-            // Truncate the in-line snippet for legibility but keep file
-            // info — IDE tooling parses the source path back out of the
-            // chain to attribute diagnostics to the right file.
             let snippet: &str = if buf.len() <= MAX {
                 &buf
             } else {

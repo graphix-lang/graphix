@@ -165,9 +165,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         }
         let mut argpats = vec![];
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
-            // Use the argument's own source position (recorded by the
-            // parser) so go-to-def on a parameter lands at the param
-            // token, not on the lambda body.
             let pattern = StructPatternNode::compile(
                 ctx,
                 &atyp.typ,
@@ -384,11 +381,6 @@ impl Lambda {
             })
         };
         typ.alias_tvars(&mut LPooled::take());
-        // The `needs_callsite` insert lets the deferred-check pass find the
-        // builtin's `check` Apply by lambda id. Under `lsp_mode` we also
-        // insert for non-callsite lambdas so IDE tooling can recover the
-        // originating LambdaId from a Type::Fn — `Mutex<None>` `check`
-        // makes the deferred path a no-op for these.
         if needs_callsite || ctx.env.lsp_mode {
             typ.lambda_ids.write().insert(id);
         }

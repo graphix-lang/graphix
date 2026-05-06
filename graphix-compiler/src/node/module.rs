@@ -7,7 +7,6 @@ use crate::{
         SigKind, Source, StructurePattern, TypeDefExpr,
     },
     node::{bind::Bind, Nop},
-    push_module_internal_view, push_sig_link,
     typ::{AbstractId, Type},
     wrap, BindId, CFlag, Event, ExecCtx, ModuleInternalView, ModuleRefSite, Node, Refs,
     Rt, Scope, SigImplLink, Update, UserEvent,
@@ -158,7 +157,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
             if ctx.env.lsp_mode {
-                push_sig_link(SigImplLink {
+                ctx.env.push_sig_link(SigImplLink {
                     scope: scope.lexical.clone(),
                     name: CompactString::from(name.as_str()),
                     sig_id: *proxy_id,
@@ -320,10 +319,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         t.compile_inner(ctx, &exprs)
             .with_context(|| format!("compiling module {}", scope.lexical))?;
         if ctx.env.lsp_mode {
-            // Snapshot the impl-side env so IDE queries on names declared
-            // inside this module can chase impl bind metadata. Env clones
-            // are cheap (immutable_chunkmap-backed).
-            push_module_internal_view(ModuleInternalView {
+            ctx.env.push_module_internal_view(ModuleInternalView {
                 scope: t.scope.lexical.clone(),
                 env: t.env.clone(),
             });

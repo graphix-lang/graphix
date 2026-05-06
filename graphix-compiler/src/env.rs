@@ -1,7 +1,7 @@
 use crate::{
     expr::{ModPath, Origin, Sandbox},
     typ::{TVar, Type},
-    BindId, Scope,
+    BindId, ModuleInternalView, Scope, SigImplLink, TypeRefSite,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
@@ -10,8 +10,12 @@ use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
-use poolshark::local::LPooled;
-use std::{fmt, iter, mem, ops::Bound};
+use parking_lot::Mutex;
+use poolshark::{
+    global::{GPooled, Pool},
+    local::LPooled,
+};
+use std::{fmt, iter, mem, ops::Bound, sync::LazyLock};
 use triomphe::Arc;
 
 pub struct Bind {
@@ -60,6 +64,46 @@ pub struct TypeDef {
     pub ori: Arc<Origin>,
 }
 
+/// IDE side-channels accumulated during compilation when `lsp_mode` is
+/// on. Pushed to from places that hold `&Env` rather than threaded
+/// through every typecheck signature, but tied to a specific `Env` via
+/// the `Arc<Mutex<Lsp>>` field — so two unrelated compiles can't
+/// cross-pollute, and a multi-threaded compile is just a `Mutex` lock
+/// away.
+///
+/// The runtime's `check` installs a fresh `Lsp` at the start of each
+/// check cycle and drains it at the end; non-LSP compiles leave
+/// `Env.lsp` as `None` and pay nothing at the push sites.
+#[derive(Debug)]
+pub struct Lsp {
+    pub type_refs: GPooled<Vec<TypeRefSite>>,
+    pub sig_links: GPooled<Vec<SigImplLink>>,
+    pub module_internals: GPooled<Vec<ModuleInternalView>>,
+}
+
+impl Lsp {
+    /// Fresh, empty sinks pulled from the named pools.
+    pub fn new() -> Self {
+        static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
+            LazyLock::new(|| Pool::new(64, 65536));
+        static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
+            LazyLock::new(|| Pool::new(32, 4096));
+        static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
+            LazyLock::new(|| Pool::new(32, 4096));
+        Self {
+            type_refs: TYPE_REF_SITE_POOL.take(),
+            sig_links: SIG_LINK_POOL.take(),
+            module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
+        }
+    }
+}
+
+impl Default for Lsp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: Map<BindId, Bind>,
@@ -77,9 +121,16 @@ pub struct Env {
     /// the compiler. Only populated when `lsp_mode` is set.
     pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
     /// True iff the compiler should populate IDE side-channels
-    /// (`ide_binds`, `TYPE_REF_SINK`, etc.). Toggled by the LSP
+    /// (`ide_binds`, the `lsp` sinks, etc.). Toggled by the LSP
     /// runtime; normal compiles leave it unset and pay no IDE cost.
     pub lsp_mode: bool,
+    /// IDE side-channel sinks for type references, sig→impl links,
+    /// and per-module env snapshots. `Some(_)` only when running
+    /// under an LSP-style check; clones share the inner `Arc<Mutex>`
+    /// so reentrant or concurrent compiles within a single check all
+    /// drain into the same buffer. The runtime swaps this in/out at
+    /// each check boundary.
+    pub lsp: Option<Arc<Mutex<Lsp>>>,
 }
 
 impl Env {
@@ -94,6 +145,7 @@ impl Env {
             catch,
             ide_binds,
             lsp_mode: _,
+            lsp: _,
         } = self;
         *by_id = Map::new();
         *binds = Map::new();
@@ -109,7 +161,9 @@ impl Env {
     // snapshot `other`, but leave the bind and type environment
     // alone. `ide_binds` is preserved across restoration so IDE
     // tooling sees lambda parameters / let bindings that were
-    // introduced inside the restored region.
+    // introduced inside the restored region. The `lsp` sink is
+    // preserved on `self` so any pushes that happened inside the
+    // restored region accumulate alongside the rest of the check.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
         Self {
             binds: other.binds,
@@ -121,6 +175,7 @@ impl Env {
             byref_chain: self.byref_chain.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
+            lsp: self.lsp.clone(),
         }
     }
 
@@ -135,6 +190,30 @@ impl Env {
             ide_binds: self.ide_binds.clone(),
             byref_chain: self.byref_chain.clone(),
             lsp_mode: self.lsp_mode,
+            lsp: self.lsp.clone(),
+        }
+    }
+
+    /// Push a `TypeRefSite` into the active LSP sink, if any. No-op
+    /// when `self.lsp` is `None` (every non-LSP compile).
+    pub fn push_type_ref(&self, site: TypeRefSite) {
+        if let Some(lsp) = &self.lsp {
+            lsp.lock().type_refs.push(site);
+        }
+    }
+
+    /// Push a `SigImplLink` into the active LSP sink, if any.
+    pub fn push_sig_link(&self, link: SigImplLink) {
+        if let Some(lsp) = &self.lsp {
+            lsp.lock().sig_links.push(link);
+        }
+    }
+
+    /// Push a per-module internal-view snapshot into the active LSP
+    /// sink, if any.
+    pub fn push_module_internal_view(&self, view: ModuleInternalView) {
+        if let Some(lsp) = &self.lsp {
+            lsp.lock().module_internals.push(view);
         }
     }
 
@@ -405,10 +484,85 @@ impl Env {
         }
     }
 
+    /// Drop everything registered at `scope` or any descendant. Used by
+    /// the LSP when re-typechecking a stdlib (or third-party graphix)
+    /// package crate's own source: the runtime's env was pre-loaded
+    /// with that package at startup, but the live edits need to
+    /// register fresh under the same scope. Without scrubbing first,
+    /// re-registration trips the duplicate-module / duplicate-type
+    /// guards.
+    ///
+    /// Returns the number of (scope, name) entries removed across binds
+    /// and typedefs.
+    pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
+        fn is_under(s: &ModPath, prefix: &ModPath) -> bool {
+            // Both come from netidx Path. A scope is under `prefix`
+            // if it equals prefix or starts with `prefix + "/"`.
+            let s: &str = s;
+            let p: &str = prefix;
+            if s == p {
+                return true;
+            }
+            if !s.starts_with(p) {
+                return false;
+            }
+            // Avoid matching e.g. `/tu` as a prefix of `/tui`.
+            s.as_bytes().get(p.len()).copied() == Some(b'/')
+        }
+        let mut removed = 0;
+        let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*bind_scopes {
+            if let Some(defs) = self.binds.get(s) {
+                let ids: Vec<BindId> = defs.into_iter().map(|(_, id)| *id).collect();
+                removed += ids.len();
+                for id in &ids {
+                    self.by_id.remove_cow(id);
+                }
+            }
+            self.binds.remove_cow(s);
+            self.ide_binds.remove_cow(s);
+        }
+        let type_scopes: LPooled<Vec<ModPath>> = (&self.typedefs)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*type_scopes {
+            if let Some(defs) = self.typedefs.get(s) {
+                removed += defs.len();
+            }
+            self.typedefs.remove_cow(s);
+        }
+        let used_scopes: LPooled<Vec<ModPath>> = (&self.used)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*used_scopes {
+            self.used.remove_cow(s);
+        }
+        let mod_scopes: LPooled<Vec<ModPath>> =
+            (&self.modules).into_iter().filter(|s| is_under(s, scope)).cloned().collect();
+        for s in &*mod_scopes {
+            self.modules.remove_cow(s);
+        }
+        let catch_scopes: LPooled<Vec<ModPath>> = (&self.catch)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*catch_scopes {
+            self.catch.remove_cow(s);
+        }
+        removed
+    }
+
     /// create a new binding. If an existing bind exists in the same
-    /// scope shadow it. `pos` and `ori` describe where in the source
-    /// the binding was introduced — IDE tooling consumes them for
-    /// go-to-definition. The compiler itself doesn't read them.
+    /// scope shadow it.
     pub fn bind_variable(
         &mut self,
         scope: &ModPath,

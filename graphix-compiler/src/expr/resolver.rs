@@ -204,19 +204,25 @@ async fn resolve_from_netidx(
 
 // add modules that are only mentioned in the interface to the implementation
 // keep their relative location and order intact
-fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
+pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     #[derive(Clone, Copy)]
-    enum Item<'a> {
+    struct Item<'a> {
+        kind: ItemKind<'a>,
+        pos: SourcePosition,
+        ori: Option<&'a Arc<Origin>>,
+    }
+    #[derive(Clone, Copy)]
+    enum ItemKind<'a> {
         Module(&'a ArcStr),
         TypeDef(&'a TypeDefExpr),
         Use(&'a ModPath),
     }
     impl<'a> PartialEq for Item<'a> {
         fn eq(&self, other: &Self) -> bool {
-            match (self, other) {
-                (Self::Module(a), Self::Module(b)) => a == b,
-                (Self::TypeDef(a), Self::TypeDef(b)) => a.name == b.name,
-                (Self::Use(a), Self::Use(b)) => a == b,
+            match (&self.kind, &other.kind) {
+                (ItemKind::Module(a), ItemKind::Module(b)) => a == b,
+                (ItemKind::TypeDef(a), ItemKind::TypeDef(b)) => a.name == b.name,
+                (ItemKind::Use(a), ItemKind::Use(b)) => a == b,
                 (_, _) => false,
             }
         }
@@ -224,16 +230,16 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     impl<'a> Eq for Item<'a> {}
     impl<'a> Hash for Item<'a> {
         fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-            match self {
-                Self::Module(m) => {
+            match &self.kind {
+                ItemKind::Module(m) => {
                     0u8.hash(state);
                     m.hash(state);
                 }
-                Self::TypeDef(td) => {
+                ItemKind::TypeDef(td) => {
                     1u8.hash(state);
                     td.name.hash(state);
                 }
-                Self::Use(m) => {
+                ItemKind::Use(m) => {
                     2u8.hash(state);
                     m.hash(state);
                 }
@@ -242,15 +248,16 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     }
     impl<'a> Item<'a> {
         fn synth(self) -> Expr {
-            match self {
-                Item::Module(name) => ExprKind::Module {
+            let kind = match self.kind {
+                ItemKind::Module(name) => ExprKind::Module {
                     name: name.clone(),
                     value: ModuleKind::Unresolved { from_interface: true },
-                }
-                .to_expr_nopos(),
-                Item::TypeDef(td) => ExprKind::TypeDef(td.clone()).to_expr_nopos(),
-                Item::Use(m) => ExprKind::Use { name: m.clone() }.to_expr_nopos(),
-            }
+                },
+                ItemKind::TypeDef(td) => ExprKind::TypeDef(td.clone()),
+                ItemKind::Use(m) => ExprKind::Use { name: m.clone() },
+            };
+            let ori = self.ori.cloned().unwrap_or_else(crate::expr::get_origin);
+            Expr { id: ExprId::new(), ori, pos: self.pos, kind }
         }
     }
     let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
@@ -261,8 +268,12 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let mut first: Option<Item> = None;
     let mut last: Option<&SigItem> = None;
     macro_rules! push {
-        ($kind:ident, $name:expr) => {{
-            let name = Item::$kind($name);
+        ($kind:ident, $name:expr, $si:expr) => {{
+            let name = Item {
+                kind: ItemKind::$kind($name),
+                pos: $si.pos,
+                ori: $si.ori.as_ref(),
+            };
             in_sig.insert(name);
             match last {
                 None => first = Some(name),
@@ -279,22 +290,37 @@ fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     }
     for si in &*sig.items {
         match &si.kind {
-            SigKind::Module(name) => push!(Module, name),
-            SigKind::TypeDef(td) => push!(TypeDef, td),
-            SigKind::Use(m) => push!(Use, m),
+            SigKind::Module(name) => push!(Module, name, si),
+            SigKind::TypeDef(td) => push!(TypeDef, td, si),
+            SigKind::Use(m) => push!(Use, m, si),
             SigKind::Bind(_) => (),
         }
         last = Some(si);
     }
     for e in &*exprs {
         if let ExprKind::Module { name, .. } = &e.kind {
-            in_sig.shift_remove(&Item::Module(name));
+            let probe = Item {
+                kind: ItemKind::Module(name),
+                pos: SourcePosition::default(),
+                ori: None,
+            };
+            in_sig.shift_remove(&probe);
         }
         if let ExprKind::TypeDef(td) = &e.kind {
-            in_sig.shift_remove(&Item::TypeDef(td));
+            let probe = Item {
+                kind: ItemKind::TypeDef(td),
+                pos: SourcePosition::default(),
+                ori: None,
+            };
+            in_sig.shift_remove(&probe);
         }
         if let ExprKind::Use { name } = &e.kind {
-            in_sig.shift_remove(&Item::Use(name));
+            let probe = Item {
+                kind: ItemKind::Use(name),
+                pos: SourcePosition::default(),
+                ori: None,
+            };
+            in_sig.shift_remove(&probe);
         }
     }
     if in_sig.is_empty() {
@@ -443,10 +469,6 @@ async fn resolve(
                 ts.elapsed()
             )
         });
-        // Keep the original parent's `ori` on the Module Expr — that's
-        // the file where `mod foo;` was written. The body's exprs
-        // already carry the implementation file as their ori, so error
-        // reporting and IDE tooling stay accurate at both layers.
         let _ = implementation; // implementation lives on the inner exprs
         return Ok(Expr { id, ori: parent, pos, kind });
     }
@@ -478,7 +500,18 @@ impl Expr {
         &'a self,
         resolvers: &'a Arc<[ModuleResolver]>,
     ) -> Result<Expr> {
-        self.resolve_modules_int(&ModPath::root(), &None, resolvers).await
+        self.resolve_modules_in_scope(&ModPath::root(), resolvers).await
+    }
+
+    /// Like `resolve_modules` but starts at a non-root scope. Used by
+    /// the runtime when typechecking a graphix package crate's source
+    /// under that crate's namespace.
+    pub async fn resolve_modules_in_scope<'a>(
+        &'a self,
+        scope: &'a ModPath,
+        resolvers: &'a Arc<[ModuleResolver]>,
+    ) -> Result<Expr> {
+        self.resolve_modules_int(scope, &None, resolvers).await
     }
 
     async fn resolve_modules_int<'a>(
@@ -586,27 +619,61 @@ impl Expr {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
-                let prepend = match &self.ori.source {
-                    Source::Unspecified | Source::Internal(_) => None,
-                    Source::File(p) => p.parent().map(|p| {
+                // The prepend resolver supplies a base for resolving
+                // *this module's* sub-modules. The right base is the
+                // implementation's sub-module directory, not the
+                // parent's directory: for `foo.gx` (pattern 1) that's
+                // `<dir>/foo/`; for `foo/mod.gx` (pattern 2) it's just
+                // `<dir>/`. We dig the implementation file's path out
+                // of the body — the body's exprs carry the impl file
+                // as their ori, while `self.ori` only points at the
+                // file where `mod foo;` was written.
+                let impl_path: Option<&std::path::Path> =
+                    exprs.iter().find_map(|e| match &e.ori.source {
+                        Source::File(p) => Some(p.as_path()),
+                        _ => None,
+                    });
+                let prepend = match impl_path {
+                    Some(p) => {
+                        let parent = match p.parent() {
+                            Some(par) => par,
+                            None => return Ok(self.clone()),
+                        };
+                        let dir = match p.file_stem().and_then(|s| s.to_str()) {
+                            Some("mod") => parent.to_path_buf(),
+                            Some(stem) => parent.join(stem),
+                            None => parent.to_path_buf(),
+                        };
                         let overrides = resolvers.iter().find_map(|m| match m {
                             ModuleResolver::Files { overrides: Some(o), .. } => {
                                 Some(o.clone())
                             }
                             _ => None,
                         });
-                        Arc::new(ModuleResolver::Files { base: p.into(), overrides })
-                    }),
-                    Source::Netidx(p) => resolvers.iter().find_map(|m| match m {
-                        ModuleResolver::Netidx { subscriber, timeout, .. } => {
-                            Some(Arc::new(ModuleResolver::Netidx {
-                                subscriber: subscriber.clone(),
-                                base: p.clone(),
-                                timeout: *timeout,
-                            }))
-                        }
-                        ModuleResolver::Files { .. } | ModuleResolver::VFS(_) => None,
-                    }),
+                        Some(Arc::new(ModuleResolver::Files { base: dir, overrides }))
+                    }
+                    None => match &self.ori.source {
+                        Source::Unspecified | Source::Internal(_) => None,
+                        Source::File(p) => p.parent().map(|p| {
+                            let overrides = resolvers.iter().find_map(|m| match m {
+                                ModuleResolver::Files { overrides: Some(o), .. } => {
+                                    Some(o.clone())
+                                }
+                                _ => None,
+                            });
+                            Arc::new(ModuleResolver::Files { base: p.into(), overrides })
+                        }),
+                        Source::Netidx(p) => resolvers.iter().find_map(|m| match m {
+                            ModuleResolver::Netidx { subscriber, timeout, .. } => {
+                                Some(Arc::new(ModuleResolver::Netidx {
+                                    subscriber: subscriber.clone(),
+                                    base: p.clone(),
+                                    timeout: *timeout,
+                                }))
+                            }
+                            ModuleResolver::Files { .. } | ModuleResolver::VFS(_) => None,
+                        }),
+                    },
                 };
                 let exprs = try_join_all(exprs.iter().map(|e| async {
                     e.resolve_modules_int(&scope, &prepend, resolvers).await

@@ -69,22 +69,24 @@ impl<H: IsoPoolable> RefHist<H> {
     /// Ref side, and None collapses all non-Ref types to the same key.
     fn ref_id(&mut self, t: &Type, env: &Env) -> Option<usize> {
         match t {
-            Type::Ref (TypeRef { scope, name, params, .. }) => match env.lookup_typedef(scope, name) {
-                Some(def) => {
-                    let def_addr = (def as *const TypeDef).addr();
-                    let entries = self.ref_ids.entry(def_addr).or_default();
-                    for &(ref p, id) in entries.iter() {
-                        if **p == **params {
-                            return Some(id);
+            Type::Ref(TypeRef { scope, name, params, .. }) => {
+                match env.lookup_typedef(scope, name) {
+                    Some(def) => {
+                        let def_addr = (def as *const TypeDef).addr();
+                        let entries = self.ref_ids.entry(def_addr).or_default();
+                        for &(ref p, id) in entries.iter() {
+                            if **p == **params {
+                                return Some(id);
+                            }
                         }
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        entries.push((params.clone(), id));
+                        Some(id)
                     }
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    entries.push((params.clone(), id));
-                    Some(id)
+                    None => None,
                 }
-                None => None,
-            },
+            }
             _ => None,
         }
     }
@@ -204,7 +206,7 @@ impl Type {
             | Self::Tuple(_)
             | Self::Struct(_)
             | Self::Variant(_, _)
-            | Self::Ref (TypeRef { .. })
+            | Self::Ref(TypeRef { .. })
             | Self::Map { .. }
             | Self::Abstract { .. } => true,
             Self::TVar(tv) => tv.read().typ.read().is_some(),
@@ -220,7 +222,13 @@ impl Type {
                             let canonical = ModPath(netidx::path::Path::from(
                                 arcstr::ArcStr::from(s),
                             ));
-                            (canonical, d.pos, d.ori.clone(), d.params.clone(), d.typ.clone())
+                            (
+                                canonical,
+                                d.pos,
+                                d.ori.clone(),
+                                d.params.clone(),
+                                d.typ.clone(),
+                            )
                         })
                     })
                     .ok_or_else(|| anyhow!("undefined type {name} in {scope}"))?;
@@ -228,13 +236,9 @@ impl Type {
                 if def_params.len() != params.len() {
                     bail!("{} expects {} type parameters", name, def_params.len());
                 }
-                // IDE side-channel: when this reference came from
-                // source (parser-populated pos/ori), record it so
-                // tooling can answer find-references / go-to-def on
-                // type names.
                 if env.lsp_mode {
                     if let (Some(pos), Some(ori)) = (pos, ori) {
-                        crate::push_type_ref(crate::TypeRefSite {
+                        env.push_type_ref(crate::TypeRefSite {
                             pos: *pos,
                             ori: ori.clone(),
                             name: name.clone(),
@@ -284,7 +288,7 @@ impl Type {
                             ori.clone(),
                         ),
                     };
-                    crate::push_type_ref(crate::TypeRefSite {
+                    env.push_type_ref(crate::TypeRefSite {
                         pos,
                         ori: ori.clone(),
                         name: tr.name.clone(),
@@ -375,7 +379,7 @@ impl Type {
                     None
                 }
             }
-            Type::Ref (TypeRef { .. }) => {
+            Type::Ref(TypeRef { .. }) => {
                 let id = hist.ref_id(self, env);
                 let t = self.lookup_ref(env).ok()?;
                 if hist.insert(id) {
@@ -422,7 +426,7 @@ impl Type {
             | Type::Abstract { .. }
             | Type::TVar(_)
             | Type::Primitive(_)
-            | Type::Ref (TypeRef { .. })
+            | Type::Ref(TypeRef { .. })
             | Type::Fn(_)
             | Type::Error(_)
             | Type::Array(_)
@@ -449,7 +453,7 @@ impl Type {
             | Self::Tuple(_)
             | Self::Struct(_)
             | Self::Variant(_, _)
-            | Self::Ref (TypeRef { .. })
+            | Self::Ref(TypeRef { .. })
             | Self::Map { .. } => f(Some(self)),
             Self::TVar(tv) => match tv.read().typ.read().as_ref() {
                 Some(t) => t.with_deref(f),
@@ -495,12 +499,9 @@ impl Type {
                 }
             },
             Type::Ref(tr) => {
-                let params = Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));
-                Type::Ref(TypeRef {
-                    scope: scope.clone(),
-                    params,
-                    ..tr.clone()
-                })
+                let params =
+                    Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));
+                Type::Ref(TypeRef { scope: scope.clone(), params, ..tr.clone() })
             }
             Type::Set(ts) => {
                 Type::Set(Arc::from_iter(ts.iter().map(|t| t.scope_refs(scope))))

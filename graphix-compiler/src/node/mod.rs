@@ -240,10 +240,6 @@ impl Use {
             .map_err(|e| anyhow!("{e:?}"))
             .with_context(|| ErrorContext(spec.clone()))?;
         if ctx.env.lsp_mode {
-            // Record the `use foo;` site for IDE tooling so
-            // find-references and go-to-definition on a module name
-            // return all known import sites and the file the module
-            // lives in.
             let canonical = ctx
                 .env
                 .canonical_modpath(&scope.lexical, name)
@@ -584,8 +580,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (id, def_pos, def_ori) = match ctx.env.lookup_bind(&scope.lexical, name)
-        {
+        let (id, def_pos, def_ori) = match ctx.env.lookup_bind(&scope.lexical, name) {
             None => bailat!(spec, "{name} is undefined"),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
@@ -661,11 +656,10 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (src_id, def_pos, def_ori) =
-            match ctx.env.lookup_bind(&scope.lexical, name) {
-                None => bailat!(spec, "{name} is undefined"),
-                Some((_, b)) => (b.id, b.pos, b.ori.clone()),
-            };
+        let (src_id, def_pos, def_ori) = match ctx.env.lookup_bind(&scope.lexical, name) {
+            None => bailat!(spec, "{name} is undefined"),
+            Some((_, b)) => (b.id, b.pos, b.ori.clone()),
+        };
         if ctx.env.lsp_mode {
             ctx.references.push(crate::ReferenceSite {
                 pos: spec.pos,

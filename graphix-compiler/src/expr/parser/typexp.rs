@@ -113,9 +113,6 @@ where
     })
 }
 
-/// A positional fn-type arg. The name is required: `name: Type`. This
-/// surfaces in IDE hover and completion snippets, mirroring how labeled
-/// args carry their `#name`.
 fn fnpositional<I>() -> impl Parser<I, Output = FnArgType>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -195,8 +192,16 @@ where
             }
             let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);
-            value(FnType { args, vargs, rtype, constraints, throws, explicit_throws, ..Default::default() })
-                .right()
+            value(FnType {
+                args,
+                vargs,
+                rtype,
+                constraints,
+                throws,
+                explicit_throws,
+                ..Default::default()
+            })
+            .right()
         })
 }
 
@@ -291,21 +296,20 @@ where
             .right(),
         }),
     )
-        .map(|(pos, n, params): (SourcePosition, ModPath, Option<LPooled<Vec<Type>>>)| {
-            let params = params
-                .map(|mut a| Arc::from_iter(a.drain(..)))
-                .unwrap_or_else(|| Arc::from_iter([]));
-            // Capture parse-time position + origin so IDE tooling can
-            // record find-references / go-to-def info when this
-            // `Type::Ref` is dereferenced (or walked from a typedef body).
-            Type::Ref(TypeRef {
-                scope: ModPath::root(),
-                name: n,
-                params,
-                pos: Some(pos),
-                ori: Some(crate::expr::get_origin()),
-            })
-        })
+        .map(
+            |(pos, n, params): (SourcePosition, ModPath, Option<LPooled<Vec<Type>>>)| {
+                let params = params
+                    .map(|mut a| Arc::from_iter(a.drain(..)))
+                    .unwrap_or_else(|| Arc::from_iter([]));
+                Type::Ref(TypeRef {
+                    scope: ModPath::root(),
+                    name: n,
+                    params,
+                    pos: Some(pos),
+                    ori: Some(crate::expr::get_origin()),
+                })
+            },
+        )
 }
 
 parser! {

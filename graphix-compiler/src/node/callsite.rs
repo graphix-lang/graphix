@@ -29,6 +29,33 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub is_default: bool,
 }
 
+/// Find the FnType inside `t` that the lambda with id `id` was unified
+/// with at typecheck time. The formal arg may be a bare `Type::Fn`, but
+/// can also be a union like `[fn(...), null]` (the typical
+/// optional-callback shape) or wrapped in a Set of fn types — in those
+/// cases we walk the arms to find the unique matching Fn. Returns
+/// `None` if no Fn arm is found.
+fn find_fn_in_arg_type(t: &Type, id: LambdaId) -> Option<&TArc<FnType>> {
+    match t {
+        Type::Fn(ft) => Some(ft),
+        Type::Set(ts) => {
+            // Prefer an arm whose lambda_ids include the lambda we're
+            // checking; fall back to the first Fn arm if none claim it.
+            let mut fallback: Option<&TArc<FnType>> = None;
+            for arm in ts.iter() {
+                if let Some(ft) = find_fn_in_arg_type(arm, id) {
+                    if ft.lambda_ids.read().contains(&id) {
+                        return Some(ft);
+                    }
+                    fallback.get_or_insert(ft);
+                }
+            }
+            fallback
+        }
+        _ => None,
+    }
+}
+
 fn compile_apply_args<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -554,9 +581,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 for id in ids.drain(..) {
                     let resolved = match hof_idmap.get(&id) {
                         None => &resolved,
-                        Some(i) => match &resolved.args[*i].typ {
-                            Type::Fn(ft) => ft,
-                            t => bail!("unexpected resolved arg type {t}"),
+                        Some(i) => match find_fn_in_arg_type(&resolved.args[*i].typ, id) {
+                            Some(ft) => ft,
+                            None => bail!(
+                                "unexpected resolved arg type {}",
+                                &resolved.args[*i].typ
+                            ),
                         },
                     };
                     if let Some(val) = ctx.lambda_defs.get(&id).cloned() {

@@ -37,10 +37,6 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     if ctx.env.lsp_mode {
-        // IDE side-channel: record the scope this compile descent
-        // was entered with. `compiler::compile` is the recursive
-        // dispatcher — every Expr in the source tree comes through
-        // here with the scope the compiler chose for it.
         ctx.scope_map.push(crate::ScopeMapEntry {
             pos: spec.pos,
             ori: spec.ori.clone(),
@@ -90,11 +86,6 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
             if ctx.env.modules.contains(&scope.lexical) {
                 bail!("duplicate module definition {}", scope.lexical)
             }
-            // Record the `mod foo;` declaration site for IDE tooling.
-            // For `Resolved` modules the inner exprs were produced by
-            // the resolver, so their `ori` points at the file the
-            // module body lives in — exactly what go-to-definition
-            // wants.
             if ctx.env.lsp_mode {
                 let def_ori = match value {
                     ModuleKind::Resolved { exprs, .. } => {
