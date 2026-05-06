@@ -209,7 +209,11 @@ impl<X: GXExt> Shell<X> {
         let env;
         match &self.mode {
             Mode::Check(source) => {
-                gx.check(source.clone()).await?;
+                let initial_scope = match source {
+                    Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
+                    _ => None,
+                };
+                gx.check(source.clone(), initial_scope).await?;
                 exit(0)
             }
             Mode::Script(source) => {
