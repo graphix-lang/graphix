@@ -58,8 +58,8 @@ winit = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 fxhash = { workspace = true }
-graphix-package-array = { version = "0.7.0", path = "../graphix-package-array" }
-graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
-graphix-package-sys = { version = "0.7.0", path = "../graphix-package-sys" }
+graphix-package-array = { version = "0.8.0", path = "../graphix-package-array" }
+graphix-package-map = { version = "0.8.0", path = "../graphix-package-map" }
+graphix-package-sys = { version = "0.8.0", path = "../graphix-package-sys" }
 netidx-core = { workspace = true }
 poolshark = { workspace = true }

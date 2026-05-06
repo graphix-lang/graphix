@@ -41,6 +41,6 @@ triomphe = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
-graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
-graphix-package-str = { version = "0.7.0", path = "../graphix-package-str" }
+graphix-package-map = { version = "0.8.0", path = "../graphix-package-map" }
+graphix-package-str = { version = "0.8.0", path = "../graphix-package-str" }
 poolshark = { workspace = true }
