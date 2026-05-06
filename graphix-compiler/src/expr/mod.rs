@@ -9,6 +9,7 @@ use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
 pub use pattern::{Pattern, StructurePattern};
+use poolshark::local::LPooled;
 use regex::Regex;
 pub use resolver::{add_interface_modules, BufferOverrides, ModuleResolver};
 use serde::{
@@ -55,6 +56,16 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     ORIGIN.with_borrow(|ori| {
         ori.as_ref().cloned().unwrap_or_else(|| DEFAULT_ORIGIN.clone())
     })
+}
+
+/// utility to read a file to an ArcStr with minimal allocation
+pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
+    use tokio::io::AsyncReadExt;
+    let mut buf: LPooled<Vec<u8>> = LPooled::take();
+    let mut f = tokio::fs::File::open(path).await?;
+    f.read_to_end(&mut *buf).await?;
+    let s = str::from_utf8(&*buf)?;
+    Ok(ArcStr::from(s))
 }
 
 #[derive(Debug)]

@@ -1,8 +1,9 @@
 use crate::{
     expr::{
-        parser, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
-        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
-        StructExpr, StructWithExpr, StructurePattern, TryCatchExpr, TypeDefExpr,
+        parser, read_to_arcstr, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId,
+        ExprKind, LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig,
+        SigItem, SigKind, Source, StructExpr, StructWithExpr, StructurePattern,
+        TryCatchExpr, TypeDefExpr,
     },
     format_with_flags, PrintFlag,
 };
@@ -122,13 +123,7 @@ async fn resolve_from_files(
     async fn read(overrides: Option<&BufferOverrides>, path: &PathBuf) -> Result<ArcStr> {
         match overrides.and_then(|o| o.lock().get(path).cloned()) {
             Some(s) => Ok(s),
-            None => {
-                let mut buf: LPooled<Vec<u8>> = LPooled::take();
-                let mut f = tokio::fs::File::open(path).await?;
-                f.read_to_end(&mut *buf).await?;
-                let s = str::from_utf8(&*buf)?;
-                Ok(ArcStr::from(s))
-            }
+            None => read_to_arcstr(path).await,
         }
     }
     let mut impl_path = base.clone();
