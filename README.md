@@ -14,7 +14,7 @@ polymorphism, and first-class functions. It's particularly well-suited for
 building UIs and working with streaming network data via
 [netidx](https://netidx.github.io/netidx-book).
 
-```graphix
+```rust
 use tui;
 use tui::block;
 use tui::text;
