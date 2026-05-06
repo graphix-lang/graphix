@@ -71,6 +71,7 @@ fn server_capabilities(position_encoding: Option<PositionEncodingKind>) -> Serve
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
         ..Default::default()
     }
@@ -160,6 +161,11 @@ fn handle_request(
                 serde_json::from_value(req.params)?;
             Response::new_ok(req_id, handlers::document_symbol::handle(state, params))
         }
+        "workspace/symbol" => {
+            let params: lsp_types::WorkspaceSymbolParams =
+                serde_json::from_value(req.params)?;
+            Response::new_ok(req_id, handlers::workspace_symbol::handle(state, params))
+        }
         "textDocument/references" => {
             let params: lsp_types::ReferenceParams =
                 serde_json::from_value(req.params)?;
@@ -188,22 +194,36 @@ fn handle_notification(
             let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
             let uri = params.text_document.uri.clone();
             let version = params.text_document.version;
-            let diagnostics = handlers::diagnostics::did_open(
+            let updates = handlers::diagnostics::did_open(
                 state,
                 uri.clone(),
                 params.text_document.text,
                 version,
             );
-            publish_diagnostics(connection, uri, diagnostics, Some(version))?;
+            for (target_uri, diags) in updates {
+                let v = if target_uri == uri {
+                    Some(version)
+                } else {
+                    state.documents.get(&target_uri).map(|d| d.version)
+                };
+                publish_diagnostics(connection, target_uri, diags, v)?;
+            }
         }
         "textDocument/didChange" => {
             let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
             let uri = params.text_document.uri.clone();
             let version = params.text_document.version;
             if let Some(change) = params.content_changes.into_iter().next() {
-                let diagnostics =
+                let updates =
                     handlers::diagnostics::did_change(state, uri.clone(), change.text, version);
-                publish_diagnostics(connection, uri, diagnostics, Some(version))?;
+                for (target_uri, diags) in updates {
+                    let v = if target_uri == uri {
+                        Some(version)
+                    } else {
+                        state.documents.get(&target_uri).map(|d| d.version)
+                    };
+                    publish_diagnostics(connection, target_uri, diags, v)?;
+                }
             }
         }
         "textDocument/didClose" => {

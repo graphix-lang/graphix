@@ -5,9 +5,8 @@
 //! `SourcePosition` directly. We walk the anyhow chain and `downcast_ref`
 //! to recover them — no message-string scraping.
 
-use crate::position::PositionEncoding;
 use graphix_compiler::expr::{ErrorContext, ParserContext, Source};
-use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+use lsp_types::Position;
 use std::path::PathBuf;
 
 /// What the chain told us about the failure: a position (line/col) and
@@ -16,34 +15,6 @@ use std::path::PathBuf;
 pub struct ErrorLocation {
     pub position: Option<Position>,
     pub file: Option<PathBuf>,
-}
-
-/// Build a single LSP `Diagnostic` from an anyhow error. `text` is
-/// the source text the error pertains to and is used to clamp
-/// out-of-range positions back inside the document. `encoding`
-/// controls how the (line, char-col) pair the error reports is
-/// translated into the LSP `Position`'s `character` units.
-pub fn error_to_diagnostics(
-    err: &anyhow::Error,
-    text: &str,
-    encoding: PositionEncoding,
-) -> Vec<Diagnostic> {
-    let loc = error_location(err);
-    let char_pos = loc.position.unwrap_or_default();
-    let pos = clamp_position(char_pos, text);
-    let pos = crate::position::char_col_to_position_in_text(
-        text,
-        pos.line,
-        pos.character as usize,
-        encoding,
-    );
-    vec![Diagnostic {
-        range: Range { start: pos, end: pos },
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some("graphix".to_string()),
-        message: error_leaf_message(err),
-        ..Default::default()
-    }]
 }
 
 /// Walk the error chain and pick the most specific position +
@@ -88,19 +59,6 @@ fn location_from_origin_pos(
 /// is just the human-readable failure text (e.g. `"raw not defined"`).
 pub fn error_leaf_message(err: &anyhow::Error) -> String {
     err.chain().last().map(|c| c.to_string()).unwrap_or_else(|| "error".into())
-}
-
-fn clamp_position(p: Position, text: &str) -> Position {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return Position { line: 0, character: 0 };
-    }
-    let line = (p.line as usize).min(lines.len() - 1);
-    let line_len = lines[line].chars().count() as u32;
-    Position {
-        line: line as u32,
-        character: p.character.min(line_len),
-    }
 }
 
 #[cfg(test)]

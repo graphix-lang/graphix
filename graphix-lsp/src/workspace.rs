@@ -39,6 +39,12 @@ pub struct WorkspaceFile {
 pub struct Project {
     pub root: PathBuf,
     pub files: FxHashSet<PathBuf>,
+    /// If `root` lives at `<crate>/src/graphix/mod.gx` of a Cargo crate
+    /// named `graphix-package-<x>`, this is `Some("<x>")` — the
+    /// graphix-side namespace under which the crate's modules
+    /// register. Tells the runtime to typecheck the project as if the
+    /// source were the body of `mod <x> { ... }`.
+    pub package_scope: Option<ArcStr>,
 }
 
 /// The scanner output: every file, every project, and a reverse
@@ -185,7 +191,8 @@ fn build_projects(files: FxHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
                 s.insert(root.clone());
                 s
             });
-        projects.push(Project { root, files: project_files });
+        let package_scope = detect_package_scope(&root);
+        projects.push(Project { root, files: project_files, package_scope });
     }
     let mut file_to_projects: FxHashMap<PathBuf, Vec<usize>> = FxHashMap::default();
     for (idx, project) in projects.iter().enumerate() {
@@ -236,6 +243,71 @@ fn bfs_from_root(
         }
     }
     out
+}
+
+/// If `root` is `<crate>/src/graphix/mod.gx` (or `mod.gxi`) and the
+/// crate's `Cargo.toml` declares a `graphix-package-<x>` package, return
+/// `Some("<x>")`. Used to typecheck the crate's source under that
+/// scope so its modules don't collide with the runtime's pre-loaded
+/// copy of the same package.
+pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
+    let stem = root.file_stem().and_then(|s| s.to_str())?;
+    if stem != "mod" {
+        return None;
+    }
+    let graphix_dir = root.parent()?; // .../src/graphix
+    if graphix_dir.file_name().and_then(|s| s.to_str()) != Some("graphix") {
+        return None;
+    }
+    let src_dir = graphix_dir.parent()?; // .../src
+    if src_dir.file_name().and_then(|s| s.to_str()) != Some("src") {
+        return None;
+    }
+    let crate_dir = src_dir.parent()?; // crate root
+    let manifest = crate_dir.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest).ok()?;
+    // Tiny scanner: find `name = "..."` inside the `[package]` section
+    // (or before any other `[...]` table). Avoids pulling in a TOML
+    // parser dependency just for this one field. The contents of
+    // `name` are a TOML basic string — no escapes used in any cargo
+    // package name in practice, so naive split-on-`"` is safe.
+    let mut in_package = false;
+    let mut started_section = false;
+    let mut pkg_name: Option<&str> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix('[') {
+            let header = rest.split(']').next().unwrap_or("").trim();
+            in_package = header == "package";
+            started_section = true;
+            continue;
+        }
+        if !started_section {
+            // Pre-table area only happens for non-Cargo TOMLs; cargo
+            // manifests always put `[package]` first.
+            continue;
+        }
+        if in_package {
+            if let Some(rest) = line.strip_prefix("name") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    if let Some(rest) = rest.strip_prefix('"') {
+                        if let Some(end) = rest.find('"') {
+                            pkg_name = Some(&rest[..end]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let name = pkg_name?;
+    let suffix = name.strip_prefix("graphix-package-")?;
+    if suffix.is_empty() {
+        return None;
+    }
+    Some(ArcStr::from(suffix))
 }
 
 /// Resolve `mod name` declared at scope `<rel>` from project base
@@ -311,6 +383,63 @@ mod tests {
             .expect("main is a root");
         assert!(main_project.files.contains(&root.join("sub.gx")));
         assert!(main_project.files.contains(&root.join("sub").join("inner.gx")));
+    }
+
+    #[test]
+    fn detects_graphix_package_scope() {
+        let dir = make_dir();
+        let crate_dir = dir.path().join("graphix-package-tui");
+        write(
+            &crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"graphix-package-tui\"\nversion = \"0.1.0\"\n",
+        );
+        let mod_path = crate_dir.join("src").join("graphix").join("mod.gx");
+        write(&mod_path, "let x = 1\n");
+        let m = scan(&[crate_dir.clone()]);
+        let project = m
+            .projects
+            .iter()
+            .find(|p| p.root == mod_path)
+            .expect("mod.gx is a project root");
+        assert_eq!(project.package_scope.as_deref(), Some("tui"));
+    }
+
+    #[test]
+    fn no_package_scope_outside_graphix_layout() {
+        let dir = make_dir();
+        // mod.gx not under src/graphix → not a package root
+        let mod_path = dir.path().join("graphix-package-tui").join("mod.gx");
+        write(&mod_path, "let x = 1\n");
+        write(
+            &dir.path().join("graphix-package-tui").join("Cargo.toml"),
+            "[package]\nname = \"graphix-package-tui\"\n",
+        );
+        let m = scan(&[dir.path().to_path_buf()]);
+        let project = m
+            .projects
+            .iter()
+            .find(|p| p.root == mod_path)
+            .expect("mod.gx is a project root");
+        assert!(project.package_scope.is_none());
+    }
+
+    #[test]
+    fn no_package_scope_for_non_graphix_crate() {
+        let dir = make_dir();
+        let crate_dir = dir.path().join("some-other-crate");
+        write(
+            &crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"some-other-crate\"\n",
+        );
+        let mod_path = crate_dir.join("src").join("graphix").join("mod.gx");
+        write(&mod_path, "let x = 1\n");
+        let m = scan(&[crate_dir.clone()]);
+        let project = m
+            .projects
+            .iter()
+            .find(|p| p.root == mod_path)
+            .expect("mod.gx is a project root");
+        assert!(project.package_scope.is_none());
     }
 
     #[test]

@@ -1,12 +1,12 @@
-use crate::diagnostics::{error_leaf_message, error_location, error_to_diagnostics};
+use crate::diagnostics::{error_leaf_message, error_location};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    env::Env,
+    env::{Env, Lsp},
     expr::{BufferOverrides, ModPath, Source},
     typ::{FnArgKind, FnType, Type},
     ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry, SigImplLink,
-    SourcePosition, TypeRefSite, MODULE_INTERNAL_VIEW_POOL, MODULE_REF_SITE_POOL,
-    REFERENCE_SITE_POOL, SCOPE_MAP_ENTRY_POOL, SIG_LINK_POOL, TYPE_REF_SITE_POOL,
+    SourcePosition, TypeRefSite, MODULE_REF_SITE_POOL, REFERENCE_SITE_POOL,
+    SCOPE_MAP_ENTRY_POOL,
 };
 use lsp_types::Uri;
 use poolshark::{global::GPooled, local::LPooled};
@@ -32,16 +32,13 @@ pub struct Document {
     pub references: GPooled<Vec<ReferenceSite>>,
     /// Module reference sites (`use foo;`, `mod foo;`).
     pub module_references: GPooled<Vec<ModuleRefSite>>,
-    /// Type-name reference sites (uses of `Foo` in type positions).
-    pub type_references: GPooled<Vec<TypeRefSite>>,
     /// Per-Expr scope map from the latest compile. Used to answer
     /// cursor → scope queries.
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// Sig→impl bind id pairs from the most recent check. Used by
-    /// goto-def on a `val foo` in a `.gxi` to chase to the impl.
-    pub sig_links: GPooled<Vec<SigImplLink>>,
-    /// Per-module impl-side env snapshots from the most recent check.
-    pub module_internals: GPooled<Vec<ModuleInternalView>>,
+    /// IDE side-channels populated during the most recent check:
+    /// type references (uses of `Foo` in type positions), sig→impl
+    /// bind id pairs, and per-module impl-side env snapshots.
+    pub lsp: Lsp,
 }
 
 impl Document {
@@ -52,10 +49,8 @@ impl Document {
             env: None,
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
-            type_references: TYPE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
-            sig_links: SIG_LINK_POOL.take(),
-            module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
+            lsp: Lsp::new(),
         }
     }
 }
@@ -66,15 +61,9 @@ pub struct TypecheckResult {
     pub env: Env,
     pub references: GPooled<Vec<ReferenceSite>>,
     pub module_references: GPooled<Vec<ModuleRefSite>>,
-    pub type_references: GPooled<Vec<TypeRefSite>>,
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// Sig→impl bind id pairs. Carries through from the runtime so the
-    /// LSP can chase from a sig val site to its `let foo = …` impl site
-    /// for goto-def, and union references across both bind ids.
-    pub sig_links: GPooled<Vec<SigImplLink>>,
-    /// Per-module impl-side env snapshots. The top-level `env` is the
-    /// project's external view; these hold each module's internal view.
-    pub module_internals: GPooled<Vec<ModuleInternalView>>,
+    /// IDE side-channels populated during the check.
+    pub lsp: Lsp,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -95,7 +84,18 @@ pub trait LspBackend: Send + Sync + 'static {
     /// edits in any file participate in the check — there is no
     /// disk-only path. Pass `root = file_path` for a stray document
     /// that isn't part of a known project.
-    fn typecheck_project(&self, root: &Path) -> anyhow::Result<TypecheckResult>;
+    ///
+    /// `initial_scope`, when set, scopes the entire compilation
+    /// under that path (as if the source were the body of a
+    /// `mod <scope> { ... }` block). Used when editing a graphix
+    /// package crate so its modules register under the package's
+    /// namespace and don't collide with the runtime's pre-loaded
+    /// copy of the same package.
+    fn typecheck_project(
+        &self,
+        root: &Path,
+        initial_scope: Option<ArcStr>,
+    ) -> anyhow::Result<TypecheckResult>;
     /// The shared open-buffer override map. The LSP server clones the
     /// returned `BufferOverrides` and mutates it on every `did_open` /
     /// `did_change` / `did_close`. The same `Arc<Mutex<…>>` is held by
@@ -111,10 +111,8 @@ pub struct ProjectResult {
     pub env: Env,
     pub references: GPooled<Vec<ReferenceSite>>,
     pub module_references: GPooled<Vec<ModuleRefSite>>,
-    pub type_references: GPooled<Vec<TypeRefSite>>,
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    pub sig_links: GPooled<Vec<SigImplLink>>,
-    pub module_internals: GPooled<Vec<ModuleInternalView>>,
+    pub lsp: Lsp,
 }
 
 /// Core language intelligence state.
@@ -140,6 +138,16 @@ pub struct ServerState {
     /// next cycle for files that recovered, so editors don't show
     /// stale red squiggles.
     pub last_project_diag_uris: HashSet<Uri>,
+    /// Same idea as `last_project_diag_uris` but for the per-document
+    /// `check_document` cycle. Tracked separately so a save-driven
+    /// recheck and a per-edit check don't stomp each other's stale
+    /// sets.
+    pub last_check_diag_uris: HashSet<Uri>,
+    /// The most recent doc the editor told us about (open / change /
+    /// save). `workspace/symbol` uses this to scope its search to the
+    /// project the user is working in, since the request itself
+    /// carries no file context.
+    pub last_active_uri: Option<Uri>,
     /// Whether the client advertised `completionItem.snippetSupport`.
     /// Drives whether function completions emit a snippet body that
     /// expands `name(${1}, ${2})$0` on accept.
@@ -165,6 +173,8 @@ impl ServerState {
             workspace: Default::default(),
             project_results: Vec::new(),
             last_project_diag_uris: HashSet::new(),
+            last_check_diag_uris: HashSet::new(),
+            last_active_uri: None,
             snippet_support,
             position_encoding,
         }
@@ -207,25 +217,23 @@ impl ServerState {
         let mut diags_by_uri: HashMap<Uri, Vec<lsp_types::Diagnostic>> =
             HashMap::new();
         for project in &self.workspace.projects {
-            let r = self.backend.typecheck_project(&project.root);
+            let r = self
+                .backend
+                .typecheck_project(&project.root, project.package_scope.clone());
             match r {
                 Ok(TypecheckResult {
                     env,
                     references,
                     module_references,
-                    type_references,
                     scope_map,
-                    sig_links,
-                    module_internals,
+                    lsp,
                 }) => {
                     results.push(Some(ProjectResult {
                         env,
                         references,
                         module_references,
-                        type_references,
                         scope_map,
-                        sig_links,
-                        module_internals,
+                        lsp,
                     }));
                 }
                 Err(e) => {
@@ -346,6 +354,17 @@ impl ServerState {
         uri_to_path(uri)
     }
 
+    /// If `root` matches a known project, return that project's
+    /// `package_scope`. Falls back to `None` for stray roots that
+    /// weren't picked up by the workspace scanner.
+    fn package_scope_for(&self, root: &Path) -> Option<ArcStr> {
+        self.workspace
+            .projects
+            .iter()
+            .find(|p| p.root == root)
+            .and_then(|p| p.package_scope.clone())
+    }
+
     /// Parse and type-check the document and return any diagnostics.
     ///
     /// Runs a project-style check rooted at the doc's project (or the
@@ -354,7 +373,11 @@ impl ServerState {
     /// cross-file diagnostics, references, types, and goto-def reflect
     /// the editor's view without saving. Per-doc fields are populated
     /// from the result.
-    pub fn check_document(&mut self, uri: &Uri) -> Vec<lsp_types::Diagnostic> {
+    pub fn check_document(
+        &mut self,
+        uri: &Uri,
+    ) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
+        self.last_active_uri = Some(uri.clone());
         // Make sure the latest buffer text is in the override map. Edits
         // typically arrive via `update_document` which already mirrors
         // them, but `did_open` lands here without a prior change.
@@ -366,47 +389,59 @@ impl ServerState {
                     .insert(path, ArcStr::from(doc.text.as_str()));
             }
         }
-        let Some(doc) = self.documents.get(uri) else {
-            return Vec::new();
-        };
-        let text = ArcStr::from(doc.text.as_str());
+        let mut out: HashMap<Uri, Vec<lsp_types::Diagnostic>> = HashMap::new();
+        // Always include the active URI so callers can publish an empty
+        // list to clear stale squiggles when the doc now compiles.
+        out.insert(uri.clone(), Vec::new());
+        if !self.documents.contains_key(uri) {
+            return out;
+        }
         let Some(root) = self.project_root_for(uri) else {
-            return Vec::new();
+            return out;
         };
-        match self.backend.typecheck_project(&root) {
+        let initial_scope = self.package_scope_for(&root);
+        match self.backend.typecheck_project(&root, initial_scope) {
             Ok(TypecheckResult {
                 env,
                 references,
                 module_references,
-                type_references,
                 scope_map,
-                sig_links,
-                module_internals,
+                lsp,
             }) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = Some(env);
                     d.references = references;
                     d.module_references = module_references;
-                    d.type_references = type_references;
                     d.scope_map = scope_map;
-                    d.sig_links = sig_links;
-                    d.module_internals = module_internals;
+                    d.lsp = lsp;
                 }
-                Vec::new()
             }
             Err(e) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = None;
                     d.references = REFERENCE_SITE_POOL.take();
                     d.module_references = MODULE_REF_SITE_POOL.take();
-                    d.type_references = TYPE_REF_SITE_POOL.take();
                     d.scope_map = SCOPE_MAP_ENTRY_POOL.take();
-                    d.sig_links = SIG_LINK_POOL.take();
-                    d.module_internals = MODULE_INTERNAL_VIEW_POOL.take();
+                    d.lsp = Lsp::new();
                 }
-                error_to_diagnostics(&e, &text, self.position_encoding)
+                // Attribute the failure to the file the error chain
+                // names, not the active URI. The error may originate in
+                // a different module of the same project (e.g. editing
+                // a sibling .gxi while the implementation .gx fails to
+                // typecheck).
+                let (target_uri, diag) =
+                    self.project_error_to_diagnostic(&e, &root);
+                out.entry(target_uri.clone()).or_default().push(diag);
             }
         }
+        // Clear any URIs we put diagnostics on last cycle that don't
+        // appear this cycle.
+        for stale in self.last_check_diag_uris.iter() {
+            out.entry(stale.clone()).or_default();
+        }
+        self.last_check_diag_uris =
+            out.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k.clone()).collect();
+        out
     }
 
     /// Find the lexical scope at `position` in `uri` using the
@@ -677,8 +712,8 @@ impl ServerState {
         self.collect_refs_from(
             doc.env.as_ref(),
             &doc.references,
-            &doc.sig_links,
-            &doc.module_internals,
+            &doc.lsp.sig_links,
+            &doc.lsp.module_internals,
             &scope,
             &name,
             include_declaration,
@@ -692,8 +727,8 @@ impl ServerState {
                 self.collect_refs_from(
                     Some(&r.env),
                     &r.references,
-                    &r.sig_links,
-                    &r.module_internals,
+                    &r.lsp.sig_links,
+                    &r.lsp.module_internals,
                     &scope,
                     &name,
                     include_declaration,
@@ -873,14 +908,14 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<(ModPath, ModPath)> {
         let doc = self.documents.get(uri)?;
-        for t in doc.type_references.iter() {
+        for t in doc.lsp.type_refs.iter() {
             if position_in_type_ref(position, t) {
                 return Some((t.canonical_scope.clone(), t.name.clone()));
             }
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.type_references.iter() {
+                for t in r.lsp.type_refs.iter() {
                     if origin_matches_uri(&t.ori, uri)
                         && position_in_type_ref(position, t)
                     {
@@ -905,7 +940,7 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for t in doc.type_references.iter() {
+            for t in doc.lsp.type_refs.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
                     push(t, out);
                 }
@@ -913,7 +948,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.type_references.iter() {
+                for t in r.lsp.type_refs.iter() {
                     if &t.canonical_scope == canonical_scope && &t.name == name {
                         push(t, out);
                     }
@@ -934,7 +969,7 @@ impl ServerState {
     ) -> Option<lsp_types::Location> {
         let take = |t: &TypeRefSite| self.ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for t in doc.type_references.iter() {
+            for t in doc.lsp.type_refs.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
                     return take(t);
                 }
@@ -942,7 +977,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.type_references.iter() {
+                for t in r.lsp.type_refs.iter() {
                     if &t.canonical_scope == canonical_scope && &t.name == name {
                         return take(t);
                     }
@@ -960,7 +995,7 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
         let doc = self.documents.get(uri)?;
-        for t in doc.type_references.iter() {
+        for t in doc.lsp.type_refs.iter() {
             if position_in_type_ref(position, t) {
                 return self.ref_to_location(uri, &t.def_ori, t.def_pos);
             }
@@ -968,7 +1003,7 @@ impl ServerState {
         // Also try any project's type_references (cross-file).
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.type_references.iter() {
+                for t in r.lsp.type_refs.iter() {
                     // Match by file ori source equality on the use side
                     // (the use site lives in this URI).
                     if origin_matches_uri(&t.ori, uri)
@@ -1009,7 +1044,9 @@ impl ServerState {
         })?;
         let target_uri = match &impl_bind.ori.source {
             Source::File(p) => path_to_uri(p)?,
-            Source::Internal(_) | Source::Unspecified => uri.clone(),
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(uri, &impl_bind.ori)
+                .unwrap_or_else(|| uri.clone()),
             Source::Netidx(_) => return None,
         };
         let line = impl_bind.pos.line.saturating_sub(1).max(0) as u32;
@@ -1027,7 +1064,7 @@ impl ServerState {
     /// match — but find-references is consulted on the latest check.
     fn sig_link_impl_for(&self, uri: &Uri, sig_id: graphix_compiler::BindId) -> Option<graphix_compiler::BindId> {
         if let Some(doc) = self.documents.get(uri) {
-            for l in doc.sig_links.iter() {
+            for l in doc.lsp.sig_links.iter() {
                 if l.sig_id == sig_id {
                     return Some(l.impl_id);
                 }
@@ -1035,7 +1072,7 @@ impl ServerState {
         }
         for idx in self.projects_containing(uri) {
             if let Some(Some(r)) = self.project_results.get(idx) {
-                for l in r.sig_links.iter() {
+                for l in r.lsp.sig_links.iter() {
                     if l.sig_id == sig_id {
                         return Some(l.impl_id);
                     }
@@ -1050,13 +1087,13 @@ impl ServerState {
     fn module_internals_for<'a>(&'a self, uri: &Uri) -> Vec<&'a ModuleInternalView> {
         let mut out = Vec::new();
         if let Some(doc) = self.documents.get(uri) {
-            for v in doc.module_internals.iter() {
+            for v in doc.lsp.module_internals.iter() {
                 out.push(v);
             }
         }
         for idx in self.projects_containing(uri) {
             if let Some(Some(r)) = self.project_results.get(idx) {
-                for v in r.module_internals.iter() {
+                for v in r.lsp.module_internals.iter() {
                     out.push(v);
                 }
             }
@@ -1125,6 +1162,13 @@ impl ServerState {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
+        // .gxi files don't go through the let-binding compile path, so
+        // their `val`/`type`/`mod` items never land in `env.binds`.
+        // Parse the buffer directly as a sig and surface every sig
+        // item.
+        if uri_is_gxi(uri) {
+            return self.gxi_document_symbols(&doc.text);
+        }
         let Some(env) = doc.env.as_ref() else {
             return Vec::new();
         };
@@ -1161,6 +1205,240 @@ impl ServerState {
         }
         symbols.sort_by_key(|s| (s.range.start.line, s.range.start.character));
         symbols
+    }
+
+    /// Symbols for a `.gxi` interface file. Parses the text as a Sig
+    /// and emits one entry per `val`/`type`/`mod`/`use` item.
+    fn gxi_document_symbols(&self, text: &str) -> Vec<lsp_types::DocumentSymbol> {
+        use graphix_compiler::expr::{parser, Origin, Source, SigKind};
+        let ori = Origin {
+            parent: None,
+            source: Source::Unspecified,
+            text: ArcStr::from(text),
+        };
+        let Ok(sig) = parser::parse_sig(ori) else {
+            return Vec::new();
+        };
+        let mut symbols = Vec::new();
+        for si in sig.items.iter() {
+            let (name, kind, detail) = match &si.kind {
+                SigKind::Bind(b) => {
+                    let kind = if matches!(b.typ, Type::Fn(_)) {
+                        lsp_types::SymbolKind::FUNCTION
+                    } else {
+                        lsp_types::SymbolKind::VARIABLE
+                    };
+                    (b.name.to_string(), kind, Some(format!("{}", b.typ)))
+                }
+                SigKind::TypeDef(t) => {
+                    let detail = format!("type {}", t.typ);
+                    (t.name.to_string(), lsp_types::SymbolKind::TYPE_PARAMETER, Some(detail))
+                }
+                SigKind::Module(name) => {
+                    (name.to_string(), lsp_types::SymbolKind::MODULE, None)
+                }
+                SigKind::Use(path) => {
+                    (format!("use {path}"), lsp_types::SymbolKind::NAMESPACE, None)
+                }
+            };
+            let line = si.pos.line.saturating_sub(1).max(0) as u32;
+            let char_col = si.pos.column.saturating_sub(1).max(0) as usize;
+            let pos = self.lsp_position_from_char_col(text, line, char_col);
+            let range = lsp_types::Range { start: pos, end: pos };
+            #[allow(deprecated)]
+            symbols.push(lsp_types::DocumentSymbol {
+                name,
+                detail,
+                kind,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range: range,
+                children: None,
+            });
+        }
+        symbols.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        symbols
+    }
+
+    /// Workspace-wide symbol search. The LSP request carries no file
+    /// context, so we scope by the project containing the most
+    /// recently active document. If we don't know the active doc (or
+    /// it's not part of any project), search every project. Each
+    /// match is a `(name, kind, file URI, position)` tuple lifted from
+    /// the file's parse, filtered by `query` (case-insensitive
+    /// substring).
+    pub fn workspace_symbols(
+        &self,
+        query: &str,
+    ) -> Vec<lsp_types::SymbolInformation> {
+        use graphix_compiler::expr::{parser, Origin, Source, SigKind};
+        let needle = query.to_ascii_lowercase();
+        let matches = |name: &str| -> bool {
+            needle.is_empty()
+                || name.to_ascii_lowercase().contains(&needle)
+        };
+        // Scope: prefer the project containing the active doc.
+        let active_idx = self
+            .last_active_uri
+            .as_ref()
+            .and_then(|u| self.projects_containing(u).next());
+        log::debug!(
+            "workspace_symbols query={query:?} active={:?} projects={} files={} active_idx={:?}",
+            self.last_active_uri.as_ref().map(|u| u.as_str()),
+            self.workspace.projects.len(),
+            self.workspace.files.len(),
+            active_idx,
+        );
+        let scoped_files: Vec<&PathBuf> = match active_idx {
+            Some(idx) => {
+                let mut v: Vec<&PathBuf> =
+                    self.workspace.projects[idx].files.iter().collect();
+                v.sort();
+                v
+            }
+            None => {
+                // Fall back to every file the workspace knows about.
+                let mut v: Vec<&PathBuf> = self.workspace.files.keys().collect();
+                v.sort();
+                v
+            }
+        };
+        let mut out = Vec::new();
+        for path in scoped_files {
+            let Some(uri) = crate::uri::path_to_uri(path) else {
+                continue;
+            };
+            // Prefer the open-buffer text so unsaved edits are
+            // searchable; fall back to the disk copy.
+            let text: ArcStr = match self.documents.get(&uri) {
+                Some(d) => ArcStr::from(d.text.as_str()),
+                None => match std::fs::read_to_string(path) {
+                    Ok(s) => ArcStr::from(s),
+                    Err(_) => continue,
+                },
+            };
+            let is_gxi = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| e == "gxi")
+                .unwrap_or(false);
+            let ori = Origin {
+                parent: None,
+                source: Source::File(path.clone()),
+                text: text.clone(),
+            };
+            let push = |name: String,
+                        kind: lsp_types::SymbolKind,
+                        line: i32,
+                        col: i32,
+                        out: &mut Vec<lsp_types::SymbolInformation>| {
+                if !matches(&name) {
+                    return;
+                }
+                let line = line.saturating_sub(1).max(0) as u32;
+                let char_col = col.saturating_sub(1).max(0) as usize;
+                let pos = self.lsp_position_from_char_col(&text, line, char_col);
+                let range = lsp_types::Range { start: pos, end: pos };
+                #[allow(deprecated)]
+                out.push(lsp_types::SymbolInformation {
+                    name,
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: lsp_types::Location {
+                        uri: uri.clone(),
+                        range,
+                    },
+                    container_name: None,
+                });
+            };
+            if is_gxi {
+                let Ok(sig) = parser::parse_sig(ori) else {
+                    continue;
+                };
+                for si in sig.items.iter() {
+                    let (name, kind) = match &si.kind {
+                        SigKind::Bind(b) => {
+                            let kind = if matches!(b.typ, Type::Fn(_)) {
+                                lsp_types::SymbolKind::FUNCTION
+                            } else {
+                                lsp_types::SymbolKind::VARIABLE
+                            };
+                            (b.name.to_string(), kind)
+                        }
+                        SigKind::TypeDef(t) => {
+                            (t.name.to_string(), lsp_types::SymbolKind::TYPE_PARAMETER)
+                        }
+                        SigKind::Module(name) => {
+                            (name.to_string(), lsp_types::SymbolKind::MODULE)
+                        }
+                        SigKind::Use(_) => continue,
+                    };
+                    push(name, kind, si.pos.line, si.pos.column, &mut out);
+                }
+            } else {
+                let Ok(exprs) = parser::parse(ori) else {
+                    continue;
+                };
+                for e in exprs.iter() {
+                    self.walk_gx_for_workspace_symbols(e, &uri, &text, &matches, &mut out);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Walk a top-level `.gx` expression and emit a workspace symbol
+    /// for every binding-shaped item (`let`, `type`, `mod`).
+    fn walk_gx_for_workspace_symbols(
+        &self,
+        e: &graphix_compiler::expr::Expr,
+        uri: &Uri,
+        text: &str,
+        matches: &impl Fn(&str) -> bool,
+        out: &mut Vec<lsp_types::SymbolInformation>,
+    ) {
+        use graphix_compiler::expr::{ExprKind, StructurePattern};
+        let mut push = |name: String,
+                        kind: lsp_types::SymbolKind,
+                        pos: graphix_compiler::SourcePosition| {
+            if !matches(&name) {
+                return;
+            }
+            let line = pos.line.saturating_sub(1).max(0) as u32;
+            let char_col = pos.column.saturating_sub(1).max(0) as usize;
+            let p = self.lsp_position_from_char_col(text, line, char_col);
+            let range = lsp_types::Range { start: p, end: p };
+            #[allow(deprecated)]
+            out.push(lsp_types::SymbolInformation {
+                name,
+                kind,
+                tags: None,
+                deprecated: None,
+                location: lsp_types::Location { uri: uri.clone(), range },
+                container_name: None,
+            });
+        };
+        match &e.kind {
+            ExprKind::Bind(b) => {
+                if let StructurePattern::Bind(name) = &b.pattern {
+                    let kind = match &b.value.kind {
+                        ExprKind::Lambda(_) => lsp_types::SymbolKind::FUNCTION,
+                        _ => lsp_types::SymbolKind::VARIABLE,
+                    };
+                    push(name.to_string(), kind, e.pos);
+                }
+            }
+            ExprKind::TypeDef(td) => {
+                push(td.name.to_string(), lsp_types::SymbolKind::TYPE_PARAMETER, e.pos);
+            }
+            ExprKind::Module { name, .. } => {
+                push(name.to_string(), lsp_types::SymbolKind::MODULE, e.pos);
+            }
+            _ => (),
+        }
     }
 
     /// Return the definition location for the symbol at the given
@@ -1208,7 +1486,9 @@ impl ServerState {
         if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
             let target_uri = match &bind.ori.source {
                 Source::File(p) => path_to_uri(p)?,
-                Source::Internal(_) | Source::Unspecified => uri.clone(),
+                Source::Internal(_) | Source::Unspecified => self
+                    .find_uri_for_internal_origin(uri, &bind.ori)
+                    .unwrap_or_else(|| uri.clone()),
                 Source::Netidx(_) => return None,
             };
             let line = bind.pos.line.saturating_sub(1).max(0) as u32;
@@ -1225,7 +1505,9 @@ impl ServerState {
         let typedef = env.lookup_typedef(&scope, &name)?;
         let target_uri = match &typedef.ori.source {
             Source::File(p) => path_to_uri(p)?,
-            Source::Internal(_) | Source::Unspecified => uri.clone(),
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(uri, &typedef.ori)
+                .unwrap_or_else(|| uri.clone()),
             Source::Netidx(_) => return None,
         };
         let line = typedef.pos.line.saturating_sub(1).max(0) as u32;
@@ -1240,6 +1522,10 @@ impl ServerState {
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     crate::uri::uri_to_path(uri)
+}
+
+fn uri_is_gxi(uri: &Uri) -> bool {
+    uri.as_str().ends_with(".gxi")
 }
 
 fn path_to_uri(path: &Path) -> Option<Uri> {
@@ -1384,6 +1670,48 @@ fn span_covers(pos: lsp_types::Position, start: SourcePosition, len: u32) -> boo
 }
 
 impl ServerState {
+    /// For an `Internal`/`Unspecified` origin (no real path attached),
+    /// try to recover the actual file URI by content match.
+    ///
+    /// The stdlib loads through the VFS resolver, which produces
+    /// `Source::Internal("core/mod")` for both `core/mod.gx` and
+    /// `core/mod.gxi`. When the user is editing the on-disk stdlib
+    /// file, goto-def on a type declared in the paired interface needs
+    /// to land on the `.gxi`, not the `.gx` we asked from. We
+    /// disambiguate by checking the `.gx`/`.gxi` sibling of the
+    /// requesting URI: if its content matches `ori.text`, that's the
+    /// file the origin came from.
+    fn find_uri_for_internal_origin(
+        &self,
+        requesting_uri: &Uri,
+        ori: &graphix_compiler::expr::Origin,
+    ) -> Option<Uri> {
+        let want = ori.text.as_str();
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            if doc.text.as_str() == want {
+                return Some(requesting_uri.clone());
+            }
+        }
+        let path = uri_to_path(requesting_uri)?;
+        let sibling = match path.extension().and_then(|s| s.to_str()) {
+            Some("gx") => path.with_extension("gxi"),
+            Some("gxi") => path.with_extension("gx"),
+            _ => return None,
+        };
+        let sibling_uri = path_to_uri(&sibling)?;
+        if let Some(doc) = self.documents.get(&sibling_uri) {
+            if doc.text.as_str() == want {
+                return Some(sibling_uri);
+            }
+        }
+        if let Ok(disk) = std::fs::read_to_string(&sibling) {
+            if disk == want {
+                return Some(sibling_uri);
+            }
+        }
+        None
+    }
+
     /// Map a module reference's `def_ori` (file the module body was
     /// loaded from) to an LSP Location pointing at the file's start.
     fn module_origin_to_location(
@@ -1393,7 +1721,9 @@ impl ServerState {
     ) -> Option<lsp_types::Location> {
         let target_uri = match &ori.source {
             Source::File(p) => path_to_uri(p)?,
-            Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(requesting_uri, ori)
+                .unwrap_or_else(|| requesting_uri.clone()),
             Source::Netidx(_) => return None,
         };
         let pos = lsp_types::Position { line: 0, character: 0 };
@@ -1417,23 +1747,22 @@ impl ServerState {
     ) -> Option<lsp_types::Location> {
         let target_uri = match &ori.source {
             Source::File(p) => path_to_uri(p)?,
-            Source::Internal(_) | Source::Unspecified => requesting_uri.clone(),
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(requesting_uri, ori)
+                .unwrap_or_else(|| requesting_uri.clone()),
             Source::Netidx(_) => return None,
         };
         let line = pos.line.saturating_sub(1).max(0) as u32;
         let char_col = pos.column.saturating_sub(1).max(0) as usize;
         // Look up the target file's text to translate char-col → encoded
-        // column. For cross-file references we use the open document if
-        // we're tracking it; otherwise we fall back to ori.text (the
-        // text the compiler saw at parse time).
-        let target_text: &str = match &ori.source {
-            Source::File(_) => self
-                .documents
-                .get(&target_uri)
-                .map(|d| d.text.as_str())
-                .unwrap_or(&ori.text),
-            _ => &ori.text,
-        };
+        // column. Use the open document text when we're tracking it;
+        // otherwise fall back to ori.text (the text the compiler saw at
+        // parse time).
+        let target_text: &str = self
+            .documents
+            .get(&target_uri)
+            .map(|d| d.text.as_str())
+            .unwrap_or(&ori.text);
         let p = self.lsp_position_from_char_col(target_text, line, char_col);
         Some(lsp_types::Location {
             uri: target_uri,
@@ -1908,5 +2237,79 @@ mod tests {
         let parent = Arc::new(ori(Source::Unspecified, None));
         let child = ori(Source::Unspecified, Some(parent));
         assert!(!origin_matches_uri(&child, &uri));
+    }
+
+    /// Stand-in `LspBackend` for tests of `ServerState` methods that
+    /// don't actually need a typecheck. Returns an empty env, refuses
+    /// project type-checks, and exposes a no-op buffer-overrides map.
+    struct StubBackend {
+        overrides: BufferOverrides,
+    }
+    impl StubBackend {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                overrides: triomphe::Arc::new(parking_lot::Mutex::new(
+                    fxhash::FxHashMap::default(),
+                )),
+            })
+        }
+    }
+    impl LspBackend for StubBackend {
+        fn env(&self) -> Env {
+            Env::default()
+        }
+        fn typecheck_project(
+            &self,
+            _root: &std::path::Path,
+            _initial_scope: Option<ArcStr>,
+        ) -> anyhow::Result<TypecheckResult> {
+            anyhow::bail!("stub backend can't typecheck")
+        }
+        fn buffer_overrides(&self) -> BufferOverrides {
+            self.overrides.clone()
+        }
+    }
+
+    /// `workspace_symbols` should surface every top-level `let` /
+    /// `type` / `mod` from a `.gx` and every `val` / `type` / `mod`
+    /// from a `.gxi`, scoped to the project containing the most
+    /// recently active document.
+    #[test]
+    fn workspace_symbols_returns_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let main_gx = root.join("main.gx");
+        let lib_gxi = root.join("lib.gxi");
+        let lib_gx = root.join("lib.gx");
+        std::fs::write(&main_gx, "mod lib;\nlet helper = |x: i64| -> i64 x + 1;\n")
+            .unwrap();
+        std::fs::write(&lib_gxi, "val widgetize: fn(n: i64) -> i64;\n").unwrap();
+        std::fs::write(&lib_gx, "let widgetize = |n: i64| -> i64 n;\n").unwrap();
+
+        let backend: std::sync::Arc<dyn LspBackend> = StubBackend::new();
+        let mut state = ServerState::new(
+            backend,
+            false,
+            crate::position::PositionEncoding::Utf16,
+        );
+        state.workspace_roots = vec![root.to_path_buf()];
+        state.workspace = crate::workspace::scan(&state.workspace_roots);
+        // Mark `main.gx` as the active doc so the scope picker
+        // chooses its project.
+        state.last_active_uri =
+            crate::uri::path_to_uri(&main_gx).map(|u| u);
+
+        // Empty query returns everything.
+        let all = state.workspace_symbols("");
+        let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"helper"), "missing helper, got {names:?}");
+        assert!(names.contains(&"lib"), "missing mod lib, got {names:?}");
+        assert!(names.contains(&"widgetize"), "missing widgetize, got {names:?}");
+
+        // Filtered query.
+        let some = state.workspace_symbols("widget");
+        let names: Vec<&str> = some.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"widgetize"));
+        assert!(!names.contains(&"helper"));
     }
 }

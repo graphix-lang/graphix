@@ -353,9 +353,17 @@ module.exports = grammar({
       optional($.constraints_clause),
     )),
 
-    fn_type_args: $ => seq(
-      commaSep1($.fn_type_arg),
-      optional(seq(',', $.fn_type_varg)),
+    // Allow either: positional/labeled args (optionally followed by a
+    // trailing `@args:` varg), or just a varg on its own. The real
+    // graphix parser accepts variadic-only fn types like
+    // `fn(@args: T) -> T`, which appear frequently in stdlib .gxi
+    // files (e.g. `val concat: fn(@args: ...)`).
+    fn_type_args: $ => choice(
+      $.fn_type_varg,
+      seq(
+        commaSep1($.fn_type_arg),
+        optional(seq(',', $.fn_type_varg)),
+      ),
     ),
 
     fn_type_arg: $ => seq(
@@ -396,7 +404,9 @@ module.exports = grammar({
 
     abstract_type: $ => seq('?', $.type_identifier),
 
-    error_type: $ => seq('Error', '<', $.string, '>'),
+    // Error<T> wraps any type, not just a string literal — e.g.
+    // `Error<'e>`, `Error<`Tag(string)>`, etc.
+    error_type: $ => seq('Error', '<', $._type, '>'),
 
     // Let binding - low precedence so RHS captures full expression
     let_binding: $ => prec.right(-1, seq(
