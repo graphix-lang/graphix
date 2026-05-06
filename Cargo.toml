@@ -103,7 +103,7 @@ arboard = "3"
 winit = { version = "0.30", features = ["rwh_06"] }
 tree-sitter = "0.24"
 tree-sitter-language = "0.1"
-tree-sitter-graphix = { version = "0.1.0", path = "ide/tree-sitter-graphix" }
+tree-sitter-graphix = { version = "0.8.0", path = "ide/tree-sitter-graphix" }
 cc = "1"
 
 # iced GUI framework (sub-crates used directly for low-level control)

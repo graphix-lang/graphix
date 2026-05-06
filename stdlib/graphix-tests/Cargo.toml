@@ -10,28 +10,28 @@ anyhow = { workspace = true }
 arcstr = { workspace = true }
 chrono = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.7.0", path = "../../graphix-compiler" }
-graphix-package = { version = "0.7.0", path = "../../graphix-package" }
-graphix-package-args = { version = "0.7.0", path = "../graphix-package-args" }
-graphix-package-core = { version = "0.7.0", path = "../graphix-package-core" }
+graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
+graphix-package = { version = "0.8.0", path = "../../graphix-package" }
+graphix-package-args = { version = "0.8.0", path = "../graphix-package-args" }
+graphix-package-core = { version = "0.8.0", path = "../graphix-package-core" }
 immutable-chunkmap = { workspace = true }
-graphix-package-array = { version = "0.7.0", path = "../graphix-package-array" }
-graphix-package-http = { version = "0.7.0", path = "../graphix-package-http" }
-graphix-package-json = { version = "0.7.0", path = "../graphix-package-json" }
-graphix-package-toml = { version = "0.7.0", path = "../graphix-package-toml" }
-graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
-graphix-package-rand = { version = "0.7.0", path = "../graphix-package-rand" }
-graphix-package-re = { version = "0.7.0", path = "../graphix-package-re" }
-graphix-package-str = { version = "0.7.0", path = "../graphix-package-str" }
-graphix-package-db = { version = "0.7.0", path = "../graphix-package-db" }
-graphix-package-sys = { version = "0.7.0", path = "../graphix-package-sys" }
-graphix-package-xls = { version = "0.7.0", path = "../graphix-package-xls" }
-graphix-package-pack = { version = "0.7.0", path = "../graphix-package-pack" }
-graphix-package-list = { version = "0.7.0", path = "../graphix-package-list" }
-graphix-package-sqlite = { version = "0.7.0", path = "../graphix-package-sqlite" }
-graphix-package-hbs = { version = "0.7.0", path = "../graphix-package-hbs" }
+graphix-package-array = { version = "0.8.0", path = "../graphix-package-array" }
+graphix-package-http = { version = "0.8.0", path = "../graphix-package-http" }
+graphix-package-json = { version = "0.8.0", path = "../graphix-package-json" }
+graphix-package-toml = { version = "0.8.0", path = "../graphix-package-toml" }
+graphix-package-map = { version = "0.8.0", path = "../graphix-package-map" }
+graphix-package-rand = { version = "0.8.0", path = "../graphix-package-rand" }
+graphix-package-re = { version = "0.8.0", path = "../graphix-package-re" }
+graphix-package-str = { version = "0.8.0", path = "../graphix-package-str" }
+graphix-package-db = { version = "0.8.0", path = "../graphix-package-db" }
+graphix-package-sys = { version = "0.8.0", path = "../graphix-package-sys" }
+graphix-package-xls = { version = "0.8.0", path = "../graphix-package-xls" }
+graphix-package-pack = { version = "0.8.0", path = "../graphix-package-pack" }
+graphix-package-list = { version = "0.8.0", path = "../graphix-package-list" }
+graphix-package-sqlite = { version = "0.8.0", path = "../graphix-package-sqlite" }
+graphix-package-hbs = { version = "0.8.0", path = "../graphix-package-hbs" }
 rust_xlsxwriter = { workspace = true }
-graphix-rt = { version = "0.7.0", path = "../../graphix-rt" }
+graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
 poolshark = { workspace = true }

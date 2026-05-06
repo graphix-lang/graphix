@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-hbs"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -21,12 +21,12 @@ anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
 fxhash = { workspace = true }
-graphix-compiler = { version = "0.7.0", path = "../../graphix-compiler" }
-graphix-derive = { version = "0.7.0", path = "../../graphix-derive" }
-graphix-package = { version = "0.7.0", path = "../../graphix-package" }
-graphix-package-core = { version = "0.7.0", path = "../graphix-package-core" }
-graphix-package-json = { version = "0.7.0", path = "../graphix-package-json" }
-graphix-rt = { version = "0.7.0", path = "../../graphix-rt" }
+graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.8.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.8.0", path = "../graphix-package-core" }
+graphix-package-json = { version = "0.8.0", path = "../graphix-package-json" }
+graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }
 handlebars = { workspace = true }
 poolshark = { workspace = true }
 netidx-core = { workspace = true }

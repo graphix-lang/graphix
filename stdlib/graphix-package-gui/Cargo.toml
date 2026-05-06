@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-gui"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -27,12 +27,12 @@ compact_str = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
 indexmap = { workspace = true }
-graphix-compiler = { version = "0.7.0", path = "../../graphix-compiler" }
-graphix-derive = { version = "0.7.0", path = "../../graphix-derive" }
-graphix-package = { version = "0.7.0", path = "../../graphix-package" }
-graphix-package-core = { version = "0.7.0", path = "../graphix-package-core" }
-graphix-package-str = { version = "0.7.0", path = "../graphix-package-str" }
-graphix-rt = { version = "0.7.0", path = "../../graphix-rt" }
+graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.8.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.8.0", path = "../graphix-package-core" }
+graphix-package-str = { version = "0.8.0", path = "../graphix-package-str" }
+graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp"] }
 iced_core = { workspace = true }
 iced_renderer = { workspace = true }

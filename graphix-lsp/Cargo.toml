@@ -1,10 +1,10 @@
 [package]
 name = "graphix-lsp"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 
 [dependencies]
-graphix-compiler = { version = "0.7.0", path = "../graphix-compiler" }
+graphix-compiler = { version = "0.8.0", path = "../graphix-compiler" }
 lsp-types = { workspace = true }
 lsp-server = { workspace = true }
 anyhow = { workspace = true }
