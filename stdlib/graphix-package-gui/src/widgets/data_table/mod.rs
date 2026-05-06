@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::CompactString;
 use futures::channel::mpsc;
-use fxhash::{FxBuildHasher, FxHashMap};
+use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use indexmap::IndexMap;
@@ -127,7 +127,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     sort_by: Vec<SortBy>,
     /// Set of selected cell paths (`row_path` for the row-name column,
     /// `row_path/col_name` otherwise), controlled by graphix.
-    selection: fxhash::FxHashSet<ArcStr>,
+    selection: FxHashSet<ArcStr>,
     on_activate_ref: Ref<X>,
     on_activate: Option<Callable<X>>,
     on_select_ref: Ref<X>,
@@ -373,8 +373,18 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         }
         if id == self.sort_by_ref.id {
             self.sort_by_ref.last = Some(v.clone());
+            // Capture the previous sort columns before reassigning
+            // `sort_by` so `apply_sort_by_change` can diff old vs new
+            // and only touch subscriptions that actually need to change.
+            // Routing through `apply_table_sync` (the prior behaviour)
+            // would have cleared every Grid sub on the way through.
+            let old_cols: FxHashSet<ArcStr> =
+                self.sort_by.iter().map(|s| s.column.clone()).collect();
             self.sort_by = parse_sort_by(v);
-            needs_resolve = true;
+            self.apply_sort_by_change(&old_cols);
+            if !self.sort_by.is_empty() {
+                self.resort_by_column();
+            }
             changed = true;
         }
         if id == self.selection_ref.id {

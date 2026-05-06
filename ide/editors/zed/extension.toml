@@ -12,7 +12,7 @@ repository = "https://github.com/graphix-lang/graphix"
 # (or a release tag SHA) when cutting a release.
 [grammars.graphix]
 repository = "https://github.com/graphix-lang/graphix"
-rev = "8b95864b5982246afe1504d77bdc5765a7801d8d"
+rev = "4057fc633db02e4835d5e98af18ae88c0dc5d83a"
 path = "ide/tree-sitter-graphix"
 
 [language_servers.graphix-lsp]

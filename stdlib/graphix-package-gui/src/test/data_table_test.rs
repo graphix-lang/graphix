@@ -707,6 +707,125 @@ let result = data_table(
     Ok(())
 }
 
+/// Regression: with more rows than fit in the visible window, every
+/// row — including those that have been off-screen since the last
+/// resort — must end up sorted by the active sort column when
+/// `sort_by` changes column or direction. Cycles through alpha asc →
+/// alpha desc → beta desc → beta asc → alpha asc. Two columns with
+/// distinct, non-symmetric mappings (`alpha[i] = i`, `beta[i] =
+/// (i*7+13) % n`) so each ordering is unique and a buggy
+/// implementation cannot pass by coincidence.
+///
+/// Bugs this catches:
+/// - `update_subscriptions` dropping the `cells` entry while a
+///   surviving Sort role still needs it: the next resort would treat
+///   off-screen rows as default-equal and the asserted ordering would
+///   collapse to the original alphabetic-by-name order.
+/// - `apply_sort_by_change` failing to subscribe a newly-added sort
+///   column: the new column would have no cells, every row would
+///   compare equal under the new key, and the table would stay in its
+///   prior order.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_by_change_resorts_offscreen_rows() -> Result<()> {
+    let n_rows: usize = 100;
+    let beta_of = |i: usize| (i * 7 + 13) % n_rows;
+    let mut publishes = String::new();
+    let mut rows = String::new();
+    for i in 0..n_rows {
+        publishes.push_str(&format!(
+            "sys::net::publish(\"/local/dt_sort_chg/r{i}/alpha\", v64:{i});\n"
+        ));
+        publishes.push_str(&format!(
+            "sys::net::publish(\"/local/dt_sort_chg/r{i}/beta\", v64:{});\n",
+            beta_of(i)
+        ));
+        if i > 0 {
+            rows.push_str(", ");
+        }
+        rows.push_str(&format!("\"/local/dt_sort_chg/r{i}\""));
+    }
+    let code = format!(
+        r#"
+use gui; use gui::data_table; use sys;
+{publishes}
+let sort_col = "alpha";
+let sort_dir: SortDirection = `Ascending;
+let sort_by: Array<SortBy> = [{{ column: sort_col, direction: sort_dir }}];
+let tbl = {{ rows: [{rows}], columns: ["alpha", "beta"] }};
+let result = data_table(
+    #sort_by: &sort_by,
+    #table: &tbl
+)
+"#
+    );
+    let mut h = dt(&code).await?;
+
+    let alpha_asc: Vec<String> = (0..n_rows).map(|i| format!("r{i}")).collect();
+    let alpha_desc: Vec<String> = alpha_asc.iter().rev().cloned().collect();
+    let mut beta_pairs: Vec<(usize, usize)> =
+        (0..n_rows).map(|i| (i, beta_of(i))).collect();
+    beta_pairs.sort_by_key(|(_, b)| *b);
+    let beta_asc: Vec<String> =
+        beta_pairs.iter().map(|(i, _)| format!("r{i}")).collect();
+    let beta_desc: Vec<String> = beta_asc.iter().rev().cloned().collect();
+
+    // Drain until the snapshot's row order matches `expected`. Caller
+    // gets a single assertion failure on timeout instead of an opaque
+    // "still wrong" loop end.
+    async fn await_order(
+        h: &mut GuiTestHarness,
+        expected: &[String],
+        why: &str,
+    ) -> Result<()> {
+        for _ in 0..40 {
+            h.drain().await?;
+            h.before_view();
+            if h.dt_snapshot().row_basenames == expected {
+                return Ok(());
+            }
+        }
+        let got = h.dt_snapshot().row_basenames;
+        anyhow::bail!(
+            "{why}: row order didn't converge\n  expected first 10: {:?}\n  got first 10:      {:?}",
+            &expected[..10.min(expected.len())],
+            &got[..10.min(got.len())],
+        )
+    }
+
+    await_order(&mut h, &alpha_asc, "initial alpha asc").await?;
+
+    // Two refs drive the sort_by ref reactively, mirroring the
+    // dashboard example's pick_list pair.
+    let col_bid = find_bind_id(&h.compiled.env, "test::sort_col")?;
+    let mut col_ref = h.gx.compile_ref(col_bid).await?;
+    let dir_bid = find_bind_id(&h.compiled.env, "test::sort_dir")?;
+    let mut dir_ref = h.gx.compile_ref(dir_bid).await?;
+
+    // Direction flip with the same column — apply_sort_by_change is a
+    // no-op on subs, but resort still runs. Off-screen rows (i.e.,
+    // those that were on-screen under alpha asc and are now past the
+    // visible window in alpha desc) must still report real values.
+    dir_ref.set(Value::String(arcstr::literal!("Descending")))?;
+    await_order(&mut h, &alpha_desc, "alpha desc after direction flip").await?;
+
+    // Switch column with direction unchanged — apply_sort_by_change
+    // must subscribe `beta` for every row and strip stale Sort roles
+    // from `alpha`'s subs.
+    col_ref.set(Value::String(arcstr::literal!("beta")))?;
+    await_order(&mut h, &beta_desc, "beta desc after column switch").await?;
+
+    // Direction flip again, now on beta.
+    dir_ref.set(Value::String(arcstr::literal!("Ascending")))?;
+    await_order(&mut h, &beta_asc, "beta asc after direction flip").await?;
+
+    // Back to alpha asc — the previously-stripped alpha subs must be
+    // re-added and resubscribed cleanly.
+    col_ref.set(Value::String(arcstr::literal!("alpha")))?;
+    await_order(&mut h, &alpha_asc, "alpha asc after returning to alpha").await?;
+
+    Ok(())
+}
+
 // ── Sparkline decimation unit test ─────────────────────────────────
 
 #[test]

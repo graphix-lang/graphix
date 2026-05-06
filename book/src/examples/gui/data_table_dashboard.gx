@@ -31,7 +31,7 @@ type State = [`Healthy, `Degraded, `Down];
 // Publish a tiny fleet of services. state is writable (Combo).
 let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
     sys::net::publish(
-        #on_write: |v: string| state <- cast<State>(v)$,
+        #on_write: |v: State| state <- v,
         "/local/graphix/data_table_dashboard/[name]/state",
         state
     );
@@ -124,26 +124,20 @@ let controls = row(
     &[
         text(&"Filter:"),
         text_input(
-            #on_input: |v: string| pattern <- v,
+            #on_input: |v| pattern <- v,
             #placeholder: &"regex or blank",
             #width: &`Fill,
             &pattern
         ),
         text(&"Sort:"),
         pick_list(
-            #on_select: |v: string| sort_col <- v,
+            #on_select: |v| sort_col <- v,
             #selected: &sort_col,
             &["state", "cpu", "uptime"]
         ),
         pick_list(
-            #on_select: |v: string| sort_dir <- select v {
-                "Ascending" => `Ascending,
-                _ => `Descending
-            },
-            #selected: &select sort_dir {
-                `Ascending => "Ascending",
-                `Descending => "Descending"
-            },
+            #on_select: |v| sort_dir <- cast<SortDirection>(v)$,
+            #selected: &cast<string>(sort_dir)$,
             &["Ascending", "Descending"]
         )
     ]

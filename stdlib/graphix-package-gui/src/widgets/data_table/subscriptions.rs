@@ -521,6 +521,58 @@ impl<X: GXExt> DataTableW<X> {
         Ok(())
     }
 
+    /// Apply a `sort_by` transition without tearing down every
+    /// subscription. `old_cols` is the set of sort columns *before*
+    /// `self.sort_by` was reassigned; the caller updates `self.sort_by`
+    /// first and then invokes this. Subscribes any newly added sort
+    /// columns and strips Sort roles from removed ones, dropping the
+    /// underlying sub (and its `cells` entry) when no role remains.
+    /// The previous behaviour — running `apply_table_sync` and thus
+    /// `clear_subs` — wiped live Grid subs on every sort flip.
+    pub(super) fn apply_sort_by_change(&mut self, old_cols: &FxHashSet<ArcStr>) {
+        let new_cols: FxHashSet<ArcStr> =
+            self.sort_by.iter().map(|s| s.column.clone()).collect();
+        for col in new_cols.difference(old_cols) {
+            self.subscribe_sort_column(col);
+        }
+        let mut inner = self.cells.inner.lock();
+        let mut subs_to_drop: LPooled<Vec<SubId>> = LPooled::take();
+        let mut cells_to_drop: LPooled<Vec<(Path, ArcStr)>> = LPooled::take();
+        for col in old_cols.difference(&new_cols) {
+            for row_path in self.row_paths.iter() {
+                let key = (row_path.clone(), col.clone());
+                let id = match inner.cells.get(&key).copied() {
+                    Some(id) => id,
+                    None => continue,
+                };
+                if let Some(roles) = inner.routing.get_mut(&id) {
+                    roles.retain(|r| !matches!(r, SubRole::Sort));
+                    // No Grid role for this (row, col) means the sub
+                    // existed only to feed the sort comparator — drop
+                    // its cells entry and dval. An on-screen row whose
+                    // displayed column matches `col` will retain its
+                    // Grid role and stay; an off-screen row's Grid was
+                    // already stripped by `update_subscriptions`, so
+                    // its only remaining role here is the Sort marker
+                    // we just removed.
+                    if roles.is_empty() {
+                        subs_to_drop.push(id);
+                        cells_to_drop.push(key);
+                    }
+                }
+            }
+        }
+        for id in subs_to_drop.iter() {
+            inner.routing.remove(id);
+            inner.dvals.remove(id);
+            inner.values.remove(id);
+            inner.formatted.remove(id);
+        }
+        for key in cells_to_drop.iter() {
+            inner.cells.remove(key);
+        }
+    }
+
     /// Subscribe every absolute row to `sort_col` via the shared
     /// channel and register routing entries. The dispatch task feeds
     /// `inner.values` as updates arrive.
@@ -574,11 +626,15 @@ impl<X: GXExt> DataTableW<X> {
             }
             for id in to_strip.iter() {
                 if let Some(roles) = inner.routing.get_mut(id) {
+                    // A SubId carries at most one Grid role (path/col
+                    // identifies the sub uniquely), so remembering one
+                    // dropped key is enough.
+                    let mut dropped_grid: Option<(Path, ArcStr)> = None;
                     roles.retain(|r| match r {
                         SubRole::Grid { row_path, col_name, .. } => {
                             if !want.contains(row_path) {
-                                cell_keys_to_drop
-                                    .push((row_path.clone(), col_name.clone()));
+                                dropped_grid =
+                                    Some((row_path.clone(), col_name.clone()));
                                 false
                             } else {
                                 true
@@ -586,6 +642,17 @@ impl<X: GXExt> DataTableW<X> {
                         }
                         _ => true,
                     });
+                    if let Some(key) = dropped_grid {
+                        // Only drop the cells entry once nothing else
+                        // needs it. A surviving Sort role keys back
+                        // through (path, col) → SubId at sort time;
+                        // dropping the entry here would silently break
+                        // sort_value_for and leave off-screen rows
+                        // comparing as "default-equal".
+                        if roles.is_empty() {
+                            cell_keys_to_drop.push(key);
+                        }
+                    }
                     if roles.is_empty() {
                         inner.routing.remove(id);
                         inner.dvals.remove(id);
