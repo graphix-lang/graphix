@@ -1,3 +1,77 @@
+# 0.8.0
+
+## Editor tooling
+
+- Built-in LSP server — `graphix lsp` runs a Language Server Protocol
+  implementation over stdio with diagnostics, completion, hover, go-to-definition,
+  find-references, and document/workspace symbols
+- Tree-sitter grammar — `ide/tree-sitter-graphix/` provides syntax highlighting,
+  indents, and locals queries
+- Editor configurations for VS Code, Zed, Helix, Neovim, Vim, and Emacs under
+  `ide/editors/`
+- New "Editor Setup" chapter in the book
+
+## New widgets and packages
+
+- `gui::data_table` — a high-performance virtual data table widget with
+  resizable columns, sortable/filterable rows, calculated columns, sparkline
+  cells, editable cells, netidx subscription columns, and per-row defaults
+- `core::math` — full f64 math module: trig, hyperbolic, exp/log/pow, rounding,
+  sign/abs, NaN/inf checks, degrees/radians, and constants (pi, e, tau, sqrt_2,
+  ln_2, ln_10, infinity, nan)
+- `core::opt` — option helpers: `is_some`, `is_none`, `contains`, `or_never`,
+  `or_default`, `or`, `and`, `xor`, `ok_or`/`ok_or_else`, `or_else`,
+  `zip`/`unzip`, `map`, `flat_map`, `filter`, `is_some_and`, `is_none_or`
+
+## Standard library additions
+
+- `core::queuefn(#trigger, #count, f)` — wrap a function so its invocations
+  queue and release on an external trigger; optional writable `#count` ref reports
+  queue depth
+- `array::dedup` — return a copy with duplicates removed, preserving
+  first-occurrence order (hash-based, no sort required)
+- `map::change` — update the value at a key by applying a function, with a
+  default for missing keys
+- `map::get_or` — return the value at a key, or a fallback if missing
+- `str::row_col` — split a path's last two components into `(row, col)` in a
+  single builtin call
+
+## Language and compiler
+
+- **Function-type parameters now require names** — `fn(x: i64, y: i64) ->
+  i64` instead of `fn(i64, i64) -> i64`. Names are documentation only (used for
+  hover/completion popups); calls remain positional. The unnamed form is no longer
+  accepted.
+- The shell's `-: <type>` printout no longer dereferences type variables, so
+  polymorphic types display with their original `'a`/`'b` names instead of `_<n>`
+- Type inference picks the narrowest binding that unifies when merging sets
+  containing unbound type variables
+- Structured error positions — compile and parse failures attach `ErrorContext`
+  with `Origin` and `SourcePosition` to the returned error, so IDE tooling can
+  locate failures via `downcast_ref` instead of scraping message strings
+- `core::filter` is now fire-and-forget: a new input arriving while the
+  predicate is still working replaces the pending value rather than enqueuing it
+  (use `core::queue` for strict pairing)
+
+## Runtime
+
+- `GXHandle::check` now returns a `CheckResult` carrying the post-compile env
+  plus reference sites, module references, scope map, and (in LSP mode) sig→impl
+  links and per-module env snapshots — buffers are pooled so per-keystroke
+  recompiles are allocation-free in steady state
+- `GXHandle::check` accepts optional per-call resolver overrides and an
+  `initial_scope` for compiling package crate sources under their own module path
+- `GXHandle::subscriber` exposes the runtime's netidx subscriber
+
+## Bug fixes
+
+- Fix function arg spec propagation
+- Fix sorting stability
+- Fix bug in `is_a`
+- Fix type-directed printing of abstract types
+- Fix many cases where ratatui panicked on invalid input
+- Make chart types public
+
 # 0.7.0
 
 ## Standard library reorganization
