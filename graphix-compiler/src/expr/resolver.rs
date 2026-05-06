@@ -24,7 +24,7 @@ use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr, time::Duration};
-use tokio::{io::AsyncReadExt, join, task, time::Instant, try_join};
+use tokio::{join, task, time::Instant, try_join};
 use triomphe::Arc;
 
 pub type BufferOverrides = Arc<Mutex<FxHashMap<PathBuf, ArcStr>>>;
