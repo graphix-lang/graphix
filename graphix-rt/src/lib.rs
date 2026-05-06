@@ -152,19 +152,11 @@ pub struct CheckResult {
     pub env: Env,
     pub references: GPooled<Vec<graphix_compiler::ReferenceSite>>,
     pub module_references: GPooled<Vec<graphix_compiler::ModuleRefSite>>,
-    pub type_references: GPooled<Vec<graphix_compiler::TypeRefSite>>,
     pub scope_map: GPooled<Vec<graphix_compiler::ScopeMapEntry>>,
-    /// Sig-to-impl bind id pairs from `val foo` ↔ `let foo = …` matches.
-    /// Populated only in `lsp_mode`. IDE consumers chase from a sig site
-    /// to the implementation for goto-def, and union references across
-    /// both bind ids for find-references.
-    pub sig_links: GPooled<Vec<graphix_compiler::SigImplLink>>,
-    /// Per-module clones of the impl-side env. The top-level `env` field
-    /// captures the project's *external* view (sig types visible to
-    /// consumers); each `ModuleInternalView` here gives the *internal*
-    /// view (impl bindings shadowed in the module body) for one module
-    /// scope. Populated only in `lsp_mode`.
-    pub module_internals: GPooled<Vec<graphix_compiler::ModuleInternalView>>,
+    /// IDE side-channels populated only in `lsp_mode`: type references,
+    /// sig→impl bind links, and per-module impl-side env snapshots.
+    /// Empty for non-LSP compiles.
+    pub lsp: graphix_compiler::env::Lsp,
 }
 
 pub struct Ref<X: GXExt> {
@@ -445,6 +437,15 @@ enum ToGX<X: GXExt> {
         /// project-scoped module resolution without rebuilding the
         /// runtime.
         resolvers: Option<Vec<ModuleResolver>>,
+        /// If provided, compile the source under this scope rather
+        /// than at the root. Used by IDE tooling editing a graphix
+        /// package crate (`graphix-package-<x>`) so its `mod.gx` body
+        /// registers under `<x>::` rather than at root, matching the
+        /// way the runtime would load it via `mod <x>;` from another
+        /// project. Any pre-existing registrations under that scope
+        /// are scrubbed from the working env first so the package's
+        /// own pre-loaded contents don't trip duplicate-module guards.
+        initial_scope: Option<ArcStr>,
         res: oneshot::Sender<Result<CheckResult>>,
     },
     Compile {
@@ -575,9 +576,18 @@ impl<X: GXExt> GXHandle<X> {
     /// override map shadows the on-disk version per path while
     /// preserving `Source::File` origins, so reference matching and
     /// goto-def land on the same file paths as a disk check would.
-    pub async fn check(&self, path: Source) -> Result<CheckResult> {
+    pub async fn check(
+        &self,
+        path: Source,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<CheckResult> {
         Ok(self
-            .exec(|tx| ToGX::Check { path, resolvers: None, res: tx })
+            .exec(|tx| ToGX::Check {
+                path,
+                resolvers: None,
+                initial_scope,
+                res: tx,
+            })
             .await??)
     }
 
@@ -585,13 +595,25 @@ impl<X: GXExt> GXHandle<X> {
     /// this call only. Used by IDE tooling to compile a project
     /// against a project-scoped resolver chain (e.g. `Files(<root>)`)
     /// without having to rebuild the runtime.
+    ///
+    /// `initial_scope`, when set, scopes the entire compilation under
+    /// the given module path (as if the source were the body of a
+    /// `mod <scope> { ... }` block). Used by the LSP when editing a
+    /// graphix package crate so its modules register under the
+    /// package's namespace.
     pub async fn check_with_resolvers(
         &self,
         path: Source,
         resolvers: Vec<ModuleResolver>,
+        initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
         Ok(self
-            .exec(|tx| ToGX::Check { path, resolvers: Some(resolvers), res: tx })
+            .exec(|tx| ToGX::Check {
+                path,
+                resolvers: Some(resolvers),
+                initial_scope,
+                res: tx,
+            })
             .await??)
     }
 
