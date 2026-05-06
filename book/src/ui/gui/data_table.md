@@ -320,7 +320,7 @@ selection echoed in the footer.
 {{#include ../../examples/gui/data_table_dashboard.gx}}
 ```
 
-![Data Table — Dashboard](./media/data_table_dashboard.gif)
+![Data Table — Dashboard](./media/data_table_dashboard.png)
 
 ## See Also
 
