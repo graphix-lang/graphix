@@ -106,5 +106,7 @@ version.texi
 /src/target/
 no_llvm_build
 /ide/tree-sitter-graphix/node_modules
+/ide/editors/vscode/node_modules
+/ide/editors/vscode/out
+/ide/editors/vscode/package-lock.json
 .claude/scheduled_tasks.lock
-
