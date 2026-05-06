@@ -11,7 +11,7 @@ automatically.
 It feels familiar to anyone who knows Haskell, OCaml, or F#: lexically scoped,
 expression-oriented, with algebraic data types, pattern matching, parametric
 polymorphism, and first-class functions. It's particularly well-suited for
-building terminal UIs and working with streaming network data via
+building UIs and working with streaming network data via
 [netidx](https://netidx.github.io/netidx-book).
 
 ```graphix
@@ -30,6 +30,7 @@ block(
   &text(&"Counter: [counter]")
 )
 ```
+![tui](book/src/ui/tui/media/overview_first.gif)
 
 ## Install
 
