@@ -1,0 +1,86 @@
+/// true if v is not null
+val is_some: fn(v: ['a, null]) -> bool;
+
+/// true if v is null
+val is_none: fn(v: ['a, null]) -> bool;
+
+/// true if v is not null and equals x. Produces false when v is null
+/// regardless of x.
+val contains: fn(v: ['a, null], x: 'a) -> bool;
+
+/// or_never(v) does not return anything if v is null, otherwise it
+/// returns v.
+val or_never: fn(v: ['a, null]) -> 'a;
+
+/// or_default(v, d): if v is null return d, otherwise return v
+val or_default: fn(v: ['a, null], d: 'a) -> 'a;
+
+/// or(a, b): return a if non-null, otherwise return b (which may itself
+/// be null).
+val or: fn(a: ['a, null], b: ['a, null]) -> ['a, null];
+
+/// and(a, b): return b if a is non-null, otherwise return null. The
+/// value of b is not inspected when a is null.
+val and: fn(a: ['a, null], b: ['b, null]) -> ['b, null];
+
+/// xor(a, b): return whichever of a or b is non-null, or null if both
+/// or neither are non-null.
+val xor: fn(a: ['a, null], b: ['a, null]) -> ['a, null];
+
+/// ok_or(v, e): return v unchanged when non-null, otherwise return
+/// error(e).
+val ok_or: fn(v: ['a, null], e: 'e) -> Result<'a, 'e>;
+
+/// zip(a, b): if both are non-null return the tuple (a, b), otherwise
+/// return null.
+val zip: fn(a: ['a, null], b: ['b, null]) -> [('a, 'b), null];
+
+/// unzip(p): given a tuple-valued option, return the pair of options.
+/// null input yields (null, null).
+val unzip: fn(p: [('a, 'b), null]) -> (['a, null], ['b, null]);
+
+/// map(v, f): apply f to the inner value if v is non-null, otherwise
+/// return null. f is invoked at most once per update of v — fire-and-
+/// forget, no queueing. If v updates again before f produces a result,
+/// the new input supersedes the pending one.
+val map: fn(v: ['a, null], f: fn(x: 'a) -> 'b) -> ['b, null];
+
+/// flat_map(v, f): apply f to the inner value if v is non-null,
+/// otherwise return null. f's own optional result is forwarded
+/// unchanged. Same fire-and-forget semantics as map.
+val flat_map: fn(v: ['a, null], f: fn(x: 'a) -> ['b, null]) -> ['b, null];
+
+/// filter(v, pred): if v is non-null and pred(v) is true, emit v.
+/// Otherwise (v is null, or pred is false) emit null. Same fire-and-
+/// forget semantics as map.
+///
+/// Caveat for reactive predicates: when pred takes more than one cycle
+/// to produce its bool, the emitted value is the *current* input, not
+/// the input pred was actually answering for. If the input changes
+/// between feeding pred and pred firing, you'll see the new value
+/// gated on a verdict about the old one. Pure predicates (the
+/// expected case) are unaffected. Use `core::queue` if you need
+/// strict input-bool pairing.
+val filter: fn(v: ['a, null], f: fn(x: 'a) -> bool) -> ['a, null];
+
+/// or_else(v, f): return v if non-null, otherwise return whatever f()
+/// produces. f is invoked eagerly and its latest value is cached so
+/// later updates to v can be resolved without re-invoking f. If v is
+/// null before f has produced its first value, no output is emitted
+/// until f fires.
+val or_else: fn(v: ['a, null], f: fn() -> ['a, null]) -> ['a, null];
+
+/// ok_or_else(v, f): return v if non-null, otherwise return
+/// error(f()). Same eager-with-caching semantics as or_else; null v
+/// before f's first firing is silent until f produces.
+val ok_or_else: fn(v: ['a, null], f: fn() -> 'e) -> Result<'a, 'e>;
+
+/// is_some_and(v, pred): true when v is non-null and pred(v) is true,
+/// false when v is null or pred is false. Fire-and-forget like map —
+/// for non-null v, no output is produced until pred fires.
+val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -> bool) -> bool;
+
+/// is_none_or(v, pred): true when v is null or pred(v) is true, false
+/// when v is non-null and pred is false. Fire-and-forget like map —
+/// for non-null v, no output is produced until pred fires.
+val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -> bool) -> bool

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,16 +181,16 @@ inferred from the type annotation at the call site.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// Parse JSON from a string, byte array, or I/O stream.
-val read: fn([string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(v: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+val write_str: fn(?#pretty: bool, v: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
-val write_bytes: fn(?#pretty: bool, Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, v: Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 
 /// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(?#pretty: bool, a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="type-directed-deserialization"><a class="header" href="#type-directed-deserialization">Type-directed deserialization</a></h2>
 <p>The return type of <code>json::read</code> is determined by the type annotation on

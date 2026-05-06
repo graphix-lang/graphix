@@ -6,11 +6,11 @@ Renders a markdown string as rich text with support for headings, bold, italic, 
 
 ```graphix
 val markdown: fn(
-  ?#on_link: fn(string) -> Any,
+  ?#on_link: fn(s: string) -> Any,
   ?#spacing: &[f64, null],
   ?#text_size: &[f64, null],
   ?#width: &Length,
-  &string
+  s: &string
 ) -> Widget
 ```
 

@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,12 +179,12 @@
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
 <pre><code class="language-graphix">val pick_list: fn(
   ?#selected: &amp;[string, null],
-  ?#on_select: fn(string) -&gt; Any,
+  ?#on_select: fn(s: string) -&gt; Any,
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#padding: &amp;Padding,
   ?#disabled: &amp;bool,
-  &amp;Array&lt;string&gt;
+  a: &amp;Array&lt;string&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

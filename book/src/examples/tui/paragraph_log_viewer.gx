@@ -1,9 +1,28 @@
 use tui;
 use tui::paragraph;
 use tui::text;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated log entry every second, then
+// subscribe to display the rolling window. Drop the publish to point
+// the viewer at any other string publisher.
+let tick = time::timer(duration:1.s, true);
+let n = count(tick);
+let messages = [
+    "request handled",
+    "cache miss",
+    "user signed in",
+    "background job complete",
+    "config reloaded",
+];
+let log_source = "";
+log_source <- tick ~ "[n] [rand::pick(tick ~ messages)]";
+sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
-let new_entry: string = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")?;
 
 log_entries <- array::window(
     #n: 100,

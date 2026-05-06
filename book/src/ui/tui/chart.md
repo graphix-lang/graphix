@@ -35,7 +35,7 @@ val axis: fn(
   ?#labels_alignment: [Alignment, null],
   ?#style: [Style, null],
   ?#title: [Line, null],
-  {min: f64, max: f64}
+  a: {min: f64, max: f64}
 ) -> Axis;
 
 type Dataset = {
@@ -51,7 +51,7 @@ val dataset: fn(
   ?#graph_type: &[GraphType, null],
   ?#name: &[Line, null],
   ?#style: &[Style, null],
-  &Array<(f64, f64)>
+  a: &Array<(f64, f64)>
 ) -> Dataset;
 
 type LegendConstraints = {
@@ -65,7 +65,7 @@ val chart: fn(
   ?#style: &[Style, null],
   ?#x_axis: &[Axis, null],
   ?#y_axis: &[Axis, null],
-  &Array<Dataset>
+  a: &Array<Dataset>
 ) -> Tui;
 ```
 

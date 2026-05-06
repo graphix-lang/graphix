@@ -1,4 +1,4 @@
-use crate::typ::{TVar, Type};
+use crate::typ::{TVar, Type, TypeRef};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::publisher::Typ;
@@ -72,11 +72,10 @@ impl Type {
                 id: *id,
                 params: Arc::from_iter(params.iter().map(|t| t.resolve_tvars())),
             },
-            Type::Ref { scope, name, params } => Type::Ref {
-                scope: scope.clone(),
-                name: name.clone(),
-                params: Arc::from_iter(params.iter().map(|t| t.resolve_tvars())),
-            },
+            Type::Ref(tr) => Type::Ref(TypeRef {
+                params: Arc::from_iter(tr.params.iter().map(|t| t.resolve_tvars())),
+                ..tr.clone()
+            }),
             Type::TVar(tv) => match tv.read().typ.read().as_ref() {
                 Some(t) => t.resolve_tvars(),
                 None => Type::TVar(TVar::empty_named(tv.name.clone())),
@@ -110,9 +109,9 @@ impl Type {
             Type::Bottom | Type::Any | Type::Abstract { .. } | Type::Primitive(_) => {
                 self.clone()
             }
-            Type::Ref { scope, name, params } => {
-                let params = Arc::from_iter(params.iter().map(|t| t.normalize()));
-                Type::Ref { scope: scope.clone(), name: name.clone(), params }
+            Type::Ref(tr) => {
+                let params = Arc::from_iter(tr.params.iter().map(|t| t.normalize()));
+                Type::Ref(TypeRef { params, ..tr.clone() })
             }
             Type::TVar(tv) => Type::TVar(tv.normalize()),
             Type::Set(s) => Self::flatten_set(s.iter().map(|t| t.normalize())),
@@ -148,21 +147,14 @@ impl Type {
             };
         }
         match (self, t) {
-            (
-                Type::Ref { scope: s0, name: r0, params: a0 },
-                Type::Ref { scope: s1, name: r1, params: a1 },
-            ) => {
-                if s0 == s1 && r0 == r1 && a0 == a1 {
-                    Some(Type::Ref {
-                        scope: s0.clone(),
-                        name: r0.clone(),
-                        params: a0.clone(),
-                    })
+            (Type::Ref(t0), Type::Ref(t1)) => {
+                if t0 == t1 {
+                    Some(Type::Ref(t0.clone()))
                 } else {
                     None
                 }
             }
-            (Type::Ref { .. }, _) | (_, Type::Ref { .. }) => None,
+            (Type::Ref (TypeRef { .. }), _) | (_, Type::Ref (TypeRef { .. })) => None,
             (Type::Bottom, t) | (t, Type::Bottom) => Some(t.clone()),
             (Type::Any, _) | (_, Type::Any) => Some(Type::Any),
             (Type::Primitive(s0), Type::Primitive(s1)) => {

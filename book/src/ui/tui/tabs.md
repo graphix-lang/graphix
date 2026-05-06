@@ -13,7 +13,7 @@ val tabs: fn(
   ?#selected: &[i64, null],
   ?#size: &[Size, null],
   ?#style: &[Style, null],
-  &Array<(Line, Tui)>
+  a: &Array<(Line, Tui)>
 ) -> Tui;
 ```
 

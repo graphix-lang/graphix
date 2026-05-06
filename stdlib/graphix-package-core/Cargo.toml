@@ -32,7 +32,9 @@ graphix-rt = { version = "0.7.0", path = "../../graphix-rt" }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
+parking_lot = { workspace = true }
 poolshark = { workspace = true }
+smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 log = { workspace = true }

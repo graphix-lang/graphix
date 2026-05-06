@@ -15,86 +15,86 @@ mod subscription;
 
 /// Get the stored type metadata for a tree, or null if none.
 /// Pass null for the default tree.
-val get_type: fn(Db, [string, null]) -> Result<[(string, string), null], `DbErr(string)>;
+val get_type: fn(db: Db, name: [string, null]) -> Result<[(string, string), null], `DbErr(string)>;
 
 /// Open or create an embedded database at the given path.
-val open: fn(string) -> Result<Db, `DbErr(string)>;
+val open: fn(path: string) -> Result<Db, `DbErr(string)>;
 
 /// Flush all pending writes to disk.
-val flush: fn(Db) -> Result<null, `DbErr(string)>;
+val flush: fn(db: Db) -> Result<null, `DbErr(string)>;
 
 /// Generate a monotonically increasing unique u64 ID.
-val generate_id: fn(Db) -> Result<u64, `DbErr(string)>;
+val generate_id: fn(db: Db) -> Result<u64, `DbErr(string)>;
 
 /// List the names of all trees in the database.
-val tree_names: fn(Db) -> Result<Array<string>, `DbErr(string)>;
+val tree_names: fn(db: Db) -> Result<Array<string>, `DbErr(string)>;
 
 /// Drop a named tree from the database.
-val drop_tree: fn(Db, string) -> Result<bool, `DbErr(string)>;
+val drop_tree: fn(db: Db, name: string) -> Result<bool, `DbErr(string)>;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree. The key and value
 /// types are recorded on first open; reopening the same tree with
 /// different types returns a `DbErr`.
-val tree: fn(Db, [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
+val tree: fn(db: Db, name: [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
 
 /// Get the value for a key, or null if not found.
-val get: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
+val get: fn(t: Tree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;
 
 /// Insert a key-value pair. Returns the previous value, or null.
-val insert: fn(Tree<'k, 'v>, 'k, 'v) -> Result<['v, null], `DbErr(string)>;
+val insert: fn(t: Tree<'k, 'v>, key: 'k, value: 'v) -> Result<['v, null], `DbErr(string)>;
 
 /// Remove a key. Returns the previous value, or null.
-val remove: fn(Tree<'k, 'v>, 'k) -> Result<['v, null], `DbErr(string)>;
+val remove: fn(t: Tree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;
 
 /// Check whether a key exists.
-val contains_key: fn(Tree<'k, 'v>, 'k) -> Result<bool, `DbErr(string)>;
+val contains_key: fn(t: Tree<'k, 'v>, key: 'k) -> Result<bool, `DbErr(string)>;
 
 /// Batch get values for an array of keys. Returns values in input order, null for missing.
-val get_many: fn(Tree<'k, 'v>, Array<'k>) -> Result<Array<['v, null]>, `DbErr(string)>;
+val get_many: fn(t: Tree<'k, 'v>, keys: Array<'k>) -> Result<Array<['v, null]>, `DbErr(string)>;
 
 /// Get the first (minimum key) entry, or null if empty.
-val first: fn(Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
+val first: fn(t: Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Get the last (maximum key) entry, or null if empty.
-val last: fn(Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
+val last: fn(t: Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Atomically remove and return the minimum-key entry.
-val pop_min: fn(Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
+val pop_min: fn(t: Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Atomically remove and return the maximum-key entry.
-val pop_max: fn(Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
+val pop_max: fn(t: Tree<'k, 'v>) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Get the entry with the greatest key strictly less than the given key.
-val get_lt: fn(Tree<'k, 'v>, 'k) -> Result<[('k, 'v), null], `DbErr(string)>;
+val get_lt: fn(t: Tree<'k, 'v>, key: 'k) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Get the entry with the smallest key strictly greater than the given key.
-val get_gt: fn(Tree<'k, 'v>, 'k) -> Result<[('k, 'v), null], `DbErr(string)>;
+val get_gt: fn(t: Tree<'k, 'v>, key: 'k) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Atomic compare-and-swap. Returns null on success,
 /// or `Mismatch(current_value) if the current value didn't match.
-val compare_and_swap: fn(Tree<'k, 'v>, 'k, ['v, null], ['v, null]) -> Result<[null, `Mismatch(['v, null])], `DbErr(string)>;
+val compare_and_swap: fn(t: Tree<'k, 'v>, key: 'k, old: ['v, null], new: ['v, null]) -> Result<[null, `Mismatch(['v, null])], `DbErr(string)>;
 
 /// Atomically apply a batch of inserts and removes.
-val batch: fn(Tree<'k, 'v>, Array<[`Insert('k, 'v), `Remove('k)]>) -> Result<null, `DbErr(string)>;
+val batch: fn(t: Tree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>) -> Result<null, `DbErr(string)>;
 
 /// Number of entries in the tree (O(n) scan).
-val len: fn(Tree<'k, 'v>) -> Result<u64, `DbErr(string)>;
+val len: fn(t: Tree<'k, 'v>) -> Result<u64, `DbErr(string)>;
 
 /// True if the tree has no entries.
-val is_empty: fn(Tree<'k, 'v>) -> Result<bool, `DbErr(string)>;
+val is_empty: fn(t: Tree<'k, 'v>) -> Result<bool, `DbErr(string)>;
 
 /// Total size of the database on disk in bytes.
-val size_on_disk: fn(Db) -> Result<u64, `DbErr(string)>;
+val size_on_disk: fn(db: Db) -> Result<u64, `DbErr(string)>;
 
 /// True if the database was recovered after a crash.
-val was_recovered: fn(Db) -> Result<bool, `DbErr(string)>;
+val was_recovered: fn(db: Db) -> Result<bool, `DbErr(string)>;
 
 /// CRC32 checksum of all keys and values (O(n)).
-val checksum: fn(Db) -> Result<u32, `DbErr(string)>;
+val checksum: fn(db: Db) -> Result<u32, `DbErr(string)>;
 
 /// Export all database contents to a file.
-val export: fn(Db, string) -> Result<null, `DbErr(string)>;
+val export: fn(db: Db, path: string) -> Result<null, `DbErr(string)>;
 
 /// Import previously exported data from a file. The database must be empty.
-val import: fn(Db, string) -> Result<null, `DbErr(string)>;
+val import: fn(db: Db, path: string) -> Result<null, `DbErr(string)>;

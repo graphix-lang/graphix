@@ -292,7 +292,7 @@ This implements `array::group`, which given an argument, stores that
 argument's updates internally, and creates an array out of them when
 the predicate returns true. Its type is
 
-```fn('a, fn(i64, 'a) -> bool) -> Array<'a>```
+```fn(v: 'a, f: fn(len: i64, x: 'a) -> bool) -> Array<'a>```
 
 For example,
 

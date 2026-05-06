@@ -7,5 +7,5 @@ type Text = {
 val text: fn(
   ?#style: &Style,
   ?#alignment: &[Alignment, null],
-  &[Array<Line>, string]
+  lines: &[Array<Line>, string]
 ) -> Tui;

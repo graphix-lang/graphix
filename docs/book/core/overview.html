@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,7 +179,7 @@
 <h2 id="types-strong-but-flexible"><a class="header" href="#types-strong-but-flexible">Types: Strong but Flexible</a></h2>
 <p>Graphix has a powerful static type system, but you’ll rarely write type annotations. The compiler infers types for you using structural typing—types are compared by their shape, not their name. A struct <code>{x: i64, y: i64}</code> is the same type whether you call it <code>Point</code> or <code>Vector</code> or don’t name it at all.</p>
 <p>The <strong><a href="./fundamental_types.html">Fundamental Types</a></strong> section covers the built-in numeric types (<code>i64</code>, <code>f64</code>, <code>u32</code>, etc.), booleans, strings, durations, and more. You’ll learn how arithmetic works across different numeric types, how string interpolation works with <code>[...]</code> brackets, and why division by zero doesn’t crash your program.</p>
-<p><strong><a href="./reading_types.html">Reading Type Signatures</a></strong> teaches you how to read the type annotations you’ll see throughout the documentation. Function types like <code>fn(Array&lt;'a&gt;, fn('a) -&gt; 'b) -&gt; Array&lt;'b&gt;</code> tell you exactly what a function expects and returns, including what errors it might throw.</p>
+<p><strong><a href="./reading_types.html">Reading Type Signatures</a></strong> teaches you how to read the type annotations you’ll see throughout the documentation. Function types like <code>fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b) -&gt; Array&lt;'b&gt;</code> tell you exactly what a function expects and returns, including what errors it might throw.</p>
 <h2 id="binding-values-and-building-blocks"><a class="header" href="#binding-values-and-building-blocks">Binding Values and Building Blocks</a></h2>
 <p>In Graphix, you create bindings with <code>let</code>. Unlike variables in other languages, these bindings can update over time—they’re more like pipes that different values flow through.</p>
 <p><strong><a href="./let_binds.html">Let Binds</a></strong> explains how to create bindings, how shadowing works, and why every binding in Graphix is potentially reactive. When you write <code>let x = 42</code>, you’re not just storing a value—you’re creating a node in the dataflow graph.</p>

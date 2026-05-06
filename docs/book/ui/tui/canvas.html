@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -224,7 +224,7 @@ val canvas: fn(
   ?#marker: &amp;[Marker, null],
   #x_bounds: &amp;{ max: f64, min: f64 },
   #y_bounds: &amp;{ max: f64, min: f64 },
-  &amp;Array&lt;&amp;CanvasShape&gt;
+  a: &amp;Array&lt;&amp;CanvasShape&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -310,12 +310,7 @@ canvas(
 <pre><code class="language-graphix">use tui;
 use tui::canvas;
 
-let clock = sys::time::timer(duration:0.1s, true);
-let x = 0.0;
-x &lt;- {
-    let new_x = (clock ~ x) + 0.1;
-    select new_x &gt; 10.0 { true =&gt; 0.0, false =&gt; new_x }
-};
+let x = cast&lt;f64&gt;(count(sys::time::timer(0.1, true)))$ * 0.1 % 10.;
 
 let moving_circle = `Circle({color: `Red, x, y: 5.0, radius: 1.0});
 

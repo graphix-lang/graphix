@@ -4,8 +4,8 @@ type VerticalSlider = {
   min: &f64,
   max: &f64,
   step: &[f64, null],
-  on_change: &fn(f64) -> Any,
-  on_release: &fn(null) -> Any,
+  on_change: &fn(v: f64) -> Any,
+  on_release: &fn(e: null) -> Any,
   width: &[f64, null],
   height: &Length
 };
@@ -14,10 +14,10 @@ val vertical_slider: fn(
   ?#min: &f64,
   ?#max: &f64,
   ?#step: &[f64, null],
-  ?#on_change: fn(f64) -> Any,
-  ?#on_release: fn(null) -> Any,
+  ?#on_change: fn(v: f64) -> Any,
+  ?#on_release: fn(e: null) -> Any,
   ?#width: &[f64, null],
   ?#height: &Length,
   ?#disabled: &bool,
-  &f64
+  value: &f64
 ) -> Widget

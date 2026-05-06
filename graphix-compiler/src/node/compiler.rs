@@ -36,6 +36,13 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
+    if ctx.env.lsp_mode {
+        ctx.scope_map.push(crate::ScopeMapEntry {
+            pos: spec.pos,
+            ori: spec.ori.clone(),
+            scope: scope.clone(),
+        });
+    }
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
@@ -78,6 +85,21 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
             let scope = scope.append(&name);
             if ctx.env.modules.contains(&scope.lexical) {
                 bail!("duplicate module definition {}", scope.lexical)
+            }
+            if ctx.env.lsp_mode {
+                let def_ori = match value {
+                    ModuleKind::Resolved { exprs, .. } => {
+                        exprs.first().map(|e| e.ori.clone())
+                    }
+                    _ => None,
+                };
+                ctx.module_references.push(crate::ModuleRefSite {
+                    pos: spec.pos,
+                    ori: spec.ori.clone(),
+                    name: crate::expr::ModPath::from([name.as_str()]),
+                    canonical: scope.lexical.clone(),
+                    def_ori,
+                });
             }
             match value {
                 ModuleKind::Unresolved { .. } => {

@@ -1,7 +1,7 @@
 type TextEditor = {
   content: &string,
   disabled: &bool,
-  on_edit: &fn(string) -> Any,
+  on_edit: &fn(s: string) -> Any,
   placeholder: &string,
   width: &[f64, null],
   height: &[f64, null],
@@ -12,12 +12,12 @@ type TextEditor = {
 
 val text_editor: fn(
   ?#placeholder: &string,
-  ?#on_edit: fn(string) -> Any,
+  ?#on_edit: fn(s: string) -> Any,
   ?#width: &[f64, null],
   ?#height: &[f64, null],
   ?#padding: &Padding,
   ?#font: &[Font, null],
   ?#size: &[f64, null],
   ?#disabled: &bool,
-  &string
+  content: &string
 ) -> Widget

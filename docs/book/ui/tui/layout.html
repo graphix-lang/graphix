@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -191,7 +191,7 @@ type Child = {
 val child: fn(
   ?#size: &amp;[Size, null],
   #constraint: Constraint,
-  Tui
+  a: Tui
 ) -&gt; Child;
 
 val layout: fn(
@@ -202,7 +202,7 @@ val layout: fn(
   ?#margin: &amp;[i64, null],
   ?#spacing: &amp;[Spacing, null],
   ?#vertical_margin: &amp;[i64, null],
-  &amp;Array&lt;Child&gt;
+  a: &amp;Array&lt;Child&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

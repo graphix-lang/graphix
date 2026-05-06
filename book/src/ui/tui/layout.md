@@ -19,7 +19,7 @@ type Child = {
 val child: fn(
   ?#size: &[Size, null],
   #constraint: Constraint,
-  Tui
+  a: Tui
 ) -> Child;
 
 val layout: fn(
@@ -30,7 +30,7 @@ val layout: fn(
   ?#margin: &[i64, null],
   ?#spacing: &[Spacing, null],
   ?#vertical_margin: &[i64, null],
-  &Array<Child>
+  a: &Array<Child>
 ) -> Tui;
 ```
 

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -203,7 +203,7 @@ a module exports without revealing the implementation details.</p>
 types of declarations:</p>
 <h3 id="value-declarations-val"><a class="header" href="#value-declarations-val">Value Declarations (val)</a></h3>
 <p>Declare exported values and their types using <code>val</code>:</p>
-<pre><code class="language-graphix">val add: fn(i64, i64) -&gt; i64;
+<pre><code class="language-graphix">val add: fn(a: i64, b: i64) -&gt; i64;
 val greeting: string;
 val config: Array&lt;i64&gt;;
 </code></pre>
@@ -231,10 +231,10 @@ mod parser;
 <p>Let’s create a simple math utilities module with an interface.</p>
 <p><strong>math.gxi</strong> (interface):</p>
 <pre><code class="language-graphix">/// Add two numbers
-val add: fn(i64, i64) -&gt; i64;
+val add: fn(a: i64, b: i64) -&gt; i64;
 
 /// Subtract the second number from the first
-val sub: fn(i64, i64) -&gt; i64;
+val sub: fn(a: i64, b: i64) -&gt; i64;
 
 /// Common mathematical constants
 type Constants = {
@@ -294,15 +294,15 @@ public API:</p>
 /// 
 /// The predicate function is called for each element. Elements for which
 /// the predicate returns true are included in the result.
-val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+val filter: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 </code></pre>
 <h2 id="polymorphic-functions"><a class="header" href="#polymorphic-functions">Polymorphic Functions</a></h2>
 <p>Interface files fully support polymorphic type signatures:</p>
 <pre><code class="language-graphix">/// Transform each element of an array using function f
-val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// Fold an array into a single value
-val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(a: Array&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 </code></pre>
 <p>Type variables (like <code>'a</code>, <code>'b</code>, <code>'e</code>) work the same as in regular type
 annotations.</p>
@@ -351,7 +351,7 @@ for precise control over sub-module visibility.</p>
 </ul>
 <p>Example:</p>
 <pre><code class="language-graphix">// parent.gxi
-val public_helper: fn(i64) -&gt; i64;
+val public_helper: fn(x: i64) -&gt; i64;
 mod child;
 </code></pre>
 <pre><code class="language-graphix">// parent.gx
@@ -402,13 +402,13 @@ still work.</p>
 type Counter;
 
 /// Create a new counter starting at the given value
-val make: fn(i64) -&gt; Counter;
+val make: fn(x: i64) -&gt; Counter;
 
 /// Get the current value
-val get: fn(Counter) -&gt; i64;
+val get: fn(c: Counter) -&gt; i64;
 
 /// Increment the counter every time trig updates
-val increment: fn(#trig: Any, &amp;Counter) -&gt; null;
+val increment: fn(#trig: Any, c: &amp;Counter) -&gt; null;
 </code></pre>
 <p><strong>counter.gx</strong>:</p>
 <pre><code class="language-graphix">// Implementation detail: counter is just an i64
@@ -430,8 +430,8 @@ let value = counter::get(c)  // 1
 <p>Abstract types can have type parameters, allowing generic containers:</p>
 <pre><code class="language-graphix">// interface
 type Box&lt;'a&gt;;
-val wrap: fn('a) -&gt; Box&lt;'a&gt;;
-val unwrap: fn(Box&lt;'a&gt;) -&gt; 'a;
+val wrap: fn(x: 'a) -&gt; Box&lt;'a&gt;;
+val unwrap: fn(b: Box&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation
 type Box&lt;'a&gt; = { value: 'a };
@@ -443,8 +443,8 @@ let unwrap = |b: Box&lt;'a&gt;| -&gt; 'a b.value
 implementation must have matching constraints:</p>
 <pre><code class="language-graphix">// interface - constraint required
 type NumericWrapper&lt;'a: Number&gt;;
-val wrap: fn('a) -&gt; NumericWrapper&lt;'a&gt;;
-val double: fn(NumericWrapper&lt;'a&gt;) -&gt; 'a;
+val wrap: fn(x: 'a) -&gt; NumericWrapper&lt;'a&gt;;
+val double: fn(w: NumericWrapper&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation - same constraint required
 type NumericWrapper&lt;'a: Number&gt; = 'a;

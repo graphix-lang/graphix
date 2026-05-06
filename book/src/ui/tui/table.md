@@ -12,7 +12,7 @@ type Cell = {
 
 val cell: fn(
   ?#style: [Style, null],
-  Line
+  a: Line
 ) -> Cell;
 
 type Row = {
@@ -28,7 +28,7 @@ val row: fn(
   ?#height: [i64, null],
   ?#style: [Style, null],
   ?#top_margin: [i64, null],
-  Array<Cell>
+  a: Array<Cell>
 ) -> Row;
 
 val table: fn(
@@ -46,7 +46,7 @@ val table: fn(
   ?#selected_column: &[i64, null],
   ?#style: &[Style, null],
   ?#widths: &[Array<Constraint>, null],
-  &Array<&Row>
+  a: &Array<&Row>
 ) -> Tui;
 ```
 

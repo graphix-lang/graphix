@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -207,7 +207,7 @@ val axis: fn(
   ?#labels_alignment: [Alignment, null],
   ?#style: [Style, null],
   ?#title: [Line, null],
-  {min: f64, max: f64}
+  a: {min: f64, max: f64}
 ) -&gt; Axis;
 
 type Dataset = {
@@ -223,7 +223,7 @@ val dataset: fn(
   ?#graph_type: &amp;[GraphType, null],
   ?#name: &amp;[Line, null],
   ?#style: &amp;[Style, null],
-  &amp;Array&lt;(f64, f64)&gt;
+  a: &amp;Array&lt;(f64, f64)&gt;
 ) -&gt; Dataset;
 
 type LegendConstraints = {
@@ -237,7 +237,7 @@ val chart: fn(
   ?#style: &amp;[Style, null],
   ?#x_axis: &amp;[Axis, null],
   ?#y_axis: &amp;[Axis, null],
-  &amp;Array&lt;Dataset&gt;
+  a: &amp;Array&lt;Dataset&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -288,8 +288,7 @@ use tui::text;
 
 let data: Array&lt;(f64, f64)&gt; = {
     let clock = sys::time::timer(duration:0.5s, true);
-    let x = 0.0;
-    x &lt;- (clock ~ x) + 1.0;
+    let x = cast&lt;f64&gt;(count(clock))$;
     let y = rand::rand(#clock, #start: f64:0., #end: f64:100.);
     let a = [];
     a &lt;- array::window(#n: 32, clock ~ a, (x, y));

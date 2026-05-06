@@ -4,14 +4,16 @@ use super::{
     Constant, Nop, NOP,
 };
 use crate::{
-    expr::{ExprId, ModPath},
+    expr::{ExprId, ModPath, Origin},
     typ::{FnType, Type},
     BindId, ExecCtx, Node, Rt, Scope, UserEvent,
 };
+use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use fxhash::FxHashMap;
 use netidx::publisher::{Typ, Value};
 use poolshark::local::LPooled;
+use triomphe::Arc;
 
 /// generate a no op with the specific type
 pub fn nop<R: Rt, E: UserEvent>(typ: Type) -> Node<R, E> {
@@ -26,7 +28,18 @@ pub fn bind<R: Rt, E: UserEvent>(
     typ: Type,
     top_id: ExprId,
 ) -> (BindId, Node<R, E>) {
-    let id = ctx.env.bind_variable(scope, name, typ.clone()).id;
+    // Generated bindings have no source position; pass defaults so IDE
+    // tooling can detect synthetic binds.
+    let id = ctx
+        .env
+        .bind_variable(
+            scope,
+            name,
+            typ.clone(),
+            SourcePosition::default(),
+            Arc::new(Origin::default()),
+        )
+        .id;
     ctx.rt.ref_var(id, top_id);
     (id, Box::new(Ref { spec: NOP.clone(), typ, id, top_id }))
 }
@@ -62,10 +75,15 @@ pub fn apply<R: Rt, E: UserEvent>(
     ftype.alias_tvars(&mut LPooled::take());
     let args: FxHashMap<ArgKey, Arg<R, E>> = args
         .into_iter()
+        .zip(typ.args.iter())
         .enumerate()
-        .map(|(i, node)| {
+        .map(|(i, (node, farg))| {
+            let key = match farg.label() {
+                Some(name) => ArgKey::Named(name.clone()),
+                None => ArgKey::Positional(i),
+            };
             (
-                ArgKey::Positional(i),
+                key,
                 Arg { id: BindId::new(), node: Some(node), is_default: false },
             )
         })

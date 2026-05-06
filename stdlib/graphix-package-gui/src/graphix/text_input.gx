@@ -1,7 +1,7 @@
 let text_input = |
   #placeholder: &string = &"",
-  #on_input: fn(string) -> Any = |_| null,
-  #on_submit: fn(null) -> Any = |_| null,
+  #on_input: fn(s: string) -> Any = |_| null,
+  #on_submit: fn(e: null) -> Any = |_| null,
   #is_secure: &bool = &false,
   #width: &Length = &`Fill,
   #padding: &Padding = &`All(5.0),

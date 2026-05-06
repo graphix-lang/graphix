@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -212,9 +212,7 @@ use tui::block;
 use tui::text;
 use tui::layout;
 
-let counter = 0;
-let clock = sys::time::timer(duration:1.s, true);
-counter &lt;- clock ~ (counter + 1);
+let counter = count(sys::time::timer(duration:1.s, true));
 
 let content = text(&amp;"Counter: [counter]");
 
@@ -300,9 +298,21 @@ list(#selected: &amp;selected_item, &amp;items)
 <pre><code class="language-graphix">use tui;
 use tui::gauge;
 use tui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
 
-// Subscribe to live data
-let temperature: f64 = sys::net::subscribe("/sensors/temperature")?;
+// Self-contained: publish a simulated temperature reading once a
+// second, then subscribe to it for display. Drop the publish to
+// point the gauge at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+let temp_source = 7000.0;
+temp_source &lt;- tick ~ 7000.0 + 2500.0 * math::sin(t / 5.0);
+sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
+
+let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
 
 // Will display updates automatically when data changes
 gauge(

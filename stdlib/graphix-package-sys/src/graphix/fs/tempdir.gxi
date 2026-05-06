@@ -4,7 +4,7 @@
 type T;
 
 /// Get the filesystem path of a TempDir as a string.
-val path: fn(T) -> string;
+val path: fn(td: T) -> string;
 
 /// Create a temporary directory and return a tempdir::T handle.
 /// The directory will be cleaned up when the tempdir::T value is
@@ -17,5 +17,5 @@ val path: fn(T) -> string;
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
-    Any
+    trigger: Any
 ) -> Result<T, `IOError(string)>;

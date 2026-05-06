@@ -1,14 +1,14 @@
-type Table = { rows: Array<string>, columns: Array<(string, v64)> };
+type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 
 /// write the value to the specified path
-val write: fn(string, Any) -> Result<_, `WriteError(string)>;
+val write: fn(path: string, value: Any) -> Result<_, `WriteError(string)>;
 
 /// subscribe to the specified path
-val subscribe: fn(string) -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]>;
+val subscribe: fn(path: string) -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]>;
 
 /// call the specified rpc. args must be a struct or null.
-val call: fn(string, 'a) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
+val call: fn(path: string, args: 'a) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
@@ -19,14 +19,14 @@ val rpc: fn(
     #path:string,
     #doc:string,
     #spec:'spec,
-    #f:fn('args) -> 'result throws 'e
+    #f:fn(args: 'args) -> 'result throws 'e
 ) -> Result<_, `PublishRpcError(string)> throws 'e;
 
 /// list paths under the specified path.
-val list: fn(?#update:Any, string) -> Result<Array<string>, `ListError(string)>;
+val list: fn(?#update:Any, path: string) -> Result<Array<string>, `ListError(string)>;
 
 /// list the table under the specified path.
-val list_table: fn(?#update:Any, string) -> Result<Table, `ListError(string)>;
+val list_table: fn(?#update:Any, path: string) -> Result<Table, `ListError(string)>;
 
 /// Publish the specifed value at the specified path.
-val publish: fn(?#on_write:fn('a) -> _ throws 'e, string, Any) -> Result<_, `PublishError(string)> throws 'e;
+val publish: fn(?#on_write:fn(v: 'a) -> _ throws 'e, path: string, v: Any) -> Result<_, `PublishError(string)> throws 'e;

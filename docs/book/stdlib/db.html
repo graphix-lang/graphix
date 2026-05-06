@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -187,86 +187,86 @@ type Db;
 type Tree&lt;'k, 'v&gt;;
 
 /// Open or create an embedded database at the given path.
-val open: fn(string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
+val open: fn(s: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn(Db, [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn(a: Db, v: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
-val get: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val get: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Insert a key-value pair. Returns the previous value, or null.
-val insert: fn(Tree&lt;'k, 'v&gt;, 'k, 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val insert: fn(a: Tree&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Remove a key. Returns the previous value, or null.
-val remove: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val remove: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Check whether a key exists.
-val contains_key: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val contains_key: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Batch get values for an array of keys.
-val get_many: fn(Tree&lt;'k, 'v&gt;, Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
+val get_many: fn(a: Tree&lt;'k, 'v&gt;, a2: Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
 
 /// Get the first (minimum key) entry, or null if empty.
-val first: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val first: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the last (maximum key) entry, or null if empty.
-val last: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val last: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomically remove and return the minimum-key entry.
-val pop_min: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val pop_min: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomically remove and return the maximum-key entry.
-val pop_max: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val pop_max: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the entry with the greatest key strictly less than the given key.
-val get_lt: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val get_lt: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the entry with the smallest key strictly greater than the given key.
-val get_gt: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val get_gt: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomic compare-and-swap.
-val compare_and_swap: fn(Tree&lt;'k, 'v&gt;, 'k, ['v, null], ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
+val compare_and_swap: fn(a: Tree&lt;'k, 'v&gt;, y: 'k, v: ['v, null], v2: ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes.
-val batch: fn(Tree&lt;'k, 'v&gt;, Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val batch: fn(a: Tree&lt;'k, 'v&gt;, a2: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Number of entries in the tree (O(n) scan).
-val len: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val len: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the tree has no entries.
-val is_empty: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val is_empty: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Get the stored type metadata for a tree, or null if none.
-val get_type: fn(Db, [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
+val get_type: fn(a: Db, v: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
 
 /// List the names of all trees in the database.
-val tree_names: fn(Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
+val tree_names: fn(a: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
 
 /// Drop a named tree from the database.
-val drop_tree: fn(Db, string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val drop_tree: fn(a: Db, s: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Generate a monotonically increasing unique u64 ID.
-val generate_id: fn(Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val generate_id: fn(a: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// Flush all pending writes to disk.
-val flush: fn(Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val flush: fn(a: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Total size of the database on disk in bytes.
-val size_on_disk: fn(Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val size_on_disk: fn(a: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the database was recovered after a crash.
-val was_recovered: fn(Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val was_recovered: fn(a: Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// CRC32 checksum of all keys and values (O(n)).
-val checksum: fn(Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
+val checksum: fn(a: Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
 
 /// Export all database contents to a file.
-val export: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val export: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Import previously exported data from a file. The database must be empty.
-val import: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val import: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
 <p>Cursors iterate over tree entries reactively, advancing on each trigger.</p>
@@ -274,20 +274,20 @@ val import: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 type Cursor&lt;'k, 'v&gt;;
 
 /// Create a new cursor, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
+val new: fn(?#prefix: ['k, null], a: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Create a cursor over a key range.
 val range: fn(
     ?#start: [`Included('k), `Excluded('k), null],
     ?#end: [`Included('k), `Excluded('k), null],
-    Tree&lt;'k, 'v&gt;
+    a: Tree&lt;'k, 'v&gt;
 ) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Read the next entry. Returns (key, value) or null when exhausted.
-val read: fn(Cursor&lt;'k, 'v&gt;, Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val read: fn(a: Cursor&lt;'k, 'v&gt;, v: Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Read up to N entries at once.
-val read_many: fn(Cursor&lt;'k, 'v&gt;, i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
+val read_many: fn(a: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
 <p>Multi-tree ACID transactions. All trees must be opened before any data
@@ -299,28 +299,28 @@ type Txn;
 type TxnTree&lt;'k, 'v&gt;;
 
 /// Begin a multi-tree transaction.
-val begin: fn(Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
+val begin: fn(a: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction.
-val tree: fn(Txn, [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn(a: Txn, v: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
-val get: fn(TxnTree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val get: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Insert a key-value pair within the transaction.
-val insert: fn(TxnTree&lt;'k, 'v&gt;, 'k, 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val insert: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Remove a key within the transaction.
-val remove: fn(TxnTree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val remove: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes within the transaction.
-val batch: fn(TxnTree&lt;'k, 'v&gt;, Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val batch: fn(a: TxnTree&lt;'k, 'v&gt;, a2: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Commit the transaction atomically.
-val commit: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val commit: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Abort the transaction.
-val rollback: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val rollback: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
 <p>Reactive subscriptions fire when entries are inserted or removed.</p>
@@ -328,13 +328,13 @@ val rollback: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 type Subscription&lt;'k, 'v&gt;;
 
 /// Subscribe to changes, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
+val new: fn(?#prefix: ['k, null], a: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
 /// Fires reactively when inserts occur.
-val on_insert: fn(Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
+val on_insert: fn(a: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
 
 /// Fires reactively when removes occur.
-val on_remove: fn(Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
+val on_remove: fn(a: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
 </code></pre>
 
                     </main>

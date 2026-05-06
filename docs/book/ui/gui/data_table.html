@@ -1,0 +1,1274 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Data Table - The Graphix Programming Language</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../../css/general-2459343d.css">
+        <link rel="stylesheet" href="../../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc-5c78f6d5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Graphix Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="the-data-table-widget"><a class="header" href="#the-data-table-widget">The Data Table Widget</a></h1>
+<p>A spreadsheet-style widget that renders a <code>Table</code> value as a grid of
+live-subscribed cells. Columns are typed: each one picks the editor
+(text, toggle, pick-list, spinner), visualization (progress bar,
+sparkline), or action (button) that cells should use. Row sort, row
+filter, column widths, and the selection set are all controlled from
+graphix — the widget is the rendering surface and the subscription
+manager, nothing more.</p>
+<p>The <code>Table</code> value is the single source of truth for what columns
+exist, in what order, and how each one is sourced. Columns are
+declared as either bare strings (shorthand for a default Text column
+with <code>`Netidx</code> source named after the string) or full
+<code>ColumnSpec</code> structs. Bare strings let the output of
+<code>sys::net::list_table</code> (which has <code>columns: Array&lt;string&gt;</code>) flow
+straight through; mixed arrays are fine.</p>
+<p>Rows that are absolute netidx paths trigger live subscriptions for
+every column whose <code>source</code> is <code>`Netidx</code>. Non-absolute row names
+render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>string</code> or
+<code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
+from the source ref.</p>
+<h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
+<pre><code class="language-graphix">type SortDirection = [`Ascending, `Descending];
+type SortBy = { column: string, direction: SortDirection };
+
+type ColumnType = [
+    `Text({ on_edit: [fn(#path: string, #value: Any) -&gt; Any, null] }),
+    `Toggle({ on_edit: [fn(#path: string, #value: bool) -&gt; Any, null] }),
+    `Combo({
+        choices: Array&lt;{ id: string, label: string }&gt;,
+        on_edit: [fn(#path: string, #value: string) -&gt; Any, null]
+    }),
+    `Spin({
+        min: f64,
+        max: f64,
+        increment: f64,
+        on_edit: [fn(#path: string, #value: f64) -&gt; Any, null]
+    }),
+    `Progress,
+    `Button({
+        on_click: [fn(#path: string, #value: Any) -&gt; Any, null]
+    }),
+    `Sparkline({
+        history_seconds: f64,
+        min: [f64, null],
+        max: [f64, null]
+    })
+];
+
+type Source = [`Netidx([null, string]), string, Map&lt;string, Any&gt;];
+
+type ColumnSpec = {
+    name: string,
+    typ: ColumnType,
+    display_name: [string, null],
+    source: &amp;Source,
+    on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    width: &amp;[f64, null]
+};
+
+type Table = {
+    rows: Array&lt;string&gt;,
+    columns: Array&lt;[string, ColumnSpec]&gt;
+};
+
+val data_table: fn(
+    ?#sort_by: &amp;Array&lt;SortBy&gt;,
+    ?#selection: &amp;Array&lt;string&gt;,
+    ?#show_row_name: &amp;bool,
+    ?#on_select: [fn(#path: string) -&gt; Any, null],
+    ?#on_activate: [fn(#path: string) -&gt; Any, null],
+    ?#on_header_click: [fn(#column: string) -&gt; Any, null],
+    ?#on_update: [fn(#path: string, #value: Primitive) -&gt; Any, null],
+    #table: &amp;Table
+) -&gt; Widget;
+
+val text_column: fn(
+    #name: string,
+    ?#on_edit: [fn(#path: string, #value: Any) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+// (toggle_column, combo_column, spin_column, progress_column,
+//  button_column, sparkline_column have the same shape — each takes
+//  #name plus its kind-specific args, and accepts the same source /
+//  width / on_resize options.)
+</code></pre>
+<h2 id="data_table-parameters"><a class="header" href="#data_table-parameters"><code>data_table</code> Parameters</a></h2>
+<ul>
+<li>
+<p><strong><code>#table</code></strong> – The table shape: <code>{ rows: Array&lt;string&gt;, columns: Array&lt;[string, ColumnSpec]&gt; }</code>. <code>sys::net::list_table(path)</code>
+produces a value whose <code>columns: Array&lt;string&gt;</code> unifies with this
+type via the union element. The caller owns the shape: to filter,
+sort, hide, or reorder rows and columns — or to attach custom
+<code>ColumnSpec</code>s to specific columns — build the <code>Table</code> record in
+graphix and hand the result to <code>data_table</code>. Every change to this
+ref is reconciled against the current subscription set.</p>
+</li>
+<li>
+<p><strong><code>#sort_by</code></strong> – Array of sort keys applied in order. The first is
+the primary sort; later keys break ties. Empty list (the default)
+preserves the <code>Table</code>’s row order. Sort values come from the column’s
+source — a live subscription when source is <code>`Netidx</code>, or the
+source’s stored value otherwise.</p>
+</li>
+<li>
+<p><strong><code>#selection</code></strong> – Controlled set of selected cell paths. For
+cells in the row-name column this is just <code>"row_path"</code>; for every
+other cell it is <code>"row_path/col_name"</code>. The widget’s own click /
+keyboard handlers never mutate this ref directly — they fire
+<code>#on_select</code> and <code>#on_activate</code> callbacks that the caller uses to
+drive the ref however they want (single-select, multi-select,
+toggle, etc.).</p>
+</li>
+<li>
+<p><strong><code>#show_row_name</code></strong> – When <code>true</code> (the default) a synthesized
+leftmost column shows each row’s basename (<code>Path::basename(row)</code>).
+Set <code>false</code> for tables where the row identity is already carried
+by a regular column.</p>
+</li>
+<li>
+<p><strong><code>#on_select</code></strong> – Fired whenever a cell is clicked or keyboard
+navigation lands on a cell. The callback receives the full cell
+path (<code>"row_path/col_name"</code> for data cells, <code>"row_path"</code> for the
+row-name column).</p>
+</li>
+<li>
+<p><strong><code>#on_activate</code></strong> – Fired when the user clicks a row-name cell
+or presses Enter while a row is selected. Receives the row path.</p>
+</li>
+<li>
+<p><strong><code>#on_header_click</code></strong> – Fired when the user clicks a data
+column’s header label. Receives the column name.</p>
+</li>
+<li>
+<p><strong><code>#on_update</code></strong> – Fired once per subscription update on every
+cell — useful when you want to mirror live values into graphix
+state (e.g. re-derive an aggregate) without subscribing separately.
+Receives the cell path and new value.</p>
+</li>
+</ul>
+<h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
+<p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
+helper constructors. All constructors take <code>#name: string</code> plus
+their kind-specific args (<code>#on_edit</code> / <code>#on_click</code> / <code>#choices</code> /
+etc.) and the common appearance options (<code>#display_name</code>, <code>#source</code>,
+<code>#width</code>, <code>#on_resize</code>).</p>
+<ul>
+<li>
+<p><strong><code>text_column</code></strong> – Plain text. With <code>on_edit</code> the cell becomes
+editable: clicking a selected cell opens a text field; <code>Enter</code>
+commits the typed value via <code>on_edit</code>, <code>Escape</code> cancels. The
+widget attempts to parse the buffer as a typed graphix value; if
+parsing fails the raw string is sent instead, so users can enter
+<code>hello</code> without quotes.</p>
+</li>
+<li>
+<p><strong><code>toggle_column</code></strong> – Renders a toggler. Cell values <code>"true"</code> or
+<code>"1"</code> turn it on. With <code>on_edit</code> the user can flip the toggle.</p>
+</li>
+<li>
+<p><strong><code>combo_column</code></strong> – Drop-down with a fixed set of <code>choices</code>. Each
+choice has an <code>id</code> (the raw value published / sent back through
+<code>on_edit</code>) and a <code>label</code> (what the user sees).</p>
+</li>
+<li>
+<p><strong><code>spin_column</code></strong> – Numeric spinner with <code>min</code>, <code>max</code>, and
+<code>increment</code> bounds; <code>on_edit</code> receives the clamped new value.</p>
+</li>
+<li>
+<p><strong><code>progress_column</code></strong> – Read-only progress bar. Cell values are
+clamped to <code>[0, 1]</code>.</p>
+</li>
+<li>
+<p><strong><code>button_column</code></strong> – Each cell renders as a button labelled with
+the cell’s current value. <code>on_click</code> fires with the cell path and
+current value.</p>
+</li>
+<li>
+<p><strong><code>sparkline_column</code></strong> – Rolling-line visualization accumulating
+published values over <code>history_seconds</code>. By default the y-axis is
+shared across every cell in the column (auto-scaled to the union of
+all rows’ values) so cells are visually comparable. Pass <code>#min</code> /
+<code>#max</code> to fix the axis instead.</p>
+</li>
+</ul>
+<h2 id="column-widths-and-resizing"><a class="header" href="#column-widths-and-resizing">Column Widths and Resizing</a></h2>
+<p>Widths are controlled by two refs per column:</p>
+<ul>
+<li>
+<p><strong><code>width: &amp;[f64, null]</code></strong> – When <code>Some(f64)</code> the column is pinned
+to that width (and the resize handle at the column header vanishes
+unless an <code>on_resize</code> callback is also set). When <code>null</code> the
+column auto-sizes to its content, with a per-column cap (default
+300px).</p>
+</li>
+<li>
+<p><strong><code>on_resize: &amp;[fn(x: f64) -&gt; Any, null]</code></strong> – Fired while the user
+drags a column header’s right edge. The callable receives the new
+pixel width. The reference is a <code>&amp;</code> field so the callable can be
+swapped, nulled, or initialized reactively.</p>
+</li>
+</ul>
+<p>Double-clicking any column’s resize handle auto-fits <em>every</em> column
+to the widest cell in the entire table (not just the visible window).</p>
+<h2 id="source-where-cell-values-come-from"><a class="header" href="#source-where-cell-values-come-from">Source: Where Cell Values Come From</a></h2>
+<p>Each <code>ColumnSpec.source</code> is a <code>&amp;Source</code> ref that decides where the
+column’s per-cell values originate:</p>
+<ul>
+<li><strong><code>`Netidx(placeholder)</code></strong> – The column subscribes to
+<code>&lt;row_path&gt;/&lt;column_name&gt;</code> for every row whose path is absolute.
+Cell values come from the subscription. The <code>placeholder</code> payload
+(<code>null</code> or a string) is the text rendered before the subscription
+resolves and any time it goes <code>Unsubscribed</code> afterward — useful
+for distinguishing “not yet subscribed” / “lost” from a real blank
+value. <code>`Netidx(null)</code> is the default for the column-builder
+helpers and the implicit behavior for bare-string entries in
+<code>Table.columns</code>.</li>
+<li><strong><code>string</code></strong> – A uniform value: every cell in the column renders
+this text. No subscription. Useful for static fields and computed
+columns where one value applies to all rows.</li>
+<li><strong><code>Map&lt;string, Any&gt;</code></strong> – Per-row values keyed by the row’s
+basename. No subscription. Rows without a matching key render
+blank. Useful for “calculated” columns whose values are derived in
+graphix.</li>
+</ul>
+<p>When the source ref updates reactively (e.g. the map changes), the
+widget re-reads it and refreshes the affected cells. Sparkline
+columns additionally push each new numeric source value into the
+rolling history, so a virtual-column sparkline fed from graphix state
+accumulates points the same way a subscribed one does.</p>
+<h2 id="keyboard-navigation"><a class="header" href="#keyboard-navigation">Keyboard Navigation</a></h2>
+<p>The widget is focusable: clicking into it grants keyboard focus.
+Arrow keys move the selection (the currently-rendered selected cell
+scrolls into view as needed). <code>Enter</code> on a row-name cell fires
+<code>on_activate</code>; <code>Space</code> on an editable cell opens its editor;
+<code>Escape</code> cancels an in-progress edit.</p>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
+<p>Minimal usage: publish three hosts and hand the
+<code>sys::net::list_table</code> output to <code>data_table</code> with no column
+configuration. Bare-string columns become default Text columns with
+<code>`Netidx</code> source.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use sys;
+use sys::net;
+mod icon;
+
+let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
+    sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
+    sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
+};
+
+publish_host(#name: "host-01", #status: `Up, #cpu: 12.4, #mem: 37.1);
+publish_host(#name: "host-02", #status: `Up, #cpu: 88.2, #mem: 62.0);
+publish_host(#name: "host-03", #status: `Degraded, #cpu: 4.1, #mem: 19.8);
+
+// list_table inspects the resolver to discover children of this path.
+let tbl = sys::net::list_table("/local/graphix/data_table_basic")$;
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Fleet health"),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Basic",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_basic.png" alt="Data Table — Basic"></p>
+<h3 id="filter-and-sort"><a class="header" href="#filter-and-sort">Filter and Sort</a></h3>
+<p>Row filtering (a regex over basenames) and sort configuration done
+in graphix before the <code>Table</code> is handed to the widget. Shows how the
+caller owns the data pipeline end to end.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use array;
+use opt;
+use re;
+use str;
+use sys;
+use sys::net;
+mod icon;
+
+// Publish 6 sensors across three environments; the sidebar controls
+// let the user pick a row filter mode. Sorting is driven entirely
+// from the table itself — click a header to cycle its sort order.
+sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
+sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
+sys::net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
+sys::net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
+sys::net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
+sys::net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
+sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
+sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
+sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+
+// Filter controls: a regex pattern and whether it includes or excludes.
+// The caller reshapes the Table in graphix before passing it in.
+let pattern = "";
+let mode: [`Include, `Exclude] = `Include;
+
+let tbl: Table = raw_tbl;
+tbl &lt;- select str::len(pattern) {
+    n if n == 0 =&gt; raw_tbl,
+    _ =&gt; {
+        let name_of = |r: string| opt::or_default(str::basename(r), r);
+        let matches = |r: string| opt::or_default(
+            re::is_match(#pat: pattern, name_of(r))$, false);
+        let keep = |r: string| select mode {
+            `Include =&gt; matches(r),
+            `Exclude =&gt; !matches(r)
+        };
+        { raw_tbl with rows: array::filter(raw_tbl.rows, keep) }
+    }
+};
+
+// Sort state: an array of (column, direction) pairs applied in order.
+// The first entry is the primary sort, subsequent entries break ties.
+// `cycle_sort` rotates a column through the three states a spreadsheet
+// user expects: absent → ascending → descending → absent.
+//
+// Clicking a column that isn't in `sort_by` appends it as ascending,
+// so sort_by grows as the user clicks new columns — that's how multi-
+// column sort is demonstrated. The first click on a column that is
+// already sorted flips its direction; a second click removes it.
+let sort_by: Array&lt;SortBy&gt; = [];
+
+// CR claude for estokes: the `column ~ { ... }` sampling and the
+// `matches[0]$` + separate `let dir = m0.direction` split are both
+// workarounds for sharp edges in graphix reactivity / parsing:
+//
+//   1. Without `column ~` on the RHS of `sort_by &lt;-`, the compiled
+//      dataflow evaluates `array::filter(sort_by, ...)` at its
+//      initial empty sort_by value and never re-fires on callback
+//      invocation — so the callback appears to do nothing.
+//      The lang reference already documents that `~` is required in
+//      callbacks to sample current state at event time; this example
+//      makes that concrete.
+//
+//   2. `array::find` hits a MapQ fast-path in graphix-package-core
+//      (`MapQ::update`, around lib.rs:679) that returns the empty
+//      input array for an empty collection instead of calling
+//      `finish()`. For HOFs whose element-returning `finish()` would
+//      produce a different type than the collection (find → Option,
+//      find_map → Option), the fast-path returns the wrong type —
+//      so `array::find(&lt;empty&gt;, pred)` emits `[]` instead of `null`
+//      and the null arm of the outer select never fires. The
+//      `array::filter` + `array::len` pair below sidesteps this
+//      because filter's natural "empty → empty" happens to match
+//      its output type.
+//
+//   3. `matches[0]$.direction` fails to parse — the `$` error-drop
+//      postfix followed immediately by `.field` confuses the parser
+//      into reporting the outer callsite as unexpected, which is a
+//      red herring. Binding `matches[0]$` to a local first parses
+//      cleanly.
+//
+// Also, every lambda needs `|sb: SortBy|` annotations (and the `map`
+// callback needs `-&gt; SortBy`) because graphix narrows sort_by's
+// element type based on the `direction: `Ascending` literal in the
+// push arm and then rejects `sb.direction` elsewhere as non-matching.
+let cycle_sort = |#column: string|
+    sort_by &lt;- column ~ {
+        let matches = array::filter(sort_by, |sb: SortBy| sb.column == column);
+        let n = array::len(matches);
+        let m0 = matches[0]$;
+        let dir: SortDirection = m0.direction;
+        select n {
+            0 =&gt; array::push(sort_by, { column: column, direction: `Ascending }),
+            _ =&gt; select dir {
+                `Ascending =&gt; array::map(sort_by, |s: SortBy| -&gt; SortBy
+                    select s.column == column {
+                        true =&gt; { s with direction: `Descending },
+                        false =&gt; s
+                    }),
+                `Descending =&gt; array::filter(sort_by, |s: SortBy| s.column != column)
+            }
+        }
+    };
+
+let controls = row(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(10.0),
+    &amp;[
+        text(&amp;"Pattern:"),
+        text_input(
+            #on_input: |v: string| pattern &lt;- v,
+            #placeholder: &amp;"regex or empty",
+            #width: &amp;`Fill,
+            &amp;pattern
+        ),
+        pick_list(
+            #on_select: |choice: string| mode &lt;- select choice {
+                "Include matches" =&gt; `Include,
+                _ =&gt; `Exclude
+            },
+            #selected: &amp;select mode {
+                `Include =&gt; "Include matches",
+                `Exclude =&gt; "Exclude matches"
+            },
+            &amp;["Include matches", "Exclude matches"]
+        )
+    ]
+);
+
+let layout = column(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Interactive filter + sort"),
+        text(#size: &amp;12.0, &amp;"Click a column header to cycle its sort; click more than one for tie-broken multi-column sort."),
+        controls,
+        data_table(
+            #sort_by: &amp;sort_by,
+            #on_header_click: |#column: string| cycle_sort(#column: column),
+            #table: &amp;tbl
+        )
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Filter &amp; Sort",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_filter_sort.png" alt="Data Table — Filter and Sort"></p>
+<h3 id="editable"><a class="header" href="#editable">Editable</a></h3>
+<p>Every editable column type in one place: <code>Text</code>, <code>Toggle</code>, <code>Combo</code>,
+<code>Spin</code>. Each cell is published with an <code>on_write</code> handler so edits
+round-trip through netidx. The example shows the
+<code>array::map(raw_columns, …)</code> pattern for attaching custom
+<code>ColumnSpec</code>s to specific column names while leaving everything else
+as bare-string Netidx-sourced columns.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use sys;
+use sys::net;
+mod icon;
+
+// Four editable columns demonstrating every ColumnType that takes
+// user input: Text, Toggle, Combo, Spin. Each cell is published with
+// an #on_write handler so edits round-trip through netidx.
+
+let host_01_name = "alpha";
+let host_01_enabled = true;
+let host_01_zone = "us-east-1";
+let host_01_cpu = f64:4.0;
+
+sys::net::publish(
+    #on_write: |v: string| host_01_name &lt;- v,
+    "/local/graphix/data_table_editable/host-01/name",
+    host_01_name
+);
+sys::net::publish(
+    #on_write: |v: bool| host_01_enabled &lt;- v,
+    "/local/graphix/data_table_editable/host-01/enabled",
+    host_01_enabled
+);
+sys::net::publish(
+    #on_write: |v: string| host_01_zone &lt;- v,
+    "/local/graphix/data_table_editable/host-01/zone",
+    host_01_zone
+);
+sys::net::publish(
+    #on_write: |v: f64| host_01_cpu &lt;- v,
+    "/local/graphix/data_table_editable/host-01/cpu",
+    host_01_cpu
+);
+
+let host_02_name = "bravo";
+let host_02_enabled = false;
+let host_02_zone = "eu-west-1";
+let host_02_cpu = f64:8.0;
+
+sys::net::publish(
+    #on_write: |v: string| host_02_name &lt;- v,
+    "/local/graphix/data_table_editable/host-02/name",
+    host_02_name
+);
+sys::net::publish(
+    #on_write: |v: bool| host_02_enabled &lt;- v,
+    "/local/graphix/data_table_editable/host-02/enabled",
+    host_02_enabled
+);
+sys::net::publish(
+    #on_write: |v: string| host_02_zone &lt;- v,
+    "/local/graphix/data_table_editable/host-02/zone",
+    host_02_zone
+);
+sys::net::publish(
+    #on_write: |v: f64| host_02_cpu &lt;- v,
+    "/local/graphix/data_table_editable/host-02/cpu",
+    host_02_cpu
+);
+
+// Map the resolver-derived columns array. Each editable column gets
+// an explicit ColumnSpec; anything else (none expected here) passes
+// through as a default Text/Netidx column.
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "name" =&gt; text_column(
+        #name: "name",
+        #on_edit: |#path: string, #value: Any|
+            sys::net::write(path, value)$,
+        #display_name: "Name"
+    ),
+    "enabled" =&gt; toggle_column(
+        #name: "enabled",
+        #on_edit: |#path: string, #value: bool|
+            sys::net::write(path, value)$,
+        #display_name: "Enabled"
+    ),
+    "zone" =&gt; combo_column(
+        #name: "zone",
+        #choices: [
+            { id: "us-east-1", label: "US East" },
+            { id: "us-west-2", label: "US West" },
+            { id: "eu-west-1", label: "EU West" },
+            { id: "ap-south-1", label: "Asia Pacific" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "Zone"
+    ),
+    "cpu" =&gt; spin_column(
+        #name: "cpu",
+        #min: f64:1.0,
+        #max: f64:64.0,
+        #increment: f64:1.0,
+        #on_edit: |#path: string, #value: f64|
+            sys::net::write(path, value)$,
+        #display_name: "CPU cores"
+    ),
+    other =&gt; other
+});
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_editable")$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let selection: Array&lt;string&gt; = [];
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Editable hosts"),
+        text(&amp;"Edits are written back through netidx and reflected in the same cell."),
+        data_table(
+            #selection: &amp;selection,
+            #on_select: |#path| selection &lt;- [path],
+            #table: &amp;tbl
+        )
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Editable",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_editable.png" alt="Data Table — Editable"></p>
+<h3 id="calculated-columns"><a class="header" href="#calculated-columns">Calculated Columns</a></h3>
+<p>A virtual column whose <code>source</code> is a reactive <code>Map&lt;string, Any&gt;</code>,
+rebuilt whenever any subscribed cell updates. Demonstrates deriving
+per-row aggregates (here, sums) without touching netidx.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use str;
+use sys;
+use sys::net;
+mod icon;
+
+// Two published columns A and B. A virtual "sum" column has its
+// per-cell value set from a let-bound Map; the `on_update` callback
+// watches every subscribed cell update and pushes the new (a+b)
+// total into the sum entry.
+
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0, #end:10, #clock)
+};
+
+publish("/local/graphix/data_table_calculated/r0/A", rv());
+publish("/local/graphix/data_table_calculated/r1/A", rv());
+publish("/local/graphix/data_table_calculated/r2/A", rv());
+publish("/local/graphix/data_table_calculated/r0/B", rv());
+publish("/local/graphix/data_table_calculated/r1/B", rv());
+publish("/local/graphix/data_table_calculated/r2/B", rv());
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+
+let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
+
+// Append a virtual `sum` column to the resolver-derived table. The
+// bare strings from `sys::net::list_table` continue to mean "Netidx-
+// sourced Text columns"; the new entry pulls its values from a let-
+// bound Map updated by the on_update callback below.
+//
+// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return type
+// widens each bare-string entry into the union element type before
+// concat. Without the explicit return type, inference leaves the
+// resulting array as `Array&lt;string&gt;` and fails to fit ColumnSpec.
+let widened: Array&lt;[string, ColumnSpec]&gt; =
+    array::map(raw_tbl.columns, |n: string| -&gt; [string, ColumnSpec] n);
+let tbl: Table = {
+    rows: raw_tbl.rows,
+    columns: array::push(widened, text_column(
+        #name: "sum",
+        #display_name: "A + B",
+        #source: &amp;opt::or_default(map::get(data, "sum"), {})
+    ))
+};
+
+// on_update is called on updates to netidx subscriptions by the table.
+let on_update = |#path: string, #value: Primitive| {
+    let v = cast&lt;i64&gt;(value)$;
+    let d = v ~ data; // run only when v updates
+    let (row, col) = opt::or_never(str::row_col(path));
+    let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
+    let sum = map::fold(d, 0, |sum, (col, rows)| select col {
+        "sum" =&gt; sum,
+        col =&gt; sum + map::get_or(rows, row, 0)
+    });
+    data &lt;- map::change(d, "sum", {}, |sums| map::insert(sums, row, sum))
+};
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Calculated column"),
+        text(&amp;"on_update fires on every cell update; the virtual sum column reflects A + B."),
+        data_table(#on_update, #table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Calculated",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_calculated.png" alt="Data Table — Calculated"></p>
+<h3 id="sparkline"><a class="header" href="#sparkline">Sparkline</a></h3>
+<p>Live rolling charts per row with automatic column-wide y-axis
+sharing, so cells are visually comparable without the caller picking
+bounds.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Four rows, each publishing a cpu value that updates once a second
+// on a sine-wave pattern staggered per row. The Sparkline column
+// accumulates the history and draws a rolling chart.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+
+let cpu_1 = 0.0;
+cpu_1 &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);
+
+let cpu_2 = 0.0;
+cpu_2 &lt;- tick ~ 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
+
+let cpu_3 = 0.0;
+cpu_3 &lt;- tick ~ 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
+
+let cpu_4 = 0.0;
+cpu_4 &lt;- tick ~ 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
+
+sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
+sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
+sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
+sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
+
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "cpu" =&gt; sparkline_column(
+        #name: "cpu",
+        #history_seconds: 30.0,
+        #display_name: "CPU (last 30s)",
+        #width: &amp;260.0
+    ),
+    other =&gt; other
+});
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"CPU over time"),
+        text(&amp;"Sparkline column accumulates values from its cell subscription."),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Sparkline",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_sparkline.png" alt="Data Table — Sparkline"></p>
+<h3 id="virtual-rows-and-columns"><a class="header" href="#virtual-rows-and-columns">Virtual Rows and Columns</a></h3>
+<p>Mix live subscribed rows with virtual rows whose cells come from
+non-Netidx sources. Virtual-column-plus-virtual-row combinations
+give you fully client-side cells.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::slider;
+use gui::column;
+use gui::text;
+use sys;
+mod icon;
+
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0., #end:1., #clock)
+};
+
+net::publish("/local/graphix/data_table_virtual/nr0/score", rv());
+net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
+net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
+
+// Rows that aren't absolute netidx paths are virtual — the data_table
+// skips subscribing for them, and cell values come from the column's
+// `source` (uniform string or per-row Map). Columns can be bare-string
+// (Netidx-sourced text, the same as `sys::net::list_table` returns) or
+// full ColumnSpecs declared inline. Mixing the two is fine: the
+// `Table` type's `columns: Array&lt;[string, ColumnSpec]&gt;` union element
+// lets `sys::net::list_table` flow straight through.
+let raw = net::list_table("/local/graphix/data_table_virtual")$;
+
+let score: Map&lt;string, f64&gt; = {};
+
+// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return
+// type widens each bare-string entry into the union element. After
+// that, `array::concat` and `array::push` operate on uniformly-typed
+// `Array&lt;[string, ColumnSpec]&gt;`s.
+let widened: Array&lt;[string, ColumnSpec]&gt; =
+    array::map(raw.columns, |n: string| -&gt; [string, ColumnSpec] n);
+let region: ColumnSpec = text_column(
+    #name: "region",
+    #display_name: "Region",
+    #source: &amp;"production"
+);
+let score_col: ColumnSpec = progress_column(
+    #name: "score",
+    #display_name: "Score",
+    #source: &amp;score,
+    #width: &amp;f64:180.0
+);
+let tbl: Table = uniq({
+    rows: array::concat(raw.rows, ["vr0", "vr1", "vr2"]),
+    columns: array::push_front(array::push(widened, score_col), region)
+});
+
+let layout = column(
+    #spacing: &amp;14.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Virtual rows and columns"),
+        text(&amp;"Move the sliders to change the score in the three virtual rows."),
+        slider(
+            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr0", v),
+            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            &amp;map::get_or(score, "vr0", 0.)
+        ),
+        slider(
+            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr1", v),
+            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            &amp;map::get_or(score, "vr1", 0.)
+        ),
+        slider(
+            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr2", v),
+            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            &amp;map::get_or(score, "vr2", 0.)
+        ),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Virtual",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_virtual.png" alt="Data Table — Virtual"></p>
+<h3 id="dashboard"><a class="header" href="#dashboard">Dashboard</a></h3>
+<p>Kitchen-sink example combining <code>Combo</code> state pickers, <code>Sparkline</code>
+CPU metrics, <code>Progress</code> uptime, a <code>Button</code> action column, a regex
+row filter in a text input, sort controlled by pick-lists, and
+selection echoed in the footer.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use core::math;
+use array;
+use opt;
+use re;
+use str;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Kitchen-sink example combining the main data_table features:
+// * Combo column for state picklists
+// * Sparkline column for rolling cpu metrics
+// * Progress column for uptime %
+// * Button column that fires an action callback
+// * Regex row filter wired to a text input
+// * Column sort driven by pick_list widgets in the sidebar
+// * Selection echoed in the footer
+
+let t = cast&lt;f64&gt;(count(time::timer(duration:1.s, true)))$;
+
+type State = [`Healthy, `Degraded, `Down];
+
+// Publish a tiny fleet of services. state is writable (Combo).
+let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
+    sys::net::publish(
+        #on_write: |v: string| state &lt;- cast&lt;State&gt;(v)$,
+        "/local/graphix/data_table_dashboard/[name]/state",
+        state
+    );
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+};
+
+// single random number
+let rn = |start: f64, end: f64| -&gt; f64 rand::rand(#start, #end, #clock:1);
+
+let published = array::init(1024, |i| svc(
+    #name:"svc-[i]",
+    #state:select rand::rand(#clock:1) {
+        n if n &lt;= 0.8 =&gt; `Healthy,
+        n if n &lt;= 0.9 =&gt; `Degraded,
+        _ =&gt; `Down
+    },
+    #uptime:rn(0., 1.),
+    #cpu:rn(0., 30.) + rn(1., 5.) * math::sin((t + rn(0., 5.)) / rn(1., 5.))
+));
+
+let last_action = "";
+
+// Map the resolver-derived columns array. Bare-string entries
+// (anything we don't recognize) pass through as default Text columns;
+// the four named columns get their custom ColumnSpec.
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "state" =&gt; combo_column(
+        #name: "state",
+        #choices: [
+            { id: "Healthy", label: "Healthy" },
+            { id: "Degraded", label: "Degraded" },
+            { id: "Down", label: "Down" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "State",
+        #width: &amp;110.
+    ),
+    "cpu" =&gt; sparkline_column(
+        #name: "cpu",
+        #history_seconds: f64:30.0,
+        #display_name: "CPU",
+        #width: &amp;220.0
+    ),
+    "uptime" =&gt; progress_column(
+        #name: "uptime",
+        #display_name: "Uptime",
+        #width: &amp;180.0
+    ),
+    "action" =&gt; button_column(
+        #name: "action",
+        #on_click: |#path: string, #value: Any|
+            last_action &lt;- "[path]",
+        #display_name: "Action"
+    ),
+    other =&gt; other
+});
+
+// Caller-side filter: apply the regex to the Table's rows, then
+// rewrap with the column specs.
+let pattern = "";
+let tbl: Table = {
+    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let rows = select str::len(pattern) {
+        n if n == 0 =&gt; raw.rows,
+        _ =&gt; array::filter(raw.rows, |r| {
+            let row = opt::or_default(str::basename(r), r);
+            select re::is_match(#pat: pattern, row) {
+                error as _ =&gt; false,
+                b =&gt; b
+            }
+        })
+    };
+    { rows, columns: make_columns(raw.columns) }
+};
+
+let sort_col = "state";
+let sort_dir: SortDirection = `Ascending;
+let sort_by: Array&lt;SortBy&gt; = [{ column: sort_col, direction: sort_dir }];
+
+// Selection + footer
+let selection: Array&lt;string&gt; = [];
+
+let controls = row(
+    #spacing: &amp;10.0,
+    &amp;[
+        text(&amp;"Filter:"),
+        text_input(
+            #on_input: |v: string| pattern &lt;- v,
+            #placeholder: &amp;"regex or blank",
+            #width: &amp;`Fill,
+            &amp;pattern
+        ),
+        text(&amp;"Sort:"),
+        pick_list(
+            #on_select: |v: string| sort_col &lt;- v,
+            #selected: &amp;sort_col,
+            &amp;["state", "cpu", "uptime"]
+        ),
+        pick_list(
+            #on_select: |v: string| sort_dir &lt;- select v {
+                "Ascending" =&gt; `Ascending,
+                _ =&gt; `Descending
+            },
+            #selected: &amp;select sort_dir {
+                `Ascending =&gt; "Ascending",
+                `Descending =&gt; "Descending"
+            },
+            &amp;["Ascending", "Descending"]
+        )
+    ]
+);
+
+let footer = row(
+    #spacing: &amp;10.0,
+    &amp;[
+        text(&amp;"Selected:"),
+        text(&amp;"[selection[0]$]"),
+        text(&amp;"  Last action:"),
+        text(&amp;"[last_action]")
+    ]
+);
+
+let layout = column(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Service dashboard"),
+        controls,
+        data_table(
+            #sort_by: &amp;sort_by,
+            #selection: &amp;selection,
+            #on_select: |#path: string| selection &lt;- [path],
+            #table: &amp;tbl
+        ),
+        footer
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Dashboard",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="./media/data_table_dashboard.gif" alt="Data Table — Dashboard"></p>
+<h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
+<ul>
+<li><a href="table.html">Table</a> – static row/column layout from graphix
+widgets, no netidx subscriptions.</li>
+<li><a href="chart.html">Chart</a> – larger-scale line / area / scatter plots.</li>
+<li><a href="../../stdlib/sys/net.html"><code>sys::net</code></a> – the <code>Table</code> record and
+<code>list_table</code> helper consumed by <code>#table</code>.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../ui/gui/table.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../../ui/gui/menu.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../ui/gui/table.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../../ui/gui/menu.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../../mark-09e88c2c.min.js"></script>
+        <script src="../../searcher-c2a407aa.js"></script>
+
+        <script src="../../clipboard-1626706a.min.js"></script>
+        <script src="../../highlight-abc7f01d.js"></script>
+        <script src="../../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../../theme/graphix-highlight-d71af7ae.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

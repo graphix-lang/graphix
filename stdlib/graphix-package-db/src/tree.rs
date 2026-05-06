@@ -4,7 +4,7 @@ use compact_str::format_compact;
 use graphix_compiler::{
     errf,
     expr::ExprId,
-    typ::{FnType, Type},
+    typ::{FnType, Type, TypeRef},
     ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
@@ -175,9 +175,9 @@ fn prim_typ(t: &Type) -> Option<Typ> {
 // The resolved return type is Ref("/Result", [Ref("/Tree"|"/TxnTree", [k, v]), ...]).
 fn find_tree_params(t: &Type) -> Option<&[Type]> {
     match t {
-        Type::Ref { name, params, .. } if Path::basename(&**name) == Some("Result") => {
+        Type::Ref (TypeRef { name, params, .. }) if Path::basename(&**name) == Some("Result") => {
             params.iter().find_map(|p| match p {
-                Type::Ref { name, params, .. }
+                Type::Ref (TypeRef { name, params, .. })
                     if matches!(Path::basename(&**name), Some("Tree" | "TxnTree"))
                         && params.len() == 2 =>
                 {

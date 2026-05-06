@@ -30,6 +30,12 @@ pub(crate) struct MenuGroupDesc {
 #[derive(Default)]
 pub(crate) struct State {
     pub open_menu: Option<usize>,
+    /// `true` while the dropdown overlay is visible. The overlay
+    /// flips this to `false` when a menu item is clicked; the parent
+    /// widget observes the flip and clears `open_menu` on its next
+    /// `update` so the dropdown closes. Kept in sync with
+    /// `open_menu.is_some()` at all open/close transitions.
+    pub menu_visible: bool,
 }
 
 /// Overlay that renders the dropdown menu below a menu bar label.
@@ -258,6 +264,9 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                     } = item
                     {
                         if *key == sc.key && *modifiers == sc.modifiers {
+                            if let Some(open) = self.open.as_deref_mut() {
+                                *open = false;
+                            }
                             shell.publish(Message::Call(
                                 *id,
                                 ValArray::from_iter([Value::Null]),
@@ -434,6 +443,12 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
+        // The overlay flips `menu_visible` to false when an item is
+        // clicked. Reconcile here so the next `overlay()` call stops
+        // rendering the dropdown.
+        if state.open_menu.is_some() && !state.menu_visible {
+            state.open_menu = None;
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
@@ -441,8 +456,10 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
                     if cursor.is_over(child_layout.bounds()) {
                         if state.open_menu == Some(i) {
                             state.open_menu = None;
+                            state.menu_visible = false;
                         } else {
                             state.open_menu = Some(i);
+                            state.menu_visible = true;
                         }
                         shell.capture_event();
                         return;
@@ -450,6 +467,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
                 }
                 if state.open_menu.is_some() {
                     state.open_menu = None;
+                    state.menu_visible = false;
                     shell.capture_event();
                 }
             }
@@ -460,6 +478,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
                             && state.open_menu != Some(i)
                         {
                             state.open_menu = Some(i);
+                            state.menu_visible = true;
                             shell.capture_event();
                             return;
                         }
@@ -472,6 +491,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
             }) => {
                 if state.open_menu.is_some() {
                     state.open_menu = None;
+                    state.menu_visible = false;
                     shell.capture_event();
                 }
             }
@@ -487,6 +507,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
                         {
                             if *key == sc.key && *modifiers == sc.modifiers {
                                 state.open_menu = None;
+                                state.menu_visible = false;
                                 shell.publish(Message::Call(
                                     *id,
                                     ValArray::from_iter([Value::Null]),
@@ -510,17 +531,20 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         _viewport: &Rectangle,
         _translation: Vector,
     ) -> Option<overlay::Element<'b, Message, GraphixTheme, Renderer>> {
-        let state = tree.state.downcast_ref::<State>();
+        let state = tree.state.downcast_mut::<State>();
         let idx = state.open_menu?;
         if idx >= self.descs.len() {
             return None;
         }
         let label_bounds = layout.children().nth(idx)?.bounds();
         let position = Point::new(label_bounds.x, label_bounds.y + label_bounds.height);
+        // Hand the overlay a `&mut bool` so it can signal close when
+        // an item is clicked. The next `update` call reconciles
+        // `open_menu` from `menu_visible`.
         Some(overlay::Element::new(Box::new(MenuOverlay {
             menu: &self.descs[idx],
             position,
-            open: None,
+            open: Some(&mut state.menu_visible),
         })))
     }
 }

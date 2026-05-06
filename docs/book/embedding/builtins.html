@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -457,7 +457,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
 <p>This implements <code>array::group</code>, which given an argument, stores that
 argument’s updates internally, and creates an array out of them when
 the predicate returns true. Its type is</p>
-<p><code>fn('a, fn(i64, 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
+<p><code>fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
 <p>For example,</p>
 <pre><code class="language-graphix">let n = seq(0, 100);
 array::group(n, |_, n| (n == 50) || (n == 99))

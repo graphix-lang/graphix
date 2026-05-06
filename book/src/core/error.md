@@ -84,7 +84,7 @@ not stop the execution of nodes in the try catch.
 Graphix function types are annotated by the type of error they might raise. In
 most cases this is automatic, but for some higher order functions it may be
 necessary to specify it explicitly. For example array map has type
-`fn(Array<'a>, fn('a) -> 'b throws 'e) -> Array<'b> throws 'e` indicating that
+`fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e` indicating that
 while the map function itself does not throw any errors, it will throw any
 errors the function passed to it throws. This is all in the service of being
 able to statically check the type of thrown errors, for example,

@@ -145,7 +145,7 @@ friends), which allows you to control how updates to a variable are
 processed.
 
 ```graphix
-val queue: fn(#clock: Any, 'a) -> 'a
+val queue: fn(#clock: Any, v: 'a) -> 'a
 ```
 
 Every time clock updates queue allows a 'a through. If no 'a is

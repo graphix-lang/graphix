@@ -1,9 +1,25 @@
 use tui;
 use tui::gauge;
 use tui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
 
-// Subscribe to live data
-let temperature: f64 = sys::net::subscribe("/sensors/temperature")?;
+// Self-contained: publish a simulated temperature reading once a
+// second, then subscribe to it for display. Drop the publish to
+// point the gauge at any other publisher.
+//
+// The gauge below renders `temperature / 100.0` as its ratio, so
+// `temperature` is published in the 0–100 range (the gauge clamps
+// anything outside [0, 1] and warns).
+let tick = time::timer(duration:1.s, true);
+let t = cast<f64>(count(tick))$;
+let temp_source = 50.0;
+temp_source <- tick ~ 50.0 + 25.0 * math::sin(t / 5.0);
+sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
+
+let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
 
 // Will display updates automatically when data changes
 gauge(

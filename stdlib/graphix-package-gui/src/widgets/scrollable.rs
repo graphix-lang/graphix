@@ -3,7 +3,7 @@ use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
@@ -46,6 +46,14 @@ impl<X: GXExt> ScrollableW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        std::slice::from_mut(&mut self.child)
+    }
+
+    fn children(&self) -> &[GuiW<X>] {
+        std::slice::from_ref(&self.child)
+    }
+
     fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,
@@ -81,14 +89,6 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
             "scrollable on_scroll recompile"
         );
         Ok(changed)
-    }
-
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        self.child.editor_action(id, action)
     }
 
     fn view(&self) -> IcedElement<'_> {

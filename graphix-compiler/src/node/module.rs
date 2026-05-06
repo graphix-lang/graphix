@@ -8,7 +8,8 @@ use crate::{
     },
     node::{bind::Bind, Nop},
     typ::{AbstractId, Type},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    wrap, BindId, CFlag, Event, ExecCtx, ModuleInternalView, ModuleRefSite, Node, Refs,
+    Rt, Scope, SigImplLink, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
@@ -16,26 +17,58 @@ use compact_str::{format_compact, CompactString};
 use enumflags2::BitFlags;
 use fxhash::{FxHashMap, FxHashSet};
 use netidx_value::{Typ, Value};
-use poolshark::local::LPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
 
-fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Result<()> {
+fn bind_sig(
+    env: &mut Env,
+    mod_env: &mut Env,
+    scope: &Scope,
+    sig: &Sig,
+    module_refs: &mut GPooled<Vec<ModuleRefSite>>,
+) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
+        let si_ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
         match &si.kind {
             SigKind::Module(name) => {
                 let scope = scope.append(name);
                 env.modules.insert_cow(scope.lexical.clone());
+                if env.lsp_mode {
+                    module_refs.push(ModuleRefSite {
+                        pos: si.pos,
+                        ori: si_ori.clone(),
+                        name: ModPath::from_iter([name.clone()]),
+                        canonical: scope.lexical.clone(),
+                        def_ori: None,
+                    });
+                }
             }
             SigKind::Use(name) => {
                 env.use_in_scope(scope, name)?;
                 mod_env.use_in_scope(scope, name)?;
+                if env.lsp_mode {
+                    let canonical = env
+                        .canonical_modpath(&scope.lexical, name)
+                        .unwrap_or_else(|| name.clone());
+                    module_refs.push(ModuleRefSite {
+                        pos: si.pos,
+                        ori: si_ori.clone(),
+                        name: name.clone(),
+                        canonical,
+                        def_ori: None,
+                    });
+                }
             }
             SigKind::Bind(BindSig { name, typ }) => {
                 let typ = typ.scope_refs(&scope.lexical);
                 typ.alias_tvars(&mut LPooled::take());
-                let bind = env.bind_variable(&scope.lexical, name, typ);
+                if env.lsp_mode {
+                    typ.record_ide_refs(env, &scope.lexical);
+                }
+                let bind =
+                    env.bind_variable(&scope.lexical, name, typ, si.pos, si_ori.clone());
                 if let Doc(Some(s)) = &si.doc {
                     bind.doc = Some(s.clone());
                 }
@@ -48,6 +81,8 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                     td.params.clone(),
                     typ.clone(),
                     si.doc.0.clone(),
+                    si.pos,
+                    si_ori,
                 )?;
             }
         }
@@ -121,6 +156,14 @@ fn check_sig<R: Rt, E: UserEvent>(
             proxy.insert(id, *proxy_id);
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
+            if ctx.env.lsp_mode {
+                ctx.env.push_sig_link(SigImplLink {
+                    scope: scope.lexical.clone(),
+                    name: CompactString::from(name.as_str()),
+                    sig_id: *proxy_id,
+                    impl_id: id,
+                });
+            }
             has_bind.insert(name.clone());
         }
         if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
@@ -232,7 +275,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, (*source).clone(), scope, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
-        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
+        bind_sig(&mut ctx.env, &mut env, &scope, &sig, &mut ctx.module_references)
             .context("binding module signature")?;
         Ok(Box::new(Self {
             spec,
@@ -259,7 +302,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
         let mut env = ctx.env.clone();
-        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
+        bind_sig(&mut ctx.env, &mut env, &scope, &sig, &mut ctx.module_references)
             .with_context(|| format!("binding signature for module {}", scope.lexical))?;
         let mut t = Self {
             spec,
@@ -275,6 +318,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         };
         t.compile_inner(ctx, &exprs)
             .with_context(|| format!("compiling module {}", scope.lexical))?;
+        if ctx.env.lsp_mode {
+            ctx.env.push_module_internal_view(ModuleInternalView {
+                scope: t.scope.lexical.clone(),
+                env: t.env.clone(),
+            });
+        }
         Ok(Box::new(t))
     }
 

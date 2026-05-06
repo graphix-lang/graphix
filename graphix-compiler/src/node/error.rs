@@ -4,7 +4,7 @@ use crate::{
     env::Env,
     expr::{self, Expr, ExprId, ModPath},
     format_with_flags,
-    typ::Type,
+    typ::{Type, TypeRef},
     wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
     UserEvent,
 };
@@ -21,11 +21,11 @@ pub(super) static ECHAIN: LazyLock<ModPath> =
     LazyLock::new(|| ModPath::from(["ErrChain"]));
 
 fn typ_echain(param: Type) -> Type {
-    Type::Ref {
+    Type::Ref (TypeRef {
         scope: ModPath::root(),
         name: ECHAIN.clone(),
         params: Arc::from_iter([param]),
-    }
+     ..Default::default()})
 }
 
 pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
@@ -83,7 +83,10 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
             }
             _ => unreachable!(),
         }
-        let id = ctx.env.bind_variable(&catch_scope.lexical, &tc.bind, typ).id;
+        let id = ctx
+            .env
+            .bind_variable(&catch_scope.lexical, &tc.bind, typ, spec.pos, spec.ori.clone())
+            .id;
         let handler = compile(ctx, flags, (*tc.handler).clone(), &catch_scope, top_id)?;
         ctx.env.catch.insert_cow(inner_scope.dynamic.clone(), id);
         let nodes = tc
@@ -259,7 +262,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 },
                 Some(Type::Error(et)) => et.with_deref(|et| match et {
                     None => bail!("type must be known"),
-                    Some(Type::Ref { scope, name, .. })
+                    Some(Type::Ref (TypeRef { scope, name, .. }))
                         if scope == &ModPath::root() && name == &*ECHAIN =>
                     {
                         Ok(etyp.clone())

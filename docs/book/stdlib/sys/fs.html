@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -217,13 +217,13 @@ type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
 mod watch;
 mod tempdir;
 
-val read_all: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val read_all_bin: fn(string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
-val write_all: fn(#path: string, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val write_all_bin: fn(#path: string, bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
-val is_file: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val is_dir: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val metadata: fn(?#follow_symlinks: bool, string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+val read_all: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+val read_all_bin: fn(s: string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val write_all: fn(#path: string, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val write_all_bin: fn(#path: string, b: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+val is_file: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+val is_dir: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+val metadata: fn(?#follow_symlinks: bool, s: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
 val readdir: fn(
     ?#max_depth: i64,
@@ -232,12 +232,12 @@ val readdir: fn(
     ?#follow_symlinks: bool,
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
-    string
+    s: string
 ) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
 
-val create_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val remove_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val create_dir: fn(?#all: bool, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val remove_dir: fn(?#all: bool, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val remove_file: fn(s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Open a file with the specified mode, returning an I/O stream.
 ///
@@ -248,16 +248,16 @@ val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(Mode, string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
+val open: fn(a: Mode, s: string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
 
 /// Seek to a position in the file. Returns the new position.
-val seek: fn(io::Stream&lt;`File&gt;, SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
+val seek: fn(stream: io::Stream&lt;`File&gt;, pos: SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
 
 /// Get metadata for the open file.
-val fstat: fn(io::Stream&lt;`File&gt;) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+val fstat: fn(stream: io::Stream&lt;`File&gt;) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
 /// Truncate or extend the file to the specified length.
-val truncate: fn(io::Stream&lt;`File&gt;, u64) -&gt; Result&lt;null, `IOError(string)&gt;;
+val truncate: fn(stream: io::Stream&lt;`File&gt;, len: u64) -&gt; Result&lt;null, `IOError(string)&gt;;
 </code></pre>
 <p>Once a file is opened with <code>sys::fs::open</code>, use <code>sys::io::read</code>,
 <code>sys::io::write</code>, and <code>sys::io::flush</code> for I/O — these work on any
@@ -311,10 +311,10 @@ type Watch;
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
-    Any
+    v: Any
 ) -&gt; Result&lt;Watcher, `WatchError(string)&gt;;
 
-val watch: fn(?#interest: Array&lt;Interest&gt;, Watcher, string)
+val watch: fn(?#interest: Array&lt;Interest&gt;, a: Watcher, s: string)
     -&gt; Result&lt;Watch, `WatchError(string)&gt;;
 
 val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
@@ -326,12 +326,12 @@ val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
 <h2 id="sysfstempdir"><a class="header" href="#sysfstempdir">sys::fs::tempdir</a></h2>
 <pre><code class="language-graphix">type T;
 
-val path: fn(T) -&gt; string;
+val path: fn(a: T) -&gt; string;
 
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
-    Any
+    v: Any
 ) -&gt; Result&lt;T, `IOError(string)&gt;;
 </code></pre>
 

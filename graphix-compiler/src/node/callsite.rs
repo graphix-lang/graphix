@@ -3,7 +3,7 @@ use crate::{
     deref_typ,
     expr::{ErrorContext, Expr, ExprId},
     node::lambda::LambdaDef,
-    typ::{FnType, Type},
+    typ::{FnArgKind, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
     Scope, TypecheckPhase, Update, UserEvent,
 };
@@ -27,6 +27,33 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub id: BindId,
     pub node: Option<Node<R, E>>,
     pub is_default: bool,
+}
+
+/// Find the FnType inside `t` that the lambda with id `id` was unified
+/// with at typecheck time. The formal arg may be a bare `Type::Fn`, but
+/// can also be a union like `[fn(...), null]` (the typical
+/// optional-callback shape) or wrapped in a Set of fn types — in those
+/// cases we walk the arms to find the unique matching Fn. Returns
+/// `None` if no Fn arm is found.
+fn find_fn_in_arg_type(t: &Type, id: LambdaId) -> Option<&TArc<FnType>> {
+    match t {
+        Type::Fn(ft) => Some(ft),
+        Type::Set(ts) => {
+            // Prefer an arm whose lambda_ids include the lambda we're
+            // checking; fall back to the first Fn arm if none claim it.
+            let mut fallback: Option<&TArc<FnType>> = None;
+            for arm in ts.iter() {
+                if let Some(ft) = find_fn_in_arg_type(arm, id) {
+                    if ft.lambda_ids.read().contains(&id) {
+                        return Some(ft);
+                    }
+                    fallback.get_or_insert(ft);
+                }
+            }
+            fallback
+        }
+        _ => None,
+    }
 }
 
 fn compile_apply_args<R: Rt, E: UserEvent>(
@@ -103,8 +130,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(Box::new(site))
     }
 
-    fn make_ref(&self, id: BindId, typ: Type) -> Node<R, E> {
-        Box::new(Ref { spec: NOP.clone(), typ, id, top_id: self.top_id })
+    fn make_ref(&self, id: BindId, typ: Type, spec: TArc<Expr>) -> Node<R, E> {
+        Box::new(Ref { spec, typ, id, top_id: self.top_id })
     }
 
     fn bind(
@@ -172,7 +199,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // Build arg_refs in function-signature order
         let mut pos_idx = 0;
         for (i, farg) in f.typ.args.iter().enumerate() {
-            if let Some((name, default)) = &farg.label {
+            if let FnArgKind::Labeled { name, has_default: default } = &farg.kind {
                 match self.args.get(&ArgKey::Named(name.clone())) {
                     Some(arg) => {
                         let typ = arg
@@ -180,17 +207,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             .as_ref()
                             .map(|n| n.typ().clone())
                             .unwrap_or_else(|| farg.typ.clone());
-                        self.arg_refs.push(self.make_ref(arg.id, typ));
+                        let spec = arg
+                            .node
+                            .as_ref()
+                            .map(|n| TArc::new(n.spec().clone()))
+                            .unwrap_or_else(|| NOP.clone());
+                        self.arg_refs.push(self.make_ref(arg.id, typ, spec));
                     }
                     None if *default => {
                         let id = BindId::new();
                         let default_node = compile_default!(i, f);
                         let typ = default_node.typ().clone();
+                        let spec = TArc::new(default_node.spec().clone());
                         self.args.insert(
                             ArgKey::Named(name.clone()),
                             Arg { id, node: Some(default_node), is_default: true },
                         );
-                        self.arg_refs.push(self.make_ref(id, typ));
+                        self.arg_refs.push(self.make_ref(id, typ, spec));
                     }
                     None => bail!("BUG: in bind missing required argument {name}"),
                 }
@@ -212,7 +245,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     .as_ref()
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| farg.typ.clone());
-                self.arg_refs.push(self.make_ref(arg.id, typ));
+                let spec = arg
+                    .node
+                    .as_ref()
+                    .map(|n| TArc::new(n.spec().clone()))
+                    .unwrap_or_else(|| NOP.clone());
+                self.arg_refs.push(self.make_ref(arg.id, typ, spec));
             }
         }
         // Handle vargs - remaining positional args
@@ -227,7 +265,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             .as_ref()
                             .map(|n| n.typ().clone())
                             .unwrap_or_else(|| Type::Bottom);
-                        self.arg_refs.push(self.make_ref(arg.id, typ));
+                        let spec = arg
+                            .node
+                            .as_ref()
+                            .map(|n| TArc::new(n.spec().clone()))
+                            .unwrap_or_else(|| NOP.clone());
+                        self.arg_refs.push(self.make_ref(arg.id, typ, spec));
                     }
                     None => break,
                 }
@@ -390,10 +433,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 let mut labeled: LPooled<FxHashSet<ArcStr>> = LPooled::take();
                 for arg in ftype.args.iter() {
-                    if let Some((name, default)) = &arg.label {
+                    if let FnArgKind::Labeled { name, has_default } = &arg.kind {
                         labeled.insert(name.clone());
                         match self.args.get(&ArgKey::Named(name.clone())) {
-                            None if !*default => {
+                            None if !*has_default => {
                                 bail!("missing required argument {name}")
                             }
                             None => {
@@ -420,7 +463,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 // Check we have enough positional args
                 let n_positional_required =
-                    ftype.args.iter().filter(|a| a.label.is_none()).count();
+                    ftype.args.iter().filter(|a| a.is_positional()).count();
                 let n_positional_provided = self
                     .args
                     .keys()
@@ -436,7 +479,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // Typecheck positional args in order
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
-            let key = if let Some((name, _)) = &farg.label {
+            let key = if let FnArgKind::Labeled { name, .. } = &farg.kind {
                 ArgKey::Named(name.clone())
             } else {
                 let key = loop {
@@ -538,9 +581,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 for id in ids.drain(..) {
                     let resolved = match hof_idmap.get(&id) {
                         None => &resolved,
-                        Some(i) => match &resolved.args[*i].typ {
-                            Type::Fn(ft) => ft,
-                            t => bail!("unexpected resolved arg type {t}"),
+                        Some(i) => match find_fn_in_arg_type(&resolved.args[*i].typ, id) {
+                            Some(ft) => ft,
+                            None => bail!(
+                                "unexpected resolved arg type {}",
+                                &resolved.args[*i].typ
+                            ),
                         },
                     };
                     if let Some(val) = ctx.lambda_defs.get(&id).cloned() {

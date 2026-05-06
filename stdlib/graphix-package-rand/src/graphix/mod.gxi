@@ -6,7 +6,7 @@ val rand: fn<'a: [Int, Float]>(?#start:'a, ?#end:'a, #clock:Any) -> 'a;
 /// pick a random element from the array and return it. Update
 /// each time the array updates. If the array is empty return
 /// nothing.
-val pick: fn(Array<'a>) -> 'a;
+val pick: fn(a: Array<'a>) -> 'a;
 
 /// return a shuffled copy of a
-val shuffle: fn(Array<'a>) -> Array<'a>;
+val shuffle: fn(a: Array<'a>) -> Array<'a>;

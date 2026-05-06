@@ -22,7 +22,7 @@ val browser: fn(
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
-    string
+    s: string
 ) -> Tui;
 ```
 

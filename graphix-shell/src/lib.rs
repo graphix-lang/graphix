@@ -30,6 +30,7 @@ use tokio::{select, sync::mpsc};
 mod completion;
 mod deps;
 mod input;
+pub mod lsp_backend;
 
 enum Output<X: GXExt> {
     None,
@@ -208,7 +209,11 @@ impl<X: GXExt> Shell<X> {
         let env;
         match &self.mode {
             Mode::Check(source) => {
-                gx.check(source.clone()).await?;
+                let initial_scope = match source {
+                    Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
+                    _ => None,
+                };
+                gx.check(source.clone(), initial_scope).await?;
                 exit(0)
             }
             Mode::Script(source) => {
@@ -298,7 +303,7 @@ impl<X: GXExt> Shell<X> {
                                             .with_deref(|t| t.cloned())
                                             .unwrap_or_else(|| e.typ.clone());
                                         format_with_flags(
-                                            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                                            PrintFlag::ReplacePrims,
                                             || println!("-: {}", typ)
                                         );
                                         output.clear().await;

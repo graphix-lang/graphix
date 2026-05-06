@@ -12,7 +12,7 @@ val line_gauge: fn(
   ?#style: &[Style, null],
   ?#unfilled_style: &[Style, null],
   ?#unfilled_symbol: &[string, null],
-  &f64
+  x: &f64
 ) -> Tui;
 ```
 

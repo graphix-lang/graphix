@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,7 +180,7 @@
 <pre><code class="language-graphix">val text: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
-  &amp;[Array&lt;Line&gt;, string]
+  v: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
 </code></pre>
 <p>The <code>text</code> widget uses types from the <a href="style.html">style</a> module including <code>Style</code>, <code>Line</code>, <code>Span</code>, <code>Color</code>, <code>Modifier</code>, and <code>Alignment</code>.</p>
@@ -228,9 +228,7 @@ text(&amp;[
 <pre><code class="language-graphix">use tui;
 use tui::text;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
+let count = count(sys::time::timer(duration:1.s, true));
 
 let colors = [`Red, `Green, `Yellow, `Blue, `Magenta, `Cyan];
 let color = colors[count % array::len(colors)]$;

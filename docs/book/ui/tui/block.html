@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -225,7 +225,7 @@ val block: fn(
   ?#title_position: &amp;[Position, null],
   ?#title_alignment: &amp;[Alignment, null],
   ?#size: &amp;[Size, null],
-  &amp;Tui
+  a: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -281,9 +281,7 @@ block(
 use tui::block;
 use tui::paragraph;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
+let count = count(sys::time::timer(duration:1.s, true));
 
 let content = paragraph(&amp;"Content here");
 

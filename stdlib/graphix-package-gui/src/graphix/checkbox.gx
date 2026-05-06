@@ -1,6 +1,6 @@
 let checkbox = |
   #label: &string = &"",
-  #on_toggle: fn(bool) -> Any = |_| null,
+  #on_toggle: fn(b: bool) -> Any = |_| null,
   #width: &Length = &`Shrink,
   #size: &[f64, null] = &null,
   #spacing: &[f64, null] = &null,

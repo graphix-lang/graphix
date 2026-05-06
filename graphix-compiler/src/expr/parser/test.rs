@@ -4,7 +4,7 @@ use crate::{
         ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
         StructurePattern,
     },
-    typ::{FnArgType, TVar, Type},
+    typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
 use arcstr::literal;
 use netidx::{publisher::Typ, utils::Either};
@@ -632,11 +632,11 @@ fn select1() {
         ),
         (
             Pattern {
-                type_predicate: Some(Type::Ref {
+                type_predicate: Some(Type::Ref (TypeRef {
                     scope: ModPath::root(),
                     name: ["Foo"].into(),
                     params: Arc::from_iter([]),
-                }),
+                 ..Default::default()})),
                 structure_predicate: StructurePattern::Struct {
                     all: None,
                     exhaustive: false,
@@ -789,11 +789,13 @@ fn lambda() {
                 labeled: None,
                 pattern: StructurePattern::Bind("foo".into()),
                 constraint: None,
+                        pos: Default::default(),
             },
             Arg {
                 labeled: None,
                 pattern: StructurePattern::Bind("bar".into()),
                 constraint: None,
+                        pos: Default::default(),
             },
         ]),
         rtype: None,
@@ -869,6 +871,7 @@ fn apply_lambda() {
                     labeled: None,
                     pattern: StructurePattern::Bind("a".into()),
                     constraint: None,
+                                pos: Default::default(),
                 }]),
                 vargs: Some(None),
                 rtype: None,
@@ -897,18 +900,20 @@ fn apply_typed_lambda() {
                         labeled: None,
                         pattern: StructurePattern::Bind("a".into()),
                         constraint: None,
+                                        pos: Default::default(),
                     },
                     Arg {
                         labeled: None,
                         pattern: StructurePattern::Bind("b".into()),
                         constraint: Some(Type::Set(Arc::from_iter([
                             Type::Primitive(Typ::Null.into()),
-                            Type::Ref {
+                            Type::Ref (TypeRef {
                                 scope: ModPath::root(),
                                 name: ["Number"].into(),
                                 params: Arc::from_iter([]),
-                            },
+                             ..Default::default()}),
                         ]))),
+                                        pos: Default::default(),
                     },
                 ]),
                 vargs: Some(Some(Type::Primitive(Typ::String.into()))),
@@ -940,6 +945,7 @@ fn typed_array() {
                 constraint: Some(Type::Array(Arc::new(Type::TVar(TVar::empty_named(
                     "a".into(),
                 ))))),
+                        pos: Default::default(),
             }]),
             vargs: None,
             constraints: Arc::from_iter([]),
@@ -963,19 +969,34 @@ fn labeled_argument_lambda() {
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
                 FnArgType {
-                    label: Some(("foo".into(), true)),
-                    typ: Type::Ref {
+                    kind: FnArgKind::Labeled {
+                        name: "foo".into(),
+                        has_default: true,
+                    },
+                    typ: Type::Ref (TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
                         params: Arc::from_iter([]),
-                    },
+                     ..Default::default()}),
                 },
                 FnArgType {
-                    label: Some(("bar".into(), true)),
+                    kind: FnArgKind::Labeled {
+                        name: "bar".into(),
+                        has_default: true,
+                    },
                     typ: Type::Primitive(Typ::String.into()),
                 },
-                FnArgType { label: Some(("a".into(), false)), typ: Type::Any },
-                FnArgType { label: None, typ: Type::Any },
+                FnArgType {
+                    kind: FnArgKind::Labeled {
+                        name: "a".into(),
+                        has_default: false,
+                    },
+                    typ: Type::Any,
+                },
+                FnArgType {
+                    kind: FnArgKind::Positional { name: Some("baz".into()) },
+                    typ: Type::Any,
+                },
             ]),
             vargs: None,
             rtype: Type::Primitive(Typ::String.into()),
@@ -991,11 +1012,12 @@ fn labeled_argument_lambda() {
                     labeled: Some(Some(
                         ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
                     )),
-                    constraint: Some(Type::Ref {
+                    constraint: Some(Type::Ref (TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
                         params: Arc::from_iter([]),
-                    }),
+                     ..Default::default()})),
+                                pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("bar".into()),
@@ -1003,16 +1025,19 @@ fn labeled_argument_lambda() {
                         ExprKind::Constant("hello".into()).to_expr_nopos(),
                     )),
                     constraint: None,
+                                pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("a".into()),
                     labeled: Some(None),
                     constraint: None,
+                                pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("baz".into()),
                     labeled: None,
                     constraint: None,
+                                pos: Default::default(),
                 },
             ]),
             vargs: None,
@@ -1025,7 +1050,7 @@ fn labeled_argument_lambda() {
     }))
     .to_expr_nopos();
     let s = r#"
-let a: fn(?#foo: Number, ?#bar: string, #a: Any, Any) -> string =
+let a: fn(?#foo: Number, ?#bar: string, #a: Any, baz: Any) -> string =
   |#foo: Number = 3, #bar = "hello", #a, baz| 'foo
 "#;
     let pe = parse_one(s).unwrap();

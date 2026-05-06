@@ -1,0 +1,185 @@
+use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use core::math;
+use array;
+use opt;
+use re;
+use str;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Kitchen-sink example combining the main data_table features:
+// * Combo column for state picklists
+// * Sparkline column for rolling cpu metrics
+// * Progress column for uptime %
+// * Button column that fires an action callback
+// * Regex row filter wired to a text input
+// * Column sort driven by pick_list widgets in the sidebar
+// * Selection echoed in the footer
+
+let t = cast<f64>(count(time::timer(duration:1.s, true)))$;
+
+type State = [`Healthy, `Degraded, `Down];
+
+// Publish a tiny fleet of services. state is writable (Combo).
+let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
+    sys::net::publish(
+        #on_write: |v: string| state <- cast<State>(v)$,
+        "/local/graphix/data_table_dashboard/[name]/state",
+        state
+    );
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+};
+
+// single random number
+let rn = |start: f64, end: f64| -> f64 rand::rand(#start, #end, #clock:1);
+
+let published = array::init(1024, |i| svc(
+    #name:"svc-[i]",
+    #state:select rand::rand(#clock:1) {
+        n if n <= 0.8 => `Healthy,
+        n if n <= 0.9 => `Degraded,
+        _ => `Down
+    },
+    #uptime:rn(0., 1.),
+    #cpu:rn(0., 30.) + rn(1., 5.) * math::sin((t + rn(0., 5.)) / rn(1., 5.))
+));
+
+let last_action = "";
+
+// Map the resolver-derived columns array. Bare-string entries
+// (anything we don't recognize) pass through as default Text columns;
+// the four named columns get their custom ColumnSpec.
+let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
+    "state" => combo_column(
+        #name: "state",
+        #choices: [
+            { id: "Healthy", label: "Healthy" },
+            { id: "Degraded", label: "Degraded" },
+            { id: "Down", label: "Down" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "State",
+        #width: &110.
+    ),
+    "cpu" => sparkline_column(
+        #name: "cpu",
+        #history_seconds: f64:30.0,
+        #display_name: "CPU",
+        #width: &220.0,
+        #min:0.,
+        #max:100.
+    ),
+    "uptime" => progress_column(
+        #name: "uptime",
+        #display_name: "Uptime",
+        #width: &180.0
+    ),
+    "action" => button_column(
+        #name: "action",
+        #on_click: |#path: string, #value: Any|
+            last_action <- "[path]",
+        #display_name: "Action"
+    ),
+    other => other
+});
+
+// Caller-side filter: apply the regex to the Table's rows, then
+// rewrap with the column specs.
+let pattern = "";
+let tbl: Table = {
+    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let rows = select str::len(pattern) {
+        n if n == 0 => raw.rows,
+        _ => array::filter(raw.rows, |r| {
+            let row = opt::or_default(str::basename(r), r);
+            select re::is_match(#pat: pattern, row) {
+                error as _ => false,
+                b => b
+            }
+        })
+    };
+    { rows, columns: make_columns(raw.columns) }
+};
+
+let sort_col = "state";
+let sort_dir: SortDirection = `Ascending;
+let sort_by: Array<SortBy> = [{ column: sort_col, direction: sort_dir }];
+
+// Selection + footer
+let selection: Array<string> = [];
+
+let controls = row(
+    #spacing: &10.0,
+    &[
+        text(&"Filter:"),
+        text_input(
+            #on_input: |v: string| pattern <- v,
+            #placeholder: &"regex or blank",
+            #width: &`Fill,
+            &pattern
+        ),
+        text(&"Sort:"),
+        pick_list(
+            #on_select: |v: string| sort_col <- v,
+            #selected: &sort_col,
+            &["state", "cpu", "uptime"]
+        ),
+        pick_list(
+            #on_select: |v: string| sort_dir <- select v {
+                "Ascending" => `Ascending,
+                _ => `Descending
+            },
+            #selected: &select sort_dir {
+                `Ascending => "Ascending",
+                `Descending => "Descending"
+            },
+            &["Ascending", "Descending"]
+        )
+    ]
+);
+
+let footer = row(
+    #spacing: &10.0,
+    &[
+        text(&"Selected:"),
+        text(&"[selection[0]$]"),
+        text(&"  Last action:"),
+        text(&"[last_action]")
+    ]
+);
+
+let layout = column(
+    #spacing: &10.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &20.0, &"Service dashboard"),
+        controls,
+        data_table(
+            #sort_by: &sort_by,
+            #selection: &selection,
+            #on_select: |#path: string| selection <- [path],
+            #table: &tbl
+        ),
+        footer
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Dashboard",
+    #theme: &`CatppuccinMocha,
+    &layout
+)]

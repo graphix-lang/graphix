@@ -27,7 +27,7 @@ val scrollbar: fn(
   ?#track_style: &[Style, null],
   ?#track_symbol: &[string, null],
   ?#viewport_length: &[i64, null],
-  &Tui
+  a: &Tui
 ) -> Tui;
 ```
 

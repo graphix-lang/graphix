@@ -1,5 +1,6 @@
 use super::pattern::StructPatternNode;
 use crate::{
+    bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -32,7 +33,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         let expr::BindExpr { rec, pattern, typ, value } = b;
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
-                bail!("at {} can't use rec on a complex pattern", spec.pos)
+                bailat!(spec, "can't use rec on a complex pattern")
             }
             match value {
                 Expr { kind: ExprKind::Lambda(_), .. } => (),
@@ -42,13 +43,20 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 Some(typ) => typ.scope_refs(&scope.lexical),
                 None => Type::empty_tvar(),
             };
-            let pattern = StructPatternNode::compile(ctx, &typ, pattern, scope)
-                .with_context(|| format!("at {}", spec.pos))?;
+            let pattern = StructPatternNode::compile(
+                ctx,
+                &typ,
+                pattern,
+                scope,
+                spec.pos,
+                spec.ori.clone(),
+            )
+            .with_context(|| expr::ErrorContext(spec.clone()))?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
             if !typ.contains(&ctx.env, ntyp)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("at {} error {} can't be matched by {typ}", ntyp, spec.pos)
+                    bailat!(spec, "error {} can't be matched by {typ}", ntyp)
                 })?
             }
             (node, pattern, typ)
@@ -61,21 +69,28 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     let ptyp = pattern.infer_type_predicate(&ctx.env)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
-                            bail!(
-                                "at {} match error {typ} can't be matched by {ptyp}",
-                                spec.pos
+                            bailat!(
+                                spec,
+                                "match error {typ} can't be matched by {ptyp}"
                             )
                         })?
                     }
                     typ
                 }
             };
-            let pattern = StructPatternNode::compile(ctx, &typ, pattern, scope)
-                .with_context(|| format!("at {}", spec.pos))?;
+            let pattern = StructPatternNode::compile(
+                ctx,
+                &typ,
+                pattern,
+                scope,
+                spec.pos,
+                spec.ori.clone(),
+            )
+            .with_context(|| expr::ErrorContext(spec.clone()))?;
             (node, pattern, typ)
         };
         if pattern.is_refutable() {
-            bail!("at {} refutable patterns are not allowed in let", spec.pos);
+            bailat!(spec, "refutable patterns are not allowed in let");
         }
         Ok(Box::new(Self { spec, typ, pattern, node }))
     }
@@ -158,12 +173,25 @@ impl Ref {
         name: &ModPath,
     ) -> Result<Node<R, E>> {
         match ctx.env.lookup_bind(&scope.lexical, name) {
-            None => bail!("at {} {name} not defined", spec.pos),
+            None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
-                ctx.rt.ref_var(bind.id, top_id);
+                let bind_id = bind.id;
                 let typ = bind.typ.clone();
+                let def_pos = bind.pos;
+                let def_ori = bind.ori.clone();
+                if ctx.env.lsp_mode {
+                    ctx.references.push(crate::ReferenceSite {
+                        pos: spec.pos,
+                        ori: spec.ori.clone(),
+                        name: name.clone(),
+                        bind_id,
+                        def_pos,
+                        def_ori,
+                    });
+                }
+                ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);
-                Ok(Box::new(Self { spec, typ, id: bind.id, top_id }))
+                Ok(Box::new(Self { spec, typ, id: bind_id, top_id }))
             }
         }
     }

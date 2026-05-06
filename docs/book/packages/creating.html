@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -231,7 +231,7 @@ let my_cached = |@args: bool| -&gt; bool 'mylib_my_cached;
 <h3 id="srcgraphixmodgxi--interface-file"><a class="header" href="#srcgraphixmodgxi--interface-file"><code>src/graphix/mod.gxi</code> – Interface File</a></h3>
 <p>The interface file declares the public API of your package:</p>
 <pre><code class="language-graphix">/// Check if a value is an error
-val my_builtin: fn(Any) -&gt; bool;
+val my_builtin: fn(v: Any) -&gt; bool;
 
 /// Logical OR of all arguments
 val my_cached: fn(@args: bool) -&gt; bool;

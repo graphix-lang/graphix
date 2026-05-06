@@ -125,11 +125,11 @@ type Event = [
 type InputHandler = {
   child: &Tui,
   enabled: &[bool, null],
-  handle: &fn(Event) -> [`Stop, `Continue]
+  handle: &fn(e: Event) -> [`Stop, `Continue]
 };
 
 val input_handler: fn(
   ?#enabled: &[bool, null],
-  #handle: &fn(Event) -> [`Stop, `Continue] throws 'e,
-  &Tui
+  #handle: &fn(e: Event) -> [`Stop, `Continue] throws 'e,
+  child: &Tui
 ) -> Tui throws 'e;

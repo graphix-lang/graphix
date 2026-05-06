@@ -32,7 +32,7 @@ also has other optional arguments. The non optional and non labeled arguments
 must match, of course. For example,
 
 ```graphix
-let f = |g: fn(#foo:i64, i64) -> i64, x: i64| g(#foo:x, x);
+let f = |g: fn(#foo: i64, x: i64) -> i64, x: i64| g(#foo: x, x);
 let g = |#foo:i64, #bar: i64 = 0, x: i64| foo + bar + x;
 f(g, 42) // valid call
 ```

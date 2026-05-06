@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,12 +183,12 @@
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(f64) -&gt; Any,
-  ?#on_release: fn(null) -&gt; Any,
+  ?#on_change: fn(x: f64) -&gt; Any,
+  ?#on_release: fn(a: null) -&gt; Any,
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
@@ -210,12 +210,12 @@
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(f64) -&gt; Any,
-  ?#on_release: fn(null) -&gt; Any,
+  ?#on_change: fn(x: f64) -&gt; Any,
+  ?#on_release: fn(a: null) -&gt; Any,
   ?#width: &amp;[f64, null],
   ?#height: &amp;Length,
   ?#disabled: &amp;bool,
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-1"><a class="header" href="#parameters-1">Parameters</a></h3>
@@ -232,7 +232,7 @@
   ?#max: &amp;f64,
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-2"><a class="header" href="#parameters-2">Parameters</a></h3>

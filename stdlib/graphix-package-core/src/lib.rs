@@ -9,7 +9,7 @@ use graphix_compiler::{
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
-    typ::{FnType, TVal, Type},
+    typ::{FnType, TVal, Type, TypeRef},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, UserEvent,
 };
@@ -32,6 +32,9 @@ use tokio::time::Instant;
 use triomphe::Arc as TArc;
 
 pub(crate) mod buffer;
+pub(crate) mod math;
+pub(crate) mod opt;
+pub(crate) mod queuefn;
 
 // ── Cast context for typed deserialization ────────────────────────
 
@@ -40,7 +43,7 @@ pub(crate) mod buffer;
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     let ft = resolved_typ?;
     let typ = match &ft.rtype {
-        Type::Ref { name, params, .. }
+        Type::Ref (TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {
             params[0].clone()
@@ -1588,15 +1591,17 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
 
 type Shr = CachedArgs<ShrEv>;
 
+/// Fire-and-forget filter: when the input produces a value we feed it
+/// into `pred`, and emit the value whenever `pred` returns `true`. If a
+/// new input arrives while `pred` is still working on the last one, the
+/// new input replaces the pending value — the caller should wrap this
+/// with `queue` if they need strict pairing between inputs and verdicts.
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
-    ready: bool,
-    queue: VecDeque<Value>,
     pred: Node<R, E>,
-    top_id: ExprId,
+    pending: Option<Value>,
     fid: BindId,
     x: BindId,
-    out: BindId,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
@@ -1623,10 +1628,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                 };
                 let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
                 let pred = genn::apply(fnode, scope.clone(), vec![xn], &ptyp, top_id);
-                let queue = VecDeque::new();
-                let out = BindId::new();
-                ctx.rt.ref_var(out, top_id);
-                Ok(Box::new(Self { ready: true, queue, pred, fid, x, out, top_id }))
+                Ok(Box::new(Self { pred, pending: None, fid, x }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -1640,52 +1642,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        macro_rules! set {
-            ($v:expr) => {{
-                self.ready = false;
-                ctx.cached.insert(self.x, $v.clone());
-                event.variables.insert(self.x, $v);
-            }};
-        }
-        macro_rules! maybe_cont {
-            () => {{
-                if let Some(v) = self.queue.front().cloned() {
-                    set!(v);
-                    continue;
-                }
-                break;
-            }};
-        }
-        if let Some(v) = from[0].update(ctx, event) {
-            self.queue.push_back(v);
-        }
         if let Some(v) = from[1].update(ctx, event) {
             ctx.cached.insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
-        if self.ready && self.queue.len() > 0 {
-            let v = self.queue.front().unwrap().clone();
-            set!(v);
+        if let Some(v) = from[0].update(ctx, event) {
+            self.pending = Some(v.clone());
+            ctx.cached.insert(self.x, v.clone());
+            event.variables.insert(self.x, v);
         }
-        loop {
-            match self.pred.update(ctx, event) {
-                None => break,
-                Some(v) => {
-                    self.ready = true;
-                    match v {
-                        Value::Bool(true) => {
-                            ctx.rt.set_var(self.out, self.queue.pop_front().unwrap());
-                            maybe_cont!();
-                        }
-                        _ => {
-                            let _ = self.queue.pop_front();
-                            maybe_cont!();
-                        }
-                    }
-                }
-            }
-        }
-        event.variables.get(&self.out).map(|v| v.clone())
+        self.pred.update(ctx, event).and_then(|b| match b {
+            Value::Bool(true) => self.pending.clone(),
+            _ => None,
+        })
     }
 
     fn typecheck(
@@ -1704,18 +1673,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.out);
         ctx.cached.remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
-        ctx.rt.unref_var(self.out, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.out, self.top_id);
-        self.out = BindId::new();
-        ctx.rt.ref_var(self.out, self.top_id);
-        self.queue.clear();
+        self.pending = None;
         self.pred.sleep(ctx);
     }
 }
@@ -2420,6 +2384,7 @@ graphix_derive::defpackage! {
         Shr,
         Filter as Filter<GXRt<X>, X::UserEvent>,
         Queue,
+        queuefn::QueueFn as queuefn::QueueFn<GXRt<X>, X::UserEvent>,
         Hold,
         Seq,
         Throttle,
@@ -2440,5 +2405,64 @@ graphix_derive::defpackage! {
         buffer::BytesLen,
         buffer::BufferEncode,
         buffer::BufferDecode,
+        math::MathSin,
+        math::MathCos,
+        math::MathTan,
+        math::MathAsin,
+        math::MathAcos,
+        math::MathAtan,
+        math::MathAtan2,
+        math::MathSinh,
+        math::MathCosh,
+        math::MathTanh,
+        math::MathAsinh,
+        math::MathAcosh,
+        math::MathAtanh,
+        math::MathExp,
+        math::MathExp2,
+        math::MathExpM1,
+        math::MathLn,
+        math::MathLn1p,
+        math::MathLog2,
+        math::MathLog10,
+        math::MathLog,
+        math::MathPow,
+        math::MathSqrt,
+        math::MathCbrt,
+        math::MathHypot,
+        math::MathFloor,
+        math::MathCeil,
+        math::MathRound,
+        math::MathTrunc,
+        math::MathFract,
+        math::MathAbs,
+        math::MathSignum,
+        math::MathCopysign,
+        math::MathMin,
+        math::MathMax,
+        math::MathClamp,
+        math::MathIsNan,
+        math::MathIsFinite,
+        math::MathIsInfinite,
+        math::MathToDegrees,
+        math::MathToRadians,
+        opt::IsSome,
+        opt::IsNone,
+        opt::Contains,
+        opt::OrNever,
+        opt::OrDefault,
+        opt::Or,
+        opt::And,
+        opt::Xor,
+        opt::OkOr,
+        opt::Zip,
+        opt::Unzip,
+        opt::OptMap as opt::OptMap<GXRt<X>, X::UserEvent>,
+        opt::OptFlatMap as opt::OptFlatMap<GXRt<X>, X::UserEvent>,
+        opt::OptFilter as opt::OptFilter<GXRt<X>, X::UserEvent>,
+        opt::OptOrElse as opt::OptOrElse<GXRt<X>, X::UserEvent>,
+        opt::OptOkOrElse as opt::OptOkOrElse<GXRt<X>, X::UserEvent>,
+        opt::OptIsSomeAnd as opt::OptIsSomeAnd<GXRt<X>, X::UserEvent>,
+        opt::OptIsNoneOr as opt::OptIsNoneOr<GXRt<X>, X::UserEvent>,
     ],
 }

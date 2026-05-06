@@ -316,6 +316,270 @@ run!(queue, QUEUE, |v: Result<&Value>| {
     }
 });
 
+const QUEUEFN_IMMEDIATE: &str = r#"
+{
+  let qf = queuefn(#trigger: never(), |x: i64| -> i64 x * 10);
+  qf(7)
+}
+"#;
+
+run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::I64(70)) => true,
+        _ => false,
+    }
+});
+
+const QUEUEFN_QUEUE_POP: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64| -> i64 x * 10);
+  let out = qf(array::iter([1, 2, 3, 4]));
+  feedback <- out;
+  array::group(out, |n, _| n == 4)
+}
+"#;
+
+run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(10), Value::I64(20), Value::I64(30), Value::I64(40)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const QUEUEFN_MULTI_ARG: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64, y: i64| -> i64 x + y * 100);
+  let xs = array::iter([1, 3, 5]);
+  let ys = array::iter([2, 4, 6]);
+  let out = qf(xs, ys);
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(201), Value::I64(403), Value::I64(605)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
+{
+  let multiplier = 100;
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64| -> i64 x * multiplier);
+  let out = qf(array::iter([1, 2, 3]));
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+// Verify #count writes when the queue grows. The wrapper writes count
+// every time it pushes (pops happen via the queuefn node when triggered).
+// With #trigger=never(), nothing pops, so depth ramps up.
+const QUEUEFN_COUNT_REF: &str = r#"
+{
+  let depth = 0;
+  let qf = queuefn(#count: &depth, #trigger: never(), |x: i64| -> i64 x * 10);
+  qf(1);  // immediate (pop_count=1), no push
+  qf(2);  // push, depth -> 1
+  qf(3);  // push, depth -> 2
+  // depth observer sees [0 (let init), 1, 2]
+  array::group(depth, |n, _| n == 3)
+}
+"#;
+
+run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(0), Value::I64(1), Value::I64(2)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+// Verify the wrapped fn is called when the wrapper output is fed back to
+// the trigger. Each pop allows the next to fire, so all queued
+// invocations eventually drain.
+const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(#trigger: feedback, |x: i64| -> i64 x + 1);
+  let out = qf(array::iter([10, 20, 30, 40, 50]));
+  feedback <- out;
+  array::group(out, |n, _| n == 5)
+}
+"#;
+
+run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(11), Value::I64(21), Value::I64(31), Value::I64(41), Value::I64(51)] => {
+                true
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
+// Trigger arriving before any wrapper invocations should bank pop_count, so
+// later calls dispatch immediately rather than queueing.
+const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
+{
+  // Three triggers arrive on init via array::iter — they bank pop_count
+  // (queue is empty at each tick) so subsequent calls dispatch immediately.
+  let trigs: Any = array::iter([null, null, null]);
+  let qf = queuefn(#trigger: trigs, |x: i64| -> i64 x * 10);
+  let xs = array::iter([1, 2, 3]);
+  array::group(qf(xs), |n, _| n == 3)
+}
+"#;
+
+run!(
+    queuefn_trigger_before_fn,
+    QUEUEFN_TRIGGER_BEFORE_FN,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [Value::I64(10), Value::I64(20), Value::I64(30)] => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);
+
+// Verify a wrapped fn with a trigger-style arg (`tick ~ x + 1000`) is not
+// fooled by queueing: each tick/x pair emits exactly once, no spurious
+// emissions when one of the two fires alone.
+const QUEUEFN_TRIGGER_ARG: &str = r#"
+{
+  let feedback: Any = never();
+  let qf = queuefn(
+    #trigger: feedback,
+    |#tick: Any, x: i64| -> i64 tick ~ x + 1000
+  );
+  let ticks: Any = array::iter([null, null, null]);
+  let xs = array::iter([10, 20, 30]);
+  let out = qf(#tick: ticks, xs);
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(
+    queuefn_trigger_arg,
+    QUEUEFN_TRIGGER_ARG,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [Value::I64(1010), Value::I64(1020), Value::I64(1030)] => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);
+
+// The point of queuefn is to protect an async-side-effecting fn from being
+// re-entered before its current invocation has produced a result. This test
+// puts an actual netidx subscription inside the wrapped lambda: each call
+// subscribes to a different path. Without queuefn, all three iter values
+// would fire same-cycle and three subscribes would race; with queuefn they
+// serialize via feedback (each subscription's value triggers the next pop).
+const QUEUEFN_NET_SUBSCRIBE: &str = r#"
+{
+  use sys;
+  sys::net::publish("/local/q_async/a", 100);
+  sys::net::publish("/local/q_async/b", 200);
+  sys::net::publish("/local/q_async/c", 300);
+  let feedback: Any = never();
+  let qf = queuefn(
+    #trigger: feedback,
+    |path: string| -> i64 sys::net::subscribe(path)?
+  );
+  let p: string = array::iter([
+    "/local/q_async/a",
+    "/local/q_async/b",
+    "/local/q_async/c"
+  ]);
+  let out = qf(p);
+  feedback <- out;
+  array::group(out, |n, _| n == 3)
+}
+"#;
+
+run!(
+    queuefn_net_subscribe,
+    QUEUEFN_NET_SUBSCRIBE,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => match &a[..] {
+                [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+);
+
+// Verify the per-cycle delta semantics. Wrapped fn only emits when its tick
+// arg fires (`tick ~ x + 1000`). Two ticks pair with two of three x values;
+// the third x fires alone and gets queued without a tick. On pop, NEW impl
+// sets only bid_x; pred sees x without a fresh tick, so no spurious emit.
+// Total emits should be 2. (Old impl re-fires a cached tick on every pop and
+// would emit a third spurious 1030.) After a delay, sample the count.
+const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
+{
+  use sys;
+  let feedback: Any = never();
+  let qf = queuefn(
+    #trigger: feedback,
+    |#tick: Any, x: i64| -> i64 tick ~ x + 1000
+  );
+  let ticks: Any = array::iter([null, null]);
+  let xs = array::iter([10, 20, 30]);
+  let out = qf(#tick: ticks, xs);
+  feedback <- out;
+  let count = 0;
+  count <- out ~ count + 1;
+  let done: Any = sys::time::timer(duration:200.ms, false);
+  done ~ count
+}
+"#;
+
+run!(
+    queuefn_delta_per_cycle,
+    QUEUEFN_DELTA_PER_CYCLE,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::I64(2)) => true,
+            _ => false,
+        }
+    }
+);
+
 const COUNT: &str = r#"
 {
   let a = [0, 1, 2, 3];

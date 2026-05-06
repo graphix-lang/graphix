@@ -1,0 +1,194 @@
+type SortDirection = [`Ascending, `Descending];
+type SortBy = { column: string, direction: SortDirection };
+
+type ColumnType = [
+    `Text({ on_edit: [fn(#path: string, #value: Any) -> Any, null] }),
+    `Toggle({ on_edit: [fn(#path: string, #value: bool) -> Any, null] }),
+    `Combo({
+        choices: Array<{ id: string, label: string }>,
+        on_edit: [fn(#path: string, #value: string) -> Any, null]
+    }),
+    `Spin({
+        min: f64,
+        max: f64,
+        increment: f64,
+        on_edit: [fn(#path: string, #value: f64) -> Any, null]
+    }),
+    `Progress,
+    `Button({
+        on_click: [fn(#path: string, #value: Any) -> Any, null]
+    }),
+    `Sparkline({
+        history_seconds: f64,
+        min: [f64, null],
+        max: [f64, null]
+    })
+];
+
+/// Where a column's per-cell values come from.
+///
+/// - `` `Netidx(fallback) ``: subscribe to `<row_path>/<column_name>`
+///   for every absolute-path row. The fallback is the value rendered
+///   for cells whose subscription is pending or `Unsubscribed`, AND
+///   for virtual rows (non-absolute paths), which never subscribe.
+///   It is one of:
+///     - `null`: no fallback — cells render blank until the
+///       subscription resolves, and virtual rows render blank.
+///     - `string`: a uniform placeholder used for every cell.
+///     - `Map<string, Any>`: per-row fallback keyed by row basename
+///       — virtual rows pick up their map entry, and absolute rows
+///       fall back to it before the subscription delivers a value.
+/// - `string`: a uniform default — every cell renders this text. No
+///   subscription. Useful for static fields and computed columns
+///   where one value applies to all rows.
+/// - `Map<string, Any>`: per-row defaults keyed by row basename. No
+///   subscription on any row. Useful for purely "calculated"
+///   columns whose values are derived in graphix and shouldn't
+///   ever subscribe.
+type Source = [`Netidx([null, string, Map<string, Any>]), string, Map<string, Any>];
+
+type ColumnSpec = {
+    name: string,
+    typ: ColumnType,
+    display_name: [string, null],
+    source: &Source,
+    on_resize: &[fn(width: f64) -> Any, null],
+    width: &[f64, null]
+};
+
+/// The data table's content. Rows are netidx paths (absolute paths
+/// drive subscriptions; non-absolute rows are virtual). Columns are
+/// either bare strings (shorthand for a default Text column with
+/// `` `Netidx `` source named after the string) or full `ColumnSpec`
+/// structs with explicit type, source, width, etc. Bare strings let
+/// `sys::net::Table` (which has `columns: Array<string>`) be passed
+/// straight through; mixed arrays are fine.
+///
+/// Display order is exactly the order of entries in `columns` —
+/// virtual and subscribed columns are not segregated.
+type Table = {
+    rows: Array<string>,
+    columns: Array<[string, ColumnSpec]>
+};
+
+type DataTable = {
+    on_activate: &[fn(#path: string) -> Any, null],
+    on_header_click: &[fn(#column: string) -> Any, null],
+    on_select: &[fn(#path: string) -> Any, null],
+    on_update: &[fn(#path: string, #value: Primitive) -> Any, null],
+    selection: &Array<string>,
+    show_row_name: &bool,
+    sort_by: &Array<SortBy>,
+    table: &Table
+};
+
+/// A data table that displays rows and columns of data.
+///
+/// Rows that are absolute netidx paths trigger live subscriptions to
+/// `<row_path>/<column_name>` for every column whose `source` is
+/// `` `Netidx ``. Rows that are not absolute paths are virtual — they
+/// never subscribe and render the column source's fallback value
+/// (either the `Netidx` payload's per-row map / uniform string, or
+/// the bare `string` / `Map<string, Any>` source).
+///
+/// The caller owns the shape of the Table: row order, column order,
+/// hidden vs. shown, virtual vs. subscribed — all of that lives in
+/// the `Table` value the caller passes in.
+///
+/// `sort_by` is a list of sort keys applied in order: the first key
+/// is the primary sort, subsequent keys break ties. Empty list (the
+/// default) preserves the Table's row order. Sort values come from
+/// the column's source — a live subscription when source is
+/// `` `Netidx ``, or the source's stored value otherwise.
+val data_table: fn(
+    ?#sort_by: &Array<SortBy>,
+    ?#selection: &Array<string>,
+    ?#show_row_name: &bool,
+    ?#on_select: [fn(#path: string) -> Any, null],
+    ?#on_activate: [fn(#path: string) -> Any, null],
+    ?#on_header_click: [fn(#column: string) -> Any, null],
+    ?#on_update: [fn(#path: string, #value: Primitive) -> Any, null],
+    #table: &Table
+) -> Widget;
+
+/// Build a `Text` ColumnSpec. With no `on_edit` the cell is read-only.
+val text_column: fn(
+    #name: string,
+    ?#on_edit: [fn(#path: string, #value: Any) -> Any, null],
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Toggle` ColumnSpec for boolean cells.
+val toggle_column: fn(
+    #name: string,
+    ?#on_edit: [fn(#path: string, #value: bool) -> Any, null],
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Combo` ColumnSpec. `choices` is the picklist; each entry's
+/// `id` is the value written and `label` is what the user sees.
+val combo_column: fn(
+    #name: string,
+    #choices: Array<{ id: string, label: string }>,
+    ?#on_edit: [fn(#path: string, #value: string) -> Any, null],
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Spin` ColumnSpec for bounded numeric input.
+val spin_column: fn(
+    #name: string,
+    #min: f64,
+    #max: f64,
+    #increment: f64,
+    ?#on_edit: [fn(#path: string, #value: f64) -> Any, null],
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a read-only `Progress` ColumnSpec. Cell values are clamped to [0, 1].
+val progress_column: fn(
+    #name: string,
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Button` ColumnSpec. Each cell renders as a button; clicking
+/// fires `on_click` with the cell's path and current value.
+val button_column: fn(
+    #name: string,
+    ?#on_click: [fn(#path: string, #value: Any) -> Any, null],
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;
+
+/// Build a `Sparkline` ColumnSpec. Each cell accumulates values from its
+/// subscription for `history_seconds` and renders them as a rolling
+/// chart. By default the y-axis is shared across every cell in the
+/// column (auto-scaled to the union of all rows' values), so cells can
+/// be compared visually. Pass `#min`/`#max` to fix the axis to a
+/// caller-defined range instead.
+val sparkline_column: fn(
+    #name: string,
+    #history_seconds: f64,
+    ?#min: [f64, null],
+    ?#max: [f64, null],
+    ?#display_name: [string, null],
+    ?#source: &Source,
+    ?#on_resize: &[fn(width: f64) -> Any, null],
+    ?#width: &[f64, null]
+) -> ColumnSpec;

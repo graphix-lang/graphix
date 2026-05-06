@@ -119,7 +119,7 @@ impl Completer for BComplete {
                         {
                             if let Type::Fn(ft) = &b.typ {
                                 for arg in ft.args.iter() {
-                                    if let Some((lbl, _)) = &arg.label {
+                                    if let Some(lbl) = arg.label() {
                                         if lbl.starts_with(part) {
                                             let description =
                                                 Some(format!("{}", arg.typ));

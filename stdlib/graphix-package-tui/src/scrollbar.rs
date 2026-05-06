@@ -1,4 +1,4 @@
-use super::{compile, EmptyW, SizeV, StyleV, TRef, TuiW, TuiWidget};
+use super::{compile, validate, EmptyW, SizeV, StyleV, TRef, TuiW, TuiWidget};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -35,12 +35,12 @@ pub(super) struct ScrollbarW<X: GXExt> {
     begin_symbol: TRef<X, Option<ArcStr>>,
     child: TuiW,
     child_ref: Ref<X>,
-    content_length: TRef<X, Option<usize>>,
-    viewport_length: TRef<X, Option<usize>>,
+    content_length: TRef<X, Option<i64>>,
+    viewport_length: TRef<X, Option<i64>>,
     end_style: TRef<X, Option<StyleV>>,
     end_symbol: TRef<X, Option<ArcStr>>,
     orientation: TRef<X, Option<ScrollbarOrientationV>>,
-    position: TRef<X, Option<u16>>,
+    position: TRef<X, Option<i64>>,
     style: TRef<X, Option<StyleV>>,
     thumb_style: TRef<X, Option<StyleV>>,
     thumb_symbol: TRef<X, Option<ArcStr>>,
@@ -49,6 +49,9 @@ pub(super) struct ScrollbarW<X: GXExt> {
     size_ref: Ref<X>,
     last_size: SizeV,
     state: ScrollbarState,
+    last_warned_position: Option<i64>,
+    last_warned_content_length: Option<i64>,
+    last_warned_viewport_length: Option<i64>,
 }
 
 impl<X: GXExt> ScrollbarW<X> {
@@ -96,7 +99,7 @@ impl<X: GXExt> ScrollbarW<X> {
             Some(v) => compile(gx.clone(), v).await?,
             None => Box::new(EmptyW),
         };
-        let content_length = TRef::<X, Option<usize>>::new(content_length)
+        let content_length = TRef::<X, Option<i64>>::new(content_length)
             .context("scrollbar tref content_length")?;
         let end_style = TRef::<X, Option<StyleV>>::new(end_style)
             .context("scrollbar tref end_style")?;
@@ -105,7 +108,7 @@ impl<X: GXExt> ScrollbarW<X> {
         let orientation = TRef::<X, Option<ScrollbarOrientationV>>::new(orientation)
             .context("scrollbar tref orientation")?;
         let position =
-            TRef::<X, Option<u16>>::new(position).context("scrollbar tref position")?;
+            TRef::<X, Option<i64>>::new(position).context("scrollbar tref position")?;
         let style =
             TRef::<X, Option<StyleV>>::new(style).context("scrollbar tref style")?;
         let thumb_style = TRef::<X, Option<StyleV>>::new(thumb_style)
@@ -116,9 +119,20 @@ impl<X: GXExt> ScrollbarW<X> {
             .context("scrollbar tref track_style")?;
         let track_symbol = TRef::<X, Option<ArcStr>>::new(track_symbol)
             .context("scrollbar tref track_symbol")?;
-        let viewport_length = TRef::<X, Option<usize>>::new(viewport_length)
+        let viewport_length = TRef::<X, Option<i64>>::new(viewport_length)
             .context("scrollbar tref viewport_length")?;
-        let state = ScrollbarState::new(content_length.t.and_then(|t| t).unwrap_or(50));
+        // Initial state's content_length: clamp the user-provided value
+        // (negative becomes 0). The draw loop re-applies this each frame
+        // through the same helper, so the warn here would just be a
+        // duplicate — suppress by using a throwaway dedup slot.
+        let initial_len = content_length
+            .t
+            .and_then(|t| t)
+            .map(|raw| {
+                validate::clamp_usize("scrollbar", "content_length", &mut None, raw)
+            })
+            .unwrap_or(50);
+        let state = ScrollbarState::new(initial_len);
         Ok(Box::new(Self {
             begin_style,
             begin_symbol,
@@ -139,6 +153,9 @@ impl<X: GXExt> ScrollbarW<X> {
             track_symbol,
             viewport_length,
             state,
+            last_warned_position: None,
+            last_warned_content_length: None,
+            last_warned_viewport_length: None,
         }))
     }
 }
@@ -170,6 +187,9 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
             track_symbol,
             viewport_length,
             state: _,
+            last_warned_position: _,
+            last_warned_content_length: _,
+            last_warned_viewport_length: _,
         } = self;
         begin_style.update(id, &v).context("scrollbar update begin_style")?;
         begin_symbol.update(id, &v).context("scrollbar update begin_symbol")?;
@@ -211,6 +231,9 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
             track_symbol,
             viewport_length,
             state,
+            last_warned_position,
+            last_warned_content_length,
+            last_warned_viewport_length,
         } = self;
         let orientation = orientation
             .t
@@ -231,7 +254,8 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
             bar = bar.end_symbol(s.as_ref().map(|s| s.as_str()));
         }
         if let Some(Some(p)) = position.t {
-            *state = state.position(p as usize);
+            let p = validate::clamp_usize("scrollbar", "position", last_warned_position, p);
+            *state = state.position(p);
         }
         if let Some(Some(s)) = style.t {
             bar = bar.style(s.0);
@@ -249,9 +273,21 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
             bar = bar.track_symbol(s.as_ref().map(|s| s.as_str()));
         }
         if let Some(Some(l)) = content_length.t.take() {
+            let l = validate::clamp_usize(
+                "scrollbar",
+                "content_length",
+                last_warned_content_length,
+                l,
+            );
             *state = state.content_length(l);
         }
         if let Some(Some(l)) = viewport_length.t.take() {
+            let l = validate::clamp_usize(
+                "scrollbar",
+                "viewport_length",
+                last_warned_viewport_length,
+                l,
+            );
             *state = state.viewport_content_length(l);
         }
         frame.render_stateful_widget(bar, rect, state);

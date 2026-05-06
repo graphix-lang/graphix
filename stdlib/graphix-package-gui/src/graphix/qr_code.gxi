@@ -5,5 +5,5 @@ type QrCode = {
 
 val qr_code: fn(
   ?#cell_size: &[f64, null],
-  &string
+  data: &string
 ) -> Widget

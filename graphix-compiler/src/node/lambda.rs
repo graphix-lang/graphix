@@ -1,14 +1,15 @@
 use super::{compiler::compile, Nop};
 use crate::{
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId},
+    expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     node::pattern::StructPatternNode,
-    typ::{FnArgType, FnType, Type},
+    typ::{FnArgKind, FnArgType, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
     TypecheckPhase, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
+use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use fxhash::FxHashSet;
@@ -164,7 +165,14 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         }
         let mut argpats = vec![];
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
-            let pattern = StructPatternNode::compile(ctx, &atyp.typ, &a.pattern, scope)?;
+            let pattern = StructPatternNode::compile(
+                ctx,
+                &atyp.typ,
+                &a.pattern,
+                scope,
+                a.pos,
+                body.ori.clone(),
+            )?;
             if pattern.is_refutable() {
                 bail!(
                     "refutable patterns are not allowed in lambda arguments {}",
@@ -292,11 +300,13 @@ impl Lambda {
                     labeled: a.labeled.clone(),
                     pattern: a.pattern.clone(),
                     constraint: None,
+                    pos: a.pos,
                 },
                 Some(typ) => Arg {
                     labeled: a.labeled.clone(),
                     pattern: a.pattern.clone(),
                     constraint: Some(typ.scope_refs(&scope.lexical)),
+                    pos: a.pos,
                 },
             })
             .collect::<LPooled<Vec<_>>>();
@@ -337,14 +347,20 @@ impl Lambda {
             }
         }
         let typ = {
-            let args = Arc::from_iter(argspec.iter().map(|a| FnArgType {
-                label: a.labeled.as_ref().and_then(|dv| {
-                    a.pattern.single_bind().map(|n| (n.clone(), dv.is_some()))
-                }),
-                typ: match a.constraint.as_ref() {
+            let args = Arc::from_iter(argspec.iter().map(|a| {
+                let kind = match (a.labeled.as_ref(), a.pattern.single_bind()) {
+                    (Some(default), Some(name)) => FnArgKind::Labeled {
+                        name: name.clone(),
+                        has_default: default.is_some(),
+                    },
+                    (Some(_), None) => FnArgKind::Positional { name: None },
+                    (None, name) => FnArgKind::Positional { name: name.cloned() },
+                };
+                let typ = match a.constraint.as_ref() {
                     Some(t) => t.clone(),
                     None => Type::empty_tvar(),
-                },
+                };
+                FnArgType { kind, typ }
             }));
             let vargs = match vargs {
                 Some(Some(t)) => Some(t.clone()),
@@ -365,7 +381,7 @@ impl Lambda {
             })
         };
         typ.alias_tvars(&mut LPooled::take());
-        if needs_callsite {
+        if needs_callsite || ctx.env.lsp_mode {
             typ.lambda_ids.write().insert(id);
         }
         let _typ = typ.clone();
@@ -471,6 +487,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 name: "faux".into(),
                 scope: def.scope.lexical.clone(),
                 typ: Type::empty_tvar(),
+                pos: SourcePosition::default(),
+                ori: Arc::new(Origin::default()),
             },
         );
         let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);

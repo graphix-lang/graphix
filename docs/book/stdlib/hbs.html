@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,7 +180,7 @@ rendering.</p>
 <pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.
-val render: fn(?#strict: bool, ?#partials: 'a, string, 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
+val render: fn(?#strict: bool, ?#partials: 'a, s: string, y: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">use hbs;

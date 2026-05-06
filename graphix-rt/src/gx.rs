@@ -5,7 +5,10 @@ use futures::{channel::mpsc, future::try_join_all, StreamExt};
 use fxhash::{FxBuildHasher, FxHashMap};
 use graphix_compiler::{
     compile,
-    expr::{self, Expr, ExprId, ExprKind, ModuleResolver, Origin, Source},
+    expr::{
+        self, read_to_arcstr, Expr, ExprId, ExprKind, ModPath, ModuleResolver, Origin,
+        Source,
+    },
     node::{genn, lambda::LambdaDef},
     typ::Type,
     BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope,
@@ -115,7 +118,10 @@ impl<X: GXExt> GX<X> {
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
         let resolvers_default = |r: &mut Vec<ModuleResolver>| match dirs::data_dir() {
             None => (),
-            Some(dd) => r.push(ModuleResolver::Files(dd.join("graphix"))),
+            Some(dd) => r.push(ModuleResolver::Files {
+                base: dd.join("graphix"),
+                overrides: None,
+            }),
         };
         match std::env::var("GRAPHIX_MODPATH") {
             Err(_) => resolvers_default(&mut cfg.resolvers),
@@ -132,8 +138,10 @@ impl<X: GXExt> GX<X> {
             },
         };
         let event = Event::new(cfg.ctx.rt.ext.empty_event());
+        let mut ctx = cfg.ctx;
+        ctx.env.lsp_mode = cfg.lsp_mode;
         let mut t = Self {
-            ctx: cfg.ctx,
+            ctx,
             event,
             nodes: IndexMap::default(),
             callables: HashMap::default(),
@@ -287,8 +295,8 @@ impl<X: GXExt> GX<X> {
                 ToGX::GetEnv { res } => {
                     let _ = res.send(self.ctx.env.clone());
                 }
-                ToGX::Check { path, res } => {
-                    let _ = res.send(self.check(&path).await);
+                ToGX::Check { path, resolvers, initial_scope, res } => {
+                    let _ = res.send(self.check(&path, resolvers, initial_scope).await);
                 }
                 ToGX::Compile { text, rt, res } => {
                     let _ = res.send(self.compile(rt, text).await);
@@ -398,10 +406,28 @@ impl<X: GXExt> GX<X> {
                 };
                 let ori = Origin {
                     parent: None,
-                    source: Source::File(file),
+                    source: Source::File(file.clone()),
                     text: ArcStr::from(s),
                 };
-                (ori.clone(), expr::parser::parse(ori)?)
+                let exprs = expr::parser::parse(ori.clone())?;
+                let exprs = if file.extension().and_then(|s| s.to_str()) == Some("gx") {
+                    let intf = file.with_extension("gxi");
+                    match read_to_arcstr(&intf).await {
+                        Ok(intf_text) => {
+                            let intf_ori = Origin {
+                                parent: None,
+                                source: Source::File(intf),
+                                text: ArcStr::from(intf_text),
+                            };
+                            let sig = expr::parser::parse_sig(intf_ori)?;
+                            expr::add_interface_modules(exprs, &sig)
+                        }
+                        Err(_) => exprs,
+                    }
+                } else {
+                    exprs
+                };
+                (ori, exprs)
             }
             Source::Netidx(path) => {
                 let val = self
@@ -433,16 +459,52 @@ impl<X: GXExt> GX<X> {
         Ok((ori, exprs))
     }
 
-    async fn check(&mut self, source: &Source) -> Result<()> {
+    async fn check(
+        &mut self,
+        source: &Source,
+        resolver_override: Option<Vec<ModuleResolver>>,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
+        let prev_refs = std::mem::replace(
+            &mut self.ctx.references,
+            graphix_compiler::REFERENCE_SITE_POOL.take(),
+        );
+        let prev_modrefs = std::mem::replace(
+            &mut self.ctx.module_references,
+            graphix_compiler::MODULE_REF_SITE_POOL.take(),
+        );
+        let prev_scopemap = std::mem::replace(
+            &mut self.ctx.scope_map,
+            graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
+        );
+        let prev_lsp = if self.ctx.env.lsp_mode {
+            self.ctx.env.lsp.replace(Arc::new(parking_lot::Mutex::new(
+                graphix_compiler::env::Lsp::new(),
+            )))
+        } else {
+            None
+        };
+        let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
+            Some(v) => Arc::from(v),
+            None => self.resolvers.clone(),
+        };
         let go = async {
             let st = Instant::now();
             info!("parse time: {:?}", st.elapsed());
-            let scope = Scope::root();
+            let scope = match &initial_scope {
+                None => Scope::root(),
+                Some(s) => {
+                    let path = ModPath(netidx::path::Path::root().append(s.as_str()));
+                    self.ctx.env.unbind_scope_subtree(&path);
+                    Scope { lexical: path.clone(), dynamic: path }
+                }
+            };
             let (ori, exprs) = self.load_exprs(source).await?;
-            let exprs =
-                try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
-                    .await?;
+            let exprs = try_join_all(exprs.iter().map(|e| {
+                e.resolve_modules_in_scope(&scope.lexical, &resolvers_for_call)
+            }))
+            .await?;
             info!("resolve time: {:?}", st.elapsed());
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             for e in exprs.iter() {
@@ -458,13 +520,36 @@ impl<X: GXExt> GX<X> {
                     }
                 }
             }
+            let env = self.ctx.env.clone();
+            let references = std::mem::replace(
+                &mut self.ctx.references,
+                graphix_compiler::REFERENCE_SITE_POOL.take(),
+            );
+            let module_references = std::mem::replace(
+                &mut self.ctx.module_references,
+                graphix_compiler::MODULE_REF_SITE_POOL.take(),
+            );
+            let lsp = match self.ctx.env.lsp.as_ref() {
+                None => graphix_compiler::env::Lsp::new(),
+                Some(lsp) => {
+                    std::mem::replace(&mut *lsp.lock(), graphix_compiler::env::Lsp::new())
+                }
+            };
+            let scope_map = std::mem::replace(
+                &mut self.ctx.scope_map,
+                graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
+            );
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok(())
+            Ok(crate::CheckResult { env, references, module_references, scope_map, lsp })
         };
         let res = go.await;
         self.ctx.env = env;
+        self.ctx.references = prev_refs;
+        self.ctx.module_references = prev_modrefs;
+        self.ctx.scope_map = prev_scopemap;
+        self.ctx.env.lsp = prev_lsp;
         res
     }
 
@@ -499,7 +584,7 @@ impl<X: GXExt> GX<X> {
         let args = lb.typ.args.iter();
         let args = args
             .map(|a| {
-                if a.label.as_ref().map(|(_, opt)| *opt).unwrap_or(false) {
+                if a.has_default() {
                     bail!("can't call lambda with an optional argument from rust")
                 } else {
                     Ok(BindId::new())

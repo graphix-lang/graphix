@@ -1,0 +1,2315 @@
+use crate::diagnostics::{error_leaf_message, error_location};
+use arcstr::ArcStr;
+use graphix_compiler::{
+    env::{Env, Lsp},
+    expr::{BufferOverrides, ModPath, Source},
+    typ::{FnArgKind, FnType, Type},
+    ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry, SigImplLink,
+    SourcePosition, TypeRefSite, MODULE_REF_SITE_POOL, REFERENCE_SITE_POOL,
+    SCOPE_MAP_ENTRY_POOL,
+};
+use lsp_types::Uri;
+use poolshark::{global::GPooled, local::LPooled};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+};
+
+/// An open document tracked by the language server.
+pub struct Document {
+    pub version: i32,
+    pub text: String,
+    /// The compiler environment as it would be after type-checking
+    /// this document. `Some` after a successful check, `None` after a
+    /// failed one (so the env doesn't drift away from the user's
+    /// current source).
+    pub env: Option<Env>,
+    /// Resolved name reference sites observed during the most
+    /// recent successful check, used to answer
+    /// `textDocument/references` and prepareRename.
+    pub references: GPooled<Vec<ReferenceSite>>,
+    /// Module reference sites (`use foo;`, `mod foo;`).
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
+    /// Per-Expr scope map from the latest compile. Used to answer
+    /// cursor → scope queries.
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    /// IDE side-channels populated during the most recent check:
+    /// type references (uses of `Foo` in type positions), sig→impl
+    /// bind id pairs, and per-module impl-side env snapshots.
+    pub lsp: Lsp,
+}
+
+impl Document {
+    pub fn new(text: String, version: i32) -> Self {
+        Self {
+            version,
+            text,
+            env: None,
+            references: REFERENCE_SITE_POOL.take(),
+            module_references: MODULE_REF_SITE_POOL.take(),
+            scope_map: SCOPE_MAP_ENTRY_POOL.take(),
+            lsp: Lsp::new(),
+        }
+    }
+}
+
+/// Result of a backend typecheck. Mirrors `graphix_rt::CheckResult`
+/// but doesn't depend on graphix-rt directly.
+pub struct TypecheckResult {
+    pub env: Env,
+    pub references: GPooled<Vec<ReferenceSite>>,
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    /// IDE side-channels populated during the check.
+    pub lsp: Lsp,
+}
+
+/// Backend that owns the graphix runtime / environment and can
+/// type-check documents on behalf of the LSP.
+///
+/// The LSP loop is synchronous; the backend is responsible for
+/// driving any async runtime needed to talk to graphix-rt.
+pub trait LspBackend: Send + Sync + 'static {
+    /// Get a current snapshot of the base compiler environment with
+    /// the stdlib (and any project modules) loaded. This is the env
+    /// used as a fallback when a document has no successful check
+    /// result yet.
+    fn env(&self) -> Env;
+    /// Type-check a project rooted at `root`. The returned
+    /// `TypecheckResult` covers every file reachable from `root` via
+    /// `mod foo;`. The backend's resolver chain layers a
+    /// `BufferOverride` for the workspace's open buffers so unsaved
+    /// edits in any file participate in the check — there is no
+    /// disk-only path. Pass `root = file_path` for a stray document
+    /// that isn't part of a known project.
+    ///
+    /// `initial_scope`, when set, scopes the entire compilation
+    /// under that path (as if the source were the body of a
+    /// `mod <scope> { ... }` block). Used when editing a graphix
+    /// package crate so its modules register under the package's
+    /// namespace and don't collide with the runtime's pre-loaded
+    /// copy of the same package.
+    fn typecheck_project(
+        &self,
+        root: &Path,
+        initial_scope: Option<ArcStr>,
+    ) -> anyhow::Result<TypecheckResult>;
+    /// The shared open-buffer override map. The LSP server clones the
+    /// returned `BufferOverrides` and mutates it on every `did_open` /
+    /// `did_change` / `did_close`. The same `Arc<Mutex<…>>` is held by
+    /// the backend's resolver chain, so changes are visible to the next
+    /// check call without rebuilding any structure.
+    fn buffer_overrides(&self) -> BufferOverrides;
+}
+
+/// One project's last-known typecheck result, keyed by the project
+/// index in `ServerState.workspace.projects`. `None` while we
+/// haven't run the project compile yet (or it failed).
+pub struct ProjectResult {
+    pub env: Env,
+    pub references: GPooled<Vec<ReferenceSite>>,
+    pub module_references: GPooled<Vec<ModuleRefSite>>,
+    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
+    pub lsp: Lsp,
+}
+
+/// Core language intelligence state.
+///
+/// Holds the compiler environment, open documents, and the workspace
+/// project graph. Drives completion, hover, go-to-definition,
+/// references, and diagnostics.
+pub struct ServerState {
+    pub env: Env,
+    pub documents: HashMap<Uri, Document>,
+    pub backend: Arc<dyn LspBackend>,
+    /// Filesystem roots the editor told us about (root_uri /
+    /// workspaceFolders). Used to scan for `.gx`/`.gxi` files.
+    pub workspace_roots: Vec<PathBuf>,
+    /// Last scan of the workspace. Rebuilt on workspace changes.
+    pub workspace: crate::workspace::WorkspaceModel,
+    /// Last typecheck result per project, parallel to
+    /// `workspace.projects`. `None` while a project hasn't been
+    /// checked yet or its last check errored.
+    pub project_results: Vec<Option<ProjectResult>>,
+    /// URIs we published non-empty diagnostics for in the last
+    /// project recheck. Used to publish empty diagnostics on the
+    /// next cycle for files that recovered, so editors don't show
+    /// stale red squiggles.
+    pub last_project_diag_uris: HashSet<Uri>,
+    /// Same idea as `last_project_diag_uris` but for the per-document
+    /// `check_document` cycle. Tracked separately so a save-driven
+    /// recheck and a per-edit check don't stomp each other's stale
+    /// sets.
+    pub last_check_diag_uris: HashSet<Uri>,
+    /// The most recent doc the editor told us about (open / change /
+    /// save). `workspace/symbol` uses this to scope its search to the
+    /// project the user is working in, since the request itself
+    /// carries no file context.
+    pub last_active_uri: Option<Uri>,
+    /// Whether the client advertised `completionItem.snippetSupport`.
+    /// Drives whether function completions emit a snippet body that
+    /// expands `name(${1}, ${2})$0` on accept.
+    pub snippet_support: bool,
+    /// Position encoding negotiated with the client. Drives how we
+    /// interpret incoming `Position.character` and how we serialize
+    /// outgoing positions.
+    pub position_encoding: crate::position::PositionEncoding,
+}
+
+impl ServerState {
+    pub fn new(
+        backend: Arc<dyn LspBackend>,
+        snippet_support: bool,
+        position_encoding: crate::position::PositionEncoding,
+    ) -> Self {
+        let env = backend.env();
+        Self {
+            env,
+            documents: HashMap::new(),
+            backend,
+            workspace_roots: Vec::new(),
+            workspace: Default::default(),
+            project_results: Vec::new(),
+            last_project_diag_uris: HashSet::new(),
+            last_check_diag_uris: HashSet::new(),
+            last_active_uri: None,
+            snippet_support,
+            position_encoding,
+        }
+    }
+
+    /// Tell the state about the editor's workspace folders. Triggers
+    /// an initial scan and project compile, returning the
+    /// per-file diagnostics so the caller can publish them.
+    pub fn set_workspace_roots(
+        &mut self,
+        roots: Vec<PathBuf>,
+    ) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
+        self.workspace_roots = roots;
+        self.recheck_workspace()
+    }
+
+    /// Re-scan the workspace and re-typecheck every project from
+    /// disk. Throws away the previous project state and replaces it
+    /// wholesale.
+    ///
+    /// Returns a (uri → diagnostics) map covering both errored
+    /// projects (with the diagnostic attributed to the file the
+    /// error originated in) and previously-erroring files that now
+    /// compile cleanly (returned with an empty diagnostic list so
+    /// callers can clear stale squiggles).
+    pub fn recheck_workspace(&mut self) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
+        if self.workspace_roots.is_empty() {
+            self.workspace = Default::default();
+            self.project_results.clear();
+            // Clear any stale diagnostics from the previous cycle.
+            let mut out = HashMap::new();
+            for uri in self.last_project_diag_uris.drain() {
+                out.insert(uri, Vec::new());
+            }
+            return out;
+        }
+        self.workspace = crate::workspace::scan(&self.workspace_roots);
+        let mut results: Vec<Option<ProjectResult>> =
+            Vec::with_capacity(self.workspace.projects.len());
+        let mut diags_by_uri: HashMap<Uri, Vec<lsp_types::Diagnostic>> =
+            HashMap::new();
+        for project in &self.workspace.projects {
+            let r = self
+                .backend
+                .typecheck_project(&project.root, project.package_scope.clone());
+            match r {
+                Ok(TypecheckResult {
+                    env,
+                    references,
+                    module_references,
+                    scope_map,
+                    lsp,
+                }) => {
+                    results.push(Some(ProjectResult {
+                        env,
+                        references,
+                        module_references,
+                        scope_map,
+                        lsp,
+                    }));
+                }
+                Err(e) => {
+                    let (uri, diag) =
+                        self.project_error_to_diagnostic(&e, &project.root);
+                    diags_by_uri.entry(uri).or_default().push(diag);
+                    results.push(None);
+                }
+            }
+        }
+        self.project_results = results;
+        // Compose the publish set: every URI we have diagnostics for
+        // this cycle plus every URI that had diagnostics last cycle but
+        // doesn't anymore (so we can publish empty to clear).
+        let mut out: HashMap<Uri, Vec<lsp_types::Diagnostic>> = HashMap::new();
+        for (uri, diags) in diags_by_uri {
+            out.insert(uri, diags);
+        }
+        for uri in self.last_project_diag_uris.iter() {
+            out.entry(uri.clone()).or_default();
+        }
+        self.last_project_diag_uris =
+            out.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k.clone()).collect();
+        out
+    }
+
+    /// Translate an incoming LSP position (whose `character` is in the
+    /// negotiated encoding's units) into a position where `character`
+    /// is a char count — the unit our cursor helpers expect. Returns
+    /// the input unchanged when we have no document text to consult.
+    fn normalize_position(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> lsp_types::Position {
+        if matches!(self.position_encoding, crate::position::PositionEncoding::Utf32) {
+            return position;
+        }
+        let Some(doc) = self.documents.get(uri) else {
+            return position;
+        };
+        let Some(line_text) = doc.text.lines().nth(position.line as usize) else {
+            return position;
+        };
+        let character = crate::position::position_to_char_col(
+            line_text,
+            position,
+            self.position_encoding,
+        ) as u32;
+        lsp_types::Position { line: position.line, character }
+    }
+
+    /// Build an LSP position from a char-based (line, column) the
+    /// compiler reports, encoding `column` according to the negotiated
+    /// position encoding. `text` is the source the position refers to —
+    /// for cross-file locations this is the *target* file's text, not
+    /// the requesting document's.
+    fn lsp_position_from_char_col(
+        &self,
+        text: &str,
+        line: u32,
+        char_col: usize,
+    ) -> lsp_types::Position {
+        crate::position::char_col_to_position_in_text(
+            text,
+            line,
+            char_col,
+            self.position_encoding,
+        )
+    }
+
+    /// Indices of projects that contain the file at `uri`.
+    fn projects_containing<'a>(&'a self, uri: &Uri) -> impl Iterator<Item = usize> + 'a {
+        let path = uri_to_path(uri);
+        self.workspace
+            .file_to_projects
+            .get(&path.unwrap_or_default())
+            .into_iter()
+            .flat_map(|v| v.iter().copied())
+    }
+
+    /// Track a newly opened document.
+    pub fn open_document(&mut self, uri: Uri, text: String, version: i32) {
+        self.documents.insert(uri, Document::new(text, version));
+    }
+
+    /// Update the text of an already-opened document. Mirrors the
+    /// new text into the shared `BufferOverride` map so the next check
+    /// (in any project) sees the unsaved edit.
+    pub fn update_document(&mut self, uri: &Uri, text: String, version: i32) {
+        let arc_text = ArcStr::from(text.as_str());
+        if let Some(doc) = self.documents.get_mut(uri) {
+            doc.text = text;
+            doc.version = version;
+        } else {
+            self.documents.insert(uri.clone(), Document::new(text, version));
+        }
+        if let Some(path) = uri_to_path(uri) {
+            self.backend.buffer_overrides().lock().insert(path, arc_text);
+        }
+    }
+
+    /// Stop tracking a document. Drops the buffer override so disk text
+    /// applies again on the next check.
+    pub fn close_document(&mut self, uri: &Uri) {
+        self.documents.remove(uri);
+        if let Some(path) = uri_to_path(uri) {
+            self.backend.buffer_overrides().lock().remove(&path);
+        }
+    }
+
+    /// Find a project root for `uri`, falling back to the file path
+    /// itself for stray docs not part of any known project.
+    fn project_root_for(&self, uri: &Uri) -> Option<PathBuf> {
+        if let Some(idx) = self.projects_containing(uri).next() {
+            return Some(self.workspace.projects[idx].root.clone());
+        }
+        uri_to_path(uri)
+    }
+
+    /// If `root` matches a known project, return that project's
+    /// `package_scope`. Falls back to `None` for stray roots that
+    /// weren't picked up by the workspace scanner.
+    fn package_scope_for(&self, root: &Path) -> Option<ArcStr> {
+        self.workspace
+            .projects
+            .iter()
+            .find(|p| p.root == root)
+            .and_then(|p| p.package_scope.clone())
+    }
+
+    /// Parse and type-check the document and return any diagnostics.
+    ///
+    /// Runs a project-style check rooted at the doc's project (or the
+    /// doc itself for stray files). The shared `BufferOverride` map
+    /// makes every open buffer's unsaved text visible to the check, so
+    /// cross-file diagnostics, references, types, and goto-def reflect
+    /// the editor's view without saving. Per-doc fields are populated
+    /// from the result.
+    pub fn check_document(
+        &mut self,
+        uri: &Uri,
+    ) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
+        self.last_active_uri = Some(uri.clone());
+        // Make sure the latest buffer text is in the override map. Edits
+        // typically arrive via `update_document` which already mirrors
+        // them, but `did_open` lands here without a prior change.
+        if let Some(doc) = self.documents.get(uri) {
+            if let Some(path) = uri_to_path(uri) {
+                self.backend
+                    .buffer_overrides()
+                    .lock()
+                    .insert(path, ArcStr::from(doc.text.as_str()));
+            }
+        }
+        let mut out: HashMap<Uri, Vec<lsp_types::Diagnostic>> = HashMap::new();
+        // Always include the active URI so callers can publish an empty
+        // list to clear stale squiggles when the doc now compiles.
+        out.insert(uri.clone(), Vec::new());
+        if !self.documents.contains_key(uri) {
+            return out;
+        }
+        let Some(root) = self.project_root_for(uri) else {
+            return out;
+        };
+        let initial_scope = self.package_scope_for(&root);
+        match self.backend.typecheck_project(&root, initial_scope) {
+            Ok(TypecheckResult {
+                env,
+                references,
+                module_references,
+                scope_map,
+                lsp,
+            }) => {
+                if let Some(d) = self.documents.get_mut(uri) {
+                    d.env = Some(env);
+                    d.references = references;
+                    d.module_references = module_references;
+                    d.scope_map = scope_map;
+                    d.lsp = lsp;
+                }
+            }
+            Err(e) => {
+                if let Some(d) = self.documents.get_mut(uri) {
+                    d.env = None;
+                    d.references = REFERENCE_SITE_POOL.take();
+                    d.module_references = MODULE_REF_SITE_POOL.take();
+                    d.scope_map = SCOPE_MAP_ENTRY_POOL.take();
+                    d.lsp = Lsp::new();
+                }
+                // Attribute the failure to the file the error chain
+                // names, not the active URI. The error may originate in
+                // a different module of the same project (e.g. editing
+                // a sibling .gxi while the implementation .gx fails to
+                // typecheck).
+                let (target_uri, diag) =
+                    self.project_error_to_diagnostic(&e, &root);
+                out.entry(target_uri.clone()).or_default().push(diag);
+            }
+        }
+        // Clear any URIs we put diagnostics on last cycle that don't
+        // appear this cycle.
+        for stale in self.last_check_diag_uris.iter() {
+            out.entry(stale.clone()).or_default();
+        }
+        self.last_check_diag_uris =
+            out.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k.clone()).collect();
+        out
+    }
+
+    /// Find the lexical scope at `position` in `uri` using the
+    /// compiler-emitted scope map. Picks the entry with the greatest
+    /// `pos` ≤ cursor in the same file as the requesting URI. Walks
+    /// the active doc first (most-fresh data), then any project's
+    /// scope map. Returns root scope if nothing matches — that's
+    /// the natural default at top of file or in unparsed regions.
+    pub fn scope_at(&self, uri: &Uri, position: lsp_types::Position) -> ModPath {
+        let position = self.normalize_position(uri, position);
+        self.scope_at_char(uri, position)
+    }
+
+    /// `scope_at` for callers that already hold a char-encoded position
+    /// (i.e. one that's been through `normalize_position`). Public state
+    /// methods that have already normalized their input use this to
+    /// avoid double-translating the position.
+    fn scope_at_char(&self, uri: &Uri, position: lsp_types::Position) -> ModPath {
+        let mut best: Option<ScopeMapEntry> = None;
+        let mut consider = |e: &ScopeMapEntry| {
+            if !origin_matches_uri(&e.ori, uri) {
+                return;
+            }
+            if !pos_le(e.pos, position) {
+                return;
+            }
+            match &best {
+                None => best = Some(e.clone()),
+                Some(b) if pos_lt(b.pos, e.pos) => best = Some(e.clone()),
+                _ => (),
+            }
+        };
+        if let Some(doc) = self.documents.get(uri) {
+            for e in doc.scope_map.iter() {
+                consider(e);
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for e in r.scope_map.iter() {
+                    consider(e);
+                }
+            }
+        }
+        best.map(|e| e.scope.lexical).unwrap_or_else(ModPath::root)
+    }
+
+    /// Pick the most-specific env we have for `uri`. Order:
+    ///   1. The document's own post-check env (live, single-file).
+    ///   2. Any project containing the file — its env covers more
+    ///      ground (cross-file imports), even if the data is from
+    ///      the most recent disk-based project recheck.
+    ///   3. The backend's base env (stdlib only).
+    fn env_for<'a>(&'a self, uri: &Uri) -> &'a Env {
+        if let Some(env) = self.documents.get(uri).and_then(|d| d.env.as_ref()) {
+            return env;
+        }
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                return &r.env;
+            }
+        }
+        &self.env
+    }
+
+    /// Return completion items at the given position.
+    pub fn completions(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Vec<lsp_types::CompletionItem> {
+        let position = self.normalize_position(uri, position);
+        let Some(doc) = self.documents.get(uri) else {
+            return Vec::new();
+        };
+        let scope = self.scope_at_char(uri, position);
+        let env = self.env_for(uri);
+        let mut items = Vec::new();
+        // Special-case: cursor is inside `#…` — the user is naming a
+        // labeled arg, not picking from the global namespace. Emit only
+        // the callee's labeled args (filtered by what's been typed) and
+        // wire up a text_edit so accepting the completion replaces the
+        // typed `#…` instead of appending to it.
+        if let Some(label_ctx) = label_prefix(&doc.text, position) {
+            if let Some(callee) = call_context(&doc.text, position) {
+                let basename =
+                    callee.rsplit("::").next().unwrap_or(&callee).to_string();
+                let callee_path = modpath_from_typed(&callee);
+                for (name, bind) in lookup_matching_via_by_id(env, &scope, &callee_path)
+                {
+                    if name.as_str() != basename {
+                        continue;
+                    }
+                    if let Type::Fn(fnt) = &bind.typ {
+                        push_labeled_arg_completions(
+                            &mut items,
+                            fnt,
+                            Some(label_ctx.range),
+                        );
+                    }
+                    break;
+                }
+            }
+            return items;
+        }
+        let prefix = token_before_cursor(&doc.text, position).unwrap_or_default();
+        // Use the compiler-emitted scope map to find what scope the
+        // cursor is in. This makes lambda parameters, let bindings,
+        // and other locally-scoped names visible in completion.
+        let part = modpath_from_typed(&prefix);
+        let matched = lookup_matching_via_by_id(env, &scope, &part);
+        // If the cursor sits inside an open call's argument list, prepend
+        // the callee's labeled args as completion items so users discover
+        // optional named params.
+        if let Some(callee) = call_context(&doc.text, position) {
+            let basename = callee.rsplit("::").next().unwrap_or(&callee).to_string();
+            let callee_path = modpath_from_typed(&callee);
+            for (name, bind) in lookup_matching_via_by_id(env, &scope, &callee_path) {
+                if name.as_str() != basename {
+                    continue;
+                }
+                if let Type::Fn(fnt) = &bind.typ {
+                    push_labeled_arg_completions(&mut items, fnt, None);
+                }
+                break;
+            }
+        }
+        // Track binding labels so we can hide a same-named module entry
+        // below — when a name is both a function (via `use foo;`) and
+        // the module it came from, the function form is more useful in
+        // a completion popup. The module is still reachable via
+        // qualified-path completion (`column::Column`).
+        let mut binding_labels: HashSet<String> = HashSet::new();
+        for (name, bind) in matched {
+            let (kind, snippet) = match &bind.typ {
+                Type::Fn(fnt) => (
+                    lsp_types::CompletionItemKind::FUNCTION,
+                    self.snippet_support.then(|| fn_snippet(name.as_str(), fnt)),
+                ),
+                _ => (lsp_types::CompletionItemKind::VARIABLE, None),
+            };
+            let label = name.to_string();
+            binding_labels.insert(label.clone());
+            let (insert_text, insert_text_format) = match snippet {
+                Some(s) => (Some(s), Some(lsp_types::InsertTextFormat::SNIPPET)),
+                None => (None, None),
+            };
+            items.push(lsp_types::CompletionItem {
+                label,
+                kind: Some(kind),
+                detail: Some(format_bind_type(&bind.typ)),
+                documentation: bind
+                    .doc
+                    .as_ref()
+                    .map(|d| lsp_types::Documentation::String(d.to_string())),
+                insert_text,
+                insert_text_format,
+                ..Default::default()
+            });
+        }
+        // Module completions still use the env's `modules` set.
+        for module in env.lookup_matching_modules(&scope, &part) {
+            let label = module.to_string();
+            if binding_labels.contains(&label) {
+                continue;
+            }
+            items.push(lsp_types::CompletionItem {
+                label,
+                kind: Some(lsp_types::CompletionItemKind::MODULE),
+                ..Default::default()
+            });
+        }
+        items
+    }
+
+    /// Return hover information for the symbol at the given position.
+    pub fn hover(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Hover> {
+        let position = self.normalize_position(uri, position);
+        let doc = self.documents.get(uri)?;
+        let env = self.env_for(uri);
+
+        // First, try resolving via a recorded reference site at the
+        // cursor. This is the only path that works for bindings that
+        // aren't reachable by name from the cursor's scope — lambda
+        // parameters, lets inside nested blocks, and the variable
+        // tokens inside string interpolations all show up here.
+        for r in doc.references.iter() {
+            if position_in_ref(position, r) {
+                if let Some(bind) = bind_for_id(env, r.bind_id) {
+                    return Some(bind_hover(&r.name.to_string(), bind));
+                }
+            }
+        }
+
+        // Cursor on a binding's declaration (lambda param, let name,
+        // etc.). Declarations don't appear in `doc.references`, so
+        // scan ide_binds for a Bind whose `pos` covers the cursor.
+        if let Some(bind) = bind_at_decl(env, uri, position) {
+            return Some(bind_hover(bind.name.as_str(), bind));
+        }
+
+        let word = get_word_at_position(&doc.text, position)?;
+        // Use the cursor's lexical scope so locally-bound names
+        // (let inside a function, etc.) are resolved correctly.
+        // `position` is already char-encoded — call the inner
+        // helper directly so we don't normalize twice.
+        let scope = self.scope_at_char(uri, position);
+        let name: ModPath = word.split("::").collect();
+
+        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
+            return Some(bind_hover(&word, bind));
+        }
+
+        if let Some(typedef) = env.lookup_typedef(&scope, &name) {
+            let mut contents = format!("```graphix\ntype {} = {}\n```", word, typedef.typ);
+            if let Some(doc) = &typedef.doc {
+                contents.push_str("\n\n");
+                contents.push_str(doc);
+            }
+            return Some(lsp_types::Hover {
+                contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                    kind: lsp_types::MarkupKind::Markdown,
+                    value: contents,
+                }),
+                range: None,
+            });
+        }
+
+        None
+    }
+
+    /// Return all known reference sites for the symbol under the
+    /// cursor. Resolves the cursor to a `BindId` two ways: by
+    /// matching against a recorded reference site that contains the
+    /// position, or — if the cursor is on the binding name itself —
+    /// by name lookup in the document's env. Optionally include the
+    /// declaration site so editors can show "1 definition + N
+    /// references".
+    pub fn references(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+        include_declaration: bool,
+    ) -> Vec<lsp_types::Location> {
+        let position = self.normalize_position(uri, position);
+        let Some(doc) = self.documents.get(uri) else {
+            return Vec::new();
+        };
+        // We use (name, scope) as the cross-source key because BindIds
+        // are minted fresh per compile — the same identifier resolves
+        // to a different `BindId` in the active-doc check vs each
+        // project compile.
+        let scope = ModPath::root();
+        let name = self
+            .name_at(uri, position)
+            .or_else(|| {
+                get_word_at_position(&doc.text, position)
+                    .map(|w| w.split("::").collect::<ModPath>())
+            });
+        let Some(name) = name else { return Vec::new() };
+        let mut locs: Vec<lsp_types::Location> = Vec::new();
+        // Active doc: doc-local bindings (let foo = …) only the live
+        // check sees them.
+        self.collect_refs_from(
+            doc.env.as_ref(),
+            &doc.references,
+            &doc.lsp.sig_links,
+            &doc.lsp.module_internals,
+            &scope,
+            &name,
+            include_declaration,
+            uri,
+            &mut locs,
+        );
+        // Each containing project contributes its cross-file
+        // references for the same name.
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                self.collect_refs_from(
+                    Some(&r.env),
+                    &r.references,
+                    &r.lsp.sig_links,
+                    &r.lsp.module_internals,
+                    &scope,
+                    &name,
+                    include_declaration,
+                    uri,
+                    &mut locs,
+                );
+            }
+        }
+        // Module references: if the cursor is on a module name, also
+        // collect every `use foo;` / `mod foo;` site that resolved to
+        // the same canonical path.
+        if let Some(canonical) = self.canonical_module_at(uri, position) {
+            self.collect_module_refs(&canonical, uri, &mut locs);
+        }
+        // Type references: if the cursor is on a type name, find
+        // every site that resolved to the same canonical (scope, name).
+        // The compiler captures both lookup_ref derefs and the walk
+        // of typedef bodies, so we can match precisely.
+        if let Some((canonical_scope, type_name)) =
+            self.canonical_typedef_at(uri, position)
+        {
+            self.collect_type_refs(&canonical_scope, &type_name, uri, &mut locs);
+            if include_declaration {
+                if let Some(loc) =
+                    self.typedef_decl_location(&canonical_scope, &type_name, uri)
+                {
+                    locs.push(loc);
+                }
+            }
+        }
+        locs.sort_by(|a, b| {
+            a.uri
+                .as_str()
+                .cmp(b.uri.as_str())
+                .then(a.range.start.line.cmp(&b.range.start.line))
+                .then(a.range.start.character.cmp(&b.range.start.character))
+        });
+        locs.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
+        locs
+    }
+
+    fn collect_refs_from(
+        &self,
+        env: Option<&Env>,
+        references: &[ReferenceSite],
+        sig_links: &[SigImplLink],
+        module_internals: &[ModuleInternalView],
+        scope: &ModPath,
+        name: &ModPath,
+        include_declaration: bool,
+        requesting_uri: &Uri,
+        out: &mut Vec<lsp_types::Location>,
+    ) {
+        let Some(env) = env else { return };
+        let Some((_, bind)) = env.lookup_bind(scope, name) else { return };
+        let starter_id = bind.id;
+        // Sig val proxies live in the project's external env; impl
+        // bindings live in the per-module internal env. find-references
+        // should return both sides — walk sig_links and union the
+        // matching pair so reference lookups don't depend on which side
+        // the user clicked.
+        let mut ids: Vec<graphix_compiler::BindId> = Vec::with_capacity(2);
+        ids.push(starter_id);
+        for l in sig_links {
+            if l.sig_id == starter_id && !ids.contains(&l.impl_id) {
+                ids.push(l.impl_id);
+            }
+            if l.impl_id == starter_id && !ids.contains(&l.sig_id) {
+                ids.push(l.sig_id);
+            }
+        }
+        for r in references {
+            if !ids.contains(&r.bind_id) {
+                continue;
+            }
+            if let Some(loc) = self.ref_to_location(requesting_uri, &r.ori, r.pos) {
+                out.push(loc);
+            }
+        }
+        if include_declaration {
+            // Sig declaration site comes from the external env's bind.
+            if let Some(loc) = self.ref_to_location(requesting_uri, &bind.ori, bind.pos) {
+                out.push(loc);
+            }
+            // Impl declaration site is in the module's internal env —
+            // chase any unioned id that isn't `starter_id`.
+            for id in ids.iter().skip(1) {
+                if let Some(impl_bind) =
+                    module_internals.iter().find_map(|v| v.env.by_id.get(id))
+                {
+                    if let Some(loc) = self.ref_to_location(
+                        requesting_uri,
+                        &impl_bind.ori,
+                        impl_bind.pos,
+                    ) {
+                        out.push(loc);
+                    }
+                }
+            }
+        }
+    }
+
+    /// If a recorded reference site in the active document covers
+    /// `position`, return the name from that site so we can
+    /// distinguish shadowed identifiers in cross-source lookup.
+    fn name_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<ModPath> {
+        let doc = self.documents.get(uri)?;
+        for r in doc.references.iter() {
+            if position_in_ref(position, r) {
+                return Some(r.name.clone());
+            }
+        }
+        None
+    }
+
+    /// If the cursor sits on a recorded reference site, return the
+    /// declaration site (`def_pos`, `def_ori`) recorded on it. The
+    /// ReferenceSite captures this at resolution time, so this
+    /// works even for bindings that have since been removed from
+    /// the env (e.g. lambda parameters tied to a single callsite).
+    /// If the cursor is on a `use foo;` / `mod foo;` site, return
+    /// the canonical module path it resolved to.
+    fn canonical_module_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<ModPath> {
+        let doc = self.documents.get(uri)?;
+        for m in doc.module_references.iter() {
+            if position_in_module_ref(position, m) {
+                return Some(m.canonical.clone());
+            }
+        }
+        None
+    }
+
+    /// Walk active doc + every project's module_references, yielding
+    /// locations for every entry whose canonical path matches.
+    fn collect_module_refs(
+        &self,
+        canonical: &ModPath,
+        requesting_uri: &Uri,
+        out: &mut Vec<lsp_types::Location>,
+    ) {
+        let push = |m: &ModuleRefSite, out: &mut Vec<lsp_types::Location>| {
+            if let Some(loc) = self.ref_to_location(requesting_uri, &m.ori, m.pos) {
+                out.push(loc);
+            }
+        };
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            for m in doc.module_references.iter() {
+                if &m.canonical == canonical {
+                    push(m, out);
+                }
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for m in r.module_references.iter() {
+                    if &m.canonical == canonical {
+                        push(m, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// If the cursor is on a recorded TypeRefSite, return the
+    /// canonical (scope, name) of the typedef it resolved to.
+    fn canonical_typedef_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<(ModPath, ModPath)> {
+        let doc = self.documents.get(uri)?;
+        for t in doc.lsp.type_refs.iter() {
+            if position_in_type_ref(position, t) {
+                return Some((t.canonical_scope.clone(), t.name.clone()));
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in r.lsp.type_refs.iter() {
+                    if origin_matches_uri(&t.ori, uri)
+                        && position_in_type_ref(position, t)
+                    {
+                        return Some((t.canonical_scope.clone(), t.name.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn collect_type_refs(
+        &self,
+        canonical_scope: &ModPath,
+        name: &ModPath,
+        requesting_uri: &Uri,
+        out: &mut Vec<lsp_types::Location>,
+    ) {
+        let push = |t: &TypeRefSite, out: &mut Vec<lsp_types::Location>| {
+            if let Some(loc) = self.ref_to_location(requesting_uri, &t.ori, t.pos) {
+                out.push(loc);
+            }
+        };
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            for t in doc.lsp.type_refs.iter() {
+                if &t.canonical_scope == canonical_scope && &t.name == name {
+                    push(t, out);
+                }
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in r.lsp.type_refs.iter() {
+                    if &t.canonical_scope == canonical_scope && &t.name == name {
+                        push(t, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Look up the typedef declaration site for a given canonical
+    /// (scope, name). Walks active doc and projects; any TypeRefSite
+    /// with matching canonical info has the same def_pos/def_ori, so
+    /// any match works.
+    fn typedef_decl_location(
+        &self,
+        canonical_scope: &ModPath,
+        name: &ModPath,
+        requesting_uri: &Uri,
+    ) -> Option<lsp_types::Location> {
+        let take = |t: &TypeRefSite| self.ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            for t in doc.lsp.type_refs.iter() {
+                if &t.canonical_scope == canonical_scope && &t.name == name {
+                    return take(t);
+                }
+            }
+        }
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in r.lsp.type_refs.iter() {
+                    if &t.canonical_scope == canonical_scope && &t.name == name {
+                        return take(t);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// If the cursor is on a recorded type-reference site, return
+    /// the typedef's declaration location.
+    fn type_definition_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let doc = self.documents.get(uri)?;
+        for t in doc.lsp.type_refs.iter() {
+            if position_in_type_ref(position, t) {
+                return self.ref_to_location(uri, &t.def_ori, t.def_pos);
+            }
+        }
+        // Also try any project's type_references (cross-file).
+        for r in &self.project_results {
+            if let Some(r) = r {
+                for t in r.lsp.type_refs.iter() {
+                    // Match by file ori source equality on the use side
+                    // (the use site lives in this URI).
+                    if origin_matches_uri(&t.ori, uri)
+                        && position_in_type_ref(position, t)
+                    {
+                        return self.ref_to_location(uri, &t.def_ori, t.def_pos);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// If the cursor sits on a sig `val foo: T;` declaration site in
+    /// a `.gxi`, chase via `sig_links` to the implementation bind in
+    /// the paired `.gx` and return its location. Returns `None` when
+    /// the cursor isn't on a sig val site or there's no matching
+    /// implementation. Type/module/use sig items follow normal
+    /// goto-def (typedef site / `mod foo;` body / etc.).
+    fn sig_to_impl_definition(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let env = self.env_for(uri);
+        let bind = bind_at_decl(env, uri, position)?;
+        let sig_id = bind.id;
+        // Only sig val proxies show up here — typedefs and modules
+        // aren't in `ide_binds` as `Bind`s. So if there's a sig_link
+        // with this sig_id, we're at a sig val site.
+        let impl_id = self.sig_link_impl_for(uri, sig_id)?;
+        let impl_bind = bind_for_id(env, impl_id).or_else(|| {
+            // The impl bind lives in the module's internal env, not the
+            // top-level external env. Walk module_internals for it.
+            self.module_internals_for(uri)
+                .into_iter()
+                .find_map(|view| view.env.by_id.get(&impl_id))
+        })?;
+        let target_uri = match &impl_bind.ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(uri, &impl_bind.ori)
+                .unwrap_or_else(|| uri.clone()),
+            Source::Netidx(_) => return None,
+        };
+        let line = impl_bind.pos.line.saturating_sub(1).max(0) as u32;
+        let char_col = impl_bind.pos.column.saturating_sub(1).max(0) as usize;
+        let pos = self.lsp_position_from_char_col(&impl_bind.ori.text, line, char_col);
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: pos, end: pos },
+        })
+    }
+
+    /// Look up the impl bind id for a given sig bind id by walking the
+    /// active doc's `sig_links` plus every project's. Sig and impl ids
+    /// are minted per compile, so stale lookups across compiles don't
+    /// match — but find-references is consulted on the latest check.
+    fn sig_link_impl_for(&self, uri: &Uri, sig_id: graphix_compiler::BindId) -> Option<graphix_compiler::BindId> {
+        if let Some(doc) = self.documents.get(uri) {
+            for l in doc.lsp.sig_links.iter() {
+                if l.sig_id == sig_id {
+                    return Some(l.impl_id);
+                }
+            }
+        }
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                for l in r.lsp.sig_links.iter() {
+                    if l.sig_id == sig_id {
+                        return Some(l.impl_id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Return the per-module internal-view env snapshots for any
+    /// project containing `uri`, plus the active doc's snapshots.
+    fn module_internals_for<'a>(&'a self, uri: &Uri) -> Vec<&'a ModuleInternalView> {
+        let mut out = Vec::new();
+        if let Some(doc) = self.documents.get(uri) {
+            for v in doc.lsp.module_internals.iter() {
+                out.push(v);
+            }
+        }
+        for idx in self.projects_containing(uri) {
+            if let Some(Some(r)) = self.project_results.get(idx) {
+                for v in r.lsp.module_internals.iter() {
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+
+    fn def_site_at_position(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<(SourcePosition, graphix_compiler::expr::Origin)> {
+        let doc = self.documents.get(uri)?;
+        for r in doc.references.iter() {
+            if position_in_ref(position, r) {
+                return Some((r.def_pos, graphix_compiler::expr::Origin::clone(&r.def_ori)));
+            }
+        }
+        None
+    }
+
+    /// If the cursor is on a `use foo;` or `mod foo;` site, return
+    /// the file the module body lives in (for `mod` decls the
+    /// resolver gives us a file directly; for `use` we look across
+    /// the workspace for any `mod` decl with the same canonical
+    /// path).
+    fn module_definition_at(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let doc = self.documents.get(uri)?;
+        let target = doc
+            .module_references
+            .iter()
+            .find(|m| position_in_module_ref(position, m))?;
+        // Prefer this site's own def_ori if the resolver attached one.
+        if let Some(ori) = target.def_ori.as_ref() {
+            return self.module_origin_to_location(uri, ori);
+        }
+        // Otherwise look at any other module ref with the same
+        // canonical path that DOES have a def_ori — likely the
+        // `mod foo;` declaration in the project's main file.
+        let canonical = &target.canonical;
+        let mut search: LPooled<Vec<&ModuleRefSite>> = LPooled::take();
+        search.extend(doc.module_references.iter());
+        for r in &self.project_results {
+            if let Some(r) = r {
+                search.extend(r.module_references.iter());
+            }
+        }
+        search
+            .iter()
+            .copied()
+            .find(|m| &m.canonical == canonical && m.def_ori.is_some())
+            .and_then(|m| {
+                self.module_origin_to_location(uri, m.def_ori.as_ref().unwrap())
+            })
+    }
+
+    /// Return the document's top-level user-defined bindings. We
+    /// identify "user bindings" by matching the bind's recorded
+    /// `Origin.text` against the live document text — stdlib and
+    /// synthetic bindings have a different (or default) origin.
+    pub fn document_symbols(&self, uri: &Uri) -> Vec<lsp_types::DocumentSymbol> {
+        let Some(doc) = self.documents.get(uri) else {
+            return Vec::new();
+        };
+        // .gxi files don't go through the let-binding compile path, so
+        // their `val`/`type`/`mod` items never land in `env.binds`.
+        // Parse the buffer directly as a sig and surface every sig
+        // item.
+        if uri_is_gxi(uri) {
+            return self.gxi_document_symbols(&doc.text);
+        }
+        let Some(env) = doc.env.as_ref() else {
+            return Vec::new();
+        };
+        let mut symbols = Vec::new();
+        for (_scope, binds) in &env.binds {
+            for (name, bind_id) in binds {
+                let Some(bind) = env.by_id.get(bind_id) else {
+                    continue;
+                };
+                if &*bind.ori.text != doc.text.as_str() {
+                    continue;
+                }
+                let line = bind.pos.line.saturating_sub(1).max(0) as u32;
+                let char_col = bind.pos.column.saturating_sub(1).max(0) as usize;
+                let pos = self.lsp_position_from_char_col(&doc.text, line, char_col);
+                let range = lsp_types::Range { start: pos, end: pos };
+                let kind = if matches!(&bind.typ, Type::Fn(_)) {
+                    lsp_types::SymbolKind::FUNCTION
+                } else {
+                    lsp_types::SymbolKind::VARIABLE
+                };
+                #[allow(deprecated)]
+                symbols.push(lsp_types::DocumentSymbol {
+                    name: name.to_string(),
+                    detail: Some(format!("{}", bind.typ)),
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    range,
+                    selection_range: range,
+                    children: None,
+                });
+            }
+        }
+        symbols.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        symbols
+    }
+
+    /// Symbols for a `.gxi` interface file. Parses the text as a Sig
+    /// and emits one entry per `val`/`type`/`mod`/`use` item.
+    fn gxi_document_symbols(&self, text: &str) -> Vec<lsp_types::DocumentSymbol> {
+        use graphix_compiler::expr::{parser, Origin, Source, SigKind};
+        let ori = Origin {
+            parent: None,
+            source: Source::Unspecified,
+            text: ArcStr::from(text),
+        };
+        let Ok(sig) = parser::parse_sig(ori) else {
+            return Vec::new();
+        };
+        let mut symbols = Vec::new();
+        for si in sig.items.iter() {
+            let (name, kind, detail) = match &si.kind {
+                SigKind::Bind(b) => {
+                    let kind = if matches!(b.typ, Type::Fn(_)) {
+                        lsp_types::SymbolKind::FUNCTION
+                    } else {
+                        lsp_types::SymbolKind::VARIABLE
+                    };
+                    (b.name.to_string(), kind, Some(format!("{}", b.typ)))
+                }
+                SigKind::TypeDef(t) => {
+                    let detail = format!("type {}", t.typ);
+                    (t.name.to_string(), lsp_types::SymbolKind::TYPE_PARAMETER, Some(detail))
+                }
+                SigKind::Module(name) => {
+                    (name.to_string(), lsp_types::SymbolKind::MODULE, None)
+                }
+                SigKind::Use(path) => {
+                    (format!("use {path}"), lsp_types::SymbolKind::NAMESPACE, None)
+                }
+            };
+            let line = si.pos.line.saturating_sub(1).max(0) as u32;
+            let char_col = si.pos.column.saturating_sub(1).max(0) as usize;
+            let pos = self.lsp_position_from_char_col(text, line, char_col);
+            let range = lsp_types::Range { start: pos, end: pos };
+            #[allow(deprecated)]
+            symbols.push(lsp_types::DocumentSymbol {
+                name,
+                detail,
+                kind,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range: range,
+                children: None,
+            });
+        }
+        symbols.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        symbols
+    }
+
+    /// Workspace-wide symbol search. The LSP request carries no file
+    /// context, so we scope by the project containing the most
+    /// recently active document. If we don't know the active doc (or
+    /// it's not part of any project), search every project. Each
+    /// match is a `(name, kind, file URI, position)` tuple lifted from
+    /// the file's parse, filtered by `query` (case-insensitive
+    /// substring).
+    pub fn workspace_symbols(
+        &self,
+        query: &str,
+    ) -> Vec<lsp_types::SymbolInformation> {
+        use graphix_compiler::expr::{parser, Origin, Source, SigKind};
+        let needle = query.to_ascii_lowercase();
+        let matches = |name: &str| -> bool {
+            needle.is_empty()
+                || name.to_ascii_lowercase().contains(&needle)
+        };
+        // Scope: prefer the project containing the active doc.
+        let active_idx = self
+            .last_active_uri
+            .as_ref()
+            .and_then(|u| self.projects_containing(u).next());
+        log::debug!(
+            "workspace_symbols query={query:?} active={:?} projects={} files={} active_idx={:?}",
+            self.last_active_uri.as_ref().map(|u| u.as_str()),
+            self.workspace.projects.len(),
+            self.workspace.files.len(),
+            active_idx,
+        );
+        let scoped_files: Vec<&PathBuf> = match active_idx {
+            Some(idx) => {
+                let mut v: Vec<&PathBuf> =
+                    self.workspace.projects[idx].files.iter().collect();
+                v.sort();
+                v
+            }
+            None => {
+                // Fall back to every file the workspace knows about.
+                let mut v: Vec<&PathBuf> = self.workspace.files.keys().collect();
+                v.sort();
+                v
+            }
+        };
+        let mut out = Vec::new();
+        for path in scoped_files {
+            let Some(uri) = crate::uri::path_to_uri(path) else {
+                continue;
+            };
+            // Prefer the open-buffer text so unsaved edits are
+            // searchable; fall back to the disk copy.
+            let text: ArcStr = match self.documents.get(&uri) {
+                Some(d) => ArcStr::from(d.text.as_str()),
+                None => match std::fs::read_to_string(path) {
+                    Ok(s) => ArcStr::from(s),
+                    Err(_) => continue,
+                },
+            };
+            let is_gxi = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| e == "gxi")
+                .unwrap_or(false);
+            let ori = Origin {
+                parent: None,
+                source: Source::File(path.clone()),
+                text: text.clone(),
+            };
+            let push = |name: String,
+                        kind: lsp_types::SymbolKind,
+                        line: i32,
+                        col: i32,
+                        out: &mut Vec<lsp_types::SymbolInformation>| {
+                if !matches(&name) {
+                    return;
+                }
+                let line = line.saturating_sub(1).max(0) as u32;
+                let char_col = col.saturating_sub(1).max(0) as usize;
+                let pos = self.lsp_position_from_char_col(&text, line, char_col);
+                let range = lsp_types::Range { start: pos, end: pos };
+                #[allow(deprecated)]
+                out.push(lsp_types::SymbolInformation {
+                    name,
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: lsp_types::Location {
+                        uri: uri.clone(),
+                        range,
+                    },
+                    container_name: None,
+                });
+            };
+            if is_gxi {
+                let Ok(sig) = parser::parse_sig(ori) else {
+                    continue;
+                };
+                for si in sig.items.iter() {
+                    let (name, kind) = match &si.kind {
+                        SigKind::Bind(b) => {
+                            let kind = if matches!(b.typ, Type::Fn(_)) {
+                                lsp_types::SymbolKind::FUNCTION
+                            } else {
+                                lsp_types::SymbolKind::VARIABLE
+                            };
+                            (b.name.to_string(), kind)
+                        }
+                        SigKind::TypeDef(t) => {
+                            (t.name.to_string(), lsp_types::SymbolKind::TYPE_PARAMETER)
+                        }
+                        SigKind::Module(name) => {
+                            (name.to_string(), lsp_types::SymbolKind::MODULE)
+                        }
+                        SigKind::Use(_) => continue,
+                    };
+                    push(name, kind, si.pos.line, si.pos.column, &mut out);
+                }
+            } else {
+                let Ok(exprs) = parser::parse(ori) else {
+                    continue;
+                };
+                for e in exprs.iter() {
+                    self.walk_gx_for_workspace_symbols(e, &uri, &text, &matches, &mut out);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Walk a top-level `.gx` expression and emit a workspace symbol
+    /// for every binding-shaped item (`let`, `type`, `mod`).
+    fn walk_gx_for_workspace_symbols(
+        &self,
+        e: &graphix_compiler::expr::Expr,
+        uri: &Uri,
+        text: &str,
+        matches: &impl Fn(&str) -> bool,
+        out: &mut Vec<lsp_types::SymbolInformation>,
+    ) {
+        use graphix_compiler::expr::{ExprKind, StructurePattern};
+        let mut push = |name: String,
+                        kind: lsp_types::SymbolKind,
+                        pos: graphix_compiler::SourcePosition| {
+            if !matches(&name) {
+                return;
+            }
+            let line = pos.line.saturating_sub(1).max(0) as u32;
+            let char_col = pos.column.saturating_sub(1).max(0) as usize;
+            let p = self.lsp_position_from_char_col(text, line, char_col);
+            let range = lsp_types::Range { start: p, end: p };
+            #[allow(deprecated)]
+            out.push(lsp_types::SymbolInformation {
+                name,
+                kind,
+                tags: None,
+                deprecated: None,
+                location: lsp_types::Location { uri: uri.clone(), range },
+                container_name: None,
+            });
+        };
+        match &e.kind {
+            ExprKind::Bind(b) => {
+                if let StructurePattern::Bind(name) = &b.pattern {
+                    let kind = match &b.value.kind {
+                        ExprKind::Lambda(_) => lsp_types::SymbolKind::FUNCTION,
+                        _ => lsp_types::SymbolKind::VARIABLE,
+                    };
+                    push(name.to_string(), kind, e.pos);
+                }
+            }
+            ExprKind::TypeDef(td) => {
+                push(td.name.to_string(), lsp_types::SymbolKind::TYPE_PARAMETER, e.pos);
+            }
+            ExprKind::Module { name, .. } => {
+                push(name.to_string(), lsp_types::SymbolKind::MODULE, e.pos);
+            }
+            _ => (),
+        }
+    }
+
+    /// Return the definition location for the symbol at the given
+    /// position. Falls back to None when the symbol came from a
+    /// non-file source (synthetic bind, netidx module, REPL input).
+    pub fn definition(
+        &self,
+        uri: &Uri,
+        position: lsp_types::Position,
+    ) -> Option<lsp_types::Location> {
+        let position = self.normalize_position(uri, position);
+        // Sig val site → implementation site. If the cursor sits on a
+        // `val foo: T;` declaration in a `.gxi`, chase via `sig_links`
+        // to the impl bind in the paired `.gx` and return that location.
+        if let Some(loc) = self.sig_to_impl_definition(uri, position) {
+            return Some(loc);
+        }
+        // First try the references list — each ReferenceSite carries
+        // the bind's declaration site. This works for all bindings,
+        // including lambda parameters that the env's by_id map no
+        // longer remembers (their callsite was deleted post-typecheck).
+        if let Some((def_pos, def_ori)) =
+            self.def_site_at_position(uri, position)
+        {
+            return self.ref_to_location(uri, &def_ori, def_pos);
+        }
+        // Try module references — `use foo;` and `mod foo;` sites
+        // carry the file the module body lives in.
+        if let Some(loc) = self.module_definition_at(uri, position) {
+            return Some(loc);
+        }
+        // Try type references — `Foo` in `let x: Foo` resolves to a
+        // typedef; jump to its declaration.
+        if let Some(loc) = self.type_definition_at(uri, position) {
+            return Some(loc);
+        }
+        // Fall back to env lookup — this catches the cursor sitting
+        // directly on the binding name (where there's no
+        // ReferenceSite for it but the bind is reachable via name).
+        let doc = self.documents.get(uri)?;
+        let word = get_word_at_position(&doc.text, position)?;
+        let scope = ModPath::root();
+        let name: ModPath = word.split("::").collect();
+        let env = self.env_for(uri);
+        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
+            let target_uri = match &bind.ori.source {
+                Source::File(p) => path_to_uri(p)?,
+                Source::Internal(_) | Source::Unspecified => self
+                    .find_uri_for_internal_origin(uri, &bind.ori)
+                    .unwrap_or_else(|| uri.clone()),
+                Source::Netidx(_) => return None,
+            };
+            let line = bind.pos.line.saturating_sub(1).max(0) as u32;
+            let char_col = bind.pos.column.saturating_sub(1).max(0) as usize;
+            let pos = self.lsp_position_from_char_col(&bind.ori.text, line, char_col);
+            return Some(lsp_types::Location {
+                uri: target_uri,
+                range: lsp_types::Range { start: pos, end: pos },
+            });
+        }
+        // Last fallback: cursor on a typedef name with no recorded
+        // ReferenceSite (e.g. cursor right on `Foo` in
+        // `type Foo = …` itself).
+        let typedef = env.lookup_typedef(&scope, &name)?;
+        let target_uri = match &typedef.ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(uri, &typedef.ori)
+                .unwrap_or_else(|| uri.clone()),
+            Source::Netidx(_) => return None,
+        };
+        let line = typedef.pos.line.saturating_sub(1).max(0) as u32;
+        let char_col = typedef.pos.column.saturating_sub(1).max(0) as usize;
+        let pos = self.lsp_position_from_char_col(&typedef.ori.text, line, char_col);
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: pos, end: pos },
+        })
+    }
+}
+
+fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    crate::uri::uri_to_path(uri)
+}
+
+fn uri_is_gxi(uri: &Uri) -> bool {
+    uri.as_str().ends_with(".gxi")
+}
+
+fn path_to_uri(path: &Path) -> Option<Uri> {
+    crate::uri::path_to_uri(path)
+}
+
+/// Turn a project compile error into a (uri, diagnostic) pair. The
+/// uri is the file the error originated in (extracted from the
+/// chain) — falling back to the project root if attribution failed.
+impl ServerState {
+    fn project_error_to_diagnostic(
+        &self,
+        err: &anyhow::Error,
+        project_root: &Path,
+    ) -> (Uri, lsp_types::Diagnostic) {
+        let loc = error_location(err);
+        let target_path = loc.file.unwrap_or_else(|| project_root.to_path_buf());
+        let uri = path_to_uri(&target_path).unwrap_or_else(|| {
+            // Path → URI conversion shouldn't fail for absolute paths,
+            // but if it does we fall back to the project root URI rather
+            // than dropping the diagnostic on the floor.
+            path_to_uri(project_root)
+                .or_else(|| Uri::from_str("file:///").ok())
+                .expect("file:/// is a valid URI")
+        });
+        let char_pos = loc.position.unwrap_or_default();
+        // Translate the char-based position into the negotiated
+        // encoding. We read the target file's text from the open-
+        // document map when we're tracking it; otherwise we read it
+        // from disk so non-ASCII positions still translate correctly
+        // for closed files. Disk-read failures fall back to the
+        // unencoded position — for ASCII-only sources (the common
+        // case) this is identical anyway.
+        let pos = match self.documents.get(&uri) {
+            Some(doc) => self.lsp_position_from_char_col(
+                &doc.text,
+                char_pos.line,
+                char_pos.character as usize,
+            ),
+            None => match std::fs::read_to_string(&target_path) {
+                Ok(text) => self.lsp_position_from_char_col(
+                    &text,
+                    char_pos.line,
+                    char_pos.character as usize,
+                ),
+                Err(_) => char_pos,
+            },
+        };
+        let diag = lsp_types::Diagnostic {
+            range: lsp_types::Range { start: pos, end: pos },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            source: Some("graphix".to_string()),
+            message: error_leaf_message(err),
+            ..Default::default()
+        };
+        (uri, diag)
+    }
+}
+
+/// Char count of `name` as it would be rendered by `Display` (e.g.
+/// `array::map` → 10), computed without allocating a String.
+fn modpath_display_chars(name: &ModPath) -> u32 {
+    use netidx::path::Path as NPath;
+    use std::borrow::Borrow;
+    let s: &str = name.borrow();
+    let levels = NPath::levels(s);
+    let parts: usize = NPath::parts(s).map(|p| p.chars().count()).sum();
+    (parts + 2 * levels.saturating_sub(1)) as u32
+}
+
+/// Check whether a 0-indexed LSP position falls inside a reference
+/// site's textual span. We use the printed length of the name as a
+/// rough span — `array::map` covers 10 characters from `pos`.
+fn position_in_ref(pos: lsp_types::Position, r: &ReferenceSite) -> bool {
+    span_covers(pos, r.pos, modpath_display_chars(&r.name))
+}
+
+/// Same idea for a module reference. The pos points at the `mod` or
+/// `use` keyword, so we extend the span to cover the keyword + name.
+fn position_in_module_ref(pos: lsp_types::Position, m: &ModuleRefSite) -> bool {
+    // The keyword is "use" or "mod" (3 chars) + 1 space + name length.
+    // Falls down on `use   foo;` (multi-space) — pessimistic, not wrong.
+    span_covers(pos, m.pos, 4 + modpath_display_chars(&m.name))
+}
+
+/// Type references record the position of the type name itself.
+fn position_in_type_ref(pos: lsp_types::Position, t: &TypeRefSite) -> bool {
+    span_covers(pos, t.pos, modpath_display_chars(&t.name))
+}
+
+/// True if the given Origin's source path matches the requesting URI.
+/// Internal/Unspecified always match (they're the active doc's own
+/// content); Netidx never does.
+fn origin_matches_uri(ori: &graphix_compiler::expr::Origin, uri: &Uri) -> bool {
+    match &ori.source {
+        Source::File(p) => match path_to_uri(p) {
+            Some(u) => &u == uri,
+            None => false,
+        },
+        // The LSP feeds the active document as `Source::Internal(text)`,
+        // and the VFS resolver wraps every stdlib module in
+        // `Source::Internal(name)` too. Both look the same on `source`
+        // alone, so we use `parent` to discriminate: only the document
+        // the LSP passed to `check_with_resolvers` has `parent = None`.
+        // VFS- (and File-) loaded children all carry `Some(parent_ori)`.
+        Source::Internal(_) | Source::Unspecified => ori.parent.is_none(),
+        Source::Netidx(_) => false,
+    }
+}
+
+/// True if `a` (1-indexed compiler pos) is ≤ `b` (0-indexed LSP pos).
+fn pos_le(a: SourcePosition, b: lsp_types::Position) -> bool {
+    let a_line = a.line.saturating_sub(1).max(0) as u32;
+    if a_line < b.line {
+        return true;
+    }
+    if a_line > b.line {
+        return false;
+    }
+    let a_col = a.column.saturating_sub(1).max(0) as u32;
+    a_col <= b.character
+}
+
+/// Strict less-than between two 1-indexed compiler positions.
+fn pos_lt(a: SourcePosition, b: SourcePosition) -> bool {
+    if a.line < b.line {
+        return true;
+    }
+    if a.line > b.line {
+        return false;
+    }
+    a.column < b.column
+}
+
+fn span_covers(pos: lsp_types::Position, start: SourcePosition, len: u32) -> bool {
+    let line0 = start.line.saturating_sub(1).max(0) as u32;
+    if pos.line != line0 {
+        return false;
+    }
+    let col0 = start.column.saturating_sub(1).max(0) as u32;
+    pos.character >= col0 && pos.character <= col0 + len
+}
+
+impl ServerState {
+    /// For an `Internal`/`Unspecified` origin (no real path attached),
+    /// try to recover the actual file URI by content match.
+    ///
+    /// The stdlib loads through the VFS resolver, which produces
+    /// `Source::Internal("core/mod")` for both `core/mod.gx` and
+    /// `core/mod.gxi`. When the user is editing the on-disk stdlib
+    /// file, goto-def on a type declared in the paired interface needs
+    /// to land on the `.gxi`, not the `.gx` we asked from. We
+    /// disambiguate by checking the `.gx`/`.gxi` sibling of the
+    /// requesting URI: if its content matches `ori.text`, that's the
+    /// file the origin came from.
+    fn find_uri_for_internal_origin(
+        &self,
+        requesting_uri: &Uri,
+        ori: &graphix_compiler::expr::Origin,
+    ) -> Option<Uri> {
+        let want = ori.text.as_str();
+        if let Some(doc) = self.documents.get(requesting_uri) {
+            if doc.text.as_str() == want {
+                return Some(requesting_uri.clone());
+            }
+        }
+        let path = uri_to_path(requesting_uri)?;
+        let sibling = match path.extension().and_then(|s| s.to_str()) {
+            Some("gx") => path.with_extension("gxi"),
+            Some("gxi") => path.with_extension("gx"),
+            _ => return None,
+        };
+        let sibling_uri = path_to_uri(&sibling)?;
+        if let Some(doc) = self.documents.get(&sibling_uri) {
+            if doc.text.as_str() == want {
+                return Some(sibling_uri);
+            }
+        }
+        if let Ok(disk) = std::fs::read_to_string(&sibling) {
+            if disk == want {
+                return Some(sibling_uri);
+            }
+        }
+        None
+    }
+
+    /// Map a module reference's `def_ori` (file the module body was
+    /// loaded from) to an LSP Location pointing at the file's start.
+    fn module_origin_to_location(
+        &self,
+        requesting_uri: &Uri,
+        ori: &graphix_compiler::expr::Origin,
+    ) -> Option<lsp_types::Location> {
+        let target_uri = match &ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(requesting_uri, ori)
+                .unwrap_or_else(|| requesting_uri.clone()),
+            Source::Netidx(_) => return None,
+        };
+        let pos = lsp_types::Position { line: 0, character: 0 };
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: pos, end: pos },
+        })
+    }
+
+    /// Map a (Origin, SourcePosition) pair to an LSP Location. For
+    /// in-document origins (everything the LSP feeds is `Source::Internal`),
+    /// fall back to the requesting URI. The position's column is
+    /// translated from char-based to the negotiated LSP encoding using
+    /// the target file's text — so the line at `pos.line` of *that*
+    /// file is what determines column units.
+    fn ref_to_location(
+        &self,
+        requesting_uri: &Uri,
+        ori: &graphix_compiler::expr::Origin,
+        pos: SourcePosition,
+    ) -> Option<lsp_types::Location> {
+        let target_uri = match &ori.source {
+            Source::File(p) => path_to_uri(p)?,
+            Source::Internal(_) | Source::Unspecified => self
+                .find_uri_for_internal_origin(requesting_uri, ori)
+                .unwrap_or_else(|| requesting_uri.clone()),
+            Source::Netidx(_) => return None,
+        };
+        let line = pos.line.saturating_sub(1).max(0) as u32;
+        let char_col = pos.column.saturating_sub(1).max(0) as usize;
+        // Look up the target file's text to translate char-col → encoded
+        // column. Use the open document text when we're tracking it;
+        // otherwise fall back to ori.text (the text the compiler saw at
+        // parse time).
+        let target_text: &str = self
+            .documents
+            .get(&target_uri)
+            .map(|d| d.text.as_str())
+            .unwrap_or(&ori.text);
+        let p = self.lsp_position_from_char_col(target_text, line, char_col);
+        Some(lsp_types::Location {
+            uri: target_uri,
+            range: lsp_types::Range { start: p, end: p },
+        })
+    }
+}
+
+/// Like `Env::lookup_matching` but walks `env.by_id` directly so
+/// that bindings whose lexical entries were dropped at scope
+/// teardown (e.g. lambda parameters) are still visible to IDE
+/// queries. A bind is "visible" from `cursor_scope` if its scope is
+/// `cursor_scope` itself or any ancestor.
+/// Like `Env::lookup_matching` but walks `env.ide_binds` so
+/// short-lived bindings (lambda params, let bindings inside
+/// scopes that get torn down) are still visible to IDE queries.
+/// A bind is visible from `cursor_scope` if the bind's scope is
+/// `cursor_scope` itself, an ancestor, or a sibling-via-`use`.
+///
+/// Goes through `env.lookup_matching` which walks the scope's `used`
+/// list via `find_visible` — that's how names brought in by `use foo;`
+/// become reachable. Walking `ide_binds` directly (as we used to)
+/// missed those.
+fn lookup_matching_via_by_id(
+    env: &Env,
+    cursor_scope: &ModPath,
+    part: &ModPath,
+) -> Vec<(compact_str::CompactString, graphix_compiler::env::Bind)> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<compact_str::CompactString> = HashSet::new();
+    for (name, bind_id) in env.lookup_matching(cursor_scope, part) {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(bind) = env.by_id.get(&bind_id) {
+            out.push((name, bind.clone()));
+        }
+    }
+    out
+}
+
+fn is_id_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Build an LSP snippet body for a function completion. Each required
+/// arg becomes a `${N:placeholder}` tab-stop. The placeholder is the
+/// arg's source-level name (`FnArgType::name`) when present; otherwise
+/// it falls back to `a0`, `a1`, … for positional args and the label
+/// name for labeled args. Labeled args with defaults are skipped —
+/// they're offered separately when the cursor is inside the call. The
+/// final `$0` lands the cursor outside the parens after the user tabs
+/// through the placeholders.
+fn fn_snippet(name: &str, fnt: &FnType) -> String {
+    use std::fmt::Write;
+    let mut body = String::new();
+    body.push_str(name);
+    body.push('(');
+    let mut idx = 1u32;
+    let mut positional = 0u32;
+    let mut first = true;
+    for arg in fnt.args.iter() {
+        match &arg.kind {
+            FnArgKind::Labeled { has_default: true, .. } => continue,
+            FnArgKind::Labeled { name: label, has_default: false } => {
+                if !first {
+                    body.push_str(", ");
+                }
+                let _ = write!(body, "#{label}: ${{{idx}:{label}}}");
+                idx += 1;
+                first = false;
+            }
+            FnArgKind::Positional { name } => {
+                if !first {
+                    body.push_str(", ");
+                }
+                match name.as_deref() {
+                    Some(n) => {
+                        let _ = write!(body, "${{{idx}:{n}}}");
+                    }
+                    None => {
+                        let _ = write!(body, "${{{idx}:a{positional}}}");
+                    }
+                }
+                idx += 1;
+                positional += 1;
+                first = false;
+            }
+        }
+    }
+    body.push_str(")$0");
+    body
+}
+
+/// If the cursor sits inside an open `(`'s argument list, return the
+/// callee path (e.g. `foo`, `array::map`). Returns `None` if the cursor
+/// isn't inside a call, or the enclosing bracket is `[`/`{`, or the
+/// scan hits a statement boundary first.
+///
+/// String literals are not parsed — a stray `(` inside a string can
+/// produce a false positive in pathological cases, but the common case
+/// (calls in code) is handled correctly.
+fn call_context(text: &str, position: lsp_types::Position) -> Option<String> {
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(text.chars());
+    // `position.character` here is a char count — callers in
+    // `ServerState` normalize incoming LSP positions through
+    // `normalize_position` before reaching this helper.
+    let mut offset = 0usize;
+    let mut line = 0u32;
+    let mut col = 0u32;
+    while offset < chars.len() {
+        if line == position.line && col == position.character {
+            break;
+        }
+        let c = chars[offset];
+        if c == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+        offset += 1;
+    }
+    let mut depth = 0i32;
+    let mut i = offset;
+    while i > 0 {
+        i -= 1;
+        let c = chars[i];
+        match c {
+            ')' | ']' | '}' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    // Found the enclosing open-paren. Walk back over
+                    // whitespace, then read the callee path.
+                    let mut j = i;
+                    while j > 0 && chars[j - 1].is_whitespace() {
+                        j -= 1;
+                    }
+                    let mut start = j;
+                    while start > 0 {
+                        if is_id_char(chars[start - 1]) {
+                            start -= 1;
+                        } else if start >= 2 && is_pathsep(&chars, start - 2) {
+                            start -= 2;
+                        } else {
+                            break;
+                        }
+                    }
+                    if start == j {
+                        return None;
+                    }
+                    return Some(chars[start..j].iter().collect());
+                }
+                depth -= 1;
+            }
+            '[' | '{' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ';' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Append a `#label` completion item per labeled arg of `fnt`.
+///
+/// When `replace` is `Some`, accepting a completion replaces that range
+/// in the document — used when the user is mid-`#…` and we want to
+/// substitute the typed `#` rather than insert another one. When
+/// `None`, accepting just inserts at the cursor (used when labeled args
+/// are offered passively alongside other completions).
+fn push_labeled_arg_completions(
+    items: &mut Vec<lsp_types::CompletionItem>,
+    fnt: &FnType,
+    replace: Option<lsp_types::Range>,
+) {
+    for arg in fnt.args.iter() {
+        let Some(label) = arg.label() else {
+            continue;
+        };
+        let label_text = format!("#{label}");
+        let insert = format!("#{label}: ");
+        let text_edit = replace.map(|range| {
+            lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                range,
+                new_text: insert.clone(),
+            })
+        });
+        items.push(lsp_types::CompletionItem {
+            label: label_text,
+            kind: Some(lsp_types::CompletionItemKind::FIELD),
+            detail: Some(format!("{}", arg.typ.clone().resolve_tvars())),
+            insert_text: text_edit.is_none().then_some(insert),
+            text_edit,
+            ..Default::default()
+        });
+    }
+}
+
+/// Cursor-context returned by `label_prefix` — the `#`-prefixed token
+/// the user is currently typing, plus the editable range that should
+/// be replaced when a label completion is accepted.
+struct LabelCtx {
+    range: lsp_types::Range,
+}
+
+/// If the cursor sits inside a `#…` token (right after a `#`, or inside
+/// the identifier following one), return the range of `#…` so a
+/// `text_edit` can replace it cleanly. Returns `None` if the cursor
+/// isn't in a label-completion position.
+fn label_prefix(text: &str, position: lsp_types::Position) -> Option<LabelCtx> {
+    let line = text.lines().nth(position.line as usize)?;
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(line.chars());
+    let col = (position.character as usize).min(chars.len());
+    let mut start = col;
+    while start > 0 && is_id_char(chars[start - 1]) {
+        start -= 1;
+    }
+    if start == 0 || chars[start - 1] != '#' {
+        return None;
+    }
+    // Don't trigger on `?#…` — that's only valid in fn type signatures
+    // and an unrelated edit position.
+    if start >= 2 && chars[start - 2] == '?' {
+        return None;
+    }
+    let hash_col = (start - 1) as u32;
+    Some(LabelCtx {
+        range: lsp_types::Range {
+            start: lsp_types::Position { line: position.line, character: hash_col },
+            end: position,
+        },
+    })
+}
+
+/// Build the hover popup payload for a binding. Markdown body is a
+/// graphix code fence with `name: type`, then any doc comment.
+fn bind_hover(name: &str, bind: &graphix_compiler::env::Bind) -> lsp_types::Hover {
+    let mut contents = format!("```graphix\n{}: {}\n```", name, format_bind_type(&bind.typ));
+    if let Some(d) = &bind.doc {
+        contents.push_str("\n\n");
+        contents.push_str(d);
+    }
+    lsp_types::Hover {
+        contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: contents,
+        }),
+        range: None,
+    }
+}
+
+/// Find a binding whose declaration position covers the cursor.
+/// Catches hovers on function parameters and let-binding names —
+/// declarations don't appear in `doc.references`, but they're recorded
+/// in `ide_binds` along with `(pos, ori, name)`. Filtering by the
+/// active URI keeps multi-file workspace checks from cross-talking.
+fn bind_at_decl<'a>(
+    env: &'a Env,
+    uri: &Uri,
+    position: lsp_types::Position,
+) -> Option<&'a graphix_compiler::env::Bind> {
+    for (_, defs) in &env.ide_binds {
+        for (_, b) in defs {
+            if !origin_matches_uri(&b.ori, uri) {
+                continue;
+            }
+            if span_covers(position, b.pos, b.name.len() as u32) {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+/// Look up a bind by id, falling back to a linear scan of `ide_binds`.
+///
+/// `env.by_id` loses lambda parameters once their parent callsite is
+/// dropped — but `unbind_variable` doesn't touch `ide_binds`, so the
+/// IDE-only mirror still has the type and doc. ide_binds is keyed by
+/// (scope, name) not by BindId, so we have to scan; n is small enough
+/// at IDE speeds that this is fine.
+fn bind_for_id(
+    env: &Env,
+    id: graphix_compiler::BindId,
+) -> Option<&graphix_compiler::env::Bind> {
+    if let Some(b) = env.by_id.get(&id) {
+        return Some(b);
+    }
+    for (_, defs) in &env.ide_binds {
+        for (_, b) in defs {
+            if b.id == id {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+/// Format a binding's type for display (completion detail, hover, etc.).
+///
+/// Two passes happen here, and the order matters. `replace_auto_constrained`
+/// (Fn types only) folds auto-named TVars from the function's constraint
+/// table into the surface — this catches polymorphic functions whose
+/// concrete arg types only appear as constraints, never written into the
+/// TVar's storage. `resolve_tvars` then walks the whole type and
+/// dereferences any TVar whose RwLock has been written by unification —
+/// this catches non-function bindings (`let tbl = …`) and any inner TVars
+/// the first pass left behind. resolve_tvars empties the constraint
+/// table, so it must run second.
+fn format_bind_type(typ: &Type) -> String {
+    use triomphe::Arc;
+    let folded = match typ {
+        Type::Fn(ft) => Type::Fn(Arc::new(ft.replace_auto_constrained())),
+        t => t.clone(),
+    };
+    format!("{}", folded.resolve_tvars())
+}
+
+/// True when `chars[i]` and `chars[i+1]` form a `::` segment separator.
+fn is_pathsep(chars: &[char], i: usize) -> bool {
+    chars.get(i).copied() == Some(':') && chars.get(i + 1).copied() == Some(':')
+}
+
+/// Return the full path-like token at `position`, including any `::`
+/// separators (e.g. `array::map`).
+fn get_word_at_position(text: &str, position: lsp_types::Position) -> Option<String> {
+    let line = text.lines().nth(position.line as usize)?;
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(line.chars());
+    let col = (position.character as usize).min(chars.len());
+    let mut start = col;
+    let mut end = col;
+    while start > 0 {
+        if is_id_char(chars[start - 1]) {
+            start -= 1;
+        } else if start >= 2 && is_pathsep(&chars, start - 2) {
+            start -= 2;
+        } else {
+            break;
+        }
+    }
+    while end < chars.len() {
+        if is_id_char(chars[end]) {
+            end += 1;
+        } else if is_pathsep(&chars, end) {
+            end += 2;
+        } else {
+            break;
+        }
+    }
+    if start == end {
+        return None;
+    }
+    Some(chars[start..end].iter().collect())
+}
+
+/// Return the prefix of a path-like token immediately to the left of the
+/// cursor, used as the completion query. Empty if the cursor isn't right
+/// after an identifier or `::`.
+fn token_before_cursor(text: &str, position: lsp_types::Position) -> Option<String> {
+    let line = text.lines().nth(position.line as usize)?;
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(line.chars());
+    let col = (position.character as usize).min(chars.len());
+    let mut start = col;
+    while start > 0 {
+        if is_id_char(chars[start - 1]) {
+            start -= 1;
+        } else if start >= 2 && is_pathsep(&chars, start - 2) {
+            start -= 2;
+        } else {
+            break;
+        }
+    }
+    if start == col {
+        Some(String::new())
+    } else {
+        Some(chars[start..col].iter().collect())
+    }
+}
+
+/// Convert what the user has typed (e.g. `array::ma` or `array::`) into
+/// a `ModPath` suitable for `lookup_matching`. A trailing `::` is preserved
+/// as an empty basename so completion lists the module's contents.
+fn modpath_from_typed(s: &str) -> ModPath {
+    if s.is_empty() {
+        return ModPath::root();
+    }
+    let parts: Vec<&str> = s.split("::").collect();
+    parts.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcstr::literal;
+    use graphix_compiler::expr::Origin;
+    use std::str::FromStr;
+    use triomphe::Arc;
+
+    fn ori(source: Source, parent: Option<Arc<Origin>>) -> Origin {
+        Origin { parent, source, text: literal!("") }
+    }
+
+    /// The LSP feeds the active document as `Source::Internal(text)` with
+    /// no parent. VFS-loaded stdlib modules also have `Source::Internal`
+    /// but carry a parent pointing at the loader's origin. Diagnostics
+    /// for the active URI must match the first form and reject the
+    /// second — otherwise stdlib errors leak into the active doc's
+    /// squiggles.
+    #[test]
+    fn origin_matches_uri_internal_active_doc_only() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let active = ori(Source::Internal(literal!("let x = 1")), None);
+        assert!(origin_matches_uri(&active, &uri));
+
+        let parent = Arc::new(ori(Source::Internal(literal!("loader")), None));
+        let vfs_child = ori(Source::Internal(literal!("array")), Some(parent));
+        assert!(!origin_matches_uri(&vfs_child, &uri));
+    }
+
+    /// File-loaded modules should only match when the path round-trips
+    /// to the requesting URI. A different file path must not match.
+    #[test]
+    fn origin_matches_uri_file_paths() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let active_file =
+            ori(Source::File(PathBuf::from("/tmp/active.gx")), None);
+        assert!(origin_matches_uri(&active_file, &uri));
+
+        let other_file =
+            ori(Source::File(PathBuf::from("/tmp/other.gx")), None);
+        assert!(!origin_matches_uri(&other_file, &uri));
+
+        // A File-sourced child whose path matches the URI still matches —
+        // it's the same physical file, regardless of how it was reached.
+        let parent = Arc::new(ori(Source::Internal(literal!("loader")), None));
+        let active_via_parent = ori(
+            Source::File(PathBuf::from("/tmp/active.gx")),
+            Some(parent),
+        );
+        assert!(origin_matches_uri(&active_via_parent, &uri));
+    }
+
+    /// Netidx-sourced origins never match a file URI — they live in a
+    /// separate namespace.
+    #[test]
+    fn origin_matches_uri_netidx_never_matches() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let n = ori(
+            Source::Netidx(netidx::path::Path::from("/foo")),
+            None,
+        );
+        assert!(!origin_matches_uri(&n, &uri));
+    }
+
+    /// `Source::Unspecified` follows the same parent rule as `Internal`:
+    /// only the top-level (parent=None) origin counts as the active doc.
+    #[test]
+    fn origin_matches_uri_unspecified_follows_parent_rule() {
+        let uri = Uri::from_str("file:///tmp/active.gx").unwrap();
+        let top = ori(Source::Unspecified, None);
+        assert!(origin_matches_uri(&top, &uri));
+
+        let parent = Arc::new(ori(Source::Unspecified, None));
+        let child = ori(Source::Unspecified, Some(parent));
+        assert!(!origin_matches_uri(&child, &uri));
+    }
+
+    /// Stand-in `LspBackend` for tests of `ServerState` methods that
+    /// don't actually need a typecheck. Returns an empty env, refuses
+    /// project type-checks, and exposes a no-op buffer-overrides map.
+    struct StubBackend {
+        overrides: BufferOverrides,
+    }
+    impl StubBackend {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                overrides: triomphe::Arc::new(parking_lot::Mutex::new(
+                    fxhash::FxHashMap::default(),
+                )),
+            })
+        }
+    }
+    impl LspBackend for StubBackend {
+        fn env(&self) -> Env {
+            Env::default()
+        }
+        fn typecheck_project(
+            &self,
+            _root: &std::path::Path,
+            _initial_scope: Option<ArcStr>,
+        ) -> anyhow::Result<TypecheckResult> {
+            anyhow::bail!("stub backend can't typecheck")
+        }
+        fn buffer_overrides(&self) -> BufferOverrides {
+            self.overrides.clone()
+        }
+    }
+
+    /// `workspace_symbols` should surface every top-level `let` /
+    /// `type` / `mod` from a `.gx` and every `val` / `type` / `mod`
+    /// from a `.gxi`, scoped to the project containing the most
+    /// recently active document.
+    #[test]
+    fn workspace_symbols_returns_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let main_gx = root.join("main.gx");
+        let lib_gxi = root.join("lib.gxi");
+        let lib_gx = root.join("lib.gx");
+        std::fs::write(&main_gx, "mod lib;\nlet helper = |x: i64| -> i64 x + 1;\n")
+            .unwrap();
+        std::fs::write(&lib_gxi, "val widgetize: fn(n: i64) -> i64;\n").unwrap();
+        std::fs::write(&lib_gx, "let widgetize = |n: i64| -> i64 n;\n").unwrap();
+
+        let backend: std::sync::Arc<dyn LspBackend> = StubBackend::new();
+        let mut state = ServerState::new(
+            backend,
+            false,
+            crate::position::PositionEncoding::Utf16,
+        );
+        state.workspace_roots = vec![root.to_path_buf()];
+        state.workspace = crate::workspace::scan(&state.workspace_roots);
+        // Mark `main.gx` as the active doc so the scope picker
+        // chooses its project.
+        state.last_active_uri =
+            crate::uri::path_to_uri(&main_gx).map(|u| u);
+
+        // Empty query returns everything.
+        let all = state.workspace_symbols("");
+        let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"helper"), "missing helper, got {names:?}");
+        assert!(names.contains(&"lib"), "missing mod lib, got {names:?}");
+        assert!(names.contains(&"widgetize"), "missing widgetize, got {names:?}");
+
+        // Filtered query.
+        let some = state.workspace_symbols("widget");
+        let names: Vec<&str> = some.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"widgetize"));
+        assert!(!names.contains(&"helper"));
+    }
+}

@@ -9,6 +9,7 @@ let trim_end = |s: string| -> string 'str_trim_end;
 let replace = |#pat: string, #rep: string, s: string| -> string 'str_replace;
 let dirname = |path: string| -> Option<string> 'str_dirname;
 let basename = |path: string| -> Option<string> 'str_basename;
+let row_col = |path: string| -> Option<(string, string)> 'str_row_col;
 let join = |#sep: string, @args: [string, Array<string>]| -> string 'str_join;
 let concat = |@args: [string, Array<string>]| -> string 'str_concat;
 let default_escape: Escape = {

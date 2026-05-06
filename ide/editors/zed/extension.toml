@@ -1,0 +1,20 @@
+id = "graphix"
+name = "Graphix"
+description = "Language support for the Graphix dataflow programming language"
+version = "0.1.0"
+schema_version = 1
+authors = ["Graphix Authors"]
+repository = "https://github.com/graphix-lang/graphix"
+
+# NOTE: `rev` must point at a commit reachable on the public
+# `graphix-lang/graphix` repo, since Zed fetches the grammar source from
+# there at extension install time. Bump this to the merge commit on main
+# (or a release tag SHA) when cutting a release.
+[grammars.graphix]
+repository = "https://github.com/graphix-lang/graphix"
+rev = "8b95864b5982246afe1504d77bdc5765a7801d8d"
+path = "ide/tree-sitter-graphix"
+
+[language_servers.graphix-lsp]
+name = "Graphix Language Server"
+languages = ["Graphix"]

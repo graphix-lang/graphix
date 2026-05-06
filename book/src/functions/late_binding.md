@@ -10,7 +10,7 @@ accepts a `T`. In this simple example we create one implementation of `f` that
 increments the count, and one that decrements it.
 
 ```graphix
-type T = { count: i64, f: fn(T) -> T };
+type T = { count: i64, f: fn(t: T) -> T };
 let ts: Array<T> = [
   { count: 0, f: |t: T| {t with count: t.count + 1} },
   { count: 0, f: |t: T| {t with count: t.count - 1} }

@@ -17,7 +17,7 @@ val image: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#content_fit: &ContentFit,
-  &ImageSource
+  a: &ImageSource
 ) -> Widget
 ```
 
@@ -28,7 +28,7 @@ val svg: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#content_fit: &ContentFit,
-  &string
+  s: &string
 ) -> Widget
 ```
 

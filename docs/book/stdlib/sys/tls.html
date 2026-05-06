@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,12 +181,12 @@ as usual — the encryption is transparent.</p>
 /// used for SNI and certificate verification. When ca_cert is null,
 /// Mozilla root certificates are used; when provided, only that CA
 /// is trusted.
-val connect: fn(?#ca_cert:[bytes, null], string, io::Stream&lt;`Tcp&gt;)
+val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: io::Stream&lt;`Tcp&gt;)
     -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
 
 /// Upgrade a TCP stream to a TLS server connection using the given
 /// PEM-encoded certificate chain and private key.
-val accept: fn(#cert:bytes, #key:bytes, io::Stream&lt;`Tcp&gt;)
+val accept: fn(#cert:bytes, #key:bytes, stream: io::Stream&lt;`Tcp&gt;)
     -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
 </code></pre>
 

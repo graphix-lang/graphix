@@ -1,4 +1,4 @@
-use super::{into_borrowed_line, LineV, StyleV, TuiW, TuiWidget};
+use super::{gauge::clamp_ratio, into_borrowed_line, LineV, StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -17,6 +17,7 @@ pub(super) struct LineGaugeW<X: GXExt> {
     style: TRef<X, Option<StyleV>>,
     unfilled_style: TRef<X, Option<StyleV>>,
     unfilled_symbol: TRef<X, Option<ArcStr>>,
+    last_clamp_warning: Option<u64>,
 }
 
 impl<X: GXExt> LineGaugeW<X> {
@@ -52,6 +53,7 @@ impl<X: GXExt> LineGaugeW<X> {
                 .context("line_gauge tref unfilled_style")?,
             unfilled_symbol: TRef::new(unfilled_symbol)
                 .context("line_gauge tref unfilled_symbol")?,
+            last_clamp_warning: None,
         }))
     }
 }
@@ -71,6 +73,7 @@ impl<X: GXExt> TuiWidget for LineGaugeW<X> {
             style,
             unfilled_style,
             unfilled_symbol,
+            last_clamp_warning: _,
         } = self;
         filled_style.update(id, &v).context("line_gauge update filled_style")?;
         filled_symbol.update(id, &v).context("line_gauge update filled_symbol")?;
@@ -91,8 +94,11 @@ impl<X: GXExt> TuiWidget for LineGaugeW<X> {
             style,
             unfilled_style,
             unfilled_symbol,
+            last_clamp_warning,
         } = self;
-        let mut g = LineGauge::default().ratio(ratio.t.unwrap_or(0.0));
+        let raw = ratio.t.unwrap_or(0.0);
+        let r = clamp_ratio("line_gauge", last_clamp_warning, raw);
+        let mut g = LineGauge::default().ratio(r);
         if let Some(Some(LineV(l))) = &label.t {
             g = g.label(into_borrowed_line(l));
         }

@@ -7,5 +7,5 @@ type Stack = {
 val stack: fn(
   ?#width: &Length,
   ?#height: &Length,
-  &Array<Widget>
+  children: &Array<Widget>
 ) -> Widget

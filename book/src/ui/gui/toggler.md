@@ -7,12 +7,12 @@ A toggle switch with an optional text label. Functionally identical to a checkbo
 ```graphix
 val toggler: fn(
   ?#label: &string,
-  ?#on_toggle: fn(bool) -> Any,
+  ?#on_toggle: fn(flag: bool) -> Any,
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],
   ?#disabled: &bool,
-  &bool
+  flag: &bool
 ) -> Widget
 ```
 

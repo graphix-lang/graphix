@@ -17,7 +17,7 @@ val table_column: fn(
   ?#width: &Length,
   ?#halign: &HAlign,
   ?#valign: &VAlign,
-  &Widget
+  header: &Widget
 ) -> TableColumn;
 
 // XCR estokes: We should add a test that passing a mismatched number of columns
@@ -26,6 +26,6 @@ val table: fn(
   ?#width: &Length,
   ?#padding: &[f64, null],
   ?#separator: &[f64, null],
-  &Array<TableColumn>,
-  &Array<Array<Widget>>
+  columns: &Array<TableColumn>,
+  rows: &Array<Array<Widget>>
 ) -> Widget

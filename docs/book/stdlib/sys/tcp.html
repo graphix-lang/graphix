@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,29 +179,29 @@
 type TcpListener;
 
 /// Connect to a TCP server at the given address (host:port).
-val connect: fn(string) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+val connect: fn(addr: string) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
 
 /// Bind a TCP listener to the given address (host:port).
-val listen: fn(string) -&gt; Result&lt;TcpListener, `TCPError(string)&gt;;
+val listen: fn(addr: string) -&gt; Result&lt;TcpListener, `TCPError(string)&gt;;
 
 /// Accept a new connection from the listener. The second argument
 /// is a trigger — each time it updates, a new accept is performed.
-val accept: fn(TcpListener, Any) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+val accept: fn(listener: TcpListener, trigger: Any) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
 
 /// Shutdown the write half of the stream. Works on both plain TCP
 /// and TLS-upgraded streams.
-val shutdown: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;null, `TCPError(string)&gt;;
+val shutdown: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;null, `TCPError(string)&gt;;
 
 /// Get the remote address of the connected peer. Works on both
 /// plain TCP and TLS-upgraded streams.
-val peer_addr: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val peer_addr: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
 
 /// Get the local address of the stream. Works on both plain TCP
 /// and TLS-upgraded streams.
-val local_addr: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val local_addr: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
 
 /// Get the local address that the listener is bound to.
-val listener_addr: fn(TcpListener) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val listener_addr: fn(listener: TcpListener) -&gt; Result&lt;string, `TCPError(string)&gt;;
 </code></pre>
 
                     </main>

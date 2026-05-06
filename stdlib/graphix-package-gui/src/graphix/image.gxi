@@ -9,5 +9,5 @@ val image: fn(
   ?#width: &Length,
   ?#height: &Length,
   ?#content_fit: &ContentFit,
-  &ImageSource
+  source: &ImageSource
 ) -> Widget

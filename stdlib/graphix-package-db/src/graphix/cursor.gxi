@@ -2,15 +2,15 @@
 type Cursor<'k, 'v>;
 
 /// Create a new cursor, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], Tree<'k, 'v>) -> Cursor<'k, 'v>;
+val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Cursor<'k, 'v>;
 
 /// Create a cursor over a key range. Both bounds are optional (null = unbounded).
 /// Use `Included(key) or `Excluded(key) to specify each bound.
-val range: fn(?#start: [`Included('k), `Excluded('k), null], ?#end: [`Included('k), `Excluded('k), null], Tree<'k, 'v>) -> Cursor<'k, 'v>;
+val range: fn(?#start: [`Included('k), `Excluded('k), null], ?#end: [`Included('k), `Excluded('k), null], t: Tree<'k, 'v>) -> Cursor<'k, 'v>;
 
 /// Read the next entry from the cursor. Advances on each trigger.
 /// Returns a (key, value) tuple, or null when exhausted.
-val read: fn(Cursor<'k, 'v>, Any) -> Result<[('k, 'v), null], `DbErr(string)>;
+val read: fn(c: Cursor<'k, 'v>, trigger: Any) -> Result<[('k, 'v), null], `DbErr(string)>;
 
 /// Read up to N entries from the cursor. Returns a shorter array when exhausted.
-val read_many: fn(Cursor<'k, 'v>, i64) -> Result<Array<('k, 'v)>, `DbErr(string)>;
+val read_many: fn(c: Cursor<'k, 'v>, n: i64) -> Result<Array<('k, 'v)>, `DbErr(string)>;

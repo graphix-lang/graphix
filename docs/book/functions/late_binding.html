@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,7 +183,7 @@ For example we can create two structs of type <code>T</code> that each contain a
 implementation of <code>f</code>, and we can use them interchangibly with any function that
 accepts a <code>T</code>. In this simple example we create one implementation of <code>f</code> that
 increments the count, and one that decrements it.</p>
-<pre><code class="language-graphix">type T = { count: i64, f: fn(T) -&gt; T };
+<pre><code class="language-graphix">type T = { count: i64, f: fn(t: T) -&gt; T };
 let ts: Array&lt;T&gt; = [
   { count: 0, f: |t: T| {t with count: t.count + 1} },
   { count: 0, f: |t: T| {t with count: t.count - 1} }

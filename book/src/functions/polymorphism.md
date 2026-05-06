@@ -10,7 +10,7 @@ that using type variables and constraints in our annotations.
 ```graphix
 〉let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y
 〉f
--: fn<'a: unbound: Number>('a: unbound, 'a: unbound) -> 'a: unbound
+-: fn<'a: unbound: Number>(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
 160
 ```
 
@@ -34,14 +34,14 @@ of,
 
 ```
 fn<'a: unbound: Number>
-('a: unbound, 'a: unbound) -> 'a: unbound
+(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
 ```
 
 We can remove the (unbound) current values and it becomes easier to read,
 
 ```
 fn<'a: Number>
-('a, 'a) -> 'a
+(x: 'a, y: 'a) -> 'a
 ```
 
 We just have one variable now, `'a` representing both argument types
@@ -85,9 +85,9 @@ even return functions. These relationships can be often inferred automatically
 without issue, but sometimes annotations are required.
 
 ```graphix
-〉 let apply = |x: 'a, f: fn('a) -> 'b throws 'e| -> 'b throws 'e f(x)
+〉 let apply = |x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x)
 〉 apply
--: fn<'e: unbound: _>('a: unbound, fn('a: unbound) -> 'b: unbound throws 'e: unbound) -> 'b: unbound throws 'e: unbound
+-: fn<'e: unbound: _>(x: 'a: unbound, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> 'b: unbound throws 'e: unbound
 163
 ```
 
@@ -101,7 +101,7 @@ We can see a more practical example in the type of `array::map` (this
 implementation of which I will not repeat here), which is,
 
 ```
-fn(Array<'a>, fn('a) -> 'b throws 'e) -> Array<'b> throws 'e
+fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e
 ```
 
 So map takes an array of `'a`, and a function mapping `'a` to `'b` and possibly
@@ -117,7 +117,7 @@ and are enforced at each call site. For example consider,
 ```graphix
 〉let f = |x, y| x + y
 〉f
--: fn<'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number>('_2067: unbound, '_2069: unbound) -> '_2071: unbound
+-: fn<'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number>(x: '_2067: unbound, y: '_2069: unbound) -> '_2071: unbound
 159
 ```
 
@@ -127,7 +127,7 @@ The type is a bit of a mouthful, lets format it a bit so it's easier to read.
 fn<'_2069: unbound: Number,
    '_2067: unbound: Number,
    '_2071: unbound: Number>
-('_2067: unbound, '_2069: unbound) -> '_2071: unbound
+(x: '_2067: unbound, y: '_2069: unbound) -> '_2071: unbound
 ```
 
 Removing the unbounds,
@@ -136,7 +136,7 @@ Removing the unbounds,
 fn<'_2069: Number,
    '_2067: Number,
    '_2071: Number>
-('_2067, '_2069) -> '_2071
+(x: '_2067, y: '_2069) -> '_2071
 ```
 
 Here we can see that `'_2067`, `'_2069`, and `'_2071` represent the two

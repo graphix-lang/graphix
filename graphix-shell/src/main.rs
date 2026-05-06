@@ -112,6 +112,9 @@ enum Command {
         #[command(subcommand)]
         action: PackageAction,
     },
+    /// Run the Language Server Protocol server (communicates over stdio).
+    /// Editors typically launch this automatically; you don't usually run it directly.
+    Lsp,
 }
 
 #[derive(Parser)]
@@ -344,8 +347,10 @@ fn tokio_main(
                         None => (),
                         Some(p) => {
                             let p = PathBuf::from(p);
-                            shell =
-                                shell.module_resolvers(vec![ModuleResolver::Files(p)]);
+                            shell = shell.module_resolvers(vec![ModuleResolver::Files {
+                                base: p,
+                                overrides: None,
+                            }]);
                         }
                     };
                     Source::File(path)
@@ -369,8 +374,10 @@ fn tokio_main(
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
     let p = Params::parse();
-    if let Some(Command::Package { action }) = p.command {
-        return handle_package(action);
+    match p.command {
+        Some(Command::Package { action }) => return handle_package(action),
+        Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
+        None => (),
     }
     let cfg = match &p.config {
         None => Config::load_default_or_local_only(),

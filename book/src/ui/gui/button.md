@@ -6,12 +6,12 @@ A clickable button that wraps a child widget (typically text). Buttons trigger a
 
 ```graphix
 val button: fn(
-  ?#on_press: fn(null) -> Any,
+  ?#on_press: fn(a: null) -> Any,
   ?#width: &Length,
   ?#height: &Length,
   ?#padding: &Padding,
   ?#disabled: &bool,
-  &Widget
+  a: &Widget
 ) -> Widget
 ```
 

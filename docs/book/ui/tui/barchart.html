@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,7 +190,7 @@ val bar: fn(
   ?#style: &amp;[Style, null],
   ?#text_value: &amp;[string, null],
   ?#value_style: &amp;[Style, null],
-  &amp;i64
+  n: &amp;i64
 ) -&gt; Bar;
 
 type BarGroup = {
@@ -200,7 +200,7 @@ type BarGroup = {
 
 val bar_group: fn(
   ?#label: [Line, null],
-  Array&lt;Bar&gt;
+  a: Array&lt;Bar&gt;
 ) -&gt; BarGroup;
 
 val bar_chart: fn(
@@ -213,7 +213,7 @@ val bar_chart: fn(
   ?#max: &amp;[i64, null],
   ?#style: &amp;[Style, null],
   ?#value_style: &amp;[Style, null],
-  &amp;Array&lt;BarGroup&gt;
+  a: &amp;Array&lt;BarGroup&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

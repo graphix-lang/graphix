@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -182,96 +182,96 @@ O(1); indexed access is O(n).</p>
 type List&lt;'a&gt;;
 
 /// Return an empty list.
-val nil: fn(Any) -&gt; List&lt;'a&gt;;
+val nil: fn(v: Any) -&gt; List&lt;'a&gt;;
 
 /// Prepend an element to the front of a list. O(1).
-val cons: fn('a, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val cons: fn(x: 'a, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list containing a single element.
-val singleton: fn('a) -&gt; List&lt;'a&gt;;
+val singleton: fn(x: 'a) -&gt; List&lt;'a&gt;;
 
 /// Return the first element, or null if empty.
-val head: fn(List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
+val head: fn(a: List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
 
 /// Return the list without its first element, or null if empty.
-val tail: fn(List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
+val tail: fn(a: List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
 
 /// Return both the head and tail as a pair, or null if empty.
-val uncons: fn(List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
+val uncons: fn(a: List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
 
 /// Return true if the list is empty.
-val is_empty: fn(List&lt;'a&gt;) -&gt; bool;
+val is_empty: fn(a: List&lt;'a&gt;) -&gt; bool;
 
 /// Return the element at position n (0-indexed), or null. O(n).
-val nth: fn(List&lt;'a&gt;, i64) -&gt; Option&lt;'a&gt;;
+val nth: fn(a: List&lt;'a&gt;, n: i64) -&gt; Option&lt;'a&gt;;
 
 /// Return the number of elements. O(n).
-val len: fn(List&lt;'a&gt;) -&gt; i64;
+val len: fn(a: List&lt;'a&gt;) -&gt; i64;
 
 /// Return the list in reverse order. O(n).
-val reverse: fn(List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val reverse: fn(a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return the first n elements.
-val take: fn(i64, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val take: fn(n: i64, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return the list without its first n elements.
-val drop: fn(i64, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val drop: fn(n: i64, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Convert a list to an array.
-val to_array: fn(List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val to_array: fn(a: List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// Convert an array to a list.
-val from_array: fn(Array&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val from_array: fn(a: Array&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Concatenate two or more lists.
-val concat: fn(List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val concat: fn(a: List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Flatten a list of lists into a single list.
-val flatten: fn(List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
+val flatten: fn(a: List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
 
 /// Apply f to each element.
-val map: fn(List&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Keep elements where f returns true.
-val filter: fn(List&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+val filter: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
 /// Keep non-null outputs of f.
-val filter_map: fn(List&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val filter_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Map and flatten: if f returns a list, inline its elements.
-val flat_map: fn(List&lt;'a&gt;, fn('a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val flat_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Left fold: f(f(f(init, a0), a1), ...).
-val fold: fn(List&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(a: List&lt;'a&gt;, y: 'b, f: fn(x: 'b, y: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 
 /// Return the first element where f returns true, or null.
-val find: fn(List&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
+val find: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
 
 /// Return the first non-null output of f.
-val find_map: fn(List&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
+val find_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
 
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn(?#dir: Direction, ?#numeric: bool, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn(?#dir: Direction, ?#numeric: bool, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
-val enumerate: fn(List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
+val enumerate: fn(a: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
 
 /// Zip two lists into a list of pairs.
-val zip: fn(List&lt;'a&gt;, List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
+val zip: fn(a: List&lt;'a&gt;, a2: List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
 
 /// Unzip a list of pairs into a pair of lists.
-val unzip: fn(List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
+val unzip: fn(a: List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
 
 /// Create a list of n elements where element i is f(i).
-val init: fn(i64, fn(i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+val init: fn(n: i64, f: fn(n: i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
 /// Produce an update for every element in the list.
-val iter: fn(List&lt;'a&gt;) -&gt; 'a;
+val iter: fn(a: List&lt;'a&gt;) -&gt; 'a;
 
 /// Produce an update for each element, gated by clock updates.
-val iterq: fn(#clock: Any, List&lt;'a&gt;) -&gt; 'a;
+val iterq: fn(#clock: Any, a: List&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 
                     </main>

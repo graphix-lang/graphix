@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -185,29 +185,29 @@ type SqlVal = [i64, f64, string, bytes, null];
 type Connection;
 
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
-val open: fn(string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
+val open: fn(s: string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
 
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
-val exec: fn(Connection, string, Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
+val exec: fn(a: Connection, s: string, a2: Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
 
 /// Execute multiple semicolon-separated statements (no params). Good for schema setup.
-val exec_batch: fn(Connection, string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val exec_batch: fn(a: Connection, s: string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array&lt;{...}&gt; for typed structs, or Array&lt;Map&lt;string, SqlVal&gt;&gt; for raw maps.
-val query: fn(Connection, string, Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
+val query: fn(a: Connection, s: string, a2: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
 
 /// Begin a transaction.
-val begin: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val begin: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Commit the current transaction.
-val commit: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val commit: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Rollback the current transaction.
-val rollback: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val rollback: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Close the connection explicitly (optional — connections close on drop).
-val close: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val close: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 </code></pre>
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.

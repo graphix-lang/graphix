@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,7 +183,7 @@ and the return type will be the same as the argument type. We can say
 that using type variables and constraints in our annotations.</p>
 <pre><code class="language-graphix">〉let f = 'a: Number |x: 'a, y: 'a| -&gt; 'a x + y
 〉f
--: fn&lt;'a: unbound: Number&gt;('a: unbound, 'a: unbound) -&gt; 'a: unbound
+-: fn&lt;'a: unbound: Number&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 160
 </code></pre>
 <p>In type annotations of lambda expressions,</p>
@@ -205,11 +205,11 @@ of,</p>
 <li>constraint type</li>
 </ul>
 <pre><code>fn&lt;'a: unbound: Number&gt;
-('a: unbound, 'a: unbound) -&gt; 'a: unbound
+(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 </code></pre>
 <p>We can remove the (unbound) current values and it becomes easier to read,</p>
 <pre><code>fn&lt;'a: Number&gt;
-('a, 'a) -&gt; 'a
+(x: 'a, y: 'a) -&gt; 'a
 </code></pre>
 <p>We just have one variable now, <code>'a</code> representing both argument types
 and the return type. Because unchecked <code>+</code> returns bottom on overflow
@@ -239,9 +239,9 @@ doesn’t unify with <code>f64</code>.</p>
 <p>Since functions are first class, they can take other functions as arguments, and
 even return functions. These relationships can be often inferred automatically
 without issue, but sometimes annotations are required.</p>
-<pre><code class="language-graphix">〉 let apply = |x: 'a, f: fn('a) -&gt; 'b throws 'e| -&gt; 'b throws 'e f(x)
+<pre><code class="language-graphix">〉 let apply = |x: 'a, f: fn(x: 'a) -&gt; 'b throws 'e| -&gt; 'b throws 'e f(x)
 〉 apply
--: fn&lt;'e: unbound: _&gt;('a: unbound, fn('a: unbound) -&gt; 'b: unbound throws 'e: unbound) -&gt; 'b: unbound throws 'e: unbound
+-: fn&lt;'e: unbound: _&gt;(x: 'a: unbound, f: fn(x: 'a: unbound) -&gt; 'b: unbound throws 'e: unbound) -&gt; 'b: unbound throws 'e: unbound
 163
 </code></pre>
 <p>Here we’ve specified a single argument apply, it takes an argument, and a
@@ -251,7 +251,7 @@ constrained by the compiler to <code>_</code> meaning basically this could throw
 or also not throw at all, it just depends on <code>f</code>.</p>
 <p>We can see a more practical example in the type of <code>array::map</code> (this
 implementation of which I will not repeat here), which is,</p>
-<pre><code>fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e
+<pre><code>fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e
 </code></pre>
 <p>So map takes an array of <code>'a</code>, and a function mapping <code>'a</code> to <code>'b</code> and possibly
 throwing <code>'e</code> and returns an array of <code>'b</code> possibly throwing <code>'e</code>.</p>
@@ -262,20 +262,20 @@ another. Any internal constraints are calculated when the definition is compiled
 and are enforced at each call site. For example consider,</p>
 <pre><code class="language-graphix">〉let f = |x, y| x + y
 〉f
--: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;('_2067: unbound, '_2069: unbound) -&gt; '_2071: unbound
+-: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
 159
 </code></pre>
 <p>The type is a bit of a mouthful, lets format it a bit so it’s easier to read.</p>
 <pre><code>fn&lt;'_2069: unbound: Number,
    '_2067: unbound: Number,
    '_2071: unbound: Number&gt;
-('_2067: unbound, '_2069: unbound) -&gt; '_2071: unbound
+(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
 </code></pre>
 <p>Removing the unbounds,</p>
 <pre><code>fn&lt;'_2069: Number,
    '_2067: Number,
    '_2071: Number&gt;
-('_2067, '_2069) -&gt; '_2071
+(x: '_2067, y: '_2069) -&gt; '_2071
 </code></pre>
 <p>Here we can see that <code>'_2067</code>, <code>'_2069</code>, and <code>'_2071</code> represent the two
 arguments and the return type of the function. They are all unbound, meaning

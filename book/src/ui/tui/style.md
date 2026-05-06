@@ -107,7 +107,7 @@ type Span = {
   content: string
 };
 
-val span: fn(?#style: Style, string) -> Span;
+val span: fn(?#style: Style, s: string) -> Span;
 ```
 
 Example:
@@ -137,7 +137,7 @@ type Line = {
   spans: [Array<Span>, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], [Array<Span>, string]) -> Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array<Span>, string]) -> Line;
 ```
 
 The `spans` field can be either an array of spans (for mixed styling) or a

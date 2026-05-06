@@ -29,6 +29,7 @@ graphix-package-core = { version = "0.7.0", path = "../graphix-package-core" }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
+poolshark = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }

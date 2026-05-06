@@ -1,15 +1,15 @@
 type Markdown = {
   content: &string,
-  on_link: &fn(string) -> Any,
+  on_link: &fn(url: string) -> Any,
   spacing: &[f64, null],
   text_size: &[f64, null],
   width: &Length
 };
 
 val markdown: fn(
-  ?#on_link: fn(string) -> Any,
+  ?#on_link: fn(url: string) -> Any,
   ?#spacing: &[f64, null],
   ?#text_size: &[f64, null],
   ?#width: &Length,
-  &string
+  content: &string
 ) -> Widget

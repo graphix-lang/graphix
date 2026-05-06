@@ -1,0 +1,24 @@
+[package]
+name = "graphix-lsp"
+version = "0.7.0"
+edition = "2024"
+
+[dependencies]
+graphix-compiler = { version = "0.7.0", path = "../graphix-compiler" }
+lsp-types = { workspace = true }
+lsp-server = { workspace = true }
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+compact_str = { workspace = true }
+fxhash = { workspace = true }
+log = { workspace = true }
+netidx = { workspace = true }
+parking_lot = { workspace = true }
+percent-encoding = { workspace = true }
+poolshark = { workspace = true }
+serde_json = { workspace = true }
+triomphe = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

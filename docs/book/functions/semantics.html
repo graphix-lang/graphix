@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -283,7 +283,7 @@ devices, you want to use the cycle semantics to achieve a particular
 semantics. For these cases there is the <code>queue</code> function (and
 friends), which allows you to control how updates to a variable are
 processed.</p>
-<pre><code class="language-graphix">val queue: fn(#clock: Any, 'a) -&gt; 'a
+<pre><code class="language-graphix">val queue: fn(#clock: Any, v: 'a) -&gt; 'a
 </code></pre>
 <p>Every time clock updates queue allows a ’a through. If no ’a is
 queued, it still remembers to allow that many through when they

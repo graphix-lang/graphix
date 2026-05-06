@@ -1,0 +1,64 @@
+use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Four rows, each publishing a cpu value that updates once a second
+// on a sine-wave pattern staggered per row. The Sparkline column
+// accumulates the history and draws a rolling chart.
+let tick = time::timer(duration:1.s, true);
+let t = cast<f64>(count(tick))$;
+
+let cpu_1 = 0.0;
+cpu_1 <- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);
+
+let cpu_2 = 0.0;
+cpu_2 <- tick ~ 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
+
+let cpu_3 = 0.0;
+cpu_3 <- tick ~ 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
+
+let cpu_4 = 0.0;
+cpu_4 <- tick ~ 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
+
+sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
+sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
+sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
+sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
+
+let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
+    "cpu" => sparkline_column(
+        #name: "cpu",
+        #history_seconds: 30.0,
+        #display_name: "CPU (last 30s)",
+        #width: &260.0
+    ),
+    other => other
+});
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let layout = column(
+    #spacing: &12.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &20.0, &"CPU over time"),
+        text(&"Sparkline column accumulates values from its cell subscription."),
+        data_table(#table: &tbl)
+    ]
+);
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Data Table — Sparkline",
+    #theme: &`CatppuccinMocha,
+    &layout
+)]

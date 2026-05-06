@@ -17,5 +17,5 @@ val text: fn(
   ?#height: &Length,
   ?#halign: &HAlign,
   ?#valign: &VAlign,
-  &string
+  content: &string
 ) -> Widget

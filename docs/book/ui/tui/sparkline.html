@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -189,7 +189,7 @@ type SparklineBar = {
 
 val sparkline_bar: fn(
   ?#style: [Style, null],
-  [f64, null]
+  v: [f64, null]
 ) -&gt; SparklineBar;
 
 val sparkline: fn(
@@ -198,7 +198,7 @@ val sparkline: fn(
   ?#direction: &amp;[RenderDirection, null],
   ?#max: &amp;[i64, null],
   ?#style: &amp;[Style, null],
-  &amp;Array&lt;[SparklineBar, f64, null]&gt;
+  a: &amp;Array&lt;[SparklineBar, f64, null]&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -284,11 +284,33 @@ layout(
 </code></pre>
 <p><img src="./media/sparkline_dashboard.png" alt="Multi Sparkline Dashboard"></p>
 <h3 id="sparkline-from-netidx"><a class="header" href="#sparkline-from-netidx">Sparkline from Netidx</a></h3>
+<p>This example is self-contained: it both publishes and subscribes to a
+simulated CPU value over netidx, so you can run it without any
+external publisher. Drop the <code>publish</code> call and point the subscribe at
+a real path to chart live data instead — for example, the output of:</p>
+<pre><code>top | \
+grep --line-buffered Cpu | \
+awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
+netidx publisher
+</code></pre>
 <pre><code class="language-graphix">use tui;
 use tui::sparkline;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated CPU value once a second, then
+// subscribe to it for a rolling 60-sample sparkline. Drop the
+// publish to point the chart at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+let cpu_source = 50.0;
+cpu_source &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 7.0);
+sys::net::publish("/local/graphix/sparkline_rolling/cpu", cpu_source);
 
 let data: Array&lt;f64&gt; = [];
-let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/graphix/sparkline_rolling/cpu")?;
 
 data &lt;- array::window(
     #n: 60,
@@ -299,12 +321,6 @@ data &lt;- array::window(
 sparkline(#max: &amp;100, &amp;data)
 </code></pre>
 <p><img src="./media/sparkline_rolling.gif" alt="Rolling Sparkline"></p>
-<p>showing the output of the below shell pipeline during a netidx build,</p>
-<pre><code>top | \
-grep --line-buffered Cpu | \
-awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
-netidx publisher
-</code></pre>
 <h2 id="use-cases"><a class="header" href="#use-cases">Use Cases</a></h2>
 <p>Sparklines are ideal for:</p>
 <ul>

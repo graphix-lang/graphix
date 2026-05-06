@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,15 +180,15 @@
 <pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
-val read_text:   fn(Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
-val write_text:  fn(string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_image:  fn(Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
-val write_image: fn(ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_html:   fn(Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
-val write_html:  fn(HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_files:  fn(Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
-val write_files: fn(Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val clear:       fn(Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_text:   fn(v: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+val write_text:  fn(s: string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_image:  fn(v: Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
+val write_image: fn(a: ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_html:   fn(v: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+val write_html:  fn(a: HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_files:  fn(v: Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
+val write_files: fn(a: Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val clear:       fn(v: Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
 </code></pre>
 <h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
 <h3 id="text"><a class="header" href="#text">Text</a></h3>

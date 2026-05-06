@@ -101,7 +101,7 @@ where
 {
     sep_by_tok(
         (
-            spaces().with(choice((
+            spaces().with(position()).and(choice((
                 string("@args").map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
                 token('#').with(fname()).map(|b| (true, StructurePattern::Bind(b))),
                 structure_pattern().map(|p| (false, p)),
@@ -113,10 +113,12 @@ where
         token('|'),
     )
     .then(
-        |mut v: LPooled<Vec<((bool, StructurePattern), Option<Type>, Option<Expr>)>>| {
+        |mut v: LPooled<
+            Vec<((SourcePosition, (bool, StructurePattern)), Option<Type>, Option<Expr>)>,
+        >| {
             let args = v
                 .drain(..)
-                .map(|((labeled, pattern), constraint, default)| {
+                .map(|((pos, (labeled, pattern)), constraint, default)| {
                     if !labeled && default.is_some() {
                         bail!("labeled")
                     } else {
@@ -124,6 +126,7 @@ where
                             labeled: labeled.then_some(default),
                             pattern,
                             constraint,
+                            pos,
                         })
                     }
                 })

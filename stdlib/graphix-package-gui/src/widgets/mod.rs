@@ -1,8 +1,10 @@
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
+use compact_str::CompactString;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{future::Future, pin::Pin};
 
@@ -61,6 +63,7 @@ pub mod combo_box;
 pub mod container;
 pub mod context_menu;
 pub mod context_menu_widget;
+pub mod data_table;
 pub mod grid;
 pub mod iced_keyboard_area;
 pub mod image;
@@ -99,6 +102,69 @@ pub enum Message {
     Nop,
     Call(CallableId, ValArray),
     EditorAction(ExprId, iced_widget::text_editor::Action),
+    /// Virtual scroll position changed: (offset_x, offset_y, viewport_w, viewport_h)
+    /// All values in logical pixels.
+    Scroll(f32, f32, f32, f32),
+    /// A cell was clicked in a data table (row index, column name).
+    /// Column name is the data_table widget's cached `ColumnSpec.name`
+    /// or one of the synthesized sentinels (`ROW_NAME_KEY`/value-mode);
+    /// either way it's a refcount-bump clone, never a fresh allocation.
+    CellClick(usize, ArcStr),
+    /// A cell was clicked to begin editing (row index, column name).
+    CellEdit(usize, ArcStr),
+    /// Cell edit text changed (new text). `CompactString` keeps small
+    /// edits inline (≤ 24 bytes) without heap traffic on each
+    /// keystroke.
+    CellEditInput(CompactString),
+    /// Cell edit submitted (Enter pressed).
+    CellEditSubmit,
+    /// Cell edit cancelled (Escape or click elsewhere).
+    CellEditCancel,
+    /// Column resize drag started (col_meta index).
+    ColumnResizeStart(usize),
+    /// Cursor moved while a column resize drag might be active
+    /// (cursor x in widget-local coordinates). The event loop filters
+    /// this against the widget's `is_column_resizing` state — only
+    /// widgets currently dragging consume it.
+    ColumnResizeMove(f32),
+    /// Column resize drag ended.
+    ColumnResizeEnd,
+    /// Keyboard navigation in a data table.
+    TableKey(TableKeyAction),
+}
+
+/// Keyboard actions for data table navigation.
+#[derive(Debug, Clone)]
+pub enum TableKeyAction {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// Enter: drill down (fire on_activate)
+    Enter,
+    /// Space: start editing selected cell
+    Space,
+    /// Escape: cancel editing
+    Escape,
+}
+
+/// Context passed to `GuiWidget::on_message` so handlers can read
+/// per-window state (e.g. the cursor position a column-resize needs)
+/// and publish follow-up messages (e.g. a `Call` fired from a drag
+/// update) without the event loop having to know widget specifics.
+pub struct MessageShell {
+    pub cursor_position: iced_core::Point,
+    pub out: LPooled<Vec<Message>>,
+}
+
+impl MessageShell {
+    pub fn new(cursor_position: iced_core::Point) -> Self {
+        Self { cursor_position, out: LPooled::take() }
+    }
+
+    pub fn publish(&mut self, msg: Message) {
+        self.out.push(msg);
+    }
 }
 
 /// Trait for GUI widgets. Unlike TUI widgets, GUI widgets are not
@@ -118,20 +184,87 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
 
-    /// Route a text editor action to the widget that owns the given
-    /// content ref. Returns `Some((callable_id, value))` if the action
-    /// was an edit and the result should be called back to graphix.
-    fn editor_action(
-        &mut self,
-        id: ExprId,
-        action: &iced_widget::text_editor::Action,
-    ) -> Option<(CallableId, Value)> {
-        let _ = (id, action);
+    /// Child widgets that `on_message` and `before_view` should
+    /// forward to. Leaf widgets return `&mut []` (the default).
+    /// Containers (row, column, container, scrollable, stack, …)
+    /// override this so that messages flow down to nested widgets
+    /// like `data_table` — without it the event loop delivers
+    /// messages to the window's top-level widget only.
+    fn children_mut(&mut self) -> &mut [GuiW<X>] {
+        &mut []
+    }
+
+    fn children(&self) -> &[GuiW<X>] {
+        &[]
+    }
+
+    /// Dispatch a message to the widget. Returns `true` if the
+    /// widget changed and a redraw is needed. Widgets that emit
+    /// follow-up messages (e.g. a `Call` fired from a column-resize
+    /// drag) publish through `shell`. The default implementation
+    /// forwards to children — containers don't need to override.
+    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.on_message(msg, shell);
+        }
+        changed
+    }
+
+    /// True if this widget (or any descendant) is currently tracking
+    /// a column-resize drag. The event loop polls this to decide
+    /// whether a cursor-moved event should be routed as a drag update.
+    fn is_column_resizing(&self) -> bool {
+        self.children().iter().any(|c| c.is_column_resizing())
+    }
+
+    /// Return a DataTableSnapshot if this widget is a data table.
+    /// Default returns None. Overridden by DataTableW.
+    #[cfg(test)]
+    fn data_table_snapshot(&self) -> Option<DataTableSnapshot> {
         None
+    }
+
+    /// Downcast escape hatch for tests that need access to a concrete
+    /// widget type. Default panics — only widgets that need test-only
+    /// state inspection (currently just `DataTableW`) override this.
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        unimplemented!("as_any not implemented for this widget")
+    }
+
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        unimplemented!("as_any_mut not implemented for this widget")
+    }
+
+    /// Called immediately before `view()` so widgets can flush deferred
+    /// state that arrived asynchronously from background tasks (e.g.
+    /// `data_table` re-sorting after sort-column subscription data
+    /// arrives outside of the graphix update cycle). Returns `true` if
+    /// state changed and the window should redraw. The default forwards
+    /// to children so containers don't have to.
+    fn before_view(&mut self) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.before_view();
+        }
+        changed
     }
 }
 
 pub type GuiW<X> = Box<dyn GuiWidget<X>>;
+
+/// Snapshot of data table state for test assertions.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataTableSnapshot {
+    pub col_names: Vec<String>,
+    pub row_basenames: Vec<String>,
+    pub grid: Vec<Vec<String>>,
+    pub is_value_mode: bool,
+    pub selection: Vec<String>,
+}
 
 /// Future type for widget compilation (avoids infinite-size async fn).
 pub type CompileFut<X> = Pin<Box<dyn Future<Output = Result<GuiW<X>>> + Send + 'static>>;
@@ -205,6 +338,14 @@ macro_rules! flex_widget {
         }
 
         impl<X: GXExt> GuiWidget<X> for $name<X> {
+            fn children_mut(&mut self) -> &mut [GuiW<X>] {
+                &mut self.children
+            }
+
+            fn children(&self) -> &[GuiW<X>] {
+                &self.children
+            }
+
             fn handle_update(
                 &mut self,
                 rt: &tokio::runtime::Handle,
@@ -233,19 +374,6 @@ macro_rules! flex_widget {
                     changed |= child.handle_update(rt, id, v)?;
                 }
                 Ok(changed)
-            }
-
-            fn editor_action(
-                &mut self,
-                id: ExprId,
-                action: &iced_widget::text_editor::Action,
-            ) -> Option<(CallableId, Value)> {
-                for child in &mut self.children {
-                    if let some @ Some(_) = child.editor_action(id, action) {
-                        return some;
-                    }
-                }
-                None
             }
 
             fn view(&self) -> IcedElement<'_> {
@@ -340,6 +468,7 @@ pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
             "MenuBar" => menu_bar::MenuBarW::compile(gx, v).await,
             "QrCode" => qr_code::QrCodeW::compile(gx, v).await,
             "Table" => table::TableW::compile(gx, v).await,
+            "DataTable" => data_table::DataTableW::compile(gx, v).await,
             _ => bail!("invalid gui widget type `{s}({v})"),
         }
     })

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -210,11 +210,11 @@ val client: fn(
     ?#default_headers: Array&lt;(string, string)&gt;,
     ?#redirect_limit: u32,
     ?#ca_cert: [bytes, null],
-    Any
+    v: Any
 ) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
 /// Get or create a shared default HTTP client.
-val default_client: fn(Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
+val default_client: fn(v: Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
 /// Make an HTTP request and return a text response.
 val request: fn(
@@ -222,8 +222,8 @@ val request: fn(
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [string, null],
     ?#timeout: [duration, null],
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 /// Make an HTTP request and return a binary response.
@@ -232,18 +232,18 @@ val request_bin: fn(
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [bytes, null],
     ?#timeout: [duration, null],
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
 
 /// Convenience: GET request with text response.
-val get: fn(Client, string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+val get: fn(a: Client, s: string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 /// Convenience: GET request with binary response.
-val get_bin: fn(Client, string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
+val get_bin: fn(a: Client, s: string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
 
 /// Return the bound address of a running server.
-val server_addr: fn(Server) -&gt; string;
+val server_addr: fn(a: Server) -&gt; string;
 
 /// Start an HTTP server.
 val serve: fn(
@@ -251,7 +251,7 @@ val serve: fn(
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
-    #handler: fn(Request) -&gt; Response throws 'e
+    #handler: fn(a: Request) -&gt; Response throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
 </code></pre>
 <h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
@@ -259,39 +259,39 @@ val serve: fn(
 <pre><code class="language-graphix">val get: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val post: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val put: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val delete: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val patch: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 </code></pre>
 

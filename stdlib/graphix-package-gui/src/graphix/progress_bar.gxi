@@ -11,5 +11,5 @@ val progress_bar: fn(
   ?#max: &f64,
   ?#width: &Length,
   ?#height: &[f64, null],
-  &f64
+  value: &f64
 ) -> Widget

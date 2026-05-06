@@ -21,10 +21,136 @@ use std::{
 };
 use triomphe::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// Position vs label distinction for a function argument.
+///
+/// Positional args carry an optional source-level name (used for IDE
+/// hover/completion; positional names do not contribute to type
+/// identity). Labeled args always carry a name — the label IS the
+/// call-site key — plus a flag for whether the lambda definition
+/// supplied a default value.
+#[derive(Debug, Clone)]
+pub enum FnArgKind {
+    Positional { name: Option<ArcStr> },
+    Labeled { name: ArcStr, has_default: bool },
+}
+
+impl FnArgKind {
+    pub fn name(&self) -> Option<&ArcStr> {
+        match self {
+            FnArgKind::Positional { name } => name.as_ref(),
+            FnArgKind::Labeled { name, .. } => Some(name),
+        }
+    }
+
+    pub fn label(&self) -> Option<&ArcStr> {
+        match self {
+            FnArgKind::Labeled { name, .. } => Some(name),
+            FnArgKind::Positional { .. } => None,
+        }
+    }
+
+    pub fn is_labeled(&self) -> bool {
+        matches!(self, FnArgKind::Labeled { .. })
+    }
+
+    pub fn is_positional(&self) -> bool {
+        matches!(self, FnArgKind::Positional { .. })
+    }
+
+    pub fn has_default(&self) -> bool {
+        matches!(self, FnArgKind::Labeled { has_default: true, .. })
+    }
+}
+
+// Positional names are documentation; only the discriminator matters
+// for positional. Labeled args participate fully in equality/ordering
+// since the label is the call-site key and `has_default` is part of
+// the type's shape (it determines whether callers can omit the arg).
+impl PartialEq for FnArgKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FnArgKind::Positional { .. }, FnArgKind::Positional { .. }) => true,
+            (
+                FnArgKind::Labeled { name: n0, has_default: d0 },
+                FnArgKind::Labeled { name: n1, has_default: d1 },
+            ) => n0 == n1 && d0 == d1,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FnArgKind {}
+
+impl PartialOrd for FnArgKind {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FnArgKind {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (FnArgKind::Positional { .. }, FnArgKind::Positional { .. }) => {
+                Ordering::Equal
+            }
+            (FnArgKind::Positional { .. }, FnArgKind::Labeled { .. }) => Ordering::Less,
+            (FnArgKind::Labeled { .. }, FnArgKind::Positional { .. }) => {
+                Ordering::Greater
+            }
+            (
+                FnArgKind::Labeled { name: n0, has_default: d0 },
+                FnArgKind::Labeled { name: n1, has_default: d1 },
+            ) => n0.cmp(n1).then_with(|| d0.cmp(d1)),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct FnArgType {
-    pub label: Option<(ArcStr, bool)>,
+    pub kind: FnArgKind,
     pub typ: Type,
+}
+
+impl FnArgType {
+    pub fn name(&self) -> Option<&ArcStr> {
+        self.kind.name()
+    }
+
+    pub fn label(&self) -> Option<&ArcStr> {
+        self.kind.label()
+    }
+
+    pub fn is_labeled(&self) -> bool {
+        self.kind.is_labeled()
+    }
+
+    pub fn is_positional(&self) -> bool {
+        self.kind.is_positional()
+    }
+
+    pub fn has_default(&self) -> bool {
+        self.kind.has_default()
+    }
+}
+
+impl PartialEq for FnArgType {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.typ == other.typ
+    }
+}
+
+impl Eq for FnArgType {}
+
+impl PartialOrd for FnArgType {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FnArgType {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.kind.cmp(&other.kind).then_with(|| self.typ.cmp(&other.typ))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +260,7 @@ impl FnType {
             self;
         let args = Arc::from_iter(
             args.iter()
-                .map(|a| FnArgType { label: a.label.clone(), typ: a.typ.normalize() }),
+                .map(|a| FnArgType { kind: a.kind.clone(), typ: a.typ.normalize() }),
         );
         let vargs = vargs.as_ref().map(|t| t.normalize());
         let rtype = rtype.normalize();
@@ -163,11 +289,10 @@ impl FnType {
             explicit_throws,
             lambda_ids,
         } = self;
-        let args =
-            Arc::from_iter(args.iter().map(|a| FnArgType {
-                label: a.label.clone(),
-                typ: a.typ.resolve_tvars(),
-            }));
+        let args = Arc::from_iter(
+            args.iter()
+                .map(|a| FnArgType { kind: a.kind.clone(), typ: a.typ.resolve_tvars() }),
+        );
         let vargs = vargs.as_ref().map(|t| t.resolve_tvars());
         let rtype = rtype.resolve_tvars();
         let constraints = Arc::new(RwLock::new(LPooled::take()));
@@ -229,7 +354,7 @@ impl FnType {
         } = self;
         let args = Arc::from_iter(
             args.iter()
-                .map(|a| FnArgType { label: a.label.clone(), typ: a.typ.reset_tvars() }),
+                .map(|a| FnArgType { kind: a.kind.clone(), typ: a.typ.reset_tvars() }),
         );
         let vargs = vargs.as_ref().map(|t| t.reset_tvars());
         let rtype = rtype.reset_tvars();
@@ -265,7 +390,7 @@ impl FnType {
             lambda_ids,
         } = self;
         let args = Arc::from_iter(args.iter().map(|a| FnArgType {
-            label: a.label.clone(),
+            kind: a.kind.clone(),
             typ: a.typ.replace_tvars_int(known, renamed),
         }));
         let vargs = vargs.as_ref().map(|t| t.replace_tvars_int(known, renamed));
@@ -277,9 +402,16 @@ impl FnType {
         FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
     }
 
-    /// replace automatically constrained type variables with their
-    /// constraint type. This is only useful for making nicer display
-    /// types in IDEs and shells.
+    /// Replace automatically constrained type variables (those with
+    /// underscore-prefixed names like `'_23`) with their constraint type.
+    /// This is only useful for making nicer display types in IDEs and
+    /// shells.
+    ///
+    /// Ordering: when combining with `Type::resolve_tvars` to fully
+    /// pretty a function signature, call `replace_auto_constrained`
+    /// FIRST and `resolve_tvars` SECOND. `resolve_tvars` empties the
+    /// constraint table, so reversing the order leaves the auto
+    /// constraints with nothing to fold against.
     pub fn replace_auto_constrained(&self) -> Self {
         let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
         let Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids } =
@@ -297,8 +429,16 @@ impl FnType {
             })
             .collect();
         let constraints = Arc::new(RwLock::new(constraints));
-        let args = Arc::from_iter(args.iter().map(|FnArgType { label, typ }| {
-            FnArgType { label: label.clone(), typ: typ.replace_tvars(&known) }
+        let mut all_tvars: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut all_tvars);
+        for (name, tv) in all_tvars.drain() {
+            if !known.contains_key(&name) {
+                known.insert(name, Type::TVar(tv));
+            }
+        }
+        let args = Arc::from_iter(args.iter().map(|FnArgType { kind, typ }| FnArgType {
+            kind: kind.clone(),
+            typ: typ.replace_tvars(&known),
         }));
         let vargs = vargs.as_ref().map(|t| t.replace_tvars(&known));
         let rtype = rtype.replace_tvars(&known);
@@ -448,42 +588,38 @@ impl FnType {
         let mut tul = 0;
         for (i, a) in self.args.iter().enumerate() {
             sul = i;
-            match &a.label {
-                None => {
+            match &a.kind {
+                FnArgKind::Positional { .. } => {
                     break;
                 }
-                Some((l, _)) => match t
-                    .args
-                    .iter()
-                    .find(|a| a.label.as_ref().map(|a| &a.0) == Some(l))
-                {
-                    None => return Ok(false),
-                    Some(o) => {
-                        if !o.typ.contains_int(flags, env, hist, &a.typ)? {
-                            return Ok(false);
+                FnArgKind::Labeled { name: l, .. } => {
+                    match t.args.iter().find(|a| a.label() == Some(l)) {
+                        None => return Ok(false),
+                        Some(o) => {
+                            if !o.typ.contains_int(flags, env, hist, &a.typ)? {
+                                return Ok(false);
+                            }
                         }
                     }
-                },
+                }
             }
         }
         for (i, a) in t.args.iter().enumerate() {
             tul = i;
-            match &a.label {
-                None => {
+            match &a.kind {
+                FnArgKind::Positional { .. } => {
                     break;
                 }
-                Some((l, opt)) => match self
-                    .args
-                    .iter()
-                    .find(|a| a.label.as_ref().map(|a| &a.0) == Some(l))
-                {
-                    Some(_) => (),
-                    None => {
-                        if !opt {
-                            return Ok(false);
+                FnArgKind::Labeled { name: l, has_default } => {
+                    match self.args.iter().find(|a| a.label() == Some(l)) {
+                        Some(_) => (),
+                        None => {
+                            if !*has_default {
+                                return Ok(false);
+                            }
                         }
                     }
-                },
+                }
             }
         }
         let slen = self.args.len() - sul;
@@ -565,9 +701,7 @@ impl FnType {
             && args0
                 .iter()
                 .zip(args1.iter())
-                .map(
-                    |(a0, a1)| Ok(a0.label == a1.label && a0.typ.contains(env, &a1.typ)?),
-                )
+                .map(|(a0, a1)| Ok(a0.kind == a1.kind && a0.typ.contains(env, &a1.typ)?))
                 .collect::<Result<AndAc>>()?
                 .0
             && match (vargs0, vargs1) {
@@ -648,12 +782,12 @@ impl FnType {
         }
         for (i, (sig_arg, impl_arg)) in sig_args.iter().zip(impl_args.iter()).enumerate()
         {
-            if sig_arg.label != impl_arg.label {
+            if sig_arg.kind != impl_arg.kind {
                 bail!(
-                    "argument {} label mismatch: signature has {:?}, implementation has {:?}",
+                    "argument {} kind mismatch: signature has {:?}, implementation has {:?}",
                     i,
-                    sig_arg.label,
-                    impl_arg.label
+                    sig_arg.kind,
+                    impl_arg.kind
                 );
             }
             sig_arg
@@ -713,15 +847,19 @@ impl FnType {
         let mut tbl: LPooled<FxHashMap<ArcStr, (Option<usize>, Option<usize>)>> =
             LPooled::take();
         for (i, a) in self.args.iter().enumerate() {
-            match &a.label {
-                None => break,
-                Some((n, _)) => tbl.entry(n.clone()).or_default().0 = Some(i),
+            match &a.kind {
+                FnArgKind::Positional { .. } => break,
+                FnArgKind::Labeled { name, .. } => {
+                    tbl.entry(name.clone()).or_default().0 = Some(i)
+                }
             }
         }
         for (i, a) in other.args.iter().enumerate() {
-            match &a.label {
-                None => break,
-                Some((n, _)) => tbl.entry(n.clone()).or_default().1 = Some(i),
+            match &a.kind {
+                FnArgKind::Positional { .. } => break,
+                FnArgKind::Labeled { name, .. } => {
+                    tbl.entry(name.clone()).or_default().1 = Some(i)
+                }
             }
         }
         tbl
@@ -732,7 +870,7 @@ impl FnType {
         let rtype = self.rtype.scope_refs(scope);
         let args =
             Arc::from_iter(self.args.iter().map(|a| FnArgType {
-                label: a.label.clone(),
+                kind: a.kind.clone(),
                 typ: a.typ.scope_refs(scope),
             }));
         let mut cres: SmallVec<[(TVar, Type); 4]> = smallvec![];
@@ -770,10 +908,15 @@ impl fmt::Display for FnType {
             write!(f, ">(")?;
         }
         for (i, a) in self.args.iter().enumerate() {
-            match &a.label {
-                Some((l, true)) => write!(f, "?#{l}: ")?,
-                Some((l, false)) => write!(f, "#{l}: ")?,
-                None => (),
+            match &a.kind {
+                FnArgKind::Labeled { name, has_default: true } => {
+                    write!(f, "?#{name}: ")?
+                }
+                FnArgKind::Labeled { name, has_default: false } => {
+                    write!(f, "#{name}: ")?
+                }
+                FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: ")?,
+                FnArgKind::Positional { name: None } => (),
             }
             write!(f, "{}", a.typ)?;
             if i < self.args.len() - 1 || self.vargs.is_some() {
@@ -794,6 +937,11 @@ impl fmt::Display for FnType {
         match &self.throws {
             Type::Bottom => Ok(()),
             Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
+            Type::TVar(tv)
+                if tv.name.starts_with('_') && tv.read().typ.read().is_none() =>
+            {
+                Ok(())
+            }
             t => write!(f, " throws {t}"),
         }
     }
@@ -821,10 +969,15 @@ impl PrettyDisplay for FnType {
         }
         buf.with_indent(2, |buf| {
             for (i, a) in self.args.iter().enumerate() {
-                match &a.label {
-                    Some((l, true)) => write!(buf, "?#{l}: ")?,
-                    Some((l, false)) => write!(buf, "#{l}: ")?,
-                    None => (),
+                match &a.kind {
+                    FnArgKind::Labeled { name, has_default: true } => {
+                        write!(buf, "?#{name}: ")?
+                    }
+                    FnArgKind::Labeled { name, has_default: false } => {
+                        write!(buf, "#{name}: ")?
+                    }
+                    FnArgKind::Positional { name: Some(n) } => write!(buf, "{n}: ")?,
+                    FnArgKind::Positional { name: None } => (),
                 }
                 buf.with_indent(2, |buf| a.typ.fmt_pretty(buf))?;
                 if i < self.args.len() - 1 || self.vargs.is_some() {
@@ -870,11 +1023,77 @@ impl PrettyDisplay for FnType {
             {
                 Ok(())
             }
+            Type::TVar(tv)
+                if tv.name.starts_with('_')
+                    && tv.read().typ.read().is_none()
+                    && !self.explicit_throws =>
+            {
+                Ok(())
+            }
             t => {
                 buf.kill_newline();
                 write!(buf, " throws ")?;
                 t.fmt_pretty(buf)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::expr::parser::parse_fn_type;
+    use poolshark::local::LPooled;
+
+    /// IDE display path: parse a polymorphic sig (`val push_front: …`),
+    /// alias same-named TVars together (what the module loader does
+    /// for sig binds), then run the same pretty pipeline the LSP
+    /// hover uses. The user-written name `'a` must survive — the
+    /// folding pass used to call `replace_tvars`, which renamed
+    /// unrelated TVars to anonymous `'_<id>` placeholders, hiding the
+    /// relationship between the two `'a` occurrences.
+    #[test]
+    fn polymorphic_sig_preserves_tvar_names() {
+        let ft = parse_fn_type("fn(a: Array<'a>, @args: 'a) -> Array<'a>").unwrap();
+        ft.alias_tvars(&mut LPooled::take());
+        let folded = ft.replace_auto_constrained();
+        let resolved = folded.resolve_tvars();
+        let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
+        assert!(
+            s.contains("'a"),
+            "named tvar 'a should survive pretty-printing, got: {s}"
+        );
+        assert!(
+            !s.contains("'_"),
+            "auto tvars should not leak into pretty output, got: {s}"
+        );
+    }
+
+    /// Function types with no explicit `throws` clause carry an
+    /// auto-allocated unbound TVar in their throws slot — that's how
+    /// the typechecker leaves room for call-site inference. The
+    /// printer must suppress it; otherwise hover on something like
+    /// `array::len` reads `fn(a: Array<'a>) -> i64 throws '_42`,
+    /// implying it might raise.
+    #[test]
+    fn unbound_auto_throws_is_hidden() {
+        let ft = parse_fn_type("fn(a: Array<'a>) -> i64").unwrap();
+        ft.alias_tvars(&mut LPooled::take());
+        let folded = ft.replace_auto_constrained();
+        let resolved = folded.resolve_tvars();
+        let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
+        assert!(!s.contains("throws"), "unbound auto throws should not appear, got: {s}");
+    }
+
+    /// An *explicit* `throws T` written by the user must always be
+    /// shown, even when `T` happens to be `Bottom` or an auto TVar.
+    /// The `explicit_throws` flag tracks user intent; only the
+    /// implicit-Bottom / implicit-auto cases get suppressed.
+    #[test]
+    fn explicit_throws_always_shown() {
+        let ft = parse_fn_type("fn(x: 'a) -> 'a throws `Boom").unwrap();
+        ft.alias_tvars(&mut LPooled::take());
+        let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(ft)));
+        assert!(s.contains("throws"), "explicit throws should be shown, got: {s}");
+        assert!(s.contains("`Boom"), "throws variant should be printed, got: {s}");
     }
 }

@@ -10,7 +10,7 @@ val paragraph: fn(
   ?#alignment: &[Alignment, null],
   ?#scroll: &{x: i64, y: i64},
   ?#trim: &bool,
-  &[Array<Line>, string]
+  v: &[Array<Line>, string]
 ) -> Tui;
 ```
 

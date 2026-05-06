@@ -35,7 +35,7 @@ types of declarations:
 Declare exported values and their types using `val`:
 
 ```graphix
-val add: fn(i64, i64) -> i64;
+val add: fn(a: i64, b: i64) -> i64;
 val greeting: string;
 val config: Array<i64>;
 ```
@@ -82,10 +82,10 @@ Let's create a simple math utilities module with an interface.
 **math.gxi** (interface):
 ```graphix
 /// Add two numbers
-val add: fn(i64, i64) -> i64;
+val add: fn(a: i64, b: i64) -> i64;
 
 /// Subtract the second number from the first
-val sub: fn(i64, i64) -> i64;
+val sub: fn(a: i64, b: i64) -> i64;
 
 /// Common mathematical constants
 type Constants = {
@@ -152,7 +152,7 @@ public API:
 /// 
 /// The predicate function is called for each element. Elements for which
 /// the predicate returns true are included in the result.
-val filter: fn(Array<'a>, fn('a) -> bool throws 'e) -> Array<'a> throws 'e;
+val filter: fn(a: Array<'a>, f: fn(x: 'a) -> bool throws 'e) -> Array<'a> throws 'e;
 ```
 
 ## Polymorphic Functions
@@ -161,10 +161,10 @@ Interface files fully support polymorphic type signatures:
 
 ```graphix
 /// Transform each element of an array using function f
-val map: fn(Array<'a>, fn('a) -> 'b throws 'e) -> Array<'b> throws 'e;
+val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e;
 
 /// Fold an array into a single value
-val fold: fn(Array<'a>, 'b, fn('b, 'a) -> 'b throws 'e) -> 'b throws 'e;
+val fold: fn(a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
 ```
 
 Type variables (like `'a`, `'b`, `'e`) work the same as in regular type
@@ -222,7 +222,7 @@ Example:
 
 ```graphix
 // parent.gxi
-val public_helper: fn(i64) -> i64;
+val public_helper: fn(x: i64) -> i64;
 mod child;
 ```
 
@@ -293,13 +293,13 @@ still work.
 type Counter;
 
 /// Create a new counter starting at the given value
-val make: fn(i64) -> Counter;
+val make: fn(x: i64) -> Counter;
 
 /// Get the current value
-val get: fn(Counter) -> i64;
+val get: fn(c: Counter) -> i64;
 
 /// Increment the counter every time trig updates
-val increment: fn(#trig: Any, &Counter) -> null;
+val increment: fn(#trig: Any, c: &Counter) -> null;
 ```
 
 **counter.gx**:
@@ -329,8 +329,8 @@ Abstract types can have type parameters, allowing generic containers:
 ```graphix
 // interface
 type Box<'a>;
-val wrap: fn('a) -> Box<'a>;
-val unwrap: fn(Box<'a>) -> 'a;
+val wrap: fn(x: 'a) -> Box<'a>;
+val unwrap: fn(b: Box<'a>) -> 'a;
 ```
 
 ```graphix
@@ -348,8 +348,8 @@ implementation must have matching constraints:
 ```graphix
 // interface - constraint required
 type NumericWrapper<'a: Number>;
-val wrap: fn('a) -> NumericWrapper<'a>;
-val double: fn(NumericWrapper<'a>) -> 'a;
+val wrap: fn(x: 'a) -> NumericWrapper<'a>;
+val double: fn(w: NumericWrapper<'a>) -> 'a;
 ```
 
 ```graphix

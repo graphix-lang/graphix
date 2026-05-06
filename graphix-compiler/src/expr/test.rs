@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgType, FnType, Type},
+    typ::{FnArgKind, FnArgType, FnType, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -260,13 +260,18 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
-                    Type::Ref { scope: ModPath::root(), name, params: Arc::from(params) }
+                    Type::Ref (TypeRef { scope: ModPath::root(), name, params: Arc::from(params) , ..Default::default()})
                 }
             ),
             (
                 collection::vec(
-                    (option::of(random_fname()), any::<bool>(), inner.clone()),
-                    (1, 10)
+                    (
+                        option::of(random_fname()),
+                        random_fname(),
+                        any::<bool>(),
+                        inner.clone(),
+                    ),
+                    (1, 10),
                 ),
                 option::of(inner.clone()),
                 inner.clone(),
@@ -274,11 +279,18 @@ fn typexp() -> impl Strategy<Value = Type> {
                 option::of(inner.clone())
             )
                 .prop_map(|(mut args, vargs, rtype, constraints, throws)| {
-                    args.sort_by(|(k0, _, _), (k1, _, _)| k1.cmp(k0));
-                    let args = args.into_iter().map(|(name, optional, typ)| FnArgType {
-                        label: name.map(|n| (n, optional)),
-                        typ,
-                    });
+                    args.sort_by(|(k0, _, _, _), (k1, _, _, _)| k1.cmp(k0));
+                    let args =
+                        args.into_iter().map(|(label, pos_name, optional, typ)| {
+                            let kind = match label {
+                                Some(n) => FnArgKind::Labeled {
+                                    name: n,
+                                    has_default: optional,
+                                },
+                                None => FnArgKind::Positional { name: Some(pos_name) },
+                            };
+                            FnArgType { kind, typ }
+                        });
                     let explicit_throws = throws.is_some();
                     let throws = throws.unwrap_or(Type::Bottom);
                     Type::Fn(Arc::new(FnType {
@@ -552,6 +564,7 @@ macro_rules! lambda {
                                 labeled: labeled.then_some(default),
                                 pattern,
                                 constraint,
+                                pos: Default::default(),
                             }
                         },
                     );
@@ -720,18 +733,33 @@ macro_rules! deref {
 fn module_sigitem() -> impl Strategy<Value = SigItem> {
     prop_oneof![
         (random_fname(), typexp(), option::of(arcstr())).prop_map(|(name, typ, doc)| {
-            SigItem { kind: SigKind::Bind(BindSig { name, typ }), doc: Doc(doc) }
+            SigItem {
+                kind: SigKind::Bind(BindSig { name, typ }),
+                doc: Doc(doc),
+                pos: Default::default(),
+                ori: None,
+            }
         }),
         (typedef(), option::of(arcstr())).prop_map(|(td, doc)| match td.kind {
-            ExprKind::TypeDef(td) =>
-                SigItem { kind: SigKind::TypeDef(td), doc: Doc(doc) },
+            ExprKind::TypeDef(td) => SigItem {
+                kind: SigKind::TypeDef(td),
+                doc: Doc(doc),
+                pos: Default::default(),
+                ori: None,
+            },
             _ => unreachable!(),
         }),
-        (modpath(), option::of(arcstr()))
-            .prop_map(|(path, doc)| SigItem { kind: SigKind::Use(path), doc: Doc(doc) }),
+        (modpath(), option::of(arcstr())).prop_map(|(path, doc)| SigItem {
+            kind: SigKind::Use(path),
+            doc: Doc(doc),
+            pos: Default::default(),
+            ori: None,
+        }),
         (random_fname(), option::of(arcstr())).prop_map(|(name, doc)| SigItem {
             kind: SigKind::Module(name),
             doc: Doc(doc),
+            pos: Default::default(),
+            ori: None,
         })
     ]
 }
@@ -1149,20 +1177,20 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (
-                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0 },
-                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1 },
+                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0, .. },
+                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1, .. },
             ) => n0 == n1 && check_type(t0, t1) && d0 == d1,
             (
-                SigItem { kind: SigKind::TypeDef(td0), doc: d0 },
-                SigItem { kind: SigKind::TypeDef(td1), doc: d1 },
+                SigItem { kind: SigKind::TypeDef(td0), doc: d0, .. },
+                SigItem { kind: SigKind::TypeDef(td1), doc: d1, .. },
             ) => check_typedef(td0, td1) && d0 == d1,
             (
-                SigItem { kind: SigKind::Use(path0), doc: d0 },
-                SigItem { kind: SigKind::Use(path1), doc: d1 },
+                SigItem { kind: SigKind::Use(path0), doc: d0, .. },
+                SigItem { kind: SigKind::Use(path1), doc: d1, .. },
             ) => path0 == path1 && d0 == d1,
             (
-                SigItem { kind: SigKind::Module(n0), doc: d0 },
-                SigItem { kind: SigKind::Module(n1), doc: d1 },
+                SigItem { kind: SigKind::Module(n0), doc: d0, .. },
+                SigItem { kind: SigKind::Module(n1), doc: d1, .. },
             ) => n0 == n1 && d0 == d1,
             (_, _) => false,
         })
@@ -1627,5 +1655,99 @@ proptest! {
         let st = dbg!(format_with_flags(BitFlags::empty(), || s.to_string_pretty(80)));
         let e = dbg!(parse_one(st.as_str()).unwrap());
         assert!(check(&s, &e))
+    }
+}
+
+mod tree_sitter_compat {
+    use super::*;
+
+    fn find_tree_error(node: tree_sitter::Node, source: &str) -> Option<String> {
+        if node.is_error() {
+            return Some(format!(
+                "ERROR at {}:{}: {:?}",
+                node.start_position().row,
+                node.start_position().column,
+                &source[node.byte_range()]
+            ));
+        }
+        if node.is_missing() {
+            return Some(format!(
+                "MISSING {} at {}:{}",
+                node.kind(),
+                node.start_position().row,
+                node.start_position().column
+            ));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(err) = find_tree_error(child, source) {
+                return Some(err);
+            }
+        }
+        None
+    }
+
+    fn assert_ts_parses(source: &str) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_graphix::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        if let Some(err) = find_tree_error(tree.root_node(), source) {
+            panic!(
+                "tree-sitter: {err}\n\nSource:\n{source}\n\nTree:\n{}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn ts_expr0(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_expr1(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_expr2(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_expr3(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp0(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp1(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp2(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
+
+        #[test]
+        fn ts_pp3(s in expr()) {
+            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            assert_ts_parses(&st);
+        }
     }
 }

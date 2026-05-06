@@ -72,7 +72,7 @@ type Span = {
   content: string
 };
 
-val span: fn(?#style: Style, string) -> Span;
+val span: fn(?#style: Style, content: string) -> Span;
 
 type Line = {
   style: Style,
@@ -80,7 +80,7 @@ type Line = {
   spans: [Array<Span>, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], [Array<Span>, string]) -> Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array<Span>, string]) -> Line;
 
 type Direction = [
   `Horizontal,

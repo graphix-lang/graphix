@@ -26,6 +26,7 @@ async-trait = { workspace = true }
 compact_str = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
+indexmap = { workspace = true }
 graphix-compiler = { version = "0.7.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.7.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.7.0", path = "../../graphix-package" }
@@ -41,6 +42,10 @@ iced_widget = { workspace = true }
 log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
+netidx-derive = { workspace = true }
+netidx-value = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
 plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series", "point_series", "candlestick", "errorbar", "datetime", "histogram", "surface_series"] }
 plotters-backend = "0.3"
 poolshark = { workspace = true }
@@ -53,5 +58,8 @@ winit = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 fxhash = { workspace = true }
+graphix-package-array = { version = "0.7.0", path = "../graphix-package-array" }
+graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
+graphix-package-sys = { version = "0.7.0", path = "../graphix-package-sys" }
 netidx-core = { workspace = true }
 poolshark = { workspace = true }

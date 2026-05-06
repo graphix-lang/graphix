@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,7 +180,7 @@ structure, a file, or even sent across the network to another instance of the
 same program. Here we build a struct that maintains a count, and a function to
 operate on the count, returning a new struct of the same type with a different
 count.</p>
-<pre><code class="language-graphix">type T = { count: i64, f: fn(T) -&gt; T };
+<pre><code class="language-graphix">type T = { count: i64, f: fn(t: T) -&gt; T };
 let t = { count: 0, f: |t: T| {t with count: t.count + 1} };
 (t.f)(t)
 </code></pre>

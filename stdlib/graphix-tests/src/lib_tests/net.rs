@@ -90,8 +90,7 @@ const NET_LIST_TABLE: &str = r#"
   sys::net::publish("/local/t/1/foo", 42);
   sys::net::publish("/local/t/1/bar", 42);
   let t = dbg(sys::net::list_table("/local/t"))?;
-  let cols = array::map(t.columns, |(n, _)| n);
-  (array::sort(cols) == ["bar", "foo"])
+  (array::sort(t.columns) == ["bar", "foo"])
   && (array::sort(t.rows) == ["/local/t/0", "/local/t/1"])
 }
 "#;

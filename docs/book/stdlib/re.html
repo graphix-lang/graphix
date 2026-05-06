@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,24 +177,24 @@
                         <h1 id="re"><a class="header" href="#re">Re</a></h1>
 <pre><code class="language-graphix">/// return true if the string is matched by #pat, otherwise return false.
 /// return an error if #pat is invalid.
-val is_match: fn(#pat: string, string) -&gt; Result&lt;bool, `ReError(string)&gt;;
+val is_match: fn(#pat: string, s: string) -&gt; Result&lt;bool, `ReError(string)&gt;;
 
 /// return an array of instances of #pat in s. return an error if #pat is
 /// invalid.
-val find: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+val find: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
 /// return an array of captures matched by #pat. The array will have an element for each
 /// capture group, which will have an element for each capture, regardless of whether it
 /// matched or not. If it did not match the corresponding element will be null. Return an
 /// error if #pat is invalid.
-val captures: fn(#pat: string, string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
+val captures: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
 
 /// return an array of strings split by #pat. return an error if #pat is invalid.
-val split: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+val split: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
 /// split the string by #pat at most #limit times and return an array of the parts.
 /// return an error if #pat is invalid
-val splitn: fn(#pat: string, #limit: i64, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+val splitn: fn(#pat: string, #limit: i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 </code></pre>
 
                     </main>

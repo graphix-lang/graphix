@@ -28,7 +28,7 @@ mod setops;
 mod tval;
 mod tvar;
 
-pub use fntyp::{FnArgType, FnType};
+pub use fntyp::{FnArgKind, FnArgType, FnType};
 pub use tval::TVal;
 pub use tvar::TVar;
 
@@ -69,22 +69,24 @@ impl<H: IsoPoolable> RefHist<H> {
     /// Ref side, and None collapses all non-Ref types to the same key.
     fn ref_id(&mut self, t: &Type, env: &Env) -> Option<usize> {
         match t {
-            Type::Ref { scope, name, params } => match env.lookup_typedef(scope, name) {
-                Some(def) => {
-                    let def_addr = (def as *const TypeDef).addr();
-                    let entries = self.ref_ids.entry(def_addr).or_default();
-                    for &(ref p, id) in entries.iter() {
-                        if **p == **params {
-                            return Some(id);
+            Type::Ref(TypeRef { scope, name, params, .. }) => {
+                match env.lookup_typedef(scope, name) {
+                    Some(def) => {
+                        let def_addr = (def as *const TypeDef).addr();
+                        let entries = self.ref_ids.entry(def_addr).or_default();
+                        for &(ref p, id) in entries.iter() {
+                            if **p == **params {
+                                return Some(id);
+                            }
                         }
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        entries.push((params.clone(), id));
+                        Some(id)
                     }
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    entries.push((params.clone(), id));
-                    Some(id)
+                    None => None,
                 }
-                None => None,
-            },
+            }
             _ => None,
         }
     }
@@ -92,12 +94,72 @@ impl<H: IsoPoolable> RefHist<H> {
 
 atomic_id!(AbstractId);
 
+/// A reference to a named typedef, e.g. `Foo` or `Result<i64, string>`.
+/// `pos` and `ori` are IDE metadata recording where this reference
+/// was written in source — they're populated by the parser and
+/// ignored for type-system equality, ordering and hashing so they
+/// don't affect type identity.
+#[derive(Debug, Clone)]
+pub struct TypeRef {
+    pub scope: ModPath,
+    pub name: ModPath,
+    pub params: Arc<[Type]>,
+    pub pos: Option<crate::SourcePosition>,
+    pub ori: Option<Arc<crate::expr::Origin>>,
+}
+
+impl TypeRef {
+    /// Build a `TypeRef` with no source-position info — for synthetic
+    /// type references created during type inference, set operations,
+    /// stdlib type literals, etc.
+    pub fn synthetic(scope: ModPath, name: ModPath, params: Arc<[Type]>) -> Self {
+        Self { scope, name, params, pos: None, ori: None }
+    }
+}
+
+impl Default for TypeRef {
+    fn default() -> Self {
+        Self {
+            scope: ModPath::root(),
+            name: ModPath::root(),
+            params: Arc::from(Vec::<Type>::new()),
+            pos: None,
+            ori: None,
+        }
+    }
+}
+
+impl PartialEq for TypeRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.scope == other.scope
+            && self.name == other.name
+            && self.params == other.params
+    }
+}
+
+impl Eq for TypeRef {}
+
+impl PartialOrd for TypeRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TypeRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.scope
+            .cmp(&other.scope)
+            .then_with(|| self.name.cmp(&other.name))
+            .then_with(|| self.params.cmp(&other.params))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Bottom,
     Any,
     Primitive(BitFlags<Typ>),
-    Ref { scope: ModPath, name: ModPath, params: Arc<[Type]> },
+    Ref(TypeRef),
     Fn(Arc<FnType>),
     Set(Arc<[Type]>),
     TVar(TVar),
@@ -144,7 +206,7 @@ impl Type {
             | Self::Tuple(_)
             | Self::Struct(_)
             | Self::Variant(_, _)
-            | Self::Ref { .. }
+            | Self::Ref(TypeRef { .. })
             | Self::Map { .. }
             | Self::Abstract { .. } => true,
             Self::TVar(tv) => tv.read().typ.read().is_some(),
@@ -153,23 +215,127 @@ impl Type {
 
     pub fn lookup_ref(&self, env: &Env) -> Result<Type> {
         match self {
-            Self::Ref { scope, name, params } => {
-                let def = env
-                    .lookup_typedef(scope, name)
+            Self::Ref(TypeRef { scope, name, params, pos, ori }) => {
+                let resolved = env
+                    .find_visible(scope, name, |s, n| {
+                        env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
+                            let canonical = ModPath(netidx::path::Path::from(
+                                arcstr::ArcStr::from(s),
+                            ));
+                            (
+                                canonical,
+                                d.pos,
+                                d.ori.clone(),
+                                d.params.clone(),
+                                d.typ.clone(),
+                            )
+                        })
+                    })
                     .ok_or_else(|| anyhow!("undefined type {name} in {scope}"))?;
-                if def.params.len() != params.len() {
-                    bail!("{} expects {} type parameters", name, def.params.len());
+                let (canonical_scope, def_pos, def_ori, def_params, def_typ) = resolved;
+                if def_params.len() != params.len() {
+                    bail!("{} expects {} type parameters", name, def_params.len());
+                }
+                if env.lsp_mode {
+                    if let (Some(pos), Some(ori)) = (pos, ori) {
+                        env.push_type_ref(crate::TypeRefSite {
+                            pos: *pos,
+                            ori: ori.clone(),
+                            name: name.clone(),
+                            canonical_scope,
+                            def_pos,
+                            def_ori,
+                        });
+                    }
                 }
                 let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
-                for ((tv, ct), arg) in def.params.iter().zip(params.iter()) {
+                for ((tv, ct), arg) in def_params.iter().zip(params.iter()) {
                     if let Some(ct) = ct {
                         ct.check_contains(env, arg)?;
                     }
                     known.insert(tv.name.clone(), arg.clone());
                 }
-                Ok(def.typ.replace_tvars(&known))
+                Ok(def_typ.replace_tvars(&known))
             }
             t => Ok(t.clone()),
+        }
+    }
+
+    /// Walk this type tree and, for every `Type::Ref` carrying
+    /// parser-populated `pos`/`ori`, push a `TypeRefSite` to the
+    /// IDE side-channel. Used at typedef-registration time so
+    /// references inside typedef bodies (which the type system
+    /// never auto-derefs) still show up in find-references results.
+    /// Caller is responsible for gating on `env.lsp_mode`; this
+    /// method recurses unconditionally once entered.
+    pub fn record_ide_refs(&self, env: &Env, fallback_scope: &ModPath) {
+        match self {
+            Type::Ref(tr) => {
+                if let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) {
+                    let resolved = env.find_visible(&tr.scope, &tr.name, |s, n| {
+                        env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
+                            let canonical = ModPath(netidx::path::Path::from(
+                                arcstr::ArcStr::from(s),
+                            ));
+                            (canonical, d.pos, d.ori.clone())
+                        })
+                    });
+                    let (canonical_scope, def_pos, def_ori) = match resolved {
+                        Some((s, dp, do_)) => (s, dp, do_),
+                        None => (
+                            fallback_scope.clone(),
+                            crate::SourcePosition::default(),
+                            ori.clone(),
+                        ),
+                    };
+                    env.push_type_ref(crate::TypeRefSite {
+                        pos,
+                        ori: ori.clone(),
+                        name: tr.name.clone(),
+                        canonical_scope,
+                        def_pos,
+                        def_ori,
+                    });
+                }
+                for p in tr.params.iter() {
+                    p.record_ide_refs(env, fallback_scope);
+                }
+            }
+            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
+                for t in ts.iter() {
+                    t.record_ide_refs(env, fallback_scope);
+                }
+            }
+            Type::Array(t) | Type::Error(t) | Type::ByRef(t) => {
+                t.record_ide_refs(env, fallback_scope)
+            }
+            Type::Map { key, value } => {
+                key.record_ide_refs(env, fallback_scope);
+                value.record_ide_refs(env, fallback_scope);
+            }
+            Type::Struct(fields) => {
+                for (_, t) in fields.iter() {
+                    t.record_ide_refs(env, fallback_scope);
+                }
+            }
+            Type::Fn(ft) => {
+                for arg in ft.args.iter() {
+                    arg.typ.record_ide_refs(env, fallback_scope);
+                }
+                ft.rtype.record_ide_refs(env, fallback_scope);
+                ft.throws.record_ide_refs(env, fallback_scope);
+            }
+            Type::Abstract { params, .. } => {
+                for p in params.iter() {
+                    p.record_ide_refs(env, fallback_scope);
+                }
+            }
+            Type::TVar(tv) => {
+                if let Some(t) = tv.read().typ.read().as_ref() {
+                    t.record_ide_refs(env, fallback_scope);
+                }
+            }
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
         }
     }
 
@@ -213,7 +379,7 @@ impl Type {
                     None
                 }
             }
-            Type::Ref { .. } => {
+            Type::Ref(TypeRef { .. }) => {
                 let id = hist.ref_id(self, env);
                 let t = self.lookup_ref(env).ok()?;
                 if hist.insert(id) {
@@ -260,7 +426,7 @@ impl Type {
             | Type::Abstract { .. }
             | Type::TVar(_)
             | Type::Primitive(_)
-            | Type::Ref { .. }
+            | Type::Ref(TypeRef { .. })
             | Type::Fn(_)
             | Type::Error(_)
             | Type::Array(_)
@@ -287,7 +453,7 @@ impl Type {
             | Self::Tuple(_)
             | Self::Struct(_)
             | Self::Variant(_, _)
-            | Self::Ref { .. }
+            | Self::Ref(TypeRef { .. })
             | Self::Map { .. } => f(Some(self)),
             Self::TVar(tv) => match tv.read().typ.read().as_ref() {
                 Some(t) => t.with_deref(f),
@@ -332,9 +498,10 @@ impl Type {
                     Type::TVar(TVar::named(tv.name.clone(), typ))
                 }
             },
-            Type::Ref { scope: _, name, params } => {
-                let params = Arc::from_iter(params.iter().map(|t| t.scope_refs(scope)));
-                Type::Ref { scope: scope.clone(), name: name.clone(), params }
+            Type::Ref(tr) => {
+                let params =
+                    Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));
+                Type::Ref(TypeRef { scope: scope.clone(), params, ..tr.clone() })
             }
             Type::Set(ts) => {
                 Type::Set(Arc::from_iter(ts.iter().map(|t| t.scope_refs(scope))))

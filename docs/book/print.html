@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-9c436f35.js"></script>
+        <script src="toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -439,7 +439,7 @@ count &lt;- timer ~ (count + 1);
 <h2 id="types-strong-but-flexible"><a class="header" href="#types-strong-but-flexible">Types: Strong but Flexible</a></h2>
 <p>Graphix has a powerful static type system, but you’ll rarely write type annotations. The compiler infers types for you using structural typing—types are compared by their shape, not their name. A struct <code>{x: i64, y: i64}</code> is the same type whether you call it <code>Point</code> or <code>Vector</code> or don’t name it at all.</p>
 <p>The <strong><a href="#fundamental-types">Fundamental Types</a></strong> section covers the built-in numeric types (<code>i64</code>, <code>f64</code>, <code>u32</code>, etc.), booleans, strings, durations, and more. You’ll learn how arithmetic works across different numeric types, how string interpolation works with <code>[...]</code> brackets, and why division by zero doesn’t crash your program.</p>
-<p><strong><a href="#reading-type-signatures">Reading Type Signatures</a></strong> teaches you how to read the type annotations you’ll see throughout the documentation. Function types like <code>fn(Array&lt;'a&gt;, fn('a) -&gt; 'b) -&gt; Array&lt;'b&gt;</code> tell you exactly what a function expects and returns, including what errors it might throw.</p>
+<p><strong><a href="#reading-type-signatures">Reading Type Signatures</a></strong> teaches you how to read the type annotations you’ll see throughout the documentation. Function types like <code>fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b) -&gt; Array&lt;'b&gt;</code> tell you exactly what a function expects and returns, including what errors it might throw.</p>
 <h2 id="binding-values-and-building-blocks"><a class="header" href="#binding-values-and-building-blocks">Binding Values and Building Blocks</a></h2>
 <p>In Graphix, you create bindings with <code>let</code>. Unlike variables in other languages, these bindings can update over time—they’re more like pipes that different values flow through.</p>
 <p><strong><a href="#let-binds">Let Binds</a></strong> explains how to create bindings, how shadowing works, and why every binding in Graphix is potentially reactive. When you write <code>let x = 42</code>, you’re not just storing a value—you’re creating a node in the dataflow graph.</p>
@@ -777,29 +777,30 @@ handling.</p>
 <p>Throughout this book and in the standard library documentation, you’ll encounter function type signatures. This guide will help you understand what they mean. Don’t try to memorize everything here - just use this as a reference when you encounter unfamiliar notation.</p>
 <h2 id="basic-function-signatures"><a class="header" href="#basic-function-signatures">Basic Function Signatures</a></h2>
 <p>The simplest function signature looks like this:</p>
-<pre><code class="language-graphix">val double: fn(i64) -&gt; i64
+<pre><code class="language-graphix">val double: fn(x: i64) -&gt; i64
 </code></pre>
 <p>This breaks down into:</p>
 <ul>
 <li><code>fn(...)</code> - this is a function</li>
-<li><code>i64</code> - takes one parameter of type i64 (64-bit integer)</li>
+<li><code>x: i64</code> - takes one parameter named <code>x</code> of type i64 (64-bit integer)</li>
 <li><code>-&gt; i64</code> - returns a value of type i64</li>
 </ul>
+<p>Every positional parameter in a function type carries a name as well as a type. The name is documentation for the reader and is what your editor shows in hover and completion popups; it does not change the call (you still pass arguments positionally, in order).</p>
 <p>Another example:</p>
-<pre><code class="language-graphix">val concat: fn(string, string) -&gt; string
+<pre><code class="language-graphix">val concat: fn(a: string, b: string) -&gt; string
 </code></pre>
 <p>Takes two strings, returns a string.</p>
 <h2 id="type-parameters-generics"><a class="header" href="#type-parameters-generics">Type Parameters (Generics)</a></h2>
 <p>Type parameters (like generics in other languages) are written with a single quote followed by an identifier: <code>'a</code>, <code>'b</code>, <code>'e</code>, etc.</p>
 <h3 id="simple-type-parameters"><a class="header" href="#simple-type-parameters">Simple Type Parameters</a></h3>
-<pre><code class="language-graphix">val identity: fn('a) -&gt; 'a
+<pre><code class="language-graphix">val identity: fn(x: 'a) -&gt; 'a
 </code></pre>
 <p>This means: “takes a value of any type <code>'a</code> and returns a value of the same type <code>'a</code>”. The <code>identity</code> function could work with integers, strings, or any other type.</p>
-<pre><code class="language-graphix">val first: fn(Array&lt;'a&gt;) -&gt; 'a
+<pre><code class="language-graphix">val first: fn(a: Array&lt;'a&gt;) -&gt; 'a
 </code></pre>
 <p>This means: “takes an array of any type <code>'a</code> and returns a single element of type <code>'a</code>”. If you pass an <code>Array&lt;string&gt;</code>, you get back a <code>string</code>. If you pass an <code>Array&lt;i64&gt;</code>, you get back an <code>i64</code>.</p>
 <h3 id="multiple-type-parameters"><a class="header" href="#multiple-type-parameters">Multiple Type Parameters</a></h3>
-<pre><code class="language-graphix">val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b) -&gt; Array&lt;'b&gt;
+<pre><code class="language-graphix">val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b) -&gt; Array&lt;'b&gt;
 </code></pre>
 <p>This function takes:</p>
 <ul>
@@ -810,7 +811,7 @@ handling.</p>
 <p>The types <code>'a</code> and <code>'b</code> can be the same or different.</p>
 <h2 id="optional-labeled-arguments"><a class="header" href="#optional-labeled-arguments">Optional Labeled Arguments</a></h2>
 <p>Arguments prefixed with <code>?#</code> are optional and labeled:</p>
-<pre><code class="language-graphix">val text: fn(?#style: Style, string) -&gt; Widget
+<pre><code class="language-graphix">val text: fn(?#style: Style, content: string) -&gt; Widget
 </code></pre>
 <p>This function can be called in two ways:</p>
 <pre><code class="language-graphix">text("Hello")                           // style uses default value
@@ -818,7 +819,7 @@ text(#style: my_style, "Hello")        // style is specified
 </code></pre>
 <h3 id="order-flexibility"><a class="header" href="#order-flexibility">Order Flexibility</a></h3>
 <p>Labeled arguments can be provided in any order, but must come before positional arguments:</p>
-<pre><code class="language-graphix">val widget: fn(?#width: i64, ?#height: i64, string) -&gt; Widget
+<pre><code class="language-graphix">val widget: fn(?#width: i64, ?#height: i64, content: string) -&gt; Widget
 
 // All of these are valid:
 widget("text")
@@ -829,8 +830,8 @@ widget(#height: 50, "text")
 <h2 id="required-labeled-arguments"><a class="header" href="#required-labeled-arguments">Required Labeled Arguments</a></h2>
 <p>Arguments with <code>#</code> but no <code>?</code> are required but labeled:</p>
 <pre><code class="language-graphix">val input_handler: fn(
-    #handle: fn(Event) -&gt; Response,
-    &amp;Widget
+    #handle: fn(e: Event) -&gt; Response,
+    w: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <p>You must provide <code>#handle</code>, but it doesn’t have to be in the first position. However, it must come before the unlabeled <code>&amp;Widget</code> argument:</p>
@@ -846,12 +847,12 @@ sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 </code></pre>
 <h3 id="variadic-with-required-arguments"><a class="header" href="#variadic-with-required-arguments">Variadic with Required Arguments</a></h3>
 <p>Sometimes a function requires at least one argument:</p>
-<pre><code class="language-graphix">val max: fn('a, @args: 'a) -&gt; 'a
+<pre><code class="language-graphix">val max: fn(first: 'a, @args: 'a) -&gt; 'a
 </code></pre>
 <p>The first <code>'a</code> is required, then any number of additional arguments of the same type.</p>
 <h2 id="reference-types"><a class="header" href="#reference-types">Reference Types</a></h2>
 <p>An ampersand <code>&amp;</code> before a type means “reference to” rather than the value itself:</p>
-<pre><code class="language-graphix">val text: fn(&amp;string) -&gt; Widget
+<pre><code class="language-graphix">val text: fn(content: &amp;string) -&gt; Widget
 </code></pre>
 <p>This takes a <em>reference</em> to a string, not the string value directly. References are important for:</p>
 <ol>
@@ -870,16 +871,16 @@ let v = *r;      // v is the value "Hello"
 <p>For a deeper dive, see <a href="#references">References</a>.</p>
 <h2 id="error-types-throws"><a class="header" href="#error-types-throws">Error Types (throws)</a></h2>
 <p>When a function can throw errors, the signature includes <code>throws</code>:</p>
-<pre><code class="language-graphix">val divide: fn(i64, i64) -&gt; i64 throws `DivideByZero
+<pre><code class="language-graphix">val divide: fn(a: i64, b: i64) -&gt; i64 throws `DivideByZero
 </code></pre>
 <p>This function returns <code>i64</code> if successful, but might throw a <code>DivideByZero</code> error.</p>
 <h3 id="multiple-error-types"><a class="header" href="#multiple-error-types">Multiple Error Types</a></h3>
 <p>A function can throw multiple error types:</p>
-<pre><code class="language-graphix">val parse_and_divide: fn(string, string) -&gt; i64 throws [`ParseError, `DivideByZero]
+<pre><code class="language-graphix">val parse_and_divide: fn(num: string, denom: string) -&gt; i64 throws [`ParseError, `DivideByZero]
 </code></pre>
 <h3 id="generic-error-types"><a class="header" href="#generic-error-types">Generic Error Types</a></h3>
 <p>Often error types are parameterized:</p>
-<pre><code class="language-graphix">val filter: fn('a, fn('a) -&gt; bool throws 'e) -&gt; 'a throws 'e
+<pre><code class="language-graphix">val filter: fn(v: 'a, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e
 </code></pre>
 <p>This means: the <code>filter</code> function itself doesn’t throw errors, but if the function you pass to it throws errors of type <code>'e</code>, then <code>filter</code> will also throw those same errors.</p>
 <h3 id="result-type"><a class="header" href="#result-type">Result Type</a></h3>
@@ -887,22 +888,22 @@ let v = *r;      // v is the value "Hello"
 <pre><code class="language-graphix">type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;]
 </code></pre>
 <p>So a function signature like:</p>
-<pre><code class="language-graphix">val parse: fn(string) -&gt; Result&lt;i64, `ParseError&gt;
+<pre><code class="language-graphix">val parse: fn(s: string) -&gt; Result&lt;i64, `ParseError&gt;
 </code></pre>
 <p>Returns either an <code>i64</code> (success) or an <code>Error&lt;</code>ParseError&gt;` (failure).</p>
 <p>See <a href="#error-handling">Error Handling</a> for complete details on working with errors.</p>
 <h2 id="set-types"><a class="header" href="#set-types">Set Types</a></h2>
 <p>Square brackets <code>[...]</code> denote a set type - the value can be any one of the types in the set:</p>
-<pre><code class="language-graphix">val process: fn([i64, string]) -&gt; string
+<pre><code class="language-graphix">val process: fn(x: [i64, string]) -&gt; string
 </code></pre>
 <p>This function accepts either an <code>i64</code> or a <code>string</code>, and returns a <code>string</code>.</p>
 <h3 id="optional-types-nullable"><a class="header" href="#optional-types-nullable">Optional Types (Nullable)</a></h3>
 <p>The pattern <code>[T, null]</code> means “T or nothing”:</p>
-<pre><code class="language-graphix">val find: fn(Array&lt;string&gt;, string) -&gt; [string, null]
+<pre><code class="language-graphix">val find: fn(haystack: Array&lt;string&gt;, needle: string) -&gt; [string, null]
 </code></pre>
 <p>Returns a string if found, <code>null</code> if not found. This is aliased as <code>Option&lt;T&gt;</code>:</p>
 <pre><code class="language-graphix">type Option&lt;'a&gt; = ['a, null]
-val find: fn(Array&lt;string&gt;, string) -&gt; Option&lt;string&gt;
+val find: fn(haystack: Array&lt;string&gt;, needle: string) -&gt; Option&lt;string&gt;
 </code></pre>
 <h3 id="nested-sets"><a class="header" href="#nested-sets">Nested Sets</a></h3>
 <p>Types can nest arbitrarily:</p>
@@ -932,7 +933,7 @@ itself during the type inference process.</p>
   '_2069: Number,
   '_2067: Number,
   '_2071: Number
-&gt;('_2067, '_2069) -&gt; '_2071
+&gt;(x: '_2067, y: '_2069) -&gt; '_2071
 </code></pre>
 <p>The compiler has inferred a bunch of properties here,</p>
 <ul>
@@ -949,7 +950,7 @@ in the type signature.</p>
 shell also telling you what type variables are currently bound to, or
 <code>unbound</code> if they aren’t bound. So in the shell this pops out as,</p>
 <pre><code class="language-graphix">〉f
--: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;('_2067: unbound, '_2069: unbound) -&gt; '_2071: unbound
+-: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
 </code></pre>
 <p>The constraint <code>'_2069: unbound: Number</code> is read as. _2069 is not
 currently bound to a type but is constrained to type <code>Number</code>. This is
@@ -963,7 +964,7 @@ worth putting in the work to learn to decipher it.</p>
     ?#selected: &amp;i64,
     ?#row_highlight_style: &amp;Style,
     ?#highlight_symbol: &amp;string,
-    &amp;Array&lt;&amp;Row&gt;
+    rows: &amp;Array&lt;&amp;Row&gt;
 ) -&gt; Widget
 </code></pre>
 <p>Breaking it down:</p>
@@ -972,17 +973,17 @@ worth putting in the work to learn to decipher it.</p>
 <li><code>?#selected: &amp;i64</code> - optional labeled argument, reference to selected index</li>
 <li><code>?#row_highlight_style: &amp;Style</code> - optional labeled argument, reference to a Style</li>
 <li><code>?#highlight_symbol: &amp;string</code> - optional labeled argument, reference to symbol string</li>
-<li><code>&amp;Array&lt;&amp;Row&gt;</code> - required unlabeled argument, reference to array of row references</li>
+<li><code>rows: &amp;Array&lt;&amp;Row&gt;</code> - required positional argument, reference to array of row references</li>
 <li><code>-&gt; Widget</code> - returns a Widget</li>
 </ul>
 <p>All parameters are references because the table needs to react to changes without rebuilding.</p>
 <h3 id="example-2-filter-function"><a class="header" href="#example-2-filter-function">Example 2: Filter Function</a></h3>
-<pre><code class="language-graphix">val filter: fn('a, fn('a) -&gt; bool throws 'e) -&gt; 'a throws 'e
+<pre><code class="language-graphix">val filter: fn(v: 'a, pred: fn(x: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e
 </code></pre>
 <p>Breaking it down:</p>
 <ul>
-<li><code>'a</code> - a value of any type</li>
-<li><code>fn('a) -&gt; bool throws 'e</code> - a predicate function that:
+<li><code>v: 'a</code> - a value of any type</li>
+<li><code>pred: fn(x: 'a) -&gt; bool throws 'e</code> - a predicate function that:
 <ul>
 <li>Takes the same type <code>'a</code></li>
 <li>Returns bool</li>
@@ -993,22 +994,22 @@ worth putting in the work to learn to decipher it.</p>
 <li><code>throws 'e</code> - propagates any errors from the predicate</li>
 </ul>
 <h3 id="example-3-queue-function"><a class="header" href="#example-3-queue-function">Example 3: Queue Function</a></h3>
-<pre><code class="language-graphix">val queue: fn(#clock: Any, 'a) -&gt; 'a
+<pre><code class="language-graphix">val queue: fn(#clock: Any, v: 'a) -&gt; 'a
 </code></pre>
 <p>Breaking it down:</p>
 <ul>
 <li><code>#clock: Any</code> - required labeled argument of any type, just used as an event source</li>
-<li><code>'a</code> - a value of any type</li>
+<li><code>v: 'a</code> - a value of any type</li>
 <li><code>-&gt; 'a</code> - returns values of the same type</li>
 </ul>
 <p>Call it like: <code>queue(#clock: my_timer, my_value)</code></p>
 <h3 id="example-4-array-map"><a class="header" href="#example-4-array-map">Example 4: Array Map</a></h3>
-<pre><code class="language-graphix">val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e
+<pre><code class="language-graphix">val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e
 </code></pre>
 <p>Breaking it down:</p>
 <ul>
-<li><code>Array&lt;'a&gt;</code> - array of any type <code>'a</code></li>
-<li><code>fn('a) -&gt; 'b throws 'e</code> - transformation function that:
+<li><code>a: Array&lt;'a&gt;</code> - array of any type <code>'a</code></li>
+<li><code>f: fn(x: 'a) -&gt; 'b throws 'e</code> - transformation function that:
 <ul>
 <li>Takes type <code>'a</code> (array element type)</li>
 <li>Returns type <code>'b</code> (result element type)</li>
@@ -1025,15 +1026,16 @@ worth putting in the work to learn to decipher it.</p>
 <tr><th>Notation</th><th>Meaning</th><th>Example</th></tr>
 </thead>
 <tbody>
-<tr><td><code>'a</code>, <code>'b</code>, <code>'e</code></td><td>Type parameter (generic)</td><td><code>fn('a) -&gt; 'a</code></td></tr>
-<tr><td><code>'_23</code>, <code>'_24</code>, <code>'_25</code></td><td>Inferred type parameter (generic)</td><td><code>fn('_23) -&gt; '_23</code></td></tr>
+<tr><td><code>'a</code>, <code>'b</code>, <code>'e</code></td><td>Type parameter (generic)</td><td><code>fn(x: 'a) -&gt; 'a</code></td></tr>
+<tr><td><code>'_23</code>, <code>'_24</code>, <code>'_25</code></td><td>Inferred type parameter (generic)</td><td><code>fn(x: '_23) -&gt; '_23</code></td></tr>
+<tr><td><code>name: T</code></td><td>Named positional argument</td><td><code>fn(x: i64) -&gt; i64</code></td></tr>
 <tr><td><code>?#param</code></td><td>Optional labeled argument</td><td><code>fn(?#x: i64 = 0)</code></td></tr>
 <tr><td><code>#param</code></td><td>Required labeled argument</td><td><code>fn(#x: i64)</code></td></tr>
 <tr><td><code>@args</code></td><td>Variadic (any number of args)</td><td><code>fn(@args: i64)</code></td></tr>
-<tr><td><code>&amp;T</code></td><td>Reference to type T</td><td><code>fn(&amp;string)</code></td></tr>
+<tr><td><code>&amp;T</code></td><td>Reference to type T</td><td><code>fn(s: &amp;string)</code></td></tr>
 <tr><td><code>throws 'e</code></td><td>Can throw errors of type ’e</td><td><code>fn() -&gt; i64 throws 'e</code></td></tr>
 <tr><td><code>[T, U]</code></td><td>T or U (set/union type)</td><td><code>[i64, null]</code></td></tr>
-<tr><td><code>-&gt;</code></td><td>Returns</td><td><code>fn(i64) -&gt; string</code></td></tr>
+<tr><td><code>-&gt;</code></td><td>Returns</td><td><code>fn(x: i64) -&gt; string</code></td></tr>
 <tr><td><code>Array&lt;T&gt;</code></td><td>Array of T</td><td><code>Array&lt;string&gt;</code></td></tr>
 <tr><td><code>Map&lt;K, V&gt;</code></td><td>Map with keys K, values V</td><td><code>Map&lt;string, i64&gt;</code></td></tr>
 <tr><td><code>Error&lt;'e&gt;</code></td><td>Error containing type ’e</td><td><code>Error&lt;\</code>ParseError&gt;`</td></tr>
@@ -1594,7 +1596,7 @@ not stop the execution of nodes in the try catch.</p>
 <p>Graphix function types are annotated by the type of error they might raise. In
 most cases this is automatic, but for some higher order functions it may be
 necessary to specify it explicitly. For example array map has type
-<code>fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e</code> indicating that
+<code>fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e</code> indicating that
 while the map function itself does not throw any errors, it will throw any
 errors the function passed to it throws. This is all in the service of being
 able to statically check the type of thrown errors, for example,</p>
@@ -1688,7 +1690,7 @@ example if you write a function that takes a function with a labeled argument
 <code>foo</code>, you can pass any function that has a labeled argument <code>foo</code>, even if it
 also has other optional arguments. The non optional and non labeled arguments
 must match, of course. For example,</p>
-<pre><code class="language-graphix">let f = |g: fn(#foo:i64, i64) -&gt; i64, x: i64| g(#foo:x, x);
+<pre><code class="language-graphix">let f = |g: fn(#foo: i64, x: i64) -&gt; i64, x: i64| g(#foo: x, x);
 let g = |#foo:i64, #bar: i64 = 0, x: i64| foo + bar + x;
 f(g, 42) // valid call
 </code></pre>
@@ -1717,7 +1719,7 @@ structure, a file, or even sent across the network to another instance of the
 same program. Here we build a struct that maintains a count, and a function to
 operate on the count, returning a new struct of the same type with a different
 count.</p>
-<pre><code class="language-graphix">type T = { count: i64, f: fn(T) -&gt; T };
+<pre><code class="language-graphix">type T = { count: i64, f: fn(t: T) -&gt; T };
 let t = { count: 0, f: |t: T| {t with count: t.count + 1} };
 (t.f)(t)
 </code></pre>
@@ -1736,7 +1738,7 @@ For example we can create two structs of type <code>T</code> that each contain a
 implementation of <code>f</code>, and we can use them interchangibly with any function that
 accepts a <code>T</code>. In this simple example we create one implementation of <code>f</code> that
 increments the count, and one that decrements it.</p>
-<pre><code class="language-graphix">type T = { count: i64, f: fn(T) -&gt; T };
+<pre><code class="language-graphix">type T = { count: i64, f: fn(t: T) -&gt; T };
 let ts: Array&lt;T&gt; = [
   { count: 0, f: |t: T| {t with count: t.count + 1} },
   { count: 0, f: |t: T| {t with count: t.count - 1} }
@@ -1762,7 +1764,7 @@ and the return type will be the same as the argument type. We can say
 that using type variables and constraints in our annotations.</p>
 <pre><code class="language-graphix">〉let f = 'a: Number |x: 'a, y: 'a| -&gt; 'a x + y
 〉f
--: fn&lt;'a: unbound: Number&gt;('a: unbound, 'a: unbound) -&gt; 'a: unbound
+-: fn&lt;'a: unbound: Number&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 160
 </code></pre>
 <p>In type annotations of lambda expressions,</p>
@@ -1784,11 +1786,11 @@ of,</p>
 <li>constraint type</li>
 </ul>
 <pre><code>fn&lt;'a: unbound: Number&gt;
-('a: unbound, 'a: unbound) -&gt; 'a: unbound
+(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 </code></pre>
 <p>We can remove the (unbound) current values and it becomes easier to read,</p>
 <pre><code>fn&lt;'a: Number&gt;
-('a, 'a) -&gt; 'a
+(x: 'a, y: 'a) -&gt; 'a
 </code></pre>
 <p>We just have one variable now, <code>'a</code> representing both argument types
 and the return type. Because unchecked <code>+</code> returns bottom on overflow
@@ -1818,9 +1820,9 @@ doesn’t unify with <code>f64</code>.</p>
 <p>Since functions are first class, they can take other functions as arguments, and
 even return functions. These relationships can be often inferred automatically
 without issue, but sometimes annotations are required.</p>
-<pre><code class="language-graphix">〉 let apply = |x: 'a, f: fn('a) -&gt; 'b throws 'e| -&gt; 'b throws 'e f(x)
+<pre><code class="language-graphix">〉 let apply = |x: 'a, f: fn(x: 'a) -&gt; 'b throws 'e| -&gt; 'b throws 'e f(x)
 〉 apply
--: fn&lt;'e: unbound: _&gt;('a: unbound, fn('a: unbound) -&gt; 'b: unbound throws 'e: unbound) -&gt; 'b: unbound throws 'e: unbound
+-: fn&lt;'e: unbound: _&gt;(x: 'a: unbound, f: fn(x: 'a: unbound) -&gt; 'b: unbound throws 'e: unbound) -&gt; 'b: unbound throws 'e: unbound
 163
 </code></pre>
 <p>Here we’ve specified a single argument apply, it takes an argument, and a
@@ -1830,7 +1832,7 @@ constrained by the compiler to <code>_</code> meaning basically this could throw
 or also not throw at all, it just depends on <code>f</code>.</p>
 <p>We can see a more practical example in the type of <code>array::map</code> (this
 implementation of which I will not repeat here), which is,</p>
-<pre><code>fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e
+<pre><code>fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e
 </code></pre>
 <p>So map takes an array of <code>'a</code>, and a function mapping <code>'a</code> to <code>'b</code> and possibly
 throwing <code>'e</code> and returns an array of <code>'b</code> possibly throwing <code>'e</code>.</p>
@@ -1841,20 +1843,20 @@ another. Any internal constraints are calculated when the definition is compiled
 and are enforced at each call site. For example consider,</p>
 <pre><code class="language-graphix">〉let f = |x, y| x + y
 〉f
--: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;('_2067: unbound, '_2069: unbound) -&gt; '_2071: unbound
+-: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
 159
 </code></pre>
 <p>The type is a bit of a mouthful, lets format it a bit so it’s easier to read.</p>
 <pre><code>fn&lt;'_2069: unbound: Number,
    '_2067: unbound: Number,
    '_2071: unbound: Number&gt;
-('_2067: unbound, '_2069: unbound) -&gt; '_2071: unbound
+(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
 </code></pre>
 <p>Removing the unbounds,</p>
 <pre><code>fn&lt;'_2069: Number,
    '_2067: Number,
    '_2071: Number&gt;
-('_2067, '_2069) -&gt; '_2071
+(x: '_2067, y: '_2069) -&gt; '_2071
 </code></pre>
 <p>Here we can see that <code>'_2067</code>, <code>'_2069</code>, and <code>'_2071</code> represent the two
 arguments and the return type of the function. They are all unbound, meaning
@@ -2008,7 +2010,7 @@ devices, you want to use the cycle semantics to achieve a particular
 semantics. For these cases there is the <code>queue</code> function (and
 friends), which allows you to control how updates to a variable are
 processed.</p>
-<pre><code class="language-graphix">val queue: fn(#clock: Any, 'a) -&gt; 'a
+<pre><code class="language-graphix">val queue: fn(#clock: Any, v: 'a) -&gt; 'a
 </code></pre>
 <p>Every time clock updates queue allows a ’a through. If no ’a is
 queued, it still remembers to allow that many through when they
@@ -2339,13 +2341,13 @@ let len = |l: List&lt;'a&gt;| {
 };
 
 // map f over the list
-let rec map = |l: List&lt;'a&gt;, f: fn('a) -&gt; 'b| -&gt; List&lt;'b&gt; select l {
+let rec map = |l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; List&lt;'b&gt; select l {
   `Cons(v, tl) =&gt; `Cons(f(v), map(tl, f)),
   `Nil =&gt; `Nil
 };
 
 // fold f over the list
-let rec fold = |l: List&lt;'a&gt;, init: 'b, f: fn('b, 'a) -&gt; 'b| -&gt; 'b select l {
+let rec fold = |l: List&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b| -&gt; 'b select l {
   `Cons(v, tl) =&gt; fold(tl, f(init, v), f),
   `Nil =&gt; init
 }
@@ -2617,7 +2619,7 @@ a module exports without revealing the implementation details.</p>
 types of declarations:</p>
 <h3 id="value-declarations-val"><a class="header" href="#value-declarations-val">Value Declarations (val)</a></h3>
 <p>Declare exported values and their types using <code>val</code>:</p>
-<pre><code class="language-graphix">val add: fn(i64, i64) -&gt; i64;
+<pre><code class="language-graphix">val add: fn(a: i64, b: i64) -&gt; i64;
 val greeting: string;
 val config: Array&lt;i64&gt;;
 </code></pre>
@@ -2645,10 +2647,10 @@ mod parser;
 <p>Let’s create a simple math utilities module with an interface.</p>
 <p><strong>math.gxi</strong> (interface):</p>
 <pre><code class="language-graphix">/// Add two numbers
-val add: fn(i64, i64) -&gt; i64;
+val add: fn(a: i64, b: i64) -&gt; i64;
 
 /// Subtract the second number from the first
-val sub: fn(i64, i64) -&gt; i64;
+val sub: fn(a: i64, b: i64) -&gt; i64;
 
 /// Common mathematical constants
 type Constants = {
@@ -2708,15 +2710,15 @@ public API:</p>
 /// 
 /// The predicate function is called for each element. Elements for which
 /// the predicate returns true are included in the result.
-val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+val filter: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 </code></pre>
 <h2 id="polymorphic-functions"><a class="header" href="#polymorphic-functions">Polymorphic Functions</a></h2>
 <p>Interface files fully support polymorphic type signatures:</p>
 <pre><code class="language-graphix">/// Transform each element of an array using function f
-val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// Fold an array into a single value
-val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(a: Array&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 </code></pre>
 <p>Type variables (like <code>'a</code>, <code>'b</code>, <code>'e</code>) work the same as in regular type
 annotations.</p>
@@ -2765,7 +2767,7 @@ for precise control over sub-module visibility.</p>
 </ul>
 <p>Example:</p>
 <pre><code class="language-graphix">// parent.gxi
-val public_helper: fn(i64) -&gt; i64;
+val public_helper: fn(x: i64) -&gt; i64;
 mod child;
 </code></pre>
 <pre><code class="language-graphix">// parent.gx
@@ -2816,13 +2818,13 @@ still work.</p>
 type Counter;
 
 /// Create a new counter starting at the given value
-val make: fn(i64) -&gt; Counter;
+val make: fn(x: i64) -&gt; Counter;
 
 /// Get the current value
-val get: fn(Counter) -&gt; i64;
+val get: fn(c: Counter) -&gt; i64;
 
 /// Increment the counter every time trig updates
-val increment: fn(#trig: Any, &amp;Counter) -&gt; null;
+val increment: fn(#trig: Any, c: &amp;Counter) -&gt; null;
 </code></pre>
 <p><strong>counter.gx</strong>:</p>
 <pre><code class="language-graphix">// Implementation detail: counter is just an i64
@@ -2844,8 +2846,8 @@ let value = counter::get(c)  // 1
 <p>Abstract types can have type parameters, allowing generic containers:</p>
 <pre><code class="language-graphix">// interface
 type Box&lt;'a&gt;;
-val wrap: fn('a) -&gt; Box&lt;'a&gt;;
-val unwrap: fn(Box&lt;'a&gt;) -&gt; 'a;
+val wrap: fn(x: 'a) -&gt; Box&lt;'a&gt;;
+val unwrap: fn(b: Box&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation
 type Box&lt;'a&gt; = { value: 'a };
@@ -2857,8 +2859,8 @@ let unwrap = |b: Box&lt;'a&gt;| -&gt; 'a b.value
 implementation must have matching constraints:</p>
 <pre><code class="language-graphix">// interface - constraint required
 type NumericWrapper&lt;'a: Number&gt;;
-val wrap: fn('a) -&gt; NumericWrapper&lt;'a&gt;;
-val double: fn(NumericWrapper&lt;'a&gt;) -&gt; 'a;
+val wrap: fn(x: 'a) -&gt; NumericWrapper&lt;'a&gt;;
+val double: fn(w: NumericWrapper&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation - same constraint required
 type NumericWrapper&lt;'a: Number&gt; = 'a;
@@ -2920,8 +2922,8 @@ sys::net::publish(path, source)$;
 let status = mod foo dynamic {
     sandbox whitelist [core];
     sig {
-        val add: fn(i64) -&gt; i64;
-        val sub: fn(i64) -&gt; i64;
+        val add: fn(x: i64) -&gt; i64;
+        val sub: fn(x: i64) -&gt; i64;
         val cfg: Array&lt;i64&gt;
     };
     source cast&lt;string&gt;(sys::net::subscribe(path)$)$
@@ -2958,7 +2960,7 @@ accessible</li>
 <li>a <code>sig</code> statement is the type signature of the module. This is a special
 syntax for writing module type signatures. There are four possible statements,
 <ul>
-<li>a val statement defines a value and it’s type, <code>val add: fn(i64) -&gt; i64</code> is
+<li>a val statement defines a value and it’s type, <code>val add: fn(x: i64) -&gt; i64</code> is
 an example of a val statement, it need not be a function it can be any type</li>
 <li>a type statement defines a type in the loaded module, e.g. <code>type T = { foo: string, bar: string }</code> val statements that come after a type statement may
 use the defined type. The type statement is identical to the normal type
@@ -3428,44 +3430,44 @@ val all: fn(@args: Any) -&gt; Any;
 val and: fn(@args: bool) -&gt; bool;
 
 /// return the number of times x has updated
-val count: fn(Any) -&gt; i64;
+val count: fn(v: Any) -&gt; i64;
 
 /// return the first argument divided by all subsequent arguments
 val divide: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
 /// return e only if e is an error
-val filter_err: fn(Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
+val filter_err: fn(r: Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
 
 /// return v if f(v) is true, otherwise return nothing
-val filter: fn('a, fn('a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
+val filter: fn(x: 'a, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
 
 /// return true if e is an error
-val is_err: fn(Any) -&gt; bool;
+val is_err: fn(v: Any) -&gt; bool;
 
 /// construct an error from the specified string
-val error: fn('a) -&gt; Error&lt;'a&gt;;
+val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn('a, @args: 'a) -&gt; 'a;
+val max: fn(x: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
-val mean: fn([Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
+val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn('a, @args:'a) -&gt; 'a;
+val min: fn(x: 'a, @args:'a) -&gt; 'a;
 
 /// return v only once, subsequent updates to v will be ignored
 /// and once will return nothing
-val once: fn('a) -&gt; 'a;
+val once: fn(x: 'a) -&gt; 'a;
 
 /// take n updates from e and drop the rest. The internal count is reset when n updates.
-val take: fn(#n:Any, 'a) -&gt; 'a;
+val take: fn(#n:Any, x: 'a) -&gt; 'a;
 
 /// skip n updates from e and return the rest. The internal count is reset when n updates.
-val skip: fn(#n:Any, 'a) -&gt; 'a;
+val skip: fn(#n:Any, x: 'a) -&gt; 'a;
 
 /// seq will update j - i times, starting at i and ending at j - 1
-val seq: fn(i64, i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
+val seq: fn(n: i64, n2: i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -&gt; bool;
@@ -3478,40 +3480,40 @@ val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; N
 
 /// when v updates return v if the new value is different from the previous value,
 /// otherwise return nothing.
-val uniq: fn('a) -&gt; 'a;
+val uniq: fn(x: 'a) -&gt; 'a;
 
 /// when v updates place it's value in an internal fifo queue. when clock updates
 /// return the oldest value from the fifo queue. If clock updates and the queue is
 /// empty, record the number of clock updates, and produce that number of
 /// values from the queue when they are available.
-val queue: fn(#clock:Any, 'a) -&gt; 'a;
+val queue: fn(#clock:Any, x: 'a) -&gt; 'a;
 
 /// hold the most recent value of v internally until clock updates. If v updates
 /// more than once before clock updates, older values of v will be discarded,
 /// only the most recent value will be retained. If clock updates when no v is held
 /// internally, record the number of times it updated, and pass that many v updates
 /// through immediately when they happen.
-val hold: fn(#clock:Any, 'a) -&gt; 'a;
+val hold: fn(#clock:Any, x: 'a) -&gt; 'a;
 
 /// ignore updates to any argument and never return anything
 val never: fn(@args: Any) -&gt; 'a;
 
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink
-val dbg: fn(?#dest:[`Stdout, `Stderr, Log], 'a) -&gt; 'a;
+val dbg: fn(?#dest:[`Stdout, `Stderr, Log], x: 'a) -&gt; 'a;
 
 /// print a log message to stdout, stderr or the specified log level using the rust log
 /// crate. Unlike dbg, log does not also return the value.
-val log: fn(?#dest:Log, 'a) -&gt; _;
+val log: fn(?#dest:Log, x: 'a) -&gt; _;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
 /// crate. Unlike dbg, log does not also return the value. Does not automatically insert
 /// a newline and does not add the source module/location.
-val print: fn(?#dest:Log, 'a) -&gt; _;
+val print: fn(?#dest:Log, x: 'a) -&gt; _;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
 /// crate followed by a newline. Unlike dbg, log does not also return the value.
-val println: fn(?#dest:Log, 'a) -&gt; _;
+val println: fn(?#dest:Log, x: 'a) -&gt; _;
 
 /// Throttle v so it updates at most every #rate, where rate is a
 /// duration (default 0.5 seconds). Intermediate updates that push v
@@ -3519,25 +3521,25 @@ val println: fn(?#dest:Log, 'a) -&gt; _;
 /// be delivered. If the sequence, m0, m1, ..., mN, arrives simultaneously
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
-val throttle: fn(?#rate:duration, 'a) -&gt; 'a;
+val throttle: fn(?#rate:duration, x: 'a) -&gt; 'a;
 
 /// bitwise AND
-val bit_and: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+val bit_and: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 
 /// bitwise OR
-val bit_or: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+val bit_or: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 
 /// bitwise XOR
-val bit_xor: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+val bit_xor: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 
 /// bitwise complement
-val bit_not: fn&lt;'a: Int&gt;('a) -&gt; 'a;
+val bit_not: fn&lt;'a: Int&gt;(x: 'a) -&gt; 'a;
 
 /// shift left (wrapping)
-val shl: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+val shl: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 
 /// shift right (wrapping)
-val shr: fn&lt;'a: Int&gt;('a, 'a) -&gt; 'a;
+val shr: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 </code></pre>
 <h2 id="corebuffer"><a class="header" href="#corebuffer">core::buffer</a></h2>
 <p>The <code>buffer</code> submodule provides functions for working with raw bytes:
@@ -3545,25 +3547,25 @@ conversion between bytes and strings/arrays, concatenation, and a
 flexible binary encode/decode system with control over endianness and
 variable-length encoding.</p>
 <pre><code class="language-graphix">/// Convert bytes to a UTF-8 string.
-val to_string: fn(bytes) -&gt; Result&lt;string, `EncodingError(string)&gt;;
+val to_string: fn(b: bytes) -&gt; Result&lt;string, `EncodingError(string)&gt;;
 
 /// Convert bytes to a UTF-8 string, replacing invalid sequences.
-val to_string_lossy: fn(bytes) -&gt; string;
+val to_string_lossy: fn(b: bytes) -&gt; string;
 
 /// Convert a string to its UTF-8 bytes.
-val from_string: fn(string) -&gt; bytes;
+val from_string: fn(s: string) -&gt; bytes;
 
 /// Concatenate bytes values.
 val concat: fn(@args: [bytes, Array&lt;bytes&gt;]) -&gt; bytes;
 
 /// Convert bytes to an Array&lt;u8&gt;.
-val to_array: fn(bytes) -&gt; Array&lt;u8&gt;;
+val to_array: fn(b: bytes) -&gt; Array&lt;u8&gt;;
 
 /// Convert an Array&lt;u8&gt; to bytes.
-val from_array: fn(Array&lt;u8&gt;) -&gt; bytes;
+val from_array: fn(a: Array&lt;u8&gt;) -&gt; bytes;
 
 /// Return the length of a bytes value.
-val len: fn(bytes) -&gt; u64;
+val len: fn(b: bytes) -&gt; u64;
 
 /// Spec for encoding values into bytes. Bare tags are
 /// big-endian (network byte order), LE suffix for little-endian.
@@ -3597,82 +3599,349 @@ type Decode = [
 ];
 
 /// Encode values into bytes according to the spec.
-val encode: fn(Array&lt;Encode&gt;) -&gt; bytes;
+val encode: fn(a: Array&lt;Encode&gt;) -&gt; bytes;
 
 /// Decode bytes into refs according to the spec.
 /// Returns the remaining bytes after all fields are consumed.
-val decode: fn(bytes, Array&lt;Decode&gt;) -&gt; Result&lt;bytes, `DecodeError(string)&gt;;
+val decode: fn(b: bytes, a: Array&lt;Decode&gt;) -&gt; Result&lt;bytes, `DecodeError(string)&gt;;
+</code></pre>
+<h2 id="coremath"><a class="header" href="#coremath">core::math</a></h2>
+<p>The <code>math</code> submodule wraps Rust’s <code>f64</code> math intrinsics (trigonometric,
+hyperbolic, exponential, logarithmic, power, rounding, comparison,
+predicate, and angle-conversion routines) plus the standard
+mathematical constants. Argument and result conventions match
+<code>std::f64</code>: angles are in radians, NaN propagates through arithmetic,
+and <code>min</code>/<code>max</code> return the non-NaN operand when one input is NaN.</p>
+<p>For polymorphic n-ary <code>min</code> / <code>max</code> / <code>sum</code> / <code>product</code> over <code>Number</code>,
+use the top-level functions in <code>core</code> instead — the bindings here are
+the binary <code>f64</code>-only forms.</p>
+<pre><code class="language-graphix">/// Sine. Argument in radians.
+val sin: fn(x: f64) -&gt; f64;
+
+/// Cosine. Argument in radians.
+val cos: fn(x: f64) -&gt; f64;
+
+/// Tangent. Argument in radians.
+val tan: fn(x: f64) -&gt; f64;
+
+/// Inverse sine. Result in radians, [-π/2, π/2].
+val asin: fn(x: f64) -&gt; f64;
+
+/// Inverse cosine. Result in radians, [0, π].
+val acos: fn(x: f64) -&gt; f64;
+
+/// Inverse tangent. Result in radians, (-π/2, π/2).
+val atan: fn(x: f64) -&gt; f64;
+
+/// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
+val atan2: fn(x: f64, x2: f64) -&gt; f64;
+
+/// Hyperbolic sine.
+val sinh: fn(x: f64) -&gt; f64;
+
+/// Hyperbolic cosine.
+val cosh: fn(x: f64) -&gt; f64;
+
+/// Hyperbolic tangent.
+val tanh: fn(x: f64) -&gt; f64;
+
+/// Inverse hyperbolic sine.
+val asinh: fn(x: f64) -&gt; f64;
+
+/// Inverse hyperbolic cosine.
+val acosh: fn(x: f64) -&gt; f64;
+
+/// Inverse hyperbolic tangent.
+val atanh: fn(x: f64) -&gt; f64;
+
+/// `e^x`.
+val exp: fn(x: f64) -&gt; f64;
+
+/// `2^x`.
+val exp2: fn(x: f64) -&gt; f64;
+
+/// `e^x - 1`. More accurate than `exp(x) - 1` near zero.
+val exp_m1: fn(x: f64) -&gt; f64;
+
+/// Natural logarithm (base e).
+val ln: fn(x: f64) -&gt; f64;
+
+/// `ln(1 + x)`. More accurate than `ln(1 + x)` near zero.
+val ln_1p: fn(x: f64) -&gt; f64;
+
+/// Logarithm base 2.
+val log2: fn(x: f64) -&gt; f64;
+
+/// Logarithm base 10.
+val log10: fn(x: f64) -&gt; f64;
+
+/// Logarithm with arbitrary base: `log(x, base) = ln(x) / ln(base)`.
+val log: fn(x: f64, x2: f64) -&gt; f64;
+
+/// `x^y`.
+val pow: fn(x: f64, x2: f64) -&gt; f64;
+
+/// Square root.
+val sqrt: fn(x: f64) -&gt; f64;
+
+/// Cube root.
+val cbrt: fn(x: f64) -&gt; f64;
+
+/// `sqrt(x^2 + y^2)`, computed without overflow for large inputs.
+val hypot: fn(x: f64, x2: f64) -&gt; f64;
+
+/// Largest integer less than or equal to `x`.
+val floor: fn(x: f64) -&gt; f64;
+
+/// Smallest integer greater than or equal to `x`.
+val ceil: fn(x: f64) -&gt; f64;
+
+/// Round to the nearest integer, ties away from zero.
+val round: fn(x: f64) -&gt; f64;
+
+/// Truncate toward zero.
+val trunc: fn(x: f64) -&gt; f64;
+
+/// Fractional part: `x - trunc(x)`.
+val fract: fn(x: f64) -&gt; f64;
+
+/// Absolute value.
+val abs: fn(x: f64) -&gt; f64;
+
+/// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
+val signum: fn(x: f64) -&gt; f64;
+
+/// `x` with the sign of `y`.
+val copysign: fn(x: f64, x2: f64) -&gt; f64;
+
+/// Smaller of two f64 values, returning the non-NaN operand if one is
+/// NaN. For n-ary polymorphic behaviour over `Number`, use the
+/// top-level `min` from core.
+val min: fn(x: f64, x2: f64) -&gt; f64;
+
+/// Larger of two f64 values, returning the non-NaN operand if one is
+/// NaN. For n-ary polymorphic behaviour over `Number`, use the
+/// top-level `max` from core.
+val max: fn(x: f64, x2: f64) -&gt; f64;
+
+/// Clamp `x` to the closed interval `[lo, hi]`.
+val clamp: fn(x: f64, x2: f64, x3: f64) -&gt; f64;
+
+/// True if `x` is NaN.
+val is_nan: fn(x: f64) -&gt; bool;
+
+/// True if `x` is finite (not NaN, not infinite).
+val is_finite: fn(x: f64) -&gt; bool;
+
+/// True if `x` is positive or negative infinity.
+val is_infinite: fn(x: f64) -&gt; bool;
+
+/// Convert radians to degrees.
+val to_degrees: fn(x: f64) -&gt; f64;
+
+/// Convert degrees to radians.
+val to_radians: fn(x: f64) -&gt; f64;
+
+/// π ≈ 3.14159265358979…
+val pi: f64;
+
+/// e ≈ 2.71828182845904…
+val e: f64;
+
+/// τ = 2π ≈ 6.28318530717958…
+val tau: f64;
+
+/// √2 ≈ 1.41421356237309…
+val sqrt_2: f64;
+
+/// ln(2) ≈ 0.69314718055994…
+val ln_2: f64;
+
+/// ln(10) ≈ 2.30258509299404…
+val ln_10: f64;
+
+/// Positive infinity.
+val infinity: f64;
+
+/// Not-a-number.
+val nan: f64;
+</code></pre>
+<h2 id="coreopt"><a class="header" href="#coreopt">core::opt</a></h2>
+<p>The <code>opt</code> submodule provides combinators for working with optional
+values — graphix’s <code>Option&lt;'a&gt;</code> is just the structural union
+<code>['a, null]</code>, and these functions mirror the most useful parts of
+Rust’s <code>std::option::Option</code> API in a reactive setting.</p>
+<p>The higher-order combinators (<code>map</code>, <code>flat_map</code>, <code>filter</code>, <code>or_else</code>,
+<code>ok_or_else</code>, <code>is_some_and</code>, <code>is_none_or</code>) are deliberately
+fire-and-forget: they never queue inputs. If a callback is slow or
+never produces a value, a new input simply supersedes the pending one
+(latest wins). Use the explicit <code>core::queue</code> / <code>core::hold</code> operators
+when you need ordered async behavior.</p>
+<pre><code class="language-graphix">/// true if v is not null
+val is_some: fn(v: ['a, null]) -&gt; bool;
+
+/// true if v is null
+val is_none: fn(v: ['a, null]) -&gt; bool;
+
+/// true if v is not null and equals x. Produces false when v is null
+/// regardless of x.
+val contains: fn(v: ['a, null], y: 'a) -&gt; bool;
+
+/// or_never(v) does not return anything if v is null, otherwise it
+/// returns v.
+val or_never: fn(v: ['a, null]) -&gt; 'a;
+
+/// or_default(v, d): if v is null return d, otherwise return v
+val or_default: fn(v: ['a, null], y: 'a) -&gt; 'a;
+
+/// or(a, b): return a if non-null, otherwise return b (which may
+/// itself be null).
+val or: fn(v: ['a, null], v2: ['a, null]) -&gt; ['a, null];
+
+/// and(a, b): return b if a is non-null, otherwise return null. The
+/// value of b is not inspected when a is null.
+val and: fn(v: ['a, null], v2: ['b, null]) -&gt; ['b, null];
+
+/// xor(a, b): return whichever of a or b is non-null, or null if both
+/// or neither are non-null.
+val xor: fn(v: ['a, null], v2: ['a, null]) -&gt; ['a, null];
+
+/// Collapse a nested option. Present for symmetry with Rust; at the
+/// value level this is the identity (graphix structural unions make
+/// [[T, null], null] equivalent to [T, null]).
+val flatten: fn(v: [['a, null], null]) -&gt; ['a, null];
+
+/// ok_or(v, e): return v unchanged when non-null, otherwise return
+/// error(e).
+val ok_or: fn(v: ['a, null], y: 'e) -&gt; Result&lt;'a, 'e&gt;;
+
+/// zip(a, b): if both are non-null return the tuple (a, b), otherwise
+/// return null.
+val zip: fn(v: ['a, null], v2: ['b, null]) -&gt; [('a, 'b), null];
+
+/// unzip(p): given a tuple-valued option, return the pair of options.
+/// null input yields (null, null).
+val unzip: fn(v: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
+
+/// map(v, f): apply f to the inner value if v is non-null, otherwise
+/// return null.
+val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b) -&gt; ['b, null];
+
+/// flat_map(v, f): apply f to the inner value if v is non-null,
+/// otherwise return null. f's own optional result is forwarded
+/// unchanged.
+val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null]) -&gt; ['b, null];
+
+/// filter(v, pred): if v is non-null and pred(v) is true, emit v.
+/// Otherwise (v is null, or pred is false) emit null. Same fire-and-
+/// forget semantics as map.
+///
+/// Caveat for reactive predicates: when pred takes more than one cycle
+/// to produce its bool, the emitted value is the *current* input, not
+/// the input pred was actually answering for. If the input changes
+/// between feeding pred and pred firing, you'll see the new value
+/// gated on a verdict about the old one. Pure predicates (the
+/// expected case) are unaffected. Use `core::queue` if you need
+/// strict input-bool pairing.
+val filter: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; ['a, null];
+
+/// or_else(v, f): return v if non-null, otherwise return whatever f()
+/// produces. f is invoked eagerly and its latest value is cached so
+/// later updates to v can be resolved without re-invoking f. If v is
+/// null before f has produced its first value, no output is emitted
+/// until f fires.
+val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null]) -&gt; ['a, null];
+
+/// ok_or_else(v, f): return v if non-null, otherwise return
+/// error(f()). Same eager-with-caching semantics as or_else; null v
+/// before f's first firing is silent until f produces.
+val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e) -&gt; Result&lt;'a, 'e&gt;;
+
+/// is_some_and(v, pred): true when v is non-null and pred(v) is true,
+/// false when v is null or pred is false. Fire-and-forget like map —
+/// for non-null v, no output is produced until pred fires.
+val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; bool;
+
+/// is_none_or(v, pred): true when v is null or pred(v) is true, false
+/// when v is non-null and pred is false. Fire-and-forget like map —
+/// for non-null v, no output is produced until pred fires.
+val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; bool;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="array-1"><a class="header" href="#array-1">Array</a></h1>
 <pre><code class="language-graphix">/// filter returns a new array containing only elements where f returned true
-val filter: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+val filter: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// filter_map returns a new array containing the outputs of f
 /// that were not null
-val filter_map: fn(Array&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return a new array where each element is the output of f applied to the
 /// corresponding element in a
-val map: fn(Array&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return a new array where each element is the output of f applied to the
 /// corresponding element in a, except that if f returns an array then it's
 /// elements will be concatenated to the end of the output instead of nesting.
-val flat_map: fn(Array&lt;'a&gt;, fn('a) -&gt; ['b, Array&lt;'b&gt;] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+val flat_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, Array&lt;'b&gt;] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return the result of f applied to the init and every element of a in
 /// sequence. f(f(f(init, a[0]), a[1]), ...)
-val fold: fn(Array&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(a: Array&lt;'a&gt;, y: 'b, f: fn(x: 'b, y: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 
 /// each time v updates group places the value of v in an internal buffer
 /// and calls f with the length of the internal buffer and the value of v.
 /// If f returns true then group returns the internal buffer as an array
 /// otherwise group returns nothing.
-val group: fn('a, fn(i64, 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
+val group: fn(x: 'a, f: fn(n: i64, y: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// iter produces an update for every value in the array a. updates are produced
 /// in the order they appear in a.
-val iter: fn(Array&lt;'a&gt;) -&gt; 'a;
+val iter: fn(a: Array&lt;'a&gt;) -&gt; 'a;
 
 /// iterq produces an update for each value in a, but only when clock updates. If
 /// clock does not update but a does, then iterq will store each a in an internal
 /// fifo queue. If clock updates but a does not, iterq will record the number of
 /// times it was triggered, and will update immediately that many times when a
 /// updates.
-val iterq: fn(#clock:Any, Array&lt;'a&gt;) -&gt; 'a;
+val iterq: fn(#clock:Any, a: Array&lt;'a&gt;) -&gt; 'a;
 
 /// returns the length of a
-val len: fn(Array&lt;'a&gt;) -&gt; i64;
+val len: fn(a: Array&lt;'a&gt;) -&gt; i64;
 
 /// returns the concatenation of two or more arrays. O(N) where
 /// N is the size of the final array.
-val concat: fn(Array&lt;'a&gt;, @args: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val concat: fn(a: Array&lt;'a&gt;, @args: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array with the args added to the end. O(N)
 /// where N is the size of the final array
-val push: fn(Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+val push: fn(a: Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
 /// return an array with the args added to the front. O(N)
 /// where N is the size of the final array
-val push_front: fn(Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+val push_front: fn(a: Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
 /// return an array no larger than #n with the args
 /// added to the back. If pushing the args would cause the
 /// array to become bigger than #n, remove values from the
 /// front. O(N) where N is the window size.
-val window: fn(#n:i64, Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+val window: fn(#n:i64, a: Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
 /// flatten takes an array with two levels of nesting and produces a flat array
 /// with all the nested elements concatenated together.
-val flatten: fn(Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
+val flatten: fn(a: Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
+
+/// return a new array with duplicate elements removed, preserving the order of
+/// first occurrence. Uses a hash set internally so the input does not need to
+/// be sorted. O(N) expected.
+val dedup: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// applies f to every element in a and returns the first element for which f
 /// returns true, or null if no element returns true
-val find: fn(Array&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
+val find: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
 
 /// applies f to every element in a and returns the first non null output of f
-val find_map: fn(Array&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
+val find_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
 
 type Direction = [
     `Ascending,
@@ -3682,63 +3951,72 @@ type Direction = [
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
-val sort: fn(?#dir:Direction, ?#numeric:bool, Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val sort: fn(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.
-val enumerate: fn(Array&lt;'a&gt;) -&gt; Array&lt;(i64, 'a)&gt;;
+val enumerate: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;(i64, 'a)&gt;;
 
 /// given two arrays, return a single array of pairs where the first
 /// element in the pair is from the first array and the second element in
 /// the pair is from the second array. The final array's length will be the
 /// minimum of the length of the input arrays
-val zip: fn(Array&lt;'a&gt;, Array&lt;'b&gt;) -&gt; Array&lt;('a, 'b)&gt;;
+val zip: fn(a: Array&lt;'a&gt;, a2: Array&lt;'b&gt;) -&gt; Array&lt;('a, 'b)&gt;;
 
 /// given an array of pairs, return two arrays with the first array
 /// containing all the elements from the first pair element and second
 /// array containing all the elements of the second pair element.
-val unzip: fn(Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;);
+val unzip: fn(a: Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;);
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
 <pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
 /// the corresponding key value pair in the current map
-val map: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val map: fn(m: Map&lt;'k, 'v&gt;, f: fn(v: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return a new map containing only the key-value pairs where f applied to
 /// (key, value) returns true
-val filter: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
+val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(v: ('k, 'v)) -&gt; bool throws 'e) -&gt; Map&lt;'k, 'v&gt; throws 'e;
 
 /// filter_map returns a new map containing the outputs of f
 /// that were not null
-val filter_map: fn(Map&lt;'k, 'v&gt;, fn(('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val filter_map: fn(m: Map&lt;'k, 'v&gt;, f: fn(v: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
-val fold: fn(Map&lt;'k, 'v&gt;, 'acc, fn('acc, ('k, 'v)) -&gt; 'acc throws 'e) -&gt; 'acc throws 'e;
+val fold: fn(m: Map&lt;'k, 'v&gt;, y: 'acc, f: fn(x: 'acc, v: ('k, 'v)) -&gt; 'acc throws 'e) -&gt; 'acc throws 'e;
 
 /// return the length of the map
-val len: fn(Map&lt;'k, 'v&gt;) -&gt; i64;
+val len: fn(m: Map&lt;'k, 'v&gt;) -&gt; i64;
 
 /// get the value associated with the key k in the map m, or null if not present
-val get: fn(Map&lt;'k, 'v&gt;, 'k) -&gt; Option&lt;'v&gt;;
+val get: fn(m: Map&lt;'k, 'v&gt;, y: 'k) -&gt; Option&lt;'v&gt;;
+
+/// get the value associated with the key k in the map m, or return the
+/// default value if k is not present in m
+val get_or: fn(m: Map&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; 'v;
 
 /// insert a new value into the map
-val insert: fn(Map&lt;'k, 'v&gt;, 'k, 'v) -&gt; Map&lt;'k, 'v&gt;;
+val insert: fn(m: Map&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Map&lt;'k, 'v&gt;;
+
+/// update the value at k by applying f to the current value at k, or
+/// to the provided default if k is not present. returns the new map
+/// with k set to f's result. e.g. change(m, "count", 0, |n| n + 1)
+val change: fn(m: Map&lt;'k, 'v&gt;, y: 'k, z: 'v, f: fn(x: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// remove the value associated with the specified key from the map
-val remove: fn(Map&lt;'k, 'v&gt;, 'k) -&gt; Map&lt;'k, 'v&gt;;
+val remove: fn(m: Map&lt;'k, 'v&gt;, y: 'k) -&gt; Map&lt;'k, 'v&gt;;
 
 /// iter produces an update for every key-value pair in the map m.
 /// updates are produced in the order they appear in m.
-val iter: fn(Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
+val iter: fn(m: Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 
 /// iterq produces an update for each value in m, but only when clock updates. If
 /// clock does not update but m does, then iterq will store each m in an internal
 /// fifo queue. If clock updates but m does not, iterq will record the number of
 /// times it was triggered, and will update immediately that many times when m
 /// updates.
-val iterq: fn(#clock: Any, Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
+val iterq: fn(#clock: Any, m: Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="str"><a class="header" href="#str">Str</a></h1>
@@ -3749,37 +4027,43 @@ val iterq: fn(#clock: Any, Map&lt;'k, 'v&gt;) -&gt; ('k, 'v);
 };
 
 /// return true if s starts with #pfx, otherwise return false
-val starts_with: fn(#pfx: string, string) -&gt; bool;
+val starts_with: fn(#pfx: string, s: string) -&gt; bool;
 
 /// return true if s ends with #sfx otherwise return false
-val ends_with: fn(#sfx: string, string) -&gt; bool;
+val ends_with: fn(#sfx: string, s: string) -&gt; bool;
 
 /// return true if s contains #part, otherwise return false
-val contains: fn(#part: string, string) -&gt; bool;
+val contains: fn(#part: string, s: string) -&gt; bool;
 
 /// if s starts with #pfx then return s with #pfx stripped otherwise return null
-val strip_prefix: fn(#pfx: string, string) -&gt; Option&lt;string&gt;;
+val strip_prefix: fn(#pfx: string, s: string) -&gt; Option&lt;string&gt;;
 
 /// if s ends with #sfx then return s with #sfx stripped otherwise return null
-val strip_suffix: fn(#sfx: string, string) -&gt; Option&lt;string&gt;;
+val strip_suffix: fn(#sfx: string, s: string) -&gt; Option&lt;string&gt;;
 
 /// return s with leading and trailing whitespace removed
-val trim: fn(string) -&gt; string;
+val trim: fn(s: string) -&gt; string;
 
 /// return s with leading whitespace removed
-val trim_start: fn(string) -&gt; string;
+val trim_start: fn(s: string) -&gt; string;
 
 /// return s with trailing whitespace removed
-val trim_end: fn(string) -&gt; string;
+val trim_end: fn(s: string) -&gt; string;
 
 /// replace all instances of #pat in s with #rep and return s
-val replace: fn(#pat: string, #rep: string, string) -&gt; string;
+val replace: fn(#pat: string, #rep: string, s: string) -&gt; string;
 
 /// return the parent path of s, or null if s does not have a parent path
-val dirname: fn(string) -&gt; Option&lt;string&gt;;
+val dirname: fn(s: string) -&gt; Option&lt;string&gt;;
 
 /// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -&gt; bar
-val basename: fn(string) -&gt; Option&lt;string&gt;;
+val basename: fn(s: string) -&gt; Option&lt;string&gt;;
+
+/// given a path ending in .../row/col, return the tuple (row, col).
+/// equivalent to (basename(dirname(s)), basename(s)), but in a single
+/// builtin call. returns null if s has fewer than two path components.
+/// e.g. /foo/bar/baz -&gt; ("bar", "baz"), /foo -&gt; null
+val row_col: fn(s: string) -&gt; Option&lt;(string, string)&gt;;
 
 /// return a single string with the arguments concatenated and separated by #sep
 val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
@@ -3789,86 +4073,86 @@ val concat: fn(@args: [string, Array&lt;string&gt;]) -&gt; string;
 
 /// escape all the characters in #to_escape in s with the escape character #escape.
 /// The escape character must appear in #to_escape
-val escape: fn(?#esc:Escape, string) -&gt; Result&lt;string, `StringError(string)&gt;;
+val escape: fn(?#esc:Escape, s: string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
 /// unescape all the characters in s escaped by the specified #escape character
-val unescape: fn(?#esc:Escape, string) -&gt; Result&lt;string, `StringError(string)&gt;;
+val unescape: fn(?#esc:Escape, s: string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
 /// split the string by the specified #pat and return an array of each part
-val split: fn(#pat: string, string) -&gt; Array&lt;string&gt;;
+val split: fn(#pat: string, s: string) -&gt; Array&lt;string&gt;;
 
 /// reverse split the string by the specified #pat and return an array of each part
-val rsplit: fn(#pat: string, string) -&gt; Array&lt;string&gt;;
+val rsplit: fn(#pat: string, s: string) -&gt; Array&lt;string&gt;;
 
 /// split the string at most #n times by the specified #pat and return an array of
 /// each part
-val splitn: fn(#pat:string, #n:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
+val splitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
 /// reverse split the string at most #n times by the specified #pat and return an array of
 /// each part
-val rsplitn: fn(#pat:string, #n:i64, string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
+val rsplitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
 /// of parts delimited by it's non escaped separator characters.
-val split_escaped: fn(#esc:string, #sep:string, string) -&gt; Result&lt;Array&lt;string&gt;, `SplitEscError(string)&gt;;
+val split_escaped: fn(#esc:string, #sep:string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `SplitEscError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
 /// of at most #n parts delimited by it's non escaped separator characters.
-val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, string) -&gt; Result&lt;Array&lt;string&gt;, `SplitNEscError(string)&gt;;
+val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `SplitNEscError(string)&gt;;
 
 /// split the string once from the beginning by #pat and return a
 /// tuple of strings, or return null if #pat was not found in the string
-val split_once: fn(#pat: string, string) -&gt; Option&lt;(string, string)&gt;;
+val split_once: fn(#pat: string, s: string) -&gt; Option&lt;(string, string)&gt;;
 
 /// split the string once from the end by #pat and return a tuple of strings
 /// or return null if #pat was not found in the string
-val rsplit_once: fn(#pat: string, string) -&gt; Option&lt;(string, string)&gt;;
+val rsplit_once: fn(#pat: string, s: string) -&gt; Option&lt;(string, string)&gt;;
 
 /// change the string to lowercase
-val to_lower: fn(string) -&gt; string;
+val to_lower: fn(s: string) -&gt; string;
 
 /// change the string to uppercase
-val to_upper: fn(string) -&gt; string;
+val to_upper: fn(s: string) -&gt; string;
 
 /// C style sprintf, implements most C standard format args
-val sprintf: fn(string, @args: Any) -&gt; string;
+val sprintf: fn(s: string, @args: Any) -&gt; string;
 
 /// return the length of the string in bytes
-val len: fn(string) -&gt; i64;
+val len: fn(s: string) -&gt; i64;
 
 /// extract a substring of s starting at #start with length #len.
 /// both #start and #len are Unicode character indexes,
 /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
 /// will return "💖💖"
-val sub: fn(#start:i64, #len:i64, string) -&gt; Result&lt;string, `SubError(string)&gt;;
+val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(string)&gt;;
 
 /// parse the specified string as a value. return the value on success or an
 /// error on failure. Note, if you feed the parser a well formed error then
 /// parse will also return an error
-val parse: fn(string) -&gt; Result&lt;PrimNoErr, Any&gt;;
+val parse: fn(s: string) -&gt; Result&lt;PrimNoErr, Any&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="re"><a class="header" href="#re">Re</a></h1>
 <pre><code class="language-graphix">/// return true if the string is matched by #pat, otherwise return false.
 /// return an error if #pat is invalid.
-val is_match: fn(#pat: string, string) -&gt; Result&lt;bool, `ReError(string)&gt;;
+val is_match: fn(#pat: string, s: string) -&gt; Result&lt;bool, `ReError(string)&gt;;
 
 /// return an array of instances of #pat in s. return an error if #pat is
 /// invalid.
-val find: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+val find: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
 /// return an array of captures matched by #pat. The array will have an element for each
 /// capture group, which will have an element for each capture, regardless of whether it
 /// matched or not. If it did not match the corresponding element will be null. Return an
 /// error if #pat is invalid.
-val captures: fn(#pat: string, string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
+val captures: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
 
 /// return an array of strings split by #pat. return an error if #pat is invalid.
-val split: fn(#pat: string, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+val split: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
 /// split the string by #pat at most #limit times and return an array of the parts.
 /// return an error if #pat is invalid
-val splitn: fn(#pat: string, #limit: i64, string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
+val splitn: fn(#pat: string, #limit: i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="rand"><a class="header" href="#rand">Rand</a></h1>
@@ -3880,10 +4164,10 @@ val rand: fn&lt;'a: [Int, Float]&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
 /// pick a random element from the array and return it. Update
 /// each time the array updates. If the array is empty return
 /// nothing.
-val pick: fn(Array&lt;'a&gt;) -&gt; 'a;
+val pick: fn(a: Array&lt;'a&gt;) -&gt; 'a;
 
 /// return a shuffled copy of a
-val shuffle: fn(Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val shuffle: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sys"><a class="header" href="#sys">sys</a></h1>
@@ -3912,7 +4196,7 @@ and stdio.</p>
 val args: fn() -&gt; Array&lt;string&gt;;
 
 /// join parts to path using the OS specific path separator
-val join_path: fn(string, @args: [string, Array&lt;string&gt;]) -&gt; string;
+val join_path: fn(s: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysio"><a class="header" href="#sysio">sys::io</a></h1>
@@ -3926,30 +4210,30 @@ type Stream&lt;'a: [`File, `Tcp, `Tls, `Stdio]&gt;;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
-val read: fn(Stream&lt;'a&gt;, u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val read: fn(a: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
 /// Read exactly n bytes from the stream. Returns fewer bytes only
 /// if EOF is reached before n bytes have been read.
-val read_exact: fn(Stream&lt;'a&gt;, u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val read_exact: fn(a: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
 /// Write bytes to the stream. Returns the number of bytes written,
 /// which may be less than the full length of data.
-val write: fn(Stream&lt;'a&gt;, bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
+val write: fn(a: Stream&lt;'a&gt;, b: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
 
 /// Write all bytes to the stream, looping until complete.
-val write_exact: fn(Stream&lt;'a&gt;, bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+val write_exact: fn(a: Stream&lt;'a&gt;, b: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Flush any buffered writes.
-val flush: fn(Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+val flush: fn(a: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Return a handle to standard input.
-val stdin: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdin: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
 
 /// Return a handle to standard output.
-val stdout: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdout: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
 
 /// Return a handle to standard error.
-val stderr: fn(Any) -&gt; Stream&lt;`Stdio&gt;;
+val stderr: fn(v: Any) -&gt; Stream&lt;`Stdio&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysfs---filesystem-operations"><a class="header" href="#sysfs---filesystem-operations">sys::fs - Filesystem Operations</a></h1>
@@ -3995,13 +4279,13 @@ type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
 mod watch;
 mod tempdir;
 
-val read_all: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val read_all_bin: fn(string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
-val write_all: fn(#path: string, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val write_all_bin: fn(#path: string, bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
-val is_file: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val is_dir: fn(string) -&gt; Result&lt;string, `IOError(string)&gt;;
-val metadata: fn(?#follow_symlinks: bool, string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+val read_all: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+val read_all_bin: fn(s: string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+val write_all: fn(#path: string, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val write_all_bin: fn(#path: string, b: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+val is_file: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+val is_dir: fn(s: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+val metadata: fn(?#follow_symlinks: bool, s: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
 val readdir: fn(
     ?#max_depth: i64,
@@ -4010,12 +4294,12 @@ val readdir: fn(
     ?#follow_symlinks: bool,
     ?#follow_root_symlink: bool,
     ?#same_filesystem: bool,
-    string
+    s: string
 ) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
 
-val create_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val remove_dir: fn(?#all: bool, string) -&gt; Result&lt;null, `IOError(string)&gt;;
-val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val create_dir: fn(?#all: bool, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val remove_dir: fn(?#all: bool, s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+val remove_file: fn(s: string) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// Open a file with the specified mode, returning an I/O stream.
 ///
@@ -4026,16 +4310,16 @@ val remove_file: fn(string) -&gt; Result&lt;null, `IOError(string)&gt;;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(Mode, string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
+val open: fn(a: Mode, s: string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
 
 /// Seek to a position in the file. Returns the new position.
-val seek: fn(io::Stream&lt;`File&gt;, SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
+val seek: fn(stream: io::Stream&lt;`File&gt;, pos: SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
 
 /// Get metadata for the open file.
-val fstat: fn(io::Stream&lt;`File&gt;) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+val fstat: fn(stream: io::Stream&lt;`File&gt;) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
 /// Truncate or extend the file to the specified length.
-val truncate: fn(io::Stream&lt;`File&gt;, u64) -&gt; Result&lt;null, `IOError(string)&gt;;
+val truncate: fn(stream: io::Stream&lt;`File&gt;, len: u64) -&gt; Result&lt;null, `IOError(string)&gt;;
 </code></pre>
 <p>Once a file is opened with <code>sys::fs::open</code>, use <code>sys::io::read</code>,
 <code>sys::io::write</code>, and <code>sys::io::flush</code> for I/O — these work on any
@@ -4089,10 +4373,10 @@ type Watch;
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
-    Any
+    v: Any
 ) -&gt; Result&lt;Watcher, `WatchError(string)&gt;;
 
-val watch: fn(?#interest: Array&lt;Interest&gt;, Watcher, string)
+val watch: fn(?#interest: Array&lt;Interest&gt;, a: Watcher, s: string)
     -&gt; Result&lt;Watch, `WatchError(string)&gt;;
 
 val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
@@ -4104,12 +4388,12 @@ val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
 <h2 id="sysfstempdir"><a class="header" href="#sysfstempdir">sys::fs::tempdir</a></h2>
 <pre><code class="language-graphix">type T;
 
-val path: fn(T) -&gt; string;
+val path: fn(a: T) -&gt; string;
 
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
-    Any
+    v: Any
 ) -&gt; Result&lt;T, `IOError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -4118,29 +4402,29 @@ val create: fn(
 type TcpListener;
 
 /// Connect to a TCP server at the given address (host:port).
-val connect: fn(string) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+val connect: fn(addr: string) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
 
 /// Bind a TCP listener to the given address (host:port).
-val listen: fn(string) -&gt; Result&lt;TcpListener, `TCPError(string)&gt;;
+val listen: fn(addr: string) -&gt; Result&lt;TcpListener, `TCPError(string)&gt;;
 
 /// Accept a new connection from the listener. The second argument
 /// is a trigger — each time it updates, a new accept is performed.
-val accept: fn(TcpListener, Any) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+val accept: fn(listener: TcpListener, trigger: Any) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
 
 /// Shutdown the write half of the stream. Works on both plain TCP
 /// and TLS-upgraded streams.
-val shutdown: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;null, `TCPError(string)&gt;;
+val shutdown: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;null, `TCPError(string)&gt;;
 
 /// Get the remote address of the connected peer. Works on both
 /// plain TCP and TLS-upgraded streams.
-val peer_addr: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val peer_addr: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
 
 /// Get the local address of the stream. Works on both plain TCP
 /// and TLS-upgraded streams.
-val local_addr: fn(io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val local_addr: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
 
 /// Get the local address that the listener is bound to.
-val listener_addr: fn(TcpListener) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val listener_addr: fn(listener: TcpListener) -&gt; Result&lt;string, `TCPError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systls"><a class="header" href="#systls">sys::tls</a></h1>
@@ -4150,12 +4434,12 @@ as usual — the encryption is transparent.</p>
 /// used for SNI and certificate verification. When ca_cert is null,
 /// Mozilla root certificates are used; when provided, only that CA
 /// is trusted.
-val connect: fn(?#ca_cert:[bytes, null], string, io::Stream&lt;`Tcp&gt;)
+val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: io::Stream&lt;`Tcp&gt;)
     -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
 
 /// Upgrade a TCP stream to a TLS server connection using the given
 /// PEM-encoded certificate chain and private key.
-val accept: fn(#cert:bytes, #key:bytes, io::Stream&lt;`Tcp&gt;)
+val accept: fn(#cert:bytes, #key:bytes, stream: io::Stream&lt;`Tcp&gt;)
     -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -4166,13 +4450,13 @@ val accept: fn(#cert:bytes, #key:bytes, io::Stream&lt;`Tcp&gt;)
 type ArgSpec = { name: string, doc: string, default: Any };
 
 /// write the value to the specified path
-val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+val write: fn(s: string, v: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
-val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+val subscribe: fn(s: string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
 
 /// call the specified rpc
-val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+val call: fn(s: string, a: Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
 
 /// Publish an rpc. When the rpc is called f will be called with the arguments
 /// sent by the caller, and whatever f returns will be sent back to the caller.
@@ -4181,39 +4465,39 @@ val rpc: fn(
     #path:string,
     #doc:string,
     #spec:Array&lt;ArgSpec&gt;,
-    #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+    #f:fn(a: Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
 /// list paths under the specified path. If #update is specified, then the list will
 /// be refreshed each time clock is triggered. If update is not specified, the list will
 /// be updated each second
-val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+val list: fn(?#update:Any, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
 /// list the table under the specified path. If #update is specified, then the table
 /// will be refreshed each time clock is triggered. If update is not specified, the table
 /// will be updated each second
-val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+val list_table: fn(?#update:Any, s: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
 /// Publish the specified value at the specified path. Whenever the value updates,
 /// the new value will be sent to subscribers. If #on_write is specified, then if
 /// subscribers write to the value on_write will be called with the written value.
 /// on_write need not return anything.
-val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+val publish: fn(?#on_write:fn(v: Any) -&gt; _ throws 'e, s: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers"><a class="header" href="#systime---timers">sys::time - Timers</a></h1>
 <pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
-val after_idle: fn([duration, Number], 'a) -&gt; 'a;
+val after_idle: fn(v: [duration, Number], y: 'a) -&gt; 'a;
 
 /// timer will wait timeout and then update with the current time.
 /// If repeat is true, it will do this forever. If repeat is a number n,
 /// it will do this n times and then stop. If repeat is false, it will do
 /// this once.
-val timer: fn([duration, Number], [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
+val timer: fn(v: [duration, Number], v2: [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
 
 /// return the current time each time trigger updates
-val now: fn(Any) -&gt; datetime;
+val now: fn(v: Any) -&gt; datetime;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysdirs"><a class="header" href="#sysdirs">sys::dirs</a></h1>
@@ -4279,11 +4563,11 @@ val client: fn(
     ?#default_headers: Array&lt;(string, string)&gt;,
     ?#redirect_limit: u32,
     ?#ca_cert: [bytes, null],
-    Any
+    v: Any
 ) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
 /// Get or create a shared default HTTP client.
-val default_client: fn(Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
+val default_client: fn(v: Any) -&gt; Result&lt;Client, `HTTPError(string)&gt;;
 
 /// Make an HTTP request and return a text response.
 val request: fn(
@@ -4291,8 +4575,8 @@ val request: fn(
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [string, null],
     ?#timeout: [duration, null],
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 /// Make an HTTP request and return a binary response.
@@ -4301,18 +4585,18 @@ val request_bin: fn(
     ?#headers: Array&lt;(string, string)&gt;,
     ?#body: [bytes, null],
     ?#timeout: [duration, null],
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
 
 /// Convenience: GET request with text response.
-val get: fn(Client, string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
+val get: fn(a: Client, s: string) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 /// Convenience: GET request with binary response.
-val get_bin: fn(Client, string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
+val get_bin: fn(a: Client, s: string) -&gt; Result&lt;BinResponse, `HTTPError(string)&gt;;
 
 /// Return the bound address of a running server.
-val server_addr: fn(Server) -&gt; string;
+val server_addr: fn(a: Server) -&gt; string;
 
 /// Start an HTTP server.
 val serve: fn(
@@ -4320,7 +4604,7 @@ val serve: fn(
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
-    #handler: fn(Request) -&gt; Response throws 'e
+    #handler: fn(a: Request) -&gt; Response throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
 </code></pre>
 <h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
@@ -4328,39 +4612,39 @@ val serve: fn(
 <pre><code class="language-graphix">val get: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val post: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val put: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val delete: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
 val patch: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
-    Client,
-    string
+    a: Client,
+    s: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -4371,16 +4655,16 @@ inferred from the type annotation at the call site.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// Parse JSON from a string, byte array, or I/O stream.
-val read: fn([string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(v: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+val write_str: fn(?#pretty: bool, v: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
-val write_bytes: fn(?#pretty: bool, Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, v: Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 
 /// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(?#pretty: bool, a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="type-directed-deserialization"><a class="header" href="#type-directed-deserialization">Type-directed deserialization</a></h2>
 <p>The return type of <code>json::read</code> is determined by the type annotation on
@@ -4401,16 +4685,16 @@ Like <code>json::read</code>, <code>toml::read</code> uses type-directed deseria
 <pre><code class="language-graphix">use sys::io;
 
 /// Parse TOML from a string, byte array, or I/O stream.
-val read: fn([string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(v: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+val write_str: fn(?#pretty: bool, v: Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
-val write_bytes: fn(?#pretty: bool, Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, v: Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
 
 /// Serialize a value and write TOML to a stream.
-val write_stream: fn(?#pretty: bool, Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(?#pretty: bool, a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">use toml;
@@ -4432,13 +4716,13 @@ deserialization.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// Decode a value from packed binary bytes or stream.
-val read: fn([bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+val read: fn(v: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
 
 /// Encode a value to packed binary bytes.
-val write_bytes: fn(Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
+val write_bytes: fn(v: Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
 
 /// Encode a value and write to a stream.
-val write_stream: fn(Stream&lt;'a&gt;, Any) -&gt; Result&lt;null, [`PackErr(string), `IOErr(string)]&gt;;
+val write_stream: fn(a: Stream&lt;'a&gt;, v: Any) -&gt; Result&lt;null, [`PackErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <p>The Pack format is a compact binary encoding native to netidx. It is
 more space-efficient than JSON or TOML and supports the full range of
@@ -4451,10 +4735,10 @@ values.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// List sheet names in a workbook.
-val sheets: fn([bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val sheets: fn(v: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 
 /// Read a sheet by name as a 2D array of rows.
-val read: fn([bytes, Stream&lt;'a&gt;], string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val read: fn(v: [bytes, Stream&lt;'a&gt;], s: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
 <pre><code class="language-graphix">use xls;
@@ -4476,29 +4760,29 @@ type SqlVal = [i64, f64, string, bytes, null];
 type Connection;
 
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
-val open: fn(string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
+val open: fn(s: string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
 
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
-val exec: fn(Connection, string, Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
+val exec: fn(a: Connection, s: string, a2: Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
 
 /// Execute multiple semicolon-separated statements (no params). Good for schema setup.
-val exec_batch: fn(Connection, string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val exec_batch: fn(a: Connection, s: string) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array&lt;{...}&gt; for typed structs, or Array&lt;Map&lt;string, SqlVal&gt;&gt; for raw maps.
-val query: fn(Connection, string, Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
+val query: fn(a: Connection, s: string, a2: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
 
 /// Begin a transaction.
-val begin: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val begin: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Commit the current transaction.
-val commit: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val commit: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Rollback the current transaction.
-val rollback: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val rollback: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 
 /// Close the connection explicitly (optional — connections close on drop).
-val close: fn(Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
+val close: fn(a: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 </code></pre>
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
@@ -4531,86 +4815,86 @@ type Db;
 type Tree&lt;'k, 'v&gt;;
 
 /// Open or create an embedded database at the given path.
-val open: fn(string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
+val open: fn(s: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn(Db, [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn(a: Db, v: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
-val get: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val get: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Insert a key-value pair. Returns the previous value, or null.
-val insert: fn(Tree&lt;'k, 'v&gt;, 'k, 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val insert: fn(a: Tree&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Remove a key. Returns the previous value, or null.
-val remove: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val remove: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Check whether a key exists.
-val contains_key: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val contains_key: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Batch get values for an array of keys.
-val get_many: fn(Tree&lt;'k, 'v&gt;, Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
+val get_many: fn(a: Tree&lt;'k, 'v&gt;, a2: Array&lt;'k&gt;) -&gt; Result&lt;Array&lt;['v, null]&gt;, `DbErr(string)&gt;;
 
 /// Get the first (minimum key) entry, or null if empty.
-val first: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val first: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the last (maximum key) entry, or null if empty.
-val last: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val last: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomically remove and return the minimum-key entry.
-val pop_min: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val pop_min: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomically remove and return the maximum-key entry.
-val pop_max: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val pop_max: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the entry with the greatest key strictly less than the given key.
-val get_lt: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val get_lt: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Get the entry with the smallest key strictly greater than the given key.
-val get_gt: fn(Tree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val get_gt: fn(a: Tree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Atomic compare-and-swap.
-val compare_and_swap: fn(Tree&lt;'k, 'v&gt;, 'k, ['v, null], ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
+val compare_and_swap: fn(a: Tree&lt;'k, 'v&gt;, y: 'k, v: ['v, null], v2: ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes.
-val batch: fn(Tree&lt;'k, 'v&gt;, Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val batch: fn(a: Tree&lt;'k, 'v&gt;, a2: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Number of entries in the tree (O(n) scan).
-val len: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val len: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the tree has no entries.
-val is_empty: fn(Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val is_empty: fn(a: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Get the stored type metadata for a tree, or null if none.
-val get_type: fn(Db, [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
+val get_type: fn(a: Db, v: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
 
 /// List the names of all trees in the database.
-val tree_names: fn(Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
+val tree_names: fn(a: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
 
 /// Drop a named tree from the database.
-val drop_tree: fn(Db, string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val drop_tree: fn(a: Db, s: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// Generate a monotonically increasing unique u64 ID.
-val generate_id: fn(Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val generate_id: fn(a: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// Flush all pending writes to disk.
-val flush: fn(Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val flush: fn(a: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Total size of the database on disk in bytes.
-val size_on_disk: fn(Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+val size_on_disk: fn(a: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the database was recovered after a crash.
-val was_recovered: fn(Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+val was_recovered: fn(a: Db) -&gt; Result&lt;bool, `DbErr(string)&gt;;
 
 /// CRC32 checksum of all keys and values (O(n)).
-val checksum: fn(Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
+val checksum: fn(a: Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
 
 /// Export all database contents to a file.
-val export: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val export: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Import previously exported data from a file. The database must be empty.
-val import: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val import: fn(a: Db, s: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
 <p>Cursors iterate over tree entries reactively, advancing on each trigger.</p>
@@ -4618,20 +4902,20 @@ val import: fn(Db, string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 type Cursor&lt;'k, 'v&gt;;
 
 /// Create a new cursor, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
+val new: fn(?#prefix: ['k, null], a: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Create a cursor over a key range.
 val range: fn(
     ?#start: [`Included('k), `Excluded('k), null],
     ?#end: [`Included('k), `Excluded('k), null],
-    Tree&lt;'k, 'v&gt;
+    a: Tree&lt;'k, 'v&gt;
 ) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Read the next entry. Returns (key, value) or null when exhausted.
-val read: fn(Cursor&lt;'k, 'v&gt;, Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
+val read: fn(a: Cursor&lt;'k, 'v&gt;, v: Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
 /// Read up to N entries at once.
-val read_many: fn(Cursor&lt;'k, 'v&gt;, i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
+val read_many: fn(a: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
 <p>Multi-tree ACID transactions. All trees must be opened before any data
@@ -4643,28 +4927,28 @@ type Txn;
 type TxnTree&lt;'k, 'v&gt;;
 
 /// Begin a multi-tree transaction.
-val begin: fn(Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
+val begin: fn(a: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction.
-val tree: fn(Txn, [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn(a: Txn, v: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
-val get: fn(TxnTree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val get: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Insert a key-value pair within the transaction.
-val insert: fn(TxnTree&lt;'k, 'v&gt;, 'k, 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val insert: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k, z: 'v) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Remove a key within the transaction.
-val remove: fn(TxnTree&lt;'k, 'v&gt;, 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
+val remove: fn(a: TxnTree&lt;'k, 'v&gt;, y: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes within the transaction.
-val batch: fn(TxnTree&lt;'k, 'v&gt;, Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val batch: fn(a: TxnTree&lt;'k, 'v&gt;, a2: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Commit the transaction atomically.
-val commit: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val commit: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Abort the transaction.
-val rollback: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val rollback: fn(a: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
 <p>Reactive subscriptions fire when entries are inserted or removed.</p>
@@ -4672,13 +4956,13 @@ val rollback: fn(Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 type Subscription&lt;'k, 'v&gt;;
 
 /// Subscribe to changes, optionally filtering by key prefix.
-val new: fn(?#prefix: ['k, null], Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
+val new: fn(?#prefix: ['k, null], a: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
 /// Fires reactively when inserts occur.
-val on_insert: fn(Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
+val on_insert: fn(a: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
 
 /// Fires reactively when removes occur.
-val on_remove: fn(Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
+val on_remove: fn(a: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="list"><a class="header" href="#list">list</a></h1>
@@ -4689,96 +4973,96 @@ O(1); indexed access is O(n).</p>
 type List&lt;'a&gt;;
 
 /// Return an empty list.
-val nil: fn(Any) -&gt; List&lt;'a&gt;;
+val nil: fn(v: Any) -&gt; List&lt;'a&gt;;
 
 /// Prepend an element to the front of a list. O(1).
-val cons: fn('a, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val cons: fn(x: 'a, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list containing a single element.
-val singleton: fn('a) -&gt; List&lt;'a&gt;;
+val singleton: fn(x: 'a) -&gt; List&lt;'a&gt;;
 
 /// Return the first element, or null if empty.
-val head: fn(List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
+val head: fn(a: List&lt;'a&gt;) -&gt; Option&lt;'a&gt;;
 
 /// Return the list without its first element, or null if empty.
-val tail: fn(List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
+val tail: fn(a: List&lt;'a&gt;) -&gt; Option&lt;List&lt;'a&gt;&gt;;
 
 /// Return both the head and tail as a pair, or null if empty.
-val uncons: fn(List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
+val uncons: fn(a: List&lt;'a&gt;) -&gt; Option&lt;('a, List&lt;'a&gt;)&gt;;
 
 /// Return true if the list is empty.
-val is_empty: fn(List&lt;'a&gt;) -&gt; bool;
+val is_empty: fn(a: List&lt;'a&gt;) -&gt; bool;
 
 /// Return the element at position n (0-indexed), or null. O(n).
-val nth: fn(List&lt;'a&gt;, i64) -&gt; Option&lt;'a&gt;;
+val nth: fn(a: List&lt;'a&gt;, n: i64) -&gt; Option&lt;'a&gt;;
 
 /// Return the number of elements. O(n).
-val len: fn(List&lt;'a&gt;) -&gt; i64;
+val len: fn(a: List&lt;'a&gt;) -&gt; i64;
 
 /// Return the list in reverse order. O(n).
-val reverse: fn(List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val reverse: fn(a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return the first n elements.
-val take: fn(i64, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val take: fn(n: i64, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return the list without its first n elements.
-val drop: fn(i64, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val drop: fn(n: i64, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Convert a list to an array.
-val to_array: fn(List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val to_array: fn(a: List&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// Convert an array to a list.
-val from_array: fn(Array&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val from_array: fn(a: Array&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Concatenate two or more lists.
-val concat: fn(List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val concat: fn(a: List&lt;'a&gt;, @args: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Flatten a list of lists into a single list.
-val flatten: fn(List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
+val flatten: fn(a: List&lt;List&lt;'a&gt;&gt;) -&gt; List&lt;'a&gt;;
 
 /// Apply f to each element.
-val map: fn(List&lt;'a&gt;, fn('a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Keep elements where f returns true.
-val filter: fn(List&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+val filter: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
 /// Keep non-null outputs of f.
-val filter_map: fn(List&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val filter_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Map and flatten: if f returns a list, inline its elements.
-val flat_map: fn(List&lt;'a&gt;, fn('a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+val flat_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Left fold: f(f(f(init, a0), a1), ...).
-val fold: fn(List&lt;'a&gt;, 'b, fn('b, 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+val fold: fn(a: List&lt;'a&gt;, y: 'b, f: fn(x: 'b, y: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 
 /// Return the first element where f returns true, or null.
-val find: fn(List&lt;'a&gt;, fn('a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
+val find: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e;
 
 /// Return the first non-null output of f.
-val find_map: fn(List&lt;'a&gt;, fn('a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
+val find_map: fn(a: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e;
 
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn(?#dir: Direction, ?#numeric: bool, List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn(?#dir: Direction, ?#numeric: bool, a: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
-val enumerate: fn(List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
+val enumerate: fn(a: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
 
 /// Zip two lists into a list of pairs.
-val zip: fn(List&lt;'a&gt;, List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
+val zip: fn(a: List&lt;'a&gt;, a2: List&lt;'b&gt;) -&gt; List&lt;('a, 'b)&gt;;
 
 /// Unzip a list of pairs into a pair of lists.
-val unzip: fn(List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
+val unzip: fn(a: List&lt;('a, 'b)&gt;) -&gt; (List&lt;'a&gt;, List&lt;'b&gt;);
 
 /// Create a list of n elements where element i is f(i).
-val init: fn(i64, fn(i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
+val init: fn(n: i64, f: fn(n: i64) -&gt; 'a throws 'e) -&gt; List&lt;'a&gt; throws 'e;
 
 /// Produce an update for every element in the list.
-val iter: fn(List&lt;'a&gt;) -&gt; 'a;
+val iter: fn(a: List&lt;'a&gt;) -&gt; 'a;
 
 /// Produce an update for each element, gated by clock updates.
-val iterq: fn(#clock: Any, List&lt;'a&gt;) -&gt; 'a;
+val iterq: fn(#clock: Any, a: List&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="args"><a class="header" href="#args">args</a></h1>
@@ -4823,10 +5107,10 @@ val option: fn(#name: string, ?#short: [string, null], ?#help: [string, null], ?
 val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -&gt; Arg;
 
 /// Create a command descriptor.
-val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array&lt;Command&gt;, Array&lt;Arg&gt;) -&gt; Command;
+val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array&lt;Command&gt;, a: Array&lt;Arg&gt;) -&gt; Command;
 
 /// Parse command-line arguments against the spec.
-val parse: fn(Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
+val parse: fn(a: Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
 </code></pre>
 <h2 id="example-2"><a class="header" href="#example-2">Example</a></h2>
 <pre><code class="language-graphix">use args;
@@ -4860,7 +5144,7 @@ rendering.</p>
 <pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.
-val render: fn(?#strict: bool, ?#partials: 'a, string, 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
+val render: fn(?#strict: bool, ?#partials: 'a, s: string, y: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example-3"><a class="header" href="#example-3">Example</a></h2>
 <pre><code class="language-graphix">use hbs;
@@ -4948,9 +5232,7 @@ use tui::block;
 use tui::text;
 use tui::layout;
 
-let counter = 0;
-let clock = sys::time::timer(duration:1.s, true);
-counter &lt;- clock ~ (counter + 1);
+let counter = count(sys::time::timer(duration:1.s, true));
 
 let content = text(&amp;"Counter: [counter]");
 
@@ -5036,9 +5318,21 @@ list(#selected: &amp;selected_item, &amp;items)
 <pre><code class="language-graphix">use tui;
 use tui::gauge;
 use tui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
 
-// Subscribe to live data
-let temperature: f64 = sys::net::subscribe("/sensors/temperature")?;
+// Self-contained: publish a simulated temperature reading once a
+// second, then subscribe to it for display. Drop the publish to
+// point the gauge at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+let temp_source = 7000.0;
+temp_source &lt;- tick ~ 7000.0 + 2500.0 * math::sin(t / 5.0);
+sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
+
+let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
 
 // Will display updates automatically when data changes
 gauge(
@@ -5130,7 +5424,7 @@ tui::style()
   content: string
 };
 
-val span: fn(?#style: Style, string) -&gt; Span;
+val span: fn(?#style: Style, s: string) -&gt; Span;
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
@@ -5153,7 +5447,7 @@ type Line = {
   spans: [Array&lt;Span&gt;, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], [Array&lt;Span&gt;, string]) -&gt; Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array&lt;Span&gt;, string]) -&gt; Line;
 </code></pre>
 <p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
 simple string (which will use the line’s style).</p>
@@ -5202,7 +5496,7 @@ val bar: fn(
   ?#style: &amp;[Style, null],
   ?#text_value: &amp;[string, null],
   ?#value_style: &amp;[Style, null],
-  &amp;i64
+  n: &amp;i64
 ) -&gt; Bar;
 
 type BarGroup = {
@@ -5212,7 +5506,7 @@ type BarGroup = {
 
 val bar_group: fn(
   ?#label: [Line, null],
-  Array&lt;Bar&gt;
+  a: Array&lt;Bar&gt;
 ) -&gt; BarGroup;
 
 val bar_chart: fn(
@@ -5225,7 +5519,7 @@ val bar_chart: fn(
   ?#max: &amp;[i64, null],
   ?#style: &amp;[Style, null],
   ?#value_style: &amp;[Style, null],
-  &amp;Array&lt;BarGroup&gt;
+  a: &amp;Array&lt;BarGroup&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -5372,7 +5666,7 @@ val block: fn(
   ?#title_position: &amp;[Position, null],
   ?#title_alignment: &amp;[Alignment, null],
   ?#size: &amp;[Size, null],
-  &amp;Tui
+  a: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-1"><a class="header" href="#parameters-1">Parameters</a></h2>
@@ -5428,9 +5722,7 @@ block(
 use tui::block;
 use tui::paragraph;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
+let count = count(sys::time::timer(duration:1.s, true));
 
 let content = paragraph(&amp;"Content here");
 
@@ -5468,7 +5760,7 @@ val browser: fn(
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
-    string
+    s: string
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-2"><a class="header" href="#parameters-2">Parameters</a></h2>
@@ -5545,14 +5837,14 @@ input_handler(
   day: i64
 };
 
-val date: fn(i64, i64, i64) -&gt; Date;
+val date: fn(n: i64, n2: i64, n3: i64) -&gt; Date;
 
 type CalendarEvent = {
   date: Date,
   style: Style
 };
 
-val calendar_event: fn(Style, Date) -&gt; CalendarEvent;
+val calendar_event: fn(a: Style, a2: Date) -&gt; CalendarEvent;
 
 val calendar: fn(
   ?#default_style: &amp;[Style, null],
@@ -5560,7 +5852,7 @@ val calendar: fn(
   ?#show_surrounding: &amp;[Style, null],
   ?#show_weekday: &amp;[Style, null],
   ?#events: &amp;[Array&lt;CalendarEvent&gt;, null],
-  &amp;Date
+  a: &amp;Date
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-3"><a class="header" href="#parameters-3">Parameters</a></h2>
@@ -5693,7 +5985,7 @@ val canvas: fn(
   ?#marker: &amp;[Marker, null],
   #x_bounds: &amp;{ max: f64, min: f64 },
   #y_bounds: &amp;{ max: f64, min: f64 },
-  &amp;Array&lt;&amp;CanvasShape&gt;
+  a: &amp;Array&lt;&amp;CanvasShape&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-4"><a class="header" href="#parameters-4">Parameters</a></h2>
@@ -5779,12 +6071,7 @@ canvas(
 <pre><code class="language-graphix">use tui;
 use tui::canvas;
 
-let clock = sys::time::timer(duration:0.1s, true);
-let x = 0.0;
-x &lt;- {
-    let new_x = (clock ~ x) + 0.1;
-    select new_x &gt; 10.0 { true =&gt; 0.0, false =&gt; new_x }
-};
+let x = cast&lt;f64&gt;(count(sys::time::timer(0.1, true)))$ * 0.1 % 10.;
 
 let moving_circle = `Circle({color: `Red, x, y: 5.0, radius: 1.0});
 
@@ -5847,7 +6134,7 @@ val axis: fn(
   ?#labels_alignment: [Alignment, null],
   ?#style: [Style, null],
   ?#title: [Line, null],
-  {min: f64, max: f64}
+  a: {min: f64, max: f64}
 ) -&gt; Axis;
 
 type Dataset = {
@@ -5863,7 +6150,7 @@ val dataset: fn(
   ?#graph_type: &amp;[GraphType, null],
   ?#name: &amp;[Line, null],
   ?#style: &amp;[Style, null],
-  &amp;Array&lt;(f64, f64)&gt;
+  a: &amp;Array&lt;(f64, f64)&gt;
 ) -&gt; Dataset;
 
 type LegendConstraints = {
@@ -5877,7 +6164,7 @@ val chart: fn(
   ?#style: &amp;[Style, null],
   ?#x_axis: &amp;[Axis, null],
   ?#y_axis: &amp;[Axis, null],
-  &amp;Array&lt;Dataset&gt;
+  a: &amp;Array&lt;Dataset&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-5"><a class="header" href="#parameters-5">Parameters</a></h2>
@@ -5928,8 +6215,7 @@ use tui::text;
 
 let data: Array&lt;(f64, f64)&gt; = {
     let clock = sys::time::timer(duration:0.5s, true);
-    let x = 0.0;
-    x &lt;- (clock ~ x) + 1.0;
+    let x = cast&lt;f64&gt;(count(clock))$;
     let y = rand::rand(#clock, #start: f64:0., #end: f64:100.);
     let a = [];
     a &lt;- array::window(#n: 32, clock ~ a, (x, y));
@@ -6017,7 +6303,7 @@ chart(
 <pre><code class="language-graphix">val text: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
-  &amp;[Array&lt;Line&gt;, string]
+  v: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
 </code></pre>
 <p>The <code>text</code> widget uses types from the <a href="#style">style</a> module including <code>Style</code>, <code>Line</code>, <code>Span</code>, <code>Color</code>, <code>Modifier</code>, and <code>Alignment</code>.</p>
@@ -6065,9 +6351,7 @@ text(&amp;[
 <pre><code class="language-graphix">use tui;
 use tui::text;
 
-let count = 0;
-let timer = sys::time::timer(duration:1.s, true);
-count &lt;- timer ~ (count + 1);
+let count = count(sys::time::timer(duration:1.s, true));
 
 let colors = [`Red, `Green, `Yellow, `Blue, `Magenta, `Cyan];
 let color = colors[count % array::len(colors)]$;
@@ -6116,7 +6400,7 @@ text(&amp;[
   ?#alignment: &amp;[Alignment, null],
   ?#scroll: &amp;{x: i64, y: i64},
   ?#trim: &amp;bool,
-  &amp;[Array&lt;Line&gt;, string]
+  v: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-6"><a class="header" href="#parameters-6">Parameters</a></h2>
@@ -6179,9 +6463,28 @@ input_handler(
 <pre><code class="language-graphix">use tui;
 use tui::paragraph;
 use tui::text;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated log entry every second, then
+// subscribe to display the rolling window. Drop the publish to point
+// the viewer at any other string publisher.
+let tick = time::timer(duration:1.s, true);
+let n = count(tick);
+let messages = [
+    "request handled",
+    "cache miss",
+    "user signed in",
+    "background job complete",
+    "config reloaded",
+];
+let log_source = "";
+log_source &lt;- tick ~ "[n] [rand::pick(tick ~ messages)]";
+sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
-let new_entry: string = sys::net::subscribe("/local/logs/application")?;
+let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")?;
 
 log_entries &lt;- array::window(
     #n: 100,
@@ -6226,7 +6529,7 @@ paragraph(
   ?#label: &amp;[Span, null],
   ?#style: &amp;[Style, null],
   ?#use_unicode: &amp;[bool, null],
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-7"><a class="header" href="#parameters-7">Parameters</a></h2>
@@ -6255,9 +6558,7 @@ use tui::gauge;
 use tui::block;
 use tui::text;
 
-let clock = sys::time::timer(duration:0.5s, true);
-let power = 0.0;
-power &lt;- min(1.0, (clock ~ power) + 0.01);
+let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
 
 let color = select power {
     x if x &lt; 0.10 =&gt; `Red,
@@ -6317,7 +6618,7 @@ gauge(
   ?#style: &amp;[Style, null],
   ?#unfilled_style: &amp;[Style, null],
   ?#unfilled_symbol: &amp;[string, null],
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-8"><a class="header" href="#parameters-8">Parameters</a></h2>
@@ -6348,9 +6649,7 @@ use tui::line_gauge;
 use tui::block;
 use tui::text;
 
-let clock = sys::time::timer(duration:0.5s, true);
-let power = 0.0;
-power &lt;- min(1.0, (clock ~ power) + 0.01);
+let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
 
 let color = select power {
     x if x &lt; 0.10 =&gt; `Red,
@@ -6541,8 +6840,8 @@ type MouseButton = [
 <p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
 <pre><code class="language-graphix">val input_handler: fn(
   ?#enabled: &amp;[bool, null],
-  #handle: &amp;fn(Event) -&gt; [`Stop, `Continue] throws 'e,
-  &amp;Tui
+  #handle: &amp;fn(a: Event) -&gt; [`Stop, `Continue] throws 'e,
+  a: &amp;Tui
 ) -&gt; Tui throws 'e;
 </code></pre>
 <p>The handler function receives events and returns:</p>
@@ -6680,7 +6979,7 @@ type Child = {
 val child: fn(
   ?#size: &amp;[Size, null],
   #constraint: Constraint,
-  Tui
+  a: Tui
 ) -&gt; Child;
 
 val layout: fn(
@@ -6691,7 +6990,7 @@ val layout: fn(
   ?#margin: &amp;[i64, null],
   ?#spacing: &amp;[Spacing, null],
   ?#vertical_margin: &amp;[i64, null],
-  &amp;Array&lt;Child&gt;
+  a: &amp;Array&lt;Child&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-9"><a class="header" href="#parameters-9">Parameters</a></h2>
@@ -6837,7 +7136,7 @@ layout(
   ?#scroll: &amp;[i64, null],
   ?#selected: &amp;[i64, null],
   ?#style: &amp;[Style, null],
-  &amp;Array&lt;Line&gt;
+  a: &amp;Array&lt;Line&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-10"><a class="header" href="#parameters-10">Parameters</a></h2>
@@ -6979,7 +7278,7 @@ val scrollbar: fn(
   ?#track_style: &amp;[Style, null],
   ?#track_symbol: &amp;[string, null],
   ?#viewport_length: &amp;[i64, null],
-  &amp;Tui
+  a: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-11"><a class="header" href="#parameters-11">Parameters</a></h2>
@@ -7118,7 +7417,7 @@ type SparklineBar = {
 
 val sparkline_bar: fn(
   ?#style: [Style, null],
-  [f64, null]
+  v: [f64, null]
 ) -&gt; SparklineBar;
 
 val sparkline: fn(
@@ -7127,7 +7426,7 @@ val sparkline: fn(
   ?#direction: &amp;[RenderDirection, null],
   ?#max: &amp;[i64, null],
   ?#style: &amp;[Style, null],
-  &amp;Array&lt;[SparklineBar, f64, null]&gt;
+  a: &amp;Array&lt;[SparklineBar, f64, null]&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-12"><a class="header" href="#parameters-12">Parameters</a></h2>
@@ -7213,11 +7512,33 @@ layout(
 </code></pre>
 <p><img src="ui/tui/media/sparkline_dashboard.png" alt="Multi Sparkline Dashboard"></p>
 <h3 id="sparkline-from-netidx"><a class="header" href="#sparkline-from-netidx">Sparkline from Netidx</a></h3>
+<p>This example is self-contained: it both publishes and subscribes to a
+simulated CPU value over netidx, so you can run it without any
+external publisher. Drop the <code>publish</code> call and point the subscribe at
+a real path to chart live data instead — for example, the output of:</p>
+<pre><code>top | \
+grep --line-buffered Cpu | \
+awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
+netidx publisher
+</code></pre>
 <pre><code class="language-graphix">use tui;
 use tui::sparkline;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated CPU value once a second, then
+// subscribe to it for a rolling 60-sample sparkline. Drop the
+// publish to point the chart at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+let cpu_source = 50.0;
+cpu_source &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 7.0);
+sys::net::publish("/local/graphix/sparkline_rolling/cpu", cpu_source);
 
 let data: Array&lt;f64&gt; = [];
-let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/graphix/sparkline_rolling/cpu")?;
 
 data &lt;- array::window(
     #n: 60,
@@ -7228,12 +7549,6 @@ data &lt;- array::window(
 sparkline(#max: &amp;100, &amp;data)
 </code></pre>
 <p><img src="ui/tui/media/sparkline_rolling.gif" alt="Rolling Sparkline"></p>
-<p>showing the output of the below shell pipeline during a netidx build,</p>
-<pre><code>top | \
-grep --line-buffered Cpu | \
-awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
-netidx publisher
-</code></pre>
 <h2 id="use-cases-1"><a class="header" href="#use-cases-1">Use Cases</a></h2>
 <p>Sparklines are ideal for:</p>
 <ul>
@@ -7259,7 +7574,7 @@ netidx publisher
 
 val cell: fn(
   ?#style: [Style, null],
-  Line
+  a: Line
 ) -&gt; Cell;
 
 type Row = {
@@ -7275,7 +7590,7 @@ val row: fn(
   ?#height: [i64, null],
   ?#style: [Style, null],
   ?#top_margin: [i64, null],
-  Array&lt;Cell&gt;
+  a: Array&lt;Cell&gt;
 ) -&gt; Row;
 
 val table: fn(
@@ -7293,7 +7608,7 @@ val table: fn(
   ?#selected_column: &amp;[i64, null],
   ?#style: &amp;[Style, null],
   ?#widths: &amp;[Array&lt;Constraint&gt;, null],
-  &amp;Array&lt;&amp;Row&gt;
+  a: &amp;Array&lt;&amp;Row&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-13"><a class="header" href="#parameters-13">Parameters</a></h2>
@@ -7499,7 +7814,7 @@ table(#header: &amp;header, &amp;rows)
   ?#selected: &amp;[i64, null],
   ?#size: &amp;[Size, null],
   ?#style: &amp;[Style, null],
-  &amp;Array&lt;(Line, Tui)&gt;
+  a: &amp;Array&lt;(Line, Tui)&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-14"><a class="header" href="#parameters-14">Parameters</a></h2>
@@ -7668,7 +7983,7 @@ val window: fn(
   ?#title: &amp;string,
   ?#size: &amp;Size,
   ?#theme: &amp;Theme,
-  &amp;Widget
+  a: &amp;Widget
 ) -&gt; Window;
 </code></pre>
 <p>All parameters except the content widget are optional. Defaults are <code>"Graphix"</code> for the title, <code>{ width: 800.0, height: 600.0 }</code> for the size, and <code>`Dark</code> for the theme.</p>
@@ -8275,7 +8590,7 @@ val slider_style: fn(
   ?#height: &amp;Length,
   ?#halign: &amp;HAlign,
   ?#valign: &amp;VAlign,
-  &amp;string
+  s: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-15"><a class="header" href="#parameters-15">Parameters</a></h2>
@@ -8334,12 +8649,12 @@ mod icon;
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
 <h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
 <pre><code class="language-graphix">val button: fn(
-  ?#on_press: fn(null) -&gt; Any,
+  ?#on_press: fn(a: null) -&gt; Any,
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#padding: &amp;Padding,
   ?#disabled: &amp;bool,
-  &amp;Widget
+  a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-16"><a class="header" href="#parameters-16">Parameters</a></h2>
@@ -8398,15 +8713,15 @@ let col = column(
 <h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
 <pre><code class="language-graphix">val text_input: fn(
   ?#placeholder: &amp;string,
-  ?#on_input: fn(string) -&gt; Any,
-  ?#on_submit: fn(null) -&gt; Any,
+  ?#on_input: fn(s: string) -&gt; Any,
+  ?#on_submit: fn(a: null) -&gt; Any,
   ?#is_secure: &amp;bool,
   ?#width: &amp;Length,
   ?#padding: &amp;Padding,
   ?#size: &amp;[f64, null],
   ?#font: &amp;[Font, null],
   ?#disabled: &amp;bool,
-  &amp;string
+  s: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-17"><a class="header" href="#parameters-17">Parameters</a></h2>
@@ -8458,14 +8773,14 @@ let col = column(
 <h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
 <pre><code class="language-graphix">val text_editor: fn(
   ?#placeholder: &amp;string,
-  ?#on_edit: fn(string) -&gt; Any,
+  ?#on_edit: fn(s: string) -&gt; Any,
   ?#width: &amp;[f64, null],
   ?#height: &amp;[f64, null],
   ?#padding: &amp;Padding,
   ?#font: &amp;[Font, null],
   ?#size: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;string
+  s: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-18"><a class="header" href="#parameters-18">Parameters</a></h2>
@@ -8521,12 +8836,12 @@ let col = column(
 <h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
 <pre><code class="language-graphix">val checkbox: fn(
   ?#label: &amp;string,
-  ?#on_toggle: fn(bool) -&gt; Any,
+  ?#on_toggle: fn(flag: bool) -&gt; Any,
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;bool
+  flag: &amp;bool
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-19"><a class="header" href="#parameters-19">Parameters</a></h2>
@@ -8577,12 +8892,12 @@ let col = column(
 <h2 id="interface-25"><a class="header" href="#interface-25">Interface</a></h2>
 <pre><code class="language-graphix">val toggler: fn(
   ?#label: &amp;string,
-  ?#on_toggle: fn(bool) -&gt; Any,
+  ?#on_toggle: fn(flag: bool) -&gt; Any,
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;bool
+  flag: &amp;bool
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-20"><a class="header" href="#parameters-20">Parameters</a></h2>
@@ -8632,12 +8947,12 @@ let col = column(
 <pre><code class="language-graphix">val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;'a,
-  ?#on_select: fn('a) -&gt; Any,
+  ?#on_select: fn(x: 'a) -&gt; Any,
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;'a
+  x: &amp;'a
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-21"><a class="header" href="#parameters-21">Parameters</a></h2>
@@ -8698,12 +9013,12 @@ let col = column(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(f64) -&gt; Any,
-  ?#on_release: fn(null) -&gt; Any,
+  ?#on_change: fn(x: f64) -&gt; Any,
+  ?#on_release: fn(a: null) -&gt; Any,
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-22"><a class="header" href="#parameters-22">Parameters</a></h3>
@@ -8725,12 +9040,12 @@ let col = column(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(f64) -&gt; Any,
-  ?#on_release: fn(null) -&gt; Any,
+  ?#on_change: fn(x: f64) -&gt; Any,
+  ?#on_release: fn(a: null) -&gt; Any,
   ?#width: &amp;[f64, null],
   ?#height: &amp;Length,
   ?#disabled: &amp;bool,
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-1-1"><a class="header" href="#parameters-1-1">Parameters</a></h3>
@@ -8747,7 +9062,7 @@ let col = column(
   ?#max: &amp;f64,
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
-  &amp;f64
+  x: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-2-1"><a class="header" href="#parameters-2-1">Parameters</a></h3>
@@ -8834,12 +9149,12 @@ let value = 50.0;
 <h2 id="interface-28"><a class="header" href="#interface-28">Interface</a></h2>
 <pre><code class="language-graphix">val pick_list: fn(
   ?#selected: &amp;[string, null],
-  ?#on_select: fn(string) -&gt; Any,
+  ?#on_select: fn(s: string) -&gt; Any,
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#padding: &amp;Padding,
   ?#disabled: &amp;bool,
-  &amp;Array&lt;string&gt;
+  a: &amp;Array&lt;string&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-23"><a class="header" href="#parameters-23">Parameters</a></h2>
@@ -8891,11 +9206,11 @@ let col = column(
 <h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
 <pre><code class="language-graphix">val combo_box: fn(
   ?#selected: &amp;[string, null],
-  ?#on_select: fn(string) -&gt; Any,
+  ?#on_select: fn(s: string) -&gt; Any,
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#disabled: &amp;bool,
-  &amp;Array&lt;string&gt;
+  a: &amp;Array&lt;string&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-24"><a class="header" href="#parameters-24">Parameters</a></h2>
@@ -8950,7 +9265,7 @@ let col = column(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#halign: &amp;HAlign,
-  &amp;Array&lt;Widget&gt;
+  a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-25"><a class="header" href="#parameters-25">Parameters</a></h2>
@@ -9006,7 +9321,7 @@ mod icon;
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#valign: &amp;VAlign,
-  &amp;Array&lt;Widget&gt;
+  a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-26"><a class="header" href="#parameters-26">Parameters</a></h2>
@@ -9073,7 +9388,7 @@ mod icon;
   ?#height: &amp;Length,
   ?#halign: &amp;HAlign,
   ?#valign: &amp;VAlign,
-  &amp;Widget
+  a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-27"><a class="header" href="#parameters-27">Parameters</a></h2>
@@ -9136,10 +9451,10 @@ mod icon;
 <h2 id="interface-33"><a class="header" href="#interface-33">Interface</a></h2>
 <pre><code class="language-graphix">val scrollable: fn(
   ?#direction: &amp;ScrollDirection,
-  ?#on_scroll: fn({x: f64, y: f64}) -&gt; Any,
+  ?#on_scroll: fn(a: {x: f64, y: f64}) -&gt; Any,
   ?#width: &amp;Length,
   ?#height: &amp;Length,
-  &amp;Widget
+  a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-28"><a class="header" href="#parameters-28">Parameters</a></h2>
@@ -9205,7 +9520,7 @@ let col = column(
 <pre><code class="language-graphix">val stack: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
-  &amp;Array&lt;Widget&gt;
+  a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-29"><a class="header" href="#parameters-29">Parameters</a></h2>
@@ -9450,7 +9765,7 @@ val canvas: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#background: &amp;[Color, null],
-  &amp;Array&lt;CanvasShape&gt;
+  a: &amp;Array&lt;CanvasShape&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-31"><a class="header" href="#parameters-31">Parameters</a></h2>
@@ -9697,7 +10012,7 @@ val chart: fn(
   ?#legend_position: &amp;[LegendPosition, null],
   ?#legend_style: &amp;[LegendStyle, null],
   ?#mesh: &amp;[MeshStyle, null],
-  &amp;Array&lt;Dataset&gt;
+  a: &amp;Array&lt;Dataset&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="chart-parameters"><a class="header" href="#chart-parameters">Chart Parameters</a></h2>
@@ -9854,8 +10169,7 @@ mod icon;
 
 let rate = 0.;
 let clock = sys::time::timer(1. - rate, true);
-let x = 0.;
-x &lt;- clock ~ x + 1.;
+let x = cast&lt;f64&gt;(count(clock))$;
 
 let series = |start: f64, end: f64| -&gt; Array&lt;(f64, f64)&gt; {
     let d = [];
@@ -9948,13 +10262,13 @@ mod icon;
 let dark_bg = color(#r: 0.1, #g: 0.1, #b: 0.15)$;
 
 let ohlc_data = [
-    {x: datetime:"2024-01-01T00:00:00Z",  open: 100., high: 108., low: 97.,  close: 105.},
-    {x: datetime:"2024-01-02T00:00:00Z",  open: 105., high: 112., low: 103., close: 110.},
-    {x: datetime:"2024-01-03T00:00:00Z",  open: 110., high: 115., low: 106., close: 107.},
-    {x: datetime:"2024-01-04T00:00:00Z",  open: 107., high: 111., low: 101., close: 103.},
-    {x: datetime:"2024-01-05T00:00:00Z",  open: 103., high: 109., low: 100., close: 108.},
-    {x: datetime:"2024-01-08T00:00:00Z",  open: 108., high: 116., low: 107., close: 114.},
-    {x: datetime:"2024-01-09T00:00:00Z",  open: 114., high: 118., low: 110., close: 112.},
+    {x: datetime:"2024-01-01T00:00:00Z", open: 100., high: 108., low: 97.,  close: 105.},
+    {x: datetime:"2024-01-02T00:00:00Z", open: 105., high: 112., low: 103., close: 110.},
+    {x: datetime:"2024-01-03T00:00:00Z", open: 110., high: 115., low: 106., close: 107.},
+    {x: datetime:"2024-01-04T00:00:00Z", open: 107., high: 111., low: 101., close: 103.},
+    {x: datetime:"2024-01-05T00:00:00Z", open: 103., high: 109., low: 100., close: 108.},
+    {x: datetime:"2024-01-08T00:00:00Z", open: 108., high: 116., low: 107., close: 114.},
+    {x: datetime:"2024-01-09T00:00:00Z", open: 114., high: 118., low: 110., close: 112.},
     {x: datetime:"2024-01-10T00:00:00Z", open: 112., high: 117., low: 108., close: 116.},
     {x: datetime:"2024-01-11T00:00:00Z", open: 116., high: 120., low: 113., close: 115.},
     {x: datetime:"2024-01-12T00:00:00Z", open: 115., high: 119., low: 109., close: 110.},
@@ -10026,8 +10340,7 @@ use gui::column;
 mod icon;
 
 let clock = sys::time::timer(duration:1.s, true);
-let x = 0.;
-x &lt;- clock ~ x + 1.;
+let x = cast&lt;f64&gt;(count(clock))$;
 
 let avg_data = [];
 let err_data = [];
@@ -10159,8 +10472,7 @@ use gui::column;
 mod icon;
 
 let clock = sys::time::timer(duration:0.5s, true);
-let x = 0.;
-x &lt;- clock ~ x + 1.;
+let x = cast&lt;f64&gt;(count(clock))$;
 
 let series = |offset, scale| {
     let d = [];
@@ -10255,7 +10567,7 @@ val image: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#content_fit: &amp;ContentFit,
-  &amp;ImageSource
+  a: &amp;ImageSource
 ) -&gt; Widget
 </code></pre>
 <h3 id="svg"><a class="header" href="#svg">svg</a></h3>
@@ -10263,7 +10575,7 @@ val image: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#content_fit: &amp;ContentFit,
-  &amp;string
+  s: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-32"><a class="header" href="#parameters-32">Parameters</a></h2>
@@ -10369,7 +10681,7 @@ let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
   #tip: &amp;Widget,
   ?#position: &amp;TooltipPosition,
   ?#gap: &amp;[f64, null],
-  &amp;Widget
+  a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-33"><a class="header" href="#parameters-33">Parameters</a></h2>
@@ -10425,12 +10737,12 @@ let col = column(
 <pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
-  ?#on_press: fn(MouseButton) -&gt; Any,
-  ?#on_release: fn(MouseButton) -&gt; Any,
-  ?#on_enter: fn(null) -&gt; Any,
-  ?#on_exit: fn(null) -&gt; Any,
-  ?#on_move: fn({x: f64, y: f64}) -&gt; Any,
-  &amp;Widget
+  ?#on_press: fn(a: MouseButton) -&gt; Any,
+  ?#on_release: fn(a: MouseButton) -&gt; Any,
+  ?#on_enter: fn(a: null) -&gt; Any,
+  ?#on_exit: fn(a: null) -&gt; Any,
+  ?#on_move: fn(a: {x: f64, y: f64}) -&gt; Any,
+  a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-34"><a class="header" href="#parameters-34">Parameters</a></h2>
@@ -10509,9 +10821,9 @@ let position = "---";
 };
 
 val keyboard_area: fn(
-  ?#on_key_press: fn(KeyEvent) -&gt; Any,
-  ?#on_key_release: fn(KeyEvent) -&gt; Any,
-  &amp;Widget
+  ?#on_key_press: fn(a: KeyEvent) -&gt; Any,
+  ?#on_key_release: fn(a: KeyEvent) -&gt; Any,
+  a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="the-keyevent-type"><a class="header" href="#the-keyevent-type">The KeyEvent Type</a></h2>
@@ -10584,15 +10896,15 @@ let mod_name = "None";
 <pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
-val read_text:   fn(Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
-val write_text:  fn(string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_image:  fn(Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
-val write_image: fn(ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_html:   fn(Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
-val write_html:  fn(HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_files:  fn(Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
-val write_files: fn(Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val clear:       fn(Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_text:   fn(v: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+val write_text:  fn(s: string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_image:  fn(v: Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
+val write_image: fn(a: ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_html:   fn(v: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+val write_html:  fn(a: HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val read_files:  fn(v: Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
+val write_files: fn(a: Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+val clear:       fn(v: Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
 </code></pre>
 <h2 id="functions-2"><a class="header" href="#functions-2">Functions</a></h2>
 <h3 id="text-1"><a class="header" href="#text-1">Text</a></h3>
@@ -10673,7 +10985,7 @@ val grid: fn(
   ?#columns: &amp;GridColumns,
   ?#width: &amp;[f64, null],
   ?#height: &amp;GridHeight,
-  &amp;Array&lt;Widget&gt;
+  a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-36"><a class="header" href="#parameters-36">Parameters</a></h2>
@@ -10738,7 +11050,7 @@ let col = column(
 <h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
 <pre><code class="language-graphix">val qr_code: fn(
   ?#cell_size: &amp;[f64, null],
-  &amp;string
+  s: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-37"><a class="header" href="#parameters-37">Parameters</a></h2>
@@ -10786,11 +11098,11 @@ let col = column(
 <p>Renders a markdown string as rich text with support for headings, bold, italic, lists, code blocks, and clickable links.</p>
 <h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
 <pre><code class="language-graphix">val markdown: fn(
-  ?#on_link: fn(string) -&gt; Any,
+  ?#on_link: fn(s: string) -&gt; Any,
   ?#spacing: &amp;[f64, null],
   ?#text_size: &amp;[f64, null],
   ?#width: &amp;Length,
-  &amp;string
+  s: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-38"><a class="header" href="#parameters-38">Parameters</a></h2>
@@ -10863,15 +11175,15 @@ val table_column: fn(
   ?#width: &amp;Length,
   ?#halign: &amp;HAlign,
   ?#valign: &amp;VAlign,
-  &amp;Widget
+  a: &amp;Widget
 ) -&gt; TableColumn;
 
 val table: fn(
   ?#width: &amp;Length,
   ?#padding: &amp;[f64, null],
   ?#separator: &amp;[f64, null],
-  &amp;Array&lt;TableColumn&gt;,
-  &amp;Array&lt;Array&lt;Widget&gt;&gt;
+  a: &amp;Array&lt;TableColumn&gt;,
+  a2: &amp;Array&lt;Array&lt;Widget&gt;&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="table_column-parameters"><a class="header" href="#table_column-parameters"><code>table_column</code> Parameters</a></h2>
@@ -10929,9 +11241,1049 @@ let layout = column(
 <li><a href="#types">types</a> – for <code>Length</code>, <code>HAlign</code>, <code>VAlign</code></li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-data-table-widget"><a class="header" href="#the-data-table-widget">The Data Table Widget</a></h1>
+<p>A spreadsheet-style widget that renders a <code>Table</code> value as a grid of
+live-subscribed cells. Columns are typed: each one picks the editor
+(text, toggle, pick-list, spinner), visualization (progress bar,
+sparkline), or action (button) that cells should use. Row sort, row
+filter, column widths, and the selection set are all controlled from
+graphix — the widget is the rendering surface and the subscription
+manager, nothing more.</p>
+<p>The <code>Table</code> value is the single source of truth for what columns
+exist, in what order, and how each one is sourced. Columns are
+declared as either bare strings (shorthand for a default Text column
+with <code>`Netidx</code> source named after the string) or full
+<code>ColumnSpec</code> structs. Bare strings let the output of
+<code>sys::net::list_table</code> (which has <code>columns: Array&lt;string&gt;</code>) flow
+straight through; mixed arrays are fine.</p>
+<p>Rows that are absolute netidx paths trigger live subscriptions for
+every column whose <code>source</code> is <code>`Netidx</code>. Non-absolute row names
+render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>string</code> or
+<code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
+from the source ref.</p>
+<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
+<pre><code class="language-graphix">type SortDirection = [`Ascending, `Descending];
+type SortBy = { column: string, direction: SortDirection };
+
+type ColumnType = [
+    `Text({ on_edit: [fn(#path: string, #value: Any) -&gt; Any, null] }),
+    `Toggle({ on_edit: [fn(#path: string, #value: bool) -&gt; Any, null] }),
+    `Combo({
+        choices: Array&lt;{ id: string, label: string }&gt;,
+        on_edit: [fn(#path: string, #value: string) -&gt; Any, null]
+    }),
+    `Spin({
+        min: f64,
+        max: f64,
+        increment: f64,
+        on_edit: [fn(#path: string, #value: f64) -&gt; Any, null]
+    }),
+    `Progress,
+    `Button({
+        on_click: [fn(#path: string, #value: Any) -&gt; Any, null]
+    }),
+    `Sparkline({
+        history_seconds: f64,
+        min: [f64, null],
+        max: [f64, null]
+    })
+];
+
+type Source = [`Netidx([null, string]), string, Map&lt;string, Any&gt;];
+
+type ColumnSpec = {
+    name: string,
+    typ: ColumnType,
+    display_name: [string, null],
+    source: &amp;Source,
+    on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    width: &amp;[f64, null]
+};
+
+type Table = {
+    rows: Array&lt;string&gt;,
+    columns: Array&lt;[string, ColumnSpec]&gt;
+};
+
+val data_table: fn(
+    ?#sort_by: &amp;Array&lt;SortBy&gt;,
+    ?#selection: &amp;Array&lt;string&gt;,
+    ?#show_row_name: &amp;bool,
+    ?#on_select: [fn(#path: string) -&gt; Any, null],
+    ?#on_activate: [fn(#path: string) -&gt; Any, null],
+    ?#on_header_click: [fn(#column: string) -&gt; Any, null],
+    ?#on_update: [fn(#path: string, #value: Primitive) -&gt; Any, null],
+    #table: &amp;Table
+) -&gt; Widget;
+
+val text_column: fn(
+    #name: string,
+    ?#on_edit: [fn(#path: string, #value: Any) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+// (toggle_column, combo_column, spin_column, progress_column,
+//  button_column, sparkline_column have the same shape — each takes
+//  #name plus its kind-specific args, and accepts the same source /
+//  width / on_resize options.)
+</code></pre>
+<h2 id="data_table-parameters"><a class="header" href="#data_table-parameters"><code>data_table</code> Parameters</a></h2>
+<ul>
+<li>
+<p><strong><code>#table</code></strong> – The table shape: <code>{ rows: Array&lt;string&gt;, columns: Array&lt;[string, ColumnSpec]&gt; }</code>. <code>sys::net::list_table(path)</code>
+produces a value whose <code>columns: Array&lt;string&gt;</code> unifies with this
+type via the union element. The caller owns the shape: to filter,
+sort, hide, or reorder rows and columns — or to attach custom
+<code>ColumnSpec</code>s to specific columns — build the <code>Table</code> record in
+graphix and hand the result to <code>data_table</code>. Every change to this
+ref is reconciled against the current subscription set.</p>
+</li>
+<li>
+<p><strong><code>#sort_by</code></strong> – Array of sort keys applied in order. The first is
+the primary sort; later keys break ties. Empty list (the default)
+preserves the <code>Table</code>’s row order. Sort values come from the column’s
+source — a live subscription when source is <code>`Netidx</code>, or the
+source’s stored value otherwise.</p>
+</li>
+<li>
+<p><strong><code>#selection</code></strong> – Controlled set of selected cell paths. For
+cells in the row-name column this is just <code>"row_path"</code>; for every
+other cell it is <code>"row_path/col_name"</code>. The widget’s own click /
+keyboard handlers never mutate this ref directly — they fire
+<code>#on_select</code> and <code>#on_activate</code> callbacks that the caller uses to
+drive the ref however they want (single-select, multi-select,
+toggle, etc.).</p>
+</li>
+<li>
+<p><strong><code>#show_row_name</code></strong> – When <code>true</code> (the default) a synthesized
+leftmost column shows each row’s basename (<code>Path::basename(row)</code>).
+Set <code>false</code> for tables where the row identity is already carried
+by a regular column.</p>
+</li>
+<li>
+<p><strong><code>#on_select</code></strong> – Fired whenever a cell is clicked or keyboard
+navigation lands on a cell. The callback receives the full cell
+path (<code>"row_path/col_name"</code> for data cells, <code>"row_path"</code> for the
+row-name column).</p>
+</li>
+<li>
+<p><strong><code>#on_activate</code></strong> – Fired when the user clicks a row-name cell
+or presses Enter while a row is selected. Receives the row path.</p>
+</li>
+<li>
+<p><strong><code>#on_header_click</code></strong> – Fired when the user clicks a data
+column’s header label. Receives the column name.</p>
+</li>
+<li>
+<p><strong><code>#on_update</code></strong> – Fired once per subscription update on every
+cell — useful when you want to mirror live values into graphix
+state (e.g. re-derive an aggregate) without subscribing separately.
+Receives the cell path and new value.</p>
+</li>
+</ul>
+<h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
+<p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
+helper constructors. All constructors take <code>#name: string</code> plus
+their kind-specific args (<code>#on_edit</code> / <code>#on_click</code> / <code>#choices</code> /
+etc.) and the common appearance options (<code>#display_name</code>, <code>#source</code>,
+<code>#width</code>, <code>#on_resize</code>).</p>
+<ul>
+<li>
+<p><strong><code>text_column</code></strong> – Plain text. With <code>on_edit</code> the cell becomes
+editable: clicking a selected cell opens a text field; <code>Enter</code>
+commits the typed value via <code>on_edit</code>, <code>Escape</code> cancels. The
+widget attempts to parse the buffer as a typed graphix value; if
+parsing fails the raw string is sent instead, so users can enter
+<code>hello</code> without quotes.</p>
+</li>
+<li>
+<p><strong><code>toggle_column</code></strong> – Renders a toggler. Cell values <code>"true"</code> or
+<code>"1"</code> turn it on. With <code>on_edit</code> the user can flip the toggle.</p>
+</li>
+<li>
+<p><strong><code>combo_column</code></strong> – Drop-down with a fixed set of <code>choices</code>. Each
+choice has an <code>id</code> (the raw value published / sent back through
+<code>on_edit</code>) and a <code>label</code> (what the user sees).</p>
+</li>
+<li>
+<p><strong><code>spin_column</code></strong> – Numeric spinner with <code>min</code>, <code>max</code>, and
+<code>increment</code> bounds; <code>on_edit</code> receives the clamped new value.</p>
+</li>
+<li>
+<p><strong><code>progress_column</code></strong> – Read-only progress bar. Cell values are
+clamped to <code>[0, 1]</code>.</p>
+</li>
+<li>
+<p><strong><code>button_column</code></strong> – Each cell renders as a button labelled with
+the cell’s current value. <code>on_click</code> fires with the cell path and
+current value.</p>
+</li>
+<li>
+<p><strong><code>sparkline_column</code></strong> – Rolling-line visualization accumulating
+published values over <code>history_seconds</code>. By default the y-axis is
+shared across every cell in the column (auto-scaled to the union of
+all rows’ values) so cells are visually comparable. Pass <code>#min</code> /
+<code>#max</code> to fix the axis instead.</p>
+</li>
+</ul>
+<h2 id="column-widths-and-resizing"><a class="header" href="#column-widths-and-resizing">Column Widths and Resizing</a></h2>
+<p>Widths are controlled by two refs per column:</p>
+<ul>
+<li>
+<p><strong><code>width: &amp;[f64, null]</code></strong> – When <code>Some(f64)</code> the column is pinned
+to that width (and the resize handle at the column header vanishes
+unless an <code>on_resize</code> callback is also set). When <code>null</code> the
+column auto-sizes to its content, with a per-column cap (default
+300px).</p>
+</li>
+<li>
+<p><strong><code>on_resize: &amp;[fn(x: f64) -&gt; Any, null]</code></strong> – Fired while the user
+drags a column header’s right edge. The callable receives the new
+pixel width. The reference is a <code>&amp;</code> field so the callable can be
+swapped, nulled, or initialized reactively.</p>
+</li>
+</ul>
+<p>Double-clicking any column’s resize handle auto-fits <em>every</em> column
+to the widest cell in the entire table (not just the visible window).</p>
+<h2 id="source-where-cell-values-come-from"><a class="header" href="#source-where-cell-values-come-from">Source: Where Cell Values Come From</a></h2>
+<p>Each <code>ColumnSpec.source</code> is a <code>&amp;Source</code> ref that decides where the
+column’s per-cell values originate:</p>
+<ul>
+<li><strong><code>`Netidx(placeholder)</code></strong> – The column subscribes to
+<code>&lt;row_path&gt;/&lt;column_name&gt;</code> for every row whose path is absolute.
+Cell values come from the subscription. The <code>placeholder</code> payload
+(<code>null</code> or a string) is the text rendered before the subscription
+resolves and any time it goes <code>Unsubscribed</code> afterward — useful
+for distinguishing “not yet subscribed” / “lost” from a real blank
+value. <code>`Netidx(null)</code> is the default for the column-builder
+helpers and the implicit behavior for bare-string entries in
+<code>Table.columns</code>.</li>
+<li><strong><code>string</code></strong> – A uniform value: every cell in the column renders
+this text. No subscription. Useful for static fields and computed
+columns where one value applies to all rows.</li>
+<li><strong><code>Map&lt;string, Any&gt;</code></strong> – Per-row values keyed by the row’s
+basename. No subscription. Rows without a matching key render
+blank. Useful for “calculated” columns whose values are derived in
+graphix.</li>
+</ul>
+<p>When the source ref updates reactively (e.g. the map changes), the
+widget re-reads it and refreshes the affected cells. Sparkline
+columns additionally push each new numeric source value into the
+rolling history, so a virtual-column sparkline fed from graphix state
+accumulates points the same way a subscribed one does.</p>
+<h2 id="keyboard-navigation-1"><a class="header" href="#keyboard-navigation-1">Keyboard Navigation</a></h2>
+<p>The widget is focusable: clicking into it grants keyboard focus.
+Arrow keys move the selection (the currently-rendered selected cell
+scrolls into view as needed). <code>Enter</code> on a row-name cell fires
+<code>on_activate</code>; <code>Space</code> on an editable cell opens its editor;
+<code>Escape</code> cancels an in-progress edit.</p>
+<h2 id="examples-42"><a class="header" href="#examples-42">Examples</a></h2>
+<h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
+<p>Minimal usage: publish three hosts and hand the
+<code>sys::net::list_table</code> output to <code>data_table</code> with no column
+configuration. Bare-string columns become default Text columns with
+<code>`Netidx</code> source.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use sys;
+use sys::net;
+mod icon;
+
+let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
+    sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
+    sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
+};
+
+publish_host(#name: "host-01", #status: `Up, #cpu: 12.4, #mem: 37.1);
+publish_host(#name: "host-02", #status: `Up, #cpu: 88.2, #mem: 62.0);
+publish_host(#name: "host-03", #status: `Degraded, #cpu: 4.1, #mem: 19.8);
+
+// list_table inspects the resolver to discover children of this path.
+let tbl = sys::net::list_table("/local/graphix/data_table_basic")$;
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Fleet health"),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Basic",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_basic.png" alt="Data Table — Basic"></p>
+<h3 id="filter-and-sort"><a class="header" href="#filter-and-sort">Filter and Sort</a></h3>
+<p>Row filtering (a regex over basenames) and sort configuration done
+in graphix before the <code>Table</code> is handed to the widget. Shows how the
+caller owns the data pipeline end to end.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use array;
+use opt;
+use re;
+use str;
+use sys;
+use sys::net;
+mod icon;
+
+// Publish 6 sensors across three environments; the sidebar controls
+// let the user pick a row filter mode. Sorting is driven entirely
+// from the table itself — click a header to cycle its sort order.
+sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
+sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
+sys::net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
+sys::net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
+sys::net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
+sys::net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
+sys::net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
+sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
+sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
+sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+
+// Filter controls: a regex pattern and whether it includes or excludes.
+// The caller reshapes the Table in graphix before passing it in.
+let pattern = "";
+let mode: [`Include, `Exclude] = `Include;
+
+let tbl: Table = raw_tbl;
+tbl &lt;- select str::len(pattern) {
+    n if n == 0 =&gt; raw_tbl,
+    _ =&gt; {
+        let name_of = |r: string| opt::or_default(str::basename(r), r);
+        let matches = |r: string| opt::or_default(
+            re::is_match(#pat: pattern, name_of(r))$, false);
+        let keep = |r: string| select mode {
+            `Include =&gt; matches(r),
+            `Exclude =&gt; !matches(r)
+        };
+        { raw_tbl with rows: array::filter(raw_tbl.rows, keep) }
+    }
+};
+
+// Sort state: an array of (column, direction) pairs applied in order.
+// The first entry is the primary sort, subsequent entries break ties.
+// `cycle_sort` rotates a column through the three states a spreadsheet
+// user expects: absent → ascending → descending → absent.
+//
+// Clicking a column that isn't in `sort_by` appends it as ascending,
+// so sort_by grows as the user clicks new columns — that's how multi-
+// column sort is demonstrated. The first click on a column that is
+// already sorted flips its direction; a second click removes it.
+let sort_by: Array&lt;SortBy&gt; = [];
+
+// CR claude for estokes: the `column ~ { ... }` sampling and the
+// `matches[0]$` + separate `let dir = m0.direction` split are both
+// workarounds for sharp edges in graphix reactivity / parsing:
+//
+//   1. Without `column ~` on the RHS of `sort_by &lt;-`, the compiled
+//      dataflow evaluates `array::filter(sort_by, ...)` at its
+//      initial empty sort_by value and never re-fires on callback
+//      invocation — so the callback appears to do nothing.
+//      The lang reference already documents that `~` is required in
+//      callbacks to sample current state at event time; this example
+//      makes that concrete.
+//
+//   2. `array::find` hits a MapQ fast-path in graphix-package-core
+//      (`MapQ::update`, around lib.rs:679) that returns the empty
+//      input array for an empty collection instead of calling
+//      `finish()`. For HOFs whose element-returning `finish()` would
+//      produce a different type than the collection (find → Option,
+//      find_map → Option), the fast-path returns the wrong type —
+//      so `array::find(&lt;empty&gt;, pred)` emits `[]` instead of `null`
+//      and the null arm of the outer select never fires. The
+//      `array::filter` + `array::len` pair below sidesteps this
+//      because filter's natural "empty → empty" happens to match
+//      its output type.
+//
+//   3. `matches[0]$.direction` fails to parse — the `$` error-drop
+//      postfix followed immediately by `.field` confuses the parser
+//      into reporting the outer callsite as unexpected, which is a
+//      red herring. Binding `matches[0]$` to a local first parses
+//      cleanly.
+//
+// Also, every lambda needs `|sb: SortBy|` annotations (and the `map`
+// callback needs `-&gt; SortBy`) because graphix narrows sort_by's
+// element type based on the `direction: `Ascending` literal in the
+// push arm and then rejects `sb.direction` elsewhere as non-matching.
+let cycle_sort = |#column: string|
+    sort_by &lt;- column ~ {
+        let matches = array::filter(sort_by, |sb: SortBy| sb.column == column);
+        let n = array::len(matches);
+        let m0 = matches[0]$;
+        let dir: SortDirection = m0.direction;
+        select n {
+            0 =&gt; array::push(sort_by, { column: column, direction: `Ascending }),
+            _ =&gt; select dir {
+                `Ascending =&gt; array::map(sort_by, |s: SortBy| -&gt; SortBy
+                    select s.column == column {
+                        true =&gt; { s with direction: `Descending },
+                        false =&gt; s
+                    }),
+                `Descending =&gt; array::filter(sort_by, |s: SortBy| s.column != column)
+            }
+        }
+    };
+
+let controls = row(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(10.0),
+    &amp;[
+        text(&amp;"Pattern:"),
+        text_input(
+            #on_input: |v: string| pattern &lt;- v,
+            #placeholder: &amp;"regex or empty",
+            #width: &amp;`Fill,
+            &amp;pattern
+        ),
+        pick_list(
+            #on_select: |choice: string| mode &lt;- select choice {
+                "Include matches" =&gt; `Include,
+                _ =&gt; `Exclude
+            },
+            #selected: &amp;select mode {
+                `Include =&gt; "Include matches",
+                `Exclude =&gt; "Exclude matches"
+            },
+            &amp;["Include matches", "Exclude matches"]
+        )
+    ]
+);
+
+let layout = column(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Interactive filter + sort"),
+        text(#size: &amp;12.0, &amp;"Click a column header to cycle its sort; click more than one for tie-broken multi-column sort."),
+        controls,
+        data_table(
+            #sort_by: &amp;sort_by,
+            #on_header_click: |#column: string| cycle_sort(#column: column),
+            #table: &amp;tbl
+        )
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Filter &amp; Sort",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_filter_sort.png" alt="Data Table — Filter and Sort"></p>
+<h3 id="editable"><a class="header" href="#editable">Editable</a></h3>
+<p>Every editable column type in one place: <code>Text</code>, <code>Toggle</code>, <code>Combo</code>,
+<code>Spin</code>. Each cell is published with an <code>on_write</code> handler so edits
+round-trip through netidx. The example shows the
+<code>array::map(raw_columns, …)</code> pattern for attaching custom
+<code>ColumnSpec</code>s to specific column names while leaving everything else
+as bare-string Netidx-sourced columns.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use sys;
+use sys::net;
+mod icon;
+
+// Four editable columns demonstrating every ColumnType that takes
+// user input: Text, Toggle, Combo, Spin. Each cell is published with
+// an #on_write handler so edits round-trip through netidx.
+
+let host_01_name = "alpha";
+let host_01_enabled = true;
+let host_01_zone = "us-east-1";
+let host_01_cpu = f64:4.0;
+
+sys::net::publish(
+    #on_write: |v: string| host_01_name &lt;- v,
+    "/local/graphix/data_table_editable/host-01/name",
+    host_01_name
+);
+sys::net::publish(
+    #on_write: |v: bool| host_01_enabled &lt;- v,
+    "/local/graphix/data_table_editable/host-01/enabled",
+    host_01_enabled
+);
+sys::net::publish(
+    #on_write: |v: string| host_01_zone &lt;- v,
+    "/local/graphix/data_table_editable/host-01/zone",
+    host_01_zone
+);
+sys::net::publish(
+    #on_write: |v: f64| host_01_cpu &lt;- v,
+    "/local/graphix/data_table_editable/host-01/cpu",
+    host_01_cpu
+);
+
+let host_02_name = "bravo";
+let host_02_enabled = false;
+let host_02_zone = "eu-west-1";
+let host_02_cpu = f64:8.0;
+
+sys::net::publish(
+    #on_write: |v: string| host_02_name &lt;- v,
+    "/local/graphix/data_table_editable/host-02/name",
+    host_02_name
+);
+sys::net::publish(
+    #on_write: |v: bool| host_02_enabled &lt;- v,
+    "/local/graphix/data_table_editable/host-02/enabled",
+    host_02_enabled
+);
+sys::net::publish(
+    #on_write: |v: string| host_02_zone &lt;- v,
+    "/local/graphix/data_table_editable/host-02/zone",
+    host_02_zone
+);
+sys::net::publish(
+    #on_write: |v: f64| host_02_cpu &lt;- v,
+    "/local/graphix/data_table_editable/host-02/cpu",
+    host_02_cpu
+);
+
+// Map the resolver-derived columns array. Each editable column gets
+// an explicit ColumnSpec; anything else (none expected here) passes
+// through as a default Text/Netidx column.
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "name" =&gt; text_column(
+        #name: "name",
+        #on_edit: |#path: string, #value: Any|
+            sys::net::write(path, value)$,
+        #display_name: "Name"
+    ),
+    "enabled" =&gt; toggle_column(
+        #name: "enabled",
+        #on_edit: |#path: string, #value: bool|
+            sys::net::write(path, value)$,
+        #display_name: "Enabled"
+    ),
+    "zone" =&gt; combo_column(
+        #name: "zone",
+        #choices: [
+            { id: "us-east-1", label: "US East" },
+            { id: "us-west-2", label: "US West" },
+            { id: "eu-west-1", label: "EU West" },
+            { id: "ap-south-1", label: "Asia Pacific" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "Zone"
+    ),
+    "cpu" =&gt; spin_column(
+        #name: "cpu",
+        #min: f64:1.0,
+        #max: f64:64.0,
+        #increment: f64:1.0,
+        #on_edit: |#path: string, #value: f64|
+            sys::net::write(path, value)$,
+        #display_name: "CPU cores"
+    ),
+    other =&gt; other
+});
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_editable")$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let selection: Array&lt;string&gt; = [];
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Editable hosts"),
+        text(&amp;"Edits are written back through netidx and reflected in the same cell."),
+        data_table(
+            #selection: &amp;selection,
+            #on_select: |#path| selection &lt;- [path],
+            #table: &amp;tbl
+        )
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Editable",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_editable.png" alt="Data Table — Editable"></p>
+<h3 id="calculated-columns"><a class="header" href="#calculated-columns">Calculated Columns</a></h3>
+<p>A virtual column whose <code>source</code> is a reactive <code>Map&lt;string, Any&gt;</code>,
+rebuilt whenever any subscribed cell updates. Demonstrates deriving
+per-row aggregates (here, sums) without touching netidx.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use str;
+use sys;
+use sys::net;
+mod icon;
+
+// Two published columns A and B. A virtual "sum" column has its
+// per-cell value set from a let-bound Map; the `on_update` callback
+// watches every subscribed cell update and pushes the new (a+b)
+// total into the sum entry.
+
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0, #end:10, #clock)
+};
+
+publish("/local/graphix/data_table_calculated/r0/A", rv());
+publish("/local/graphix/data_table_calculated/r1/A", rv());
+publish("/local/graphix/data_table_calculated/r2/A", rv());
+publish("/local/graphix/data_table_calculated/r0/B", rv());
+publish("/local/graphix/data_table_calculated/r1/B", rv());
+publish("/local/graphix/data_table_calculated/r2/B", rv());
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+
+let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
+
+// Append a virtual `sum` column to the resolver-derived table. The
+// bare strings from `sys::net::list_table` continue to mean "Netidx-
+// sourced Text columns"; the new entry pulls its values from a let-
+// bound Map updated by the on_update callback below.
+//
+// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return type
+// widens each bare-string entry into the union element type before
+// concat. Without the explicit return type, inference leaves the
+// resulting array as `Array&lt;string&gt;` and fails to fit ColumnSpec.
+let widened: Array&lt;[string, ColumnSpec]&gt; =
+    array::map(raw_tbl.columns, |n: string| -&gt; [string, ColumnSpec] n);
+let tbl: Table = {
+    rows: raw_tbl.rows,
+    columns: array::push(widened, text_column(
+        #name: "sum",
+        #display_name: "A + B",
+        #source: &amp;opt::or_default(map::get(data, "sum"), {})
+    ))
+};
+
+// on_update is called on updates to netidx subscriptions by the table.
+let on_update = |#path: string, #value: Primitive| {
+    let v = cast&lt;i64&gt;(value)$;
+    let d = v ~ data; // run only when v updates
+    let (row, col) = opt::or_never(str::row_col(path));
+    let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
+    let sum = map::fold(d, 0, |sum, (col, rows)| select col {
+        "sum" =&gt; sum,
+        col =&gt; sum + map::get_or(rows, row, 0)
+    });
+    data &lt;- map::change(d, "sum", {}, |sums| map::insert(sums, row, sum))
+};
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Calculated column"),
+        text(&amp;"on_update fires on every cell update; the virtual sum column reflects A + B."),
+        data_table(#on_update, #table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Calculated",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_calculated.png" alt="Data Table — Calculated"></p>
+<h3 id="sparkline-1"><a class="header" href="#sparkline-1">Sparkline</a></h3>
+<p>Live rolling charts per row with automatic column-wide y-axis
+sharing, so cells are visually comparable without the caller picking
+bounds.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::column;
+use gui::text;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Four rows, each publishing a cpu value that updates once a second
+// on a sine-wave pattern staggered per row. The Sparkline column
+// accumulates the history and draws a rolling chart.
+let tick = time::timer(duration:1.s, true);
+let t = cast&lt;f64&gt;(count(tick))$;
+
+let cpu_1 = 0.0;
+cpu_1 &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);
+
+let cpu_2 = 0.0;
+cpu_2 &lt;- tick ~ 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
+
+let cpu_3 = 0.0;
+cpu_3 &lt;- tick ~ 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
+
+let cpu_4 = 0.0;
+cpu_4 &lt;- tick ~ 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
+
+sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
+sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
+sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
+sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
+
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "cpu" =&gt; sparkline_column(
+        #name: "cpu",
+        #history_seconds: 30.0,
+        #display_name: "CPU (last 30s)",
+        #width: &amp;260.0
+    ),
+    other =&gt; other
+});
+
+let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let layout = column(
+    #spacing: &amp;12.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"CPU over time"),
+        text(&amp;"Sparkline column accumulates values from its cell subscription."),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Sparkline",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_sparkline.png" alt="Data Table — Sparkline"></p>
+<h3 id="virtual-rows-and-columns"><a class="header" href="#virtual-rows-and-columns">Virtual Rows and Columns</a></h3>
+<p>Mix live subscribed rows with virtual rows whose cells come from
+non-Netidx sources. Virtual-column-plus-virtual-row combinations
+give you fully client-side cells.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::slider;
+use gui::column;
+use gui::text;
+use sys;
+mod icon;
+
+let rv = {
+    let clock = time::timer(5, true);
+    || rand::rand(#start:0., #end:1., #clock)
+};
+
+net::publish("/local/graphix/data_table_virtual/nr0/score", rv());
+net::publish("/local/graphix/data_table_virtual/nr1/score", rv());
+net::publish("/local/graphix/data_table_virtual/nr2/score", rv());
+
+// Rows that aren't absolute netidx paths are virtual — the data_table
+// skips subscribing for them, and cell values come from the column's
+// `source` (uniform string or per-row Map). Columns can be bare-string
+// (Netidx-sourced text, the same as `sys::net::list_table` returns) or
+// full ColumnSpecs declared inline. Mixing the two is fine: the
+// `Table` type's `columns: Array&lt;[string, ColumnSpec]&gt;` union element
+// lets `sys::net::list_table` flow straight through.
+let raw = net::list_table("/local/graphix/data_table_virtual")$;
+
+let score: Map&lt;string, f64&gt; = {};
+
+// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return
+// type widens each bare-string entry into the union element. After
+// that, `array::concat` and `array::push` operate on uniformly-typed
+// `Array&lt;[string, ColumnSpec]&gt;`s.
+let widened: Array&lt;[string, ColumnSpec]&gt; =
+    array::map(raw.columns, |n: string| -&gt; [string, ColumnSpec] n);
+let region: ColumnSpec = text_column(
+    #name: "region",
+    #display_name: "Region",
+    #source: &amp;"production"
+);
+let score_col: ColumnSpec = progress_column(
+    #name: "score",
+    #display_name: "Score",
+    #source: &amp;score,
+    #width: &amp;f64:180.0
+);
+let tbl: Table = uniq({
+    rows: array::concat(raw.rows, ["vr0", "vr1", "vr2"]),
+    columns: array::push_front(array::push(widened, score_col), region)
+});
+
+let layout = column(
+    #spacing: &amp;14.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Virtual rows and columns"),
+        text(&amp;"Move the sliders to change the score in the three virtual rows."),
+        slider(
+            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr0", v),
+            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            &amp;map::get_or(score, "vr0", 0.)
+        ),
+        slider(
+            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr1", v),
+            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            &amp;map::get_or(score, "vr1", 0.)
+        ),
+        slider(
+            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr2", v),
+            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            &amp;map::get_or(score, "vr2", 0.)
+        ),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Virtual",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_virtual.png" alt="Data Table — Virtual"></p>
+<h3 id="dashboard"><a class="header" href="#dashboard">Dashboard</a></h3>
+<p>Kitchen-sink example combining <code>Combo</code> state pickers, <code>Sparkline</code>
+CPU metrics, <code>Progress</code> uptime, a <code>Button</code> action column, a regex
+row filter in a text input, sort controlled by pick-lists, and
+selection echoed in the footer.</p>
+<pre><code class="language-graphix">use gui;
+use gui::data_table;
+use gui::row;
+use gui::column;
+use gui::text;
+use gui::text_input;
+use gui::pick_list;
+use core::math;
+use array;
+use opt;
+use re;
+use str;
+use sys;
+use sys::net;
+use sys::time;
+mod icon;
+
+// Kitchen-sink example combining the main data_table features:
+// * Combo column for state picklists
+// * Sparkline column for rolling cpu metrics
+// * Progress column for uptime %
+// * Button column that fires an action callback
+// * Regex row filter wired to a text input
+// * Column sort driven by pick_list widgets in the sidebar
+// * Selection echoed in the footer
+
+let t = cast&lt;f64&gt;(count(time::timer(duration:1.s, true)))$;
+
+type State = [`Healthy, `Degraded, `Down];
+
+// Publish a tiny fleet of services. state is writable (Combo).
+let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
+    sys::net::publish(
+        #on_write: |v: string| state &lt;- cast&lt;State&gt;(v)$,
+        "/local/graphix/data_table_dashboard/[name]/state",
+        state
+    );
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+};
+
+// single random number
+let rn = |start: f64, end: f64| -&gt; f64 rand::rand(#start, #end, #clock:1);
+
+let published = array::init(1024, |i| svc(
+    #name:"svc-[i]",
+    #state:select rand::rand(#clock:1) {
+        n if n &lt;= 0.8 =&gt; `Healthy,
+        n if n &lt;= 0.9 =&gt; `Degraded,
+        _ =&gt; `Down
+    },
+    #uptime:rn(0., 1.),
+    #cpu:rn(0., 30.) + rn(1., 5.) * math::sin((t + rn(0., 5.)) / rn(1., 5.))
+));
+
+let last_action = "";
+
+// Map the resolver-derived columns array. Bare-string entries
+// (anything we don't recognize) pass through as default Text columns;
+// the four named columns get their custom ColumnSpec.
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "state" =&gt; combo_column(
+        #name: "state",
+        #choices: [
+            { id: "Healthy", label: "Healthy" },
+            { id: "Degraded", label: "Degraded" },
+            { id: "Down", label: "Down" }
+        ],
+        #on_edit: |#path: string, #value: string|
+            sys::net::write(path, value)$,
+        #display_name: "State",
+        #width: &amp;110.
+    ),
+    "cpu" =&gt; sparkline_column(
+        #name: "cpu",
+        #history_seconds: f64:30.0,
+        #display_name: "CPU",
+        #width: &amp;220.0
+    ),
+    "uptime" =&gt; progress_column(
+        #name: "uptime",
+        #display_name: "Uptime",
+        #width: &amp;180.0
+    ),
+    "action" =&gt; button_column(
+        #name: "action",
+        #on_click: |#path: string, #value: Any|
+            last_action &lt;- "[path]",
+        #display_name: "Action"
+    ),
+    other =&gt; other
+});
+
+// Caller-side filter: apply the regex to the Table's rows, then
+// rewrap with the column specs.
+let pattern = "";
+let tbl: Table = {
+    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let rows = select str::len(pattern) {
+        n if n == 0 =&gt; raw.rows,
+        _ =&gt; array::filter(raw.rows, |r| {
+            let row = opt::or_default(str::basename(r), r);
+            select re::is_match(#pat: pattern, row) {
+                error as _ =&gt; false,
+                b =&gt; b
+            }
+        })
+    };
+    { rows, columns: make_columns(raw.columns) }
+};
+
+let sort_col = "state";
+let sort_dir: SortDirection = `Ascending;
+let sort_by: Array&lt;SortBy&gt; = [{ column: sort_col, direction: sort_dir }];
+
+// Selection + footer
+let selection: Array&lt;string&gt; = [];
+
+let controls = row(
+    #spacing: &amp;10.0,
+    &amp;[
+        text(&amp;"Filter:"),
+        text_input(
+            #on_input: |v: string| pattern &lt;- v,
+            #placeholder: &amp;"regex or blank",
+            #width: &amp;`Fill,
+            &amp;pattern
+        ),
+        text(&amp;"Sort:"),
+        pick_list(
+            #on_select: |v: string| sort_col &lt;- v,
+            #selected: &amp;sort_col,
+            &amp;["state", "cpu", "uptime"]
+        ),
+        pick_list(
+            #on_select: |v: string| sort_dir &lt;- select v {
+                "Ascending" =&gt; `Ascending,
+                _ =&gt; `Descending
+            },
+            #selected: &amp;select sort_dir {
+                `Ascending =&gt; "Ascending",
+                `Descending =&gt; "Descending"
+            },
+            &amp;["Ascending", "Descending"]
+        )
+    ]
+);
+
+let footer = row(
+    #spacing: &amp;10.0,
+    &amp;[
+        text(&amp;"Selected:"),
+        text(&amp;"[selection[0]$]"),
+        text(&amp;"  Last action:"),
+        text(&amp;"[last_action]")
+    ]
+);
+
+let layout = column(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(20.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;20.0, &amp;"Service dashboard"),
+        controls,
+        data_table(
+            #sort_by: &amp;sort_by,
+            #selection: &amp;selection,
+            #on_select: |#path: string| selection &lt;- [path],
+            #table: &amp;tbl
+        ),
+        footer
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Dashboard",
+    #theme: &amp;`CatppuccinMocha,
+    &amp;layout
+)]
+</code></pre>
+<p><img src="ui/gui/media/data_table_dashboard.gif" alt="Data Table — Dashboard"></p>
+<h2 id="see-also-45"><a class="header" href="#see-also-45">See Also</a></h2>
+<ul>
+<li><a href="#the-table-widget-1">Table</a> – static row/column layout from graphix
+widgets, no netidx subscriptions.</li>
+<li><a href="#the-chart-widget-1">Chart</a> – larger-scale line / area / scatter plots.</li>
+<li><a href="#sysnet---netidx-operations"><code>sys::net</code></a> – the <code>Table</code> record and
+<code>list_table</code> helper consumed by <code>#table</code>.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
-<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
+<h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
 <pre><code class="language-graphix">type Shortcut;
 
 val shortcut: fn(
@@ -10939,13 +12291,13 @@ val shortcut: fn(
   ?#shift: bool,
   ?#alt: bool,
   ?#logo: bool,
-  string
+  s: string
 ) -&gt; [Shortcut, Error&lt;`InvalidKey(string)&gt;];
 
 type MenuAction = {
   label: &amp;string,
   shortcut: &amp;[Shortcut, null],
-  on_click: &amp;fn(null) -&gt; Any,
+  on_click: &amp;fn(a: null) -&gt; Any,
   disabled: &amp;bool
 };
 
@@ -10959,19 +12311,19 @@ type MenuGroup = {
 type ContextMenu = { child: &amp;Widget, items: &amp;Array&lt;MenuItem&gt; };
 
 val action: fn(
-  ?#on_click: fn(null) -&gt; Any,
+  ?#on_click: fn(a: null) -&gt; Any,
   ?#shortcut: &amp;[Shortcut, null],
   ?#disabled: &amp;bool,
-  &amp;string
+  s: &amp;string
 ) -&gt; MenuItem;
 
 val divider: fn() -&gt; MenuItem;
 
-val menu: fn(&amp;string, &amp;Array&lt;MenuItem&gt;) -&gt; MenuGroup;
+val menu: fn(s: &amp;string, a: &amp;Array&lt;MenuItem&gt;) -&gt; MenuGroup;
 
-val bar: fn(?#width: &amp;Length, &amp;Array&lt;MenuGroup&gt;) -&gt; Widget;
+val bar: fn(?#width: &amp;Length, a: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget;
 
-val context_menu: fn(&amp;Array&lt;MenuItem&gt;, &amp;Widget) -&gt; Widget
+val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widget
 </code></pre>
 <h2 id="menushortcut"><a class="header" href="#menushortcut"><code>menu::shortcut</code></a></h2>
 <p>Creates a keyboard shortcut from modifier flags and a single character key.</p>
@@ -11010,7 +12362,7 @@ val context_menu: fn(&amp;Array&lt;MenuItem&gt;, &amp;Widget) -&gt; Widget
 <li><strong>positional <code>&amp;Widget</code></strong> – The child widget. Right-clicking anywhere on this widget opens the menu at the cursor position.</li>
 </ul>
 <p>The menu closes when an item is clicked, when the user clicks outside it, or when Escape is pressed.</p>
-<h2 id="examples-42"><a class="header" href="#examples-42">Examples</a></h2>
+<h2 id="examples-43"><a class="header" href="#examples-43">Examples</a></h2>
 <h3 id="menu-bar"><a class="header" href="#menu-bar">Menu Bar</a></h3>
 <pre><code class="language-graphix">use gui;
 use gui::text;
@@ -11128,7 +12480,7 @@ let content = container(
 )]
 </code></pre>
 <p><img src="ui/gui/media/context_menu.png" alt="Context Menu"></p>
-<h2 id="see-also-45"><a class="header" href="#see-also-45">See Also</a></h2>
+<h2 id="see-also-46"><a class="header" href="#see-also-46">See Also</a></h2>
 <ul>
 <li><a href="#the-button-widget">button</a> – for standalone clickable actions</li>
 <li><a href="#the-keyboard-area-widget">keyboard_area</a> – for capturing keyboard shortcuts</li>
@@ -11328,7 +12680,7 @@ let my_cached = |@args: bool| -&gt; bool 'mylib_my_cached;
 <h3 id="srcgraphixmodgxi--interface-file"><a class="header" href="#srcgraphixmodgxi--interface-file"><code>src/graphix/mod.gxi</code> – Interface File</a></h3>
 <p>The interface file declares the public API of your package:</p>
 <pre><code class="language-graphix">/// Check if a value is an error
-val my_builtin: fn(Any) -&gt; bool;
+val my_builtin: fn(v: Any) -&gt; bool;
 
 /// Logical OR of all arguments
 val my_cached: fn(@args: bool) -&gt; bool;
@@ -11942,7 +13294,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
 <p>This implements <code>array::group</code>, which given an argument, stores that
 argument’s updates internally, and creates an array out of them when
 the predicate returns true. Its type is</p>
-<p><code>fn('a, fn(i64, 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
+<p><code>fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
 <p>For example,</p>
 <pre><code class="language-graphix">let n = seq(0, 100);
 array::group(n, |_, n| (n == 50) || (n == 99))

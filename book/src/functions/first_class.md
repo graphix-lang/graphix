@@ -7,7 +7,7 @@ operate on the count, returning a new struct of the same type with a different
 count.
 
 ```graphix
-type T = { count: i64, f: fn(T) -> T };
+type T = { count: i64, f: fn(t: T) -> T };
 let t = { count: 0, f: |t: T| {t with count: t.count + 1} };
 (t.f)(t)
 ```

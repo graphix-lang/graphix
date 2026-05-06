@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -208,13 +208,13 @@ let len = |l: List&lt;'a&gt;| {
 };
 
 // map f over the list
-let rec map = |l: List&lt;'a&gt;, f: fn('a) -&gt; 'b| -&gt; List&lt;'b&gt; select l {
+let rec map = |l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; List&lt;'b&gt; select l {
   `Cons(v, tl) =&gt; `Cons(f(v), map(tl, f)),
   `Nil =&gt; `Nil
 };
 
 // fold f over the list
-let rec fold = |l: List&lt;'a&gt;, init: 'b, f: fn('b, 'a) -&gt; 'b| -&gt; 'b select l {
+let rec fold = |l: List&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b| -&gt; 'b select l {
   `Cons(v, tl) =&gt; fold(tl, f(init, v), f),
   `Nil =&gt; init
 }

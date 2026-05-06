@@ -11,14 +11,14 @@ type Date = {
   day: i64
 };
 
-val date: fn(i64, i64, i64) -> Date;
+val date: fn(n: i64, n2: i64, n3: i64) -> Date;
 
 type CalendarEvent = {
   date: Date,
   style: Style
 };
 
-val calendar_event: fn(Style, Date) -> CalendarEvent;
+val calendar_event: fn(a: Style, a2: Date) -> CalendarEvent;
 
 val calendar: fn(
   ?#default_style: &[Style, null],
@@ -26,7 +26,7 @@ val calendar: fn(
   ?#show_surrounding: &[Style, null],
   ?#show_weekday: &[Style, null],
   ?#events: &[Array<CalendarEvent>, null],
-  &Date
+  a: &Date
 ) -> Tui;
 ```
 

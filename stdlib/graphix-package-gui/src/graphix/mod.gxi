@@ -31,7 +31,8 @@ type Widget = [
   `Toggler(toggler::Toggler),
   `Tooltip(tooltip::Tooltip),
   `VerticalRule(rule::VerticalRule),
-  `VerticalSlider(vertical_slider::VerticalSlider)
+  `VerticalSlider(vertical_slider::VerticalSlider),
+  `DataTable(data_table::DataTable)
 ];
 
 type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
@@ -102,7 +103,7 @@ val window: fn(
   ?#size: &Size,
   ?#theme: &Theme,
   ?#icon: &ImageSource,
-  &Widget
+  content: &Widget
 ) -> Window;
 
 mod style;
@@ -136,8 +137,5 @@ mod grid;
 mod markdown;
 mod menu;
 mod qr_code;
-mod table
-
-// XCR estokes: The one thing that seems missing is context menus.
-// It seems like it would be pretty easy to use Overlay to Create
-// a widget that wraps any other widget and adds a context menu
+mod table;
+mod data_table

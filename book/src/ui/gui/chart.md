@@ -105,7 +105,7 @@ val chart: fn(
   ?#legend_position: &[LegendPosition, null],
   ?#legend_style: &[LegendStyle, null],
   ?#mesh: &[MeshStyle, null],
-  &Array<Dataset>
+  a: &Array<Dataset>
 ) -> Widget
 ```
 

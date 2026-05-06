@@ -38,3 +38,9 @@ smallvec = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+graphix-package-map = { version = "0.7.0", path = "../graphix-package-map" }
+graphix-package-str = { version = "0.7.0", path = "../graphix-package-str" }
+poolshark = { workspace = true }

@@ -7,4 +7,4 @@ let request_bin = |#method: Method = `GET, #headers: Array<(string, string)> = [
 let get = |client: Client, url: string| -> Result<Response, `HTTPError(string)> request(client, url);
 let get_bin = |client: Client, url: string| -> Result<BinResponse, `HTTPError(string)> request_bin(client, url);
 let server_addr = |server: Server| -> string 'http_server_addr;
-let serve = |#addr: string, #cert: [bytes, null] = null, #key: [bytes, null] = null, #max_connections: i64 = 768, #handler: fn(Request) -> Response throws 'e| -> Result<Server, `HTTPError(string)> throws 'e 'http_serve
+let serve = |#addr: string, #cert: [bytes, null] = null, #key: [bytes, null] = null, #max_connections: i64 = 768, #handler: fn(req: Request) -> Response throws 'e| -> Result<Server, `HTTPError(string)> throws 'e 'http_serve

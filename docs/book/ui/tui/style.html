@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -256,7 +256,7 @@ tui::style()
   content: string
 };
 
-val span: fn(?#style: Style, string) -&gt; Span;
+val span: fn(?#style: Style, s: string) -&gt; Span;
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
@@ -279,7 +279,7 @@ type Line = {
   spans: [Array&lt;Span&gt;, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], [Array&lt;Span&gt;, string]) -&gt; Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array&lt;Span&gt;, string]) -&gt; Line;
 </code></pre>
 <p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
 simple string (which will use the line’s style).</p>

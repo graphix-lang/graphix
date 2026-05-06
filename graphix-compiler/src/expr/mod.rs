@@ -9,8 +9,9 @@ use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
 pub use pattern::{Pattern, StructurePattern};
+use poolshark::local::LPooled;
 use regex::Regex;
-pub use resolver::ModuleResolver;
+pub use resolver::{add_interface_modules, BufferOverrides, ModuleResolver};
 use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -57,6 +58,16 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     })
 }
 
+/// utility to read a file to an ArcStr with minimal allocation
+pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
+    use tokio::io::AsyncReadExt;
+    let mut buf: LPooled<Vec<u8>> = LPooled::take();
+    let mut f = tokio::fs::File::open(path).await?;
+    f.read_to_end(&mut *buf).await?;
+    let s = str::from_utf8(&*buf)?;
+    Ok(ArcStr::from(s))
+}
+
 #[derive(Debug)]
 pub struct CouldNotResolve(ArcStr);
 
@@ -66,11 +77,34 @@ impl fmt::Display for CouldNotResolve {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone)]
 pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
+    pub pos: SourcePosition,
+}
+
+impl PartialEq for Arg {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.labeled == rhs.labeled
+            && self.pattern == rhs.pattern
+            && self.constraint == rhs.constraint
+    }
+}
+
+impl PartialOrd for Arg {
+    fn partial_cmp(&self, rhs: &Self) -> Option<std::cmp::Ordering> {
+        match self.labeled.partial_cmp(&rhs.labeled)? {
+            std::cmp::Ordering::Equal => (),
+            o => return Some(o),
+        }
+        match self.pattern.partial_cmp(&rhs.pattern)? {
+            std::cmp::Ordering::Equal => (),
+            o => return Some(o),
+        }
+        self.constraint.partial_cmp(&rhs.constraint)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -97,10 +131,27 @@ pub enum SigKind {
     Use(ModPath),
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone)]
 pub struct SigItem {
     pub doc: Doc,
     pub kind: SigKind,
+    pub pos: SourcePosition,
+    pub ori: Option<Arc<Origin>>,
+}
+
+impl PartialEq for SigItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.doc == other.doc && self.kind == other.kind
+    }
+}
+
+impl PartialOrd for SigItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.doc.partial_cmp(&other.doc)? {
+            std::cmp::Ordering::Equal => self.kind.partial_cmp(&other.kind),
+            ord => Some(ord),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -358,6 +409,10 @@ impl Origin {
         ]
         .into()
     }
+
+    pub fn from_str(s: &str) -> Self {
+        Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
+    }
 }
 
 #[derive(Clone)]
@@ -585,6 +640,43 @@ impl Expr {
 
 pub struct ErrorContext(pub Expr);
 
+impl fmt::Debug for ErrorContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for ErrorContext {}
+
+pub struct ParserContext {
+    pub ori: Arc<Origin>,
+    pub pos: SourcePosition,
+}
+
+impl fmt::Debug for ParserContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for ParserContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.ori.source {
+            Source::File(p) => {
+                write!(f, "parse error at {} in file {}", self.pos, p.display())
+            }
+            Source::Netidx(p) => {
+                write!(f, "parse error at {} in netidx {p}", self.pos)
+            }
+            Source::Internal(_) | Source::Unspecified => {
+                write!(f, "parse error at {}", self.pos)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParserContext {}
+
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use std::fmt::Write;
@@ -595,15 +687,29 @@ impl fmt::Display for ErrorContext {
         BUF.with_borrow_mut(|buf| {
             buf.clear();
             write!(buf, "{}", self.0).unwrap();
-            if buf.len() <= MAX {
-                write!(f, "at: {}, in: {buf}", self.0.pos)
+            let snippet: &str = if buf.len() <= MAX {
+                &buf
             } else {
                 let mut end = MAX;
                 while !buf.is_char_boundary(end) {
                     end += 1
                 }
-                let buf = &buf[0..end];
-                write!(f, "at: {}, in: {buf}..", self.0.pos)
+                &buf[0..end]
+            };
+            let suffix = if buf.len() > MAX { ".." } else { "" };
+            match &self.0.ori.source {
+                Source::File(p) => write!(
+                    f,
+                    "at: {} in file {}, in: {snippet}{suffix}",
+                    self.0.pos,
+                    p.display()
+                ),
+                Source::Netidx(p) => {
+                    write!(f, "at: {} in netidx {p}, in: {snippet}{suffix}", self.0.pos)
+                }
+                Source::Internal(_) | Source::Unspecified => {
+                    write!(f, "at: {}, in: {snippet}{suffix}", self.0.pos)
+                }
             }
         })
     }

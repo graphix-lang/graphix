@@ -8,12 +8,12 @@ A radio button for single-select choices within a group. Each `radio` widget rep
 val radio: fn(
   #label: &string,
   ?#selected: &'a,
-  ?#on_select: fn('a) -> Any,
+  ?#on_select: fn(x: 'a) -> Any,
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],
   ?#disabled: &bool,
-  &'a
+  x: &'a
 ) -> Widget
 ```
 

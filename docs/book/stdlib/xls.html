@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-9c436f35.js"></script>
+        <script src="../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,10 +181,10 @@ values.</p>
 <pre><code class="language-graphix">use sys::io;
 
 /// List sheet names in a workbook.
-val sheets: fn([bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val sheets: fn(v: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 
 /// Read a sheet by name as a 2D array of rows.
-val read: fn([bytes, Stream&lt;'a&gt;], string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val read: fn(v: [bytes, Stream&lt;'a&gt;], s: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">use xls;

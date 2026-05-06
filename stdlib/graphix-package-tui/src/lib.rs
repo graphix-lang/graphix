@@ -21,7 +21,7 @@ use gauge::GaugeW;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath},
-    typ::Type,
+    typ::{Type, TypeRef},
     BindId,
 };
 use graphix_package::CustomDisplay;
@@ -66,6 +66,10 @@ mod sparkline;
 mod table;
 mod tabs;
 mod text;
+mod validate;
+
+#[cfg(test)]
+mod test;
 
 #[derive(Clone, Copy)]
 struct AlignmentV(Alignment);
@@ -223,12 +227,17 @@ impl FromValue for FlexV {
     }
 }
 
+/// Raw scroll offset as graphix delivers it: (y, x) i64 pair. Stored
+/// as i64 so out-of-range values reach a downstream clamp + warn
+/// instead of failing the whole widget compile. The
+/// `paragraph::draw` consumer maps these to ratatui's `(u16, u16)`
+/// via `validate::clamp_u16`.
 #[derive(Debug, Clone, Copy)]
-struct ScrollV((u16, u16));
+struct ScrollV((i64, i64));
 
 impl FromValue for ScrollV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, u16); 2]>()?;
+        let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, i64); 2]>()?;
         Ok(Self((y, x)))
     }
 }
@@ -553,11 +562,11 @@ async fn run<X: GXExt>(
     Ok(())
 }
 
-static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref {
+static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref (TypeRef {
     scope: ModPath::root(),
     name: ModPath::from(["tui", "Tui"]),
     params: Arc::from_iter([]),
-});
+ ..Default::default()}));
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {

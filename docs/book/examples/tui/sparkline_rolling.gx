@@ -1,8 +1,21 @@
 use tui;
 use tui::sparkline;
+use core::math;
+use sys;
+use sys::net;
+use sys::time;
+
+// Self-contained: publish a simulated CPU value once a second, then
+// subscribe to it for a rolling 60-sample sparkline. Drop the
+// publish to point the chart at any other publisher.
+let tick = time::timer(duration:1.s, true);
+let t = cast<f64>(count(tick))$;
+let cpu_source = 50.0;
+cpu_source <- tick ~ 50.0 + 40.0 * math::sin(t / 7.0);
+sys::net::publish("/local/graphix/sparkline_rolling/cpu", cpu_source);
 
 let data: Array<f64> = [];
-let new_value: f64 = sys::net::subscribe("/local/metrics/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/graphix/sparkline_rolling/cpu")?;
 
 data <- array::window(
     #n: 60,

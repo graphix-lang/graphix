@@ -1,16 +1,21 @@
 use crate::{
-    expr::{ModPath, Sandbox},
+    expr::{ModPath, Origin, Sandbox},
     typ::{TVar, Type},
-    BindId, Scope,
+    BindId, ModuleInternalView, Scope, SigImplLink, TypeRefSite,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
+use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
 use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
-use poolshark::local::LPooled;
-use std::{fmt, iter, mem, ops::Bound};
+use parking_lot::Mutex;
+use poolshark::{
+    global::{GPooled, Pool},
+    local::LPooled,
+};
+use std::{fmt, iter, mem, ops::Bound, sync::LazyLock};
 use triomphe::Arc;
 
 pub struct Bind {
@@ -20,6 +25,11 @@ pub struct Bind {
     pub doc: Option<ArcStr>,
     pub scope: ModPath,
     pub name: CompactString,
+    /// Source position where the binding was introduced. Used by IDE
+    /// tooling for go-to-definition; not consulted by the compiler.
+    pub pos: SourcePosition,
+    /// Source origin (file/buffer) where the binding was introduced.
+    pub ori: Arc<Origin>,
 }
 
 impl fmt::Debug for Bind {
@@ -37,6 +47,8 @@ impl Clone for Bind {
             doc: self.doc.clone(),
             export: self.export,
             typ: self.typ.clone(),
+            pos: self.pos,
+            ori: self.ori.clone(),
         }
     }
 }
@@ -46,6 +58,50 @@ pub struct TypeDef {
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
     pub doc: Option<ArcStr>,
+    /// Source position where this typedef was declared. Used by IDE
+    /// tooling for go-to-definition; the compiler doesn't read it.
+    pub pos: SourcePosition,
+    pub ori: Arc<Origin>,
+}
+
+/// IDE side-channels accumulated during compilation when `lsp_mode` is
+/// on. Pushed to from places that hold `&Env` rather than threaded
+/// through every typecheck signature, but tied to a specific `Env` via
+/// the `Arc<Mutex<Lsp>>` field — so two unrelated compiles can't
+/// cross-pollute, and a multi-threaded compile is just a `Mutex` lock
+/// away.
+///
+/// The runtime's `check` installs a fresh `Lsp` at the start of each
+/// check cycle and drains it at the end; non-LSP compiles leave
+/// `Env.lsp` as `None` and pay nothing at the push sites.
+#[derive(Debug)]
+pub struct Lsp {
+    pub type_refs: GPooled<Vec<TypeRefSite>>,
+    pub sig_links: GPooled<Vec<SigImplLink>>,
+    pub module_internals: GPooled<Vec<ModuleInternalView>>,
+}
+
+impl Lsp {
+    /// Fresh, empty sinks pulled from the named pools.
+    pub fn new() -> Self {
+        static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
+            LazyLock::new(|| Pool::new(64, 65536));
+        static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
+            LazyLock::new(|| Pool::new(32, 4096));
+        static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
+            LazyLock::new(|| Pool::new(32, 4096));
+        Self {
+            type_refs: TYPE_REF_SITE_POOL.take(),
+            sig_links: SIG_LINK_POOL.take(),
+            module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
+        }
+    }
+}
+
+impl Default for Lsp {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,11 +113,40 @@ pub struct Env {
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     pub catch: Map<ModPath, BindId>,
+    /// Append-only mirror of every `(scope, name) → BindId` ever
+    /// created via `bind_variable`. Used by IDE tooling for cursor
+    /// → scope completion: it exposes lambda parameters and other
+    /// short-lived bindings that `binds` drops at scope teardown
+    /// and `unbind_variable` removes from `by_id`. Not consulted by
+    /// the compiler. Only populated when `lsp_mode` is set.
+    pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
+    /// True iff the compiler should populate IDE side-channels
+    /// (`ide_binds`, the `lsp` sinks, etc.). Toggled by the LSP
+    /// runtime; normal compiles leave it unset and pay no IDE cost.
+    pub lsp_mode: bool,
+    /// IDE side-channel sinks for type references, sig→impl links,
+    /// and per-module env snapshots. `Some(_)` only when running
+    /// under an LSP-style check; clones share the inner `Arc<Mutex>`
+    /// so reentrant or concurrent compiles within a single check all
+    /// drain into the same buffer. The runtime swaps this in/out at
+    /// each check boundary.
+    pub lsp: Option<Arc<Mutex<Lsp>>>,
 }
 
 impl Env {
     pub(super) fn clear(&mut self) {
-        let Self { by_id, binds, byref_chain, used, modules, typedefs, catch } = self;
+        let Self {
+            by_id,
+            binds,
+            byref_chain,
+            used,
+            modules,
+            typedefs,
+            catch,
+            ide_binds,
+            lsp_mode: _,
+            lsp: _,
+        } = self;
         *by_id = Map::new();
         *binds = Map::new();
         *byref_chain = Map::new();
@@ -69,11 +154,16 @@ impl Env {
         *modules = Set::new();
         *typedefs = Map::new();
         *catch = Map::new();
+        *ide_binds = Map::new();
     }
 
     // restore the lexical environment to the state it was in at the
     // snapshot `other`, but leave the bind and type environment
-    // alone.
+    // alone. `ide_binds` is preserved across restoration so IDE
+    // tooling sees lambda parameters / let bindings that were
+    // introduced inside the restored region. The `lsp` sink is
+    // preserved on `self` so any pushes that happened inside the
+    // restored region accumulate alongside the rest of the check.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
         Self {
             binds: other.binds,
@@ -83,6 +173,9 @@ impl Env {
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
+            ide_binds: self.ide_binds.clone(),
+            lsp_mode: self.lsp_mode,
+            lsp: self.lsp.clone(),
         }
     }
 
@@ -94,7 +187,33 @@ impl Env {
             typedefs: mem::take(&mut other.typedefs),
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
+            ide_binds: self.ide_binds.clone(),
             byref_chain: self.byref_chain.clone(),
+            lsp_mode: self.lsp_mode,
+            lsp: self.lsp.clone(),
+        }
+    }
+
+    /// Push a `TypeRefSite` into the active LSP sink, if any. No-op
+    /// when `self.lsp` is `None` (every non-LSP compile).
+    pub fn push_type_ref(&self, site: TypeRefSite) {
+        if let Some(lsp) = &self.lsp {
+            lsp.lock().type_refs.push(site);
+        }
+    }
+
+    /// Push a `SigImplLink` into the active LSP sink, if any.
+    pub fn push_sig_link(&self, link: SigImplLink) {
+        if let Some(lsp) = &self.lsp {
+            lsp.lock().sig_links.push(link);
+        }
+    }
+
+    /// Push a per-module internal-view snapshot into the active LSP
+    /// sink, if any.
+    pub fn push_module_internal_view(&self, view: ModuleInternalView) {
+        if let Some(lsp) = &self.lsp {
+            lsp.lock().module_internals.push(view);
         }
     }
 
@@ -312,38 +431,48 @@ impl Env {
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
         doc: Option<ArcStr>,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
     ) -> Result<()> {
-        let defs = self.typedefs.get_or_default_cow(scope.clone());
-        if defs.get(name).is_some() {
+        if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
-        } else {
-            let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
-            let mut declared: LPooled<FxHashSet<ArcStr>> = LPooled::take();
-            for (tv, tc) in params.iter() {
-                Type::TVar(tv.clone()).alias_tvars(&mut known);
-                if let Some(tc) = tc {
-                    tc.alias_tvars(&mut known);
-                }
-            }
-            typ.alias_tvars(&mut known);
-            for (tv, _) in params.iter() {
-                if !declared.insert(tv.name.clone()) {
-                    bail!("duplicate type variable {tv} in definition of {name}");
-                }
-            }
-            for (_, t) in params.iter() {
-                if let Some(t) = t {
-                    t.check_tvars_declared(&mut declared)?;
-                }
-            }
-            for dec in declared.iter() {
-                if !known.contains_key(dec) {
-                    bail!("unused type parameter {dec} in definition of {name}")
-                }
-            }
-            defs.insert_cow(name.into(), TypeDef { params, typ, doc });
-            Ok(())
         }
+        let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut declared: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+        for (tv, tc) in params.iter() {
+            Type::TVar(tv.clone()).alias_tvars(&mut known);
+            if let Some(tc) = tc {
+                tc.alias_tvars(&mut known);
+            }
+        }
+        typ.alias_tvars(&mut known);
+        for (tv, _) in params.iter() {
+            if !declared.insert(tv.name.clone()) {
+                bail!("duplicate type variable {tv} in definition of {name}");
+            }
+        }
+        for (_, t) in params.iter() {
+            if let Some(t) = t {
+                t.check_tvars_declared(&mut declared)?;
+            }
+        }
+        for dec in declared.iter() {
+            if !known.contains_key(dec) {
+                bail!("unused type parameter {dec} in definition of {name}")
+            }
+        }
+        if self.lsp_mode {
+            // Capture every type-name occurrence inside the typedef
+            // body for IDE find-references. This catches uses that
+            // never go through `Type::lookup_ref` directly (e.g.
+            // `Foo` inside `type Pair = (Foo, Foo)` — typedef bodies
+            // are stored, not type-checked against anything). Done
+            // before we mutably borrow `self.typedefs` below.
+            typ.record_ide_refs(self, scope);
+        }
+        let defs = self.typedefs.get_or_default_cow(scope.clone());
+        defs.insert_cow(name.into(), TypeDef { params, typ, doc, pos, ori });
+        Ok(())
     }
 
     pub fn undeftype(&mut self, scope: &ModPath, name: &str) {
@@ -355,9 +484,93 @@ impl Env {
         }
     }
 
+    /// Drop everything registered at `scope` or any descendant. Used by
+    /// the LSP when re-typechecking a stdlib (or third-party graphix)
+    /// package crate's own source: the runtime's env was pre-loaded
+    /// with that package at startup, but the live edits need to
+    /// register fresh under the same scope. Without scrubbing first,
+    /// re-registration trips the duplicate-module / duplicate-type
+    /// guards.
+    ///
+    /// Returns the number of (scope, name) entries removed across binds
+    /// and typedefs.
+    pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
+        fn is_under(s: &ModPath, prefix: &ModPath) -> bool {
+            // Both come from netidx Path. A scope is under `prefix`
+            // if it equals prefix or starts with `prefix + "/"`.
+            let s: &str = s;
+            let p: &str = prefix;
+            if s == p {
+                return true;
+            }
+            if !s.starts_with(p) {
+                return false;
+            }
+            // Avoid matching e.g. `/tu` as a prefix of `/tui`.
+            s.as_bytes().get(p.len()).copied() == Some(b'/')
+        }
+        let mut removed = 0;
+        let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*bind_scopes {
+            if let Some(defs) = self.binds.get(s) {
+                let ids: Vec<BindId> = defs.into_iter().map(|(_, id)| *id).collect();
+                removed += ids.len();
+                for id in &ids {
+                    self.by_id.remove_cow(id);
+                }
+            }
+            self.binds.remove_cow(s);
+            self.ide_binds.remove_cow(s);
+        }
+        let type_scopes: LPooled<Vec<ModPath>> = (&self.typedefs)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*type_scopes {
+            if let Some(defs) = self.typedefs.get(s) {
+                removed += defs.len();
+            }
+            self.typedefs.remove_cow(s);
+        }
+        let used_scopes: LPooled<Vec<ModPath>> = (&self.used)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*used_scopes {
+            self.used.remove_cow(s);
+        }
+        let mod_scopes: LPooled<Vec<ModPath>> =
+            (&self.modules).into_iter().filter(|s| is_under(s, scope)).cloned().collect();
+        for s in &*mod_scopes {
+            self.modules.remove_cow(s);
+        }
+        let catch_scopes: LPooled<Vec<ModPath>> = (&self.catch)
+            .into_iter()
+            .filter(|(s, _)| is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*catch_scopes {
+            self.catch.remove_cow(s);
+        }
+        removed
+    }
+
     /// create a new binding. If an existing bind exists in the same
     /// scope shadow it.
-    pub fn bind_variable(&mut self, scope: &ModPath, name: &str, typ: Type) -> &mut Bind {
+    pub fn bind_variable(
+        &mut self,
+        scope: &ModPath,
+        name: &str,
+        typ: Type,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
+    ) -> &mut Bind {
         let binds = self.binds.get_or_default_cow(scope.clone());
         let mut existing = true;
         let id = binds.get_or_insert_cow(CompactString::from(name), || {
@@ -367,14 +580,22 @@ impl Env {
         if existing {
             *id = BindId::new();
         }
-        self.by_id.get_or_insert_cow(*id, || Bind {
+        let bind = self.by_id.get_or_insert_cow(*id, || Bind {
             export: true,
             id: *id,
             scope: scope.clone(),
             doc: None,
             name: CompactString::from(name),
             typ,
-        })
+            pos,
+            ori,
+        });
+        if self.lsp_mode {
+            let ide_clone = bind.clone();
+            let ide_defs = self.ide_binds.get_or_default_cow(scope.clone());
+            ide_defs.insert_cow(CompactString::from(name), ide_clone);
+        }
+        self.by_id.get_mut_cow(id).unwrap()
     }
 
     /// make the specified name an alias for `id`

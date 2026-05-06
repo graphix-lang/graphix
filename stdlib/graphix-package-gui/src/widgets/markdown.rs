@@ -8,6 +8,22 @@ use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
 
+// TODO: Known issue — links in markdown flicker their hover
+// underline when the cursor crosses between adjacent link spans
+// (e.g. the words of a multi-word link, which pulldown-cmark splits
+// into separate Text events and iced renders as separate spans).
+//
+// The bug is in iced's `iced_widget::text::rich::update`: it only
+// calls `shell.request_redraw()` when the *presence* of a hovered
+// link flips (`was_hovered != hovered_link.is_some()`), not when the
+// hovered *index* changes. Moving from link-span-A to link-span-B
+// updates state silently; the next unrelated repaint catches up,
+// producing the flicker.
+//
+// Waiting on an upstream fix rather than carrying a local patch or a
+// `Viewer` workaround that trades correct behavior (hover underlines)
+// for a cosmetic change (always underline).
+
 pub(crate) struct MarkdownW<X: GXExt> {
     gx: GXHandle<X>,
     content: TRef<X, String>,

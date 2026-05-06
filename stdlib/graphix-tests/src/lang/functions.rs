@@ -20,7 +20,7 @@ run!(lambda, LAMBDA, |v: Result<&Value>| match v {
 const FIRST_CLASS_LAMBDAS: &str = r#"
 {
   let doit = |x: Number| x + 1;
-  let g = |f: fn<'a: Number>('a) -> 'a, y| f(y) + 1;
+  let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
   g(doit, 1)
 }
 "#;
@@ -145,7 +145,7 @@ run!(late_binding2, LATE_BINDING2, |v: Result<&Value>| match v {
 
 const LATE_BINDING3: &str = r#"
 {
-    let f: fn(i64) -> i64 = never();
+    let f: fn(x: i64) -> i64 = never();
     let res = f(1);
     f <- |i: i64| i + 1;
     res
@@ -163,7 +163,7 @@ const LATE_BINDING4: &str = r#"
     let g = |#bar: i64 = 1, #foo: i64 = 0, baz| (foo - bar) + baz;
     let h = |#bar: i64 = 1, #zam: i64 = 55, #foo: i64 = 0, baz| (foo - bar) + baz + zam;
     let fs = [f, g, h];
-    let f: fn(i64) -> i64 = never();
+    let f: fn(x: i64) -> i64 = never();
     f <- array::iter(fs);
     array::group(f(1), |n, _| n == 3)
 }
@@ -297,7 +297,7 @@ const ARG_UPDATE_BEFORE_BIND: &str = r#"
         n if n < 5 => step + 1,
         _ => never()
     };
-    let f: fn(i64) -> i64 = never();
+    let f: fn(x: i64) -> i64 = never();
     f <- select step {
         5 => |i: i64| -> i64 i + 1,
         _ => never()

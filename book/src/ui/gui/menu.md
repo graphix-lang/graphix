@@ -12,13 +12,13 @@ val shortcut: fn(
   ?#shift: bool,
   ?#alt: bool,
   ?#logo: bool,
-  string
+  s: string
 ) -> [Shortcut, Error<`InvalidKey(string)>];
 
 type MenuAction = {
   label: &string,
   shortcut: &[Shortcut, null],
-  on_click: &fn(null) -> Any,
+  on_click: &fn(a: null) -> Any,
   disabled: &bool
 };
 
@@ -32,19 +32,19 @@ type MenuGroup = {
 type ContextMenu = { child: &Widget, items: &Array<MenuItem> };
 
 val action: fn(
-  ?#on_click: fn(null) -> Any,
+  ?#on_click: fn(a: null) -> Any,
   ?#shortcut: &[Shortcut, null],
   ?#disabled: &bool,
-  &string
+  s: &string
 ) -> MenuItem;
 
 val divider: fn() -> MenuItem;
 
-val menu: fn(&string, &Array<MenuItem>) -> MenuGroup;
+val menu: fn(s: &string, a: &Array<MenuItem>) -> MenuGroup;
 
-val bar: fn(?#width: &Length, &Array<MenuGroup>) -> Widget;
+val bar: fn(?#width: &Length, a: &Array<MenuGroup>) -> Widget;
 
-val context_menu: fn(&Array<MenuItem>, &Widget) -> Widget
+val context_menu: fn(a: &Array<MenuItem>, a2: &Widget) -> Widget
 ```
 
 ## `menu::shortcut`

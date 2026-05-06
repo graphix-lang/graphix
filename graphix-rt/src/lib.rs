@@ -140,6 +140,25 @@ pub struct CompRes<X: GXExt> {
     pub env: Env,
 }
 
+/// Result of a typecheck-only compile pass. Carries the env as it
+/// would be after the source was compiled, plus the set of resolved
+/// name references and module references encountered during
+/// compilation. The IDE-side collections are `GPooled` so the buffers
+/// return to the runtime-side named pools after crossing the LSP
+/// thread boundary, keeping the recompile-per-keystroke loop
+/// allocation-free in steady state.
+#[derive(Debug)]
+pub struct CheckResult {
+    pub env: Env,
+    pub references: GPooled<Vec<graphix_compiler::ReferenceSite>>,
+    pub module_references: GPooled<Vec<graphix_compiler::ModuleRefSite>>,
+    pub scope_map: GPooled<Vec<graphix_compiler::ScopeMapEntry>>,
+    /// IDE side-channels populated only in `lsp_mode`: type references,
+    /// sig→impl bind links, and per-module impl-side env snapshots.
+    /// Empty for non-LSP compiles.
+    pub lsp: graphix_compiler::env::Lsp,
+}
+
 pub struct Ref<X: GXExt> {
     pub id: ExprId,
     // the most recent value of the variable
@@ -413,7 +432,21 @@ enum ToGX<X: GXExt> {
     },
     Check {
         path: Source,
-        res: oneshot::Sender<Result<()>>,
+        /// If provided, override the runtime's default resolver chain
+        /// for this check only. Used by IDE tooling that needs
+        /// project-scoped module resolution without rebuilding the
+        /// runtime.
+        resolvers: Option<Vec<ModuleResolver>>,
+        /// If provided, compile the source under this scope rather
+        /// than at the root. Used by IDE tooling editing a graphix
+        /// package crate (`graphix-package-<x>`) so its `mod.gx` body
+        /// registers under `<x>::` rather than at root, matching the
+        /// way the runtime would load it via `mod <x>;` from another
+        /// project. Any pre-existing registrations under that scope
+        /// are scrubbed from the working env first so the package's
+        /// own pre-loaded contents don't trip duplicate-module guards.
+        initial_scope: Option<ArcStr>,
+        res: oneshot::Sender<Result<CheckResult>>,
     },
     Compile {
         text: ArcStr,
@@ -452,6 +485,7 @@ pub enum GXEvent {
 struct GXHandleInner<X: GXExt> {
     tx: tmpsc::UnboundedSender<ToGX<X>>,
     task: JoinHandle<()>,
+    subscriber: netidx::subscriber::Subscriber,
 }
 
 impl<X: GXExt> Drop for GXHandleInner<X> {
@@ -478,6 +512,11 @@ impl<X: GXExt> Clone for GXHandle<X> {
 }
 
 impl<X: GXExt> GXHandle<X> {
+    /// Get a clone of the netidx subscriber used by this runtime.
+    pub fn subscriber(&self) -> netidx::subscriber::Subscriber {
+        self.0.subscriber.clone()
+    }
+
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
         let (tx, rx) = oneshot::channel();
         self.0.tx.send(f(tx)).map_err(|_| anyhow!("runtime is dead"))?;
@@ -489,17 +528,93 @@ impl<X: GXExt> GXHandle<X> {
         self.exec(|res| ToGX::GetEnv { res }).await
     }
 
-    /// Check that a graphix module compiles
+    /// Check that a graphix module compiles and type-checks.
     ///
-    /// If path startes with `netidx:` then the module will be loaded
-    /// from netidx, otherwise it will be loaded from the
-    /// filesystem. If the file compiles successfully return Ok(())
-    /// otherwise an error describing the problem. The environment
-    /// will not be altered by checking an expression, so you will not
-    /// be able to use any defined names later in the program. If you
-    /// want to do that see `compile`.
-    pub async fn check(&self, path: Source) -> Result<()> {
-        Ok(self.exec(|tx| ToGX::Check { path, res: tx }).await??)
+    /// If path starts with `netidx:` the module is loaded from
+    /// netidx; otherwise it is loaded from the filesystem (or read
+    /// directly if `Source::Internal`). On success returns a
+    /// `CheckResult` containing both an env snapshot (as it would be
+    /// after the module was compiled) and the set of resolved name
+    /// references the compiler observed — useful for IDE tooling
+    /// (`textDocument/references`). The runtime's live environment
+    /// is not altered — to keep the bindings live, use `compile` or
+    /// `load`.
+    ///
+    /// # Error position info
+    ///
+    /// Compile and parse failures attach a structured context to the
+    /// returned `anyhow::Error` carrying the originating `Origin` and
+    /// `SourcePosition`. IDE tooling and other consumers should
+    /// `downcast_ref` the error rather than scraping the chain's
+    /// message strings:
+    ///
+    /// - [`graphix_compiler::expr::ErrorContext`] — wraps compile-time
+    ///   failures (`bailat!`-style bails and `wrap!`-attached typecheck
+    ///   errors). Carries the failing `Expr`, from which `pos` and
+    ///   `ori` are read.
+    /// - [`graphix_compiler::expr::ParserContext`] — wraps combine
+    ///   parser failures with `Origin` + `SourcePosition` fields.
+    ///
+    /// `anyhow::Error::downcast_ref` walks the context chain via
+    /// anyhow's vtable and returns the outermost match, which for the
+    /// runtime's compile path is the right one.
+    ///
+    /// # IDE / LSP usage
+    ///
+    /// `CheckResult` carries IDE side-channels populated only when
+    /// `env.lsp_mode` is set: `references`, `module_references`,
+    /// `type_references`, `scope_map`, `sig_links`, and
+    /// `module_internals`. The first four record where the compiler saw
+    /// each name and where it resolved; `sig_links` ties `val foo` in a
+    /// `.gxi` to its `let foo = …` impl in the paired `.gx`;
+    /// `module_internals` carries each module's impl-side env so IDE
+    /// queries inside a module body can chase impl bind metadata that
+    /// isn't visible from the project's external view.
+    ///
+    /// To check editor buffers without saving, layer a
+    /// [`ModuleResolver::BufferOverride`] into the resolver chain — its
+    /// override map shadows the on-disk version per path while
+    /// preserving `Source::File` origins, so reference matching and
+    /// goto-def land on the same file paths as a disk check would.
+    pub async fn check(
+        &self,
+        path: Source,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<CheckResult> {
+        Ok(self
+            .exec(|tx| ToGX::Check {
+                path,
+                resolvers: None,
+                initial_scope,
+                res: tx,
+            })
+            .await??)
+    }
+
+    /// Like `check` but overrides the runtime's resolver chain for
+    /// this call only. Used by IDE tooling to compile a project
+    /// against a project-scoped resolver chain (e.g. `Files(<root>)`)
+    /// without having to rebuild the runtime.
+    ///
+    /// `initial_scope`, when set, scopes the entire compilation under
+    /// the given module path (as if the source were the body of a
+    /// `mod <scope> { ... }` block). Used by the LSP when editing a
+    /// graphix package crate so its modules register under the
+    /// package's namespace.
+    pub async fn check_with_resolvers(
+        &self,
+        path: Source,
+        resolvers: Vec<ModuleResolver>,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<CheckResult> {
+        Ok(self
+            .exec(|tx| ToGX::Check {
+                path,
+                resolvers: Some(resolvers),
+                initial_scope,
+                res: tx,
+            })
+            .await??)
     }
 
     /// Compile and execute a graphix expression
@@ -631,6 +746,12 @@ pub struct GXConfig<X: GXExt> {
     /// The set of compiler flags. Default empty.
     #[builder(default)]
     flags: BitFlags<CFlag>,
+    /// If true, populate IDE side-channels (`ide_binds`,
+    /// references, module references, scope map, type-ref sink) on
+    /// every compile and check. Carries a per-compile cost; only
+    /// the LSP backend should set it.
+    #[builder(default)]
+    lsp_mode: bool,
 }
 
 impl<X: GXExt> GXConfig<X> {
@@ -651,6 +772,7 @@ impl<X: GXExt> GXConfig<X> {
     /// library. To build a runtime with the full standard library and nothing
     /// else simply pass the output of `graphix_stdlib::register` to start.
     pub async fn start(self) -> Result<GXHandle<X>> {
+        let subscriber = self.ctx.rt.subscriber.clone();
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();
         let task = task::spawn(async move {
@@ -667,6 +789,6 @@ impl<X: GXExt> GXConfig<X> {
             };
         });
         init_rx.await??;
-        Ok(GXHandle(Arc::new(GXHandleInner { tx, task })))
+        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, subscriber })))
     }
 }

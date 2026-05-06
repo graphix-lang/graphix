@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c2e5d38b.js";
+            window.path_to_searchindex_js = "../../searchindex-fbfb2680.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-9c436f35.js"></script>
+        <script src="../../toc-5c78f6d5.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,13 +181,13 @@
 type ArgSpec = { name: string, doc: string, default: Any };
 
 /// write the value to the specified path
-val write: fn(string, Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+val write: fn(s: string, v: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
-val subscribe: fn(string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
+val subscribe: fn(s: string) -&gt; Result&lt;Primitive, `SubscribeError(string)&gt;;
 
 /// call the specified rpc
-val call: fn(string, Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
+val call: fn(s: string, a: Array&lt;(string, Any)&gt;) -&gt; Result&lt;Primitive, `RpcError(string)&gt;;
 
 /// Publish an rpc. When the rpc is called f will be called with the arguments
 /// sent by the caller, and whatever f returns will be sent back to the caller.
@@ -196,24 +196,24 @@ val rpc: fn(
     #path:string,
     #doc:string,
     #spec:Array&lt;ArgSpec&gt;,
-    #f:fn(Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
+    #f:fn(a: Array&lt;(string, Any)&gt;) -&gt; Any throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
 /// list paths under the specified path. If #update is specified, then the list will
 /// be refreshed each time clock is triggered. If update is not specified, the list will
 /// be updated each second
-val list: fn(?#update:Any, string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
+val list: fn(?#update:Any, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
 /// list the table under the specified path. If #update is specified, then the table
 /// will be refreshed each time clock is triggered. If update is not specified, the table
 /// will be updated each second
-val list_table: fn(?#update:Any, string) -&gt; Result&lt;Table, `ListError(string)&gt;;
+val list_table: fn(?#update:Any, s: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
 /// Publish the specified value at the specified path. Whenever the value updates,
 /// the new value will be sent to subscribers. If #on_write is specified, then if
 /// subscribers write to the value on_write will be called with the written value.
 /// on_write need not return anything.
-val publish: fn(?#on_write:fn(Any) -&gt; _ throws 'e, string, Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+val publish: fn(?#on_write:fn(v: Any) -&gt; _ throws 'e, s: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
                     </main>
