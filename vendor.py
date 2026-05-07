@@ -141,8 +141,19 @@ def vendor_workspace_member(member_path, ws_deps, vendor_dir):
     if dest.exists():
         shutil.rmtree(dest)
 
-    # Copy the entire crate source
-    shutil.copytree(ROOT / member_path, dest, ignore=shutil.ignore_patterns("target"))
+    # Copy the entire crate source. Skip:
+    #   - target/ build artifacts
+    #   - editor/VCS junk that has no business in a published tarball
+    #     (Emacs `.#foo` lockfiles are dangling symlinks while a file is
+    #     being edited, and copytree raises on them by default)
+    shutil.copytree(
+        ROOT / member_path,
+        dest,
+        ignore=shutil.ignore_patterns(
+            "target", ".#*", "#*#", "*~", ".DS_Store",
+        ),
+        ignore_dangling_symlinks=True,
+    )
 
     # Overwrite Cargo.toml with resolved version
     write_cargo_toml(parsed, ws_deps, dest / "Cargo.toml")
