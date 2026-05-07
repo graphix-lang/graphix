@@ -2,6 +2,14 @@
 name = "graphix-lsp"
 version = "0.8.0"
 edition = "2024"
+authors = ["Eric Stokes <eestokes@pm.me>"]
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, compiler"
+documentation = "https://docs.rs/graphix-lsp"
+readme = "../README.md"
+license = "MIT"
+categories = ["network-programming", "compilers", "gui"]
 
 [dependencies]
 graphix-compiler = { version = "0.8.0", path = "../graphix-compiler" }
