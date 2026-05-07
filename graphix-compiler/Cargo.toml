@@ -51,4 +51,4 @@ proptest = { workspace = true }
 env_logger = { workspace = true }
 rust_decimal = { workspace = true }
 tree-sitter = { workspace = true }
-tree-sitter-graphix = { path = "ide/tree-sitter-graphix" }
+tree-sitter-graphix = { path = "../ide/tree-sitter-graphix" }
