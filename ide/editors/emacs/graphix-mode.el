@@ -116,6 +116,11 @@ Falls back to this mode when tree-sitter is not available.
 (when (and (fboundp 'treesit-available-p)
            (treesit-available-p))
 
+  ;; `treesit-font-lock-rules' lives in treesit.el. Autoloads cover most
+  ;; entry points but not the macros/functions used here at load time,
+  ;; so require explicitly to avoid `void-function' on first load.
+  (require 'treesit)
+
   (defvar graphix--treesit-font-lock-rules
     (treesit-font-lock-rules
      ;; Level 1: comments
@@ -189,11 +194,15 @@ Falls back to this mode when tree-sitter is not available.
        (struct_pattern_field name: (identifier) @font-lock-property-name-face)
        (struct_type_field name: (identifier) @font-lock-property-name-face))
 
-     ;; Level 3: modules
+     ;; Level 3: modules.
+     ;; String form: the `.` anchor in `(module_path . (identifier) ...)`
+     ;; is a tree-sitter query operator (first-child anchor), but Emacs's
+     ;; Lisp reader would parse `.` inside a quoted list as a cons-cell
+     ;; dot and bail with "expected )". String queries skip the reader.
      :language 'graphix
      :feature 'module
-     '((module name: (identifier) @font-lock-constant-face)
-       (module_path . (identifier) @font-lock-constant-face))
+     "(module name: (identifier) @font-lock-constant-face)
+      (module_path . (identifier) @font-lock-constant-face)"
 
      ;; Level 3: constructors (variants)
      :language 'graphix
