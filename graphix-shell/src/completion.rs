@@ -71,6 +71,7 @@ impl Completer for BComplete {
                                 extra: None,
                                 append_whitespace: false,
                                 match_indices: None,
+                                display_override: None,
                             })
                         }
                         for (value, id) in self.0.lookup_matching(&ModPath::root(), &part)
@@ -109,6 +110,7 @@ impl Completer for BComplete {
                                 extra: Some(vec!["hello world!".into()]),
                                 append_whitespace: false,
                                 match_indices: None,
+                                display_override: None,
                             })
                         }
                     }
@@ -131,6 +133,7 @@ impl Completer for BComplete {
                                                 extra: None,
                                                 append_whitespace: false,
                                                 match_indices: None,
+                                                display_override: None,
                                             })
                                         }
                                     }

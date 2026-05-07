@@ -32,7 +32,7 @@ netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
 poolshark = { workspace = true }
-rusqlite = { version = "0.35", features = ["bundled"] }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 uuid = { workspace = true }

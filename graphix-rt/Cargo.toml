@@ -47,5 +47,5 @@ tokio = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
-proptest = "1"
-env_logger = "0.11"
+proptest = { workspace = true }
+env_logger = { workspace = true }

@@ -47,8 +47,8 @@ triomphe = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-proptest = "1"
-env_logger = "0.11"
+proptest = { workspace = true }
+env_logger = { workspace = true }
 rust_decimal = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-graphix = { workspace = true }

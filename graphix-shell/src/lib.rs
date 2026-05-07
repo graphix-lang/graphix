@@ -289,7 +289,7 @@ impl<X: GXExt> Shell<X> {
                         Ok(Signal::CtrlC) => {
                             output.clear().await;
                         }
-                        Ok(Signal::CtrlD) => break Ok(()),
+                        Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break Ok(()),
                         Ok(Signal::Success(line)) => {
                             match gx.compile(ArcStr::from(line)).await {
                                 Err(e) => eprintln!("error: {e:?}"),
@@ -316,6 +316,7 @@ impl<X: GXExt> Shell<X> {
                                 }
                             }
                         }
+                        Ok(_) => ()
                     }
                 },
             }
