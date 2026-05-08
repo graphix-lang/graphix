@@ -1,6 +1,6 @@
 [package]
 name = "graphix-rt"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -29,7 +29,7 @@ enumflags2 = { workspace = true }
 futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
-graphix-compiler = { version = "0.8.0", path = "../graphix-compiler" }
+graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
 immutable-chunkmap = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }

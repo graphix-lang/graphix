@@ -1,6 +1,6 @@
 [package]
 name = "graphix-shell"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 license = "MIT"
@@ -43,29 +43,29 @@ flexi_logger = { workspace = true }
 futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
-graphix-compiler = { version = "0.8.0", path = "../graphix-compiler" }
-graphix-package = { version = "0.8.0", path = "../graphix-package" }
-graphix-package-array = { version = "0.8.0", path = "../stdlib/graphix-package-array" }
-graphix-package-core = { version = "0.8.0", path = "../stdlib/graphix-package-core" }
-graphix-package-args = { version = "0.8.0", path = "../stdlib/graphix-package-args" }
-graphix-package-db = { version = "0.8.0", path = "../stdlib/graphix-package-db" }
-graphix-package-hbs = { version = "0.8.0", path = "../stdlib/graphix-package-hbs" }
-graphix-package-http = { version = "0.8.0", path = "../stdlib/graphix-package-http" }
-graphix-package-json = { version = "0.8.0", path = "../stdlib/graphix-package-json" }
-graphix-package-list = { version = "0.8.0", path = "../stdlib/graphix-package-list" }
-graphix-package-map = { version = "0.8.0", path = "../stdlib/graphix-package-map" }
-graphix-package-pack = { version = "0.8.0", path = "../stdlib/graphix-package-pack" }
-graphix-package-rand = { version = "0.8.0", path = "../stdlib/graphix-package-rand" }
-graphix-package-re = { version = "0.8.0", path = "../stdlib/graphix-package-re" }
-graphix-package-sqlite = { version = "0.8.0", path = "../stdlib/graphix-package-sqlite" }
-graphix-package-str = { version = "0.8.0", path = "../stdlib/graphix-package-str" }
-graphix-package-sys = { version = "0.8.0", path = "../stdlib/graphix-package-sys" }
-graphix-package-toml = { version = "0.8.0", path = "../stdlib/graphix-package-toml" }
-graphix-package-xls = { version = "0.8.0", path = "../stdlib/graphix-package-xls" }
-graphix-package-tui = { version = "0.8.0", path = "../stdlib/graphix-package-tui" }
-graphix-package-gui = { version = "0.8.0", path = "../stdlib/graphix-package-gui", optional = true }
-graphix-rt = { version = "0.8.0", path = "../graphix-rt" }
-graphix-lsp = { version = "0.8.0", path = "../graphix-lsp" }
+graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
+graphix-package = { version = "0.9.0", path = "../graphix-package" }
+graphix-package-array = { version = "0.9.0", path = "../stdlib/graphix-package-array" }
+graphix-package-core = { version = "0.9.0", path = "../stdlib/graphix-package-core" }
+graphix-package-args = { version = "0.9.0", path = "../stdlib/graphix-package-args" }
+graphix-package-db = { version = "0.9.0", path = "../stdlib/graphix-package-db" }
+graphix-package-hbs = { version = "0.9.0", path = "../stdlib/graphix-package-hbs" }
+graphix-package-http = { version = "0.9.0", path = "../stdlib/graphix-package-http" }
+graphix-package-json = { version = "0.9.0", path = "../stdlib/graphix-package-json" }
+graphix-package-list = { version = "0.9.0", path = "../stdlib/graphix-package-list" }
+graphix-package-map = { version = "0.9.0", path = "../stdlib/graphix-package-map" }
+graphix-package-pack = { version = "0.9.0", path = "../stdlib/graphix-package-pack" }
+graphix-package-rand = { version = "0.9.0", path = "../stdlib/graphix-package-rand" }
+graphix-package-re = { version = "0.9.0", path = "../stdlib/graphix-package-re" }
+graphix-package-sqlite = { version = "0.9.0", path = "../stdlib/graphix-package-sqlite" }
+graphix-package-str = { version = "0.9.0", path = "../stdlib/graphix-package-str" }
+graphix-package-sys = { version = "0.9.0", path = "../stdlib/graphix-package-sys" }
+graphix-package-toml = { version = "0.9.0", path = "../stdlib/graphix-package-toml" }
+graphix-package-xls = { version = "0.9.0", path = "../stdlib/graphix-package-xls" }
+graphix-package-tui = { version = "0.9.0", path = "../stdlib/graphix-package-tui" }
+graphix-package-gui = { version = "0.9.0", path = "../stdlib/graphix-package-gui", optional = true }
+graphix-rt = { version = "0.9.0", path = "../graphix-rt" }
+graphix-lsp = { version = "0.9.0", path = "../graphix-lsp" }
 log = { workspace = true }
 lsp-types = { workspace = true }
 netidx = { workspace = true }

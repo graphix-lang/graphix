@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-gui"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -28,12 +28,12 @@ futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
 indexmap = { workspace = true }
-graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
-graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
-graphix-package = { version = "0.8.0", path = "../../graphix-package" }
-graphix-package-core = { version = "0.8.0", path = "../graphix-package-core" }
-graphix-package-str = { version = "0.8.0", path = "../graphix-package-str" }
-graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }
+graphix-compiler = { version = "0.9.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.9.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.9.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.9.0", path = "../graphix-package-core" }
+graphix-package-str = { version = "0.9.0", path = "../graphix-package-str" }
+graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
 image = { workspace = true }
 iced_core = { workspace = true }
 iced_renderer = { workspace = true }

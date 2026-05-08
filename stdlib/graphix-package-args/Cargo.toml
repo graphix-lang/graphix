@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-args"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -24,11 +24,11 @@ compact_str = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
 immutable-chunkmap = { workspace = true }
-graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
-graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
-graphix-package = { version = "0.8.0", path = "../../graphix-package" }
-graphix-package-core = { version = "0.8.0", path = "../graphix-package-core" }
-graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }
+graphix-compiler = { version = "0.9.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.9.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.9.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.9.0", path = "../graphix-package-core" }
+graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }

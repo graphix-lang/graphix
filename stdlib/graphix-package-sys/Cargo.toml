@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-sys"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
@@ -28,11 +28,11 @@ extended-notify = { workspace = true }
 futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
-graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
-graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
-graphix-package = { version = "0.8.0", path = "../../graphix-package" }
-graphix-package-core = { version = "0.8.0", path = "../graphix-package-core" }
-graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }
+graphix-compiler = { version = "0.9.0", path = "../../graphix-compiler" }
+graphix-derive = { version = "0.9.0", path = "../../graphix-derive" }
+graphix-package = { version = "0.9.0", path = "../../graphix-package" }
+graphix-package-core = { version = "0.9.0", path = "../graphix-package-core" }
+graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
 log = { workspace = true }
 netidx-core = { workspace = true }
 netidx-protocols = { workspace = true }
