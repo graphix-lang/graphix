@@ -22,7 +22,8 @@ arcstr = { workspace = true }
 bytes = { workspace = true }
 compact_str = { workspace = true }
 futures = { workspace = true }
-fxhash = { workspace = true }
+nohash = { workspace = true }
+ahash = { workspace = true }
 graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.8.0", path = "../../graphix-package" }

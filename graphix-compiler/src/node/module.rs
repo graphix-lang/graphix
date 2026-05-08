@@ -11,12 +11,13 @@ use crate::{
     wrap, BindId, CFlag, Event, ExecCtx, ModuleInternalView, ModuleRefSite, Node, Refs,
     Rt, Scope, SigImplLink, Update, UserEvent,
 };
+use ahash::AHashSet;
 use anyhow::{bail, Context, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::{format_compact, CompactString};
 use enumflags2::BitFlags;
-use fxhash::{FxHashMap, FxHashSet};
 use netidx_value::{Typ, Value};
+use nohash::IntMap;
 use poolshark::{global::GPooled, local::LPooled};
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
@@ -129,13 +130,13 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
 fn check_sig<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     top_id: ExprId,
-    proxy: &mut FxHashMap<BindId, BindId>,
+    proxy: &mut IntMap<BindId, BindId>,
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
-    let mut has_bind: LPooled<FxHashSet<ArcStr>> = LPooled::take();
-    let mut abstract_types: LPooled<FxHashMap<AbstractId, Type>> = LPooled::take();
+    let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    let mut abstract_types: LPooled<IntMap<AbstractId, Type>> = LPooled::take();
     for n in nodes {
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
             && let Some(binds) = ctx.env.binds.get(&scope.lexical)
@@ -257,7 +258,7 @@ pub(super) struct Module<R: Rt, E: UserEvent> {
     env: Env,
     sig: Sig,
     scope: Scope,
-    proxy: FxHashMap<BindId, BindId>,
+    proxy: IntMap<BindId, BindId>,
     nodes: Box<[Node<R, E>]>,
     top_id: ExprId,
 }
@@ -285,7 +286,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             source,
             dynamic_sig_env: Some(ctx.env.clone()),
             scope: scope.clone(),
-            proxy: FxHashMap::default(),
+            proxy: IntMap::default(),
             nodes: Box::new([]),
             top_id,
         }))
@@ -312,7 +313,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             source,
             dynamic_sig_env: None,
             scope: scope.clone(),
-            proxy: FxHashMap::default(),
+            proxy: IntMap::default(),
             nodes: Box::new([]),
             top_id,
         };

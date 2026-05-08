@@ -2,6 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use ahash::AHashSet;
 use anyhow::{bail, Result};
 use compact_str::format_compact;
 use graphix_compiler::{
@@ -14,7 +15,6 @@ use graphix_compiler::{
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
 };
-use fxhash::FxHashSet;
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value, utils::Either};
 use netidx_value::ValArray;
@@ -404,7 +404,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
             Some(Value::Array(a)) => {
-                let mut seen: LPooled<FxHashSet<Value>> = LPooled::take();
+                let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
                 for v in a.iter() {
                     if !seen.contains(v) {
                         seen.insert(v.clone());

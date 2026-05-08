@@ -17,6 +17,7 @@
 //! a live widget tree. Subsequent updates flow through `drain()` to
 //! `widget.handle_update`, the same as in production.
 
+use ahash::AHashMap;
 use anyhow::{bail, Context, Result};
 use crossterm::event::Event;
 use graphix_compiler::expr::{ExprId, ModuleResolver};
@@ -24,6 +25,7 @@ use graphix_compiler::BindId;
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use nohash::IntMap;
 use poolshark::global::GPooled;
 use ratatui::{
     backend::{Backend, TestBackend},
@@ -62,8 +64,8 @@ pub(crate) struct TuiTestHarness {
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     widget: TuiW,
     terminal: Terminal<TestBackend>,
-    watched: fxhash::FxHashMap<ExprId, Value>,
-    watch_names: fxhash::FxHashMap<String, ExprId>,
+    watched: IntMap<ExprId, Value>,
+    watch_names: AHashMap<String, ExprId>,
     _refs: Vec<Ref<NoExt>>,
     _callables: Vec<Callable<NoExt>>,
 }
@@ -83,7 +85,7 @@ impl TuiTestHarness {
         height: u16,
     ) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel(100);
-        let tbl = fxhash::FxHashMap::from_iter([(
+        let tbl = AHashMap::from_iter([(
             netidx_core::path::Path::from("/test.gx"),
             arcstr::ArcStr::from(code),
         )]);
@@ -101,9 +103,8 @@ impl TuiTestHarness {
 
         // Build the live widget tree. Same path as the runtime's `run()`
         // takes for the root expression's first delivery.
-        let widget = compile(gx.clone(), initial_value)
-            .await
-            .context("compile widget tree")?;
+        let widget =
+            compile(gx.clone(), initial_value).await.context("compile widget tree")?;
 
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).context("build TestBackend terminal")?;
@@ -115,8 +116,8 @@ impl TuiTestHarness {
             rx,
             widget,
             terminal,
-            watched: fxhash::FxHashMap::default(),
-            watch_names: fxhash::FxHashMap::default(),
+            watched: IntMap::default(),
+            watch_names: AHashMap::default(),
             _refs: Vec::new(),
             _callables: Vec::new(),
         })
@@ -268,11 +269,9 @@ impl TuiTestHarness {
             .last
             .clone()
             .with_context(|| format!("compile_named_callable: no value for {name}"))?;
-        let cb = self
-            .gx
-            .compile_callable(val)
-            .await
-            .with_context(|| format!("compile_named_callable: compile_callable {name}"))?;
+        let cb = self.gx.compile_callable(val).await.with_context(|| {
+            format!("compile_named_callable: compile_callable {name}")
+        })?;
         let id = cb.id();
         self._refs.push(r);
         self._callables.push(cb);

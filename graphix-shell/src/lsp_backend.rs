@@ -2,10 +2,10 @@
 //! and exposes a synchronous interface for the LSP server.
 
 use crate::deps;
+use ahash::AHashMap;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     env::Env,
     expr::{BufferOverrides, ModuleResolver, Source},
@@ -47,7 +47,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let subscriber = netidx.subscriber().clone();
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))
         .context("creating graphix context")?;
-    let mut vfs = FxHashMap::default();
+    let mut vfs = AHashMap::default();
     let res = deps::register::<NoExt>(&mut ctx, &mut vfs)
         .context("registering stdlib modules")?;
     let mut resolvers: Vec<ModuleResolver> = vec![ModuleResolver::VFS(vfs)];
@@ -73,7 +73,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
         .await
         .context("loading stdlib")?;
     let _keep_netidx = StdArc::new(netidx);
-    let buffer_overrides: BufferOverrides = Arc::new(Mutex::new(FxHashMap::default()));
+    let buffer_overrides: BufferOverrides = Arc::new(Mutex::new(AHashMap::default()));
     Ok(StdArc::new(ShellLspBackend {
         gx,
         rt_handle: Handle::current(),
@@ -169,23 +169,12 @@ impl LspBackend for ShellLspBackend {
         root: &Path,
         initial_scope: Option<ArcStr>,
     ) -> Result<TypecheckResult> {
-        let CheckResult {
-            env,
-            references,
-            module_references,
-            scope_map,
-            lsp,
-        } = self.rt_handle.block_on(self.gx.check_with_resolvers(
-            Source::File(root.to_path_buf()),
-            self.resolvers_for(root),
-            initial_scope,
-        ))?;
-        Ok(TypecheckResult {
-            env,
-            references,
-            module_references,
-            scope_map,
-            lsp,
-        })
+        let CheckResult { env, references, module_references, scope_map, lsp } =
+            self.rt_handle.block_on(self.gx.check_with_resolvers(
+                Source::File(root.to_path_buf()),
+                self.resolvers_for(root),
+                initial_scope,
+            ))?;
+        Ok(TypecheckResult { env, references, module_references, scope_map, lsp })
     }
 }

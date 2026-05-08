@@ -4,10 +4,10 @@ use crate::{
     typ::{tvar::would_cycle_inner, AndAc, RefHist, Type, TypeRef},
     PrintFlag,
 };
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use enumflags2::bitflags;
 use enumflags2::BitFlags;
-use fxhash::FxHashMap;
 use netidx::publisher::Typ;
 use poolshark::local::LPooled;
 use std::fmt::Debug;
@@ -36,7 +36,7 @@ impl Type {
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
         if (self as *const Type) == (t as *const Type) {

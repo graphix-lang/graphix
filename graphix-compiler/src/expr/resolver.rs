@@ -7,12 +7,12 @@ use crate::{
     },
     format_with_flags, PrintFlag,
 };
+use ahash::AHashMap;
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
-use fxhash::FxHashMap;
 use indexmap::IndexSet;
 use log::info;
 use netidx::{
@@ -27,11 +27,11 @@ use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr, time::Duration};
 use tokio::{join, task, time::Instant, try_join};
 use triomphe::Arc;
 
-pub type BufferOverrides = Arc<Mutex<FxHashMap<PathBuf, ArcStr>>>;
+pub type BufferOverrides = Arc<Mutex<AHashMap<PathBuf, ArcStr>>>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleResolver {
-    VFS(FxHashMap<Path, ArcStr>),
+    VFS(AHashMap<Path, ArcStr>),
     Files { base: PathBuf, overrides: Option<BufferOverrides> },
     Netidx { subscriber: Subscriber, base: Path, timeout: Option<Duration> },
 }
@@ -70,7 +70,7 @@ fn resolve_from_vfs(
     scope: &ModPath,
     parent: &Arc<Origin>,
     name: &Path,
-    vfs: &FxHashMap<Path, ArcStr>,
+    vfs: &AHashMap<Path, ArcStr>,
 ) -> Resolution {
     macro_rules! ori {
         ($s:expr) => {
@@ -256,10 +256,10 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         }
     }
     let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
-    let mut after_bind: LPooled<FxHashMap<&ArcStr, Item>> = LPooled::take();
-    let mut after_td: LPooled<FxHashMap<&ArcStr, Item>> = LPooled::take();
-    let mut after_mod: LPooled<FxHashMap<&ArcStr, Item>> = LPooled::take();
-    let mut after_use: LPooled<FxHashMap<&ModPath, Item>> = LPooled::take();
+    let mut after_bind: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_td: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_mod: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_use: LPooled<AHashMap<&ModPath, Item>> = LPooled::take();
     let mut first: Option<Item> = None;
     let mut last: Option<&SigItem> = None;
     macro_rules! push {

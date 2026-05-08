@@ -2,7 +2,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use futures::{channel::mpsc, future::try_join_all, StreamExt};
-use fxhash::{FxBuildHasher, FxHashMap};
 use graphix_compiler::{
     compile,
     expr::{
@@ -21,13 +20,14 @@ use netidx::{
     subscriber::{self, Dval},
 };
 use netidx_protocols::rpc::server::RpcCall;
+use nohash::{BuildNoHashHasher, IntMap};
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
 };
 use smallvec::{smallvec, SmallVec};
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{hash_map::Entry, VecDeque},
     future, mem, result,
     time::Duration,
 };
@@ -103,8 +103,8 @@ struct CallableInt {
 pub(super) struct GX<X: GXExt> {
     ctx: ExecCtx<GXRt<X>, X::UserEvent>,
     event: Event<X::UserEvent>,
-    nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, FxBuildHasher>,
-    callables: FxHashMap<CallableId, CallableInt>,
+    nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, BuildNoHashHasher<ExprId>>,
+    callables: IntMap<CallableId, CallableInt>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Arc<[ModuleResolver]>,
     publish_timeout: Option<Duration>,
@@ -144,7 +144,7 @@ impl<X: GXExt> GX<X> {
             ctx,
             event,
             nodes: IndexMap::default(),
-            callables: HashMap::default(),
+            callables: IntMap::default(),
             sub: cfg.sub,
             resolvers: Arc::from(cfg.resolvers),
             publish_timeout: cfg.publish_timeout,

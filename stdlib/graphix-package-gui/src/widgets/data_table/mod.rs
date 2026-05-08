@@ -21,11 +21,11 @@
 //! - `test_access`   — test-only inspection helpers
 
 use super::{GuiW, GuiWidget, IcedElement, Message, Renderer};
+use ahash::{AHashMap, AHashSet, AHasher};
 use anyhow::{Context, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::CompactString;
 use futures::channel::mpsc;
-use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use indexmap::IndexMap;
@@ -35,8 +35,9 @@ use netidx::{
     subscriber::{Event, SubId, Subscriber},
 };
 use parking_lot::Mutex;
-use poolshark::global::GPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use std::{
+    hash::BuildHasherDefault,
     sync::{atomic::Ordering, Arc},
     time::Instant,
 };
@@ -65,7 +66,7 @@ pub(crate) use types::decimate_sparkline;
 /// matters and the indexed iteration order doubles as the display
 /// order — the first `displayed_count` entries are the displayed
 /// columns in display order.
-pub(super) type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
+pub(super) type AIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<AHasher>>;
 
 const ROW_HEIGHT_ESTIMATE: f32 = 22.0;
 const ROW_HEIGHT_CONTROLS: f32 = 30.0;
@@ -124,10 +125,10 @@ pub(crate) struct DataTableW<X: GXExt> {
     show_row_name: TRef<X, bool>,
     sort_by_ref: Ref<X>,
     selection_ref: Ref<X>,
-    sort_by: Vec<SortBy>,
+    sort_by: LPooled<Vec<SortBy>>,
     /// Set of selected cell paths (`row_path` for the row-name column,
     /// `row_path/col_name` otherwise), controlled by graphix.
-    selection: FxHashSet<ArcStr>,
+    selection: LPooled<AHashSet<ArcStr>>,
     on_activate_ref: Ref<X>,
     on_activate: Option<Callable<X>>,
     on_select_ref: Ref<X>,
@@ -140,13 +141,13 @@ pub(crate) struct DataTableW<X: GXExt> {
     /// the display order; insertion happens in `apply_table` from
     /// the user-supplied `columns` array. Per-entry `ColumnState`
     /// carries the parsed spec plus compiled callables/refs.
-    columns: FxIndexMap<ArcStr, ColumnState<X>>,
+    columns: AIndexMap<ArcStr, ColumnState<X>>,
     /// User-controlled widths (free resize or auto-sized on first
     /// load). Held in a `Mutex` so render-path code (which only has
     /// `&self`) can read and write through it. Lifetime is decoupled
     /// from the column entry — a column re-added after deletion
     /// reuses the user's stored drag preference.
-    user_widths: Mutex<FxHashMap<ArcStr, f32>>,
+    user_widths: Mutex<AHashMap<ArcStr, f32>>,
     /// Active resize drag state
     resize_drag: Option<ResizeDrag>,
     /// Last resize handle click: (col_meta_idx, timestamp) for double-click detection
@@ -161,7 +162,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     /// Interior-mutable because iced requires the widget to be `Sync`.
     viewport_metrics: Mutex<types::ViewportMetrics>,
     /// Cached actual column widths from the last view() call, keyed by col_name.
-    cached_col_widths: Mutex<FxHashMap<ArcStr, f32>>,
+    cached_col_widths: Mutex<AHashMap<ArcStr, f32>>,
     /// Set when keyboard nav changes first_row/first_col. Suppresses
     /// the next handle_scroll from overwriting the keyboard-driven position.
     keyboard_scroll_override: bool,
@@ -291,8 +292,8 @@ impl<X: GXExt> DataTableW<X> {
             on_header_click,
             on_update_ref,
             on_update,
-            columns: FxIndexMap::default(),
-            user_widths: Mutex::new(FxHashMap::default()),
+            columns: AIndexMap::default(),
+            user_widths: Mutex::new(AHashMap::default()),
             resize_drag: None,
             last_resize_click: None,
             mode: DisplayMode::Table,
@@ -301,7 +302,7 @@ impl<X: GXExt> DataTableW<X> {
             first_row: 0,
             first_col: 0,
             viewport_metrics: Mutex::new(types::ViewportMetrics::default()),
-            cached_col_widths: Mutex::new(FxHashMap::default()),
+            cached_col_widths: Mutex::new(AHashMap::default()),
             keyboard_scroll_override: false,
             editing: None,
             edit_buffer: CompactString::new(""),
@@ -378,7 +379,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             // and only touch subscriptions that actually need to change.
             // Routing through `apply_table_sync` (the prior behaviour)
             // would have cleared every Grid sub on the way through.
-            let old_cols: FxHashSet<ArcStr> =
+            let old_cols: AHashSet<ArcStr> =
                 self.sort_by.iter().map(|s| s.column.clone()).collect();
             self.sort_by = parse_sort_by(v);
             self.apply_sort_by_change(&old_cols);

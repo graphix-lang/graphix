@@ -3,9 +3,9 @@ use crate::tree::{
     check_or_store_meta, extract_key_typ_from_rtype, extract_type_strings_from_rtype,
     get_db, read_meta, types_are_concrete, DEFAULT_TREE_META, META_TREE,
 };
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
@@ -121,7 +121,7 @@ struct TxnCtx<'a> {
     commit_reply: &'a RefCell<Option<oneshot::Sender<Value>>>,
     aborted: &'a Cell<bool>,
     meta_idx: Option<usize>,
-    pending_meta: &'a FxHashMap<ArcStr, (ArcStr, ArcStr)>,
+    pending_meta: &'a AHashMap<ArcStr, (ArcStr, ArcStr)>,
 }
 
 impl TxnCtx<'_> {
@@ -237,7 +237,7 @@ impl TxnCtx<'_> {
 fn run_transaction(
     trees: &[sled::Tree],
     meta_idx: Option<usize>,
-    pending_meta: &FxHashMap<ArcStr, (ArcStr, ArcStr)>,
+    pending_meta: &AHashMap<ArcStr, (ArcStr, ArcStr)>,
     rx: mpsc::Receiver<TxnMsg>,
     first_msg: TxnMsg,
 ) {
@@ -287,7 +287,7 @@ fn run_transaction(
 
 struct BeginTxnCtx {
     trees: GPooled<Vec<sled::Tree>>,
-    pending_meta: GPooled<FxHashMap<ArcStr, (ArcStr, ArcStr)>>,
+    pending_meta: GPooled<AHashMap<ArcStr, (ArcStr, ArcStr)>>,
     db: sled::Db,
     rx: mpsc::Receiver<TxnMsg>,
 }
@@ -412,7 +412,7 @@ impl BeginTxnCtx {
     fn new(db: sled::Db, rx: mpsc::Receiver<TxnMsg>) -> Self {
         static TREES: LazyLock<Pool<Vec<sled::Tree>>> =
             LazyLock::new(|| Pool::new(64, 256));
-        static PENDING: LazyLock<Pool<FxHashMap<ArcStr, (ArcStr, ArcStr)>>> =
+        static PENDING: LazyLock<Pool<AHashMap<ArcStr, (ArcStr, ArcStr)>>> =
             LazyLock::new(|| Pool::new(64, 256));
         Self { db, rx, pending_meta: PENDING.take(), trees: TREES.take() }
     }

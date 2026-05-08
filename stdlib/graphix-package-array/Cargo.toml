@@ -20,7 +20,8 @@ krb5_iov = ["netidx/krb5_iov"]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
-fxhash = { workspace = true }
+nohash = { workspace = true }
+ahash = { workspace = true }
 graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.8.0", path = "../../graphix-derive" }
 graphix-rt = { version = "0.8.0", path = "../../graphix-rt" }

@@ -12,8 +12,8 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use fxhash::FxHashSet;
 use netidx::{pack::Pack, subscriber::Value, utils::Either};
+use nohash::IntSet;
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
 use std::{fmt, hash::Hash, sync::Arc as SArc};
@@ -377,7 +377,7 @@ impl Lambda {
                 rtype,
                 throws,
                 explicit_throws,
-                lambda_ids: Arc::new(RwLock::new(FxHashSet::default())),
+                lambda_ids: Arc::new(RwLock::new(IntSet::default())),
             })
         };
         typ.alias_tvars(&mut LPooled::take());

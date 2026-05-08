@@ -4,10 +4,10 @@ use crate::{
     typ::{RefHist, Type, TypeRef},
     AbstractTypeRegistry, CAST_ERR_TAG,
 };
+use ahash::AHashSet;
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use enumflags2::{bitflags, BitFlags};
-use fxhash::FxHashSet;
 use immutable_chunkmap::map::Map;
 use netidx::publisher::{Typ, Value};
 use netidx_value::ValArray;
@@ -27,7 +27,7 @@ impl Type {
     fn check_cast_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<FxHashSet<Option<usize>>>,
+        hist: &mut RefHist<AHashSet<Option<usize>>>,
     ) -> Result<()> {
         match self {
             Type::Primitive(_) | Type::Any => Ok(()),
@@ -76,7 +76,7 @@ impl Type {
     fn cast_value_int(
         &self,
         env: &Env,
-        hist: &mut FxHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(usize, usize)>,
         v: Value,
     ) -> Result<Value> {
         if self.is_a_int(env, hist, BitFlags::empty(), &v) {
@@ -273,7 +273,7 @@ impl Type {
     fn is_a_int(
         &self,
         env: &Env,
-        hist: &mut FxHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(usize, usize)>,
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {

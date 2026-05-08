@@ -2,9 +2,9 @@ use crate::{
     env::Env,
     typ::{RefHist, Type, TypeRef},
 };
+use ahash::AHashMap;
 use anyhow::Result;
 use enumflags2::BitFlags;
-use fxhash::FxHashMap;
 use netidx::publisher::Typ;
 use poolshark::local::LPooled;
 use std::iter;
@@ -14,7 +14,7 @@ impl Type {
     fn union_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), Type>>,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), Type>>,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -32,7 +32,7 @@ impl Type {
                 let params = Arc::from_iter(params.drain(..));
                 Ok(Self::Ref(TypeRef { params, ..t0.clone() }))
             }
-            (tr @ Type::Ref (TypeRef { .. }), t) => {
+            (tr @ Type::Ref(TypeRef { .. }), t) => {
                 let t0_id = hist.ref_id(tr, env);
                 let t_id = hist.ref_id(t, env);
                 let t0 = tr.lookup_ref(env)?;
@@ -46,7 +46,7 @@ impl Type {
                     }
                 }
             }
-            (t, tr @ Type::Ref (TypeRef { .. })) => {
+            (t, tr @ Type::Ref(TypeRef { .. })) => {
                 let t_id = hist.ref_id(t, env);
                 let t1_id = hist.ref_id(tr, env);
                 let t1 = tr.lookup_ref(env)?;
@@ -219,15 +219,16 @@ impl Type {
     fn diff_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), Type>>,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), Type>>,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
             (
-                Type::Ref (TypeRef { scope: s0, name: n0, .. }),
-                Type::Ref (TypeRef { scope: s1, name: n1, .. }),
+                Type::Ref(TypeRef { scope: s0, name: n0, .. }),
+                Type::Ref(TypeRef { scope: s1, name: n1, .. }),
             ) if s0 == s1 && n0 == n1 => Ok(Type::Primitive(BitFlags::empty())),
-            (t0 @ Type::Ref (TypeRef { .. }), t1) | (t0, t1 @ Type::Ref (TypeRef { .. })) => {
+            (t0 @ Type::Ref(TypeRef { .. }), t1)
+            | (t0, t1 @ Type::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;

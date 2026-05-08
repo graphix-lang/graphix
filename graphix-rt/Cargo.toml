@@ -27,7 +27,8 @@ derive_builder = { workspace = true }
 dirs = { workspace = true }
 enumflags2 = { workspace = true }
 futures = { workspace = true }
-fxhash = { workspace = true }
+nohash = { workspace = true }
+ahash = { workspace = true }
 graphix-compiler = { version = "0.8.0", path = "../graphix-compiler" }
 immutable-chunkmap = { workspace = true }
 indexmap = { workspace = true }

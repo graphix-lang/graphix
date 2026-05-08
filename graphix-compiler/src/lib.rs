@@ -20,12 +20,12 @@ use crate::{
     node::lambda::LambdaDef,
     typ::{FnType, Type},
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use enumflags2::{bitflags, BitFlags};
 use expr::Expr;
 use futures::channel::mpsc;
-use fxhash::{FxHashMap, FxHashSet};
 use log::info;
 use netidx::{
     path::Path,
@@ -35,6 +35,7 @@ use netidx::{
 use netidx_protocols::rpc::server::{ArgSpec, RpcCall};
 use netidx_value::{abstract_type::AbstractWrapper, Abstract};
 use node::compiler;
+use nohash::{IntMap, IntSet};
 use parking_lot::{Mutex, RwLock};
 use poolshark::{
     global::{GPooled, Pool},
@@ -43,10 +44,7 @@ use poolshark::{
 use std::{
     any::{Any, TypeId},
     cell::Cell,
-    collections::{
-        hash_map::{self, Entry},
-        HashMap,
-    },
+    collections::hash_map::{self, Entry},
     fmt::Debug,
     mem,
     sync::{
@@ -246,11 +244,11 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
     pub init: bool,
-    pub variables: FxHashMap<BindId, Value>,
-    pub netidx: FxHashMap<SubId, subscriber::Event>,
-    pub writes: FxHashMap<Id, WriteRequest>,
-    pub rpc_calls: FxHashMap<BindId, RpcCall>,
-    pub custom: FxHashMap<BindId, Box<dyn CustomBuiltinType>>,
+    pub variables: IntMap<BindId, Value>,
+    pub netidx: IntMap<SubId, subscriber::Event>,
+    pub writes: IntMap<Id, WriteRequest>,
+    pub rpc_calls: IntMap<BindId, RpcCall>,
+    pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
     pub user: E,
 }
 
@@ -258,11 +256,11 @@ impl<E: UserEvent> Event<E> {
     pub fn new(user: E) -> Self {
         Event {
             init: false,
-            variables: HashMap::default(),
-            netidx: HashMap::default(),
-            writes: HashMap::default(),
-            rpc_calls: HashMap::default(),
-            custom: HashMap::default(),
+            variables: IntMap::default(),
+            netidx: IntMap::default(),
+            writes: IntMap::default(),
+            rpc_calls: IntMap::default(),
+            custom: IntMap::default(),
             user,
         }
     }
@@ -281,8 +279,8 @@ impl<E: UserEvent> Event<E> {
 
 #[derive(Debug, Clone, Default)]
 pub struct Refs {
-    refed: LPooled<FxHashSet<BindId>>,
-    bound: LPooled<FxHashSet<BindId>>,
+    refed: LPooled<IntSet<BindId>>,
+    bound: LPooled<IntSet<BindId>>,
 }
 
 pub use combine::stream::position::SourcePosition;
@@ -698,7 +696,7 @@ pub trait Rt: Debug + Any {
 }
 
 #[derive(Default)]
-pub struct LibState(FxHashMap<TypeId, Box<dyn Any + Send + Sync>>);
+pub struct LibState(AHashMap<TypeId, Box<dyn Any + Send + Sync>>);
 
 impl LibState {
     /// Look up and return the context global library state of type
@@ -806,8 +804,8 @@ impl LibState {
 /// printing functions.
 #[derive(Default)]
 pub struct AbstractTypeRegistry {
-    by_tid: FxHashMap<TypeId, Uuid>,
-    by_uuid: FxHashMap<Uuid, &'static str>,
+    by_tid: AHashMap<TypeId, Uuid>,
+    by_uuid: AHashMap<Uuid, &'static str>,
 }
 
 impl AbstractTypeRegistry {
@@ -847,22 +845,22 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
-    builtins: FxHashMap<&'static str, (BuiltInInitFn<R, E>, bool)>,
+    builtins: AHashMap<&'static str, (BuiltInInitFn<R, E>, bool)>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
     // hash consed variant tags
-    tags: FxHashSet<ArcStr>,
+    tags: AHashSet<ArcStr>,
     /// context global library state for built-in functions
     pub libstate: LibState,
     /// the language environment, typdefs, binds, lambdas, etc
     pub env: Env,
     /// the last value of every bound variable
-    pub cached: FxHashMap<BindId, Value>,
+    pub cached: IntMap<BindId, Value>,
     /// the runtime
     pub rt: R,
     /// LambdaDefs indexed by LambdaId, for deferred type checking
-    pub lambda_defs: FxHashMap<LambdaId, Value>,
+    pub lambda_defs: IntMap<LambdaId, Value>,
     /// deferred type check closures, evaluated after all primary type checking
     pub deferred_checks:
         Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
@@ -901,13 +899,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         Ok(Self {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
-            builtins: FxHashMap::default(),
+            builtins: AHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
-            tags: FxHashSet::default(),
-            cached: HashMap::default(),
+            tags: AHashSet::default(),
+            cached: IntMap::default(),
             rt: user,
-            lambda_defs: FxHashMap::default(),
+            lambda_defs: IntMap::default(),
             deferred_checks: Vec::new(),
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),

@@ -5,6 +5,7 @@ use crate::{
     },
     typ::{FnType, Type},
 };
+use ahash::AHashSet;
 use arcstr::{literal, ArcStr};
 use combine::{
     attempt, between, choice, eof, look_ahead, many, none_of, not_followed_by, optional,
@@ -22,7 +23,6 @@ use combine::{
 };
 use compact_str::CompactString;
 use escaping::Escape;
-use fxhash::FxHashSet;
 use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
     escaped_string, int, not_prefix, sep_by1_tok, sep_by_tok, value as parse_value,
@@ -70,8 +70,8 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     )
     .unwrap()
 });
-pub const RESERVED: LazyLock<FxHashSet<&str>> = LazyLock::new(|| {
-    FxHashSet::from_iter([
+pub const RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
+    AHashSet::from_iter([
         "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
         "if", "i8", "u8", "i16", "u16", "u32", "v32", "i32", "z32", "u64", "v64", "i64",
         "z64", "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
@@ -548,7 +548,7 @@ where
         ),
     )
         .then(|(pos, mut exprs): (_, LPooled<Vec<(ArcStr, Option<Expr>)>>)| {
-            let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<FxHashSet<_>>>();
+            let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
             if s.len() < exprs.len() {
                 return unexpected_any("struct fields must be unique").left();
             }
@@ -637,7 +637,7 @@ where
                 _,
                 (Expr, LPooled<Vec<(ArcStr, Option<Expr>)>>),
             )| {
-                let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<FxHashSet<_>>>();
+                let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
                 if s.len() < exprs.len() {
                     return unexpected_any("struct fields must be unique").left();
                 }

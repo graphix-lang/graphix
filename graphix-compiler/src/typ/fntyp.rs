@@ -8,10 +8,11 @@ use crate::{
     typ::{contains::ContainsFlags, AbstractId, RefHist, TVar, Type},
     LambdaId,
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use fxhash::{FxHashMap, FxHashSet};
+use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use smallvec::{smallvec, SmallVec};
@@ -162,7 +163,7 @@ pub struct FnType {
     pub throws: Type,
     pub explicit_throws: bool,
     /// accumulated set of all LambdaIds this type might represent (for late binding)
-    pub lambda_ids: Arc<RwLock<FxHashSet<LambdaId>>>,
+    pub lambda_ids: Arc<RwLock<IntSet<LambdaId>>>,
 }
 
 impl PartialEq for FnType {
@@ -249,7 +250,7 @@ impl Default for FnType {
             constraints: Arc::new(RwLock::new(LPooled::take())),
             throws: Default::default(),
             explicit_throws: false,
-            lambda_ids: Arc::new(RwLock::new(FxHashSet::default())),
+            lambda_ids: Arc::new(RwLock::new(IntSet::default())),
         }
     }
 }
@@ -371,14 +372,14 @@ impl FnType {
         FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
     }
 
-    pub fn replace_tvars(&self, known: &FxHashMap<ArcStr, Type>) -> Self {
+    pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Type>) -> Self {
         self.replace_tvars_int(known, &mut LPooled::take())
     }
 
     pub(super) fn replace_tvars_int(
         &self,
-        known: &FxHashMap<ArcStr, Type>,
-        renamed: &mut FxHashMap<ArcStr, TVar>,
+        known: &AHashMap<ArcStr, Type>,
+        renamed: &mut AHashMap<ArcStr, TVar>,
     ) -> Self {
         let FnType {
             args,
@@ -413,7 +414,7 @@ impl FnType {
     /// constraint table, so reversing the order leaves the auto
     /// constraints with nothing to fold against.
     pub fn replace_auto_constrained(&self) -> Self {
-        let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
+        let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
         let Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids } =
             self;
         let constraints: LPooled<Vec<(TVar, Type)>> = constraints
@@ -429,7 +430,7 @@ impl FnType {
             })
             .collect();
         let constraints = Arc::new(RwLock::new(constraints));
-        let mut all_tvars: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut all_tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut all_tvars);
         for (name, tv) in all_tvars.drain() {
             if !known.contains_key(&name) {
@@ -496,7 +497,7 @@ impl FnType {
         throws.bind_as(t);
     }
 
-    pub fn alias_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
+    pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         let FnType {
             args,
             vargs,
@@ -544,7 +545,7 @@ impl FnType {
         throws.unfreeze_tvars();
     }
 
-    pub fn collect_tvars(&self, known: &mut FxHashMap<ArcStr, TVar>) {
+    pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         let FnType {
             args,
             vargs,
@@ -581,7 +582,7 @@ impl FnType {
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
         let mut sul = 0;
@@ -736,7 +737,7 @@ impl FnType {
         &self,
         env: &Env,
         impl_fn: &Self,
-        adts: &mut FxHashMap<AbstractId, Type>,
+        adts: &mut IntMap<AbstractId, Type>,
     ) -> Result<()> {
         self.sig_matches_int(
             env,
@@ -751,9 +752,9 @@ impl FnType {
         &self,
         env: &Env,
         impl_fn: &Self,
-        tvar_map: &mut FxHashMap<usize, Type>,
-        hist: &mut RefHist<FxHashSet<(Option<usize>, Option<usize>)>>,
-        adts: &FxHashMap<AbstractId, Type>,
+        tvar_map: &mut IntMap<usize, Type>,
+        hist: &mut RefHist<AHashSet<(Option<usize>, Option<usize>)>>,
+        adts: &IntMap<AbstractId, Type>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
@@ -843,8 +844,8 @@ impl FnType {
     pub fn map_argpos(
         &self,
         other: &Self,
-    ) -> LPooled<FxHashMap<ArcStr, (Option<usize>, Option<usize>)>> {
-        let mut tbl: LPooled<FxHashMap<ArcStr, (Option<usize>, Option<usize>)>> =
+    ) -> LPooled<AHashMap<ArcStr, (Option<usize>, Option<usize>)>> {
+        let mut tbl: LPooled<AHashMap<ArcStr, (Option<usize>, Option<usize>)>> =
             LPooled::take();
         for (i, a) in self.args.iter().enumerate() {
             match &a.kind {

@@ -18,7 +18,8 @@ lsp-server = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
-fxhash = { workspace = true }
+nohash = { workspace = true }
+ahash = { workspace = true }
 log = { workspace = true }
 netidx = { workspace = true }
 parking_lot = { workspace = true }

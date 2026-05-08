@@ -394,7 +394,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
                 ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
-                modules: &mut ::fxhash::FxHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
+                modules: &mut ::ahash::AHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
                 root_mods: &mut ::graphix_package::IndexSet<::arcstr::ArcStr>,
             ) -> ::anyhow::Result<()> {
                 if root_mods.contains(#package_name) {

@@ -5,14 +5,15 @@
 //! sprinkling `parse_*` helpers across every impl block that calls them.
 
 use super::{Renderer, CELL_H_PADDING, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH};
+use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use compact_str::{format_compact, CompactString};
-use fxhash::{FxHashMap, FxHashSet};
 use graphix_rt::{Callable, GXExt, Ref};
 use iced_core::text::Paragraph as _;
 use log::warn;
 use netidx::{path::Path, publisher::Value};
 use netidx_derive::FromValue;
+use poolshark::local::LPooled;
 use std::{borrow::Cow, collections::VecDeque, time::Instant};
 
 pub(super) type Paragraph = <Renderer as iced_core::text::Renderer>::Paragraph;
@@ -212,14 +213,14 @@ pub(super) struct ColumnSpec {
 
 // ── Parsing ────────────────────────────────────────────────────────
 
-pub(super) fn parse_sort_by(v: &Value) -> Vec<SortBy> {
+pub(super) fn parse_sort_by(v: &Value) -> LPooled<Vec<SortBy>> {
     v.clone().cast_to().unwrap_or_default()
 }
 
-pub(super) fn parse_selection(v: &Value) -> FxHashSet<ArcStr> {
+pub(super) fn parse_selection(v: &Value) -> LPooled<AHashSet<ArcStr>> {
     let items = match v.clone().cast_to::<Vec<Value>>() {
         Ok(items) => items,
-        Err(_) => return FxHashSet::default(),
+        Err(_) => return LPooled::take(),
     };
     items
         .into_iter()
@@ -278,7 +279,8 @@ fn parse_column_type(v: &Value) -> (ColumnType, Option<Value>) {
             let (hs, max_o, min_o) = match payload.cast_to::<[(ArcStr, Value); 3]>() {
                 Ok([(_, hs_v), (_, max_v), (_, min_v)]) => {
                     let hs_raw = hs_v.cast_to::<f64>().unwrap_or(60.0);
-                    let hs = if hs_raw.is_finite() && hs_raw > 0.0 { hs_raw } else { 60.0 };
+                    let hs =
+                        if hs_raw.is_finite() && hs_raw > 0.0 { hs_raw } else { 60.0 };
                     let max_o = max_v.cast_to::<f64>().ok();
                     let min_o = min_v.cast_to::<f64>().ok();
                     (hs, max_o, min_o)
@@ -398,14 +400,14 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
 /// This lets callers append explicit `ColumnSpec` overrides to a
 /// `sys::net::list_table`-derived bare-string columns list without
 /// having to filter the original out first.
-pub(super) fn parse_table_columns(v: &Value) -> Vec<ColumnSpec> {
-    let raw = match v.clone().cast_to::<Vec<Value>>() {
+pub(super) fn parse_table_columns(v: &Value) -> LPooled<Vec<ColumnSpec>> {
+    let mut raw = match v.clone().cast_to::<LPooled<Vec<Value>>>() {
         Ok(r) => r,
-        Err(_) => return Vec::new(),
+        Err(_) => return LPooled::take(),
     };
-    let mut out: Vec<ColumnSpec> = Vec::with_capacity(raw.len());
-    let mut idx: FxHashMap<ArcStr, usize> = FxHashMap::default();
-    for item in raw {
+    let mut out: LPooled<Vec<ColumnSpec>> = LPooled::take();
+    let mut idx: LPooled<AHashMap<ArcStr, usize>> = LPooled::take();
+    for item in raw.drain(..) {
         let Some(spec) = parse_column_entry(item) else { continue };
         match idx.get(&spec.name) {
             Some(&i) => out[i] = spec,
@@ -454,14 +456,14 @@ pub(super) enum Source {
 pub(super) enum Fallback {
     None,
     Uniform(Value),
-    PerRow(FxHashMap<ArcStr, Value>),
+    PerRow(LPooled<AHashMap<ArcStr, Value>>),
 }
 
 impl Fallback {
     fn from_value(v: Value) -> Self {
         match v {
             Value::Null => Fallback::None,
-            v @ Value::Map(_) => match v.cast_to::<FxHashMap<ArcStr, Value>>() {
+            v @ Value::Map(_) => match v.cast_to::<LPooled<AHashMap<ArcStr, Value>>>() {
                 Ok(m) => Fallback::PerRow(m),
                 Err(e) => {
                     warn!("source Map had non-string keys: {e}");

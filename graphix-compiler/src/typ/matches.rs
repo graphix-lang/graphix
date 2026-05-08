@@ -4,24 +4,25 @@ use crate::{
     typ::{AbstractId, AndAc, RefHist, Type, TypeRef},
     PrintFlag,
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Result};
 use enumflags2::BitFlags;
-use fxhash::{FxHashMap, FxHashSet};
 use netidx_value::Typ;
+use nohash::IntMap;
 use poolshark::local::LPooled;
 
 impl Type {
     fn could_match_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<FxHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
         let fl = BitFlags::empty();
         match (self, t) {
             (
-                Self::Ref (TypeRef { scope: s0, name: n0, params: p0 , ..}),
-                Self::Ref (TypeRef { scope: s1, name: n1, params: p1 , ..}),
+                Self::Ref(TypeRef { scope: s0, name: n0, params: p0, .. }),
+                Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
             ) if s0 == s1 && n0 == n1 => Ok(p0.len() == p1.len()
                 && p0
                     .iter()
@@ -29,7 +30,8 @@ impl Type {
                     .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            (t0 @ Self::Ref (TypeRef { .. }), t1) | (t0, t1 @ Self::Ref (TypeRef { .. })) => {
+            (t0 @ Self::Ref(TypeRef { .. }), t1)
+            | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;
@@ -152,7 +154,7 @@ impl Type {
         &self,
         env: &Env,
         impl_type: &Self,
-        adts: &FxHashMap<AbstractId, Type>,
+        adts: &IntMap<AbstractId, Type>,
     ) -> Result<()> {
         self.sig_matches_int(
             env,
@@ -167,9 +169,9 @@ impl Type {
         &self,
         env: &Env,
         impl_type: &Self,
-        tvar_map: &mut FxHashMap<usize, Type>,
-        hist: &mut RefHist<FxHashSet<(Option<usize>, Option<usize>)>>,
-        adts: &FxHashMap<AbstractId, Type>,
+        tvar_map: &mut IntMap<usize, Type>,
+        hist: &mut RefHist<AHashSet<(Option<usize>, Option<usize>)>>,
+        adts: &IntMap<AbstractId, Type>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
             return Ok(());
@@ -179,15 +181,16 @@ impl Type {
             (Self::Any, Self::Any) => Ok(()),
             (Self::Primitive(p0), Self::Primitive(p1)) if p0 == p1 => Ok(()),
             (
-                Self::Ref (TypeRef { scope: s0, name: n0, params: p0 , ..}),
-                Self::Ref (TypeRef { scope: s1, name: n1, params: p1 , ..}),
+                Self::Ref(TypeRef { scope: s0, name: n0, params: p0, .. }),
+                Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
             ) if s0 == s1 && n0 == n1 && p0.len() == p1.len() => {
                 for (t0, t1) in p0.iter().zip(p1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
                 }
                 Ok(())
             }
-            (t0 @ Self::Ref (TypeRef { .. }), t1) | (t0, t1 @ Self::Ref (TypeRef { .. })) => {
+            (t0 @ Self::Ref(TypeRef { .. }), t1)
+            | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let t0 = t0.lookup_ref(env)?;

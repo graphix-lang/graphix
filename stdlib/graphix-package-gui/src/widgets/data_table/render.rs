@@ -12,9 +12,9 @@ use super::{
     ROW_NAME_KEY_ARC, ROW_NAME_LABEL, VALUE_COL_KEY,
 };
 use crate::theme::GraphixTheme;
+use ahash::AHashMap;
 use arcstr::{literal, ArcStr};
 use compact_str::{format_compact, CompactString};
-use fxhash::FxHashMap;
 use graphix_rt::GXExt;
 use iced_widget as widget;
 use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
@@ -134,7 +134,7 @@ impl<X: GXExt> DataTableW<X> {
     /// so the user can tell primary from tie-breakers.
     pub(super) fn build_sort_indicators(
         &self,
-    ) -> LPooled<FxHashMap<ArcStr, CompactString>> {
+    ) -> LPooled<AHashMap<ArcStr, CompactString>> {
         let multi = self.sort_by.len() > 1;
         self.sort_by
             .iter()
@@ -231,7 +231,7 @@ impl<X: GXExt> DataTableW<X> {
                 .collect()
         };
         let name_col_offset = if show_row_name { 1 } else { 0 };
-        let sort_indicators: LPooled<FxHashMap<ArcStr, CompactString>> =
+        let sort_indicators: LPooled<AHashMap<ArcStr, CompactString>> =
             self.build_sort_indicators();
         // Column metadata with widths.
         // If effective_col_width returns Some, use it directly.
@@ -418,8 +418,7 @@ impl<X: GXExt> DataTableW<X> {
         // behavior: union of every row's points so cells in the same
         // column are visually comparable. The column type's `min`/`max`
         // override either end when set.
-        let spark_bounds_by_col: FxHashMap<ArcStr, SparkBounds> =
-            self.compute_sparkline_bounds();
+        let spark_bounds_by_col = self.compute_sparkline_bounds();
         let mut body = Col::new()
             .spacing(0)
             .width(iced_core::Length::Shrink)
@@ -647,11 +646,11 @@ impl<X: GXExt> DataTableW<X> {
     /// `Sparkline`-typed column. The column type's `min`/`max` clamp
     /// either end when set; otherwise the bound comes from the union
     /// of every row's recorded points.
-    fn compute_sparkline_bounds(&self) -> FxHashMap<ArcStr, SparkBounds> {
-        let mut out = FxHashMap::default();
+    fn compute_sparkline_bounds(&self) -> LPooled<AHashMap<ArcStr, SparkBounds>> {
+        let mut out: LPooled<AHashMap<ArcStr, SparkBounds>> = LPooled::take();
         // Collect column-wide value ranges by walking the sparkline
         // history in one lock.
-        let mut ranges: FxHashMap<ArcStr, (f64, f64)> = FxHashMap::default();
+        let mut ranges: LPooled<AHashMap<ArcStr, (f64, f64)>> = LPooled::take();
         {
             let inner = self.cells.inner.lock();
             for ((_row, col), history) in inner.sparklines.iter() {
@@ -781,7 +780,7 @@ impl<X: GXExt> DataTableW<X> {
                     GraphixTheme,
                     Renderer,
                 >::new(options, selected, {
-                    let id_map_owned: FxHashMap<String, ArcStr> = choices
+                    let id_map_owned: LPooled<AHashMap<String, ArcStr>> = choices
                         .iter()
                         .map(|(id, label)| (label.to_string(), id.clone()))
                         .collect();

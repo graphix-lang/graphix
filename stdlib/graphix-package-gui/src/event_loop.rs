@@ -15,8 +15,8 @@ use crate::{
     window::{ResolvedWindow, TrackedWindow},
     ToGui,
 };
+use ahash::AHashMap;
 use anyhow::{Context, Result};
-use fxhash::FxHashMap;
 use graphix_compiler::BindId;
 use graphix_rt::{CompExp, GXExt, GXHandle};
 use iced_core::{clipboard, mouse, renderer::Style, window, Size};
@@ -24,6 +24,7 @@ use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::wgpu;
 use log::error;
 use netidx::publisher::Value;
+use nohash::IntMap;
 use poolshark::local::LPooled;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -125,10 +126,10 @@ struct GuiHandler<X: GXExt> {
     gpu: Option<GpuState>,
     rt: tokio::runtime::Handle,
     stop: Option<oneshot::Sender<()>>,
-    windows: FxHashMap<BindId, TrackedWindow<X>>,
-    win_to_bid: FxHashMap<WindowId, BindId>,
-    surfaces: FxHashMap<WindowId, WindowSurface>,
-    ui_caches: FxHashMap<WindowId, user_interface::Cache>,
+    windows: IntMap<BindId, TrackedWindow<X>>,
+    win_to_bid: AHashMap<WindowId, BindId>,
+    surfaces: AHashMap<WindowId, WindowSurface>,
+    ui_caches: AHashMap<WindowId, user_interface::Cache>,
     clipboard: Clipboard,
     /// Proxy cloned into the resize-burst render timer tasks so they
     /// can post `ToGui::ResizeTimer` back into the main loop when
@@ -515,10 +516,10 @@ pub(crate) fn run<X: GXExt>(
         gpu: None,
         rt,
         stop: Some(stop),
-        windows: FxHashMap::default(),
-        win_to_bid: FxHashMap::default(),
-        surfaces: FxHashMap::default(),
-        ui_caches: FxHashMap::default(),
+        windows: IntMap::default(),
+        win_to_bid: AHashMap::default(),
+        surfaces: AHashMap::default(),
+        ui_caches: AHashMap::default(),
         clipboard: Clipboard::new(),
         resize_proxy,
         resize_end_tx,
@@ -544,7 +545,7 @@ async fn resize_end_debounce(
     let far = || Instant::now() + Duration::from_secs(86400);
     let timer = sleep_until(far());
     tokio::pin!(timer);
-    let mut pending: FxHashMap<WindowId, SizeV> = FxHashMap::default();
+    let mut pending: LPooled<AHashMap<WindowId, SizeV>> = LPooled::take();
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
@@ -573,10 +574,10 @@ fn reconcile_windows<X: GXExt>(
     rt: &tokio::runtime::Handle,
     gpu: &mut Option<GpuState>,
     event_loop: &ActiveEventLoop,
-    windows: &mut FxHashMap<BindId, TrackedWindow<X>>,
-    win_to_bid: &mut FxHashMap<WindowId, BindId>,
-    surfaces: &mut FxHashMap<WindowId, WindowSurface>,
-    ui_caches: &mut FxHashMap<WindowId, user_interface::Cache>,
+    windows: &mut IntMap<BindId, TrackedWindow<X>>,
+    win_to_bid: &mut AHashMap<WindowId, BindId>,
+    surfaces: &mut AHashMap<WindowId, WindowSurface>,
+    ui_caches: &mut AHashMap<WindowId, user_interface::Cache>,
     root_value: Value,
 ) -> Result<()> {
     let arr =

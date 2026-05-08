@@ -8,9 +8,9 @@ use crate::{
     typ::{FnType, Type},
     BindId, ExecCtx, Node, Rt, Scope, UserEvent,
 };
+use ahash::AHashMap;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
-use fxhash::FxHashMap;
 use netidx::publisher::{Typ, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -73,7 +73,7 @@ pub fn apply<R: Rt, E: UserEvent>(
 ) -> Node<R, E> {
     let ftype = typ.reset_tvars();
     ftype.alias_tvars(&mut LPooled::take());
-    let args: FxHashMap<ArgKey, Arg<R, E>> = args
+    let args: AHashMap<ArgKey, Arg<R, E>> = args
         .into_iter()
         .zip(typ.args.iter())
         .enumerate()
@@ -82,10 +82,7 @@ pub fn apply<R: Rt, E: UserEvent>(
                 Some(name) => ArgKey::Named(name.clone()),
                 None => ArgKey::Positional(i),
             };
-            (
-                key,
-                Arg { id: BindId::new(), node: Some(node), is_default: false },
-            )
+            (key, Arg { id: BindId::new(), node: Some(node), is_default: false })
         })
         .collect();
     Box::new(CallSite {

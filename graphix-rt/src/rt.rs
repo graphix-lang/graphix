@@ -1,10 +1,10 @@
 use crate::{GXExt, UpdateBatch, WriteBatch};
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use arcstr::{literal, ArcStr};
 use chrono::prelude::*;
 use compact_str::format_compact;
 use futures::{channel::mpsc, stream::SelectAll, FutureExt};
-use fxhash::FxHashMap;
 use graphix_compiler::{expr::ExprId, BindId, CustomBuiltinType, Rt};
 use netidx::{
     path::Path,
@@ -17,9 +17,10 @@ use netidx_protocols::rpc::{
     self,
     server::{ArgSpec, RpcCall},
 };
+use nohash::IntMap;
 use poolshark::global::GPooled;
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{hash_map::Entry, VecDeque},
     fmt::Debug,
     future,
     time::Duration,
@@ -39,18 +40,18 @@ pub(super) struct RpcClient {
 
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
-    pub(super) by_ref: FxHashMap<BindId, FxHashMap<ExprId, usize>>,
-    pub(super) subscribed: FxHashMap<SubId, FxHashMap<ExprId, usize>>,
-    pub(super) published: FxHashMap<Id, FxHashMap<ExprId, usize>>,
+    pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
+    pub(super) subscribed: IntMap<SubId, IntMap<ExprId, usize>>,
+    pub(super) published: IntMap<Id, IntMap<ExprId, usize>>,
     pub(super) var_updates: VecDeque<(BindId, Value)>,
     pub(super) custom_updates: VecDeque<(BindId, Box<dyn CustomBuiltinType>)>,
     pub(super) net_updates: VecDeque<(SubId, subscriber::Event)>,
     pub(super) net_writes: VecDeque<(Id, WriteRequest)>,
     pub(super) rpc_overflow: VecDeque<(BindId, RpcCall)>,
-    pub(super) rpc_clients: FxHashMap<Path, RpcClient>,
-    pub(super) published_rpcs: FxHashMap<Path, rpc::server::Proc>,
+    pub(super) rpc_clients: AHashMap<Path, RpcClient>,
+    pub(super) published_rpcs: AHashMap<Path, rpc::server::Proc>,
     pub(super) pending_unsubscribe: VecDeque<(Instant, Dval)>,
-    pub(super) change_trackers: FxHashMap<BindId, Arc<Mutex<ChangeTracker>>>,
+    pub(super) change_trackers: IntMap<BindId, Arc<Mutex<ChangeTracker>>>,
     pub(super) tasks: JoinSet<(BindId, Value)>,
     pub(super) custom_tasks: JoinSet<(BindId, Box<dyn CustomBuiltinType>)>,
     pub(super) watches:
@@ -69,7 +70,7 @@ pub struct GXRt<X: GXExt> {
     pub(super) writes: mpsc::Receiver<WriteBatch>,
     pub(super) rpcs_tx: mpsc::Sender<(BindId, RpcCall)>,
     pub(super) rpcs: mpsc::Receiver<(BindId, RpcCall)>,
-    pub(super) updated: FxHashMap<ExprId, bool>,
+    pub(super) updated: IntMap<ExprId, bool>,
     pub ext: X,
 }
 
@@ -90,19 +91,19 @@ impl<X: GXExt> GXRt<X> {
         let mut var_watches = SelectAll::new();
         var_watches.push(dummy_rx);
         Self {
-            by_ref: HashMap::default(),
+            by_ref: IntMap::default(),
             var_updates: VecDeque::new(),
             custom_updates: VecDeque::new(),
             net_updates: VecDeque::new(),
             net_writes: VecDeque::new(),
             rpc_overflow: VecDeque::new(),
-            rpc_clients: HashMap::default(),
-            subscribed: HashMap::default(),
+            rpc_clients: AHashMap::default(),
+            subscribed: IntMap::default(),
             pending_unsubscribe: VecDeque::new(),
-            published: HashMap::default(),
-            change_trackers: HashMap::default(),
-            published_rpcs: HashMap::default(),
-            updated: HashMap::default(),
+            published: IntMap::default(),
+            change_trackers: IntMap::default(),
+            published_rpcs: AHashMap::default(),
+            updated: IntMap::default(),
             ext: X::default(),
             tasks,
             custom_tasks,
@@ -332,7 +333,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.tasks.spawn(async move {
             check_changed!(id, resolver, path, ct);
             let mut tbl = or_err!(id, resolver.table(path).await);
-            let cols = tbl.cols.drain(..).map(|(name, _count)| Value::String(name.into()));
+            let cols =
+                tbl.cols.drain(..).map(|(name, _count)| Value::String(name.into()));
             let cols = Value::Array(ValArray::from_iter_exact(cols));
             let rows = tbl.rows.drain(..).map(|name| Value::String(name.into()));
             let rows = Value::Array(ValArray::from_iter_exact(rows));

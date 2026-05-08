@@ -19,7 +19,7 @@ impl TestCtx {
 
 pub type RegisterFn = fn(
     &mut graphix_compiler::ExecCtx<GXRt<NoExt>, <NoExt as graphix_rt::GXExt>::UserEvent>,
-    &mut fxhash::FxHashMap<netidx_core::path::Path, arcstr::ArcStr>,
+    &mut ahash::AHashMap<netidx_core::path::Path, arcstr::ArcStr>,
     &mut graphix_package::IndexSet<arcstr::ArcStr>,
 ) -> Result<()>;
 
@@ -58,7 +58,7 @@ where
         env.publisher().clone(),
         env.subscriber().clone(),
     ))?;
-    let mut modules = fxhash::FxHashMap::default();
+    let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
     for f in register {
         f(&mut ctx, &mut modules, &mut root_mods)?;
@@ -110,7 +110,7 @@ where
 {
     let (tx, mut rx) = mpsc::channel(10);
     let gx_code = format!("let result = {code}");
-    let tbl = fxhash::FxHashMap::from_iter([(
+    let tbl = ahash::AHashMap::from_iter([(
         netidx_core::path::Path::from("/test.gx"),
         arcstr::ArcStr::from(gx_code),
     )]);
@@ -166,7 +166,7 @@ macro_rules! run {
         #[tokio::test(flavor = "current_thread")]
         async fn $name() -> ::anyhow::Result<()> {
             let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
-            let tbl = ::fxhash::FxHashMap::from_iter([
+            let tbl = ::ahash::AHashMap::from_iter([
                 $((::netidx_core::path::Path::from($path), ::arcstr::ArcStr::from($code))),+
             ]);
             let resolver = ::graphix_compiler::expr::ModuleResolver::VFS(tbl);

@@ -2,11 +2,11 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use ahash::AHashMap;
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
-use fxhash::FxHashMap;
 use graphix_compiler::{
     env::Env,
     expr::{CouldNotResolve, ExprId, ModuleResolver, Source},
@@ -161,7 +161,7 @@ impl<X: GXExt> Shell<X> {
         if !args.is_empty() {
             ctx.libstate.set(ProgramArgs(args));
         }
-        let mut vfs_modules = FxHashMap::default();
+        let mut vfs_modules = AHashMap::default();
         let result = deps::register::<X>(&mut ctx, &mut vfs_modules)
             .context("register package modules")?;
         if let Some(main) = result.main_program {

@@ -72,7 +72,7 @@ macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
         $typ.with_deref(|typ| {
             let mut typ = typ.cloned();
-            let mut hist: poolshark::local::LPooled<fxhash::FxHashSet<usize>> = poolshark::local::LPooled::take();
+            let mut hist: poolshark::local::LPooled<nohash::IntSet<usize>> = poolshark::local::LPooled::take();
             loop {
                 #[allow(unreachable_patterns)]
                 match &typ {

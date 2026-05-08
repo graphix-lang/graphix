@@ -1,7 +1,7 @@
-use super::{PrintFlag, Type, TypeRef};
 use super::cast::IsAFlags;
+use super::{PrintFlag, Type, TypeRef};
 use crate::{env::Env, typ::format_with_flags};
-use fxhash::FxHashSet;
+use ahash::AHashSet;
 use netidx::publisher::Value;
 use netidx_value::NakedValue;
 use poolshark::local::LPooled;
@@ -18,7 +18,7 @@ impl<'a> TVal<'a> {
     fn fmt_int(
         &self,
         f: &mut fmt::Formatter<'_>,
-        hist: &mut FxHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(usize, usize)>,
     ) -> fmt::Result {
         if !self.typ.is_a_with(&self.env, IsAFlags::MatchAbstract.into(), &self.v) {
             return format_with_flags(PrintFlag::DerefTVars, || {
@@ -39,7 +39,7 @@ impl<'a> TVal<'a> {
             }
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => write!(f, "{}", NakedValue(v)),
-            (Type::Ref (TypeRef { .. }), v) => {
+            (Type::Ref(TypeRef { .. }), v) => {
                 let typ = match self.typ.lookup_ref(&self.env) {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,

@@ -16,11 +16,11 @@ use super::types::{
 use super::{
     compile_callable_opt, DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY,
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use futures::channel::mpsc;
-use fxhash::{FxHashMap, FxHashSet};
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use log::warn;
 use netidx::{
@@ -29,6 +29,7 @@ use netidx::{
     publisher::Value,
     subscriber::{Dval, Event, SubId, UpdatesFlags},
 };
+use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use smallvec::SmallVec;
@@ -73,35 +74,35 @@ pub(super) struct SharedCellsInner {
     /// `SubId` → owned `Dval`. Dropping a Dval cancels the netidx
     /// subscription, so this map is the single source of subscription
     /// lifetime; the widget no longer holds row_subs or sort_col_subs.
-    pub(super) dvals: FxHashMap<SubId, Dval>,
+    pub(super) dvals: IntMap<SubId, Dval>,
     /// Most recent `Value` from each subscription. Stored raw — the
     /// dispatch task writes the netidx `Value` as-is and we format to
     /// `ArcStr` only at draw / sort time. A 100 Hz cell scrolled out
     /// of view costs one `Value::clone` per update (refcount bump),
     /// not one ArcStr allocation.
-    pub(super) values: FxHashMap<SubId, Value>,
+    pub(super) values: IntMap<SubId, Value>,
     /// Lazy `ArcStr` cache for display. Populated at render time when
     /// a cell is first formatted; the dispatch task evicts an entry
     /// whenever its `Value` changes. So a stable cell allocates one
     /// ArcStr the first time it is drawn and reuses it forever; a
     /// fast-updating off-screen cell never allocates because its
     /// invalidations are never followed by a render.
-    pub(super) formatted: FxHashMap<SubId, ArcStr>,
+    pub(super) formatted: IntMap<SubId, ArcStr>,
     /// `(row_path, col_name)` → `SubId`. Cell index used by the render
     /// path to find the value for a given cell. Sort columns share
     /// `SubId`s with grid cells whenever the paths coincide (netidx
     /// dedupes `subscribe` by path), so an entry exists for every
     /// `(Path, col)` we have a live subscription on.
-    pub(super) cells: FxHashMap<(Path, ArcStr), SubId>,
+    pub(super) cells: AHashMap<(Path, ArcStr), SubId>,
     /// `SubId` → roles played by that subscription. Multi-role because
     /// a cell that is also sorted on registers two roles against the
     /// same id; the dispatch task fans every update out to each role.
-    pub(super) routing: FxHashMap<SubId, SubRoles>,
+    pub(super) routing: IntMap<SubId, SubRoles>,
     /// Sparkline history: `(row_path, col_name)` → timestamped values.
     /// Identity-keyed so history survives row reordering. `LPooled`
     /// returns `VecDeque`s to the thread-local pool when sparkline
     /// cells churn (sort/scroll evicts and re-creates entries).
-    pub(super) sparklines: FxHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
+    pub(super) sparklines: AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
     /// Latest `on_update` callable id (if any). Written by the widget
     /// when the `on_update` ref resolves; read by the dispatch task at
     /// the start of each batch.
@@ -111,12 +112,12 @@ pub(super) struct SharedCellsInner {
 impl SharedCellsInner {
     fn new() -> Self {
         Self {
-            dvals: FxHashMap::default(),
-            values: FxHashMap::default(),
-            formatted: FxHashMap::default(),
-            cells: FxHashMap::default(),
-            routing: FxHashMap::default(),
-            sparklines: FxHashMap::default(),
+            dvals: IntMap::default(),
+            values: IntMap::default(),
+            formatted: IntMap::default(),
+            cells: AHashMap::default(),
+            routing: IntMap::default(),
+            sparklines: AHashMap::default(),
             on_update: None,
         }
     }
@@ -362,7 +363,7 @@ impl<X: GXExt> DataTableW<X> {
                     return pending;
                 }
             };
-        let new_specs = parse_table_columns(&cols_val);
+        let mut new_specs = parse_table_columns(&cols_val);
         let mut rows_raw: LPooled<Vec<Value>> =
             rows_val.cast_to::<LPooled<Vec<Value>>>().unwrap_or_default();
         // Convert row strings to Paths (for absolute netidx paths) or
@@ -377,9 +378,9 @@ impl<X: GXExt> DataTableW<X> {
         // (matched by name). New (never-seen) columns get fresh
         // `ColumnState`s; the loop below compiles their refs/callables
         // before returning.
-        let mut existing: FxHashMap<ArcStr, ColumnState<X>> =
+        let mut existing: LPooled<AHashMap<ArcStr, ColumnState<X>>> =
             self.columns.drain(..).collect();
-        for spec in new_specs.into_iter() {
+        for spec in new_specs.drain(..) {
             let entry = match existing.remove(&spec.name) {
                 Some(mut prev) => {
                     // Reuse compiled state when the bid matches —
@@ -429,7 +430,7 @@ impl<X: GXExt> DataTableW<X> {
         // so the row comparator has live cell values for each sort
         // key.
         self.cells.sort_col_dirty.store(false, Ordering::Relaxed);
-        let mut sort_cols: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+        let mut sort_cols: LPooled<AHashSet<ArcStr>> = LPooled::take();
         sort_cols.extend(self.sort_by.iter().map(|s| s.column.clone()));
         for sort_col in sort_cols.iter() {
             self.subscribe_sort_column(sort_col);
@@ -467,7 +468,16 @@ impl<X: GXExt> DataTableW<X> {
     /// yet. Idempotent: a column whose state was reused from the
     /// previous `apply_table` skips through with no work.
     async fn compile_column_refs(&mut self, name: &ArcStr) -> Result<()> {
-        let (need_callback, cb_value, need_source, source_bid, need_width, width_bid, need_on_resize, on_resize_bid) = {
+        let (
+            need_callback,
+            cb_value,
+            need_source,
+            source_bid,
+            need_width,
+            width_bid,
+            need_on_resize,
+            on_resize_bid,
+        ) = {
             let Some(c) = self.columns.get(name) else { return Ok(()) };
             (
                 c.callback.is_none() && c.spec.callback_value.is_some(),
@@ -529,8 +539,8 @@ impl<X: GXExt> DataTableW<X> {
     /// underlying sub (and its `cells` entry) when no role remains.
     /// The previous behaviour — running `apply_table_sync` and thus
     /// `clear_subs` — wiped live Grid subs on every sort flip.
-    pub(super) fn apply_sort_by_change(&mut self, old_cols: &FxHashSet<ArcStr>) {
-        let new_cols: FxHashSet<ArcStr> =
+    pub(super) fn apply_sort_by_change(&mut self, old_cols: &AHashSet<ArcStr>) {
+        let new_cols: LPooled<AHashSet<ArcStr>> =
             self.sort_by.iter().map(|s| s.column.clone()).collect();
         for col in new_cols.difference(old_cols) {
             self.subscribe_sort_column(col);
@@ -606,7 +616,7 @@ impl<X: GXExt> DataTableW<X> {
     /// itself when no role remains.
     pub(super) fn update_subscriptions(&mut self) {
         let (s, e) = self.subscription_row_range();
-        let mut want: LPooled<FxHashSet<Path>> = LPooled::take();
+        let mut want: LPooled<AHashSet<Path>> = LPooled::take();
         want.extend((s..e).filter_map(|i| self.row_paths.get(i).cloned()));
         {
             let mut inner = self.cells.inner.lock();
@@ -633,8 +643,7 @@ impl<X: GXExt> DataTableW<X> {
                     roles.retain(|r| match r {
                         SubRole::Grid { row_path, col_name, .. } => {
                             if !want.contains(row_path) {
-                                dropped_grid =
-                                    Some((row_path.clone(), col_name.clone()));
+                                dropped_grid = Some((row_path.clone(), col_name.clone()));
                                 false
                             } else {
                                 true

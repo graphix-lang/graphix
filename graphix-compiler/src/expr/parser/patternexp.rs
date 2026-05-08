@@ -8,6 +8,7 @@ use crate::{
     },
     typ::Type,
 };
+use ahash::AHashSet;
 use arcstr::{literal, ArcStr};
 use combine::{
     attempt, between, choice, optional,
@@ -15,7 +16,6 @@ use combine::{
     stream::{position::SourcePosition, Range},
     token, unexpected_any, value, ParseError, Parser, RangeStream,
 };
-use fxhash::FxHashSet;
 use netidx::utils::Either;
 use netidx_value::parser::{value as parse_value, VAL_ESC, VAL_MUST_ESC};
 use poolshark::local::LPooled;
@@ -187,7 +187,7 @@ where
             *ex
         });
         binds.sort_by_key(|(s, _, _)| s.clone());
-        let s = binds.iter().map(|(s, _, _)| s).collect::<LPooled<FxHashSet<_>>>();
+        let s = binds.iter().map(|(s, _, _)| s).collect::<LPooled<AHashSet<_>>>();
         if s.len() < binds.len() {
             unexpected_any("struct fields must be unique").left()
         } else {

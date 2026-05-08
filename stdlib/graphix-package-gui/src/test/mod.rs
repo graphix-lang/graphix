@@ -1,9 +1,11 @@
+use ahash::AHashMap;
 use anyhow::{bail, Context, Result};
 use graphix_compiler::expr::{ExprId, ModuleResolver};
 use graphix_compiler::BindId;
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use nohash::IntMap;
 use poolshark::global::GPooled;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -39,8 +41,8 @@ struct GuiTestHarness {
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     widget: GuiW<NoExt>,
     rt_handle: tokio::runtime::Handle,
-    watched: fxhash::FxHashMap<ExprId, Value>,
-    watch_names: fxhash::FxHashMap<String, ExprId>,
+    watched: IntMap<ExprId, Value>,
+    watch_names: AHashMap<String, ExprId>,
     _refs: Vec<Ref<NoExt>>,
     _callables: Vec<Callable<NoExt>>,
 }
@@ -53,7 +55,7 @@ impl GuiTestHarness {
     /// Example: `"use gui; let result = gui::text(content: &\"hello\")"`.
     async fn new(code: &str) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel(100);
-        let tbl = fxhash::FxHashMap::from_iter([(
+        let tbl = AHashMap::from_iter([(
             netidx_core::path::Path::from("/test.gx"),
             arcstr::ArcStr::from(code),
         )]);
@@ -83,8 +85,8 @@ impl GuiTestHarness {
             rx,
             widget,
             rt_handle,
-            watched: fxhash::FxHashMap::default(),
-            watch_names: fxhash::FxHashMap::default(),
+            watched: IntMap::default(),
+            watch_names: AHashMap::default(),
             _refs: Vec::new(),
             _callables: Vec::new(),
         })
@@ -159,7 +161,8 @@ impl GuiTestHarness {
         // any follow-up messages the shell emits are fed back in.
         // FIFO (same as the real event loop) so message ordering
         // like CellEdit → CellEditSubmit is preserved.
-        let mut pending: std::collections::VecDeque<Message> = msgs.iter().cloned().collect();
+        let mut pending: std::collections::VecDeque<Message> =
+            msgs.iter().cloned().collect();
         while let Some(msg) = pending.pop_front() {
             match msg {
                 Message::Nop => {}
@@ -209,7 +212,12 @@ impl GuiTestHarness {
     /// both the runtime queue and the widget's `before_view` hooks,
     /// so tests see the same state a redraw would.
     #[allow(dead_code)]
-    async fn wait_until<F>(&mut self, mut pred: F, within: Duration, why: &str) -> Result<()>
+    async fn wait_until<F>(
+        &mut self,
+        mut pred: F,
+        within: Duration,
+        why: &str,
+    ) -> Result<()>
     where
         F: FnMut(&mut Self) -> bool,
     {
@@ -234,9 +242,7 @@ impl GuiTestHarness {
 
     /// Get a DataTableSnapshot from the widget, if it is a data table.
     fn dt_snapshot(&self) -> crate::widgets::DataTableSnapshot {
-        self.widget
-            .data_table_snapshot()
-            .expect("widget is not a DataTableW")
+        self.widget.data_table_snapshot().expect("widget is not a DataTableW")
     }
 
     /// Downcast the root widget to `DataTableW<NoExt>` for direct
@@ -288,12 +294,18 @@ impl GuiTestHarness {
     ) -> Result<graphix_rt::CallableId> {
         let bid = find_bind_id(&self.compiled.env, name)
             .with_context(|| format!("compile_named_callable: lookup {name}"))?;
-        let r = self.gx.compile_ref(bid).await
+        let r = self
+            .gx
+            .compile_ref(bid)
+            .await
             .with_context(|| format!("compile_named_callable: compile_ref {name}"))?;
-        let val = r.last.clone()
+        let val = r
+            .last
+            .clone()
             .with_context(|| format!("compile_named_callable: no value for {name}"))?;
-        let cb = self.gx.compile_callable(val).await
-            .with_context(|| format!("compile_named_callable: compile_callable {name}"))?;
+        let cb = self.gx.compile_callable(val).await.with_context(|| {
+            format!("compile_named_callable: compile_callable {name}")
+        })?;
         let id = cb.id();
         self._refs.push(r);
         self._callables.push(cb);

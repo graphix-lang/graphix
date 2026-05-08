@@ -3,11 +3,12 @@ use crate::{
     expr::ModPath,
     format_with_flags, PrintFlag, PRINT_FLAGS,
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use fxhash::{FxHashMap, FxHashSet};
 use netidx::{publisher::Typ, utils::Either};
+use nohash::IntMap;
 use poolshark::{local::LPooled, IsoPoolable};
 use smallvec::SmallVec;
 use std::{
@@ -42,7 +43,7 @@ impl FromIterator<bool> for AndAc {
 
 struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
-    ref_ids: LPooled<FxHashMap<usize, SmallVec<[(Arc<[Type]>, usize); 2]>>>,
+    ref_ids: LPooled<IntMap<usize, SmallVec<[(Arc<[Type]>, usize); 2]>>>,
     next_id: usize,
 }
 
@@ -248,7 +249,7 @@ impl Type {
                         });
                     }
                 }
-                let mut known: LPooled<FxHashMap<ArcStr, Type>> = LPooled::take();
+                let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
                 for ((tv, ct), arg) in def_params.iter().zip(params.iter()) {
                     if let Some(ct) = ct {
                         ct.check_contains(env, arg)?;
@@ -362,7 +363,7 @@ impl Type {
     fn strip_error_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<FxHashSet<Option<usize>>>,
+        hist: &mut RefHist<AHashSet<Option<usize>>>,
     ) -> Option<Type> {
         match self {
             Type::Error(t) => match t.strip_error_int(env, hist) {
@@ -415,7 +416,7 @@ impl Type {
     pub fn strip_error(&self, env: &Env) -> Option<Self> {
         self.strip_error_int(
             env,
-            &mut RefHist::<FxHashSet<Option<usize>>>::new(LPooled::take()),
+            &mut RefHist::<AHashSet<Option<usize>>>::new(LPooled::take()),
         )
     }
 

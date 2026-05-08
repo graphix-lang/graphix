@@ -3,11 +3,11 @@ use crate::{
     typ::{TVar, Type},
     BindId, ModuleInternalView, Scope, SigImplLink, TypeRefSite,
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
-use fxhash::{FxHashMap, FxHashSet};
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
 use parking_lot::Mutex;
@@ -245,8 +245,8 @@ impl Env {
             }
             Sandbox::Whitelist(wl) => {
                 let mut t = self.clone();
-                let mut modules = FxHashSet::default();
-                let mut names: FxHashMap<_, FxHashSet<_>> = FxHashMap::default();
+                let mut modules = AHashSet::default();
+                let mut names: AHashMap<_, AHashSet<_>> = AHashMap::default();
                 for w in wl.iter() {
                     if t.modules.contains(w) {
                         modules.insert(w.clone());
@@ -437,8 +437,8 @@ impl Env {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
         }
-        let mut known: LPooled<FxHashMap<ArcStr, TVar>> = LPooled::take();
-        let mut declared: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for (tv, tc) in params.iter() {
             Type::TVar(tv.clone()).alias_tvars(&mut known);
             if let Some(tc) = tc {

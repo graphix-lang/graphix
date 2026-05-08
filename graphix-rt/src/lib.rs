@@ -13,7 +13,6 @@ use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
-use fxhash::FxHashSet;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath, ModuleResolver, Source},
@@ -28,6 +27,7 @@ use netidx::{
 };
 use netidx_core::atomic_id;
 use netidx_value::FromValue;
+use nohash::IntSet;
 use poolshark::global::GPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -335,7 +335,7 @@ enum DeferredCall {
 pub struct NamedCallable<X: GXExt> {
     fname: Ref<X>,
     current: Option<Callable<X>>,
-    ids: FxHashSet<ExprId>,
+    ids: IntSet<ExprId>,
     deferred: Vec<DeferredCall>,
     h: GXHandle<X>,
 }
@@ -582,12 +582,7 @@ impl<X: GXExt> GXHandle<X> {
         initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
         Ok(self
-            .exec(|tx| ToGX::Check {
-                path,
-                resolvers: None,
-                initial_scope,
-                res: tx,
-            })
+            .exec(|tx| ToGX::Check { path, resolvers: None, initial_scope, res: tx })
             .await??)
     }
 
@@ -672,7 +667,7 @@ impl<X: GXExt> GXHandle<X> {
         Ok(NamedCallable {
             fname: r,
             current: None,
-            ids: FxHashSet::default(),
+            ids: IntSet::default(),
             deferred: vec![],
             h: self.clone(),
         })

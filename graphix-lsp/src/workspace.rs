@@ -7,12 +7,10 @@
 //! picked. Files with no incoming edges are project roots; everything
 //! reachable from a root forms that project.
 
+use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use arcstr::ArcStr;
-use fxhash::{FxHashMap, FxHashSet};
-use graphix_compiler::expr::{
-    parser, ExprKind, ModuleKind, Origin, SigKind, Source,
-};
+use graphix_compiler::expr::{parser, ExprKind, ModuleKind, Origin, SigKind, Source};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -38,7 +36,7 @@ pub struct WorkspaceFile {
 #[derive(Debug, Clone)]
 pub struct Project {
     pub root: PathBuf,
-    pub files: FxHashSet<PathBuf>,
+    pub files: AHashSet<PathBuf>,
     /// If `root` lives at `<crate>/src/graphix/mod.gx` of a Cargo crate
     /// named `graphix-package-<x>`, this is `Some("<x>")` — the
     /// graphix-side namespace under which the crate's modules
@@ -51,9 +49,9 @@ pub struct Project {
 /// index from file → projects containing it.
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceModel {
-    pub files: FxHashMap<PathBuf, WorkspaceFile>,
+    pub files: AHashMap<PathBuf, WorkspaceFile>,
     pub projects: Vec<Project>,
-    pub file_to_projects: FxHashMap<PathBuf, Vec<usize>>,
+    pub file_to_projects: AHashMap<PathBuf, Vec<usize>>,
 }
 
 const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor"];
@@ -63,13 +61,10 @@ const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor
 /// empty `mod_decls` so partially-broken workspaces still produce a
 /// useful graph.
 pub fn scan(roots: &[PathBuf]) -> WorkspaceModel {
-    let mut files: FxHashMap<PathBuf, WorkspaceFile> = FxHashMap::default();
+    let mut files: AHashMap<PathBuf, WorkspaceFile> = AHashMap::default();
     for root in roots {
         for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
-            !e.file_name()
-                .to_str()
-                .map(|s| SKIP_DIRS.contains(&s))
-                .unwrap_or(false)
+            !e.file_name().to_str().map(|s| SKIP_DIRS.contains(&s)).unwrap_or(false)
         }) {
             let Ok(entry) = entry else { continue };
             if !entry.file_type().is_file() {
@@ -102,11 +97,8 @@ pub fn extract_mod_decls(
     kind: FileKind,
     path: PathBuf,
 ) -> Result<Vec<ArcStr>> {
-    let ori = Origin {
-        parent: None,
-        source: Source::File(path),
-        text: ArcStr::from(text),
-    };
+    let ori =
+        Origin { parent: None, source: Source::File(path), text: ArcStr::from(text) };
     let mut out = Vec::new();
     match kind {
         FileKind::Gx => {
@@ -153,11 +145,10 @@ fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
 /// Compute the reachable file set for every potential project root
 /// (every `.gx` file), mark files imported by any project, and
 /// declare project roots as the unimported `.gx` files.
-fn build_projects(files: FxHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
+fn build_projects(files: AHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
     // Pre-compute reachable sets for every .gx file as if it were a
     // project root.
-    let mut reachable: FxHashMap<PathBuf, FxHashSet<PathBuf>> =
-        FxHashMap::default();
+    let mut reachable: AHashMap<PathBuf, AHashSet<PathBuf>> = AHashMap::default();
     for (path, wf) in &files {
         if wf.kind == FileKind::Gxi {
             continue;
@@ -165,7 +156,7 @@ fn build_projects(files: FxHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
         reachable.insert(path.clone(), bfs_from_root(path, &files));
     }
     // A file is "imported" if some other root's BFS reaches it.
-    let mut imported: FxHashSet<PathBuf> = FxHashSet::default();
+    let mut imported: AHashSet<PathBuf> = AHashSet::default();
     for (root, set) in &reachable {
         for f in set {
             if f != root {
@@ -183,18 +174,15 @@ fn build_projects(files: FxHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
     roots.sort();
     let mut projects: Vec<Project> = Vec::new();
     for root in roots {
-        let project_files = reachable
-            .get(&root)
-            .cloned()
-            .unwrap_or_else(|| {
-                let mut s = FxHashSet::default();
-                s.insert(root.clone());
-                s
-            });
+        let project_files = reachable.get(&root).cloned().unwrap_or_else(|| {
+            let mut s = AHashSet::default();
+            s.insert(root.clone());
+            s
+        });
         let package_scope = detect_package_scope(&root);
         projects.push(Project { root, files: project_files, package_scope });
     }
-    let mut file_to_projects: FxHashMap<PathBuf, Vec<usize>> = FxHashMap::default();
+    let mut file_to_projects: AHashMap<PathBuf, Vec<usize>> = AHashMap::default();
     for (idx, project) in projects.iter().enumerate() {
         for f in &project.files {
             file_to_projects.entry(f.clone()).or_default().push(idx);
@@ -210,10 +198,10 @@ fn build_projects(files: FxHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
 /// descend.
 fn bfs_from_root(
     root: &Path,
-    files: &FxHashMap<PathBuf, WorkspaceFile>,
-) -> FxHashSet<PathBuf> {
+    files: &AHashMap<PathBuf, WorkspaceFile>,
+) -> AHashSet<PathBuf> {
     let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-    let mut out: FxHashSet<PathBuf> = FxHashSet::default();
+    let mut out: AHashSet<PathBuf> = AHashSet::default();
     let mut stack: Vec<(PathBuf, PathBuf)> = vec![(root.to_path_buf(), PathBuf::new())];
     while let Some((file, rel)) = stack.pop() {
         if !out.insert(file.clone()) {
@@ -317,7 +305,7 @@ fn resolve_mod(
     base: &Path,
     rel: &Path,
     name: &str,
-    files: &FxHashMap<PathBuf, WorkspaceFile>,
+    files: &AHashMap<PathBuf, WorkspaceFile>,
 ) -> Option<PathBuf> {
     let dir = base.join(rel);
     let candidates = [
@@ -427,10 +415,7 @@ mod tests {
     fn no_package_scope_for_non_graphix_crate() {
         let dir = make_dir();
         let crate_dir = dir.path().join("some-other-crate");
-        write(
-            &crate_dir.join("Cargo.toml"),
-            "[package]\nname = \"some-other-crate\"\n",
-        );
+        write(&crate_dir.join("Cargo.toml"), "[package]\nname = \"some-other-crate\"\n");
         let mod_path = crate_dir.join("src").join("graphix").join("mod.gx");
         write(&mod_path, "let x = 1\n");
         let m = scan(&[crate_dir.clone()]);
@@ -459,5 +444,3 @@ mod tests {
         assert!(main.files.contains(&root.join("api.gxi")));
     }
 }
-
-

@@ -9,7 +9,8 @@ publish = false
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 chrono = { workspace = true }
-fxhash = { workspace = true }
+nohash = { workspace = true }
+ahash = { workspace = true }
 graphix-compiler = { version = "0.8.0", path = "../../graphix-compiler" }
 graphix-package = { version = "0.8.0", path = "../../graphix-package" }
 graphix-package-args = { version = "0.8.0", path = "../graphix-package-args" }

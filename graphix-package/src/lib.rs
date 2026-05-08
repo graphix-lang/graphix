@@ -2,6 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use ahash::AHashMap;
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -9,7 +10,6 @@ use chrono::Local;
 use compact_str::{format_compact, CompactString};
 use crates_io_api::AsyncClient;
 use flate2::bufread::MultiGzDecoder;
-use fxhash::FxHashMap;
 use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use handlebars::Handlebars;
@@ -85,7 +85,7 @@ pub trait Package<X: GXExt> {
     /// Normally this is handled by the defpackage macro.
     fn register(
         ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
-        modules: &mut FxHashMap<netidx_core::path::Path, ArcStr>,
+        modules: &mut AHashMap<netidx_core::path::Path, ArcStr>,
         root_mods: &mut IndexSet<ArcStr>,
     ) -> Result<()>;
 

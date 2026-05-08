@@ -39,7 +39,8 @@ flate2 = "1"
 flexi_logger = "0.31"
 futures = "0.3.32"
 fd-lock = "4"
-fxhash = "0.2"
+nohash = "0.2"
+ahash = "0.8.12"
 handlebars = "6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp"] }
 immutable-chunkmap = { version = "2.1", features = ["pool", "serde"] }
@@ -47,11 +48,11 @@ indexmap = "2"
 log = "0.4"
 lsp-server = "0.7"
 lsp-types = "0.97"
-netidx-core = { version = "0.31.0", path = "../netidx/netidx-core" }
-netidx-derive = { version = "0.31.0", path = "../netidx/netidx-derive" }
-netidx-protocols = { version = "0.31.0", path = "../netidx/netidx-protocols" }
-netidx-value = { version = "0.31.6", path = "../netidx/netidx-value" }
-netidx = { version = "0.31.0", default-features = false, path = "../netidx/netidx" }
+netidx-core = { version = "0.32.0", path = "../netidx/netidx-core" }
+netidx-derive = { version = "0.32.0", path = "../netidx/netidx-derive" }
+netidx-protocols = { version = "0.32.0", path = "../netidx/netidx-protocols" }
+netidx-value = { version = "0.32.0", path = "../netidx/netidx-value" }
+netidx = { version = "0.32.0", default-features = false, path = "../netidx/netidx" }
 parking_lot = "0.12.1"
 percent-encoding = "2"
 plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series", "point_series", "candlestick", "errorbar", "datetime", "histogram", "surface_series"] }

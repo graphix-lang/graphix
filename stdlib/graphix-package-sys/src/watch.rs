@@ -1,3 +1,4 @@
+use ahash::AHashMap;
 use anyhow::Result;
 use arcstr::{literal, ArcStr};
 use enumflags2::BitFlags;
@@ -6,7 +7,6 @@ use extended_notify::{
     WatcherConfigBuilder,
 };
 use futures::{channel::mpsc, SinkExt, TryFutureExt};
-use fxhash::{FxHashMap, FxHashSet};
 use graphix_compiler::{
     errf, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, CustomBuiltinType, Event,
     ExecCtx, Node, Rt, Scope, UserEvent, CBATCH_POOL,
@@ -15,6 +15,7 @@ use graphix_package_core::CachedVals;
 use netidx_value::{
     abstract_type::AbstractWrapper, Abstract, FromValue, ValArray, Value,
 };
+use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use std::{
@@ -107,7 +108,7 @@ impl CustomBuiltinType for WEvent {}
 #[derive(Debug, Clone)]
 struct NotifyChan {
     tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
-    idmap: Arc<Mutex<FxHashMap<Id, BindId>>>,
+    idmap: Arc<Mutex<AHashMap<Id, BindId>>>,
 }
 
 impl EventHandler for NotifyChan {
@@ -131,7 +132,7 @@ impl EventHandler for NotifyChan {
 #[derive(Debug)]
 struct Watched {
     w: extended_notify::Watched,
-    idmap: Arc<Mutex<FxHashMap<Id, BindId>>>,
+    idmap: Arc<Mutex<AHashMap<Id, BindId>>>,
 }
 
 impl Drop for Watched {
@@ -149,7 +150,7 @@ fn utf8_path(p: ArcPath) -> Value {
 #[derive(Debug, Clone)]
 struct WatcherValue {
     watcher: Watcher,
-    idmap: Arc<Mutex<FxHashMap<Id, BindId>>>,
+    idmap: Arc<Mutex<AHashMap<Id, BindId>>>,
 }
 
 impl PartialEq for WatcherValue {
@@ -296,7 +297,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
             None => (),
         }
         if trigger.is_some() {
-            let idmap = Arc::new(Mutex::new(FxHashMap::default()));
+            let idmap = Arc::new(Mutex::new(AHashMap::default()));
             let (notify_tx, notify_rx) = mpsc::channel(10);
             let notify_tx = NotifyChan { tx: notify_tx, idmap: idmap.clone() };
             let mut builder = WatcherConfigBuilder::default();
@@ -412,7 +413,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
 
 // ── Shared helpers for accessor functions ────────────────────────
 
-fn extract_bind_ids(v: &Value, out: &mut FxHashSet<BindId>) {
+fn extract_bind_ids(v: &Value, out: &mut IntSet<BindId>) {
     match v {
         Value::Abstract(a) => {
             if let Some(wv) = a.downcast_ref::<WatchValue>() {
@@ -442,7 +443,7 @@ fn extract_bind_ids(v: &Value, out: &mut FxHashSet<BindId>) {
 }
 
 fn scan_watch_events<E: UserEvent>(
-    bind_ids: &FxHashSet<BindId>,
+    bind_ids: &IntSet<BindId>,
     event: &mut Event<E>,
     convert: fn(&mut WEvent) -> Value,
 ) -> Option<Value> {
@@ -478,7 +479,7 @@ fn convert_events(w: &mut WEvent) -> Value {
 pub(crate) struct WatchPath {
     top_id: ExprId,
     cached: CachedVals,
-    bind_ids: FxHashSet<BindId>,
+    bind_ids: IntSet<BindId>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
@@ -496,7 +497,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
         Ok(Box::new(WatchPath {
             top_id,
             cached: CachedVals::new(from),
-            bind_ids: FxHashSet::default(),
+            bind_ids: IntSet::default(),
         }))
     }
 }
@@ -544,7 +545,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
 pub(crate) struct WatchEvents {
     top_id: ExprId,
     cached: CachedVals,
-    bind_ids: FxHashSet<BindId>,
+    bind_ids: IntSet<BindId>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
@@ -562,7 +563,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
         Ok(Box::new(WatchEvents {
             top_id,
             cached: CachedVals::new(from),
-            bind_ids: FxHashSet::default(),
+            bind_ids: IntSet::default(),
         }))
     }
 }

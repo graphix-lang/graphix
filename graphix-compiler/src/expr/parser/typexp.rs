@@ -6,6 +6,7 @@ use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
     typ::{AbstractId, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
+use ahash::AHashSet;
 use arcstr::ArcStr;
 use combine::{
     attempt, between, choice, look_ahead, not_followed_by, optional,
@@ -14,7 +15,6 @@ use combine::{
     stream::{position::SourcePosition, Range},
     token, unexpected_any, value, ParseError, Parser, RangeStream,
 };
-use fxhash::FxHashSet;
 use netidx::{publisher::Typ, utils::Either};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
@@ -249,7 +249,7 @@ where
         sep_by1_tok((spfname().skip(sptoken(':')), typ()), csep(), token('}')),
     )
     .then(|mut exps: LPooled<Vec<(ArcStr, Type)>>| {
-        let s = exps.iter().map(|(n, _)| n).collect::<LPooled<FxHashSet<_>>>();
+        let s = exps.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
         if s.len() < exps.len() {
             return unexpected_any("struct field names must be unique").left();
         }

@@ -7,11 +7,12 @@ use crate::{
     wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
     Scope, TypecheckPhase, Update, UserEvent,
 };
+use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use fxhash::{FxHashMap, FxHashSet};
 use netidx::subscriber::Value;
+use nohash::IntMap;
 use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, mem};
 use triomphe::Arc as TArc;
@@ -62,8 +63,8 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
-) -> Result<FxHashMap<ArgKey, Arg<R, E>>> {
-    let mut res = FxHashMap::default();
+) -> Result<AHashMap<ArgKey, Arg<R, E>>> {
+    let mut res = AHashMap::default();
     let mut pos = 0;
     for (name, expr) in args.iter() {
         let node = Some(compile(ctx, flags, expr.clone(), scope, top_id)?);
@@ -93,7 +94,7 @@ pub(crate) struct CallSite<R: Rt, E: UserEvent> {
     pub(super) resolved_ftype: Option<FnType>,
     pub(super) rtype: Type,
     pub(super) fnode: Node<R, E>,
-    pub(super) args: FxHashMap<ArgKey, Arg<R, E>>,
+    pub(super) args: AHashMap<ArgKey, Arg<R, E>>,
     pub(super) arg_refs: Vec<Node<R, E>>,
     pub(super) function: Option<(Value, Box<dyn Apply<R, E>>)>,
     pub(super) flags: BitFlags<CFlag>,
@@ -431,7 +432,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         self.args.len()
                     )
                 }
-                let mut labeled: LPooled<FxHashSet<ArcStr>> = LPooled::take();
+                let mut labeled: LPooled<AHashSet<ArcStr>> = LPooled::take();
                 for arg in ftype.args.iter() {
                     if let FnArgKind::Labeled { name, has_default } = &arg.kind {
                         labeled.insert(name.clone());
@@ -475,7 +476,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ftype
             }
         };
-        let mut hof_idmap: LPooled<FxHashMap<LambdaId, usize>> = LPooled::take();
+        let mut hof_idmap: LPooled<IntMap<LambdaId, usize>> = LPooled::take();
         // Typecheck positional args in order
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
@@ -581,13 +582,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 for id in ids.drain(..) {
                     let resolved = match hof_idmap.get(&id) {
                         None => &resolved,
-                        Some(i) => match find_fn_in_arg_type(&resolved.args[*i].typ, id) {
-                            Some(ft) => ft,
-                            None => bail!(
-                                "unexpected resolved arg type {}",
-                                &resolved.args[*i].typ
-                            ),
-                        },
+                        Some(i) => {
+                            match find_fn_in_arg_type(&resolved.args[*i].typ, id) {
+                                Some(ft) => ft,
+                                None => bail!(
+                                    "unexpected resolved arg type {}",
+                                    &resolved.args[*i].typ
+                                ),
+                            }
+                        }
                     };
                     if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
                         let ldef = val
