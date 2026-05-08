@@ -1,6 +1,6 @@
 [package]
 name = "graphix-lsp"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 homepage = "https://graphix-lang.github.io/graphix"

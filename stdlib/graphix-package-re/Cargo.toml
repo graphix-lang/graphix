@@ -1,6 +1,6 @@
 [package]
 name = "graphix-package-re"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["Eric Stokes <letaris@gmail.com>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
