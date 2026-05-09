@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use fxhash::FxHashMap;
+use ahash::AHashMap;
 use graphix_compiler::{env::Env, ExecCtx};
 use graphix_package::{CustomDisplay, IndexSet, MainThreadHandle, Package};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
@@ -16,7 +16,7 @@ pub(crate) struct RegisterResult {
 
 pub(crate) fn register<X: GXExt>(
     ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
-    modules: &mut FxHashMap<Path, ArcStr>,
+    modules: &mut AHashMap<Path, ArcStr>,
 ) -> Result<RegisterResult> {
     let mut root_mods = IndexSet::new();
     {{#each deps}}

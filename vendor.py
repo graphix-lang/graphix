@@ -45,8 +45,13 @@ def format_toml_value(v):
     return str(v)
 
 
-def resolve_deps(deps, ws_deps):
-    """Resolve workspace refs and strip path keys from a deps table."""
+def resolve_deps(deps, ws_deps, crate_dir):
+    """Resolve workspace refs and strip path keys from a deps table.
+
+    `crate_dir` is the directory of the crate that owns `deps` — used to
+    resolve `path = "..."` entries when we need to read a version from
+    the target crate's Cargo.toml.
+    """
     resolved = {}
     for name, dep in deps.items():
         if isinstance(dep, dict) and dep.get("workspace"):
@@ -56,13 +61,27 @@ def resolve_deps(deps, ws_deps):
                 continue
             dep = dict(ws_val) if isinstance(ws_val, dict) else ws_val
         if isinstance(dep, dict):
+            # If stripping `path` would leave us with no version, recover
+            # the version from the path target's Cargo.toml first.
+            if "path" in dep and "version" not in dep:
+                target = (crate_dir / dep["path"]).resolve()
+                with open(target / "Cargo.toml", "rb") as f:
+                    target_pkg = tomllib.load(f)["package"]
+                dep = dict(dep)
+                dep["version"] = target_pkg["version"]
             dep = {k: v for k, v in dep.items() if k != "path"}
+            if not dep:
+                raise RuntimeError(
+                    f"dep {name!r} in {crate_dir} resolved to empty table "
+                    f"after stripping path; needs a version or workspace = true"
+                )
         resolved[name] = dep
     return resolved
 
 
-def write_cargo_toml(parsed, ws_deps, dest):
-    """Write a resolved Cargo.toml to dest."""
+def write_cargo_toml(parsed, ws_deps, crate_dir, dest):
+    """Write a resolved Cargo.toml to dest. `crate_dir` is the crate's
+    original source directory, used to resolve any `path = "..."` deps."""
     lines = []
 
     # [package]
@@ -95,21 +114,21 @@ def write_cargo_toml(parsed, ws_deps, dest):
     if "dependencies" in parsed:
         lines.append("")
         lines.append("[dependencies]")
-        for name, dep in resolve_deps(parsed["dependencies"], ws_deps).items():
+        for name, dep in resolve_deps(parsed["dependencies"], ws_deps, crate_dir).items():
             lines.append(f"{name} = {format_toml_value(dep)}")
 
     # [dev-dependencies]
     if "dev-dependencies" in parsed:
         lines.append("")
         lines.append("[dev-dependencies]")
-        for name, dep in resolve_deps(parsed["dev-dependencies"], ws_deps).items():
+        for name, dep in resolve_deps(parsed["dev-dependencies"], ws_deps, crate_dir).items():
             lines.append(f"{name} = {format_toml_value(dep)}")
 
     # [build-dependencies]
     if "build-dependencies" in parsed:
         lines.append("")
         lines.append("[build-dependencies]")
-        for name, dep in resolve_deps(parsed["build-dependencies"], ws_deps).items():
+        for name, dep in resolve_deps(parsed["build-dependencies"], ws_deps, crate_dir).items():
             lines.append(f"{name} = {format_toml_value(dep)}")
 
     # [target.'cfg(...)'.dependencies] sections
@@ -121,7 +140,7 @@ def write_cargo_toml(parsed, ws_deps, dest):
                         if section_name in sections:
                             lines.append("")
                             lines.append(f"[target.'{target}'.{section_name}]")
-                            for name, dep in resolve_deps(sections[section_name], ws_deps).items():
+                            for name, dep in resolve_deps(sections[section_name], ws_deps, crate_dir).items():
                                 lines.append(f"{name} = {format_toml_value(dep)}")
 
     with open(dest, "w") as f:
@@ -156,7 +175,7 @@ def vendor_workspace_member(member_path, ws_deps, vendor_dir):
     )
 
     # Overwrite Cargo.toml with resolved version
-    write_cargo_toml(parsed, ws_deps, dest / "Cargo.toml")
+    write_cargo_toml(parsed, ws_deps, ROOT / member_path, dest / "Cargo.toml")
 
     # Write dummy .cargo-checksum.json (required by cargo vendor source)
     with open(dest / ".cargo-checksum.json", "w") as f:
@@ -233,7 +252,7 @@ def vendor_external_path_deps(ws_deps, vendor_dir):
             shutil.rmtree(dest)
 
         shutil.copytree(crate_path, dest, ignore=shutil.ignore_patterns("target", ".#*"))
-        write_cargo_toml(parsed, ext_ws_deps, dest / "Cargo.toml")
+        write_cargo_toml(parsed, ext_ws_deps, crate_path, dest / "Cargo.toml")
         with open(dest / ".cargo-checksum.json", "w") as f:
             json.dump({"files": {}}, f)
         print(f"  {name}-{version}")
