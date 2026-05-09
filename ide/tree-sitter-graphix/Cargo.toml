@@ -1,8 +1,14 @@
 [package]
 name = "tree-sitter-graphix"
 version = "0.9.0"
-edition = "2024"
 license = "MIT"
+authors = ["Eric Stokes <eestokes@pm.me>"]
+edition = "2024"
+homepage = "https://graphix-lang.github.io/graphix"
+repository = "https://github.com/graphix-lang/graphix"
+description = "A dataflow language for UIs and network programming, compiler"
+documentation = "https://docs.rs/tree-sitter-graphix"
+categories = ["network-programming", "compilers", "gui"]
 
 [lib]
 path = "lib.rs"
