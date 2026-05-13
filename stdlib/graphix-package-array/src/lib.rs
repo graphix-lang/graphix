@@ -6,6 +6,7 @@ use ahash::AHashSet;
 use anyhow::{bail, Result};
 use compact_str::format_compact;
 use graphix_compiler::{
+    effects::EffectKind,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
@@ -163,6 +164,7 @@ struct ConcatEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const NAME: &str = "array_concat";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -195,6 +197,7 @@ struct PushBackEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const NAME: &str = "array_push_back";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -228,6 +231,7 @@ struct PushFrontEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const NAME: &str = "array_push_front";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -261,6 +265,7 @@ struct WindowEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const NAME: &str = "array_window";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -315,6 +320,7 @@ struct LenEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "array_len";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -332,6 +338,7 @@ struct FlattenEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const NAME: &str = "array_flatten";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -358,6 +365,7 @@ struct SortEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const NAME: &str = "array_sort";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fn cn(v: &Value) -> Value {
@@ -400,6 +408,7 @@ struct DedupEv(SmallVec<[Value; 32]>);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
     const NAME: &str = "array_dedup";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -426,6 +435,7 @@ struct EnumerateEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const NAME: &str = "array_enumerate";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::Array(a)) = &from.0[0] {
@@ -446,6 +456,7 @@ struct ZipEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const NAME: &str = "array_zip";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -470,6 +481,7 @@ struct UnzipEv {
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const NAME: &str = "array_unzip";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -510,6 +522,8 @@ struct Group<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
     const NEEDS_CALLSITE: bool = false;
+    // Intrinsic sync; predicate effect joins at the call site (M6).
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -753,6 +767,8 @@ struct Init<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
     const NAME: &str = "array_init";
     const NEEDS_CALLSITE: bool = false;
+    // Intrinsic sync; predicate effect joins at the call site (M6).
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

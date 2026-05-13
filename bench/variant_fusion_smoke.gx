@@ -1,0 +1,32 @@
+// Variant fusion smoke bench.
+//
+// Validates the M7.10 path end-to-end:
+// - `classify` takes a variant-typed param `v: [\`Add(i64, i64), \`Neg(i64)]`
+//   and pattern-matches each case. Body lowers to a `KirOp::VariantTagEq`
+//   condition per arm, with payload bindings flowing through
+//   `KirOp::VariantPayload` reads (at slot 1+).
+// - Tag string at slot 0 is checked via `ArcStr` byte-equality; the
+//   compile-time-known literal is interned via `arcstr::literal!` so
+//   the comparison takes the ptr fast-path when both sides are
+//   interned.
+// - Construction at the call sites uses `KirOp::VariantNew`
+//   (`Value::Array([Value::String(literal!("tag")), payload0, ...])`)
+//   via the regular runtime — the bench shape is "outer runtime
+//   builds the variant, fused kernel pattern-matches it".
+//
+// Result wraps in a scalar return — verifies the whole pipeline from
+// variant construction through tag dispatch to payload extraction.
+
+let classify: fn(v: [`Add(i64, i64), `Neg(i64)]) -> i64 =
+    |v: [`Add(i64, i64), `Neg(i64)]| -> i64
+        select v {
+            `Add(a, b) => a + b,
+            `Neg(n) => 0 - n
+        };
+
+let sum: i64 = classify(`Add(3, 4));
+let neg: i64 = classify(`Neg(7));
+
+println("classify(`Add(3, 4)) = [sum]");
+println("classify(`Neg(7)) = [neg]");
+sys::exit(0)

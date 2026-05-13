@@ -1,4 +1,4 @@
-use graphix_compiler::{ExecCtx, Rt, UserEvent};
+use graphix_compiler::{effects::EffectKind, ExecCtx, Rt, UserEvent};
 use netidx_value::Value;
 
 use crate::{CachedArgs, CachedVals, EvalCached};
@@ -10,6 +10,7 @@ macro_rules! unary_f64 {
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const NAME: &str = $name;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Sync;
 
             fn eval(
                 &mut self,
@@ -31,6 +32,7 @@ macro_rules! binary_f64 {
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const NAME: &str = $name;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Sync;
 
             fn eval(
                 &mut self,
@@ -53,6 +55,7 @@ macro_rules! unary_f64_pred {
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const NAME: &str = $name;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Sync;
 
             fn eval(
                 &mut self,
@@ -121,6 +124,7 @@ pub(crate) struct MathClampEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
     const NAME: &str = "core_math_clamp";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let x = from.get::<f64>(0)?;

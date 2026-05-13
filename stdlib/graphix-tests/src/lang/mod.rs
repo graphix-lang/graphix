@@ -4,6 +4,7 @@ mod arrays;
 mod basics;
 mod byref;
 mod datetime;
+mod differential;
 mod errors;
 mod functions;
 mod interfaces;

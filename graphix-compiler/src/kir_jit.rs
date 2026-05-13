@@ -44,8 +44,8 @@
 //! limitation; both lift in M4.
 
 use crate::kernel_ir::{
-    BinOp, BoolOp, CmpOp, ConstVal, KirExpr, KirKernel, KirOp, KirStmt, PrimType,
-    SelectArm,
+    BinOp, BoolOp, CmpOp, ConstVal, KirExpr, KirKernel, KirOp, KirStmt, KirType,
+    PrimType, SelectArm,
 };
 use anyhow::{anyhow, Context as AnyContext, Result};
 use arcstr::ArcStr;
@@ -78,6 +78,10 @@ pub struct JitCtx {
     /// graphix-level name (e.g. `iterate`) shows up across multiple
     /// fused lambdas in a single program.
     counter: u32,
+    /// Pre-declared FuncIds for the `kir_jit_helpers::*` runtime
+    /// helpers — registered once at construction so per-function
+    /// codegen can materialize FuncRefs to them without re-declaring.
+    helper_ids: HelperFuncIds,
 }
 
 impl JitCtx {
@@ -98,13 +102,21 @@ impl JitCtx {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .context("isa_builder.finish")?;
-        let builder = JITBuilder::with_isa(isa, default_libcall_names());
-        let module = JITModule::new(builder);
+        let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        // Make the kir_jit_helpers entry points resolvable from JIT'd
+        // code. Each one is `#[no_mangle] extern "C"`, registered
+        // here under the same symbol name we use in `declare_function`.
+        for (name, ptr) in crate::kir_jit_helpers::all_symbols() {
+            builder.symbol(name, ptr);
+        }
+        let mut module = JITModule::new(builder);
+        let helper_ids = HelperFuncIds::new(&mut module)?;
         Ok(Self {
             module,
             builder_ctx: FunctionBuilderContext::new(),
             func_ctx: Context::new(),
             counter: 0,
+            helper_ids,
         })
     }
 
@@ -122,6 +134,11 @@ pub struct CompiledKernel {
     pub func_id: FuncId,
     pub fn_ptr: *const u8,
     pub signature: Signature,
+    /// Per-kernel ArcStr slots referenced by the JIT'd code via
+    /// stable pointers. Held here so it lives as long as the
+    /// compiled function; drops alongside the JIT module when this
+    /// struct drops.
+    _strings: KernelStrings,
 }
 
 unsafe impl Send for CompiledKernel {}
@@ -133,12 +150,17 @@ unsafe impl Sync for CompiledKernel {}
 /// point. The pointer's call signature matches the kernel's params /
 /// return type — see the module docstring for the calling convention.
 pub fn compile_kernel(jit: &mut JitCtx, kernel: &KirKernel) -> Result<CompiledKernel> {
-    let (func_id, sig) = define_typed_kernel(jit, kernel)?;
+    // `compile_kernel` is the bare-entry-point path (no wrapper, no
+    // string-table lifecycle). Strings would still need to live
+    // somewhere for the JIT'd code to reach them — for now just
+    // leak them by storing in the returned CompiledKernel, same
+    // policy as the wrapped path.
+    let (func_id, sig, strings) = define_typed_kernel(jit, kernel)?;
     jit.module
         .finalize_definitions()
         .context("finalize_definitions")?;
     let fn_ptr = jit.module.get_finalized_function(func_id);
-    Ok(CompiledKernel { func_id, fn_ptr, signature: sig })
+    Ok(CompiledKernel { func_id, fn_ptr, signature: sig, _strings: strings })
 }
 
 /// Define the typed kernel function in the JIT module without
@@ -150,13 +172,42 @@ pub fn compile_kernel(jit: &mut JitCtx, kernel: &KirKernel) -> Result<CompiledKe
 fn define_typed_kernel(
     jit: &mut JitCtx,
     kernel: &KirKernel,
-) -> Result<(FuncId, Signature)> {
+) -> Result<(FuncId, Signature, KernelStrings)> {
+    if !kernel.fn_params.is_empty() {
+        return Err(anyhow!(
+            "JIT does not yet support fn (HOF) params"
+        ));
+    }
     let symbol = jit.next_symbol(&kernel.fn_name);
     let mut sig = Signature::new(jit.module.isa().default_call_conv());
     for p in &kernel.params {
         sig.params.push(AbiParam::new(prim_to_clif(p.prim)));
     }
-    sig.returns.push(AbiParam::new(prim_to_clif(kernel.return_type)));
+    // Composite (array/tuple/struct) params follow scalars; each is
+    // a `*const ValArray` passed as a pointer-sized integer. Variant
+    // params follow those; they're `*const Value` (different shape
+    // but same I64 pointer size at the ABI level).
+    let n_composites = kernel.array_params.len()
+        + kernel.tuple_params.len()
+        + kernel.struct_params.len()
+        + kernel.variant_params.len();
+    for _ in 0..n_composites {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    // Composite-return support: when the kernel's return type is
+    // an Array/Tuple/Struct/Variant, the typed kernel returns an
+    // I64 holding the owned `*mut ValArray` (for array/tuple/
+    // struct) or `*mut Value` (for variant). The runtime caller
+    // reads this pointer out of the wrapper's *out slot and
+    // reclaims ownership via `Box::from_raw`.
+    let return_clif = match &kernel.return_type {
+        KirType::Prim(p) => prim_to_clif(*p),
+        KirType::Array(_)
+        | KirType::Tuple(_)
+        | KirType::Struct(_)
+        | KirType::Variant(_) => types::I64,
+    };
+    sig.returns.push(AbiParam::new(return_clif));
 
     let func_id = jit
         .module
@@ -166,10 +217,27 @@ fn define_typed_kernel(
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
 
+    // Build the per-kernel string slot table. Each unique struct
+    // field name / variant tag goes through the global intern table
+    // (which dedupes across the whole process). The resulting
+    // `KernelStrings` owns one canonical clone of each string; the
+    // boxed slice has stable addresses for codegen to use.
+    let strings = KernelStrings::build(kernel);
     {
+        let helper_refs = declare_helpers(
+            &mut jit.module,
+            &mut jit.func_ctx.func,
+            &jit.helper_ids,
+        );
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        compile_into_function(&mut builder, kernel, &BTreeMap::new())?;
+        compile_into_function(
+            &mut builder,
+            kernel,
+            &BTreeMap::new(),
+            &helper_refs,
+            &strings,
+        )?;
         builder.finalize();
     }
 
@@ -177,7 +245,7 @@ fn define_typed_kernel(
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (typed)")?;
     jit.module.clear_context(&mut jit.func_ctx);
-    Ok((func_id, sig))
+    Ok((func_id, sig, strings))
 }
 
 /// A compiled kernel exposed through a uniform calling convention,
@@ -208,6 +276,13 @@ pub struct WrappedKernel {
     /// them mapped for the program's lifetime, so no per-kernel
     /// ownership is needed.
     _ctx: Option<JitCtx>,
+    /// Per-kernel ArcStr slots that the JIT'd code references via
+    /// stable `*const ArcStr` pointers. Held here so the slots live
+    /// as long as the compiled function does. When this struct
+    /// drops, the strings drop, decrementing the global intern
+    /// table's `Arc<str>` refcounts — letting the GC pass reclaim
+    /// entries whose last consumer is gone.
+    _strings: KernelStrings,
 }
 
 unsafe impl Send for WrappedKernel {}
@@ -235,13 +310,17 @@ impl WrappedKernel {
 /// [`compile_kernel_with_callees`] for those.
 pub fn compile_kernel_with_wrapper(kernel: &KirKernel) -> Result<WrappedKernel> {
     let mut ctx = JitCtx::new()?;
-    let (typed_id, _) = define_typed_kernel(&mut ctx, kernel)?;
+    let (typed_id, _, strings) = define_typed_kernel(&mut ctx, kernel)?;
     let wrapper_id = define_wrapper(&mut ctx, kernel, typed_id)?;
     ctx.module
         .finalize_definitions()
         .context("finalize_definitions (wrapper)")?;
     let wrapper_fn_ptr = ctx.module.get_finalized_function(wrapper_id);
-    Ok(WrappedKernel { wrapper_fn_ptr, _ctx: Some(ctx) })
+    Ok(WrappedKernel {
+        wrapper_fn_ptr,
+        _ctx: Some(ctx),
+        _strings: strings,
+    })
 }
 
 // ─── Shared JIT module: cross-kernel CLIF calls ──────────────────
@@ -351,7 +430,15 @@ pub fn compile_kernel_with_callees(
         .context("finalize_definitions (shared)")?;
     let wrapper_fn_ptr = shared.ctx.module.get_finalized_function(wrapper_id);
     // _ctx: None — the shared module is kept alive by the static.
-    Ok(WrappedKernel { wrapper_fn_ptr, _ctx: None })
+    // _strings: empty for now — this path doesn't yet handle
+    // composite producer ops (would need to attach to the shared
+    // module's per-kernel state, since the WrappedKernel drops
+    // independently of the shared code).
+    Ok(WrappedKernel {
+        wrapper_fn_ptr,
+        _ctx: None,
+        _strings: KernelStrings { slots: Box::new([]), index: BTreeMap::new() },
+    })
 }
 
 /// Phase-1 helper: ensure `k` has a `FuncId` declared in the shared
@@ -372,7 +459,11 @@ fn ensure_declared(
     for p in &k.params {
         sig.params.push(AbiParam::new(prim_to_clif(p.prim)));
     }
-    sig.returns.push(AbiParam::new(prim_to_clif(k.return_type)));
+    let k_return_prim = k
+        .return_type
+        .as_prim()
+        .ok_or_else(|| anyhow!("JIT does not support array return types"))?;
+    sig.returns.push(AbiParam::new(prim_to_clif(k_return_prim)));
     let fid = shared
         .ctx
         .module
@@ -432,10 +523,29 @@ fn define_kernel_body(
                 .declare_func_in_func(target_fid, &mut jit.func_ctx.func);
             callee_refs.insert(name, fref);
         }
+        let strings = KernelStrings::build(kernel);
+        let helper_refs = declare_helpers(
+            &mut jit.module,
+            &mut jit.func_ctx.func,
+            &jit.helper_ids,
+        );
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        compile_into_function(&mut builder, kernel, &callee_refs)?;
+        compile_into_function(
+            &mut builder,
+            kernel,
+            &callee_refs,
+            &helper_refs,
+            &strings,
+        )?;
         builder.finalize();
+        // NOTE: this path doesn't currently feed `strings` back to
+        // a per-kernel storage — the shared-module path is for
+        // KirOp::Call kernels which today bail on composites.
+        // Once composite ops land in this path, we'll need to
+        // attach the strings to whatever lifecycle holds the
+        // shared module's per-kernel state.
+        std::mem::drop(strings);
     }
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
@@ -485,14 +595,33 @@ fn define_wrapper(
         let out_ptr = b.block_params(entry)[1];
 
         // Load each kernel param from args[i*8] at the appropriate
-        // CLIF type. Smaller-than-8-byte primitives just load fewer
-        // bytes from the slot — the upper bytes are ignored.
-        let mut typed_args = Vec::with_capacity(kernel.params.len());
-        for (i, p) in kernel.params.iter().enumerate() {
+        // CLIF type. Scalar primitives load fewer-than-8 bytes from
+        // the slot when applicable (upper bytes ignored). Composite
+        // params (array/tuple/struct) load as i64 — the caller has
+        // stored a `*const ValArray` cast to u64 in the slot.
+        let total_params = kernel.params.len()
+            + kernel.array_params.len()
+            + kernel.tuple_params.len()
+            + kernel.struct_params.len()
+            + kernel.variant_params.len();
+        let mut typed_args = Vec::with_capacity(total_params);
+        let mut slot = 0;
+        for p in kernel.params.iter() {
             let cty = prim_to_clif(p.prim);
-            let offset = (i as i32) * 8;
+            let offset = (slot as i32) * 8;
             let v = b.ins().load(cty, MemFlags::trusted(), args_ptr, offset);
             typed_args.push(v);
+            slot += 1;
+        }
+        let n_composites = kernel.array_params.len()
+            + kernel.tuple_params.len()
+            + kernel.struct_params.len()
+            + kernel.variant_params.len();
+        for _ in 0..n_composites {
+            let offset = (slot as i32) * 8;
+            let v = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, offset);
+            typed_args.push(v);
+            slot += 1;
         }
 
         let call = b.ins().call(typed_ref, &typed_args);
@@ -665,6 +794,8 @@ fn compile_into_function(
     b: &mut FunctionBuilder,
     kernel: &KirKernel,
     callee_refs: &BTreeMap<ArcStr, FuncRef>,
+    helper_refs: &HelperRefs,
+    strings: &KernelStrings,
 ) -> Result<()> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -680,13 +811,72 @@ fn compile_into_function(
     // takes &mut self on the FunctionBuilder, which would conflict
     // with the &[Value] returned from block_params.
     let initial_vals: Vec<ClifValue> = b.block_params(entry).to_vec();
-    for (i, p) in kernel.params.iter().enumerate() {
+    let mut next = 0usize;
+    for p in kernel.params.iter() {
         let cty = prim_to_clif(p.prim);
         let var = b.declare_var(cty);
-        b.def_var(var, initial_vals[i]);
+        b.def_var(var, initial_vals[next]);
         env.bind(p.name.clone(), var, p.prim);
+        next += 1;
     }
     let param_count = env.locals.len();
+    // Composite-typed params (array / tuple / struct) follow the
+    // scalar params in the typed-kernel signature; each occupies one
+    // pointer-sized slot. The CLIF Variable holds an OWNED `*mut
+    // ValArray` (refcount-bumped from the caller's borrowed pointer
+    // at entry). Going-owned at entry unifies the ownership story:
+    //
+    // - TupleNew / StructNew / ArrayInit produce owned pointers.
+    // - Tail-call rebind drops the old owned value, stores the new
+    //   owned value into the slot.
+    // - Function exit drops all owned composite locals.
+    //
+    // The entry clone is one refcount bump per composite param per
+    // kernel invocation — `triomphe::Arc` clone is a relaxed atomic
+    // increment, ~ns-scale.
+    let clone_helper = helper_refs
+        .get("graphix_valarray_clone")
+        .expect("graphix_valarray_clone helper must be registered");
+    for p in kernel.array_params.iter() {
+        let borrowed = initial_vals[next];
+        let call = b.ins().call(clone_helper, &[borrowed]);
+        let owned = b.inst_results(call)[0];
+        let var = b.declare_var(types::I64);
+        b.def_var(var, owned);
+        env.bind_composite(p.name.clone(), var);
+        next += 1;
+    }
+    for p in kernel.tuple_params.iter() {
+        let borrowed = initial_vals[next];
+        let call = b.ins().call(clone_helper, &[borrowed]);
+        let owned = b.inst_results(call)[0];
+        let var = b.declare_var(types::I64);
+        b.def_var(var, owned);
+        env.bind_composite(p.name.clone(), var);
+        next += 1;
+    }
+    for p in kernel.struct_params.iter() {
+        let borrowed = initial_vals[next];
+        let call = b.ins().call(clone_helper, &[borrowed]);
+        let owned = b.inst_results(call)[0];
+        let var = b.declare_var(types::I64);
+        b.def_var(var, owned);
+        env.bind_composite(p.name.clone(), var);
+        next += 1;
+    }
+    // Variant params: borrowed `*const Value`. We hold the pointer
+    // directly without refcount-bumping — the caller's Value lives
+    // for the duration of the kernel call (held in `variant_args`
+    // SmallVec on KirNode::update's stack). Variant params don't
+    // get rebound via tail-call in any current bench, so no
+    // ownership concerns inside the kernel either.
+    for p in kernel.variant_params.iter() {
+        let borrowed = initial_vals[next];
+        let var = b.declare_var(types::I64);
+        b.def_var(var, borrowed);
+        env.bind_variant(p.name.clone(), var);
+        next += 1;
+    }
     b.seal_block(entry);
 
     let loop_head = if kernel.has_tail_loop {
@@ -701,7 +891,19 @@ fn compile_into_function(
         None
     };
 
-    let lower = LowerCtx { loop_head, param_count, callee_refs };
+    let tail_call_slots = if kernel.tail_call_slots.is_empty() {
+        None
+    } else {
+        Some(kernel.tail_call_slots.as_slice())
+    };
+    let lower = LowerCtx {
+        loop_head,
+        param_count,
+        callee_refs,
+        helper_refs,
+        tail_call_slots,
+        strings,
+    };
     compile_body(b, &kernel.body, &mut env, &lower)?;
 
     if let Some(head) = loop_head {
@@ -716,14 +918,173 @@ fn compile_into_function(
     Ok(())
 }
 
+/// Per-kernel storage of the ArcStrs the JIT'd code references via
+/// stable `*const ArcStr` pointers.
+///
+/// Each unique string used by the kernel is interned through the
+/// global [`crate::kir_jit_intern`] table (which gives back a
+/// refcount-shared canonical `ArcStr`), and the canonical clone is
+/// stored at a fixed index in `slots`. Codegen emits an `iconst`
+/// of `&slots[index]` for each reference; the pointer is valid for
+/// as long as the boxed slice (and hence the owning `WrappedKernel`)
+/// is alive.
+///
+/// On drop, every `ArcStr` in `slots` drops, decrementing the
+/// shared `Arc<str>` refcounts. When the last live kernel that
+/// uses a particular string drops, the global interner's GC pass
+/// can reclaim that entry.
+///
+/// The `index` map is only used at compile time (codegen lookup);
+/// once compile is done, only `slots` matters at runtime.
+pub struct KernelStrings {
+    /// Stable-address ArcStr slots. Codegen-emitted pointers point
+    /// into this slice. `Box<[ArcStr]>` is heap-allocated and the
+    /// Box never moves its allocation — moving the Box value only
+    /// moves a 16-byte pointer, not the data.
+    slots: Box<[ArcStr]>,
+    /// String → index lookup, populated during the pre-walk.
+    /// Dropped after codegen would be fine, but we keep it for
+    /// debug-print symmetry; cost is small.
+    index: BTreeMap<ArcStr, usize>,
+}
+
+impl KernelStrings {
+    /// Pre-walk `kernel`, intern every string it references, and
+    /// store the resulting canonical clones at stable positions.
+    pub fn build(kernel: &KirKernel) -> Self {
+        let mut unique: std::collections::BTreeSet<ArcStr> =
+            std::collections::BTreeSet::new();
+        for stmt in &kernel.body {
+            collect_strings_stmt(stmt, &mut unique);
+        }
+        let mut slots: Vec<ArcStr> = Vec::with_capacity(unique.len());
+        let mut index: BTreeMap<ArcStr, usize> = BTreeMap::new();
+        for s in unique {
+            let canonical = crate::kir_jit_intern::intern(&s);
+            index.insert(s.clone(), slots.len());
+            slots.push(canonical);
+        }
+        Self { slots: slots.into_boxed_slice(), index }
+    }
+
+    /// Get the stable `*const ArcStr` for `s`. Panics if `s` wasn't
+    /// in the pre-walk (i.e. a string-using op was missed).
+    pub fn get(&self, s: &ArcStr) -> *const ArcStr {
+        let i = *self.index.get(s).unwrap_or_else(|| {
+            panic!(
+                "KernelStrings: lookup miss for `{}` — pre-walk must \
+                 have missed a string-using op",
+                s
+            )
+        });
+        &self.slots[i] as *const ArcStr
+    }
+}
+
+fn collect_strings_stmt(s: &KirStmt, out: &mut std::collections::BTreeSet<ArcStr>) {
+    match s {
+        KirStmt::Let(l) => collect_strings_expr(&l.value, out),
+        KirStmt::Return(e) => collect_strings_expr(e, out),
+        KirStmt::TailCall { args } => {
+            for a in args {
+                collect_strings_expr(a, out);
+            }
+        }
+        KirStmt::Select { arms } => {
+            for arm in arms {
+                if let Some(c) = &arm.cond {
+                    collect_strings_expr(c, out);
+                }
+                for s in &arm.body {
+                    collect_strings_stmt(s, out);
+                }
+            }
+        }
+    }
+}
+
+fn collect_strings_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr>) {
+    match &e.op {
+        KirOp::Const(_) | KirOp::Local(_) => {}
+        KirOp::Bin { lhs, rhs, .. }
+        | KirOp::Cmp { lhs, rhs, .. }
+        | KirOp::BoolBin { lhs, rhs, .. } => {
+            collect_strings_expr(lhs, out);
+            collect_strings_expr(rhs, out);
+        }
+        KirOp::Not(e) | KirOp::Cast { inner: e, .. } => {
+            collect_strings_expr(e, out)
+        }
+        KirOp::Call { args, .. } | KirOp::DynCall { args, .. } => {
+            for a in args {
+                collect_strings_expr(a, out);
+            }
+        }
+        KirOp::Block { lets, tail } => {
+            for l in lets {
+                collect_strings_expr(&l.value, out);
+            }
+            collect_strings_expr(tail, out);
+        }
+        KirOp::IfChain { arms } => {
+            for (cond, body) in arms {
+                if let Some(c) = cond {
+                    collect_strings_expr(c, out);
+                }
+                collect_strings_expr(body, out);
+            }
+        }
+        KirOp::ArrayLen { .. }
+        | KirOp::ArrayGet { .. }
+        | KirOp::TupleGet { .. }
+        | KirOp::StructGet { .. }
+        | KirOp::VariantPayload { .. } => {}
+        KirOp::VariantTagEq { expected_tag, .. } => {
+            // The expected tag is emitted as an iconst in codegen,
+            // so the per-kernel KernelStrings must have it interned.
+            out.insert(expected_tag.clone());
+        }
+        KirOp::ArrayFold { init, body, .. } => {
+            collect_strings_expr(init, out);
+            collect_strings_expr(body, out);
+        }
+        KirOp::ArrayInit { n, body, .. } => {
+            collect_strings_expr(n, out);
+            collect_strings_expr(body, out);
+        }
+        KirOp::ArrayMap { body, .. } => collect_strings_expr(body, out),
+        KirOp::ArrayFilter { predicate, .. } => {
+            collect_strings_expr(predicate, out)
+        }
+        KirOp::TupleNew { fields, .. } => {
+            for f in fields {
+                collect_strings_expr(f, out);
+            }
+        }
+        KirOp::StructNew { sorted_fields, .. } => {
+            for (name, e) in sorted_fields {
+                out.insert(name.clone());
+                collect_strings_expr(e, out);
+            }
+        }
+        KirOp::VariantNew { tag, payloads, .. } => {
+            out.insert(tag.clone());
+            for p in payloads {
+                collect_strings_expr(p, out);
+            }
+        }
+    }
+}
+
 /// Per-function lowering context: things that don't change across
 /// statements within a single body.
 struct LowerCtx<'a> {
     /// `Some(block)` when the kernel has a tail loop; TailCall jumps
     /// here. `None` for non-tail-recursive kernels.
     loop_head: Option<Block>,
-    /// Number of formal parameters — `env.locals[..param_count]` are
-    /// the params. Used by TailCall to know which Variables to assign.
+    /// Number of scalar params — used to truncate env.locals after
+    /// tail-call rebind so per-iteration block-scoped locals don't
+    /// leak across iterations.
     param_count: usize,
     /// `KirOp::Call { fn_name }` resolves through this map to a CLIF
     /// `FuncRef`. The caller must `declare_func_in_func` each callee's
@@ -731,33 +1092,312 @@ struct LowerCtx<'a> {
     /// FunctionBuilder, then pass the resulting refs in here. Empty
     /// for kernels with no `KirOp::Call` sites.
     callee_refs: &'a BTreeMap<ArcStr, FuncRef>,
+    /// `FuncRef`s for the `kir_jit_helpers::*` runtime helpers.
+    /// Declared in the current function before the FunctionBuilder
+    /// is constructed (same constraint as `callee_refs`). Lookups
+    /// are by helper name (e.g. `"graphix_valarray_get_i64"`).
+    helper_refs: &'a HelperRefs,
+    /// Per-source-position tail-call slot map (from
+    /// `KirKernel::tail_call_slots`). Drives which Variable each
+    /// tail-call arg rebinds into — scalar slots hit `env.locals`,
+    /// composite slots hit `env.composites`. `None` for kernels
+    /// without a tail loop (or that hand-built fixtures leave
+    /// empty).
+    tail_call_slots: Option<&'a [crate::kernel_ir::TailCallSlot]>,
+    /// Per-kernel string table. StructNew / VariantNew codegen
+    /// looks up field names / variant tags here to get stable
+    /// `*const ArcStr` pointers to emit as iconst values. Lives
+    /// on the resulting `WrappedKernel` so the pointers remain
+    /// valid for as long as the compiled code does.
+    strings: &'a KernelStrings,
+}
+
+/// FuncRefs into the JIT module for each runtime helper, valid
+/// within a single function's body. Populated by [`declare_helpers`]
+/// just before constructing the FunctionBuilder.
+#[derive(Default)]
+struct HelperRefs {
+    refs: BTreeMap<&'static str, FuncRef>,
+}
+
+impl HelperRefs {
+    fn get(&self, name: &str) -> Option<FuncRef> {
+        self.refs.get(name).copied()
+    }
+}
+
+/// Stable FuncIds for the runtime helpers, declared once per JIT
+/// module at [`JitCtx::new`]. Per-function compilation calls
+/// [`declare_helpers`] to materialize these as FuncRefs in the
+/// current function.
+struct HelperFuncIds {
+    ids: BTreeMap<&'static str, FuncId>,
+}
+
+impl HelperFuncIds {
+    fn new(module: &mut JITModule) -> Result<Self> {
+        let mut ids = BTreeMap::new();
+        // Each helper's signature. The naming convention encodes the
+        // return type — we match on that to pick the right CLIF sig.
+        for (name, _ptr) in crate::kir_jit_helpers::all_symbols() {
+            let sig = helper_signature(module, name)?;
+            let fid = module
+                .declare_function(name, Linkage::Import, &sig)
+                .with_context(|| {
+                    format!("declare_function for helper `{name}`")
+                })?;
+            ids.insert(name, fid);
+        }
+        Ok(Self { ids })
+    }
+}
+
+fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
+    let mut sig = Signature::new(module.isa().default_call_conv());
+    // Manual per-helper signature wiring — explicit is clearer than
+    // a clever scheme when adding new helpers means revisiting this
+    // anyway.
+    match name {
+        // Read helpers: (ptr: i64, idx: i64) -> <prim>
+        "graphix_valarray_get_i64" | "graphix_struct_get_i64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "graphix_valarray_get_f64" | "graphix_struct_get_f64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::F64));
+        }
+        "graphix_valarray_get_i32"
+        | "graphix_valarray_get_u32"
+        | "graphix_struct_get_i32"
+        | "graphix_struct_get_u32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I32));
+        }
+        "graphix_valarray_get_f32" | "graphix_struct_get_f32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::F32));
+        }
+        "graphix_valarray_get_bool"
+        | "graphix_struct_get_bool"
+        | "graphix_valarray_get_i8"
+        | "graphix_struct_get_i8"
+        | "graphix_valarray_get_u8"
+        | "graphix_struct_get_u8" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        "graphix_valarray_get_i16"
+        | "graphix_struct_get_i16"
+        | "graphix_valarray_get_u16"
+        | "graphix_struct_get_u16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I16));
+        }
+        "graphix_valarray_get_u64" | "graphix_struct_get_u64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "graphix_valarray_len" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // Producer-op builder.
+        "graphix_value_buf_new" => {
+            // (cap: usize) -> *mut LPooled<Vec<Value>>
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "graphix_value_buf_push_i64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "graphix_value_buf_push_f64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::F64));
+        }
+        "graphix_value_buf_push_i32" | "graphix_value_buf_push_u32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+        }
+        "graphix_value_buf_push_f32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::F32));
+        }
+        "graphix_value_buf_push_bool"
+        | "graphix_value_buf_push_i8"
+        | "graphix_value_buf_push_u8" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I8));
+        }
+        "graphix_value_buf_push_i16" | "graphix_value_buf_push_u16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I16));
+        }
+        "graphix_value_buf_push_u64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "graphix_value_buf_push_array"
+        | "graphix_value_buf_push_arcstr" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "graphix_valarray_finalize" => {
+            // consumes buf, returns *mut ValArray
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "graphix_valarray_clone" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "graphix_valarray_drop" | "graphix_value_drop" => {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "graphix_value_new_from_array"
+        | "graphix_value_new_string_from_arcstr"
+        | "graphix_value_clone" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // Variant consumer ops.
+        "graphix_variant_tag_eq" => {
+            // (v: *const Value = i64, expected: *const ArcStr = i64) -> u8
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        "graphix_variant_payload_i64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "graphix_variant_payload_f64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::F64));
+        }
+        "graphix_variant_payload_i32"
+        | "graphix_variant_payload_u32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I32));
+        }
+        "graphix_variant_payload_f32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::F32));
+        }
+        "graphix_variant_payload_bool"
+        | "graphix_variant_payload_i8"
+        | "graphix_variant_payload_u8" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        "graphix_variant_payload_i16" | "graphix_variant_payload_u16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I16));
+        }
+        "graphix_variant_payload_u64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        other => {
+            return Err(anyhow!("unknown JIT helper symbol `{other}`"))
+        }
+    }
+    Ok(sig)
+}
+
+/// Declare each runtime helper FuncId as a FuncRef in the current
+/// function being built. Call this with `&mut jit.func_ctx.func`
+/// before constructing the FunctionBuilder (same borrowing
+/// constraint as the existing `callee_refs` setup).
+fn declare_helpers(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+    ids: &HelperFuncIds,
+) -> HelperRefs {
+    let mut refs = BTreeMap::new();
+    for (name, fid) in ids.ids.iter() {
+        let fref = module.declare_func_in_func(*fid, func);
+        refs.insert(*name, fref);
+    }
+    HelperRefs { refs }
 }
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
 struct JitEnv {
-    /// Each entry is `(name, var, prim)`. Lookups walk back-to-front
-    /// for proper shadowing. Same shape as the interpreter env, just
-    /// storing CLIF Variables instead of RegValues. Variables are
-    /// allocated by [`FunctionBuilder::declare_var`]; we only carry
-    /// them through the env so name lookup at use sites finds the
-    /// right one.
+    /// Scalar locals: `(name, var, prim)`. Lookups walk back-to-front
+    /// for proper shadowing.
     locals: Vec<(ArcStr, Variable, PrimType)>,
+    /// Composite parameter pointer Variables: `(name, var)`. The var
+    /// holds a `*const ValArray` (CLIF i64 on 64-bit targets). Array,
+    /// tuple, and struct params share this table — they differ only
+    /// in how the kernel reads slots, not in the pointer layout.
+    composites: Vec<(ArcStr, Variable)>,
+    /// Variant parameter pointer Variables. Separate from
+    /// `composites` because the runtime representation is `Value`
+    /// (`*const Value`), not `*const ValArray` — VariantTagEq /
+    /// VariantPayload dispatch on the Value's outer shape.
+    variants: Vec<(ArcStr, Variable)>,
 }
 
 impl JitEnv {
     fn new() -> Self {
-        Self { locals: Vec::with_capacity(8) }
+        Self {
+            locals: Vec::with_capacity(8),
+            composites: Vec::new(),
+            variants: Vec::new(),
+        }
     }
 
     fn bind(&mut self, name: ArcStr, var: Variable, prim: PrimType) {
         self.locals.push((name, var, prim));
     }
 
+    fn bind_composite(&mut self, name: ArcStr, var: Variable) {
+        self.composites.push((name, var));
+    }
+
+    fn bind_variant(&mut self, name: ArcStr, var: Variable) {
+        self.variants.push((name, var));
+    }
+
     fn lookup(&self, name: &str) -> Option<(Variable, PrimType)> {
         for (n, v, p) in self.locals.iter().rev() {
             if n.as_str() == name {
                 return Some((*v, *p));
+            }
+        }
+        None
+    }
+
+    fn lookup_composite(&self, name: &str) -> Option<Variable> {
+        for (n, v) in self.composites.iter().rev() {
+            if n.as_str() == name {
+                return Some(*v);
+            }
+        }
+        None
+    }
+
+    fn lookup_variant(&self, name: &str) -> Option<Variable> {
+        for (n, v) in self.variants.iter().rev() {
+            if n.as_str() == name {
+                return Some(*v);
             }
         }
         None
@@ -784,12 +1424,62 @@ fn compile_body(
         match stmt {
             KirStmt::Let(l) => {
                 let v = compile_expr(b, &l.value, env, ctx)?;
-                let var = b.declare_var(prim_to_clif(l.value.typ));
-                b.def_var(var, v);
-                env.bind(l.local.clone(), var, l.value.typ);
+                match &l.value.typ {
+                    KirType::Prim(p) => {
+                        let var = b.declare_var(prim_to_clif(*p));
+                        b.def_var(var, v);
+                        env.bind(l.local.clone(), var, *p);
+                    }
+                    KirType::Array(_)
+                    | KirType::Tuple(_)
+                    | KirType::Struct(_) => {
+                        // Composite local: store the owned `*mut
+                        // ValArray` pointer as an I64. Currently leaks
+                        // when the binding goes out of scope — Phase 3
+                        // adds drops at scope exit.
+                        let var = b.declare_var(types::I64);
+                        b.def_var(var, v);
+                        env.bind_composite(l.local.clone(), var);
+                    }
+                    KirType::Variant(_) => {
+                        return Err(anyhow!(
+                            "JIT: variant Let bindings not yet supported"
+                        ));
+                    }
+                }
             }
             KirStmt::Return(e) => {
-                let v = compile_expr(b, e, env, ctx)?;
+                let mut v = compile_expr(b, e, env, ctx)?;
+                // If the return value is a composite Local — i.e.
+                // the same pointer that's still in `env.composites`
+                // — the post-return drop_owned_composites would
+                // free it. Refcount-bump first to give the caller
+                // a separate owned reference. Owned-source returns
+                // (TupleNew / StructNew / VariantNew / etc.) skip
+                // the bump because they're already fresh.
+                let returns_composite =
+                    !matches!(e.typ, KirType::Prim(_));
+                if returns_composite
+                    && classify_composite_source(e)
+                        == CompositeSource::Borrowed
+                {
+                    let helper_name = match &e.typ {
+                        KirType::Variant(_) => "graphix_value_clone",
+                        KirType::Array(_)
+                        | KirType::Tuple(_)
+                        | KirType::Struct(_) => "graphix_valarray_clone",
+                        KirType::Prim(_) => unreachable!(),
+                    };
+                    let helper = ctx
+                        .helper_refs
+                        .get(helper_name)
+                        .ok_or_else(|| {
+                            anyhow!("missing helper `{helper_name}`")
+                        })?;
+                    let call = b.ins().call(helper, &[v]);
+                    v = b.inst_results(call)[0];
+                }
+                drop_owned_composites(b, env, ctx)?;
                 b.ins().return_(&[v]);
                 return Ok(());
             }
@@ -804,13 +1494,96 @@ fn compile_body(
                 for a in args {
                     new_vals.push(compile_expr(b, a, env, ctx)?);
                 }
-                debug_assert_eq!(new_vals.len(), ctx.param_count);
-                for (i, v) in new_vals.iter().enumerate() {
-                    let (var, _) = (env.locals[i].1, env.locals[i].2);
-                    b.def_var(var, *v);
+                // Back-compat: hand-built test kernels leave
+                // `tail_call_slots` empty and assume all params are
+                // scalar in declaration order. Drive the rebind
+                // positionally in that case.
+                if ctx.tail_call_slots.is_none() {
+                    debug_assert_eq!(new_vals.len(), ctx.param_count);
+                    for (i, v) in new_vals.iter().enumerate() {
+                        let (var, _) = (env.locals[i].1, env.locals[i].2);
+                        b.def_var(var, *v);
+                    }
+                    env.truncate(ctx.param_count);
+                    b.ins().jump(head, &[]);
+                    return Ok(());
                 }
-                // Drop locals beyond params so the next iteration
-                // starts with a clean lexical state.
+                let slots = ctx.tail_call_slots.unwrap();
+                debug_assert_eq!(args.len(), slots.len());
+                use crate::kernel_ir::TailCallSlotKind;
+                let drop_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let clone_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_clone")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
+                // Detect each composite-rebind source so we know
+                // whether the SSA value already holds a fresh owned
+                // pointer (TupleNew / StructNew / etc.) or whether
+                // it's a Local read sharing the same pointer as the
+                // slot we're about to drop. The latter needs a
+                // refcount bump before rebind so the drop balances.
+                let composite_sources: Vec<CompositeSource> = args
+                    .iter()
+                    .map(|a| classify_composite_source(a))
+                    .collect();
+                let mut new_vals: Vec<ClifValue> = new_vals;
+                for (i, slot) in slots.iter().enumerate() {
+                    if matches!(slot.kind, TailCallSlotKind::ValArray)
+                        && composite_sources[i] == CompositeSource::Borrowed
+                    {
+                        // Clone (refcount bump) so the next iteration
+                        // holds an owned reference, separate from any
+                        // other live alias.
+                        let call =
+                            b.ins().call(clone_helper, &[new_vals[i]]);
+                        new_vals[i] = b.inst_results(call)[0];
+                    }
+                }
+                for (slot, v) in slots.iter().zip(new_vals.iter()) {
+                    match slot.kind {
+                        TailCallSlotKind::Scalar(_) => {
+                            let (var, _) =
+                                env.lookup(&slot.name).ok_or_else(|| {
+                                    anyhow!(
+                                        "TailCall: scalar slot `{}` not in env",
+                                        slot.name
+                                    )
+                                })?;
+                            b.def_var(var, *v);
+                        }
+                        TailCallSlotKind::ValArray => {
+                            // Composite rebind: drop the previously-
+                            // owned pointer in the slot, then store
+                            // the new owned `*mut ValArray`. This
+                            // closes the leak we had in Phase 2.
+                            let var = env
+                                .lookup_composite(&slot.name)
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "TailCall: composite slot `{}` not in env",
+                                        slot.name
+                                    )
+                                })?;
+                            let old = b.use_var(var);
+                            b.ins().call(drop_helper, &[old]);
+                            b.def_var(var, *v);
+                        }
+                        TailCallSlotKind::Variant => {
+                            return Err(anyhow!(
+                                "JIT: variant tail-call rebind not yet supported"
+                            ));
+                        }
+                    }
+                }
+                // Drop scalar locals beyond params so the next
+                // iteration starts with a clean lexical state. (We
+                // currently don't track composite-local extras; they
+                // shouldn't happen in tail-loop kernels anyway since
+                // any block-scoped composite would also have leaked
+                // before tail call.)
                 env.truncate(ctx.param_count);
                 b.ins().jump(head, &[]);
                 return Ok(());
@@ -905,20 +1678,47 @@ fn compile_expr(
     match &e.op {
         KirOp::Const(c) => Ok(compile_const(b, *c)),
         KirOp::Local(name) => {
-            let (var, _) = env.lookup(name).ok_or_else(|| {
-                anyhow!("KIR malformed: undefined local `{name}`")
-            })?;
-            Ok(b.use_var(var))
+            // Dispatch on the expression's KirType: scalar locals
+            // sit in `env.locals`, composite locals (array/tuple/
+            // struct pointers) in `env.composites`. The CLIF type
+            // returned matches — scalars get their prim type,
+            // composites get I64 (the pointer).
+            match &e.typ {
+                KirType::Prim(_) => {
+                    let (var, _) = env.lookup(name).ok_or_else(|| {
+                        anyhow!("KIR malformed: undefined scalar local `{name}`")
+                    })?;
+                    Ok(b.use_var(var))
+                }
+                KirType::Array(_)
+                | KirType::Tuple(_)
+                | KirType::Struct(_) => {
+                    let var = env.lookup_composite(name).ok_or_else(|| {
+                        anyhow!(
+                            "KIR malformed: undefined composite local `{name}`"
+                        )
+                    })?;
+                    Ok(b.use_var(var))
+                }
+                KirType::Variant(_) => {
+                    let var = env.lookup_variant(name).ok_or_else(|| {
+                        anyhow!(
+                            "KIR malformed: undefined variant local `{name}`"
+                        )
+                    })?;
+                    Ok(b.use_var(var))
+                }
+            }
         }
         KirOp::Bin { op, lhs, rhs } => {
             let l = compile_expr(b, lhs, env, ctx)?;
             let r = compile_expr(b, rhs, env, ctx)?;
-            Ok(compile_bin(b, *op, lhs.typ, l, r))
+            Ok(compile_bin(b, *op, prim_of(&lhs.typ), l, r))
         }
         KirOp::Cmp { op, lhs, rhs } => {
             let l = compile_expr(b, lhs, env, ctx)?;
             let r = compile_expr(b, rhs, env, ctx)?;
-            Ok(compile_cmp(b, *op, lhs.typ, l, r))
+            Ok(compile_cmp(b, *op, prim_of(&lhs.typ), l, r))
         }
         KirOp::BoolBin { op, lhs, rhs } => {
             // We use eager (non-short-circuit) evaluation here for
@@ -943,7 +1743,7 @@ fn compile_expr(
         }
         KirOp::Cast { inner, target } => {
             let v = compile_expr(b, inner, env, ctx)?;
-            Ok(compile_cast(b, v, inner.typ, *target))
+            Ok(compile_cast(b, v, prim_of(&inner.typ), *target))
         }
         KirOp::Call { fn_name, args } => {
             // Cross-kernel call: look up the callee's `FuncRef` (the
@@ -979,19 +1779,695 @@ fn compile_expr(
             let mark = env.mark();
             for l in lets {
                 let v = compile_expr(b, &l.value, env, ctx)?;
-                let var = b.declare_var(prim_to_clif(l.value.typ));
+                let p = prim_of(&l.value.typ);
+                let var = b.declare_var(prim_to_clif(p));
                 b.def_var(var, v);
-                env.bind(l.local.clone(), var, l.value.typ);
+                env.bind(l.local.clone(), var, p);
             }
             let result = compile_expr(b, tail, env, ctx)?;
             env.truncate(mark);
             Ok(result)
         }
-        KirOp::IfChain { arms } => compile_ifchain(b, arms, e.typ, env, ctx),
+        KirOp::IfChain { arms } => compile_ifchain(b, arms, prim_of(&e.typ), env, ctx),
         KirOp::DynCall { .. } => Err(anyhow!(
             "KirOp::DynCall not supported in JIT v1 (kernel falls back \
              to interpreter; M4g v3 lifts this if perf needs it)"
         )),
+        KirOp::ArrayLen { name } => {
+            let helper = ctx.helper_refs.get("graphix_valarray_len").ok_or_else(
+                || anyhow!("missing graphix_valarray_len helper"),
+            )?;
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined composite param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(helper, &[arr_ptr]);
+            // Helper returns usize (i64); ArrayLen's KirExpr.typ is
+            // Prim(U64), so width matches.
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::ArrayGet { name, idx } => {
+            let elem_p = e.typ.as_prim().ok_or_else(|| {
+                anyhow!("KIR malformed: ArrayGet must have scalar result type")
+            })?;
+            let helper_name = valarray_get_helper(elem_p)?;
+            let helper =
+                ctx.helper_refs.get(helper_name).ok_or_else(|| {
+                    anyhow!("missing JIT helper `{helper_name}`")
+                })?;
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined composite param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let idx_val = compile_expr(b, idx, env, ctx)?;
+            // Helper expects usize — widen to i64 if the index
+            // expression was narrower.
+            let idx_i64 = widen_to_i64(b, idx_val, prim_of(&idx.typ));
+            let call = b.ins().call(helper, &[arr_ptr, idx_i64]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::TupleGet { name, idx, elem_typ } => {
+            let helper_name = valarray_get_helper(*elem_typ)?;
+            let helper =
+                ctx.helper_refs.get(helper_name).ok_or_else(|| {
+                    anyhow!("missing JIT helper `{helper_name}`")
+                })?;
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined tuple param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let idx_const = b.ins().iconst(types::I64, *idx as i64);
+            let call = b.ins().call(helper, &[arr_ptr, idx_const]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
+            let helper_name = struct_get_helper(*elem_typ)?;
+            let helper =
+                ctx.helper_refs.get(helper_name).ok_or_else(|| {
+                    anyhow!("missing JIT helper `{helper_name}`")
+                })?;
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined struct param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let idx_const = b.ins().iconst(types::I64, *sorted_idx as i64);
+            let call = b.ins().call(helper, &[arr_ptr, idx_const]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::TupleNew { fields, elem_types } => {
+            // Build a `Vec<Value>` field-by-field via the producer
+            // helpers, then finalize into an owned `*mut ValArray`.
+            // Returned ClifValue is I64 (the pointer); consumers
+            // (TupleGet, tail-call rebind, kernel return) treat it
+            // as a `*const ValArray`.
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let cap = b.ins().iconst(types::I64, fields.len() as i64);
+            let call = b.ins().call(buf_new, &[cap]);
+            let buf = b.inst_results(call)[0];
+            for (f, t) in fields.iter().zip(elem_types.iter()) {
+                let push = ctx
+                    .helper_refs
+                    .get(value_buf_push_helper(*t)?)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing JIT push helper for {t:?}"
+                        )
+                    })?;
+                let v = compile_expr(b, f, env, ctx)?;
+                b.ins().call(push, &[buf, v]);
+            }
+            let call = b.ins().call(finalize, &[buf]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::StructNew { sorted_fields, sorted_types } => {
+            // Layout: outer ValArray of inner [name, value] pairs.
+            //   outer = buf_new(N)
+            //   for each field:
+            //     inner = buf_new(2)
+            //     push_arcstr(inner, &interned_name)
+            //     push_<T>(inner, value)
+            //     inner_arr = finalize(inner)
+            //     push_array(outer, inner_arr)   // takes ownership
+            //   finalize(outer)
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let push_arcstr = ctx
+                .helper_refs
+                .get("graphix_value_buf_push_arcstr")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_value_buf_push_arcstr")
+                })?;
+            let push_array = ctx
+                .helper_refs
+                .get("graphix_value_buf_push_array")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_value_buf_push_array")
+                })?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let outer_cap =
+                b.ins().iconst(types::I64, sorted_fields.len() as i64);
+            let call = b.ins().call(buf_new, &[outer_cap]);
+            let outer = b.inst_results(call)[0];
+            for ((name, expr), (_, typ)) in
+                sorted_fields.iter().zip(sorted_types.iter())
+            {
+                let inner_cap = b.ins().iconst(types::I64, 2);
+                let call = b.ins().call(buf_new, &[inner_cap]);
+                let inner = b.inst_results(call)[0];
+                let name_ptr = ctx.strings.get(name) as i64;
+                let name_ptr_val = b.ins().iconst(types::I64, name_ptr);
+                b.ins().call(push_arcstr, &[inner, name_ptr_val]);
+                let push = ctx
+                    .helper_refs
+                    .get(value_buf_push_helper(*typ)?)
+                    .ok_or_else(|| {
+                        anyhow!("missing JIT push helper for {typ:?}")
+                    })?;
+                let v = compile_expr(b, expr, env, ctx)?;
+                b.ins().call(push, &[inner, v]);
+                let call = b.ins().call(finalize, &[inner]);
+                let inner_arr = b.inst_results(call)[0];
+                b.ins().call(push_array, &[outer, inner_arr]);
+            }
+            let call = b.ins().call(finalize, &[outer]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::VariantNew { tag, payloads, payload_types } => {
+            // Nullary variant → Value::String(tag) directly.
+            // With-payload variant → Value::Array([tag, p0, ...]).
+            //
+            // The result of VariantNew is a `*mut Value`, NOT a
+            // `*mut ValArray`. We emit an I64 CLIF value either way
+            // (always a pointer), and downstream consumers / the
+            // composite-return ABI dispatch on KirType::Variant.
+            let tag_ptr = ctx.strings.get(tag) as i64;
+            let tag_ptr_val = b.ins().iconst(types::I64, tag_ptr);
+            if payloads.is_empty() {
+                let new_str = ctx
+                    .helper_refs
+                    .get("graphix_value_new_string_from_arcstr")
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing graphix_value_new_string_from_arcstr"
+                        )
+                    })?;
+                let call = b.ins().call(new_str, &[tag_ptr_val]);
+                Ok(b.inst_results(call)[0])
+            } else {
+                let buf_new = ctx
+                    .helper_refs
+                    .get("graphix_value_buf_new")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_value_buf_new")
+                    })?;
+                let push_arcstr = ctx
+                    .helper_refs
+                    .get("graphix_value_buf_push_arcstr")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_value_buf_push_arcstr")
+                    })?;
+                let finalize = ctx
+                    .helper_refs
+                    .get("graphix_valarray_finalize")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_valarray_finalize")
+                    })?;
+                let wrap_array = ctx
+                    .helper_refs
+                    .get("graphix_value_new_from_array")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_value_new_from_array")
+                    })?;
+                let cap =
+                    b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
+                let call = b.ins().call(buf_new, &[cap]);
+                let buf = b.inst_results(call)[0];
+                b.ins().call(push_arcstr, &[buf, tag_ptr_val]);
+                for (p, t) in payloads.iter().zip(payload_types.iter()) {
+                    let push = ctx
+                        .helper_refs
+                        .get(value_buf_push_helper(*t)?)
+                        .ok_or_else(|| {
+                            anyhow!("missing push helper for {t:?}")
+                        })?;
+                    let v = compile_expr(b, p, env, ctx)?;
+                    b.ins().call(push, &[buf, v]);
+                }
+                let call = b.ins().call(finalize, &[buf]);
+                let arr = b.inst_results(call)[0];
+                let call = b.ins().call(wrap_array, &[arr]);
+                Ok(b.inst_results(call)[0])
+            }
+        }
+        KirOp::ArrayInit { n, idx_local, elem_typ, body } => {
+            // n_val = eval n.    Scalar I64-ish; widen if narrower.
+            // buf = buf_new(n_val)
+            // loop i in 0..n_val:
+            //     bind idx_local to i in env
+            //     elem = eval body
+            //     call push_<T>(buf, elem)
+            // arr = finalize(buf)
+            //
+            // Block structure: caller's current block jumps to
+            // loop_header; loop_header tests the counter and brif's
+            // to loop_body (push + increment) or loop_exit (finalize).
+            // loop_exit is where compile_expr returns to.
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let push = ctx
+                .helper_refs
+                .get(value_buf_push_helper(*elem_typ)?)
+                .ok_or_else(|| {
+                    anyhow!("missing push helper for {elem_typ:?}")
+                })?;
+            let n_raw = compile_expr(b, n, env, ctx)?;
+            let n_val = widen_to_i64(b, n_raw, prim_of(&n.typ));
+            let call = b.ins().call(buf_new, &[n_val]);
+            let buf = b.inst_results(call)[0];
+            // Loop counter `i` as a CLIF Variable so the loop-back
+            // edge can update it. CLIF auto-inserts the SSA phi.
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let loop_exit = b.create_block();
+            b.ins().jump(loop_header, &[]);
+            // Header: test i < n. brif uses I8 cond (0 or 1).
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, n_val);
+            b.ins()
+                .brif(cond, loop_body, &[], loop_exit, &[]);
+            // Body: bind idx_local, compile body expr, push, increment.
+            b.switch_to_block(loop_body);
+            let mark = env.mark();
+            env.bind(idx_local.clone(), i_var, PrimType::I64);
+            let elem = compile_expr(b, body, env, ctx)?;
+            env.truncate(mark);
+            b.ins().call(push, &[buf, elem]);
+            let i_now = b.use_var(i_var);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            // Exit: finalize and return the array pointer.
+            b.switch_to_block(loop_exit);
+            b.seal_block(loop_exit);
+            let call = b.ins().call(finalize, &[buf]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
+            // Iterate over an existing composite param/local.
+            //   arr_ptr = lookup_composite(array)
+            //   len = call valarray_len(arr_ptr)
+            //   buf = call buf_new(len)
+            //   loop i in 0..len:
+            //     elem = call valarray_get_<in_elem>(arr_ptr, i)
+            //     bind elem_local = elem
+            //     out_val = eval body
+            //     call push_<out_elem>(buf, out_val)
+            //   finalize(buf)
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let get_helper = ctx
+                .helper_refs
+                .get(valarray_get_helper(*in_elem)?)
+                .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+            let push = ctx
+                .helper_refs
+                .get(value_buf_push_helper(*out_elem)?)
+                .ok_or_else(|| {
+                    anyhow!("missing push helper for {out_elem:?}")
+                })?;
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let call = b.ins().call(buf_new, &[len]);
+            let buf = b.inst_results(call)[0];
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let loop_exit = b.create_block();
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+            let elem = b.inst_results(call)[0];
+            let elem_var = b.declare_var(prim_to_clif(*in_elem));
+            b.def_var(elem_var, elem);
+            let mark = env.mark();
+            env.bind(elem_local.clone(), elem_var, *in_elem);
+            let out_val = compile_expr(b, body, env, ctx)?;
+            env.truncate(mark);
+            b.ins().call(push, &[buf, out_val]);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(loop_exit);
+            b.seal_block(loop_exit);
+            let call = b.ins().call(finalize, &[buf]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::ArrayFilter { array, elem, elem_local, predicate } => {
+            // Same shape as ArrayMap but with a conditional push.
+            //   loop i in 0..len:
+            //     elem = get(arr, i)
+            //     bind elem_local
+            //     keep = eval predicate (Bool, CLIF I8)
+            //     if keep: push elem; else continue
+            //     i += 1
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let get_helper = ctx
+                .helper_refs
+                .get(valarray_get_helper(*elem)?)
+                .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+            let push = ctx
+                .helper_refs
+                .get(value_buf_push_helper(*elem)?)
+                .ok_or_else(|| {
+                    anyhow!("missing push helper for {elem:?}")
+                })?;
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let call = b.ins().call(buf_new, &[len]);
+            let buf = b.inst_results(call)[0];
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let push_block = b.create_block();
+            let advance = b.create_block();
+            let loop_exit = b.create_block();
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+            let elem_val = b.inst_results(call)[0];
+            let elem_var = b.declare_var(prim_to_clif(*elem));
+            b.def_var(elem_var, elem_val);
+            let mark = env.mark();
+            env.bind(elem_local.clone(), elem_var, *elem);
+            let keep = compile_expr(b, predicate, env, ctx)?;
+            env.truncate(mark);
+            b.ins().brif(keep, push_block, &[], advance, &[]);
+            b.switch_to_block(push_block);
+            let elem_again = b.use_var(elem_var);
+            b.ins().call(push, &[buf, elem_again]);
+            b.ins().jump(advance, &[]);
+            b.seal_block(push_block);
+            b.switch_to_block(advance);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(advance);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(loop_exit);
+            b.seal_block(loop_exit);
+            let call = b.ins().call(finalize, &[buf]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
+            // acc_var = compile init  (scalar, type = body.typ.as_prim())
+            // loop i in 0..len:
+            //   elem = get(arr, i)
+            //   bind acc_local = acc_var, elem_local = elem
+            //   new_acc = compile body
+            //   def_var(acc_var, new_acc)
+            // result = use_var(acc_var)
+            let acc_prim = prim_of(&e.typ);
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let get_helper = ctx
+                .helper_refs
+                .get(valarray_get_helper(*elem_typ)?)
+                .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined fold array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let acc_var = b.declare_var(prim_to_clif(acc_prim));
+            let init_val = compile_expr(b, init, env, ctx)?;
+            b.def_var(acc_var, init_val);
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let loop_exit = b.create_block();
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+            let elem_val = b.inst_results(call)[0];
+            let elem_var = b.declare_var(prim_to_clif(*elem_typ));
+            b.def_var(elem_var, elem_val);
+            // Bind acc and elem locals so the body's KirOp::Local
+            // resolutions work. The order matches the interp:
+            // acc first then elem (KIR construction pins this).
+            let mark = env.mark();
+            env.bind(acc_local.clone(), acc_var, acc_prim);
+            env.bind(elem_local.clone(), elem_var, *elem_typ);
+            let new_acc = compile_expr(b, body, env, ctx)?;
+            env.truncate(mark);
+            b.def_var(acc_var, new_acc);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(loop_exit);
+            b.seal_block(loop_exit);
+            Ok(b.use_var(acc_var))
+        }
+        KirOp::VariantTagEq { name, expected_tag } => {
+            let helper = ctx
+                .helper_refs
+                .get("graphix_variant_tag_eq")
+                .ok_or_else(|| anyhow!("missing graphix_variant_tag_eq"))?;
+            let var = env.lookup_variant(name).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined variant `{name}`")
+            })?;
+            let v_ptr = b.use_var(var);
+            let tag_ptr = ctx.strings.get(expected_tag) as i64;
+            let tag_val = b.ins().iconst(types::I64, tag_ptr);
+            let call = b.ins().call(helper, &[v_ptr, tag_val]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::VariantPayload { name, payload_idx, elem_typ } => {
+            let helper_name = variant_payload_helper(*elem_typ)?;
+            let helper = ctx
+                .helper_refs
+                .get(helper_name)
+                .ok_or_else(|| anyhow!("missing helper `{helper_name}`"))?;
+            let var = env.lookup_variant(name).ok_or_else(|| {
+                anyhow!("KIR malformed: undefined variant `{name}`")
+            })?;
+            let v_ptr = b.use_var(var);
+            let idx_const =
+                b.ins().iconst(types::I64, *payload_idx as i64);
+            let call = b.ins().call(helper, &[v_ptr, idx_const]);
+            Ok(b.inst_results(call)[0])
+        }
+    }
+}
+
+fn variant_payload_helper(p: PrimType) -> Result<&'static str> {
+    Ok(match p {
+        PrimType::I8 => "graphix_variant_payload_i8",
+        PrimType::I16 => "graphix_variant_payload_i16",
+        PrimType::I32 => "graphix_variant_payload_i32",
+        PrimType::I64 => "graphix_variant_payload_i64",
+        PrimType::U8 => "graphix_variant_payload_u8",
+        PrimType::U16 => "graphix_variant_payload_u16",
+        PrimType::U32 => "graphix_variant_payload_u32",
+        PrimType::U64 => "graphix_variant_payload_u64",
+        PrimType::F32 => "graphix_variant_payload_f32",
+        PrimType::F64 => "graphix_variant_payload_f64",
+        PrimType::Bool => "graphix_variant_payload_bool",
+    })
+}
+
+/// Where a composite expression's pointer came from. Drives whether
+/// a tail-call rebind needs a refcount bump (`Borrowed`) or can
+/// transfer ownership directly (`Owned`).
+#[derive(Debug, PartialEq, Eq)]
+enum CompositeSource {
+    /// Expression produces a fresh owned pointer — TupleNew,
+    /// StructNew, ArrayInit, etc. Transfer to the slot as-is.
+    Owned,
+    /// Expression reads from an existing binding that already owns
+    /// the pointer (typically `Local(name)`). If we move it into a
+    /// slot whose old contents we then drop, the drop frees the
+    /// shared underlying buffer. Caller must clone before transfer.
+    Borrowed,
+}
+
+fn classify_composite_source(e: &KirExpr) -> CompositeSource {
+    match &e.op {
+        // Producer ops yield owned pointers.
+        KirOp::TupleNew { .. }
+        | KirOp::StructNew { .. }
+        | KirOp::ArrayInit { .. }
+        | KirOp::ArrayMap { .. }
+        | KirOp::ArrayFilter { .. }
+        | KirOp::VariantNew { .. } => CompositeSource::Owned,
+        // Anything else (Local reads, block tails, if-chain results,
+        // etc.) we conservatively treat as borrowed. False positives
+        // (e.g. an IfChain whose every arm is a fresh producer) just
+        // cost one extra refcount bump — never an unsoundness.
+        _ => CompositeSource::Borrowed,
+    }
+}
+
+/// Emit a `graphix_valarray_drop` call for every owned composite
+/// local currently in scope. Called at every Return point so we
+/// don't leak refcount-bumped ValArrays past kernel exit.
+///
+/// Composite-return kernels (when we add them) would skip the
+/// dropped value being returned; right now all composite return is
+/// rejected at compile so it's safe to drop everything.
+fn drop_owned_composites(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<()> {
+    let drop_helper = ctx
+        .helper_refs
+        .get("graphix_valarray_drop")
+        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+    for (_, var) in &env.composites {
+        let ptr = b.use_var(*var);
+        b.ins().call(drop_helper, &[ptr]);
+    }
+    Ok(())
+}
+
+/// Map a [`PrimType`] to the `graphix_value_buf_push_<T>` helper.
+fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
+    Ok(match p {
+        PrimType::I8 => "graphix_value_buf_push_i8",
+        PrimType::I16 => "graphix_value_buf_push_i16",
+        PrimType::I32 => "graphix_value_buf_push_i32",
+        PrimType::I64 => "graphix_value_buf_push_i64",
+        PrimType::U8 => "graphix_value_buf_push_u8",
+        PrimType::U16 => "graphix_value_buf_push_u16",
+        PrimType::U32 => "graphix_value_buf_push_u32",
+        PrimType::U64 => "graphix_value_buf_push_u64",
+        PrimType::F32 => "graphix_value_buf_push_f32",
+        PrimType::F64 => "graphix_value_buf_push_f64",
+        PrimType::Bool => "graphix_value_buf_push_bool",
+    })
+}
+
+/// Map an element [`PrimType`] to the `graphix_valarray_get_<T>`
+/// helper symbol name. Used by ArrayGet / TupleGet lowering.
+fn valarray_get_helper(p: PrimType) -> Result<&'static str> {
+    Ok(match p {
+        PrimType::I8 => "graphix_valarray_get_i8",
+        PrimType::I16 => "graphix_valarray_get_i16",
+        PrimType::I32 => "graphix_valarray_get_i32",
+        PrimType::I64 => "graphix_valarray_get_i64",
+        PrimType::U8 => "graphix_valarray_get_u8",
+        PrimType::U16 => "graphix_valarray_get_u16",
+        PrimType::U32 => "graphix_valarray_get_u32",
+        PrimType::U64 => "graphix_valarray_get_u64",
+        PrimType::F32 => "graphix_valarray_get_f32",
+        PrimType::F64 => "graphix_valarray_get_f64",
+        PrimType::Bool => "graphix_valarray_get_bool",
+    })
+}
+
+/// Map a struct field [`PrimType`] to the `graphix_struct_get_<T>`
+/// helper symbol name.
+fn struct_get_helper(p: PrimType) -> Result<&'static str> {
+    Ok(match p {
+        PrimType::I8 => "graphix_struct_get_i8",
+        PrimType::I16 => "graphix_struct_get_i16",
+        PrimType::I32 => "graphix_struct_get_i32",
+        PrimType::I64 => "graphix_struct_get_i64",
+        PrimType::U8 => "graphix_struct_get_u8",
+        PrimType::U16 => "graphix_struct_get_u16",
+        PrimType::U32 => "graphix_struct_get_u32",
+        PrimType::U64 => "graphix_struct_get_u64",
+        PrimType::F32 => "graphix_struct_get_f32",
+        PrimType::F64 => "graphix_struct_get_f64",
+        PrimType::Bool => "graphix_struct_get_bool",
+    })
+}
+
+/// Widen a CLIF value to i64. Helpers expect a usize index; if the
+/// caller's index expression was narrower (e.g. `i32` from a
+/// `cast`), we zero/sign extend here.
+fn widen_to_i64(
+    b: &mut FunctionBuilder,
+    v: ClifValue,
+    p: PrimType,
+) -> ClifValue {
+    match p {
+        PrimType::I64 | PrimType::U64 => v,
+        PrimType::I8 | PrimType::I16 | PrimType::I32 => {
+            b.ins().sextend(types::I64, v)
+        }
+        PrimType::U8 | PrimType::U16 | PrimType::U32 | PrimType::Bool => {
+            b.ins().uextend(types::I64, v)
+        }
+        PrimType::F32 | PrimType::F64 => {
+            panic!("widen_to_i64: float index — KIR malformed")
+        }
     }
 }
 
@@ -1224,6 +2700,15 @@ fn compile_cast(
 
 // ─── Type plumbing ───────────────────────────────────────────────
 
+/// JIT v1 is scalar-only. Every `KirExpr.typ` we encounter inside a
+/// JIT-compilable kernel must be a primitive — array ops route to the
+/// interpreter via the explicit error arm in `compile_expr`. This
+/// helper crashes loudly on misuse rather than silently producing
+/// nonsense lowering.
+fn prim_of(t: &KirType) -> PrimType {
+    t.as_prim().expect("JIT scalar-only: array typ slipped past compile_expr")
+}
+
 fn prim_to_clif(p: PrimType) -> ClifType {
     match p {
         PrimType::I8 | PrimType::U8 | PrimType::Bool => types::I8,
@@ -1251,8 +2736,8 @@ mod tests {
     use super::*;
     use crate::kernel_ir::{
         arith, bool_op, cast, cmp, const_expr, local, BinOp, BoolOp, CmpOp,
-        ConstVal, Input, KirExpr, KirKernel, KirOp, KirStmt, Let, PrimType,
-        SelectArm,
+        ConstVal, Input, KirExpr, KirKernel, KirOp, KirStmt, KirType, Let,
+        PrimType, SelectArm,
     };
 
     fn input(name: &str, prim: PrimType) -> Input {
@@ -1300,7 +2785,12 @@ mod tests {
                 input("c", PrimType::I64),
             ],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1334,13 +2824,18 @@ mod tests {
                     .unwrap(),
                 ),
             },
-            typ: PrimType::F64,
+            typ: KirType::Prim(PrimType::F64),
         };
         let kernel = KirKernel {
             fn_name: ArcStr::from("scaled"),
             params: vec![input("a", PrimType::F64), input("b", PrimType::F64)],
             fn_params: vec![],
-            return_type: PrimType::F64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(block)],
         };
@@ -1372,7 +2867,12 @@ mod tests {
             fn_name: ArcStr::from("range_check"),
             params: vec![input("x", PrimType::F64), input("y", PrimType::F64)],
             fn_params: vec![],
-            return_type: PrimType::Bool,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::Bool),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1391,7 +2891,12 @@ mod tests {
             fn_name: ArcStr::from("itof"),
             params: vec![input("i", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::F64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1505,7 +3010,12 @@ mod tests {
                 input("i", PrimType::I64),
             ],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
             body: vec![KirStmt::Select { arms: vec![arm0, arm1, arm2] }],
         }
@@ -1553,7 +3063,12 @@ mod tests {
             fn_name: ArcStr::from("countdown"),
             params: vec![input("n", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
             body: vec![KirStmt::Select { arms: vec![arm0, arm1] }],
         };
@@ -1593,13 +3108,18 @@ mod tests {
                     (None, const_expr(ConstVal::I64(0))),
                 ],
             },
-            typ: PrimType::I64,
+            typ: KirType::Prim(PrimType::I64),
         };
         let kernel = KirKernel {
             fn_name: ArcStr::from("sign"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(chain)],
         };
@@ -1633,7 +3153,7 @@ mod tests {
         ];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, kernel.return_type), RegValue::I64(7));
+        assert_eq!(unpack_u64_to_reg(out, kernel.return_type.as_prim().unwrap()), RegValue::I64(7));
 
         // c=0+0i, i=20 → 0
         let args = [
@@ -1645,7 +3165,7 @@ mod tests {
         ];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, kernel.return_type), RegValue::I64(0));
+        assert_eq!(unpack_u64_to_reg(out, kernel.return_type.as_prim().unwrap()), RegValue::I64(0));
     }
 
     #[test]
@@ -1661,7 +3181,12 @@ mod tests {
             fn_name: ArcStr::from("inc"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1684,7 +3209,12 @@ mod tests {
             fn_name: ArcStr::from("square"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(
                 arith(
@@ -1701,7 +3231,7 @@ mod tests {
                 fn_name: ArcStr::from("square"),
                 args: vec![loc("n", PrimType::I64)],
             },
-            typ: PrimType::I64,
+            typ: KirType::Prim(PrimType::I64),
         };
         let body = arith(call_expr, const_expr(ConstVal::I64(10)), BinOp::Add)
             .unwrap();
@@ -1709,7 +3239,12 @@ mod tests {
             fn_name: ArcStr::from("caller"),
             params: vec![input("n", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         });
@@ -1721,7 +3256,7 @@ mod tests {
         let args = [pack_reg_to_u64(&RegValue::I64(7))];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, caller.return_type), RegValue::I64(59));
+        assert_eq!(unpack_u64_to_reg(out, caller.return_type.as_prim().unwrap()), RegValue::I64(59));
     }
 
     /// Non-tail self-recursion via `KirOp::Call` (e.g. naive fib's
@@ -1744,7 +3279,7 @@ mod tests {
                 )
                 .unwrap()],
             },
-            typ: PrimType::I64,
+            typ: KirType::Prim(PrimType::I64),
         };
         let recursive_body =
             arith(fib_call(1), fib_call(2), BinOp::Add).unwrap();
@@ -1769,7 +3304,12 @@ mod tests {
             fn_name: ArcStr::from("fib"),
             params: vec![input("n", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Select { arms }],
         });
@@ -1809,7 +3349,12 @@ mod tests {
             fn_name: ArcStr::from("leaf"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(
                 arith(
@@ -1825,7 +3370,12 @@ mod tests {
             fn_name: ArcStr::from("middle"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(
                 arith(
@@ -1834,7 +3384,7 @@ mod tests {
                             fn_name: ArcStr::from("leaf"),
                             args: vec![loc("x", PrimType::I64)],
                         },
-                        typ: PrimType::I64,
+                        typ: KirType::Prim(PrimType::I64),
                     },
                     const_expr(ConstVal::I64(2)),
                     BinOp::Mul,
@@ -1847,7 +3397,12 @@ mod tests {
             fn_name: ArcStr::from("outer"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(
                 arith(
@@ -1856,7 +3411,7 @@ mod tests {
                             fn_name: ArcStr::from("middle"),
                             args: vec![loc("x", PrimType::I64)],
                         },
-                        typ: PrimType::I64,
+                        typ: KirType::Prim(PrimType::I64),
                     },
                     const_expr(ConstVal::I64(3)),
                     BinOp::Sub,
@@ -1889,7 +3444,12 @@ mod tests {
             fn_name: ArcStr::from("square"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(
                 arith(
@@ -1906,7 +3466,7 @@ mod tests {
                     fn_name: ArcStr::from("square"),
                     args: vec![loc("n", PrimType::I64)],
                 },
-                typ: PrimType::I64,
+                typ: KirType::Prim(PrimType::I64),
             };
             let body = arith(
                 call_expr,
@@ -1918,7 +3478,12 @@ mod tests {
                 fn_name: ArcStr::from("caller"),
                 params: vec![input("n", PrimType::I64)],
                 fn_params: vec![],
-                return_type: PrimType::I64,
+                array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+                return_type: KirType::Prim(PrimType::I64),
                 has_tail_loop: false,
                 body: vec![KirStmt::Return(body)],
             })

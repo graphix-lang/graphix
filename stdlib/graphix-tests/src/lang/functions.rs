@@ -326,7 +326,7 @@ run!(kir_lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
 const KIR_DYNCALL_HOF: &str = r#"
 {
     let square = |x: i64| -> i64 x * x;
-    let combine = |f: fn(i64) -> i64, x: i64| -> i64 f(x) + 1;
+    let combine = |f: fn(x: i64) -> i64, x: i64| -> i64 f(x) + 1;
     combine(square, 5)
 }
 "#;

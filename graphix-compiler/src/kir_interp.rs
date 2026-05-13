@@ -26,12 +26,14 @@
 
 use crate::{
     kernel_ir::{
-        BinOp, BoolOp, CmpOp, ConstVal, KirExpr, KirKernel, KirOp, KirStmt, PrimType,
+        BinOp, BoolOp, CmpOp, ConstVal, KirExpr, KirKernel, KirOp, KirStmt, KirType,
+        PrimType,
     },
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
 };
 use arcstr::ArcStr;
 use netidx::subscriber::Value;
+use netidx_value::ValArray;
 use std::{collections::BTreeMap, sync::Arc};
 
 // ─── Runtime register value ──────────────────────────────────────
@@ -137,6 +139,114 @@ impl RegValue {
             _ => panic!("as_bool: not a Bool — KIR is malformed"),
         }
     }
+
+    /// Coerce any integer variant to `usize` for use as an array
+    /// index. Float / bool variants panic — fusion only emits
+    /// `ArrayGet` whose `idx` typechecks as an integer.
+    fn as_usize(self) -> usize {
+        match self {
+            RegValue::I8(x) => x as usize,
+            RegValue::I16(x) => x as usize,
+            RegValue::I32(x) => x as usize,
+            RegValue::I64(x) => x as usize,
+            RegValue::U8(x) => x as usize,
+            RegValue::U16(x) => x as usize,
+            RegValue::U32(x) => x as usize,
+            RegValue::U64(x) => x as usize,
+            RegValue::F32(_) | RegValue::F64(_) | RegValue::Bool(_) => {
+                panic!("as_usize: non-integer index — KIR is malformed")
+            }
+        }
+    }
+
+    /// Read element `i` of `arr` as a `RegValue` of variant `expected`.
+    /// Wraps `ValArray::get_unchecked` — same safety contract: caller
+    /// guarantees `i < arr.len()` and that every element of `arr`
+    /// carries the matching primitive variant. Both invariants hold
+    /// when this is called from a kernel built by fusion.
+    unsafe fn from_array_elem(arr: &ValArray, i: usize, expected: PrimType) -> RegValue {
+        unsafe {
+            match expected {
+                PrimType::I8 => RegValue::I8(arr.get_unchecked::<i8>(i)),
+                PrimType::I16 => RegValue::I16(arr.get_unchecked::<i16>(i)),
+                PrimType::I32 => RegValue::I32(arr.get_unchecked::<i32>(i)),
+                PrimType::I64 => RegValue::I64(arr.get_unchecked::<i64>(i)),
+                PrimType::U8 => RegValue::U8(arr.get_unchecked::<u8>(i)),
+                PrimType::U16 => RegValue::U16(arr.get_unchecked::<u16>(i)),
+                PrimType::U32 => RegValue::U32(arr.get_unchecked::<u32>(i)),
+                PrimType::U64 => RegValue::U64(arr.get_unchecked::<u64>(i)),
+                PrimType::F32 => RegValue::F32(arr.get_unchecked::<f32>(i)),
+                PrimType::F64 => RegValue::F64(arr.get_unchecked::<f64>(i)),
+                PrimType::Bool => RegValue::Bool(arr.get_unchecked::<bool>(i)),
+            }
+        }
+    }
+}
+
+// ─── Eval result ─────────────────────────────────────────────────
+
+/// The interpreter's universal expression result type. Mirrors the
+/// runtime layouts the rest of the system uses:
+///
+/// - `Scalar(RegValue)` — primitives, the hot path. Stored unboxed,
+///   `Copy`, fits in a register.
+/// - `ValArray(ValArray)` — arrays, tuples, structs. All three share
+///   the `Value::Array(ValArray)` runtime representation; only their
+///   slot interpretation differs.
+/// - `Variant(Value)` — variants are `Value::String(tag)` for
+///   nullary or `Value::Array([tag, ...payload])` for with-payload,
+///   so we keep the outer `Value` so the kernel can dispatch on
+///   shape.
+///
+/// Consumers that statically know the kind (`Bin` operands are
+/// always scalar, etc.) use `into_scalar` / `into_valarray` /
+/// `into_variant`. Polymorphic spots (let-binding, tail-call rebind,
+/// kernel return) keep the whole `EvalResult` and dispatch.
+#[derive(Debug, Clone)]
+pub enum EvalResult {
+    Scalar(RegValue),
+    ValArray(ValArray),
+    Variant(Value),
+}
+
+impl EvalResult {
+    /// Convert to a netidx `Value` for the runtime boundary.
+    pub fn into_value(self) -> Value {
+        match self {
+            EvalResult::Scalar(r) => r.to_value(),
+            EvalResult::ValArray(a) => Value::Array(a),
+            EvalResult::Variant(v) => v,
+        }
+    }
+
+    fn into_scalar(self) -> RegValue {
+        match self {
+            EvalResult::Scalar(r) => r,
+            other => panic!(
+                "EvalResult: expected scalar, got {other:?} — KIR is malformed"
+            ),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn into_valarray(self) -> ValArray {
+        match self {
+            EvalResult::ValArray(a) => a,
+            other => panic!(
+                "EvalResult: expected ValArray, got {other:?} — KIR is malformed"
+            ),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn into_variant(self) -> Value {
+        match self {
+            EvalResult::Variant(v) => v,
+            other => panic!(
+                "EvalResult: expected variant Value, got {other:?} — KIR is malformed"
+            ),
+        }
+    }
 }
 
 // ─── Interpreter env ─────────────────────────────────────────────
@@ -158,11 +268,55 @@ struct InterpEnv {
     /// place and truncate everything beyond `param_count`.
     locals: Vec<(arcstr::ArcStr, RegValue)>,
     param_count: usize,
+    /// Array / tuple / struct parameters bound at kernel entry. All
+    /// three share the `ValArray` runtime layout, so they live in one
+    /// table looked up by name from `KirOp::ArrayLen` /
+    /// `KirOp::ArrayGet` / `KirOp::TupleGet` / `KirOp::StructGet`.
+    /// Don't shadow scalar locals — fusion enforces disjoint names.
+    arrays: Vec<(arcstr::ArcStr, ValArray)>,
+    /// Variant parameters bound at kernel entry. Kept separate from
+    /// `arrays` because the runtime representation is `Value`
+    /// (`String` for nullary, `Array` for with-payload), not
+    /// uniformly `ValArray`. `KirOp::VariantTagEq` /
+    /// `KirOp::VariantPayload` dispatch on the Value shape.
+    variants: Vec<(arcstr::ArcStr, Value)>,
+    /// Tail-call slot map for the kernel currently being evaluated.
+    /// Source-arg order; entry `i` describes the destination of the
+    /// `i`th tail-call arg. Empty for non-tail kernels.
+    /// `std::mem::take`d during tail-call handling to satisfy the
+    /// borrow checker, then put back.
+    tail_call_slots: Vec<crate::kernel_ir::TailCallSlot>,
 }
 
 impl InterpEnv {
     fn new(params: usize) -> Self {
-        Self { locals: Vec::with_capacity(params + 4), param_count: params }
+        Self {
+            locals: Vec::with_capacity(params + 4),
+            param_count: params,
+            arrays: Vec::new(),
+            variants: Vec::new(),
+            tail_call_slots: Vec::new(),
+        }
+    }
+
+    fn rebind_array(&mut self, name: &str, value: ValArray) {
+        for (n, slot) in self.arrays.iter_mut() {
+            if n.as_str() == name {
+                *slot = value;
+                return;
+            }
+        }
+        panic!("rebind_array: name `{name}` not bound — KIR malformed");
+    }
+
+    fn rebind_variant(&mut self, name: &str, value: Value) {
+        for (n, slot) in self.variants.iter_mut() {
+            if n.as_str() == name {
+                *slot = value;
+                return;
+            }
+        }
+        panic!("rebind_variant: name `{name}` not bound — KIR malformed");
     }
 
     fn lookup(&self, name: &str) -> Option<RegValue> {
@@ -174,8 +328,39 @@ impl InterpEnv {
         None
     }
 
+    fn lookup_array(&self, name: &str) -> Option<&ValArray> {
+        self.arrays.iter().rev().find_map(
+            |(n, v)| if n.as_str() == name { Some(v) } else { None },
+        )
+    }
+
+    fn push_array(&mut self, name: arcstr::ArcStr, value: ValArray) {
+        self.arrays.push((name, value));
+    }
+
+    fn lookup_variant(&self, name: &str) -> Option<&Value> {
+        self.variants.iter().rev().find_map(
+            |(n, v)| if n.as_str() == name { Some(v) } else { None },
+        )
+    }
+
+    fn push_variant(&mut self, name: arcstr::ArcStr, value: Value) {
+        self.variants.push((name, value));
+    }
+
     fn push(&mut self, name: arcstr::ArcStr, value: RegValue) {
         self.locals.push((name, value));
+    }
+
+    /// Push a let-binding into the right env table based on the
+    /// EvalResult kind. Composite locals live alongside composite
+    /// params in `arrays` / `variants`.
+    fn push_local(&mut self, name: arcstr::ArcStr, value: EvalResult) {
+        match value {
+            EvalResult::Scalar(r) => self.push(name, r),
+            EvalResult::ValArray(a) => self.push_array(name, a),
+            EvalResult::Variant(v) => self.push_variant(name, v),
+        }
     }
 
     fn mark(&self) -> usize {
@@ -195,7 +380,7 @@ impl InterpEnv {
 
 /// Body evaluation control flow.
 enum BodyResult {
-    Return(RegValue),
+    Return(EvalResult),
     /// Tail call — params already updated in env, locals beyond params
     /// already truncated. Caller re-enters the body from the top.
     TailCall,
@@ -233,7 +418,9 @@ pub fn eval_kernel(kernel: &KirKernel, args: &[RegValue]) -> RegValue {
 
 /// Evaluate a [`KirKernel`], resolving any `KirOp::Call` against
 /// `registry`. Panics on `KirOp::DynCall` — use
-/// [`eval_kernel_with_dispatch`] for those.
+/// [`eval_kernel_with_dispatch`] for those. Convenience wrapper
+/// for scalar-result kernels; if the kernel returns a composite,
+/// use [`eval_kernel_with_dispatch`] directly.
 pub fn eval_kernel_with_registry(
     kernel: &KirKernel,
     args: &[RegValue],
@@ -242,23 +429,78 @@ pub fn eval_kernel_with_registry(
     let mut dispatch = no_dyn_dispatch;
     eval_kernel_with_dispatch(kernel, args, registry, &mut dispatch)
         .expect("kernel without DynCall must produce a value")
+        .into_scalar()
 }
 
 /// Evaluate a [`KirKernel`] resolving `KirOp::Call` via `registry`
 /// and `KirOp::DynCall` via `dispatch`. Returns `None` if a DynCall
 /// produced no value this cycle (synchronous-only v1: the kernel
 /// short-circuits and the caller must re-fire when the callee
-/// catches up).
+/// catches up). Returns the kernel's full `EvalResult` (scalar /
+/// ValArray / Variant) — callers that know the kernel's return type
+/// can destructure via `.into_scalar()` etc.
 pub fn eval_kernel_with_dispatch(
     kernel: &KirKernel,
     args: &[RegValue],
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
-) -> Option<RegValue> {
+) -> Option<EvalResult> {
+    eval_kernel_with_dispatch_and_arrays(kernel, args, &[], registry, dispatch)
+}
+
+/// Like [`eval_kernel_with_dispatch`] but also accepts array-typed
+/// arguments. `array_args` parallels `kernel.array_params` in
+/// declaration order. Tuple, struct, and variant args are empty
+/// here — use [`eval_kernel_full`] for those.
+pub fn eval_kernel_with_dispatch_and_arrays(
+    kernel: &KirKernel,
+    args: &[RegValue],
+    array_args: &[ValArray],
+    registry: &KernelRegistry,
+    dispatch: DynDispatch<'_>,
+) -> Option<EvalResult> {
+    eval_kernel_full(kernel, args, array_args, &[], &[], &[], registry, dispatch)
+}
+
+/// Most-general kernel entry. Each composite arg list parallels the
+/// matching `kernel.*_params` in declaration order. Variants take
+/// `Value` (their runtime layout: `String` for nullary, `Array` for
+/// with-payload); tuples and structs share the `ValArray` boundary
+/// with arrays.
+pub fn eval_kernel_full(
+    kernel: &KirKernel,
+    args: &[RegValue],
+    array_args: &[ValArray],
+    tuple_args: &[ValArray],
+    struct_args: &[ValArray],
+    variant_args: &[Value],
+    registry: &KernelRegistry,
+    dispatch: DynDispatch<'_>,
+) -> Option<EvalResult> {
     debug_assert_eq!(
         args.len(),
         kernel.params.len(),
         "eval_kernel: arity mismatch"
+    );
+    debug_assert_eq!(
+        array_args.len(),
+        kernel.array_params.len(),
+        "eval_kernel: array arity mismatch"
+    );
+    debug_assert_eq!(
+        tuple_args.len(),
+        kernel.tuple_params.len(),
+        "eval_kernel: tuple arity mismatch"
+    );
+    debug_assert_eq!(
+        struct_args.len(),
+        kernel.struct_params.len(),
+        "eval_kernel: struct arity mismatch"
+    );
+    debug_assert_eq!(
+        variant_args.len(),
+        kernel.variant_params.len(),
+        "eval_kernel: variant arity mismatch"
     );
     let mut env = InterpEnv::new(kernel.params.len());
     for (p, v) in kernel.params.iter().zip(args) {
@@ -270,6 +512,21 @@ pub fn eval_kernel_with_dispatch(
         );
         env.push(p.name.clone(), *v);
     }
+    for (p, a) in kernel.array_params.iter().zip(array_args) {
+        env.push_array(p.name.clone(), a.clone());
+    }
+    for (p, a) in kernel.tuple_params.iter().zip(tuple_args) {
+        env.push_array(p.name.clone(), a.clone());
+    }
+    for (p, a) in kernel.struct_params.iter().zip(struct_args) {
+        env.push_array(p.name.clone(), a.clone());
+    }
+    for (p, v) in kernel.variant_params.iter().zip(variant_args) {
+        env.push_variant(p.name.clone(), v.clone());
+    }
+    // Hand the tail-call slot map to the env so KirStmt::TailCall
+    // can route each new arg into the right slot list.
+    env.tail_call_slots = kernel.tail_call_slots.clone();
     loop {
         match eval_body(&mut env, &kernel.body, registry, dispatch) {
             BodyResult::Return(v) => return Some(v),
@@ -297,7 +554,7 @@ fn eval_body(
                     Some(v) => v,
                     None => return BodyResult::Pending,
                 };
-                env.push(l.local.clone(), v);
+                env.push_local(l.local.clone(), v);
             }
             KirStmt::Return(e) => {
                 return match eval_expr(env, e, registry, dispatch) {
@@ -308,8 +565,10 @@ fn eval_body(
             KirStmt::TailCall { args } => {
                 // Evaluate all args first so an arg expression that
                 // reads an old param sees the old value, not one we
-                // already overwrote.
-                let mut new_vals: smallvec::SmallVec<[RegValue; 8]> =
+                // already overwrote. Each arg can be scalar or
+                // composite; routing to the right param slot is
+                // driven by the kernel's `tail_call_slots`.
+                let mut new_vals: smallvec::SmallVec<[EvalResult; 8]> =
                     smallvec::SmallVec::with_capacity(args.len());
                 for a in args {
                     match eval_expr(env, a, registry, dispatch) {
@@ -317,9 +576,41 @@ fn eval_body(
                         None => return BodyResult::Pending,
                     }
                 }
-                debug_assert_eq!(new_vals.len(), env.param_count);
-                for (i, v) in new_vals.iter().enumerate() {
-                    env.set_param(i, *v);
+                // Scalar params live in env.locals[0..param_count];
+                // composite params live in env.arrays / env.variants
+                // keyed by name. tail_call_slots tells us, for each
+                // tail-call arg position, which slot list to rebind.
+                //
+                // Back-compat: tail_call_slots may be empty for older
+                // hand-built test kernels that only use scalar
+                // params. In that case rebind positionally into
+                // env.locals.
+                if env.tail_call_slots.is_empty() {
+                    debug_assert_eq!(new_vals.len(), env.param_count);
+                    for (i, v) in new_vals.into_iter().enumerate() {
+                        env.set_param(i, v.into_scalar());
+                    }
+                } else {
+                    debug_assert_eq!(new_vals.len(), env.tail_call_slots.len());
+                    let slots = std::mem::take(&mut env.tail_call_slots);
+                    let mut scalar_idx = 0usize;
+                    for (i, v) in new_vals.into_iter().enumerate() {
+                        let slot = &slots[i];
+                        match v {
+                            EvalResult::Scalar(r) => {
+                                env.set_param(scalar_idx, r);
+                                scalar_idx += 1;
+                                let _ = slot;
+                            }
+                            EvalResult::ValArray(a) => {
+                                env.rebind_array(&slot.name, a);
+                            }
+                            EvalResult::Variant(val) => {
+                                env.rebind_variant(&slot.name, val);
+                            }
+                        }
+                    }
+                    env.tail_call_slots = slots;
                 }
                 env.truncate(env.param_count);
                 return BodyResult::TailCall;
@@ -330,7 +621,7 @@ fn eval_body(
                         None => true,
                         Some(cond) => {
                             match eval_expr(env, cond, registry, dispatch) {
-                                Some(v) => v.as_bool(),
+                                Some(v) => v.into_scalar().as_bool(),
                                 None => return BodyResult::Pending,
                             }
                         }
@@ -362,48 +653,75 @@ fn eval_expr(
     e: &KirExpr,
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
-) -> Option<RegValue> {
+) -> Option<EvalResult> {
     Some(match &e.op {
-        KirOp::Const(c) => RegValue::from_const(*c),
-        KirOp::Local(name) => env
-            .lookup(name)
-            .unwrap_or_else(|| panic!("undefined local `{name}` — KIR is malformed")),
+        KirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
+        KirOp::Local(name) => match &e.typ {
+            KirType::Prim(_) => EvalResult::Scalar(env.lookup(name).unwrap_or_else(
+                || panic!("undefined scalar local `{name}` — KIR is malformed"),
+            )),
+            KirType::Array(_)
+            | KirType::Tuple(_)
+            | KirType::Struct(_) => EvalResult::ValArray(
+                env.lookup_array(name)
+                    .unwrap_or_else(|| {
+                        panic!("undefined composite local `{name}` — KIR is malformed")
+                    })
+                    .clone(),
+            ),
+            KirType::Variant(_) => EvalResult::Variant(
+                env.lookup_variant(name)
+                    .unwrap_or_else(|| {
+                        panic!("undefined variant local `{name}` — KIR is malformed")
+                    })
+                    .clone(),
+            ),
+        },
         KirOp::Bin { op, lhs, rhs } => {
-            let l = eval_expr(env, lhs, registry, dispatch)?;
-            let r = eval_expr(env, rhs, registry, dispatch)?;
-            eval_bin(*op, l, r)
+            let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
+            let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
+            EvalResult::Scalar(eval_bin(*op, l, r))
         }
         KirOp::Cmp { op, lhs, rhs } => {
-            let l = eval_expr(env, lhs, registry, dispatch)?;
-            let r = eval_expr(env, rhs, registry, dispatch)?;
-            eval_cmp(*op, l, r)
+            let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
+            let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
+            EvalResult::Scalar(eval_cmp(*op, l, r))
         }
         KirOp::BoolBin { op, lhs, rhs } => {
             // Short-circuit to match Rust && / ||.
-            let l = eval_expr(env, lhs, registry, dispatch)?.as_bool();
+            let l = eval_expr(env, lhs, registry, dispatch)?
+                .into_scalar()
+                .as_bool();
             let result = match op {
                 BoolOp::And => {
-                    l && eval_expr(env, rhs, registry, dispatch)?.as_bool()
+                    l && eval_expr(env, rhs, registry, dispatch)?
+                        .into_scalar()
+                        .as_bool()
                 }
                 BoolOp::Or => {
-                    l || eval_expr(env, rhs, registry, dispatch)?.as_bool()
+                    l || eval_expr(env, rhs, registry, dispatch)?
+                        .into_scalar()
+                        .as_bool()
                 }
             };
-            RegValue::Bool(result)
+            EvalResult::Scalar(RegValue::Bool(result))
         }
-        KirOp::Not(inner) => {
-            RegValue::Bool(!eval_expr(env, inner, registry, dispatch)?.as_bool())
-        }
+        KirOp::Not(inner) => EvalResult::Scalar(RegValue::Bool(
+            !eval_expr(env, inner, registry, dispatch)?
+                .into_scalar()
+                .as_bool(),
+        )),
         KirOp::Cast { inner, target } => {
-            let v = eval_expr(env, inner, registry, dispatch)?;
-            eval_cast(v, *target)
+            let v = eval_expr(env, inner, registry, dispatch)?.into_scalar();
+            EvalResult::Scalar(eval_cast(v, *target))
         }
         KirOp::Call { fn_name, args } => {
             // Look up the callee in the registry, evaluate args (in
             // the caller's env), then recursively eval the callee
-            // with its own fresh env. The callee shares the same
-            // registry and dispatch — its body might call further
-            // kernels or have its own DynCall sites.
+            // with its own fresh env. Args are scalar today
+            // (callsite::fuse only passes scalar-typed args through
+            // the Call op); composite-arg cross-kernel calls would
+            // need this list of smallvecs extended.
             let callee = registry.kernels.get(fn_name).unwrap_or_else(|| {
                 panic!(
                     "KirOp::Call to `{fn_name}` not in kernel registry \
@@ -413,7 +731,8 @@ fn eval_expr(
             let mut call_args: smallvec::SmallVec<[RegValue; 8]> =
                 smallvec::SmallVec::with_capacity(args.len());
             for a in args {
-                call_args.push(eval_expr(env, a, registry, dispatch)?);
+                call_args
+                    .push(eval_expr(env, a, registry, dispatch)?.into_scalar());
             }
             eval_kernel_with_dispatch(callee, &call_args, registry, dispatch)?
         }
@@ -426,39 +745,48 @@ fn eval_expr(
             // Evaluate args, convert to Values (the dispatcher's
             // contract is in netidx Value), call dispatcher, convert
             // result back. None propagates up through the kernel.
+            // DynCall is scalar-only today; the dispatcher contract
+            // names a `PrimType` return.
             debug_assert_eq!(args.len(), arg_types.len(), "DynCall arity mismatch");
             let mut value_args: smallvec::SmallVec<[Value; 8]> =
                 smallvec::SmallVec::with_capacity(args.len());
             for (a, t) in args.iter().zip(arg_types.iter()) {
-                let r = eval_expr(env, a, registry, dispatch)?;
+                let r = eval_expr(env, a, registry, dispatch)?.into_scalar();
                 debug_assert_eq!(r.typ(), *t, "DynCall arg type mismatch");
                 value_args.push(r.to_value());
             }
             let result = dispatch(*fn_index, &value_args)?;
-            RegValue::from_value(&result, *return_type).unwrap_or_else(|| {
-                panic!(
-                    "DynCall returned a Value not matching the declared \
-                     return type {:?} — typechecker should have caught \
-                     this",
-                    return_type
-                )
-            })
+            EvalResult::Scalar(
+                RegValue::from_value(&result, *return_type).unwrap_or_else(|| {
+                    panic!(
+                        "DynCall returned a Value not matching the declared \
+                         return type {:?} — typechecker should have caught this",
+                        return_type
+                    )
+                }),
+            )
         }
         KirOp::Block { lets, tail } => {
             let mark = env.mark();
+            let array_mark = env.arrays.len();
+            let variant_mark = env.variants.len();
             for l in lets {
                 let v = eval_expr(env, &l.value, registry, dispatch)?;
-                env.push(l.local.clone(), v);
+                env.push_local(l.local.clone(), v);
             }
-            let result = eval_expr(env, tail, registry, dispatch)?;
+            let result = eval_expr(env, tail, registry, dispatch);
             env.truncate(mark);
-            result
+            env.arrays.truncate(array_mark);
+            env.variants.truncate(variant_mark);
+            result?
         }
         KirOp::IfChain { arms } => {
             for (cond, body) in arms {
                 let matches = match cond {
                     None => true,
-                    Some(c) => eval_expr(env, c, registry, dispatch)?.as_bool(),
+                    Some(c) => eval_expr(env, c, registry, dispatch)?
+                        .into_scalar()
+                        .as_bool(),
                 };
                 if matches {
                     return eval_expr(env, body, registry, dispatch);
@@ -466,7 +794,270 @@ fn eval_expr(
             }
             panic!("if-chain fell through without a match — KIR is malformed");
         }
+        KirOp::ArrayLen { name } => {
+            let arr = env.lookup_array(name).unwrap_or_else(|| {
+                panic!("undefined array `{name}` — KIR is malformed")
+            });
+            EvalResult::Scalar(RegValue::U64(arr.len() as u64))
+        }
+        KirOp::ArrayGet { name, idx } => {
+            // Clone the ValArray (refcount bump only) so the immutable
+            // env borrow is released before we recurse into eval_expr
+            // for `idx`.
+            let arr = env
+                .lookup_array(name)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{name}` — KIR is malformed")
+                })
+                .clone();
+            let idx_val =
+                eval_expr(env, idx, registry, dispatch)?.into_scalar();
+            // The index expression's type is whatever the user wrote
+            // (typically i64). Coerce to usize the same way the AOT
+            // backend does.
+            let i = idx_val.as_usize();
+            // ArrayGet's result is always scalar — the constructor
+            // pins `KirExpr.typ = KirType::Prim(elem)`.
+            let elem_p = e
+                .typ
+                .as_prim()
+                .expect("KIR malformed: ArrayGet must have scalar result type");
+            EvalResult::Scalar(unsafe {
+                RegValue::from_array_elem(&arr, i, elem_p)
+            })
+        }
+        KirOp::TupleGet { name, idx, elem_typ } => {
+            // Tuple values are flat ValArrays — same lookup +
+            // unsafe extraction as ArrayGet but with a literal index.
+            let arr = env
+                .lookup_array(name)
+                .unwrap_or_else(|| {
+                    panic!("undefined tuple `{name}` — KIR is malformed")
+                })
+                .clone();
+            EvalResult::Scalar(unsafe {
+                RegValue::from_array_elem(&arr, *idx, *elem_typ)
+            })
+        }
+        KirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
+            // Runtime struct layout is `[Array([name, val]), ...]` —
+            // each field is a 2-element kv-pair subarray. Two-level
+            // read: outer[sorted_idx] gives the kv pair, then [1]
+            // gives the value.
+            let outer = env.lookup_array(name).unwrap_or_else(|| {
+                panic!("undefined struct `{name}` — KIR is malformed")
+            });
+            let kv_pair = match &outer[*sorted_idx] {
+                Value::Array(a) => a.clone(),
+                v => panic!(
+                    "struct `{name}` field {sorted_idx} not a kv-pair: {v:?}"
+                ),
+            };
+            EvalResult::Scalar(unsafe {
+                RegValue::from_array_elem(&kv_pair, 1, *elem_typ)
+            })
+        }
+        KirOp::ArrayInit { n, idx_local, elem_typ, body } => {
+            // Evaluate `n` once, allocate a single output buffer,
+            // then loop the body with `idx_local` bound to 0..n,
+            // pushing each scalar result. Mirrors the AOT lowering
+            // (`from_iter_exact` over a range map).
+            let n_val =
+                eval_expr(env, n, registry, dispatch)?.into_scalar().as_usize();
+            let mark = env.mark();
+            env.push(idx_local.clone(), RegValue::I64(0));
+            let idx_slot = env.locals.len() - 1;
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            out.reserve(n_val);
+            for i in 0..n_val {
+                env.locals[idx_slot].1 = RegValue::I64(i as i64);
+                let r = eval_expr(env, body, registry, dispatch)?.into_scalar();
+                debug_assert_eq!(r.typ(), *elem_typ, "ArrayInit elem type mismatch");
+                out.push(r.to_value());
+            }
+            env.truncate(mark);
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        KirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — KIR is malformed")
+                })
+                .clone();
+            let mark = env.mark();
+            env.push(elem_local.clone(), zero_reg(*in_elem));
+            let elem_slot = env.locals.len() - 1;
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            out.reserve(arr.len());
+            for i in 0..arr.len() {
+                env.locals[elem_slot].1 =
+                    unsafe { RegValue::from_array_elem(&arr, i, *in_elem) };
+                let r = eval_expr(env, body, registry, dispatch)?.into_scalar();
+                debug_assert_eq!(r.typ(), *out_elem, "ArrayMap elem type mismatch");
+                out.push(r.to_value());
+            }
+            env.truncate(mark);
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        KirOp::ArrayFilter { array, elem, elem_local, predicate } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — KIR is malformed")
+                })
+                .clone();
+            let mark = env.mark();
+            env.push(elem_local.clone(), zero_reg(*elem));
+            let elem_slot = env.locals.len() - 1;
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            for i in 0..arr.len() {
+                let elem_val =
+                    unsafe { RegValue::from_array_elem(&arr, i, *elem) };
+                env.locals[elem_slot].1 = elem_val;
+                let keep = eval_expr(env, predicate, registry, dispatch)?
+                    .into_scalar()
+                    .as_bool();
+                if keep {
+                    out.push(elem_val.to_value());
+                }
+            }
+            env.truncate(mark);
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        KirOp::TupleNew { fields, elem_types } => {
+            // Tuples are flat: ValArray([Value::T0(v0), Value::T1(v1), ...]).
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            out.reserve(fields.len());
+            for (f, t) in fields.iter().zip(elem_types.iter()) {
+                let r = eval_expr(env, f, registry, dispatch)?.into_scalar();
+                debug_assert_eq!(r.typ(), *t, "TupleNew slot type mismatch");
+                out.push(r.to_value());
+            }
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        KirOp::StructNew { sorted_fields, sorted_types } => {
+            // Structs are kv-pairs in sorted-name order:
+            // ValArray([ValArray([name, val]), ...]).
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            out.reserve(sorted_fields.len());
+            for ((fname, fexpr), (_, ftyp)) in
+                sorted_fields.iter().zip(sorted_types.iter())
+            {
+                let r = eval_expr(env, fexpr, registry, dispatch)?.into_scalar();
+                debug_assert_eq!(r.typ(), *ftyp, "StructNew field type mismatch");
+                let kv = ValArray::from_iter_exact(
+                    [Value::String(fname.clone()), r.to_value()].into_iter(),
+                );
+                out.push(Value::Array(kv));
+            }
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        KirOp::VariantNew { tag, payloads, payload_types } => {
+            // Nullary → Value::String(tag).
+            // With-payload → Value::Array([Value::String(tag), p0, p1, ...]).
+            if payloads.is_empty() {
+                EvalResult::Variant(Value::String(tag.clone()))
+            } else {
+                let mut out: poolshark::local::LPooled<Vec<Value>> =
+                    poolshark::local::LPooled::take();
+                out.reserve(payloads.len() + 1);
+                out.push(Value::String(tag.clone()));
+                for (p, t) in payloads.iter().zip(payload_types.iter()) {
+                    let r = eval_expr(env, p, registry, dispatch)?.into_scalar();
+                    debug_assert_eq!(r.typ(), *t, "VariantNew payload type mismatch");
+                    out.push(r.to_value());
+                }
+                EvalResult::Variant(Value::Array(ValArray::from_iter_exact(
+                    out.drain(..),
+                )))
+            }
+        }
+        KirOp::VariantTagEq { name, expected_tag } => {
+            // Variants are `Value::String(tag)` for nullary or
+            // `Value::Array([tag, payload...])` for with-payload.
+            let v = env.lookup_variant(name).unwrap_or_else(|| {
+                panic!("undefined variant `{name}` — KIR is malformed")
+            });
+            let matched = match v {
+                Value::String(s) => s.as_str() == expected_tag.as_str(),
+                Value::Array(a) => {
+                    let tag_arc = unsafe {
+                        a.get_ref_unchecked::<arcstr::ArcStr>(0usize)
+                    };
+                    tag_arc.as_str() == expected_tag.as_str()
+                }
+                _ => panic!(
+                    "variant `{name}` has unexpected runtime shape: {v:?}"
+                ),
+            };
+            EvalResult::Scalar(RegValue::Bool(matched))
+        }
+        KirOp::VariantPayload { name, payload_idx, elem_typ } => {
+            let v = env.lookup_variant(name).unwrap_or_else(|| {
+                panic!("undefined variant `{name}` — KIR is malformed")
+            });
+            match v {
+                Value::Array(a) => {
+                    let a = a.clone();
+                    EvalResult::Scalar(unsafe {
+                        RegValue::from_array_elem(&a, payload_idx + 1, *elem_typ)
+                    })
+                }
+                _ => panic!(
+                    "VariantPayload read on non-Array variant `{name}` \
+                     (nullary tag has no payload)"
+                ),
+            }
+        }
+        KirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — KIR is malformed")
+                })
+                .clone();
+            let mut acc =
+                eval_expr(env, init, registry, dispatch)?.into_scalar();
+            let mark = env.mark();
+            env.push(acc_local.clone(), acc);
+            env.push(elem_local.clone(), zero_reg(*elem_typ));
+            let acc_idx = env.locals.len() - 2;
+            let elem_idx = env.locals.len() - 1;
+            for i in 0..arr.len() {
+                let elem_val =
+                    unsafe { RegValue::from_array_elem(&arr, i, *elem_typ) };
+                env.locals[elem_idx].1 = elem_val;
+                let new_acc = eval_expr(env, body, registry, dispatch)?
+                    .into_scalar();
+                env.locals[acc_idx].1 = new_acc;
+                acc = new_acc;
+            }
+            env.truncate(mark);
+            EvalResult::Scalar(acc)
+        }
     })
+}
+
+fn zero_reg(t: PrimType) -> RegValue {
+    match t {
+        PrimType::I8 => RegValue::I8(0),
+        PrimType::I16 => RegValue::I16(0),
+        PrimType::I32 => RegValue::I32(0),
+        PrimType::I64 => RegValue::I64(0),
+        PrimType::U8 => RegValue::U8(0),
+        PrimType::U16 => RegValue::U16(0),
+        PrimType::U32 => RegValue::U32(0),
+        PrimType::U64 => RegValue::U64(0),
+        PrimType::F32 => RegValue::F32(0.0),
+        PrimType::F64 => RegValue::F64(0.0),
+        PrimType::Bool => RegValue::Bool(false),
+    }
 }
 
 fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> RegValue {
@@ -673,6 +1264,41 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         Self { bind_ids, arg_refs, current: None, scope, top_id }
     }
 
+    /// Eagerly initialize the inner Apply against `lambda_value`'s
+    /// LambdaDef. Used at KirNode construction for binding-source
+    /// fn_params whose callee is known up front. Pre-initializing
+    /// matters because the inner Apply's body wires up bind_id
+    /// subscriptions via `ref_var(..., top_id)` during init — if we
+    /// defer to first dispatch, those subscriptions exist but the
+    /// runtime cycle that scheduled the parent kernel has already
+    /// snapshotted its trigger set, so the parent never re-fires when
+    /// the inner Apply's intermediate cycles need it to.
+    ///
+    /// Returns `Err` if the LambdaDef can't be downcast or the inner
+    /// init fails. Caller should fall back to lazy init in that case.
+    pub fn pre_init(
+        &mut self,
+        lambda_value: &Value,
+        ctx: &mut crate::ExecCtx<R, E>,
+    ) -> ::anyhow::Result<()> {
+        use ::anyhow::anyhow;
+        let lambda_def = lambda_value
+            .downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
+            .ok_or_else(|| {
+                anyhow!("DynCallSlot::pre_init: not a LambdaDef")
+            })?;
+        let lambda_ptr = lambda_def as *const _ as *const u8;
+        let new_apply = (lambda_def.init)(
+            &self.scope,
+            ctx,
+            &mut self.arg_refs,
+            None,
+            self.top_id,
+        )?;
+        self.current = Some((lambda_ptr, new_apply));
+        Ok(())
+    }
+
     /// Dispatch the DynCall: look up (or initialize) the inner Apply,
     /// side-channel each arg through its BindId, run `apply.update`,
     /// clean up the BindIds, and return whatever Value the Apply
@@ -784,13 +1410,13 @@ pub struct KirNode<R: Rt, E: UserEvent> {
     /// the kernel runs once every slot is `Some`.
     args: Box<[Option<Value>]>,
     /// Synchronously-compiled JIT wrapper, when available. Filled at
-    /// `Lambda::compile` time when `GRAPHIX_JIT=1` is set. Update
+    /// `Lambda::compile` time when JIT mode is `Sync`. Update
     /// dispatch checks this first.
     jit: Option<Arc<crate::kir_jit::WrappedKernel>>,
     /// Async JIT slot. Filled by the global background worker once
     /// it finishes compiling. `update` polls the slot on each call;
     /// before it's filled the interpreter runs, after it the JIT'd
-    /// wrapper does. Set when `GRAPHIX_JIT_ASYNC=1` is set.
+    /// wrapper does. Set when JIT mode is `Async`.
     async_jit: Option<Arc<crate::kir_jit::AsyncJitSlot>>,
     /// Fused kernels visible at this lambda's compile site, shared
     /// across all instantiations of the lambda. The interpreter uses
@@ -811,38 +1437,109 @@ pub struct KirNode<R: Rt, E: UserEvent> {
     arg_layout: Vec<ArgKind>,
 }
 
-/// Tag for each call-site arg position: primitive param `i` (extract
-/// to `RegValue` and pass to `eval_kernel_with_dispatch`) or fn
-/// param `i` (use as the LambdaDef value for DynCall slot `i`).
+/// Tag for each call-site arg position. The runtime walks the
+/// incoming `from` slice in source-arg order; each entry classifies
+/// the arg into the right slot list (scalar, array, tuple, struct,
+/// variant, fn) and stores its index within that list.
 #[derive(Debug, Clone, Copy)]
 enum ArgKind {
     Prim(u32),
     Fn(u32),
+    Array(u32),
+    Tuple(u32),
+    Struct(u32),
+    Variant(u32),
 }
 
-fn build_arg_layout(kernel: &KirKernel) -> Vec<ArgKind> {
+/// Total number of input slots the runtime passes into a KirNode for
+/// this kernel — scalar params + all composite params + HOF-arg fn
+/// params (Binding-source fn params resolve through ctx.cached and
+/// don't count). Equals `arg_layout.len()`.
+pub fn total_kernel_arity(kernel: &KirKernel) -> usize {
     use crate::kernel_ir::FnSource;
-    // Only HOF-arg (`Param`-source) fn_params occupy slots in the
-    // incoming `from` slice. `Binding`-source slots resolve through
-    // ctx.cached at dispatch time and don't take a positional input.
     let param_source_count = kernel
         .fn_params
         .iter()
         .filter(|fp| matches!(fp.source, FnSource::Param { .. }))
         .count();
-    let total = kernel.params.len() + param_source_count;
-    let mut out = Vec::with_capacity(total);
+    kernel.tail_call_slots.len() + param_source_count
+}
+
+fn build_arg_layout(kernel: &KirKernel) -> Vec<ArgKind> {
+    use crate::kernel_ir::{FnSource, TailCallSlotKind};
+    // `tail_call_slots` is populated for every kernel and lists
+    // params in source-declared order. Each slot carries a name
+    // matching one of the kernel's *_params lists. Walking this list
+    // gives us per-position routing; the corresponding within-list
+    // index falls out of a running counter per kind.
+    //
+    // Fn params don't appear in `tail_call_slots` (the constructor
+    // bails on fn args in tail-call kernels). For non-tail kernels
+    // tail_call_slots is also populated for the non-fn params, so we
+    // detect fn positions separately by walking fn_params.
+    let mut out = Vec::with_capacity(
+        kernel.tail_call_slots.len() + kernel.fn_params.len(),
+    );
     let mut prim_idx: u32 = 0;
+    let mut array_idx: u32 = 0;
+    let mut tuple_idx: u32 = 0;
+    let mut struct_idx: u32 = 0;
+    let mut variant_idx: u32 = 0;
+    // Count of HOF-arg fn_params (Binding-source ones don't take a
+    // positional input). Combined with `tail_call_slots.len()` to
+    // size the layout.
+    let param_source_count = kernel
+        .fn_params
+        .iter()
+        .filter(|fp| matches!(fp.source, FnSource::Param { .. }))
+        .count();
+    let total = kernel.tail_call_slots.len() + param_source_count;
+    let mut tail_iter = kernel.tail_call_slots.iter();
     for i in 0..total {
-        // Find any HOF-arg fn_param whose arg_pos == i.
+        // Fn params occupy a fixed position via FnSource::Param. If
+        // this position is one of them, emit a Fn slot.
         let fn_match = kernel.fn_params.iter().position(|fp| {
             matches!(fp.source, FnSource::Param { arg_pos } if arg_pos as usize == i)
         });
-        match fn_match {
-            Some(fn_idx) => out.push(ArgKind::Fn(fn_idx as u32)),
-            None => {
+        if let Some(fn_idx) = fn_match {
+            out.push(ArgKind::Fn(fn_idx as u32));
+            continue;
+        }
+        // Otherwise pull the next tail_call_slot entry — that
+        // describes which scalar/composite list the arg belongs to.
+        let slot = tail_iter.next().expect(
+            "arg_layout: ran out of tail_call_slots before filling all \
+             positions — fusion built an inconsistent kernel",
+        );
+        match slot.kind {
+            TailCallSlotKind::Scalar(_) => {
                 out.push(ArgKind::Prim(prim_idx));
                 prim_idx += 1;
+            }
+            TailCallSlotKind::ValArray => {
+                // Disambiguate by looking at which list the name
+                // appears in. ValArray covers Array/Tuple/Struct;
+                // names are unique across slot lists by construction.
+                if kernel.array_params.iter().any(|a| a.name == slot.name) {
+                    out.push(ArgKind::Array(array_idx));
+                    array_idx += 1;
+                } else if kernel.tuple_params.iter().any(|t| t.name == slot.name) {
+                    out.push(ArgKind::Tuple(tuple_idx));
+                    tuple_idx += 1;
+                } else if kernel.struct_params.iter().any(|s| s.name == slot.name) {
+                    out.push(ArgKind::Struct(struct_idx));
+                    struct_idx += 1;
+                } else {
+                    panic!(
+                        "arg_layout: ValArray slot `{}` not found in any \
+                         composite param list",
+                        slot.name
+                    );
+                }
+            }
+            TailCallSlotKind::Variant => {
+                out.push(ArgKind::Variant(variant_idx));
+                variant_idx += 1;
             }
         }
     }
@@ -879,8 +1576,8 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
     ) -> Self {
         debug_assert_eq!(
             n_args,
-            kernel.params.len() + kernel.fn_params.len(),
-            "KirNode arity = prim params + fn params"
+            total_kernel_arity(&kernel),
+            "KirNode arity = sum of all slot kinds"
         );
         let dyn_slots = kernel
             .fn_params
@@ -910,10 +1607,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> Self {
-        debug_assert_eq!(
-            n_args,
-            kernel.params.len() + kernel.fn_params.len()
-        );
+        debug_assert_eq!(n_args, total_kernel_arity(&kernel));
         let dyn_slots = kernel
             .fn_params
             .iter()
@@ -931,6 +1625,41 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         }
     }
 
+    /// Eagerly initialize each binding-source DynCall slot so the
+    /// inner Apply's body wires up its bind_id subscriptions during
+    /// the current cycle. Without this, the runtime never re-
+    /// schedules the parent kernel for the inner Apply's later
+    /// cycles (we saw this hang `array::fold` calls dispatched via
+    /// DynCall).
+    ///
+    /// Param-source slots (HOF args) are skipped — the callee value
+    /// arrives per dispatch from the kernel's caller, not from a
+    /// fixed binding.
+    pub fn pre_init_binding_slots(
+        &mut self,
+        ctx: &mut crate::ExecCtx<R, E>,
+    ) {
+        for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
+            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source
+            {
+                if let Some(v) = ctx.cached.get(bind_id).cloned() {
+                    if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
+                        log::warn!(
+                            "kir_interp: pre_init for fn_param `{}` failed: \
+                             {e:#}; falling back to lazy init (multi-cycle \
+                             callees may hang)",
+                            fp.name
+                        );
+                    }
+                }
+                // If the LambdaDef isn't cached yet, leave the slot
+                // uninitialized — dispatch will lazy-init when it's
+                // first invoked. This case mostly hits at very early
+                // startup before all let-bindings have evaluated.
+            }
+        }
+    }
+
     /// Construct a KirNode that interprets initially and atomic-
     /// swaps to a JIT'd wrapper when the async worker finishes
     /// compiling.
@@ -942,10 +1671,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> Self {
-        debug_assert_eq!(
-            n_args,
-            kernel.params.len() + kernel.fn_params.len()
-        );
+        debug_assert_eq!(n_args, total_kernel_arity(&kernel));
         let dyn_slots = kernel
             .fn_params
             .iter()
@@ -982,25 +1708,47 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 any_updated = true;
             }
         }
+        // Binding-source fn_params don't sit in `from` (they resolve
+        // through ctx.cached at dispatch time) but they DO influence
+        // the kernel's result — when a referenced LambdaDef binding
+        // updates this cycle, we must re-fire so the new callee
+        // dispatches. Without this check, a kernel that DynCalls
+        // into `helper` never reruns after helper's first publish.
+        for fp in self.kernel.fn_params.iter() {
+            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source
+            {
+                if event.variables.contains_key(bind_id) {
+                    any_updated = true;
+                    break;
+                }
+            }
+        }
         if !any_updated {
             return None;
         }
-        // Classify into prim args (RegValue) and fn arg values
-        // (kept as Value, used by the DynCall dispatcher). Both must
+        // Classify into prim args (RegValue), composite args
+        // (ValArray or Value for variants), and fn arg values (kept
+        // as Value, used by the DynCall dispatcher). All slots must
         // have a value before we can run; bail with None otherwise.
         let mut reg_args: smallvec::SmallVec<[RegValue; 8]> =
             smallvec::SmallVec::with_capacity(self.kernel.params.len());
+        let mut array_args: smallvec::SmallVec<[ValArray; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.array_params.len());
+        let mut tuple_args: smallvec::SmallVec<[ValArray; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.tuple_params.len());
+        let mut struct_args: smallvec::SmallVec<[ValArray; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.struct_params.len());
+        let mut variant_args: smallvec::SmallVec<[Value; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.variant_params.len());
         let mut fn_arg_values: smallvec::SmallVec<[Value; 4]> =
             smallvec::SmallVec::with_capacity(self.kernel.fn_params.len());
-        // Pre-fill fn_arg_values with placeholders; we'll overwrite by
-        // index. Use a Default value just to size the SmallVec.
         for _ in 0..self.kernel.fn_params.len() {
             fn_arg_values.push(Value::Null);
         }
-        // Walk incoming args. Prim slots fill reg_args; Param-source
-        // fn slots fill fn_arg_values at the matching fn_idx. Binding-
-        // source fn slots aren't represented in arg_layout — we'll
-        // resolve them from ctx.cached below.
+        // Walk incoming args. Each ArgKind drives a single
+        // smallvec.push (in slot-list order, which matches the
+        // kernel's *_params declaration order). Binding-source fn
+        // slots aren't in arg_layout — resolved from ctx.cached below.
         for (i, kind) in self.arg_layout.iter().enumerate() {
             let v = self.args[i].as_ref()?;
             match *kind {
@@ -1017,6 +1765,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 }
                 ArgKind::Fn(fn_idx) => {
                     fn_arg_values[fn_idx as usize] = v.clone();
+                }
+                ArgKind::Array(idx)
+                | ArgKind::Tuple(idx)
+                | ArgKind::Struct(idx) => {
+                    let a = match v {
+                        Value::Array(a) => a.clone(),
+                        _ => panic!(
+                            "KirNode: arg {i} expected Value::Array for \
+                             composite param, got {v:?}"
+                        ),
+                    };
+                    match *kind {
+                        ArgKind::Array(_) => {
+                            debug_assert_eq!(idx as usize, array_args.len());
+                            array_args.push(a);
+                        }
+                        ArgKind::Tuple(_) => {
+                            debug_assert_eq!(idx as usize, tuple_args.len());
+                            tuple_args.push(a);
+                        }
+                        ArgKind::Struct(_) => {
+                            debug_assert_eq!(idx as usize, struct_args.len());
+                            struct_args.push(a);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                ArgKind::Variant(idx) => {
+                    debug_assert_eq!(idx as usize, variant_args.len());
+                    variant_args.push(v.clone());
                 }
             }
         }
@@ -1039,6 +1817,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
         // Pick a JIT wrapper if available. Sync JIT wins (already
         // compiled at Lambda::compile); else check the async slot
         // which atomic-fills when the worker thread finishes.
+        //
+        // The JIT supports kernels with array/tuple/struct/variant
+        // INPUTS (each composite param is a pointer in the wrapper's
+        // arg slot — `*const ValArray` for array/tuple/struct,
+        // `*const Value` for variant). Fn-typed params (HOF args)
+        // still bail at the kir_jit compile path, so `self.jit` is
+        // None for those — no extra gate needed here.
         let wrapper = match &self.jit {
             Some(w) => Some(w.clone()),
             None => self.async_jit.as_ref().and_then(|s| s.fetch()),
@@ -1056,42 +1841,131 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     let lambda_v = &fn_arg_values_ref[fn_index as usize];
                     slot.dispatch(lambda_v, ctx, event, args)
                 };
-                let r = eval_kernel_with_dispatch(
+                let r = eval_kernel_full(
                     &self.kernel,
                     &reg_args,
+                    &array_args,
+                    &tuple_args,
+                    &struct_args,
+                    &variant_args,
                     &self.registry,
                     &mut dispatch,
                 )?;
                 r
             }
             Some(wrapped) => {
-                // Pack RegValues into raw u64 slots, call through the
-                // wrapper, unpack the result. `slots` is on the stack
-                // — we cap at 16 args, which covers every plausible
-                // fused kernel; over that we'd allocate a Vec. The
-                // kir_jit pack helpers handle the bit munging.
+                // Pack RegValues into raw u64 slots, then composite
+                // args as `*const ValArray` cast to u64. Call through
+                // the wrapper, unpack the result.
                 //
-                // Note: JIT path is only entered when the kernel has
-                // no DynCall sites, so fn_arg_values isn't touched.
+                // Slot order matches the typed kernel signature in
+                // `kir_jit::define_typed_kernel`: scalar params
+                // first, then array_params, then tuple_params, then
+                // struct_params. Variants would come after structs
+                // but aren't supported in this slice (we bail above).
+                //
+                // The ValArray references stay borrowed by `array_args`
+                // / `tuple_args` / `struct_args` (`SmallVec<ValArray>`)
+                // for the duration of the wrapper call — the JIT'd
+                // helpers dereference these pointers, so the originals
+                // must outlive the call. They do: the smallvecs live
+                // for the rest of `update`.
+                let n_slots = reg_args.len()
+                    + array_args.len()
+                    + tuple_args.len()
+                    + struct_args.len()
+                    + variant_args.len();
                 let mut slots: smallvec::SmallVec<[u64; 16]> =
-                    smallvec::SmallVec::with_capacity(reg_args.len());
+                    smallvec::SmallVec::with_capacity(n_slots);
                 for r in &reg_args {
                     slots.push(crate::kir_jit::pack_reg_to_u64(r));
+                }
+                for a in &array_args {
+                    slots.push(a as *const ValArray as u64);
+                }
+                for a in &tuple_args {
+                    slots.push(a as *const ValArray as u64);
+                }
+                for a in &struct_args {
+                    slots.push(a as *const ValArray as u64);
+                }
+                for v in &variant_args {
+                    // Variant boundary: pointer to the borrowed
+                    // `Value` in this SmallVec slot.
+                    slots.push(v as *const Value as u64);
                 }
                 let mut out: u64 = 0;
                 let f = unsafe { wrapped.fn_ptr() };
                 unsafe {
                     f(slots.as_ptr(), &mut out);
                 }
-                crate::kir_jit::unpack_u64_to_reg(out, self.kernel.return_type)
+                // Decode the wrapper's *out slot according to the
+                // kernel's declared return type:
+                //
+                // - Prim: u64 bits → RegValue
+                // - Array/Tuple/Struct: u64 holds a `*mut ValArray`
+                //   we own; reclaim via Box::from_raw, wrap in
+                //   EvalResult::ValArray (KirNode::update.into_value
+                //   later wraps in Value::Array).
+                // - Variant: u64 holds a `*mut Value` we own; reclaim
+                //   similarly and wrap in EvalResult::Variant.
+                use crate::kernel_ir::KirType;
+                match &self.kernel.return_type {
+                    KirType::Prim(p) => {
+                        EvalResult::Scalar(
+                            crate::kir_jit::unpack_u64_to_reg(out, *p),
+                        )
+                    }
+                    KirType::Array(_)
+                    | KirType::Tuple(_)
+                    | KirType::Struct(_) => {
+                        let ptr = out as *mut ValArray;
+                        let owned = unsafe { *Box::from_raw(ptr) };
+                        EvalResult::ValArray(owned)
+                    }
+                    KirType::Variant(_) => {
+                        let ptr = out as *mut Value;
+                        let owned = unsafe { *Box::from_raw(ptr) };
+                        EvalResult::Variant(owned)
+                    }
+                }
             }
         };
-        Some(result.to_value())
+        Some(result.into_value())
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         for slot in self.args.iter_mut() {
             *slot = None;
+        }
+    }
+
+    fn refs(&self, refs: &mut crate::Refs) {
+        // KirNode replaces a CallSite for fused lambdas. The
+        // CallSite would have walked its inner Apply's refs to
+        // build subscription state — when those BindIds fire, the
+        // runtime re-triggers the parent. We must do the same: walk
+        // every DynCallSlot's inner Apply (the actual callee) plus
+        // the slot's arg-ref nodes, and register binding-source
+        // fn_param BindIds. Without this, the runtime never re-
+        // fires KirNode when the inner callee or its dependencies
+        // update — exactly the DynCall hang we caught with the
+        // differential harness.
+        for slot in &self.dyn_slots {
+            if let Some((_, inner)) = &slot.current {
+                inner.refs(refs);
+            }
+            for n in &slot.arg_refs {
+                n.refs(refs);
+            }
+            for id in &slot.bind_ids {
+                refs.bound.insert(*id);
+            }
+        }
+        for fp in &self.kernel.fn_params {
+            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source {
+                refs.refed.insert(*bind_id);
+            }
         }
     }
 }
@@ -1101,7 +1975,7 @@ mod tests {
     use super::*;
     use crate::kernel_ir::{
         arith, bool_op, cast, cmp, const_expr, local, BinOp, BoolOp, CmpOp,
-        ConstVal, Input, KirExpr, KirKernel, KirOp, KirStmt, Let, PrimType,
+        ConstVal, Input, KirExpr, KirKernel, KirOp, KirStmt, KirType, Let, PrimType,
         SelectArm,
     };
     use arcstr::ArcStr;
@@ -1141,7 +2015,12 @@ mod tests {
                 input("c", PrimType::I64),
             ],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1172,13 +2051,18 @@ mod tests {
         .unwrap();
         let body = KirExpr {
             op: KirOp::Block { lets, tail: Box::new(tail) },
-            typ: PrimType::F64,
+            typ: KirType::Prim(PrimType::F64),
         };
         let kernel = KirKernel {
             fn_name: ArcStr::from("scaled"),
             params: vec![input("a", PrimType::F64), input("b", PrimType::F64)],
             fn_params: vec![],
-            return_type: PrimType::F64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1209,7 +2093,12 @@ mod tests {
             fn_name: ArcStr::from("range_check"),
             params: vec![input("x", PrimType::F64), input("y", PrimType::F64)],
             fn_params: vec![],
-            return_type: PrimType::Bool,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::Bool),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1229,7 +2118,12 @@ mod tests {
             fn_name: ArcStr::from("itof"),
             params: vec![input("i", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::F64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1345,7 +2239,12 @@ mod tests {
                 input("i", PrimType::I64),
             ],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
             body: vec![KirStmt::Select { arms: vec![arm0, arm1, arm2] }],
         }
@@ -1426,7 +2325,12 @@ mod tests {
             fn_name: ArcStr::from("countdown"),
             params: vec![input("n", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
             body: vec![KirStmt::Select { arms: vec![arm0, arm1] }],
         };
@@ -1454,14 +2358,19 @@ mod tests {
                 }],
                 tail: Box::new(loc("y", PrimType::I64)),
             },
-            typ: PrimType::I64,
+            typ: KirType::Prim(PrimType::I64),
         };
         let body = arith(inner_block, loc("x", PrimType::I64), BinOp::Add).unwrap();
         let kernel = KirKernel {
             fn_name: ArcStr::from("inner_y_plus_x"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1501,13 +2410,18 @@ mod tests {
                     (None, const_expr(ConstVal::I64(0))),
                 ],
             },
-            typ: PrimType::I64,
+            typ: KirType::Prim(PrimType::I64),
         };
         let kernel = KirKernel {
             fn_name: ArcStr::from("sign"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(chain)],
         };
@@ -1539,7 +2453,12 @@ mod tests {
             fn_name: ArcStr::from("inc"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
-            return_type: PrimType::I64,
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
             body: vec![KirStmt::Return(body)],
         };
@@ -1564,5 +2483,164 @@ mod tests {
         // Type mismatch returns None.
         assert!(RegValue::from_value(&Value::I64(42), PrimType::F64).is_none());
         assert!(RegValue::from_value(&Value::Bool(true), PrimType::I64).is_none());
+    }
+
+    #[test]
+    fn array_len_and_get() {
+        // Kernel:
+        //   fn sum_two(arr: Array<f64>) -> f64 = arr[0] + arr[1]
+        // Validates ArrayLen plumbing isn't needed here, but ArrayGet
+        // is — and the kernel reads two distinct indices through the
+        // array param.
+        use crate::kernel_ir::{ArrayInput, KirExpr, KirOp};
+        let elem_at = |i: i64| KirExpr {
+            op: KirOp::ArrayGet {
+                name: ArcStr::from("arr"),
+                idx: Box::new(const_expr(ConstVal::I64(i))),
+            },
+            typ: KirType::Prim(PrimType::F64),
+        };
+        let body = arith(elem_at(0), elem_at(1), BinOp::Add).unwrap();
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("sum_two"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![ArrayInput {
+                name: ArcStr::from("arr"),
+                elem: PrimType::F64,
+                bind_id: None,
+                rust_name: "arr".to_string(),
+            }],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::F64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        let arr = ValArray::from_iter_exact(
+            [Value::F64(1.5), Value::F64(2.25)].into_iter(),
+        );
+        let registry = KernelRegistry::default();
+        let r = eval_kernel_with_dispatch_and_arrays(
+            &kernel,
+            &[],
+            &[arr],
+            &registry,
+            &mut |_, _| None,
+        );
+        assert_eq!(r.map(EvalResult::into_scalar), Some(RegValue::F64(3.75)));
+    }
+
+    #[test]
+    fn array_fold_sum_f64() {
+        // Manual ArrayFold KIR: sum over an Array<f64> starting from 0.0.
+        //   { let acc = 0.0; for x in arr { acc = acc + x; }; acc }
+        use crate::kernel_ir::{ArrayInput, KirExpr, KirOp};
+        let body = arith(
+            local(ArcStr::from("acc"), PrimType::F64),
+            local(ArcStr::from("x"), PrimType::F64),
+            BinOp::Add,
+        )
+        .unwrap();
+        let fold = KirExpr {
+            op: KirOp::ArrayFold {
+                array: ArcStr::from("arr"),
+                elem_typ: PrimType::F64,
+                init: Box::new(const_expr(ConstVal::F64(0.0))),
+                acc_local: ArcStr::from("acc"),
+                elem_local: ArcStr::from("x"),
+                body: Box::new(body),
+            },
+            typ: KirType::Prim(PrimType::F64),
+        };
+        // Wrap in a body so the kernel has a synthetic ArrayGet for the
+        // emitter helpers; actually we don't need that — fold is the
+        // whole body. Use the Block expression form to introduce a no-op
+        // local before fold to exercise scope nesting.
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("sum_f64"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![ArrayInput {
+                name: ArcStr::from("arr"),
+                elem: PrimType::F64,
+                bind_id: None,
+                rust_name: "arr".to_string(),
+            }],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::F64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(fold)],
+        };
+        let arr = ValArray::from_iter_exact(
+            [Value::F64(1.0), Value::F64(2.5), Value::F64(-0.5), Value::F64(10.0)]
+                .into_iter(),
+        );
+        let registry = KernelRegistry::default();
+        let r = eval_kernel_with_dispatch_and_arrays(
+            &kernel,
+            &[],
+            &[arr],
+            &registry,
+            &mut |_, _| None,
+        );
+        assert_eq!(r.map(EvalResult::into_scalar), Some(RegValue::F64(13.0)));
+
+        // Empty array — fold returns the init.
+        let empty = ValArray::from_iter_exact(std::iter::empty());
+        let r = eval_kernel_with_dispatch_and_arrays(
+            &kernel,
+            &[],
+            &[empty],
+            &registry,
+            &mut |_, _| None,
+        );
+        assert_eq!(r.map(EvalResult::into_scalar), Some(RegValue::F64(0.0)));
+    }
+
+    #[test]
+    fn array_len_op() {
+        // Kernel: fn len_of(arr: Array<i64>) -> u64 = array::len(arr)
+        // Smoke-tests ArrayLen and the kernel-arity bookkeeping.
+        use crate::kernel_ir::{ArrayInput, KirExpr, KirOp};
+        let body = KirExpr {
+            op: KirOp::ArrayLen { name: ArcStr::from("arr") },
+            typ: KirType::Prim(PrimType::U64),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("len_of"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![ArrayInput {
+                name: ArcStr::from("arr"),
+                elem: PrimType::I64,
+                bind_id: None,
+                rust_name: "arr".to_string(),
+            }],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::U64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        let arr = ValArray::from_iter_exact(
+            [Value::I64(10), Value::I64(20), Value::I64(30)].into_iter(),
+        );
+        let registry = KernelRegistry::default();
+        let r = eval_kernel_with_dispatch_and_arrays(
+            &kernel,
+            &[],
+            &[arr],
+            &registry,
+            &mut |_, _| None,
+        );
+        assert_eq!(r.map(EvalResult::into_scalar), Some(RegValue::U64(3)));
     }
 }

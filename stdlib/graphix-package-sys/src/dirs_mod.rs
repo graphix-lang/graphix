@@ -1,5 +1,6 @@
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node,
+    Rt, Scope, UserEvent,
 };
 use netidx::subscriber::Value;
 
@@ -13,6 +14,7 @@ macro_rules! dirs_builtin {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Sync;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

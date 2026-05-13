@@ -6,7 +6,8 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    effects::EffectKind, errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope,
+    TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -122,9 +123,11 @@ type PackRead = CachedArgsAsync<PackReadEv>;
 #[derive(Debug, Default)]
 struct PackWriteBytesEv;
 
+// pack::write_bytes is a pure Value→bytes conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
     const NAME: &str = "pack_write_bytes";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.first()?.as_ref()?;

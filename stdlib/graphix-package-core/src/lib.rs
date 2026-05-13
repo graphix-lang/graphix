@@ -6,6 +6,7 @@ use anyhow::{bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
 use graphix_compiler::{
+    effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
@@ -263,6 +264,13 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 {
     const NAME: &str;
     const NEEDS_CALLSITE: bool;
+    /// Sync/async classification for fusion. Same semantics as
+    /// `BuiltIn::EFFECT`: defaults to `Async` (conservative); override
+    /// to `Sync` when the cached operation produces all of its output
+    /// on the same cycle as the most recent input that triggered it.
+    /// `CachedArgs<T>`'s `BuiltIn` impl pulls this through to the
+    /// builtin registry.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -296,6 +304,7 @@ pub struct CachedArgs<T> {
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
     const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
+    const EFFECT: EffectKind = T::EFFECT;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -587,6 +596,11 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     const NAME: &str = T::NAME;
     const NEEDS_CALLSITE: bool = false;
+    // Intrinsically sync: the body iterates and dispatches per-element
+    // predicate calls. Slot/cached plumbing is sync scaffolding, not
+    // an async-effect operation. The call-site effect joins MapQ's
+    // intrinsic Sync with the predicate's effect (M6 HOF inference).
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -775,6 +789,8 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     const NAME: &str = T::NAME;
     const NEEDS_CALLSITE: bool = false;
+    // Intrinsically sync. See MapQ above for the rationale.
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -982,6 +998,7 @@ struct IsErr;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const NAME: &str = "core_is_err";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1017,6 +1034,7 @@ struct FilterErr;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "core_filter_err";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1052,6 +1070,7 @@ struct ToError;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const NAME: &str = "core_error";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1086,6 +1105,7 @@ struct Once {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1132,6 +1152,7 @@ struct Take {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1183,6 +1204,7 @@ struct Skip {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1232,6 +1254,7 @@ struct AllEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const NAME: &str = "core_all";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
@@ -1266,6 +1289,7 @@ struct SumEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1291,6 +1315,7 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const NAME: &str = "core_product";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1316,6 +1341,7 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const NAME: &str = "core_divide";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1333,6 +1359,7 @@ struct MinEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const NAME: &str = "core_min";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1359,6 +1386,7 @@ struct MaxEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1385,6 +1413,7 @@ struct AndEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const NAME: &str = "core_and";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
@@ -1409,6 +1438,7 @@ struct OrEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const NAME: &str = "core_or";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
@@ -1499,6 +1529,7 @@ struct BitAndEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const NAME: &str = "core_bit_and";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, &)
@@ -1513,6 +1544,7 @@ struct BitOrEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const NAME: &str = "core_bit_or";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, |)
@@ -1527,6 +1559,7 @@ struct BitXorEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const NAME: &str = "core_bit_xor";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, ^)
@@ -1541,6 +1574,7 @@ struct BitNotEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const NAME: &str = "core_bit_not";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -1569,6 +1603,7 @@ struct ShlEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const NAME: &str = "core_shl";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shl)
@@ -1583,6 +1618,7 @@ struct ShrEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const NAME: &str = "core_shr";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shr)
@@ -1607,6 +1643,7 @@ struct Filter<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "core_filter";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1757,6 +1794,12 @@ struct Hold {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "core_hold";
     const NEEDS_CALLSITE: bool = false;
+    // Hold takes (trigger, value); it caches state across cycles
+    // (triggered count, latest value) but each emission lands on the
+    // same cycle as the most recent input that completed the
+    // (trigger-arrived, value-arrived) pairing. State becomes a
+    // kernel-local register; no cycle-shifted output.
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1967,6 +2010,7 @@ struct Count {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2006,6 +2050,7 @@ struct MeanEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const NAME: &str = "core_mean";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
@@ -2041,6 +2086,7 @@ struct Uniq(Option<Value>);
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2082,6 +2128,7 @@ struct Never;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "core_never";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2160,6 +2207,7 @@ struct Dbg {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "core_dbg";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2242,6 +2290,7 @@ struct Log {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "core_log";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2298,6 +2347,7 @@ macro_rules! printfn {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const NAME: &str = $name;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Sync;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

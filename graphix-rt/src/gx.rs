@@ -396,6 +396,12 @@ impl<X: GXExt> GX<X> {
             .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))
             .collect::<Result<LPooled<Vec<_>>>>()
             .with_context(|| ori.clone())?;
+        // Effect inference (M6): with all let-bound lambdas now
+        // registered in `fusion_lambdas`, walk each one's body to a
+        // fixed point and classify it Sync vs Async. Read by fusion's
+        // call-site lowering to decide whether a `KirOp::Call` to this
+        // lambda can be absorbed into the caller's sync kernel.
+        graphix_compiler::fusion::infer_effects(&self.ctx);
         let exprs = exprs
             .iter()
             .zip(nodes.drain(..))

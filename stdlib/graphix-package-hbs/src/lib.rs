@@ -4,7 +4,10 @@
 )]
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
-use graphix_compiler::{deref_typ, errf, typ::Type, ExecCtx, PrintFlag, Rt, TypecheckPhase, UserEvent};
+use graphix_compiler::{
+    deref_typ, effects::EffectKind, errf, typ::Type, ExecCtx, PrintFlag, Rt,
+    TypecheckPhase, UserEvent,
+};
 use graphix_package_core::{is_struct, CachedArgs, CachedVals, EvalCached};
 use graphix_package_json::value_to_json;
 use handlebars::Handlebars;
@@ -79,6 +82,7 @@ impl Default for HbsRenderEv {
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
     const NAME: &str = "hbs_render";
     const NEEDS_CALLSITE: bool = true;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn typecheck(
         &mut self,

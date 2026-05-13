@@ -160,6 +160,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     cache: parking_lot::Mutex::new(
                         crate::FusionLazyCache::NotAttempted,
                     ),
+                    effect: parking_lot::Mutex::new(crate::effects::EffectKind::Sync),
                 });
                 ctx.fusion_lambdas.insert(name.clone(), entry);
             }

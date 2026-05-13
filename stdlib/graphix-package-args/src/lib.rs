@@ -4,8 +4,8 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    effects::EffectKind, errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx,
+    Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
@@ -214,6 +214,7 @@ struct Parse {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     const NAME: &str = "args_parse";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

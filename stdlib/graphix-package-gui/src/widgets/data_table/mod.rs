@@ -57,12 +57,12 @@ use types::{parse_selection, parse_sort_by, ColumnState, ResizeDrag, SortBy};
 #[cfg(test)]
 pub(crate) use types::decimate_sparkline;
 
-/// `IndexMap` with the project-standard fx hasher. Holds every known
+/// `IndexMap` with the project-standard ahash hasher. Holds every known
 /// column, both displayed (raw netidx columns and virtual columns
 /// with a non-null default) and spec-only (configured but not yet
 /// displayed because their `default_value` ref currently resolves to
 /// null and the column has no source in the table data). Netidx
-/// tables can reach millions of columns, so the `fxhash` hasher
+/// tables can reach millions of columns, so the `AHasher` choice
 /// matters and the indexed iteration order doubles as the display
 /// order — the first `displayed_count` entries are the displayed
 /// columns in display order.

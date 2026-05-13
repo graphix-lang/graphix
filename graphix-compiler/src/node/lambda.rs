@@ -1,5 +1,6 @@
 use super::{compiler::compile, Nop};
 use crate::{
+    effects::EffectKind,
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     node::pattern::StructPatternNode,
@@ -28,6 +29,15 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub init: InitFn<R, E>,
     pub needs_callsite: bool,
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
+    /// Intrinsic sync/async effect — see `effects::EffectKind` and
+    /// `design/whole_graph_fusion.md`. Computed by the M6 effect
+    /// inference pass after all lambdas have been compiled. Defaults
+    /// to `Sync`; the pass walks each lambda body and flips to
+    /// `Async` if it finds an async-effect builtin call or a call to
+    /// another async user lambda. Function-typed parameter calls do
+    /// NOT contribute here — those are handled at the call site via
+    /// the lattice join with the resolved fn-arg's effect.
+    pub intrinsic_effect: Mutex<EffectKind>,
 }
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
@@ -387,27 +397,16 @@ impl Lambda {
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
-        // Honour GRAPHIX_NO_KIR=1 by skipping the KirNode path
-        // entirely. Captured at compile time so the env var only
-        // matters for the process lifetime — runtime A/B benches
-        // (KirNode vs GXLambda) toggle it before launching graphix.
-        let kir_enabled = std::env::var_os("GRAPHIX_NO_KIR").is_none();
-        // GRAPHIX_JIT=1: synchronous JIT compile at Lambda::compile.
-        // Predictable (fully native by the time we run the program)
-        // but pays codegen cost up-front; with many fusable
-        // lambdas this delays startup.
-        //
-        // GRAPHIX_JIT_ASYNC=1: queue compile to a background worker
-        // thread. KirNode interprets until the worker fills the
-        // async slot, then transparently swaps to native dispatch.
-        // No startup penalty; first-N invocations of each kernel
-        // run interpreted (still much faster than the node graph).
-        //
-        // If both are set, sync wins (more predictable). If neither,
-        // no JIT.
-        let jit_enabled = std::env::var_os("GRAPHIX_JIT").is_some();
-        let jit_async = !jit_enabled
-            && std::env::var_os("GRAPHIX_JIT_ASYNC").is_some();
+        // Honour the per-runtime fusion/JIT configuration set on
+        // `ExecCtx::fusion_config`. Captured at Lambda::compile time
+        // so the decision is sticky for the lifetime of the compiled
+        // lambda — flipping the config mid-program produces undefined
+        // behavior because already-compiled lambdas snapshot here.
+        let kir_enabled = !ctx.fusion_config.fusion_disabled;
+        let jit_enabled =
+            matches!(ctx.fusion_config.jit_mode, crate::JitMode::Sync);
+        let jit_async =
+            matches!(ctx.fusion_config.jit_mode, crate::JitMode::Async);
         // Lazy fusion. We capture the lambda + a snapshot of the
         // current `fusion_known_consts` map into the InitFn closure
         // and run the actual fusion at first call. Cross-kernel
@@ -699,15 +698,19 @@ impl Lambda {
                         if let Some((kernel_arc, wrapped, async_slot, registry)) =
                             slot
                         {
-                            // KirNode arity = prim params + fn params.
-                            // For kernels without HOF args fn_params is
-                            // empty, so this matches the legacy check.
-                            let total_params = kernel_arc.params.len()
-                                + kernel_arc.fn_params.len();
+                            // KirNode arity = all slot kinds (scalar +
+                            // array + tuple + struct + variant + HOF-arg
+                            // fn params). Binding-source fn params
+                            // resolve through ctx.cached and don't take
+                            // an input slot.
+                            let total_params =
+                                crate::kir_interp::total_kernel_arity(
+                                    &kernel_arc,
+                                );
                             if args.len() == total_params {
                                 let n_args = args.len();
                                 let kn_scope = scope.clone();
-                                let kn = match (wrapped, async_slot) {
+                                let mut kn = match (wrapped, async_slot) {
                                     (Some(w), _) =>
                                         crate::kir_interp::KirNode::with_jit(
                                             kernel_arc,
@@ -735,6 +738,7 @@ impl Lambda {
                                             tid,
                                         ),
                                 };
+                                kn.pre_init_binding_slots(ctx);
                                 return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
                             }
                         }
@@ -779,6 +783,7 @@ impl Lambda {
             scope: original_scope,
             needs_callsite,
             check: Mutex::new(None),
+            intrinsic_effect: Mutex::new(EffectKind::Sync),
         });
         ctx.lambda_defs.insert(id, def.clone());
         // Publish the lambda's FnType under its source-level ExprId

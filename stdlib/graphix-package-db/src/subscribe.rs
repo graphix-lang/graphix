@@ -1,8 +1,8 @@
 use anyhow::Result;
 use futures::{channel::mpsc, SinkExt};
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx,
-    Node, Rt, Scope, UserEvent, CBATCH_POOL,
+    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn,
+    CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope, UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
@@ -127,6 +127,7 @@ pub(crate) struct DbSubscribe {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
     const NAME: &str = "db_subscription_new";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -251,6 +252,7 @@ macro_rules! db_event_accessor {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Async;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

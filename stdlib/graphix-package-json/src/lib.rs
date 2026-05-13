@@ -6,7 +6,8 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    effects::EffectKind, errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope,
+    TypecheckPhase, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -237,9 +238,11 @@ type JsonRead = CachedArgsAsync<JsonReadEv>;
 #[derive(Debug, Default)]
 struct JsonWriteStrEv;
 
+// json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const NAME: &str = "json_write_str";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -275,6 +278,7 @@ struct JsonWriteBytesEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const NAME: &str = "json_write_bytes";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;

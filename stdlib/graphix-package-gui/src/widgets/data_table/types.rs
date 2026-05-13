@@ -436,7 +436,7 @@ pub(super) fn row_basename(p: &Path) -> &str {
 /// Pre-parsed cache for a column's `source` ref. Built once when the
 /// ref updates so the per-cell display path can look up by `&str`
 /// without rebuilding a `Value::String(ArcStr)` key per call.
-/// `PerRow` uses `FxHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
+/// `PerRow` uses `AHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
 /// enables the cheap lookup.
 ///
 /// `Netidx(fallback)` means the column subscribes to

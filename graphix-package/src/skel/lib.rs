@@ -1,6 +1,7 @@
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node,
+    Rt, Scope, UserEvent,
 };
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
@@ -13,6 +14,10 @@ struct ExampleBuiltin;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
     const NEEDS_CALLSITE: bool = false;
+    // Async is the conservative default — override to `Sync` only if
+    // every output appears on the same cycle as the input that
+    // triggered it. See graphix_compiler::effects::EffectKind.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

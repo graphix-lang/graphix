@@ -8,6 +8,7 @@ use bytes::Bytes;
 use compact_str::format_compact;
 use futures::{channel::mpsc, SinkExt};
 use graphix_compiler::{
+    effects::EffectKind,
     errf,
     expr::ExprId,
     node::genn,
@@ -226,9 +227,12 @@ static DEFAULT_CLIENT: LazyLock<Arc<reqwest::Client>> = LazyLock::new(|| {
 #[derive(Debug, Default)]
 pub(crate) struct HttpClientEv;
 
+// http::client constructs a client config — pure value computation.
+// The actual requests go through HttpRequestEv (async). Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
     const NAME: &str = "http_client";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
@@ -270,6 +274,7 @@ pub(crate) struct HttpDefaultClientEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
     const NAME: &str = "http_default_client";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         cached.0.get(0)?.as_ref()?;
@@ -287,6 +292,7 @@ pub(crate) struct HttpServerAddrEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
     const NAME: &str = "http_server_addr";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.get(0)?.as_ref()?;

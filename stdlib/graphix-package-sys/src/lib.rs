@@ -5,8 +5,8 @@
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    effects::EffectKind, errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx,
+    Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
@@ -332,9 +332,12 @@ pub(crate) type GxTempDir = CachedArgsAsync<GxTempDirEv>;
 #[derive(Debug, Default)]
 pub(crate) struct TempDirPathEv;
 
+// sys::tempdir_path returns a path string from a TempDir handle. Pure
+// transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const NAME: &str = "sys_tempdir_path";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0.first()?.as_ref()?;
@@ -368,6 +371,7 @@ pub(crate) struct JoinPathEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const NAME: &str = "sys_join_path";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -411,6 +415,8 @@ pub(crate) struct Args {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     const NAME: &str = "sys_args";
     const NEEDS_CALLSITE: bool = false;
+    // Fires once on init with the cmd-line args. Same-cycle output.
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -457,6 +463,9 @@ pub(crate) struct Exit;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     const NAME: &str = "sys_exit";
     const NEEDS_CALLSITE: bool = false;
+    // exit consumes its arg and terminates the process; no future-cycle
+    // output. Sync.
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

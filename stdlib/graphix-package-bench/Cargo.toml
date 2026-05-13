@@ -14,6 +14,8 @@ exclude = ["../../book"]
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
+nohash = { workspace = true }
+ahash = { workspace = true }
 graphix-compiler = { version = "0.9.0", path = "../../graphix-compiler" }
 graphix-derive = { version = "0.9.0", path = "../../graphix-derive" }
 graphix-package = { version = "0.9.0", path = "../../graphix-package" }

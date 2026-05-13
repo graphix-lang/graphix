@@ -9,16 +9,20 @@ extern crate combine;
 #[macro_use]
 extern crate serde_derive;
 
+pub mod effects;
 pub mod env;
 pub mod expr;
 pub mod fusion;
 pub mod kernel_ir;
 pub mod kir_interp;
 pub mod kir_jit;
+pub mod kir_jit_helpers;
+pub mod kir_jit_intern;
 pub mod node;
 pub mod typ;
 
 use crate::{
+    effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
     node::lambda::LambdaDef,
@@ -109,6 +113,22 @@ pub fn with_trace<F: FnOnce() -> Result<R>, R>(
 #[allow(dead_code)]
 pub fn trace() -> bool {
     TRACE.load(Ordering::Relaxed)
+}
+
+// ─── Fusion / JIT mode ───────────────────────────────────────────
+//
+// Per-runtime fusion/JIT configuration lives on [`ExecCtx`] as
+// [`FusionConfig`]. The CLI in graphix-shell parses `--no-fusion` /
+// `--no-jit` / `--jit-async` and sets the field on the ctx it
+// builds. Concurrent in-process runtimes (e.g. the differential
+// test harness) can hold different modes independently — no shared
+// global state.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitMode {
+    Off,
+    Sync,
+    Async,
 }
 
 #[macro_export]
@@ -530,12 +550,27 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
     ExprId,
 ) -> Result<Box<dyn Apply<R, E>>>;
 
-/// Trait implemented by graphix built-in functions implemented in rust. This
-/// trait isn't meant to be implemented manually, use derive(BuiltIn) from the
-/// graphix-derive crate
+/// Trait implemented by graphix built-in functions implemented in rust
 pub trait BuiltIn<R: Rt, E: UserEvent> {
+    /// The name of the builtin, this must be package::unique_name for
+    /// builtins in a package
     const NAME: &str;
+    /// Does this builtin need a 2nd typecheck pass? If yes then typecheck will
+    /// be called a second time after all types are resolved and may examine
+    /// them and have a second chance to reject the program. For example
+    /// - type directed deserialization functions need the final deserialization
+    ///   type to decide if it's valid, and to build their schema.
+    /// - type requirements not expressable in the grammar. For example this
+    ///   argument must be some kind of struct, and the fields and types must
+    ///   correspond to some other struct (e.g. publish rpc)
     const NEEDS_CALLSITE: bool;
+    /// Sync/async classification for fusion. Conservative default is
+    /// `Async`; override to `Sync` when the builtin produces all of its
+    /// output on the same cycle as the input that triggered it (it may
+    /// produce no output at all, but never on a future cycle relative
+    /// to a current trigger). See `effects::EffectKind` and
+    /// `design/whole_graph_fusion.md` for the rules and examples.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -850,6 +885,13 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
     builtins: AHashMap<&'static str, (BuiltInInitFn<R, E>, bool)>,
+    /// Sync/async effect of each registered builtin, keyed by name.
+    /// Populated by `register_builtin` from `T::EFFECT`. Read by
+    /// fusion's effect inference (M6) to decide whether a builtin
+    /// call site can be absorbed into a sync kernel. Builtins absent
+    /// from this map are treated as `Async` (the conservative
+    /// default), which is always correct.
+    pub builtin_effects: AHashMap<&'static str, EffectKind>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
@@ -916,8 +958,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// looks here when a kernel's body references `name(...)`, locks
     /// the entry's cache, and builds the callee's kernel on demand.
     /// Cycles are broken by the entry cache's `InProgress` state.
-    pub fusion_lambdas:
-        std::collections::BTreeMap<ArcStr, sync::Arc<FusionLazyEntry>>,
+    pub fusion_lambdas: std::collections::BTreeMap<ArcStr, sync::Arc<FusionLazyEntry>>,
     /// Names of bindings that are the target of a `<-` (Connect)
     /// somewhere in the program. Lazy-fusion's cross-kernel call
     /// resolution refuses to register these in `fusion_lambdas`
@@ -927,6 +968,37 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// the same names should produce DynCall sites instead of being
     /// dropped.)
     pub unstable_bindings: std::collections::BTreeSet<ArcStr>,
+    /// Per-runtime fusion / JIT configuration. Read by
+    /// [`crate::node::lambda::Lambda::compile`] when deciding whether
+    /// to build a fused kernel and how to dispatch it. Set once at
+    /// runtime construction (typically from CLI flags or test setup);
+    /// changing it mid-program produces undefined behavior because
+    /// already-compiled lambdas snapshot it at their compile site.
+    ///
+    /// Default: fusion enabled, JIT off (interpreter dispatch via
+    /// kir_interp). Library callers that want JIT-compiled fused
+    /// kernels should set `jit_mode = JitMode::Sync` before any
+    /// `compile` call.
+    pub fusion_config: FusionConfig,
+}
+
+/// Per-runtime fusion / JIT configuration. Lives on [`ExecCtx`] so
+/// concurrent runtimes in the same process can hold different modes
+/// without racing on a shared global.
+#[derive(Debug, Clone, Copy)]
+pub struct FusionConfig {
+    /// Skip the fused-kernel path entirely. Every lambda runs as
+    /// `GXLambda` (the regular node-graph interpreter). Useful for
+    /// A/B differential testing.
+    pub fusion_disabled: bool,
+    /// JIT mode for fused kernels. See [`JitMode`].
+    pub jit_mode: JitMode,
+}
+
+impl Default for FusionConfig {
+    fn default() -> Self {
+        Self { fusion_disabled: false, jit_mode: JitMode::Off }
+    }
 }
 
 /// A let-bound lambda visible for cross-kernel-call resolution.
@@ -940,12 +1012,21 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
 /// `FnType` there at build time, so unannotated callees (whose argspec
 /// `constraint` fields are all `None`) fuse correctly using the
 /// types the typechecker inferred from their call sites.
+///
+/// `effect` is the lambda's intrinsic sync/async classification.
+/// Populated by the M6 `fusion::infer_effects` fixed-point pass that
+/// runs after compilation. Read by fusion's call-site lowering to
+/// decide whether a `KirOp::Call` to this lambda can be absorbed into
+/// the caller's sync kernel. Default is `Sync`; the inference pass
+/// flips to `Async` if the body invokes an async-effect builtin or
+/// calls another async user lambda.
 #[derive(Debug)]
 pub struct FusionLazyEntry {
     pub fn_name: ArcStr,
     pub spec_id: crate::expr::ExprId,
     pub lambda: triomphe::Arc<expr::LambdaExpr>,
     pub cache: parking_lot::Mutex<FusionLazyCache>,
+    pub effect: parking_lot::Mutex<EffectKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -990,6 +1071,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
             builtins: AHashMap::default(),
+            builtin_effects: AHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
             tags: AHashSet::default(),
@@ -1005,6 +1087,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion_known_consts: std::collections::BTreeMap::new(),
             fusion_lambdas: std::collections::BTreeMap::new(),
             unstable_bindings: std::collections::BTreeSet::new(),
+            fusion_config: FusionConfig::default(),
         })
     }
 
@@ -1015,7 +1098,15 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
+        self.builtin_effects.insert(T::NAME, T::EFFECT);
         Ok(())
+    }
+
+    /// Look up the sync/async effect of a registered builtin. Returns
+    /// `EffectKind::Async` (the conservative default) for unknown names
+    /// so callers don't need to handle the "missing" case specially.
+    pub fn builtin_effect(&self, name: &str) -> EffectKind {
+        self.builtin_effects.get(name).copied().unwrap_or_default()
     }
 
     /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin

@@ -4,7 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node,
+    Rt, Scope, UserEvent,
 };
 use graphix_package_core::CachedVals;
 use netidx::subscriber::Value;
@@ -17,6 +18,7 @@ struct MandelbrotIterate {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
     const NAME: &str = "bench_mandelbrot_iterate";
     const NEEDS_CALLSITE: bool = false;
+    const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

@@ -3,6 +3,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::SourcePosition;
 use graphix_compiler::{
+    effects::EffectKind,
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
@@ -166,6 +167,7 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
     const NAME: &str = "core_queuefn";
     const NEEDS_CALLSITE: bool = true;
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -248,6 +250,10 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             init,
             needs_callsite: false,
             check: Mutex::new(None),
+            // queuefn wraps a function in queue-based dispatch — each
+            // call queues the predicate and dispatches across cycles.
+            // The wrapper lambda is intrinsically async.
+            intrinsic_effect: Mutex::new(EffectKind::Async),
         };
         Ok(ctx.wrap_lambda(def))
     }
