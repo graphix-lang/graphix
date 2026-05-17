@@ -156,6 +156,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 let entry = std::sync::Arc::new(crate::FusionLazyEntry {
                     fn_name: name.clone(),
                     spec_id: b.value.id,
+                    // Share the source Expr's typ cell so TVar
+                    // refinement during typecheck flows through.
+                    spec_typ: b.value.typ.clone(),
                     lambda: la.clone(),
                     cache: parking_lot::Mutex::new(
                         crate::FusionLazyCache::NotAttempted,
@@ -225,7 +228,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         &self.spec
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck(ctx))?;
         wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
         Ok(())
@@ -317,7 +320,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &self.typ
     }
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 }
@@ -395,7 +398,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.child.refs(refs)
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck(ctx))?;
         let t = Type::ByRef(Arc::new(self.child.typ().clone()));
         wrap!(self, self.typ.check_contains(&ctx.env, &t))
@@ -481,7 +484,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck(ctx))?;
         let typ = match self.child.typ() {
             Type::ByRef(t) => (**t).clone(),

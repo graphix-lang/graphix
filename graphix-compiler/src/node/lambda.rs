@@ -603,6 +603,21 @@ impl Lambda {
                                         }
                                     }
                                 }
+                                // Discover sync-builtin call sites in
+                                // the lambda body and add them to the
+                                // extra_fn_inputs alongside binding
+                                // sources. After M8.4 step f, this
+                                // lets builtin calls fuse into the
+                                // kernel via `KirOp::DynCall`.
+                                if let netidx::utils::Either::Left(body) =
+                                    &patched.body
+                                {
+                                    binding_fn_inputs.extend(
+                                        crate::fusion::discover_builtin_fn_inputs(
+                                            body, ctx,
+                                        ),
+                                    );
+                                }
                                 let attempt =
                                     crate::fusion::build_kir_kernel_with_binding_inputs(
                                         synth.as_str(),
@@ -618,6 +633,25 @@ impl Lambda {
                                             crate::kernel_ir::kernel_contains_call(
                                                 &kernel_arc,
                                             );
+                                        // KirType::String values can't sit
+                                        // in CLIF registers; force these
+                                        // kernels through the interpreter.
+                                        let has_strings =
+                                            crate::kernel_ir::kernel_contains_string(
+                                                &kernel_arc,
+                                            );
+                                        // Composite-element accessor ops
+                                        // (TupleGet/StructGet with non-
+                                        // primitive elem_typ) can't lower
+                                        // through the JIT's scalar
+                                        // extraction helpers; route to
+                                        // the interpreter, which handles
+                                        // both shapes via
+                                        // `extract_composite_or_scalar`.
+                                        let has_composite_elems =
+                                            crate::kernel_ir::kernel_contains_composite_element_op(
+                                                &kernel_arc,
+                                            );
                                         // Sync JIT path. Kernels with
                                         // `KirOp::Call` go through the
                                         // shared-module path so the
@@ -625,7 +659,10 @@ impl Lambda {
                                         // CLIF-call its callees; leaf
                                         // kernels use a private module
                                         // for cheaper isolation.
-                                        let wrapped = if jit_enabled {
+                                        let wrapped = if jit_enabled
+                                            && !has_strings
+                                            && !has_composite_elems
+                                        {
                                             let res = if has_calls {
                                                 crate::kir_jit::compile_kernel_with_callees(
                                                     &kernel_arc,
@@ -663,6 +700,8 @@ impl Lambda {
                                         let async_slot = if jit_async
                                             && wrapped.is_none()
                                             && !has_calls
+                                            && !has_strings
+                                            && !has_composite_elems
                                         {
                                             Some(
                                                 crate::kir_jit::submit_async_compile(
@@ -710,35 +749,42 @@ impl Lambda {
                             if args.len() == total_params {
                                 let n_args = args.len();
                                 let kn_scope = scope.clone();
-                                let mut kn = match (wrapped, async_slot) {
+                                // `KirNode::{new,with_jit,with_async_jit}`
+                                // all run `pre_init_binding_slots` +
+                                // `pre_init_builtin_slots` internally
+                                // via the single `build` chokepoint —
+                                // no extra calls needed here.
+                                let kn = match (wrapped, async_slot) {
                                     (Some(w), _) =>
                                         crate::kir_interp::KirNode::with_jit(
+                                            ctx,
                                             kernel_arc,
                                             n_args,
                                             w,
                                             registry,
                                             kn_scope,
                                             tid,
-                                        ),
+                                        )?,
                                     (None, Some(s)) =>
                                         crate::kir_interp::KirNode::with_async_jit(
+                                            ctx,
                                             kernel_arc,
                                             n_args,
                                             s,
                                             registry,
                                             kn_scope,
                                             tid,
-                                        ),
+                                        )?,
                                     (None, None) =>
                                         crate::kir_interp::KirNode::new(
+                                            ctx,
                                             kernel_arc,
                                             n_args,
                                             registry,
                                             kn_scope,
                                             tid,
-                                        ),
+                                        )?,
                                 };
-                                kn.pre_init_binding_slots(ctx);
                                 return Ok(Box::new(kn) as Box<dyn Apply<R, E>>);
                             }
                         }
@@ -786,14 +832,11 @@ impl Lambda {
             intrinsic_effect: Mutex::new(EffectKind::Sync),
         });
         ctx.lambda_defs.insert(id, def.clone());
-        // Publish the lambda's FnType under its source-level ExprId
-        // so later consumers (the fusion pass) can resolve the type
-        // without re-doing inference. `typ` here is Arc-shared with
-        // the copy stored on the lambda's Value; TVars inside get
-        // unified in place as the containing expression typechecks,
-        // so our cloned-out FnType sees the same resolved state
-        // through its TVar Arcs.
-        ctx.fn_types.insert(spec.id, (*typ).clone());
+        // (Previously: published the lambda's FnType under
+        // `ctx.fn_types[spec.id]` for the fusion pass. After Phase 5,
+        // the fusion pass reads this off the source `Expr.typ` cell
+        // — set by trait-default propagation in `Update::typecheck`
+        // — instead. No sidecar insertion needed.)
         Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
     }
 }
@@ -821,7 +864,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let def = self
             .def
             .downcast_ref::<LambdaDef<R, E>>()

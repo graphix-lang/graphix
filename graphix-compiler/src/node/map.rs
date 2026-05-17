@@ -92,7 +92,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.vals.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
             wrap!(n.node, n.node.typecheck(ctx))?
         }
@@ -162,7 +162,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source.node, self.source.node.typecheck(ctx))?;
         wrap!(self.key.node, self.key.node.typecheck(ctx))?;
         let mt = Type::Map {

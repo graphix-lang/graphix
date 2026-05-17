@@ -75,5 +75,4 @@ parking_lot = { workspace = true }
 poolshark = { workspace = true }
 reedline = { workspace = true }
 tokio = { workspace = true }
-toml_edit = { workspace = true }
 triomphe = { workspace = true }

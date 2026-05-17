@@ -27,6 +27,7 @@ parser! {
                         ori: get_origin(),
                         pos,
                         kind: ExprKind::Constant(Value::from(s)),
+                        typ: triomphe::Arc::new(std::sync::OnceLock::new()),
                     },
                     Intp::Expr(s) => s,
                 }

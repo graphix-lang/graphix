@@ -156,6 +156,71 @@ pub unsafe extern "C" fn graphix_value_buf_push_array(
     }
 }
 
+/// Borrow-mode array push: refcount-bumps the caller's
+/// `*const ValArray` and pushes `Value::Array(clone)`. Used for
+/// DynCall composite args where the caller still owns its local
+/// and the dispatcher needs a separately-tracked clone.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_push_array_borrowed(
+    buf: *mut LPooled<Vec<Value>>,
+    src: *const ValArray,
+) {
+    unsafe {
+        let cloned: ValArray = (*src).clone();
+        (*buf).push(Value::Array(cloned));
+    }
+}
+
+/// Borrow-mode value push: refcount-bumps the caller's
+/// `*const Value` and pushes the clone. Used for DynCall variant
+/// args sourced from a Local (the caller still owns the original).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_push_value_borrowed(
+    buf: *mut LPooled<Vec<Value>>,
+    src: *const Value,
+) {
+    unsafe {
+        let cloned: Value = (*src).clone();
+        (*buf).push(cloned);
+    }
+}
+
+/// Move-mode value push: takes ownership of `v` (a `*mut Value` from
+/// `Box::into_raw`) and pushes it without a refcount bump. Used for
+/// DynCall variant args sourced from an owned producer (VariantNew,
+/// or a composite-return DynCall result) — the pointer isn't tracked
+/// anywhere else, so a borrow-mode push would leak it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_push_value(
+    buf: *mut LPooled<Vec<Value>>,
+    v: *mut Value,
+) {
+    unsafe {
+        let owned: Value = *Box::from_raw(v);
+        (*buf).push(owned);
+    }
+}
+
+/// Drop a partially-built (still-`Box`'d) `LPooled<Vec<Value>>`.
+/// Used by the JIT cleanup_stack on pending paths: a producer op
+/// that allocated a buf but never reached `finalize` needs to free
+/// it explicitly.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_drop(
+    buf: *mut LPooled<Vec<Value>>,
+) {
+    unsafe { drop(Box::from_raw(buf)) }
+}
+
+/// Read-and-clear the `DYNCALL_PENDING` thread-local. JIT-emitted
+/// code calls this after every `graphix_dyncall` to decide whether
+/// to branch to `pre_pending_<n>`. Returns 1 if pending was set
+/// (and clears it), 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_dyncall_pending_take() -> u8 {
+    DYNCALL_PENDING.with(|c| if c.replace(false) { 1 } else { 0 })
+}
+
 /// Push a `Value::String(s)` slot. The string is identified by an
 /// `ArcStr` already interned somewhere; we pass the raw pointer
 /// (which is `Arc<str>` data — see `ArcStr::as_ptr`) plus length.
@@ -370,6 +435,111 @@ variant_payload_impl!(graphix_variant_payload_i16, i16);
 variant_payload_impl!(graphix_variant_payload_u8, u8);
 variant_payload_impl!(graphix_variant_payload_u16, u16);
 variant_payload_impl!(graphix_variant_payload_u64, u64);
+
+// ─── DynCall (HOF) dispatch ──────────────────────────────────────
+//
+// JIT'd kernels invoke fn-typed params (HOF args) via the
+// `graphix_dyncall` helper. The dispatch is type-erased through a
+// `DynDispatchHandle` set on a thread-local by `KirNode::update`:
+//
+//   1. Before calling the wrapper, KirNode::update builds a
+//      `DynDispatchHandle` whose `dispatch` is a monomorphized
+//      `dispatch_typed::<R, E>` function pointer and whose `state`
+//      points to a per-call struct holding the dyn_slots, ctx,
+//      event, and fn_arg_values references.
+//   2. The thread-local `DYN_DISPATCH_HANDLE` is saved and replaced
+//      with a pointer to the new handle (save-restore lets nested
+//      JIT calls stack properly).
+//   3. The wrapper runs. JIT'd code emits calls to `graphix_dyncall`
+//      with `fn_index` + an args buffer. The helper reads the
+//      handle and calls its `dispatch` function pointer.
+//   4. If the inner Apply returns `None` (callee not ready this
+//      cycle), `dispatch` returns 0 and sets `DYNCALL_PENDING`.
+//      Otherwise it returns the scalar result's raw u64 bits.
+//   5. After the wrapper returns, KirNode::update checks
+//      `DYNCALL_PENDING` (and resets it). If set, the kernel
+//      result is discarded and KirNode::update returns `None` so
+//      the runtime re-fires next cycle.
+//
+// Restrictions: this v1 only supports DynCalls where both args
+// and return are scalar primitives (no composite/variant args or
+// returns). The kernel itself must also have scalar return — a
+// pending DynCall produces garbage 0s downstream, and a composite
+// kernel return would mean reading a null pointer.
+
+use std::cell::Cell;
+
+/// Type-erased per-call dispatch handle, lifetime-tied to one
+/// `KirNode::update` invocation. Built on the stack there and
+/// pointed at via the thread-local.
+#[repr(C)]
+pub struct DynDispatchHandle {
+    /// Function pointer to a monomorphized `dispatch_typed::<R, E>`.
+    /// Takes `(state, fn_index, args, ret_kind)` and returns the
+    /// result encoded per `ret_kind` (scalar bits, owned ValArray
+    /// pointer, or owned Value pointer). Returns `0` and sets
+    /// `DYNCALL_PENDING` if the inner Apply returned None.
+    pub dispatch: unsafe extern "C" fn(
+        state: *mut u8,
+        fn_index: u32,
+        args: *mut LPooled<Vec<Value>>,
+        ret_kind: u8,
+    ) -> u64,
+    /// Type-erased pointer to the per-call state struct that holds
+    /// `&mut [DynCallSlot<R, E>]`, `&[Value]` (fn_arg_values),
+    /// `&mut ExecCtx<R, E>`, `&mut Event<E>`.
+    pub state: *mut u8,
+}
+
+thread_local! {
+    /// Pointer to the active `DynDispatchHandle` for the JIT'd
+    /// kernel currently on the call stack. Set/restored by
+    /// `KirNode::update`. Null when no JIT'd kernel is in flight.
+    pub static DYN_DISPATCH_HANDLE: Cell<*const DynDispatchHandle> =
+        const { Cell::new(std::ptr::null()) };
+
+    /// Sticky flag set by `dispatch_typed` when an inner Apply
+    /// returns `None`. Read and reset by `KirNode::update` after
+    /// the wrapper returns; if true, the kernel's result is
+    /// discarded and `update` itself returns `None`.
+    pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The single registered DynCall entry point. Indirects through
+/// the thread-local handle to the monomorphized dispatcher.
+///
+/// `ret_kind`:
+/// - `0`: scalar (`Prim`) — dispatcher packs the result's bits into
+///   the returned `u64`.
+/// - `1`: composite ValArray (`Array` / `Tuple` / `Struct`) —
+///   dispatcher boxes the inner `ValArray` and returns
+///   `Box::into_raw(...)` as `u64`.
+/// - `2`: composite `Value` (`Variant`) — dispatcher boxes the
+///   `Value` and returns `Box::into_raw(...)` as `u64`.
+///
+/// On pending (inner Apply returned `None`): returns `0`, sets
+/// `DYNCALL_PENDING`. JIT-emitted code calls
+/// `graphix_dyncall_pending_take` after the dyncall to decide
+/// whether to branch to its `pre_pending_<n>` cleanup block.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_dyncall(
+    fn_index: u32,
+    args: *mut LPooled<Vec<Value>>,
+    ret_kind: u8,
+) -> u64 {
+    let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
+    if handle.is_null() {
+        panic!(
+            "graphix_dyncall: no DynDispatchHandle set — KirNode::update \
+             must populate the thread-local before invoking JIT'd code \
+             that calls HOFs"
+        );
+    }
+    unsafe {
+        let h = &*handle;
+        (h.dispatch)(h.state, fn_index, args, ret_kind)
+    }
+}
 
 /// Read element `idx` of `arr` as an `i64`. JIT-side counterpart of
 /// `KirOp::ArrayGet` / `KirOp::TupleGet` for scalar i64 elements.
@@ -641,5 +811,11 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_variant_payload_u8", graphix_variant_payload_u8 as *const u8),
         ("graphix_variant_payload_u16", graphix_variant_payload_u16 as *const u8),
         ("graphix_variant_payload_u64", graphix_variant_payload_u64 as *const u8),
+        ("graphix_dyncall", graphix_dyncall as *const u8),
+        ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
+        ("graphix_value_buf_push_array_borrowed", graphix_value_buf_push_array_borrowed as *const u8),
+        ("graphix_value_buf_push_value_borrowed", graphix_value_buf_push_value_borrowed as *const u8),
+        ("graphix_value_buf_push_value", graphix_value_buf_push_value as *const u8),
+        ("graphix_value_buf_drop", graphix_value_buf_drop as *const u8),
     ]
 }

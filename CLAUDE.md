@@ -281,3 +281,236 @@ Widget test access pattern: the `GuiWidget` trait gains a `#[cfg(test)] fn as_an
 `InternalOnly` in the test ctx DOES spin up a real in-process resolver server, so `sys::net::publish` / `subscribe` round-trips work end-to-end. However, when driving many updates rapidly (e.g. via `seq(0, N)?`), netidx publisher coalescing means the subscriber only sees a few values. For multi-point sparkline subscription tests, space updates with one-shot `sys::time::timer(duration, false)` calls — a repeating timer (`true`) keeps `drain()` looping forever because batches always arrive within its reset window.
 
 ColumnSpec `on_resize` field fix: the .gxi types it as `&[fn(width: f64) -> Any, null]` (a ref), so the runtime struct value is a u64 BindId, not the callable directly. `parse_column_specs` must extract it as a bid (like `default_value` and `width`) and then `compile_ref` + `compile_callable_opt` to get the actual callable. The widget also tracks the inner ref in `on_resize_refs` so callable swaps at runtime recompile.
+
+### Composite-return DynCalls in the JIT (May 2026)
+
+`KirOp::DynCall` (HOF dispatch in the cranelift JIT) now supports
+fn-typed kernel params whose args *or* return are composite
+(tuple/struct/variant), not just scalars. Key pieces:
+
+- **Fusion now builds Param-source HOF kernels.** The `tail_call_slots`
+  and `source_args` builders in `fusion.rs` used to `return None` on
+  any fn-typed param, so a HOF whose fn-param came from `lambda.args`
+  (vs. an outer binding) never fused at all. They now `continue` past
+  fn-typed params — `build_arg_layout` (kir_interp) already
+  reconstructs fn-param positions separately by `FnSource::Param`'s
+  `arg_pos`, so `tail_call_slots` / `source_args` intentionally
+  *exclude* fn_params. A fn_param + tail-loop kernel still bails
+  (a tail call can't reference a bare fn_param — no emit_expr
+  lowering — so it can't fuse anyway; the `has_tail` guard is
+  belt-and-suspenders).
+
+- **Shared-module string tables must outlive the code.** A kernel
+  with a `DynCall` goes through `compile_kernel_with_callees` (the
+  `SHARED_JIT` path; `kernel_contains_call` counts DynCall). That
+  path's `define_kernel_body` built each kernel's `KernelStrings`
+  (stable `*const ArcStr` addresses baked into the code for variant
+  tags / struct field names) and then **dropped it** — dangling
+  pointers, segfault on the first `VariantTagEq`. Fix: `CachedKernel`
+  in `SharedJit::by_kernel` now carries a `_strings: KernelStrings`
+  field; `define_kernel_body` returns the table and
+  `compile_kernel_with_callees` stores it into the cache entry, which
+  lives as long as the shared module. Moving a `KernelStrings` is
+  safe — only the `Box` pointer moves, not the heap allocation the
+  baked-in pointers reference.
+
+- **Composite DynCall arg ownership.** A composite DynCall arg uses a
+  refcount-bump push (`graphix_value_buf_push_array_borrowed` /
+  `_value_borrowed`) when it's a `Borrowed` source (a Local read — the
+  caller still owns it), or a move push (`graphix_value_buf_push_array`
+  / new `graphix_value_buf_push_value`) when it's an `Owned` source
+  (an inline `TupleNew`/`StructNew`/`VariantNew`, or a composite-return
+  DynCall result not bound to a local). `classify_composite_source`
+  drives the choice and now classifies `KirOp::DynCall` as `Owned`.
+  Using the borrowed helper on an Owned source leaks the original;
+  the move helper on a Borrowed source double-frees it.
+
+### Composite block-lets & composite IfChains in the JIT (May 2026)
+
+Pre-M8.4 hardening — bigger fused subgraphs hit two JIT codegen
+crashes that smaller kernels didn't:
+
+- **`KirOp::Block` with a composite let panicked.** The block-
+  expression arm did `prim_of(&l.value.typ)` on every let — a panic
+  for any tuple/struct/variant let. It also only `mark`/`truncate`d
+  `env.locals`, so composite/variant block-lets leaked into the
+  enclosing scope (and weren't dropped, leaking per-iteration in a
+  loop body). Fixed: the arm now routes composite/variant lets to
+  `bind_composite`/`bind_variant`, snapshots all three `env` lists,
+  drops the block-scoped composites/variants on exit, and runs the
+  block tail through `ensure_owned_composite` (so a tail that aliases
+  a block-scoped local outlives the block).
+
+- **Composite `select`-as-expression (`KirOp::IfChain`) panicked.**
+  `compile_ifchain` took a `PrimType` and `prim_to_clif`'d it for the
+  merge-block param — a panic for a tuple/variant-typed if-chain. It
+  now takes a `ClifType` (via the new `clif_of`, composites → `I64`)
+  and runs each arm result through `ensure_owned_composite` so the
+  merge always receives an owned pointer regardless of which arm won.
+
+- **`JitEnv::mark`/`truncate` now cover all three binding lists**
+  (`locals`, `composites`, `variants`) via an `EnvMark` snapshot — not
+  just `locals`. `truncate` is compile-time `env`-Vec hygiene only
+  (no runtime drops); drops are the job of scope-exit code
+  (`KirOp::Block`) and terminating statements (`KirStmt::Return` via
+  `drop_owned_composites`). `LowerCtx::param_count` became
+  `param_mark: EnvMark` so a `TailCall` rebind resets every list to
+  the post-param state.
+
+- **`ensure_owned_composite`** is the single ownership choke point:
+  given a composite expr + its compiled value, it refcount-clones a
+  `Borrowed` source and passes an `Owned` one through. Used by
+  `KirStmt::Let`, `KirStmt::Return`, the `KirOp::Block` tail, and each
+  `compile_ifchain` arm. `classify_composite_source` now also
+  classifies `KirOp::Block` and `KirOp::IfChain` as `Owned` (correct
+  *because* those sites pre-own their result via this helper).
+
+### AOT pipeline removed (May 2026)
+
+The ahead-of-time Rust-source-emission backend is gone — the JIT
+(cranelift) is now the only fusion backend. Removed: `fusion.rs`'s
+`emit_kernel` / `emit_function_kernel*` (Rust-source emitters),
+`rewrite_program*` / `rewrite_walk` / `RewriteState` / `FusedKernel`
+(the AST-rewriting program pass), `emit_package` / `render_*` /
+`write_package` (cargo-package emission), and `walk_and_fuse` /
+`try_fuse_lambda`; `kernel_ir.rs`'s `kir_to_rust_*` emitter plus the
+`rust_name`/`rust_op`/`rust_src` helper methods and the now-dead
+`rust_name` field on `Input`/`ArrayInput`/`TupleInput`/`StructInput`/
+`VariantInput`/`TailCallSlot`/`SelfArg`; and the `graphix compile`
+CLI subcommand (`handle_compile` + the standalone-binary build
+helpers) from `graphix-shell`. ~3700 lines net. The live fusion path
+is unchanged: `build_kir_kernel` → `KirKernel` → cranelift JIT (or
+`kir_interp`). This clears the deck for M8.4 — maximal sync subgraph
+splitting is implemented exactly once, in `analyze_program`.
+
+### Fusion refactor — Phases 0–3 (May 2026)
+
+Multi-phase refactor aimed at eliminating duplicated paths and
+preparing for nested-composite data shapes. Tests pass 1090/1090
+across the workspace after each phase.
+
+**Phase 0 — Typed AST via `Arc<OnceLock<Type>>` on `Expr`.**
+Added a `typ: Arc<OnceLock<Type>>` field to `Expr` (shared via Arc so
+clones see the same cell; `OnceLock` enforces write-once at the type
+system level — Type's structure is set once during typecheck, TVar
+refinement flows through the inner `Arc<RwLock>` of TVars). The
+`Update` trait reshaped: `typecheck` is now a default method that
+runs `typecheck_inner` and propagates `self.typ()` into
+`self.spec().typ`. Every Update impl renamed via one sed sweep — no
+per-impl discipline needed, the compiler enforces propagation.
+
+**Phase 1a — Single KirNode init chokepoint.** All three KirNode
+constructors (`new`, `with_jit`, `with_async_jit`) now take
+`&mut ExecCtx` and route through a private `build` chokepoint that
+runs both `pre_init_binding_slots` + `pre_init_builtin_slots`
+internally. Previously the lazy-fusion path manually called both and
+the FusedRegion path called only the builtin one — easy to forget,
+and forgetting the builtin one panicked with "fn-arg value isn't a
+LambdaDef" on first DynCall into a fused stdlib builtin. Now
+impossible to skip.
+
+**Phase 1b — Consolidated let-routing.** Three near-duplicate `match
+KirType -> push to ctx.*_inputs` blocks (in `emit_do_as_expr`,
+`emit_bind_stmt`, and parameter-discovery) replaced with one helper
+`register_kir_binding(ctx, name, &KirType)`. Adding a new `KirType`
+variant is now one site instead of three.
+
+**Phase 2 — Widened KirType to support nested composites.**
+`Array(PrimType)` → `Array(Box<KirType>)`; `Tuple(Vec<PrimType>)` →
+`Tuple(Vec<KirType>)`; `Struct(Vec<(ArcStr, PrimType)>)` →
+`Struct(Vec<(ArcStr, KirType)>)`; `Variant(...Vec<PrimType>)` →
+`Variant(...Vec<KirType>)`. The `Input`/`ArrayInput`/`TupleInput`/
+`StructInput`/`VariantInput` slot structs widened similarly. New
+`KirType::as_array_prim()` helper for sites that still need a flat
+`PrimType` (with `as_array_elem()` as the fully-general accessor).
+Runtime layer needed no changes — `ValArray<Value>` was already
+nested-capable. Today's consumers still call `as_prim()?` to bail
+on composite elements where the lowering/JIT machinery doesn't yet
+handle them; the type system now *allows* nested composites and
+follow-up work can lower them.
+
+**Phase 3 — Unified infer with emit.** `infer_body_rtype` no longer
+runs a parallel scope-tracking AST walk. After the self-recursion +
+known-fn short-circuit, it reads the cached type off `body.typ.get()`
+(populated by Phase 0's propagation) and translates via
+`KirType::from_type`. Falls through to `emit_expr` only for
+synthesized Exprs whose `typ` cell is empty (module-kernel synth
+tail, etc.). The Do/Select/ExplicitParens recursion is gone — the
+typed AST means the body's *resulting* type is known without walking
+control structure.
+
+**Phase 4 — Collapsed kernel-build entry points.** The three entry
+points (lambda body, region root, top-level module Do) now route
+through a single unified `build_kernel(fn_name, body, value_inputs,
+fn_inputs, return_type, has_tail, self_info, known, consts)`. The
+slot-list routing (the giant `match RegionInputKind { Prim => ...,
+Array => ..., Tuple => ..., Struct => ..., Variant => ... }` that
+populates `ctx.inputs` / `ctx.*_inputs` / `params.*_params` /
+`tail_call_slots` — previously duplicated in two places) collapsed
+into one `populate_kernel_inputs` function. Adding a new
+`RegionInputKind` variant is now one edit instead of two.
+
+The three callers become thin translation layers:
+- `build_kir_kernel_with_binding_inputs` (lambda): classifies each
+  `lambda.args` entry into either a `RegionInput` (value) or a
+  `FnParam` (HOF arg with `FnSource::Param`); computes `has_tail` +
+  `SelfInfo` + `source_args`; calls `build_kernel`. The two parallel
+  arg walks (~100 lines each, one for source_args, one for
+  tail_call_slots) collapsed to one classify-pass plus a single
+  source_args build.
+- `build_kir_kernel_from_region` (region): trivial pass-through —
+  inputs are already in `&[RegionInput]` shape, no self_info or tail.
+- `build_module_kernel` unchanged at the public API level; calls
+  `build_kir_kernel_from_region` (which delegates to `build_kernel`).
+
+Net: ~800 lines deleted from `fusion.rs` across Phases 0–4.
+
+**Phase 5 — `ctx.fn_types` sidecar deleted.** With Phase 0's typed
+AST in place, the per-`ExprId` `FnType` sidecar was redundant:
+- For an Apply call site, the call-site-specialized FnType lives on
+  `a.function.typ.get()` (the function expression's typ cell, set
+  by `Update::typecheck` propagation). `try_register_builtin_call`,
+  `apply_site_effect`, and `try_build_lazy` (via the new
+  `apply_site_hint: Arc<OnceLock<Type>>` parameter) all read from
+  there now.
+- For a lambda's spec FnType, `FusionLazyEntry` gained a
+  `spec_typ: Arc<OnceLock<Type>>` field that shares the bind's
+  source `Expr.typ` cell. `try_build_lazy` reads from there instead
+  of `ctx.fn_types[spec_id]`.
+- The two producers (`node/lambda.rs` and `node/callsite.rs`'s
+  `ctx.fn_types.insert(...)` calls) are gone.
+- The field, its `IntMap` allocation in `ExecCtx::new`, and the
+  `CheckWithTypes` / `check_with_types` public API (originally for
+  the removed `graphix compile` subcommand, no in-workspace callers
+  remained) are all deleted.
+
+`discover_callee_names` now yields `(ArcStr, Arc<OnceLock<Type>>)`
+pairs instead of `(ArcStr, ExprId)` — the cell *is* the lookup
+result, no sidecar indirection.
+
+**Phase 6 — composite-element accessor lowering.** Lifted the
+`as_prim()?` bail in `emit_tuple_ref` / `emit_struct_ref` /
+`emit_array_ref` so composite slot types can be read. Widened
+`KirOp::TupleGet.elem_typ` and `KirOp::StructGet.elem_typ` from
+`PrimType` to `KirType`; `KirOp::ArrayGet` reads its element type
+straight off `e.typ` (no separate field). The interpreter routes
+composite-typed accesses through a new `extract_composite_or_scalar`
+helper — primitive slots use the existing fast scalar extraction;
+composite slots clone the slot `Value` into the matching
+`EvalResult` variant. The JIT routes any kernel containing a
+composite-element accessor through the interpreter via a new
+`kernel_contains_composite_element_op` guard (same pattern as
+`kernel_contains_string`). End-to-end test: `let s = {nested: (1,
+2), flag: true}; let pair = s.nested; let first = pair.0;` works
+identically under `--no-fusion`, `--whole-graph`, and lazy modes.
+
+Producer ops (`TupleNew` / `StructNew` / `VariantNew`) still bail on
+composite fields — same pattern but more surgery (the producer
+KirOps' `elem_types: Vec<PrimType>` would need widening too, plus
+interp/JIT side updates). Follow-up.
+
+**Remaining refactor work (tracked as tasks):**
+- Producer-side composite-element support (TupleNew/StructNew/
+  VariantNew accepting composite fields).
+- M8.4(g): flip the switch + delete lazy path. Phase 4's unification
+  makes this a much smaller delta.

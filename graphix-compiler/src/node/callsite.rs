@@ -413,7 +413,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self.spec
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck(ctx))?;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
@@ -424,13 +424,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let ftype = ftype.reset_tvars();
                 ftype.alias_tvars(&mut LPooled::take());
                 self.ftype = Some(ftype.clone());
-                // Publish the callee's FnType under this Apply's
-                // source ExprId. The Arc is shared with the ftype held
-                // on self.ftype — TVars resolve in-place, so later
-                // readers see the unified types. The fusion pass uses
-                // this to get the exact callback signature at each
-                // call site (replacing its hand-maintained HOF table).
-                ctx.fn_types.insert(self.spec.id, ftype.clone());
+                // (Previously: published this Apply's call-site
+                // FnType under `ctx.fn_types[self.spec.id]`. After
+                // Phase 5, the fusion pass reads it off the
+                // function expression's `typ` cell — set by
+                // trait-default Update propagation — instead. The
+                // Apply's typecheck propagation handles populating
+                // the function expr's cell as part of recursing
+                // into children.)
                 let ftype = self.ftype.as_ref().unwrap();
                 if ftype.args.len() < self.args.len() && ftype.vargs.is_none() {
                     bail!(

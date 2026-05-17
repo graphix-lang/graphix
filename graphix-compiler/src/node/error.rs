@@ -121,7 +121,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
         self.handler.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.nodes.iter_mut() {
             wrap!(n, n.typecheck(ctx))?
         }
@@ -239,7 +239,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         fn fix_echain_typ<R: Rt, E: UserEvent>(
             ctx: &ExecCtx<R, E>,
             etyp: &Type,
@@ -364,7 +364,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck(ctx))?;
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {

@@ -524,8 +524,22 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// delete the node and it's children from the specified context
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
 
-    /// type check the node and it's children
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+    /// type check the node and it's children. The default impl runs
+    /// the node-specific `typecheck_inner` and, on success, propagates
+    /// the resolved `typ()` into the source `Expr`'s `typ` cell — so
+    /// after a successful typecheck pass every Expr in the program
+    /// reports its resolved Type via `Expr::typ.get()`. Don't override
+    /// unless you're sure you want to skip propagation (which is
+    /// almost certainly wrong — fusion and other AST consumers depend
+    /// on this).
+    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.typecheck_inner(ctx)?;
+        let _ = self.spec().typ.set(self.typ().clone());
+        Ok(())
+    }
+
+    /// node-specific typecheck logic — see [`Self::typecheck`].
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
     /// return the node type
     fn typ(&self) -> &Type;
@@ -924,14 +938,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// time it's invoked, recording the scope it was called with.
     /// IDE tooling reads this to answer `cursor → scope` queries.
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// Resolved function types keyed by the ExprId of the Lambda /
-    /// Apply site they describe. Populated by Lambda::compile (source
-    /// lambdas) and CallSite::typecheck (function being applied). This
-    /// is the type-map graphix-compile's fusion pass reads from to
-    /// replace its ad-hoc type heuristics with real typechecker-
-    /// derived types. Only populated by code that cares — nodes that
-    /// don't write entries just leave it alone.
-    pub fn_types: IntMap<crate::expr::ExprId, crate::typ::FnType>,
     /// Side channel for fusion's self-recursion detection: when
     /// `Bind::compile` descends into a `let X = lambda` form, it
     /// stashes `Some(X)` here before recursing, restoring the prior
@@ -993,11 +999,23 @@ pub struct FusionConfig {
     pub fusion_disabled: bool,
     /// JIT mode for fused kernels. See [`JitMode`].
     pub jit_mode: JitMode,
+    /// Run the whole-graph fusion analyzer (M8.4):
+    /// `fusion::analyze_program` carves each top-level expression
+    /// into maximal sync subgraphs and splices a `FusedRegion`
+    /// runtime node in place of each region's compiled tree. When
+    /// off (the default until M8.4 step g flips it), compilation
+    /// behaves exactly as it did before — the existing per-lambda
+    /// lazy fusion path is the only fusion mechanism.
+    pub whole_graph: bool,
 }
 
 impl Default for FusionConfig {
     fn default() -> Self {
-        Self { fusion_disabled: false, jit_mode: JitMode::Off }
+        Self {
+            fusion_disabled: false,
+            jit_mode: JitMode::Off,
+            whole_graph: false,
+        }
     }
 }
 
@@ -1007,11 +1025,11 @@ impl Default for FusionConfig {
 /// `X(...)`. The cache builds at most once per entry, on demand.
 ///
 /// `spec_id` is the `ExprId` of the wrapping `Expr` (the bind's
-/// value) — same key `Lambda::compile` uses when it inserts into
-/// `ctx.fn_types`. Lazy resolution looks up the lambda's resolved
-/// `FnType` there at build time, so unannotated callees (whose argspec
-/// `constraint` fields are all `None`) fuse correctly using the
-/// types the typechecker inferred from their call sites.
+/// value). `spec_typ` shares that Expr's `typ` cell so lazy
+/// resolution reads the lambda's resolved `FnType` directly off the
+/// typed AST — unannotated callees (whose argspec `constraint`
+/// fields are all `None`) fuse correctly using the types the
+/// typechecker inferred from their call sites.
 ///
 /// `effect` is the lambda's intrinsic sync/async classification.
 /// Populated by the M6 `fusion::infer_effects` fixed-point pass that
@@ -1024,6 +1042,12 @@ impl Default for FusionConfig {
 pub struct FusionLazyEntry {
     pub fn_name: ArcStr,
     pub spec_id: crate::expr::ExprId,
+    /// The lambda's source-spec typ cell — shared with the source
+    /// `Expr.typ`, so TVar refinement after the entry is registered
+    /// is visible through this Arc. `try_build_lazy` reads this as
+    /// its fallback FnType source when no call-site hint is given.
+    /// Replaces the previously-used `ctx.fn_types[spec_id]` sidecar.
+    pub spec_typ: triomphe::Arc<std::sync::OnceLock<crate::typ::Type>>,
     pub lambda: triomphe::Arc<expr::LambdaExpr>,
     pub cache: parking_lot::Mutex<FusionLazyCache>,
     pub effect: parking_lot::Mutex<EffectKind>,
@@ -1082,7 +1106,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
-            fn_types: IntMap::default(),
             current_binding_name: None,
             fusion_known_consts: std::collections::BTreeMap::new(),
             fusion_lambdas: std::collections::BTreeMap::new(),

@@ -40,8 +40,9 @@ async fn eval_under(
     code: &str,
     fusion_disabled: bool,
     jit: JitMode,
+    whole_graph: bool,
 ) -> Result<Value> {
-    let cfg = FusionConfig { fusion_disabled, jit_mode: jit };
+    let cfg = FusionConfig { fusion_disabled, jit_mode: jit, whole_graph };
     let (v, ctx) = graphix_package_core::testing::eval_with_setup(
         code,
         &crate::TEST_REGISTER,
@@ -54,16 +55,32 @@ async fn eval_under(
     Ok(v)
 }
 
-/// Run `code` under Mode A / B / C and assert all three produce the
-/// same Value. Returns the Value (Mode A's, which is ground truth)
-/// on success. `label` shows up in failure messages.
+/// Run `code` under Mode A / B / C / D and assert all four produce
+/// the same Value. Returns Mode A's value (ground truth). `label`
+/// shows up in failure messages.
+///
+/// Modes:
+/// - **A** (`fusion_disabled: true`, no JIT, no whole-graph): every
+///   lambda runs as `GXLambda`. Ground truth.
+/// - **B** (lazy fusion, no JIT, no whole-graph): fused kernels
+///   dispatch through `kir_interp`.
+/// - **C** (lazy fusion, sync JIT, no whole-graph): fused kernels
+///   dispatch through cranelift-emitted native code.
+/// - **D** (lazy fusion, sync JIT, whole-graph on): M8.4
+///   `analyze_program` runs and any region with a buildable kernel
+///   gets a `FusedRegion` node spliced in. Mode D should be a
+///   strict superset of Mode C's fusion — anything that fused in C
+///   should produce the same result in D, plus regions that the
+///   per-lambda lazy path couldn't see (cross-lambda chains).
 async fn assert_modes_agree(label: &str, code: &str) -> Result<Value> {
-    let a = eval_under(code, true, JitMode::Off).await
+    let a = eval_under(code, true, JitMode::Off, false).await
         .map_err(|e| anyhow!("[{label}] mode A (no fusion) failed: {e}"))?;
-    let b = eval_under(code, false, JitMode::Off).await
+    let b = eval_under(code, false, JitMode::Off, false).await
         .map_err(|e| anyhow!("[{label}] mode B (fusion, no JIT) failed: {e}"))?;
-    let c = eval_under(code, false, JitMode::Sync).await
+    let c = eval_under(code, false, JitMode::Sync, false).await
         .map_err(|e| anyhow!("[{label}] mode C (fusion + JIT) failed: {e}"))?;
+    let d = eval_under(code, false, JitMode::Sync, true).await
+        .map_err(|e| anyhow!("[{label}] mode D (whole-graph) failed: {e}"))?;
     if a != b {
         return Err(anyhow!(
             "[{label}] mode A != mode B:\n  A: {a:?}\n  B: {b:?}"
@@ -72,6 +89,11 @@ async fn assert_modes_agree(label: &str, code: &str) -> Result<Value> {
     if b != c {
         return Err(anyhow!(
             "[{label}] mode B != mode C:\n  B: {b:?}\n  C: {c:?}"
+        ));
+    }
+    if c != d {
+        return Err(anyhow!(
+            "[{label}] mode C != mode D:\n  C: {c:?}\n  D: {d:?}"
         ));
     }
     Ok(a)
@@ -263,6 +285,42 @@ async fn cross_mode_producer_ops() -> Result<()> {
     // [0..10] → keep evens [0,2,4,6,8] → count 5
     assert_eq!(v, Value::I64(5));
 
+    // HOF param dispatch through JIT (scalar return).
+    // `compose(f, x)` takes a fn-typed param `f` and calls it; this
+    // produces a `KirOp::DynCall { fn_index, ret=Prim(I64) }` site
+    // in the JIT'd body. `square` is passed as the HOF arg, so
+    // FnSource::Param.
+    let v = assert_modes_agree(
+        "dyncall_scalar_hof_param",
+        "{
+            let compose: fn(f: fn(x: i64) -> i64, x: i64) -> i64 =
+                |f: fn(x: i64) -> i64, x: i64| -> i64 f(x) + 1;
+            let square: fn(x: i64) -> i64 = |x: i64| -> i64 x * x;
+            compose(square, 5)
+        }",
+    ).await?;
+    // square(5) + 1 = 26
+    assert_eq!(v, Value::I64(26));
+
+    // HOF as Binding source: `helper` is non-fusable (uses an
+    // array literal that fusion can't lower), so the outer kernel
+    // resolves it via FnSource::Binding and dispatches through
+    // graphix_dyncall.
+    let v = assert_modes_agree(
+        "dyncall_scalar_hof_binding",
+        "{
+            use array;
+            let helper: fn(x: i64) -> i64 =
+                |x: i64| -> i64
+                    array::fold([x, x], 0, |a: i64, b: i64| a + b * b);
+            let outer: fn(x: i64) -> i64 =
+                |x: i64| -> i64 helper(x) + 1;
+            outer(5)
+        }",
+    ).await?;
+    // helper(5) = 5*5 + 5*5 = 50; outer = 50 + 1 = 51
+    assert_eq!(v, Value::I64(51));
+
     // TupleNew + TupleGet round-trip via a tail-recursive kernel
     // that builds a fresh tuple each iteration.
     let v = assert_modes_agree(
@@ -345,6 +403,218 @@ async fn cross_mode_producer_ops() -> Result<()> {
         }",
     ).await?;
     assert_eq!(v, Value::I64(255));
+
+    // Composite-return DynCall: HOF param `g` returns a tuple. The
+    // `g(x)` site is a `KirOp::DynCall { ret=Tuple(..) }` — the JIT
+    // marshals the result as an owned `*mut ValArray`, binds it as a
+    // composite local, then reads it via TupleGet.
+    let v = assert_modes_agree(
+        "dyncall_tuple_return_hof",
+        "{
+            let mk: fn(n: i64) -> (i64, i64) =
+                |n: i64| -> (i64, i64) (n, n * 2);
+            let sp: fn(g: fn(n: i64) -> (i64, i64), x: i64) -> i64 =
+                |g: fn(n: i64) -> (i64, i64), x: i64| -> i64 {
+                    let p = g(x);
+                    p.0 + p.1
+                };
+            sp(mk, 10)
+        }",
+    ).await?;
+    // mk(10) = (10, 20); p.0 + p.1 = 30
+    assert_eq!(v, Value::I64(30));
+
+    // Composite-return DynCall: HOF param returns a struct, consumed
+    // via StructGet (the kv-pair layout).
+    let v = assert_modes_agree(
+        "dyncall_struct_return_hof",
+        "{
+            let mk: fn(a: i64) -> {x: i64, y: i64} =
+                |a: i64| -> {x: i64, y: i64} {x: a, y: a + 1};
+            let rd: fn(g: fn(a: i64) -> {x: i64, y: i64}, n: i64) -> i64 =
+                |g: fn(a: i64) -> {x: i64, y: i64}, n: i64| -> i64 {
+                    let s = g(n);
+                    s.x * 100 + s.y
+                };
+            rd(mk, 7)
+        }",
+    ).await?;
+    // mk(7) = {x:7, y:8}; 7*100 + 8 = 708
+    assert_eq!(v, Value::I64(708));
+
+    // Composite-return DynCall: HOF param returns a variant. The
+    // `f(x)` site is `KirOp::DynCall { ret=Variant(..) }` — the JIT
+    // marshals the result as an owned `*mut Value`, binds it as a
+    // variant local, then matches it.
+    let v = assert_modes_agree(
+        "dyncall_variant_return_hof",
+        "{
+            let wrap: fn(n: i64) -> [`Pos(i64), `Neg(i64)] =
+                |n: i64| -> [`Pos(i64), `Neg(i64)]
+                    select n > 0 {
+                        true => `Pos(n),
+                        false => `Neg(0 - n)
+                    };
+            let ah: fn(
+                f: fn(n: i64) -> [`Pos(i64), `Neg(i64)],
+                x: i64
+            ) -> i64 =
+                |f: fn(n: i64) -> [`Pos(i64), `Neg(i64)], x: i64| -> i64 {
+                    let v = f(x);
+                    select v {
+                        `Pos(a) => a,
+                        `Neg(a) => 0 - a
+                    }
+                };
+            ah(wrap, -5)
+        }",
+    ).await?;
+    // wrap(-5) = `Neg(5); select → 0 - 5 = -5
+    assert_eq!(v, Value::I64(-5));
+
+    // Composite-ARG DynCall: HOF param `f` takes a tuple. The tuple
+    // is bound to a local first (`t`), so the DynCall arg push is the
+    // borrow-mode path — `t` stays owned and is dropped at function
+    // exit.
+    let v = assert_modes_agree(
+        "dyncall_tuple_arg_hof",
+        "{
+            let sum: fn(p: (i64, i64)) -> i64 =
+                |p: (i64, i64)| -> i64 p.0 + p.1;
+            let app: fn(
+                f: fn(p: (i64, i64)) -> i64,
+                a: i64,
+                b: i64
+            ) -> i64 =
+                |f: fn(p: (i64, i64)) -> i64, a: i64, b: i64| -> i64 {
+                    let t = (a, b);
+                    f(t) * 2
+                };
+            app(sum, 3, 4)
+        }",
+    ).await?;
+    // sum((3, 4)) = 7; 7 * 2 = 14
+    assert_eq!(v, Value::I64(14));
+
+    // Composite-ARG DynCall, owned source: the tuple is constructed
+    // inline at the call site (`f((a, b))`), so the DynCall arg is a
+    // fresh owned `TupleNew` result — the JIT must move it into the
+    // args buf rather than refcount-bump (which would leak the
+    // original).
+    let v = assert_modes_agree(
+        "dyncall_inline_tuple_arg_hof",
+        "{
+            let sum: fn(p: (i64, i64)) -> i64 =
+                |p: (i64, i64)| -> i64 p.0 + p.1;
+            let app: fn(
+                f: fn(p: (i64, i64)) -> i64,
+                a: i64,
+                b: i64
+            ) -> i64 =
+                |f: fn(p: (i64, i64)) -> i64, a: i64, b: i64| -> i64
+                    f((a, b)) * 2;
+            app(sum, 5, 6)
+        }",
+    ).await?;
+    // sum((5, 6)) = 11; 11 * 2 = 22
+    assert_eq!(v, Value::I64(22));
+
+    // Composite let inside a nested block EXPRESSION (`KirOp::Block`,
+    // not statement-level lets). The JIT must route the tuple let
+    // through `bind_composite`, scope it to the block, and drop it on
+    // block exit — the old code `prim_of`-panicked on it.
+    let v = assert_modes_agree(
+        "block_expr_composite_let",
+        "{
+            let f: fn(a: i64, b: i64) -> i64 =
+                |a: i64, b: i64| -> i64 {
+                    let r = { let t = (a, b); t.0 + t.1 };
+                    r * 2
+                };
+            f(3, 4)
+        }",
+    ).await?;
+    // { let t = (3,4); t.0 + t.1 } = 7; 7 * 2 = 14
+    assert_eq!(v, Value::I64(14));
+
+    // Nested block EXPRESSION whose tail is itself a composite — the
+    // block must `ensure_owned_composite` the tail so the value
+    // outlives the block-scoped local it aliases.
+    let v = assert_modes_agree(
+        "block_expr_composite_tail",
+        "{
+            let g: fn(a: i64) -> i64 = |a: i64| -> i64 {
+                let p = { let inner = (a, a + 1); inner };
+                p.0 * 10 + p.1
+            };
+            g(5)
+        }",
+    ).await?;
+    // inner = (5, 6); p.0*10 + p.1 = 56
+    assert_eq!(v, Value::I64(56));
+
+    // `select` at expression position with tuple arms lowers to a
+    // composite-typed `KirOp::IfChain`. The JIT used to `prim_of`-
+    // panic on the merge-block param type; it now widens to a pointer
+    // and runs each arm through `ensure_owned_composite`.
+    let v = assert_modes_agree(
+        "ifchain_expr_composite_tuple",
+        "{
+            let h: fn(n: i64) -> i64 = |n: i64| -> i64 {
+                let pick: (i64, i64) =
+                    select n > 0 {
+                        true => (n, n * 2),
+                        false => (n - n, n)
+                    };
+                pick.0 + pick.1
+            };
+            h(7) + h(0 - 3)
+        }",
+    ).await?;
+    // h(7): (7,14) → 21; h(-3): (0,-3) → -3; total 18
+    assert_eq!(v, Value::I64(18));
+
+    // Composite `IfChain` whose arms disagree on ownership: one arm is
+    // a `Local` (Borrowed — aliases an outer composite param), the
+    // other an inline `TupleNew` (Owned). Each arm must be made owned
+    // before the merge so the merged pointer has a single, consistent
+    // owner.
+    let v = assert_modes_agree(
+        "ifchain_expr_composite_mixed_ownership",
+        "{
+            let j: fn(base: (i64, i64), n: i64) -> i64 =
+                |base: (i64, i64), n: i64| -> i64 {
+                    let chosen: (i64, i64) =
+                        select n > 0 {
+                            true => base,
+                            false => (n, n)
+                        };
+                    chosen.0 + chosen.1
+                };
+            j((10, 20), 1) + j((10, 20), 0 - 1)
+        }",
+    ).await?;
+    // j((10,20),1): base → 30; j((10,20),-1): (-1,-1) → -2; total 28
+    assert_eq!(v, Value::I64(28));
+
+    // Variant `select` at expression position → variant-typed
+    // `KirOp::IfChain`.
+    let v = assert_modes_agree(
+        "ifchain_expr_variant",
+        "{
+            let k: fn(n: i64) -> i64 = |n: i64| -> i64 {
+                let v: [`Pos(i64), `Neg(i64)] =
+                    select n > 0 {
+                        true => `Pos(n),
+                        false => `Neg(0 - n)
+                    };
+                select v { `Pos(a) => a, `Neg(a) => 0 - a }
+            };
+            k(8) + k(0 - 8)
+        }",
+    ).await?;
+    // k(8) = 8; k(-8) = -8; total 0
+    assert_eq!(v, Value::I64(0));
 
     Ok(())
 }

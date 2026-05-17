@@ -1,19 +1,15 @@
 //! Typed kernel intermediate representation.
 //!
 //! This is the shared form between the fusion analysis (which decides
-//! what's fusable and produces a KIR tree) and the backends that lower
-//! KIR to executable code:
+//! what's fusable and produces a KIR tree) and the JIT backend that
+//! lowers KIR to executable code:
 //!
-//! - `kir_to_rust_*` — produces Rust source for the AOT path
-//!   (`graphix compile`). The emitted source goes into a generated
-//!   `graphix-package-<name>` crate and is compiled by rustc.
-//!
-//! - `kir_to_clif` (in `crate::jit`, future) — produces Cranelift IR
+//! - `kir_to_clif` (in `crate::kir_jit`) — produces Cranelift IR
 //!   for the JIT path. The compiled function pointer lives inside a
 //!   `CraneliftNode<R, E>` wrapped around the would-be interpreter
 //!   apply, with lazy compile + atomic swap.
 //!
-//! Both backends share the fusion-side analysis. Anything KIR can't
+//! The JIT shares the fusion-side analysis. Anything KIR can't
 //! represent is by definition not fusable; the fusion pass falls back
 //! to the interpreter for that subtree.
 //!
@@ -40,7 +36,6 @@
 use crate::{typ::Type, BindId};
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
-use std::fmt::Write;
 
 // ─── Primitive types ─────────────────────────────────────────────
 
@@ -64,40 +59,6 @@ pub enum PrimType {
 }
 
 impl PrimType {
-    /// Name of the corresponding Rust primitive.
-    pub fn rust_name(self) -> &'static str {
-        match self {
-            PrimType::I8 => "i8",
-            PrimType::I16 => "i16",
-            PrimType::I32 => "i32",
-            PrimType::I64 => "i64",
-            PrimType::U8 => "u8",
-            PrimType::U16 => "u16",
-            PrimType::U32 => "u32",
-            PrimType::U64 => "u64",
-            PrimType::F32 => "f32",
-            PrimType::F64 => "f64",
-            PrimType::Bool => "bool",
-        }
-    }
-
-    /// Name of the `Value` variant that carries this primitive.
-    pub fn value_variant(self) -> &'static str {
-        match self {
-            PrimType::I8 => "I8",
-            PrimType::I16 => "I16",
-            PrimType::I32 => "I32",
-            PrimType::I64 => "I64",
-            PrimType::U8 => "U8",
-            PrimType::U16 => "U16",
-            PrimType::U32 => "U32",
-            PrimType::U64 => "U64",
-            PrimType::F32 => "F32",
-            PrimType::F64 => "F64",
-            PrimType::Bool => "Bool",
-        }
-    }
-
     pub fn from_typ(t: Typ) -> Option<PrimType> {
         Some(match t {
             Typ::I8 => PrimType::I8,
@@ -197,21 +158,51 @@ impl PrimType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KirType {
     Prim(PrimType),
-    Array(PrimType),
-    /// `(T0, T1, T2, ...)` — order matters; per-slot types in source order.
-    Tuple(Vec<PrimType>),
+    /// `Array<T>` — element type is any `KirType`, including nested
+    /// composites (`Array<Tuple<i64, string>>`, `Array<Array<i64>>`,
+    /// etc.). The runtime stores arrays as `ValArray<Value>` and
+    /// `Value` is already nested-capable, so no runtime layout change
+    /// is needed; only the static KIR type needs to track nesting.
+    Array(Box<KirType>),
+    /// `(T0, T1, T2, ...)` — order matters; per-slot types in source
+    /// order. Slots can be any `KirType` (nested tuples / arrays /
+    /// structs / variants allowed).
+    Tuple(Vec<KirType>),
     /// `{field0: T0, field1: T1, ...}` — sorted alphabetically by
-    /// field name (matching graphix's canonical struct layout).
-    Struct(Vec<(ArcStr, PrimType)>),
+    /// field name (matching graphix's canonical struct layout). Field
+    /// types can be any `KirType`.
+    Struct(Vec<(ArcStr, KirType)>),
     /// `` `Foo(T0, T1) | `Bar(U0) `` — tagged union of cases. Each
     /// case carries its tag (an `ArcStr`) and zero-or-more payload
-    /// primitive types. At runtime, a variant value with payloads
-    /// is `Value::Array([Value::String("tag"), payload0, ...])`;
-    /// nullary cases (no payloads) are `Value::String("tag")` and
-    /// fall outside this fusion path (the v0 emitter rejects them).
-    /// The cases list is the set of all cases that can flow into
-    /// this position — typecheck-derived.
-    Variant(Vec<(ArcStr, Vec<PrimType>)>),
+    /// types (any `KirType`). At runtime, a variant value with
+    /// payloads is `Value::Array([Value::String("tag"), payload0,
+    /// ...])`; nullary cases (no payloads) are
+    /// `Value::String("tag")` and fall outside this fusion path (the
+    /// v0 emitter rejects them). The cases list is the set of all
+    /// cases that can flow into this position — typecheck-derived.
+    Variant(Vec<(ArcStr, Vec<KirType>)>),
+    /// "No useful value" — the return shape of side-effect-only
+    /// builtins like `println`, `dbg`, `log`. Graphix surfaces it as
+    /// `_` in val sigs, which the parser resolves to `Type::Bottom`.
+    /// Kernels never *produce* a Unit-typed value that downstream
+    /// code reads: `KirOp::DynCall { return_type: Unit }` discards
+    /// the runtime `Value` returned by `Apply::update`. `Unit` is
+    /// a **leaf type** — composing it (Array<Unit>, Tuple<[Unit,
+    /// …]>, …) is rejected by the constructors. Adding it lets
+    /// `extract_fn_signature` accept Bottom-returning callees,
+    /// which is what `discover_builtin_fn_inputs` needs to register
+    /// sync side-effect builtins as `FnSource::Builtin` slots.
+    Unit,
+    /// `ArcStr`-backed string. Lives outside [`PrimType`] because
+    /// strings don't fit in a JIT register — the interpreter holds
+    /// them via [`crate::kir_interp::EvalResult::String`], and JIT
+    /// codegen falls back to the interpreter for kernels that touch
+    /// strings (gated by `kernel_contains_string`). Produced by
+    /// [`KirOp::ConstStr`] and [`KirOp::Concat`]; consumed by
+    /// `KirOp::DynCall` arg-marshalling to push a `Value::String`.
+    /// Like `Unit`, treated as a **leaf type** — `Array<String>`,
+    /// `Tuple<[String, _]>`, etc. aren't expressible at this layer.
+    String,
 }
 
 impl KirType {
@@ -221,9 +212,11 @@ impl KirType {
         KirType::Prim(p)
     }
 
-    /// Convenience for `KirType::Array(_)`.
+    /// Convenience for `KirType::Array(_)` with a primitive element.
+    /// For composite elements construct directly via
+    /// `KirType::Array(Box::new(inner))`.
     pub fn array(elem: PrimType) -> Self {
-        KirType::Array(elem)
+        KirType::Array(Box::new(KirType::Prim(elem)))
     }
 
     /// Returns the inner `PrimType` if this is a scalar; `None`
@@ -236,17 +229,26 @@ impl KirType {
         }
     }
 
-    /// Returns the element `PrimType` if this is an array; `None` for
+    /// Returns the element type if this is an array; `None` for
     /// scalars / tuples / structs.
-    pub fn as_array_elem(&self) -> Option<PrimType> {
+    pub fn as_array_elem(&self) -> Option<&KirType> {
         match self {
-            KirType::Array(p) => Some(*p),
+            KirType::Array(t) => Some(t),
             _ => None,
         }
     }
 
+    /// Backwards-compatible helper: returns the element `PrimType` if
+    /// this is `Array<Prim(P)>`; `None` if the element is composite or
+    /// the value isn't an array. Use [`Self::as_array_elem`] for the
+    /// fully-general accessor; this exists for sites that genuinely
+    /// only handle the scalar case (e.g. legacy JIT helper selection).
+    pub fn as_array_prim(&self) -> Option<PrimType> {
+        self.as_array_elem().and_then(KirType::as_prim)
+    }
+
     /// Returns the per-slot types if this is a tuple; `None` otherwise.
-    pub fn as_tuple_elems(&self) -> Option<&[PrimType]> {
+    pub fn as_tuple_elems(&self) -> Option<&[KirType]> {
         match self {
             KirType::Tuple(es) => Some(es),
             _ => None,
@@ -255,7 +257,7 @@ impl KirType {
 
     /// Returns the (sorted) field list if this is a struct; `None`
     /// otherwise.
-    pub fn as_struct_fields(&self) -> Option<&[(ArcStr, PrimType)]> {
+    pub fn as_struct_fields(&self) -> Option<&[(ArcStr, KirType)]> {
         match self {
             KirType::Struct(fs) => Some(fs),
             _ => None,
@@ -263,31 +265,10 @@ impl KirType {
     }
 
     /// Returns the case list if this is a variant; `None` otherwise.
-    pub fn as_variant_cases(&self) -> Option<&[(ArcStr, Vec<PrimType>)]> {
+    pub fn as_variant_cases(&self) -> Option<&[(ArcStr, Vec<KirType>)]> {
         match self {
             KirType::Variant(cs) => Some(cs),
             _ => None,
-        }
-    }
-
-    /// Rust source for this type — used by the AOT emitter when
-    /// rendering parameter and return types. Tuple and struct values
-    /// share the array runtime layout (all `ValArray` underneath), so
-    /// they all render the same way at the kernel boundary.
-    pub fn rust_name(&self) -> std::borrow::Cow<'static, str> {
-        match self {
-            KirType::Prim(p) => p.rust_name().into(),
-            // Array, tuple, struct: always-`Value::Array(ValArray)`
-            // at runtime — kernel boundary takes the `ValArray`
-            // directly, skipping the outer Value wrapper.
-            KirType::Array(_)
-            | KirType::Tuple(_)
-            | KirType::Struct(_) => "::netidx_value::ValArray".into(),
-            // Variant: either `Value::String(tag)` (nullary) or
-            // `Value::Array([tag, ...])` (with-payload). Kernel
-            // boundary takes the full `Value` so VariantTagEq /
-            // VariantPayload can dispatch on the discriminant.
-            KirType::Variant(_) => "::netidx_value::Value".into(),
         }
     }
 
@@ -301,19 +282,20 @@ impl KirType {
     /// non-fused execution.
     pub fn from_type(t: &Type) -> Option<KirType> {
         // Helper: pull out a single `Type::Variant(tag, payloads)`
-        // case where every payload is a primitive. Nullary cases
-        // (empty payloads) are accepted — they flow at runtime as
-        // `Value::String(tag)`, distinct from `Value::Array([tag,
-        // ...payloads])` for the with-payload case; the kernel
-        // boundary takes `&Value` and dispatches at access sites.
+        // case where every payload converts to a KirType (now
+        // possibly composite). Nullary cases (empty payloads) are
+        // accepted — they flow at runtime as `Value::String(tag)`,
+        // distinct from `Value::Array([tag, ...payloads])` for the
+        // with-payload case; the kernel boundary takes `&Value` and
+        // dispatches at access sites.
         fn variant_case(
             t: &Type,
-        ) -> Option<(ArcStr, Vec<PrimType>)> {
+        ) -> Option<(ArcStr, Vec<KirType>)> {
             t.with_deref(|resolved| match resolved? {
                 Type::Variant(tag, ts) => {
-                    let payloads: Option<Vec<PrimType>> = ts
+                    let payloads: Option<Vec<KirType>> = ts
                         .iter()
-                        .map(|p| PrimType::from_type(p))
+                        .map(|p| KirType::from_type(p))
                         .collect();
                     payloads.map(|p| (tag.clone(), p))
                 }
@@ -321,11 +303,26 @@ impl KirType {
             })
         }
         t.with_deref(|resolved| match resolved? {
-            Type::Array(inner) => PrimType::from_type(inner).map(KirType::Array),
+            // `_` (Bottom) is the return type of side-effect-only
+            // builtins. Lower it to `KirType::Unit` so dispatch can
+            // register them — the value is never consumed downstream.
+            Type::Bottom => Some(KirType::Unit),
+            // String primitives lower to `KirType::String` (lives
+            // outside `PrimType` because ArcStr doesn't fit a
+            // register).
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::String)
+                    && p.iter().count() == 1 =>
+            {
+                Some(KirType::String)
+            }
+            Type::Array(inner) => {
+                KirType::from_type(inner).map(|t| KirType::Array(Box::new(t)))
+            }
             Type::Tuple(elems) => {
-                let elems: Option<Vec<PrimType>> = elems
+                let elems: Option<Vec<KirType>> = elems
                     .iter()
-                    .map(|e| PrimType::from_type(e))
+                    .map(|e| KirType::from_type(e))
                     .collect();
                 elems.map(KirType::Tuple)
             }
@@ -339,16 +336,16 @@ impl KirType {
                 // shape; reject Sets with non-variant members
                 // (those are general unions — different fusion
                 // story).
-                let cases: Option<Vec<(ArcStr, Vec<PrimType>)>> = members
+                let cases: Option<Vec<(ArcStr, Vec<KirType>)>> = members
                     .iter()
                     .map(|m| variant_case(m))
                     .collect();
                 cases.map(KirType::Variant)
             }
             Type::Struct(fields) => {
-                let fs: Option<Vec<(ArcStr, PrimType)>> = fields
+                let fs: Option<Vec<(ArcStr, KirType)>> = fields
                     .iter()
-                    .map(|(n, t)| PrimType::from_type(t).map(|p| (n.clone(), p)))
+                    .map(|(n, t)| KirType::from_type(t).map(|p| (n.clone(), p)))
                     .collect();
                 fs.map(KirType::Struct)
             }
@@ -374,18 +371,6 @@ pub enum BinOp {
     Mod,
 }
 
-impl BinOp {
-    pub fn rust_op(self) -> &'static str {
-        match self {
-            BinOp::Add => "+",
-            BinOp::Sub => "-",
-            BinOp::Mul => "*",
-            BinOp::Div => "/",
-            BinOp::Mod => "%",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpOp {
     Eq,
@@ -396,32 +381,10 @@ pub enum CmpOp {
     Gte,
 }
 
-impl CmpOp {
-    pub fn rust_op(self) -> &'static str {
-        match self {
-            CmpOp::Eq => "==",
-            CmpOp::Ne => "!=",
-            CmpOp::Lt => "<",
-            CmpOp::Gt => ">",
-            CmpOp::Lte => "<=",
-            CmpOp::Gte => ">=",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BoolOp {
     And,
     Or,
-}
-
-impl BoolOp {
-    pub fn rust_op(self) -> &'static str {
-        match self {
-            BoolOp::And => "&&",
-            BoolOp::Or => "||",
-        }
-    }
 }
 
 // ─── Constants ───────────────────────────────────────────────────
@@ -480,96 +443,64 @@ impl ConstVal {
         })
     }
 
-    /// Render as a Rust source literal — `42i64`, `3.14f64`, `true`.
-    pub fn rust_src(&self) -> String {
-        match self {
-            ConstVal::I8(x) => format!("{x}i8"),
-            ConstVal::I16(x) => format!("{x}i16"),
-            ConstVal::I32(x) => format!("{x}i32"),
-            ConstVal::I64(x) => format!("{x}i64"),
-            ConstVal::U8(x) => format!("{x}u8"),
-            ConstVal::U16(x) => format!("{x}u16"),
-            ConstVal::U32(x) => format!("{x}u32"),
-            ConstVal::U64(x) => format!("{x}u64"),
-            ConstVal::F32(x) => format!("{x}f32"),
-            ConstVal::F64(x) => format!("{x}f64"),
-            ConstVal::Bool(b) => format!("{b}"),
-        }
-    }
 }
 
 // ─── Inputs and known fns/consts ─────────────────────────────────
 
 /// One input to a fused kernel — a binding the kernel reads. `name` is
-/// the source-level identifier; `rust_name` is the identifier the Rust
-/// backend emits (deterministic, won't collide with Rust keywords);
-/// `bind_id` is set when the input came from `discover_inputs` walking
-/// a real graph, `None` for synthetic inputs (lambda args, let-bindings
-/// introduced by the body emitter).
+/// the source-level identifier; `bind_id` is set when the input came
+/// from `discover_inputs` walking a real graph, `None` for synthetic
+/// inputs (lambda args, let-bindings introduced by the body emitter).
 #[derive(Debug, Clone)]
 pub struct Input {
     pub name: ArcStr,
     pub prim: PrimType,
     pub bind_id: Option<BindId>,
-    pub rust_name: String,
 }
 
-/// A flat array of primitives passed as a kernel parameter.
-///
-/// Sibling to [`Input`] — kept separate so the existing scalar-only
-/// pipeline (constructors, emitters, etc.) keeps compiling unchanged
-/// while array support is added incrementally. `elem` is the element
-/// `PrimType`; the runtime value is a `&ValArray` whose every slot
-/// carries that variant. Inside the kernel, elements are loaded via
-/// `unsafe { arr.get_unchecked::<T>(i) }` (see
-/// `netidx_value::ValArray::get_unchecked`) — no allocation, no
-/// per-element variant match.
+/// An array value passed as a kernel parameter. The element type is
+/// any [`KirType`] — primitive or nested composite. Runtime value is
+/// `&ValArray`; for primitive elements the JIT loads via
+/// `arr.get_unchecked::<T>(i)`, for composite elements via a
+/// `*mut Value` accessor.
 #[derive(Debug, Clone)]
 pub struct ArrayInput {
     pub name: ArcStr,
-    pub elem: PrimType,
+    pub elem: KirType,
     pub bind_id: Option<BindId>,
-    pub rust_name: String,
 }
 
-/// A tuple value passed as a kernel parameter.
-///
-/// Same `&ValArray` boundary as [`ArrayInput`] (graphix tuples are
-/// stored as `Value::Array(ValArray)` at the runtime layer); the
-/// difference is per-slot types. `elems[i]` is the `PrimType` of the
-/// `i`th tuple position.
+/// A tuple value passed as a kernel parameter. Per-slot types can be
+/// any [`KirType`] (nested tuples / structs / variants / arrays
+/// allowed). Same `&ValArray` runtime boundary as [`ArrayInput`].
 #[derive(Debug, Clone)]
 pub struct TupleInput {
     pub name: ArcStr,
-    pub elems: Vec<PrimType>,
+    pub elems: Vec<KirType>,
     pub bind_id: Option<BindId>,
-    pub rust_name: String,
 }
 
-/// A struct value passed as a kernel parameter.
-///
-/// Same `&ValArray` boundary, with fields stored at compile-time
-/// known sorted-by-name positions (matching graphix's canonical
-/// struct layout).
+/// A struct value passed as a kernel parameter. Field types can be
+/// any [`KirType`]. Same `&ValArray` boundary, with fields stored at
+/// compile-time-known sorted-by-name positions.
 #[derive(Debug, Clone)]
 pub struct StructInput {
     pub name: ArcStr,
-    pub fields: Vec<(ArcStr, PrimType)>,
+    pub fields: Vec<(ArcStr, KirType)>,
     pub bind_id: Option<BindId>,
-    pub rust_name: String,
 }
 
-/// A variant value passed as a kernel parameter. Same `&ValArray`
-/// boundary as tuples/structs, but the slot at index 0 is the tag
-/// string (an interned `ArcStr`) and payloads start at index 1.
-/// `cases` enumerates the legal `(tag, payload_types)` shapes — at
-/// runtime exactly one of these is active per value.
+/// A variant value passed as a kernel parameter. Payload types per
+/// case can be any [`KirType`]. Same `&ValArray` boundary as
+/// tuples/structs, but the slot at index 0 is the tag string (an
+/// interned `ArcStr`) and payloads start at index 1. `cases`
+/// enumerates the legal `(tag, payload_types)` shapes — at runtime
+/// exactly one of these is active per value.
 #[derive(Debug, Clone)]
 pub struct VariantInput {
     pub name: ArcStr,
-    pub cases: Vec<(ArcStr, Vec<PrimType>)>,
+    pub cases: Vec<(ArcStr, Vec<KirType>)>,
     pub bind_id: Option<BindId>,
-    pub rust_name: String,
 }
 
 /// Per-source-arg metadata used by the tail-call renderer to assign
@@ -580,7 +511,6 @@ pub struct VariantInput {
 #[derive(Debug, Clone)]
 pub struct TailCallSlot {
     pub name: ArcStr,
-    pub rust_name: String,
     pub kind: TailCallSlotKind,
 }
 
@@ -645,6 +575,20 @@ pub struct KirExpr {
 pub enum KirOp {
     /// A primitive constant.
     Const(ConstVal),
+    /// A string-typed constant. Used by `emit_expr`'s
+    /// `ExprKind::Constant(Value::String)` arm and by `Concat`'s
+    /// literal segments. Result type is [`KirType::String`].
+    /// Lives outside [`ConstVal`] because [`ConstVal`] is `Copy` and
+    /// `ArcStr` isn't — keeping `ConstVal` `Copy` matters for the
+    /// `kir_interp` register paths.
+    ConstStr(ArcStr),
+    /// Concatenation of string-renderable parts — the KIR form of
+    /// `ExprKind::StringInterpolate` (`"x=[x]"`). Each child must
+    /// be [`KirType::String`] or [`KirType::Prim`]; prim children
+    /// are formatted via the netidx `Value` `Display` (the same
+    /// renderer `StringInterpolate` uses at non-fusion time).
+    /// Result type is [`KirType::String`].
+    Concat(Vec<KirExpr>),
     /// Reference to a function arg or let-bound local. Identified by
     /// name; the Rust backend uses the name directly, the CLIF backend
     /// looks it up in its `Variable` table.
@@ -701,12 +645,17 @@ pub enum KirOp {
     DynCall {
         fn_index: u32,
         args: Vec<KirExpr>,
-        /// Argument types parallel to `args` — used to convert each
-        /// `RegValue` into a `netidx::Value` before the dispatch.
-        arg_types: Vec<PrimType>,
+        /// Argument types parallel to `args`. Used by the dispatch
+        /// machinery to encode each arg into a `netidx::Value` and
+        /// (in the JIT path) to pick the right buf-push helper —
+        /// scalars marshal as primitives, composites pass as
+        /// refcount-bumped clones of the caller's owned pointer.
+        arg_types: Vec<KirType>,
         /// Return type. Equals the wrapping `KirExpr.typ`; carried
-        /// here for RegValue conversion symmetry with `arg_types`.
-        return_type: PrimType,
+        /// here for symmetry with `arg_types` and so the JIT can
+        /// pick the right `cast_u64_to_*` / `Box::from_raw` decode
+        /// path without re-walking `KirExpr.typ`.
+        return_type: KirType,
     },
     /// Expression-form block: `{ let a = ..; let b = ..; tail }`.
     /// All non-tail items are let-bindings; the tail provides the
@@ -836,13 +785,18 @@ pub enum KirOp {
         predicate: Box<KirExpr>,
     },
     /// Read tuple slot `idx` of `name` (a tuple kernel parameter).
-    /// Result `KirExpr.typ` is `KirType::Prim(elem_typ)` — the type
-    /// of that specific slot. Lowers byte-identically to
-    /// `KirOp::ArrayGet` using `ValArray::get_unchecked`.
+    /// Result `KirExpr.typ` matches `elem_typ`. For `Prim` slots the
+    /// runtime extracts a scalar via `ValArray::get_unchecked`; for
+    /// composite slots (nested array/tuple/struct/variant) the runtime
+    /// returns the slot's `Value` wrapped in an `EvalResult::ValArray`
+    /// or `Variant`. Kernels containing composite-slot accesses route
+    /// to the interpreter via `kernel_contains_composite_element_op`
+    /// (the JIT's primitive-only extraction path can't represent the
+    /// composite return).
     TupleGet {
         name: ArcStr,
         idx: usize,
-        elem_typ: PrimType,
+        elem_typ: KirType,
     },
     /// Build a tuple from per-slot expressions. Each `fields[i]`
     /// emits to its own scalar KIR; the renderer wraps each in
@@ -855,13 +809,16 @@ pub enum KirOp {
         elem_types: Vec<PrimType>,
     },
     /// Read struct field `field` from `name` (a struct kernel
-    /// parameter), at the sorted index `sorted_idx`. Result type is
-    /// `KirType::Prim(elem_typ)`. Same lowering as `TupleGet`.
+    /// parameter), at the sorted index `sorted_idx`. Result type
+    /// matches `elem_typ` — composite-typed fields produce
+    /// composite `EvalResult`s in the interpreter; the JIT routes
+    /// kernels with composite-field access to the interpreter via
+    /// `kernel_contains_composite_element_op`.
     StructGet {
         name: ArcStr,
         field: ArcStr,
         sorted_idx: usize,
-        elem_typ: PrimType,
+        elem_typ: KirType,
     },
     /// Build a struct from per-field expressions. `sorted_fields` is
     /// the canonical alphabetical order (graphix's runtime layout).
@@ -929,6 +886,13 @@ pub enum KirStmt {
     /// no arm is unconditional, lowering inserts a fallthrough
     /// `unreachable!()` — typecheck should forbid this in practice.
     Select { arms: Vec<SelectArm> },
+    /// Evaluate `expr` for its side effect, discard the result.
+    /// Used for `KirType::Unit` calls (`println`, `dbg`, `log`, …)
+    /// and any other expression whose value the program doesn't
+    /// consume. The interpreter / JIT evaluates `expr` (firing any
+    /// `KirOp::DynCall`s or producer-op effects inside it) and
+    /// throws away the `EvalResult`.
+    Discard(KirExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -992,14 +956,18 @@ pub struct FnParam {
     pub name: ArcStr,
     /// Where to find the `LambdaDef` for this slot at runtime.
     pub source: FnSource,
-    /// Argument prim types of the *callee* function — used to
-    /// convert RegValue→Value at DynCall sites.
-    pub arg_types: Vec<PrimType>,
-    /// Return prim type of the callee.
-    pub return_type: PrimType,
+    /// Argument types of the *callee* function. Carries scalar
+    /// primitives plus composite (Array/Tuple/Struct/Variant)
+    /// shapes — the JIT marshals each arg into a `netidx::Value`
+    /// per its declared kind before dispatch.
+    pub arg_types: Vec<KirType>,
+    /// Return type of the callee. May be scalar or composite; the
+    /// dispatcher and JIT codegen branch on the kind to pick the
+    /// right encode/decode path.
+    pub return_type: KirType,
 }
 
-/// How a [`FnParam`]'s `LambdaDef` is sourced at DynCall time.
+/// How a [`FnParam`]'s callable is sourced at dispatch time.
 #[derive(Debug, Clone)]
 pub enum FnSource {
     /// HOF argument: the kernel's caller passes a `LambdaDef` value
@@ -1007,12 +975,62 @@ pub enum FnSource {
     /// order argument list, mixed with primitive args). KirNode's
     /// runtime extracts it from the incoming `from` slice.
     Param { arg_pos: u32 },
-    /// Statically-resolved binding: the `LambdaDef` lives in
+    /// Statically-resolved user binding: the `LambdaDef` lives in
     /// `ctx.cached[bind_id]` (or, for unstable bindings,
     /// `event.variables[bind_id]`). Set when fusion can't fuse the
     /// callee inline (its body uses unsupported constructs) but can
     /// still call it via Apply::update.
     Binding { bind_id: crate::BindId },
+    /// Sync builtin call. Resolved at `KirNode::new` time by looking
+    /// up `name` in `ctx.builtins`, constructing the builtin's
+    /// `Apply<R, E>` via the registered init fn, and stashing it in
+    /// the per-kernel slot. The slot is pre-bound — `dispatch` skips
+    /// the `LambdaDef`-rebind check entirely.
+    ///
+    /// `typ` is the resolved FnType at the call site (read by
+    /// fusion off `a.function.typ.get()` — the typed-AST cell on
+    /// the function expression of the Apply), needed by builtin
+    /// init fns.
+    ///
+    /// `layout` describes the callee's full formal-arg list (one
+    /// entry per `typ.args` slot, in declaration order — same order
+    /// `Apply::update` reads `from[]`). `Positional` slots are fed
+    /// by the kernel-marshalled call args (indexed by their position
+    /// in `FnParam.arg_types`). `LabeledDefault` slots get the
+    /// captured default expression compiled once at
+    /// `pre_bind_builtin` time and never updated again (mirrors
+    /// `CallSite::bind`'s `compile_default!` macro, but resolved
+    /// once because the call site is fixed in a fused kernel).
+    Builtin {
+        name: ArcStr,
+        typ: std::sync::Arc<crate::typ::FnType>,
+        layout: std::sync::Arc<[BuiltinSlot]>,
+    },
+}
+
+/// Per-formal-arg routing for a [`FnSource::Builtin`] slot —
+/// one entry per arg in the callee's declared signature, in
+/// declaration order. See [`FnSource::Builtin`].
+#[derive(Debug, Clone)]
+pub enum BuiltinSlot {
+    /// Fed by the kernel — `Positional(call_idx)` reads value
+    /// `call_idx` from the kernel's marshalled call-arg list
+    /// (i.e. the `FnParam.arg_types[call_idx]`-typed value).
+    Positional(usize),
+    /// Filled at `pre_bind_builtin` time by compiling the captured
+    /// default expression. The result `Node` lives in the slot's
+    /// `arg_refs[i]` for the life of the kernel; no per-dispatch
+    /// work.
+    LabeledDefault(crate::expr::Expr),
+    /// One slot representing the variadic tail. At dispatch time,
+    /// the kernel's call args `[from_call_idx, from_call_idx + count)`
+    /// are forwarded as additional positional refs to the inner
+    /// Apply — the Apply's own vargs handling collects them into the
+    /// expected `Array<T>` per its declared FnType. `count` is fixed
+    /// at fusion time because each call site's arity is captured in
+    /// its own `FnParam` (different arities → different FnParams,
+    /// keyed by `(name, arity)` in `find_fn_input`).
+    Variadic { from_call_idx: usize, count: usize },
 }
 
 // ─── Constructors that enforce KIR invariants ────────────────────
@@ -1091,16 +1109,18 @@ pub fn local(name: ArcStr, prim: PrimType) -> KirExpr {
 /// element type goes on `KirType::Array(elem)` so downstream ops
 /// (ArrayMap, ArrayFold) can read it back without a separate sidecar.
 pub fn local_array(name: ArcStr, elem: PrimType) -> KirExpr {
-    KirExpr { op: KirOp::Local(name), typ: KirType::Array(elem) }
+    KirExpr {
+        op: KirOp::Local(name),
+        typ: KirType::Array(Box::new(KirType::Prim(elem))),
+    }
 }
 
 /// True if the kernel contains a [`KirOp::Call`] anywhere — i.e.
-/// non-tail self-recursion or cross-kernel calls. The AOT backend
-/// handles these (rustc emits real recursion / direct calls); the
-/// interpreter and JIT v1 do not. Callers wiring KIR through the
-/// runtime path use this to refuse to instantiate a `KirNode` that
-/// would panic on first call. Lifts in M4-followups when the kernel
-/// registry is in place.
+/// non-tail self-recursion or cross-kernel calls. The interpreter and
+/// JIT v1 do not handle these. Callers wiring KIR through the runtime
+/// path use this to refuse to instantiate a `KirNode` that would panic
+/// on first call. Lifts in M4-followups when the kernel registry is in
+/// place.
 pub fn kernel_contains_call(kernel: &KirKernel) -> bool {
     kernel.body.iter().any(stmt_has_call)
 }
@@ -1109,6 +1129,7 @@ fn stmt_has_call(stmt: &KirStmt) -> bool {
     match stmt {
         KirStmt::Let(l) => expr_has_call(&l.value),
         KirStmt::Return(e) => expr_has_call(e),
+        KirStmt::Discard(e) => expr_has_call(e),
         KirStmt::TailCall { args } => args.iter().any(expr_has_call),
         KirStmt::Select { arms } => arms.iter().any(|a| {
             a.cond.as_ref().is_some_and(expr_has_call)
@@ -1120,7 +1141,11 @@ fn stmt_has_call(stmt: &KirStmt) -> bool {
 fn expr_has_call(e: &KirExpr) -> bool {
     match &e.op {
         KirOp::Call { .. } | KirOp::DynCall { .. } => true,
-        KirOp::Const(_) | KirOp::Local(_) | KirOp::ArrayLen { .. } => false,
+        KirOp::Const(_)
+        | KirOp::ConstStr(_)
+        | KirOp::Local(_)
+        | KirOp::ArrayLen { .. } => false,
+        KirOp::Concat(parts) => parts.iter().any(expr_has_call),
         KirOp::Bin { lhs, rhs, .. }
         | KirOp::Cmp { lhs, rhs, .. }
         | KirOp::BoolBin { lhs, rhs, .. } => {
@@ -1159,10 +1184,170 @@ pub fn kernel_contains_dyncall(kernel: &KirKernel) -> bool {
     kernel.body.iter().any(stmt_has_dyncall)
 }
 
+/// True if the kernel references the [`KirType::String`] shape
+/// anywhere — via [`KirOp::ConstStr`], [`KirOp::Concat`], a
+/// `String` arg/return on a `DynCall`, or a `KirExpr.typ` of
+/// `String`. The JIT can't lower String today (ArcStr doesn't fit
+/// a register, no string helpers in `kir_jit_helpers`), so such
+/// kernels route through the interpreter — same fallback shape as
+/// `kernel_contains_dyncall`.
+pub fn kernel_contains_string(kernel: &KirKernel) -> bool {
+    if matches!(kernel.return_type, KirType::String) {
+        return true;
+    }
+    kernel.body.iter().any(stmt_has_string)
+}
+
+/// True if the kernel contains a `TupleGet` / `StructGet` (and
+/// eventually array / variant accessors) whose `elem_typ` is a
+/// composite (non-`Prim`) `KirType`. The JIT's primitive-only
+/// scalar extraction can't handle these — callers gate on this
+/// helper to route the whole kernel to the interpreter (where
+/// `extract_composite_or_scalar` handles both cases).
+pub fn kernel_contains_composite_element_op(kernel: &KirKernel) -> bool {
+    kernel.body.iter().any(stmt_has_composite_element_op)
+}
+
+fn stmt_has_composite_element_op(s: &KirStmt) -> bool {
+    match s {
+        KirStmt::Let(l) => expr_has_composite_element_op(&l.value),
+        KirStmt::Return(e) => expr_has_composite_element_op(e),
+        KirStmt::Discard(e) => expr_has_composite_element_op(e),
+        KirStmt::TailCall { args } => {
+            args.iter().any(expr_has_composite_element_op)
+        }
+        KirStmt::Select { arms } => arms.iter().any(|a| {
+            a.cond.as_ref().is_some_and(expr_has_composite_element_op)
+                || a.body.iter().any(stmt_has_composite_element_op)
+        }),
+    }
+}
+
+fn expr_has_composite_element_op(e: &KirExpr) -> bool {
+    match &e.op {
+        KirOp::TupleGet { elem_typ, .. } | KirOp::StructGet { elem_typ, .. } => {
+            !matches!(elem_typ, KirType::Prim(_))
+        }
+        // ArrayGet's element type lives on `e.typ` (no separate
+        // elem_typ field). Composite-result ArrayGet routes to interp.
+        KirOp::ArrayGet { idx, .. } => {
+            !matches!(e.typ, KirType::Prim(_))
+                || expr_has_composite_element_op(idx)
+        }
+        KirOp::Const(_) | KirOp::ConstStr(_) | KirOp::Local(_)
+        | KirOp::ArrayLen { .. } | KirOp::VariantTagEq { .. }
+        | KirOp::VariantPayload { .. } => false,
+        KirOp::Concat(parts) => parts.iter().any(expr_has_composite_element_op),
+        KirOp::Bin { lhs, rhs, .. }
+        | KirOp::Cmp { lhs, rhs, .. }
+        | KirOp::BoolBin { lhs, rhs, .. } => {
+            expr_has_composite_element_op(lhs)
+                || expr_has_composite_element_op(rhs)
+        }
+        KirOp::Not(inner) | KirOp::Cast { inner, .. } => {
+            expr_has_composite_element_op(inner)
+        }
+        KirOp::ArrayFold { init, body, .. } => {
+            expr_has_composite_element_op(init)
+                || expr_has_composite_element_op(body)
+        }
+        KirOp::ArrayInit { n, body, .. } => {
+            expr_has_composite_element_op(n)
+                || expr_has_composite_element_op(body)
+        }
+        KirOp::ArrayMap { body, .. } => expr_has_composite_element_op(body),
+        KirOp::ArrayFilter { predicate, .. } => {
+            expr_has_composite_element_op(predicate)
+        }
+        KirOp::TupleNew { fields, .. } => {
+            fields.iter().any(expr_has_composite_element_op)
+        }
+        KirOp::StructNew { sorted_fields, .. } => sorted_fields
+            .iter()
+            .any(|(_, e)| expr_has_composite_element_op(e)),
+        KirOp::VariantNew { payloads, .. } => {
+            payloads.iter().any(expr_has_composite_element_op)
+        }
+        KirOp::Block { lets, tail } => {
+            lets.iter().any(|l| expr_has_composite_element_op(&l.value))
+                || expr_has_composite_element_op(tail)
+        }
+        KirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
+            c.as_ref().is_some_and(expr_has_composite_element_op)
+                || expr_has_composite_element_op(v)
+        }),
+        KirOp::Call { args, .. } | KirOp::DynCall { args, .. } => {
+            args.iter().any(expr_has_composite_element_op)
+        }
+    }
+}
+
+fn stmt_has_string(s: &KirStmt) -> bool {
+    match s {
+        KirStmt::Let(l) => expr_has_string(&l.value),
+        KirStmt::Return(e) => expr_has_string(e),
+        KirStmt::Discard(e) => expr_has_string(e),
+        KirStmt::TailCall { args } => args.iter().any(expr_has_string),
+        KirStmt::Select { arms } => arms.iter().any(|a| {
+            a.cond.as_ref().is_some_and(expr_has_string)
+                || a.body.iter().any(stmt_has_string)
+        }),
+    }
+}
+
+fn expr_has_string(e: &KirExpr) -> bool {
+    if matches!(e.typ, KirType::String) {
+        return true;
+    }
+    match &e.op {
+        KirOp::Const(_) | KirOp::Local(_) | KirOp::ArrayLen { .. } => false,
+        KirOp::ConstStr(_) => true,
+        KirOp::Concat(parts) => parts.iter().any(expr_has_string),
+        KirOp::Bin { lhs, rhs, .. }
+        | KirOp::Cmp { lhs, rhs, .. }
+        | KirOp::BoolBin { lhs, rhs, .. } => {
+            expr_has_string(lhs) || expr_has_string(rhs)
+        }
+        KirOp::Not(inner) | KirOp::Cast { inner, .. } => expr_has_string(inner),
+        KirOp::ArrayGet { idx, .. } => expr_has_string(idx),
+        KirOp::ArrayFold { init, body, .. } => {
+            expr_has_string(init) || expr_has_string(body)
+        }
+        KirOp::ArrayInit { n, body, .. } => {
+            expr_has_string(n) || expr_has_string(body)
+        }
+        KirOp::ArrayMap { body, .. } => expr_has_string(body),
+        KirOp::ArrayFilter { predicate, .. } => expr_has_string(predicate),
+        KirOp::TupleGet { .. } | KirOp::StructGet { .. } => false,
+        KirOp::TupleNew { fields, .. } => fields.iter().any(expr_has_string),
+        KirOp::StructNew { sorted_fields, .. } => {
+            sorted_fields.iter().any(|(_, e)| expr_has_string(e))
+        }
+        KirOp::VariantTagEq { .. } | KirOp::VariantPayload { .. } => false,
+        KirOp::VariantNew { payloads, .. } => {
+            payloads.iter().any(expr_has_string)
+        }
+        KirOp::Block { lets, tail } => {
+            lets.iter().any(|l| expr_has_string(&l.value))
+                || expr_has_string(tail)
+        }
+        KirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
+            c.as_ref().is_some_and(expr_has_string) || expr_has_string(v)
+        }),
+        KirOp::Call { args, .. } => args.iter().any(expr_has_string),
+        KirOp::DynCall { args, arg_types, return_type, .. } => {
+            matches!(return_type, KirType::String)
+                || arg_types.iter().any(|t| matches!(t, KirType::String))
+                || args.iter().any(expr_has_string)
+        }
+    }
+}
+
 fn stmt_has_dyncall(s: &KirStmt) -> bool {
     match s {
         KirStmt::Let(l) => expr_has_dyncall(&l.value),
         KirStmt::Return(e) => expr_has_dyncall(e),
+        KirStmt::Discard(e) => expr_has_dyncall(e),
         KirStmt::TailCall { args } => args.iter().any(expr_has_dyncall),
         KirStmt::Select { arms } => arms.iter().any(|a| {
             a.cond.as_ref().is_some_and(expr_has_dyncall)
@@ -1175,7 +1360,11 @@ fn expr_has_dyncall(e: &KirExpr) -> bool {
     match &e.op {
         KirOp::DynCall { .. } => true,
         KirOp::Call { args, .. } => args.iter().any(expr_has_dyncall),
-        KirOp::Const(_) | KirOp::Local(_) | KirOp::ArrayLen { .. } => false,
+        KirOp::Const(_)
+        | KirOp::ConstStr(_)
+        | KirOp::Local(_)
+        | KirOp::ArrayLen { .. } => false,
+        KirOp::Concat(parts) => parts.iter().any(expr_has_dyncall),
         KirOp::Bin { lhs, rhs, .. }
         | KirOp::Cmp { lhs, rhs, .. }
         | KirOp::BoolBin { lhs, rhs, .. } => {
@@ -1226,6 +1415,7 @@ fn walk_call_sites_stmt(s: &KirStmt, out: &mut std::collections::BTreeSet<ArcStr
     match s {
         KirStmt::Let(l) => walk_call_sites_expr(&l.value, out),
         KirStmt::Return(e) => walk_call_sites_expr(e, out),
+        KirStmt::Discard(e) => walk_call_sites_expr(e, out),
         KirStmt::TailCall { args } => {
             for a in args {
                 walk_call_sites_expr(a, out);
@@ -1260,7 +1450,15 @@ fn walk_call_sites_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr
                 walk_call_sites_expr(a, out);
             }
         }
-        KirOp::Const(_) | KirOp::Local(_) | KirOp::ArrayLen { .. } => {}
+        KirOp::Concat(parts) => {
+            for p in parts {
+                walk_call_sites_expr(p, out);
+            }
+        }
+        KirOp::Const(_)
+        | KirOp::ConstStr(_)
+        | KirOp::Local(_)
+        | KirOp::ArrayLen { .. } => {}
         KirOp::Bin { lhs, rhs, .. }
         | KirOp::Cmp { lhs, rhs, .. }
         | KirOp::BoolBin { lhs, rhs, .. } => {
@@ -1317,852 +1515,6 @@ fn walk_call_sites_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr
 // is now baked into `KirOp::ArrayFold` directly via `elem_typ`, so
 // neither backend needs to walk the body to recover it.)
 
-// ─── Rust backend ────────────────────────────────────────────────
-//
-// Lowers KIR to Rust source. The output is byte-equivalent to what the
-// pre-KIR fusion emitter produced — every existing fusion test asserts
-// against specific substrings, and we preserve them.
-//
-// Format conventions:
-// - Binary / unary / cast / cmp / bool ops always wrap in parens.
-// - Constants render via `ConstVal::rust_src` (`42i64`, `3.14f64`, …).
-// - Block expressions: `{ <let>; <let>; <tail> }` — single-line, single
-//   space separators, no trailing `;` after tail.
-// - If-chain expressions wrap in parens: `(if <c1> { <e1> } else if ...)`.
-// - Bodies are emitted as multi-line Rust statements with indented
-//   `<indent>` levels at 4 spaces per level. Each statement ends with
-//   `\n`. The caller is responsible for the surrounding `fn { … }`
-//   shape and for any `loop { … }` wrapper.
-
-/// Render a KIR expression to Rust source. Always wraps in parens
-/// (consistent with the existing emitter).
-pub fn kir_to_rust_expr(e: &KirExpr) -> String {
-    let mut out = String::new();
-    write_rust_expr(&mut out, e);
-    out
-}
-
-fn write_rust_expr(out: &mut String, e: &KirExpr) {
-    match &e.op {
-        KirOp::Const(c) => {
-            out.push_str(&c.rust_src());
-        }
-        KirOp::Local(name) => {
-            out.push_str(name.as_str());
-        }
-        KirOp::Bin { op, lhs, rhs } => {
-            out.push('(');
-            write_rust_expr(out, lhs);
-            write!(out, " {} ", op.rust_op()).ok();
-            write_rust_expr(out, rhs);
-            out.push(')');
-        }
-        KirOp::Cmp { op, lhs, rhs } => {
-            out.push('(');
-            write_rust_expr(out, lhs);
-            write!(out, " {} ", op.rust_op()).ok();
-            write_rust_expr(out, rhs);
-            out.push(')');
-        }
-        KirOp::BoolBin { op, lhs, rhs } => {
-            out.push('(');
-            write_rust_expr(out, lhs);
-            write!(out, " {} ", op.rust_op()).ok();
-            write_rust_expr(out, rhs);
-            out.push(')');
-        }
-        KirOp::Not(inner) => {
-            out.push_str("(!");
-            write_rust_expr(out, inner);
-            out.push(')');
-        }
-        KirOp::Cast { inner, target } => {
-            out.push('(');
-            write_rust_expr(out, inner);
-            write!(out, " as {})", target.rust_name()).ok();
-        }
-        KirOp::ArrayLen { name } => {
-            // The kernel signature passes array params as `&ValArray`,
-            // which derefs to `&[Value]`. `.len() as u64` matches the
-            // KIR-declared `KirExpr.typ = U64`.
-            write!(out, "({}.len() as u64)", name).ok();
-        }
-        KirOp::ArrayGet { name, idx } => {
-            // Unsafe element load — relies on `ValArray::get_unchecked<T>`
-            // (added in netidx-value). The `T` comes from `e.typ`,
-            // which the constructor pinned to the array's element
-            // type. `idx` is the user-typed index expression; cast to
-            // `usize` because `get_unchecked` takes `usize`.
-            write!(
-                out,
-                "(unsafe {{ {}.get_unchecked::<{}>((",
-                name,
-                e.typ.rust_name()
-            )
-            .ok();
-            write_rust_expr(out, idx);
-            out.push_str(") as usize) })");
-        }
-        KirOp::ArrayInit { n, idx_local, elem_typ, body } => {
-            // Render as a self-contained expression that yields a
-            // `ValArray`. Uses `ValArray::from_iter_exact` so the
-            // result array is one pooled allocation; per-element work
-            // happens inside `.map`'s closure with no intermediate
-            // Vec.
-            //
-            //   {
-            //       let __n = (n) as usize;
-            //       ::netidx_value::ValArray::from_iter_exact(
-            //           (0..__n).map(|__i| {
-            //               let idx: i64 = __i as i64;
-            //               ::netidx_value::Value::F64(body)
-            //           })
-            //       )
-            //   }
-            let elem_v = elem_typ.value_variant();
-            out.push_str("{ let __n: usize = (");
-            write_rust_expr(out, n);
-            out.push_str(") as usize; ::netidx_value::ValArray::from_iter_exact(");
-            write!(
-                out,
-                "(0..__n).map(|__i| {{ let {idx}: i64 = __i as i64; \
-                 ::netidx_value::Value::{elem_v}(",
-                idx = idx_local,
-            )
-            .ok();
-            write_rust_expr(out, body);
-            out.push_str(") })) }");
-        }
-        KirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
-            // Same shape as ArrayInit but iterates over an existing
-            // `ValArray` input rather than a 0..n range. Element
-            // loads via the unsafe `get_unchecked` fast path; output
-            // built via `from_iter_exact` to share the pooled
-            // ValArray allocator.
-            let in_t = in_elem.rust_name();
-            let out_v = out_elem.value_variant();
-            write!(
-                out,
-                "{{ let __n: usize = {arr}.len(); \
-                 ::netidx_value::ValArray::from_iter_exact( \
-                 (0..__n).map(|__i| {{ \
-                 let {elem}: {in_t} = unsafe {{ {arr}.get_unchecked::<{in_t}>(__i) }}; \
-                 ::netidx_value::Value::{out_v}(",
-                arr = array,
-                elem = elem_local,
-                in_t = in_t,
-                out_v = out_v,
-            )
-            .ok();
-            write_rust_expr(out, body);
-            out.push_str(") })) }");
-        }
-        KirOp::TupleGet { name, idx, elem_typ } => {
-            // Tuple slot read — same as ArrayGet but the index is a
-            // compile-time literal and the element type is encoded
-            // on the op (no need to walk siblings).
-            write!(
-                out,
-                "(unsafe {{ {}.get_unchecked::<{}>({}usize) }})",
-                name,
-                elem_typ.rust_name(),
-                idx,
-            )
-            .ok();
-        }
-        KirOp::TupleNew { fields, elem_types } => {
-            // Build a fixed-size ValArray from the literal fields.
-            // Emit as `from_iter_exact([Value::T0(f0), Value::T1(f1), ...].into_iter())`
-            // — one pooled allocation, no Vec.
-            out.push_str(
-                "::netidx_value::ValArray::from_iter_exact([",
-            );
-            for (i, (f, t)) in fields.iter().zip(elem_types.iter()).enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write!(out, "::netidx_value::Value::{}(", t.value_variant()).ok();
-                write_rust_expr(out, f);
-                out.push(')');
-            }
-            out.push_str("].into_iter())");
-        }
-        KirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
-            // Struct field read by sorted index — same byte-shape as
-            // TupleGet. The compiler resolves the source-side field
-            // name to its sorted-index at lowering time.
-            write!(
-                out,
-                "(unsafe {{ {}.get_unchecked::<{}>({}usize) }})",
-                name,
-                elem_typ.rust_name(),
-                sorted_idx,
-            )
-            .ok();
-        }
-        KirOp::StructNew { sorted_fields, sorted_types } => {
-            // Identical to TupleNew at the runtime layer — graphix's
-            // canonical struct layout is a sorted ValArray.
-            out.push_str(
-                "::netidx_value::ValArray::from_iter_exact([",
-            );
-            for (i, ((_, f), (_, t))) in
-                sorted_fields.iter().zip(sorted_types.iter()).enumerate()
-            {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write!(out, "::netidx_value::Value::{}(", t.value_variant()).ok();
-                write_rust_expr(out, f);
-                out.push(')');
-            }
-            out.push_str("].into_iter())");
-        }
-        KirOp::VariantTagEq { name, expected_tag } => {
-            // The variant param is `&Value`. Match the discriminant:
-            //   - nullary case: `Value::String(s)` — tag is `s`
-            //   - with-payload: `Value::Array(arr)` — tag is at slot 0
-            // The `_ =>` unreachable branch lets the optimizer drop
-            // the comparison path for the unmatched discriminant.
-            write!(
-                out,
-                "(match {} {{ \
-                    ::netidx_value::Value::String(__t) => \
-                        __t.as_str() == \"{}\", \
-                    ::netidx_value::Value::Array(__a) => unsafe {{ \
-                        __a.get_ref_unchecked::<::arcstr::ArcStr>(0usize) \
-                            .as_str() == \"{}\" \
-                    }}, \
-                    _ => unsafe {{ ::std::hint::unreachable_unchecked() }} \
-                }})",
-                name,
-                expected_tag.as_str().escape_default(),
-                expected_tag.as_str().escape_default(),
-            )
-            .ok();
-        }
-        KirOp::VariantPayload { name, payload_idx, elem_typ } => {
-            // Only valid inside an arm matched by a non-nullary
-            // case — so the discriminant is `Value::Array(arr)` and
-            // the payload sits at slot `payload_idx + 1` (slot 0
-            // holds the tag string).
-            write!(
-                out,
-                "(match {name} {{ \
-                    ::netidx_value::Value::Array(__a) => unsafe {{ \
-                        __a.get_unchecked::<{rust}>({slot}usize) \
-                    }}, \
-                    _ => unsafe {{ ::std::hint::unreachable_unchecked() }} \
-                }})",
-                name = name,
-                rust = elem_typ.rust_name(),
-                slot = payload_idx + 1,
-            )
-            .ok();
-        }
-        KirOp::VariantNew { tag, payloads, payload_types } => {
-            // Nullary case (payloads empty) → `Value::String(literal!("tag"))`.
-            // With-payload → `Value::Array(ValArray::from_iter_exact([
-            //     Value::String(literal!("tag")), Value::T0(p0), ...
-            // ]))`. Tag is interned via `literal!` so downstream
-            // VariantTagEq can take the ArcStr ptr fast-path when
-            // both sides are interned.
-            if payloads.is_empty() {
-                write!(
-                    out,
-                    "::netidx_value::Value::String(::arcstr::literal!(\"{}\"))",
-                    tag.as_str().escape_default(),
-                )
-                .ok();
-            } else {
-                out.push_str(
-                    "::netidx_value::Value::Array(\
-                     ::netidx_value::ValArray::from_iter_exact([\
-                     ::netidx_value::Value::String(::arcstr::literal!(\"",
-                );
-                write!(out, "{}", tag.as_str().escape_default()).ok();
-                out.push_str("\"))");
-                for (p, t) in payloads.iter().zip(payload_types.iter()) {
-                    out.push_str(", ");
-                    write!(out, "::netidx_value::Value::{}(", t.value_variant()).ok();
-                    write_rust_expr(out, p);
-                    out.push(')');
-                }
-                out.push_str("].into_iter()))");
-            }
-        }
-        KirOp::ArrayFilter { array, elem, elem_local, predicate } => {
-            // Output length is dynamic, so we go through the
-            // `FromIterator<Value>` impl on `ValArray` (which
-            // internally stages into an `LPooled<Vec>` then feeds
-            // `from_iter_exact`). After thread warmup the pool
-            // returns the same scratch buffer each call — net zero
-            // alloc on the hot path.
-            let in_t = elem.rust_name();
-            let out_v = elem.value_variant();
-            write!(
-                out,
-                "{{ let __n: usize = {arr}.len(); \
-                 (0..__n).filter_map(|__i| {{ \
-                 let {elem_l}: {in_t} = unsafe {{ {arr}.get_unchecked::<{in_t}>(__i) }}; \
-                 if (",
-                arr = array,
-                elem_l = elem_local,
-                in_t = in_t,
-            )
-            .ok();
-            write_rust_expr(out, predicate);
-            write!(
-                out,
-                ") {{ ::std::option::Option::Some(::netidx_value::Value::{out_v}({elem_l})) }} \
-                 else {{ ::std::option::Option::None }} \
-                 }}).collect::<::netidx_value::ValArray>() }}",
-                out_v = out_v,
-                elem_l = elem_local,
-            )
-            .ok();
-        }
-        KirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
-            // Renders as a self-contained expression block:
-            //   { let mut acc: T = init;
-            //     let n = arr.len();
-            //     let mut i = 0usize;
-            //     while i < n {
-            //         let elem: E = unsafe { arr.get_unchecked::<E>(i) };
-            //         acc = body;
-            //         i += 1;
-            //     }
-            //     acc }
-            // We use `while` (not `for ... in 0..n`) because `for`
-            // borrows the range and rustc's vectorizer is happier
-            // with the explicit-counter form. `acc` and `elem` are
-            // the user-given local names; rustc enforces uniqueness
-            // because they're shadowed locals in this block.
-            let acc_t = e.typ.rust_name();
-            let elem_t = elem_typ.rust_name();
-            write!(
-                out,
-                "{{ let mut {acc}: {acc_t} = ",
-                acc = acc_local
-            )
-            .ok();
-            write_rust_expr(out, init);
-            write!(
-                out,
-                "; let __n: usize = {arr}.len(); let mut __i: usize = 0; \
-                 while __i < __n {{ let {elem}: {elem_t} = unsafe {{ \
-                 {arr}.get_unchecked::<{elem_t}>(__i) }}; {acc} = ",
-                arr = array,
-                elem = elem_local,
-                acc = acc_local,
-                elem_t = elem_t
-            )
-            .ok();
-            write_rust_expr(out, body);
-            write!(out, "; __i += 1; }} {acc} }}", acc = acc_local).ok();
-        }
-        KirOp::Call { fn_name, args } => {
-            // Direct call to a known fused-fn body. The function lives
-            // in the same generated crate so we can use the bare name.
-            out.push_str(&format!("fused_{}_body(", fn_name));
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_rust_expr(out, a);
-            }
-            out.push(')');
-        }
-        KirOp::DynCall { .. } => {
-            // The Rust-source AOT backend doesn't support DynCall yet;
-            // fusion's classifier is supposed to refuse to lower a
-            // late-bound call into KIR for the AOT path. If we get
-            // here, that classifier was bypassed — emit a clearly
-            // wrong placeholder so the Rust compile fails loudly.
-            out.push_str("compile_error!(\"DynCall in AOT backend\")");
-        }
-        KirOp::Block { lets, tail } => {
-            out.push_str("{ ");
-            for l in lets {
-                // Expression-form let needs a type annotation so
-                // rustc's inference doesn't get tripped up when the
-                // RHS is a polymorphic numeric literal.
-                write!(
-                    out,
-                    "let mut {}: {} = ",
-                    l.local,
-                    l.value.typ.rust_name()
-                )
-                .ok();
-                write_rust_expr(out, &l.value);
-                out.push_str("; ");
-            }
-            write_rust_expr(out, tail);
-            out.push_str(" }");
-        }
-        KirOp::IfChain { arms } => {
-            out.push('(');
-            let n = arms.len();
-            for (i, (cond, body)) in arms.iter().enumerate() {
-                let is_last = i == n - 1;
-                match (i, cond) {
-                    (0, Some(c)) => {
-                        out.push_str("if ");
-                        write_rust_expr(out, c);
-                        out.push_str(" { ");
-                        write_rust_expr(out, body);
-                        out.push_str(" }");
-                    }
-                    (0, None) => {
-                        // First arm unconditional — just a wrapped
-                        // block, no `if`. Matches the existing emitter.
-                        out.push_str("{ ");
-                        write_rust_expr(out, body);
-                        out.push_str(" }");
-                    }
-                    (_, Some(c)) if !is_last => {
-                        out.push_str(" else if ");
-                        write_rust_expr(out, c);
-                        out.push_str(" { ");
-                        write_rust_expr(out, body);
-                        out.push_str(" }");
-                    }
-                    (_, Some(c)) => {
-                        // Last arm conditional — keep the condition and
-                        // close with an `else { unreachable!() }` so the
-                        // expression is well-typed.
-                        out.push_str(" else if ");
-                        write_rust_expr(out, c);
-                        out.push_str(" { ");
-                        write_rust_expr(out, body);
-                        out.push_str(" } else { unreachable!(\"select fallthrough\") }");
-                    }
-                    (_, None) => {
-                        // Unconditional non-first arm becomes the `else`.
-                        out.push_str(" else { ");
-                        write_rust_expr(out, body);
-                        out.push_str(" }");
-                    }
-                }
-            }
-            out.push(')');
-        }
-    }
-}
-
-fn indent_into(out: &mut String, indent: usize) {
-    for _ in 0..indent {
-        out.push_str("    ");
-    }
-}
-
-/// Render a body (sequence of statements) to Rust source. Indented at
-/// `indent` levels of 4-space indent. Used both for top-level kernel
-/// bodies and (recursively) for select-arm sub-bodies.
-pub fn kir_to_rust_body(stmts: &[KirStmt], indent: usize) -> String {
-    let mut out = String::new();
-    write_rust_body(&mut out, stmts, indent);
-    out
-}
-
-fn write_rust_body(out: &mut String, stmts: &[KirStmt], indent: usize) {
-    for stmt in stmts {
-        write_rust_stmt(out, stmt, indent);
-    }
-}
-
-fn write_rust_stmt(out: &mut String, stmt: &KirStmt, indent: usize) {
-    match stmt {
-        KirStmt::Let(l) => {
-            indent_into(out, indent);
-            // Body-position `let` matches the existing emitter: no
-            // type annotation; rustc infers from the RHS, which is
-            // already monomorphic in our IR. `mut` is defensive but
-            // costs nothing.
-            write!(out, "let mut {} = ", l.local).ok();
-            write_rust_expr(out, &l.value);
-            out.push_str(";\n");
-        }
-        KirStmt::Return(e) => {
-            indent_into(out, indent);
-            out.push_str("return ");
-            write_rust_expr(out, e);
-            out.push_str(";\n");
-        }
-        KirStmt::TailCall { args } => {
-            // Evaluate each new arg into a temp first (so that an arg
-            // expression that reads an old param value sees the old
-            // value, not one we already overwrote). Then assign each
-            // temp into its destination param and `continue`.
-            //
-            // The arg→param mapping is positional and the kernel
-            // emitter's responsibility — the caller must supply the
-            // KirKernel's params in `params` so this lowering can name
-            // the destinations. We carry the names by stashing the
-            // current kernel's params in a thread-local, but that's
-            // ugly; instead we encode the destination names directly
-            // by requiring the caller to attach them. For simplicity
-            // here, we synthesize names from the parameter index — but
-            // that loses the original names the existing tests check
-            // for (`__tmp_zr`, `zr = __tmp_zr;`).
-            //
-            // To preserve the existing format, this function relies on
-            // the caller having already split the work: in practice
-            // the kernel-emit pipeline passes per-arg destination
-            // names separately. See `write_rust_tail_call_with_params`
-            // below, which is what the kernel emitter actually calls.
-            //
-            // This unparameterised form is a fallback that uses
-            // numeric placeholders; it's only here so that
-            // `kir_to_rust_body` is callable without extra context.
-            // The existing tests go through `kir_to_rust_kernel`,
-            // which calls the parameterised form.
-            for (i, a) in args.iter().enumerate() {
-                indent_into(out, indent);
-                write!(out, "let __tmp_arg{i}: {} = ", a.typ.rust_name()).ok();
-                write_rust_expr(out, a);
-                out.push_str(";\n");
-            }
-            for (i, _) in args.iter().enumerate() {
-                indent_into(out, indent);
-                write!(out, "__arg{i} = __tmp_arg{i};\n").ok();
-            }
-            indent_into(out, indent);
-            out.push_str("continue;\n");
-        }
-        KirStmt::Select { arms } => {
-            write_rust_select(out, arms, indent);
-        }
-    }
-}
-
-fn write_rust_select(out: &mut String, arms: &[SelectArm], indent: usize) {
-    let n = arms.len();
-    let mut last_was_unconditional = false;
-    for (i, arm) in arms.iter().enumerate() {
-        let is_last = i == n - 1;
-        match (&arm.cond, is_last) {
-            (None, true) => {
-                // Unconditional last arm — inline body, no wrapping `if`.
-                write_rust_body(out, &arm.body, indent);
-                last_was_unconditional = true;
-            }
-            (None, false) => {
-                // Unconditional non-last arm — emit as a bare block so
-                // any subsequent guarded arms still parse; but in
-                // practice the body's tail (return/continue) ends the
-                // function for that path. Subsequent arms are dead.
-                indent_into(out, indent);
-                out.push_str("{\n");
-                write_rust_body(out, &arm.body, indent + 1);
-                indent_into(out, indent);
-                out.push_str("}\n");
-            }
-            (Some(c), _) => {
-                indent_into(out, indent);
-                out.push_str("if ");
-                write_rust_expr(out, c);
-                out.push_str(" {\n");
-                write_rust_body(out, &arm.body, indent + 1);
-                indent_into(out, indent);
-                out.push_str("}\n");
-            }
-        }
-    }
-    if !last_was_unconditional {
-        indent_into(out, indent);
-        out.push_str("unreachable!(\"select fell through — typecheck should forbid\");\n");
-    }
-}
-
-/// Lower a complete kernel to its Rust free-function source. Produces
-/// just the `fn fused_<name>_body(...) -> T { ... }` form — the
-/// surrounding `Apply<R, E>` shim and `BuiltIn<R, E>` impl are still
-/// generated by `fusion::emit_function_kernel*` since they are AOT-
-/// only packaging infrastructure (the JIT path uses a `CraneliftNode`
-/// instead).
-///
-/// The output mirrors the existing emitter: an `#[allow(...)]`
-/// attribute to silence parens/unreachable/mut warnings, an `#[inline]`
-/// hint, the signature with `mut` params, and a `loop { … }` wrapper
-/// when `has_tail_loop` is set.
-pub fn kir_to_rust_kernel(kernel: &KirKernel) -> String {
-    let mut out = String::new();
-    writeln!(
-        out,
-        "#[allow(unused_parens, unreachable_code, unused_mut, clippy::too_many_arguments)]"
-    )
-    .ok();
-    write!(out, "#[inline]\npub fn fused_{}_body(", kernel.fn_name).ok();
-    // Emit parameters in source-declared order so the apply shim
-    // (which extracts args in source order) can call the body
-    // positionally. `tail_call_slots` is populated for every kernel
-    // and carries the source-order mapping. Scalar slots take their
-    // primitive type by value; ValArray slots (Array / Tuple /
-    // Struct) take `&ValArray`; Variant slots take `&Value`.
-    for (i, slot) in kernel.tail_call_slots.iter().enumerate() {
-        if i > 0 {
-            out.push_str(", ");
-        }
-        match slot.kind {
-            TailCallSlotKind::Scalar(p) => write!(
-                out,
-                "mut {}: {}",
-                slot.rust_name,
-                p.rust_name(),
-            )
-            .ok(),
-            TailCallSlotKind::ValArray => write!(
-                out,
-                "{}: &::netidx_value::ValArray",
-                slot.rust_name,
-            )
-            .ok(),
-            TailCallSlotKind::Variant => write!(
-                out,
-                "{}: &::netidx_value::Value",
-                slot.rust_name,
-            )
-            .ok(),
-        };
-    }
-    let return_t = match &kernel.return_type {
-        KirType::Prim(p) => p.rust_name().to_string(),
-        // Array, tuple, struct: body produces an owned ValArray via
-        // from_iter_exact / collect.
-        KirType::Array(_)
-        | KirType::Tuple(_)
-        | KirType::Struct(_) => "::netidx_value::ValArray".to_string(),
-        // Variant: body produces a `Value` (String for nullary,
-        // Array for with-payload).
-        KirType::Variant(_) => "::netidx_value::Value".to_string(),
-    };
-    writeln!(out, ") -> {} {{", return_t).ok();
-    let body_indent = if kernel.has_tail_loop { 2 } else { 1 };
-    // When the body tail-calls itself, composite params (which enter
-    // as `&ValArray`) need a mutable owned local to be reassignable.
-    // Insert a `let mut <name>: ValArray = <name>.clone();` shadow
-    // for each. The clone is a refcount bump (ValArray is Arc-
-    // backed) — cheap, and necessary so the loop can reassign the
-    // local to a freshly-built ValArray each iteration.
-    //
-    // Scalar params stay `mut <T>` in the signature, which works
-    // directly for tail-call reassignment.
-    if kernel.has_tail_loop {
-        for p in &kernel.array_params {
-            writeln!(
-                out,
-                "    let mut {}: ::netidx_value::ValArray = {}.clone();",
-                p.rust_name, p.rust_name,
-            )
-            .ok();
-        }
-        for p in &kernel.tuple_params {
-            writeln!(
-                out,
-                "    let mut {}: ::netidx_value::ValArray = {}.clone();",
-                p.rust_name, p.rust_name,
-            )
-            .ok();
-        }
-        for p in &kernel.struct_params {
-            writeln!(
-                out,
-                "    let mut {}: ::netidx_value::ValArray = {}.clone();",
-                p.rust_name, p.rust_name,
-            )
-            .ok();
-        }
-        for p in &kernel.variant_params {
-            // Owned `Value` shadow — `Value::clone()` is a refcount
-            // bump for the heap-backed variants (Array, String,
-            // Bytes, …) and a Copy for the scalar variants.
-            writeln!(
-                out,
-                "    let mut {}: ::netidx_value::Value = {}.clone();",
-                p.rust_name, p.rust_name,
-            )
-            .ok();
-        }
-        writeln!(out, "    loop {{").ok();
-    }
-    write_rust_kernel_body(
-        &mut out,
-        &kernel.body,
-        &kernel.params,
-        &kernel.tail_call_slots,
-        body_indent,
-    );
-    if kernel.has_tail_loop {
-        writeln!(out, "    }}").ok();
-    }
-    writeln!(out, "}}").ok();
-    out
-}
-
-/// Render a kernel body, threading the scalar params (for legacy
-/// emitter paths that still want a plain `[Input]`) and the full
-/// per-source-position tail-call slot list (so `KirStmt::TailCall`
-/// can resolve each arg to its destination slot regardless of
-/// category).
-fn write_rust_kernel_body(
-    out: &mut String,
-    stmts: &[KirStmt],
-    params: &[Input],
-    tail_slots: &[TailCallSlot],
-    indent: usize,
-) {
-    for stmt in stmts {
-        write_rust_kernel_stmt(out, stmt, params, tail_slots, indent);
-    }
-}
-
-fn write_rust_kernel_stmt(
-    out: &mut String,
-    stmt: &KirStmt,
-    params: &[Input],
-    tail_slots: &[TailCallSlot],
-    indent: usize,
-) {
-    match stmt {
-        KirStmt::Let(l) => {
-            indent_into(out, indent);
-            write!(out, "let mut {} = ", l.local).ok();
-            write_rust_expr(out, &l.value);
-            out.push_str(";\n");
-        }
-        KirStmt::Return(e) => {
-            indent_into(out, indent);
-            out.push_str("return ");
-            write_rust_expr(out, e);
-            out.push_str(";\n");
-        }
-        KirStmt::TailCall { args } => {
-            write_rust_tail_call_with_slots(out, args, tail_slots, indent);
-        }
-        KirStmt::Select { arms } => {
-            write_rust_kernel_select(out, arms, params, tail_slots, indent);
-        }
-    }
-}
-
-fn write_rust_kernel_select(
-    out: &mut String,
-    arms: &[SelectArm],
-    params: &[Input],
-    tail_slots: &[TailCallSlot],
-    indent: usize,
-) {
-    let n = arms.len();
-    let mut last_was_unconditional = false;
-    for (i, arm) in arms.iter().enumerate() {
-        let is_last = i == n - 1;
-        match (&arm.cond, is_last) {
-            (None, true) => {
-                write_rust_kernel_body(
-                    out, &arm.body, params, tail_slots, indent,
-                );
-                last_was_unconditional = true;
-            }
-            (None, false) => {
-                indent_into(out, indent);
-                out.push_str("{\n");
-                write_rust_kernel_body(
-                    out, &arm.body, params, tail_slots, indent + 1,
-                );
-                indent_into(out, indent);
-                out.push_str("}\n");
-            }
-            (Some(c), _) => {
-                indent_into(out, indent);
-                out.push_str("if ");
-                write_rust_expr(out, c);
-                out.push_str(" {\n");
-                write_rust_kernel_body(
-                    out, &arm.body, params, tail_slots, indent + 1,
-                );
-                indent_into(out, indent);
-                out.push_str("}\n");
-            }
-        }
-    }
-    if !last_was_unconditional {
-        indent_into(out, indent);
-        out.push_str("unreachable!(\"select fell through — typecheck should forbid\");\n");
-    }
-}
-
-/// Emit a tail call using the per-source-position slot list, so each
-/// new arg goes to its right destination regardless of category.
-/// Scalars get a `__tmp_<name>: <T>` temp; composites get an owned
-/// `ValArray` temp (the source expression already produces an owned
-/// value when the body is a `TupleNew` / `ArrayInit` /
-/// `ValArray::from_iter_exact` call; `Ref(name)` to a composite
-/// renders as a bare identifier that we explicitly `.clone()` to
-/// avoid moving the shadowed mutable local).
-fn write_rust_tail_call_with_slots(
-    out: &mut String,
-    args: &[KirExpr],
-    slots: &[TailCallSlot],
-    indent: usize,
-) {
-    debug_assert_eq!(args.len(), slots.len(), "tail-call arity mismatch");
-    for (a, slot) in args.iter().zip(slots.iter()) {
-        indent_into(out, indent);
-        match slot.kind {
-            TailCallSlotKind::Scalar(p) => {
-                write!(
-                    out,
-                    "let __tmp_{}: {} = ",
-                    slot.rust_name,
-                    p.rust_name(),
-                )
-                .ok();
-                write_rust_expr(out, a);
-                out.push_str(";\n");
-            }
-            TailCallSlotKind::ValArray => {
-                // The arg expression's runtime type is owned
-                // `ValArray` regardless of how the body produced it
-                // (TupleNew / StructNew / ArrayInit / ArrayMap /
-                // ArrayFilter / a bare composite Local). For a bare
-                // Local that shadows the loop's owned slot, we'd
-                // otherwise move out of the slot mid-tail-call; the
-                // explicit `.clone()` (refcount bump) keeps the
-                // slot's value alive until the assignment below.
-                write!(
-                    out,
-                    "let __tmp_{}: ::netidx_value::ValArray = (",
-                    slot.rust_name,
-                )
-                .ok();
-                write_rust_expr(out, a);
-                out.push_str(").clone();\n");
-            }
-            TailCallSlotKind::Variant => {
-                // Variant runtime type is `Value` (String for nullary,
-                // Array for with-payload). VariantNew produces an
-                // owned Value; a bare Local shadows the loop slot, so
-                // explicit clone keeps the slot alive across the
-                // assignment.
-                write!(
-                    out,
-                    "let __tmp_{}: ::netidx_value::Value = (",
-                    slot.rust_name,
-                )
-                .ok();
-                write_rust_expr(out, a);
-                out.push_str(").clone();\n");
-            }
-        }
-    }
-    for slot in slots.iter() {
-        indent_into(out, indent);
-        writeln!(out, "{} = __tmp_{};", slot.rust_name, slot.rust_name).ok();
-    }
-    indent_into(out, indent);
-    out.push_str("continue;\n");
-}
 
 #[cfg(test)]
 mod tests {
@@ -2194,138 +1546,10 @@ mod tests {
     }
 
     #[test]
-    fn rust_renders_arith_with_parens_and_suffix() {
-        // `zr * zr + zi * zi > 4.0` style.
-        let zr = loc("zr", PrimType::F64);
-        let zi = loc("zi", PrimType::F64);
-        let zr_sq = arith(zr.clone(), zr, BinOp::Mul).unwrap();
-        let zi_sq = arith(zi.clone(), zi, BinOp::Mul).unwrap();
-        let sum = arith(zr_sq, zi_sq, BinOp::Add).unwrap();
-        let escaped = cmp(sum, f64c(4.0), CmpOp::Gt).unwrap();
-        let src = kir_to_rust_expr(&escaped);
-        assert_eq!(src, "(((zr * zr) + (zi * zi)) > 4f64)");
-    }
-
-    #[test]
-    fn block_lets_get_type_annotations() {
-        // `{ let c = a + b; c * 2.0 }` style.
-        let a = loc("a", PrimType::F64);
-        let b = loc("b", PrimType::F64);
-        let sum = arith(a, b, BinOp::Add).unwrap();
-        let c_ref = loc("c", PrimType::F64);
-        let scaled = arith(c_ref, f64c(2.0), BinOp::Mul).unwrap();
-        let block = KirExpr {
-            op: KirOp::Block {
-                lets: vec![Let { local: ArcStr::from("c"), value: sum }],
-                tail: Box::new(scaled),
-            },
-            typ: KirType::Prim(PrimType::F64),
-        };
-        let src = kir_to_rust_expr(&block);
-        assert!(src.contains("let mut c: f64 = (a + b);"), "{src}");
-        assert!(src.contains("(c * 2f64)"), "{src}");
-    }
-
-    #[test]
-    fn ifchain_unconditional_last_arm() {
-        // `if x { 1 } else { 2 }` style.
-        let x = loc("x", PrimType::Bool);
-        let chain = KirExpr {
-            op: KirOp::IfChain {
-                arms: vec![
-                    (Some(x), i64c(1)),
-                    (None, i64c(2)),
-                ],
-            },
-            typ: KirType::Prim(PrimType::I64),
-        };
-        let src = kir_to_rust_expr(&chain);
-        assert_eq!(src, "(if x { 1i64 } else { 2i64 })");
-    }
-
-    #[test]
-    fn ifchain_all_conditional_inserts_unreachable() {
-        let x = loc("x", PrimType::Bool);
-        let y = loc("y", PrimType::Bool);
-        let chain = KirExpr {
-            op: KirOp::IfChain {
-                arms: vec![
-                    (Some(x), i64c(1)),
-                    (Some(y), i64c(2)),
-                ],
-            },
-            typ: KirType::Prim(PrimType::I64),
-        };
-        let src = kir_to_rust_expr(&chain);
-        assert!(src.contains("unreachable!"), "{src}");
-        assert!(src.starts_with("(if x { 1i64 }"), "{src}");
-    }
-
-    #[test]
-    fn cast_uses_as() {
-        let px = loc("px", PrimType::I64);
-        let casted = cast(px, PrimType::F64).unwrap();
-        let src = kir_to_rust_expr(&casted);
-        assert_eq!(src, "(px as f64)");
-    }
-
-    #[test]
     fn cast_bool_rejected() {
         let x = loc("x", PrimType::Bool);
         assert!(cast(x, PrimType::I64).is_none());
         let y = loc("y", PrimType::I64);
         assert!(cast(y, PrimType::Bool).is_none());
-    }
-
-    #[test]
-    fn kernel_with_tail_call_wraps_loop() {
-        // Mini-mandelbrot shape: one param, body is `select { 0 => 0,
-        // _ => iterate(i - 1) }` style — return-or-tail-call.
-        let i = Input {
-            name: ArcStr::from("i"),
-            prim: PrimType::I64,
-            bind_id: None,
-            rust_name: "i".to_string(),
-        };
-        let i_ref = || loc("i", PrimType::I64);
-        let is_zero = cmp(i_ref(), i64c(0), CmpOp::Eq).unwrap();
-        let next_i = arith(i_ref(), i64c(1), BinOp::Sub).unwrap();
-        let body = vec![KirStmt::Select {
-            arms: vec![
-                SelectArm {
-                    cond: Some(is_zero),
-                    body: vec![KirStmt::Return(i64c(0))],
-                },
-                SelectArm {
-                    cond: None,
-                    body: vec![KirStmt::TailCall { args: vec![next_i] }],
-                },
-            ],
-        }];
-        let kernel = KirKernel {
-            fn_name: ArcStr::from("countdown"),
-            params: vec![i.clone()],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            tail_call_slots: vec![TailCallSlot {
-                name: i.name.clone(),
-                rust_name: i.rust_name.clone(),
-                kind: TailCallSlotKind::Scalar(i.prim),
-            }],
-            return_type: KirType::Prim(PrimType::I64),
-            has_tail_loop: true,
-            body,
-        };
-        let src = kir_to_rust_kernel(&kernel);
-        assert!(src.contains("loop {"), "{src}");
-        assert!(src.contains("if (i == 0i64) {"), "{src}");
-        assert!(src.contains("return 0i64;"), "{src}");
-        assert!(src.contains("let __tmp_i: i64 = (i - 1i64);"), "{src}");
-        assert!(src.contains("i = __tmp_i;"), "{src}");
-        assert!(src.contains("continue;"), "{src}");
-        assert!(src.contains("fn fused_countdown_body(mut i: i64) -> i64"), "{src}");
     }
 }

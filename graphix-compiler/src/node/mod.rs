@@ -23,6 +23,7 @@ pub(crate) mod map;
 pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
+pub mod region;
 pub(crate) mod select;
 
 #[macro_export]
@@ -127,7 +128,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -174,7 +175,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         self.n.typecheck(ctx)
     }
 
@@ -274,7 +275,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
         None
     }
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -337,7 +338,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         None
     }
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -407,7 +408,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         &self.typ
     }
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -495,7 +496,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         &self.children.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in &mut self.children {
             if self.module {
                 wrap!(n, n.typecheck(ctx)).with_context(|| self.spec.ori.clone())?
@@ -588,7 +589,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a.node, a.node.typecheck(ctx))?;
             self.typs[i] = a.node.typ().with_deref(|t| match t {
@@ -670,7 +671,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.node.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck(ctx))?;
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
@@ -779,7 +780,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.rhs.node, self.rhs.node.typecheck(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
@@ -843,7 +844,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.refs(refs)
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(wrap!(self.n, self.n.typecheck(ctx))?)
     }
 }
@@ -900,7 +901,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck(ctx))?
         }
@@ -992,7 +993,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.refs(refs);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.trigger, self.trigger.typecheck(ctx))?;
         wrap!(self.arg.node, self.arg.node.typecheck(ctx))
     }

@@ -207,6 +207,12 @@ pub enum EvalResult {
     Scalar(RegValue),
     ValArray(ValArray),
     Variant(Value),
+    /// `KirType::String` result — kernel evaluation produces
+    /// strings via `KirOp::ConstStr` (string literals) and
+    /// `KirOp::Concat` (StringInterpolate). The runtime marshals
+    /// these into `Value::String` at the kernel boundary (DynCall
+    /// arg push, kernel return).
+    String(arcstr::ArcStr),
 }
 
 impl EvalResult {
@@ -216,6 +222,7 @@ impl EvalResult {
             EvalResult::Scalar(r) => r.to_value(),
             EvalResult::ValArray(a) => Value::Array(a),
             EvalResult::Variant(v) => v,
+            EvalResult::String(s) => Value::String(s),
         }
     }
 
@@ -360,6 +367,13 @@ impl InterpEnv {
             EvalResult::Scalar(r) => self.push(name, r),
             EvalResult::ValArray(a) => self.push_array(name, a),
             EvalResult::Variant(v) => self.push_variant(name, v),
+            // String locals not supported yet — would need a
+            // `string_inputs`-like env table. `emit_bind_stmt`
+            // rejects String-typed lets so this shouldn't fire.
+            EvalResult::String(_) => panic!(
+                "EvalResult::String pushed as local — kernel build \
+                 should have rejected, KIR is malformed"
+            ),
         }
     }
 
@@ -556,6 +570,16 @@ fn eval_body(
                 };
                 env.push_local(l.local.clone(), v);
             }
+            KirStmt::Discard(e) => {
+                // Evaluate for side effects; throw away the result.
+                // `None` here still means "pending" (an inner
+                // DynCall hasn't produced a value this cycle yet) —
+                // the kernel must re-fire next cycle, same as Let.
+                match eval_expr(env, e, registry, dispatch) {
+                    Some(_) => {}
+                    None => return BodyResult::Pending,
+                }
+            }
             KirStmt::Return(e) => {
                 return match eval_expr(env, e, registry, dispatch) {
                     Some(v) => BodyResult::Return(v),
@@ -608,6 +632,10 @@ fn eval_body(
                             EvalResult::Variant(val) => {
                                 env.rebind_variant(&slot.name, val);
                             }
+                            EvalResult::String(_) => panic!(
+                                "TailCall rebind of String — string \
+                                 params aren't supported"
+                            ),
                         }
                     }
                     env.tail_call_slots = slots;
@@ -656,6 +684,35 @@ fn eval_expr(
 ) -> Option<EvalResult> {
     Some(match &e.op {
         KirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
+        KirOp::ConstStr(s) => EvalResult::String(s.clone()),
+        KirOp::Concat(parts) => {
+            // Render each part — String children emit bare (no quoting,
+            // matching how `"x=[s]"` outputs `s`'s contents directly);
+            // non-string children render via `NakedValue`, which strips
+            // the type prefix that `Value`'s own Display emits (e.g.
+            // `i64:42` → `42`). This matches `node::StringInterpolate`'s
+            // non-fusion behavior — TVal falls through to NakedValue
+            // for primitive leaves anyway.
+            use std::fmt::Write;
+            use compact_str::CompactString;
+            use netidx_value::NakedValue;
+            let mut buf = CompactString::default();
+            for part in parts {
+                let v = eval_expr(env, part, registry, dispatch)?;
+                match v {
+                    EvalResult::String(s) => buf.push_str(&s),
+                    EvalResult::Scalar(r) => {
+                        let v = r.to_value();
+                        let _ = write!(buf, "{}", NakedValue(&v));
+                    }
+                    other => panic!(
+                        "Concat child has unexpected EvalResult: \
+                         {other:?} — KIR is malformed"
+                    ),
+                }
+            }
+            EvalResult::String(arcstr::ArcStr::from(buf.as_str()))
+        }
         KirOp::Local(name) => match &e.typ {
             KirType::Prim(_) => EvalResult::Scalar(env.lookup(name).unwrap_or_else(
                 || panic!("undefined scalar local `{name}` — KIR is malformed"),
@@ -675,6 +732,21 @@ fn eval_expr(
                         panic!("undefined variant local `{name}` — KIR is malformed")
                     })
                     .clone(),
+            ),
+            // Unit-typed locals don't exist — `emit_bind_stmt` routes
+            // them through `KirStmt::Discard` without registering a
+            // local. A `Local` ref of Unit type is a malformed kernel.
+            KirType::Unit => panic!(
+                "Local(`{name}`) has KirType::Unit — emit_bind_stmt \
+                 should have emitted Discard, KIR is malformed"
+            ),
+            // String-typed locals aren't supported yet — no
+            // `string_inputs` slot list. `emit_bind_stmt` rejects
+            // String-typed lets, so this shouldn't appear in a
+            // well-formed kernel.
+            KirType::String => panic!(
+                "Local(`{name}`) has KirType::String — kernel build \
+                 should have rejected, KIR is malformed"
             ),
         },
         KirOp::Bin { op, lhs, rhs } => {
@@ -742,29 +814,78 @@ fn eval_expr(
             arg_types,
             return_type,
         } => {
-            // Evaluate args, convert to Values (the dispatcher's
-            // contract is in netidx Value), call dispatcher, convert
-            // result back. None propagates up through the kernel.
-            // DynCall is scalar-only today; the dispatcher contract
-            // names a `PrimType` return.
+            // Evaluate args, convert each to a `Value` per its
+            // declared `KirType` (scalar prim, composite ValArray,
+            // or variant Value), call the dispatcher, then decode
+            // the result based on `return_type`. Pending (`None`)
+            // propagates up via `?`.
             debug_assert_eq!(args.len(), arg_types.len(), "DynCall arity mismatch");
             let mut value_args: smallvec::SmallVec<[Value; 8]> =
                 smallvec::SmallVec::with_capacity(args.len());
             for (a, t) in args.iter().zip(arg_types.iter()) {
-                let r = eval_expr(env, a, registry, dispatch)?.into_scalar();
-                debug_assert_eq!(r.typ(), *t, "DynCall arg type mismatch");
-                value_args.push(r.to_value());
+                let r = eval_expr(env, a, registry, dispatch)?;
+                value_args.push(match (t, r) {
+                    (KirType::Prim(p), EvalResult::Scalar(s)) => {
+                        debug_assert_eq!(s.typ(), *p, "DynCall scalar arg mismatch");
+                        s.to_value()
+                    }
+                    (KirType::Array(_)
+                    | KirType::Tuple(_)
+                    | KirType::Struct(_), EvalResult::ValArray(a)) => {
+                        Value::Array(a)
+                    }
+                    (KirType::Variant(_), EvalResult::Variant(v)) => v,
+                    (KirType::String, EvalResult::String(s)) => {
+                        Value::String(s)
+                    }
+                    // `KirType::Unit` is a return-only shape — never
+                    // a DynCall arg type.
+                    (KirType::Unit, _) => panic!(
+                        "DynCall arg has declared type Unit — KIR is malformed"
+                    ),
+                    (decl, actual) => panic!(
+                        "DynCall arg shape mismatch: declared {decl:?}, \
+                         got {actual:?}"
+                    ),
+                });
             }
             let result = dispatch(*fn_index, &value_args)?;
-            EvalResult::Scalar(
-                RegValue::from_value(&result, *return_type).unwrap_or_else(|| {
-                    panic!(
-                        "DynCall returned a Value not matching the declared \
-                         return type {:?} — typechecker should have caught this",
-                        return_type
-                    )
-                }),
-            )
+            match return_type {
+                KirType::Prim(p) => EvalResult::Scalar(
+                    RegValue::from_value(&result, *p).unwrap_or_else(|| {
+                        panic!(
+                            "DynCall returned a Value not matching the \
+                             declared prim return type {p:?}"
+                        )
+                    }),
+                ),
+                KirType::Array(_)
+                | KirType::Tuple(_)
+                | KirType::Struct(_) => match result {
+                    Value::Array(a) => EvalResult::ValArray(a),
+                    other => panic!(
+                        "DynCall declared composite return but got {other:?}"
+                    ),
+                },
+                KirType::Variant(_) => EvalResult::Variant(result),
+                // Unit-typed DynCall: discard the runtime Value. The
+                // caller is `KirStmt::Discard`, which throws away the
+                // EvalResult. Return a Scalar(Bool(false)) as a
+                // placeholder — the Discard arm in `eval_body`
+                // pattern-matches on `Some(_)` so the actual value
+                // is never observed.
+                KirType::Unit => {
+                    EvalResult::Scalar(RegValue::Bool(false))
+                }
+                // String return: the runtime gave us a Value::String;
+                // wrap it.
+                KirType::String => match result {
+                    Value::String(s) => EvalResult::String(s),
+                    other => panic!(
+                        "DynCall declared String return but got {other:?}"
+                    ),
+                },
+            }
         }
         KirOp::Block { lets, tail } => {
             let mark = env.mark();
@@ -803,7 +924,9 @@ fn eval_expr(
         KirOp::ArrayGet { name, idx } => {
             // Clone the ValArray (refcount bump only) so the immutable
             // env borrow is released before we recurse into eval_expr
-            // for `idx`.
+            // for `idx`. Result type follows `e.typ` — primitive uses
+            // the fast scalar extraction; composite gets the slot's
+            // Value wrapped via `extract_composite_or_scalar`.
             let arr = env
                 .lookup_array(name)
                 .unwrap_or_else(|| {
@@ -812,38 +935,29 @@ fn eval_expr(
                 .clone();
             let idx_val =
                 eval_expr(env, idx, registry, dispatch)?.into_scalar();
-            // The index expression's type is whatever the user wrote
-            // (typically i64). Coerce to usize the same way the AOT
-            // backend does.
             let i = idx_val.as_usize();
-            // ArrayGet's result is always scalar — the constructor
-            // pins `KirExpr.typ = KirType::Prim(elem)`.
-            let elem_p = e
-                .typ
-                .as_prim()
-                .expect("KIR malformed: ArrayGet must have scalar result type");
-            EvalResult::Scalar(unsafe {
-                RegValue::from_array_elem(&arr, i, elem_p)
-            })
+            extract_composite_or_scalar(&arr, i, &e.typ)
         }
         KirOp::TupleGet { name, idx, elem_typ } => {
-            // Tuple values are flat ValArrays — same lookup +
-            // unsafe extraction as ArrayGet but with a literal index.
+            // Tuple values are flat ValArrays. Branch on the slot's
+            // KirType — primitive slots use the fast unsafe scalar
+            // extraction; composite slots read the `Value` and wrap
+            // it in the matching `EvalResult` (`ValArray` for
+            // array/tuple/struct, `Variant` for variant).
             let arr = env
                 .lookup_array(name)
                 .unwrap_or_else(|| {
                     panic!("undefined tuple `{name}` — KIR is malformed")
                 })
                 .clone();
-            EvalResult::Scalar(unsafe {
-                RegValue::from_array_elem(&arr, *idx, *elem_typ)
-            })
+            extract_composite_or_scalar(&arr, *idx, elem_typ)
         }
         KirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
             // Runtime struct layout is `[Array([name, val]), ...]` —
             // each field is a 2-element kv-pair subarray. Two-level
             // read: outer[sorted_idx] gives the kv pair, then [1]
-            // gives the value.
+            // gives the value. Branch on `elem_typ` for the
+            // primitive/composite distinction (same as TupleGet).
             let outer = env.lookup_array(name).unwrap_or_else(|| {
                 panic!("undefined struct `{name}` — KIR is malformed")
             });
@@ -853,9 +967,7 @@ fn eval_expr(
                     "struct `{name}` field {sorted_idx} not a kv-pair: {v:?}"
                 ),
             };
-            EvalResult::Scalar(unsafe {
-                RegValue::from_array_elem(&kv_pair, 1, *elem_typ)
-            })
+            extract_composite_or_scalar(&kv_pair, 1, elem_typ)
         }
         KirOp::ArrayInit { n, idx_local, elem_typ, body } => {
             // Evaluate `n` once, allocate a single output buffer,
@@ -1044,6 +1156,48 @@ fn eval_expr(
     })
 }
 
+/// Read slot `idx` from `arr` as an `EvalResult` matching `slot_typ`.
+/// Used by composite-aware accessors (`TupleGet` / `StructGet`):
+/// primitive slots use the existing fast unsafe scalar extraction;
+/// composite slots clone the slot's `Value` and wrap it in the
+/// matching `EvalResult` variant (`ValArray` for array/tuple/
+/// struct, `Variant` for variant, `String` for string).
+///
+/// Panics if the slot type doesn't match the runtime value's shape
+/// — that would mean KIR is malformed (typecheck should have
+/// rejected the program before it got this far).
+fn extract_composite_or_scalar(
+    arr: &ValArray,
+    idx: usize,
+    slot_typ: &crate::kernel_ir::KirType,
+) -> EvalResult {
+    use crate::kernel_ir::KirType;
+    match slot_typ {
+        KirType::Prim(p) => EvalResult::Scalar(unsafe {
+            RegValue::from_array_elem(arr, idx, *p)
+        }),
+        KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => {
+            match &arr[idx] {
+                Value::Array(inner) => EvalResult::ValArray(inner.clone()),
+                v => panic!(
+                    "composite slot {idx}: expected Value::Array, got {v:?}"
+                ),
+            }
+        }
+        KirType::Variant(_) => EvalResult::Variant(arr[idx].clone()),
+        KirType::String => match &arr[idx] {
+            Value::String(s) => EvalResult::String(s.clone()),
+            v => panic!(
+                "string slot {idx}: expected Value::String, got {v:?}"
+            ),
+        },
+        KirType::Unit => panic!(
+            "Unit slot at {idx} — Unit isn't usefully extractable, \
+             KIR is malformed"
+        ),
+    }
+}
+
 fn zero_reg(t: PrimType) -> RegValue {
     match t {
         PrimType::I8 => RegValue::I8(0),
@@ -1213,8 +1367,15 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     arg_refs: Vec<Node<R, E>>,
     /// Cached `(LambdaDef pointer, Apply instance)`. Invalidated when
     /// a new LambdaDef arrives (different raw pointer) — typical case
-    /// is the hot loop where the same callback is reused.
+    /// is the hot loop where the same callback is reused. For
+    /// pre-bound slots (`pre_bound = true`) the pointer is a stable
+    /// sentinel and `dispatch` never re-inits.
     current: Option<(*const u8, Box<dyn Apply<R, E>>)>,
+    /// `true` when the slot was bound at KirNode construction time
+    /// (e.g. `FnSource::Builtin` — the call target is fixed and
+    /// can't change). `dispatch` short-circuits the LambdaDef
+    /// downcast + rebind check for these slots.
+    pre_bound: bool,
     /// Lexical scope at the kernel's definition site. Re-passed to
     /// the inner Apply's `init` so it sees the right environment.
     scope: crate::Scope,
@@ -1246,13 +1407,14 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         let mut bind_ids = Vec::with_capacity(fn_param.arg_types.len());
         let mut arg_refs: Vec<Node<R, E>> =
             Vec::with_capacity(fn_param.arg_types.len());
-        for prim in &fn_param.arg_types {
+        for arg_kty in &fn_param.arg_types {
             let id = crate::BindId::new();
             bind_ids.push(id);
             // Ref reads `event.variables[id]` (or falls back to
-            // `ctx.cached[id]`) on each `update`. `typ` is the
-            // primitive Graphix type matching `prim`.
-            let typ = prim_type_to_graphix_type(*prim);
+            // `ctx.cached[id]`) on each `update`. `typ` matches
+            // the FnParam's declared `KirType` (scalar prim,
+            // composite, or variant).
+            let typ = kir_type_to_graphix_type(arg_kty);
             let node = crate::node::bind::Ref::new::<R, E>(
                 id,
                 typ,
@@ -1261,7 +1423,134 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             );
             arg_refs.push(node);
         }
-        Self { bind_ids, arg_refs, current: None, scope, top_id }
+        Self { bind_ids, arg_refs, current: None, pre_bound: false, scope, top_id }
+    }
+
+    /// Construct the builtin's `Apply<R, E>` immediately via its
+    /// registered init fn and stash it as a pre-bound slot.
+    /// Dispatch will route every call into this Apply without ever
+    /// re-binding. Used for `FnSource::Builtin` fn_params at
+    /// `KirNode::new` time.
+    ///
+    /// `layout` describes the callee's full formal-arg list (one
+    /// entry per `typ.args` slot, declaration order). For each:
+    /// - `Positional(call_idx)`: arg_refs[i] becomes a `Ref` reading
+    ///   `bind_ids[call_idx]` (the kernel writes the dispatched
+    ///   value to that BindId).
+    /// - `LabeledDefault(expr)`: compile the default expression
+    ///   into a `Node<R, E>` once; that Node becomes arg_refs[i]
+    ///   and produces the default value on every call. Mirrors
+    ///   `CallSite::bind`'s `compile_default!` macro, but the
+    ///   compile happens once per kernel construction (the call
+    ///   site never changes).
+    pub fn pre_bind_builtin(
+        &mut self,
+        ctx: &mut crate::ExecCtx<R, E>,
+        builtin_name: &str,
+        typ: &crate::typ::FnType,
+        layout: &[crate::kernel_ir::BuiltinSlot],
+    ) -> ::anyhow::Result<()> {
+        use ::anyhow::anyhow;
+        use crate::kernel_ir::BuiltinSlot;
+        let (init, _needs_callsite) =
+            ctx.builtins.get(builtin_name).copied().ok_or_else(|| {
+                anyhow!(
+                    "DynCallSlot::pre_bind_builtin: unknown builtin `{}`",
+                    builtin_name
+                )
+            })?;
+        // The slot's existing `arg_refs` has one Ref per kernel-
+        // marshalled arg (i.e. one per Positional in the layout).
+        // Re-shape into a per-formal `from[]` slice in
+        // `typ.args` declaration order: Positional slots take their
+        // matching Ref from the existing arg_refs; LabeledDefault
+        // slots compile the captured default expression and use
+        // the resulting Node.
+        let mut new_arg_refs: Vec<Node<R, E>> =
+            Vec::with_capacity(layout.len());
+        // Drain self.arg_refs (one per positional) so we can move
+        // each Ref into the right formal slot. Indexed by
+        // BuiltinSlot::Positional(call_idx).
+        let mut positional_refs: Vec<Option<Node<R, E>>> = self
+            .arg_refs
+            .drain(..)
+            .map(Some)
+            .collect();
+        for slot in layout {
+            match slot {
+                BuiltinSlot::Positional(call_idx) => {
+                    let r = positional_refs
+                        .get_mut(*call_idx)
+                        .and_then(|s| s.take())
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "DynCallSlot::pre_bind_builtin: layout \
+                                 Positional({call_idx}) but only \
+                                 {} positional refs allocated",
+                                positional_refs.len()
+                            )
+                        })?;
+                    new_arg_refs.push(r);
+                }
+                BuiltinSlot::LabeledDefault(expr) => {
+                    // Compile the default expression in the kernel's
+                    // scope. The `_top_id` is the kernel's top-level
+                    // ExprId so any `ref_var` subscriptions inside
+                    // the default tie back here. Defaults are
+                    // typically simple literals (`` `Stdout ``, `0`,
+                    // …) so the compile is cheap and the resulting
+                    // Node's update fires once and caches.
+                    let node = crate::node::compiler::compile(
+                        ctx,
+                        enumflags2::BitFlags::empty(),
+                        expr.clone(),
+                        &self.scope,
+                        self.top_id,
+                    )?;
+                    new_arg_refs.push(node);
+                }
+                BuiltinSlot::Variadic { from_call_idx, count } => {
+                    // Variadic tail: forward `count` positional refs
+                    // straight through. The inner Apply's own vargs
+                    // handling (`CallSite::bind`) walks positional
+                    // refs past the fixed formals and collects them
+                    // into the declared `Array<varg_type>`. From the
+                    // dispatch perspective, a variadic builtin is
+                    // just a builtin with extra positional args.
+                    for i in 0..*count {
+                        let idx = from_call_idx + i;
+                        let r = positional_refs
+                            .get_mut(idx)
+                            .and_then(|s| s.take())
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "DynCallSlot::pre_bind_builtin: \
+                                     layout Variadic at call_idx \
+                                     {idx} but only {} positional refs \
+                                     allocated",
+                                    positional_refs.len()
+                                )
+                            })?;
+                        new_arg_refs.push(r);
+                    }
+                }
+            }
+        }
+        self.arg_refs = new_arg_refs;
+        let apply = init(
+            ctx,
+            typ,
+            Some(typ),
+            &self.scope,
+            &self.arg_refs,
+            self.top_id,
+        )?;
+        // Use the slot's own address as a stable sentinel pointer —
+        // dispatch checks `pre_bound` first and never reads this.
+        let sentinel = self as *const Self as *const u8;
+        self.current = Some((sentinel, apply));
+        self.pre_bound = true;
+        Ok(())
     }
 
     /// Eagerly initialize the inner Apply against `lambda_value`'s
@@ -1312,39 +1601,44 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         args: &[Value],
     ) -> Option<Value> {
         debug_assert_eq!(args.len(), self.bind_ids.len(), "DynCall arity");
-        // Resolve the callee's LambdaDef out of the Value via
-        // `downcast_ref`. We key the cache by the LambdaDef's address
-        // (stable for the lifetime of the inner Arc<AbstractInner>),
-        // so the hot path of "same callback re-invoked" reuses the
-        // existing Apply without re-init'ing.
-        let lambda_def = lambda_value
-            .downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
-            .unwrap_or_else(|| {
-                panic!(
-                    "DynCall: fn-arg value isn't a LambdaDef — \
-                     typecheck should have rejected this"
+        // Pre-bound (FnSource::Builtin) slots: the target was fixed
+        // at construction; never re-init, ignore `lambda_value`.
+        if !self.pre_bound {
+            // Resolve the callee's LambdaDef out of the Value via
+            // `downcast_ref`. We key the cache by the LambdaDef's
+            // address (stable for the lifetime of the inner
+            // Arc<AbstractInner>), so the hot path of "same callback
+            // re-invoked" reuses the existing Apply without
+            // re-init'ing.
+            let lambda_def = lambda_value
+                .downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "DynCall: fn-arg value isn't a LambdaDef — \
+                         typecheck should have rejected this"
+                    )
+                });
+            let lambda_ptr = lambda_def as *const _ as *const u8;
+            let needs_init = match &self.current {
+                Some((p, _)) if *p == lambda_ptr => false,
+                _ => true,
+            };
+            if needs_init {
+                // Drop the old Apply (if any) so it releases resources
+                // before we initialize a new one.
+                if let Some((_, mut prev)) = self.current.take() {
+                    prev.delete(ctx);
+                }
+                let new_apply = (lambda_def.init)(
+                    &self.scope,
+                    ctx,
+                    &mut self.arg_refs,
+                    None,
+                    self.top_id,
                 )
-            });
-        let lambda_ptr = lambda_def as *const _ as *const u8;
-        let needs_init = match &self.current {
-            Some((p, _)) if *p == lambda_ptr => false,
-            _ => true,
-        };
-        if needs_init {
-            // Drop the old Apply (if any) so it releases resources
-            // before we initialize a new one.
-            if let Some((_, mut prev)) = self.current.take() {
-                prev.delete(ctx);
+                .ok()?;
+                self.current = Some((lambda_ptr, new_apply));
             }
-            let new_apply = (lambda_def.init)(
-                &self.scope,
-                ctx,
-                &mut self.arg_refs,
-                None, // no resolved FnType; inner Apply uses its own typ
-                self.top_id,
-            )
-            .ok()?;
-            self.current = Some((lambda_ptr, new_apply));
         }
         // Side-channel: stash each arg Value at its BindId so the
         // arg_refs `Ref` nodes read it inside `apply.update`.
@@ -1387,6 +1681,167 @@ fn prim_type_to_graphix_type(p: PrimType) -> crate::typ::Type {
     let mut flags = enumflags2::BitFlags::<netidx_value::Typ>::empty();
     flags.insert(flag);
     crate::typ::Type::Primitive(flags)
+}
+
+/// Reverse the `KirType::from_type` lowering: produce a graphix
+/// [`crate::typ::Type`] that the DynCall arg `Ref` node can carry
+/// for diagnostics / typecheck. The exact shape matters for the
+/// runtime's internal type assertions; structural equivalence to
+/// the user's source-level type is sufficient.
+pub(crate) fn kir_type_to_graphix_type(
+    t: &crate::kernel_ir::KirType,
+) -> crate::typ::Type {
+    use crate::kernel_ir::KirType;
+    use crate::typ::Type;
+    match t {
+        KirType::Prim(p) => prim_type_to_graphix_type(*p),
+        KirType::Array(elem) => Type::Array(
+            triomphe::Arc::new(kir_type_to_graphix_type(elem)),
+        ),
+        KirType::Tuple(elems) => Type::Tuple(
+            elems.iter().map(kir_type_to_graphix_type).collect(),
+        ),
+        KirType::Struct(fields) => Type::Struct(
+            fields
+                .iter()
+                .map(|(n, p)| (n.clone(), kir_type_to_graphix_type(p)))
+                .collect(),
+        ),
+        KirType::Variant(cases) => {
+            // Reconstruct a `[\`Tag(payload...), ...]` shape by
+            // building a Type::Set of Variant cases.
+            let cases_ty: triomphe::Arc<[Type]> = cases
+                .iter()
+                .map(|(tag, payload_kts)| {
+                    let payload_types: triomphe::Arc<[Type]> = payload_kts
+                        .iter()
+                        .map(kir_type_to_graphix_type)
+                        .collect();
+                    Type::Variant(tag.clone(), payload_types)
+                })
+                .collect();
+            Type::Set(cases_ty)
+        }
+        // Unit is the discard-return shape; source-level `_` → Bottom.
+        KirType::Unit => Type::Bottom,
+        // String maps back to `Type::Primitive(Typ::String)`.
+        KirType::String => {
+            let mut flags =
+                enumflags2::BitFlags::<netidx_value::Typ>::empty();
+            flags.insert(netidx_value::Typ::String);
+            Type::Primitive(flags)
+        }
+    }
+}
+
+// ─── DynCall dispatch for JIT'd kernels ──────────────────────────
+//
+// When a JIT'd kernel calls a HOF (KirOp::DynCall), the emitted code
+// invokes `graphix_dyncall` which indirects through the thread-local
+// `DYN_DISPATCH_HANDLE` to a monomorphized `dispatch_typed::<R, E>`.
+// `KirNode::update` populates the handle before calling the wrapper,
+// passing a `DispatcherState` whose erased pointer holds the per-call
+// references (`dyn_slots`, `fn_arg_values`, `ctx`, `event`).
+
+/// Per-call state shared between Rust-side `KirNode::update` and the
+/// JIT-side `graphix_dyncall` dispatcher. Held by `KirNode::update`
+/// on its stack for the duration of the wrapper call; the handle's
+/// `state` pointer references this struct.
+///
+/// All fields are raw pointers so we can type-erase the struct
+/// itself through `*mut u8` and reconstruct in
+/// `dispatch_typed::<R, E>` without lifetime annotations carrying
+/// through the FFI boundary.
+#[repr(C)]
+struct DispatcherState<R: Rt, E: UserEvent> {
+    dyn_slots: *mut [DynCallSlot<R, E>],
+    fn_arg_values: *const [Value],
+    ctx: *mut ExecCtx<R, E>,
+    event: *mut Event<E>,
+}
+
+/// Monomorphized DynCall dispatcher. The function pointer is stored
+/// in `DynDispatchHandle.dispatch` per-call by `KirNode::update`.
+///
+/// SAFETY contract: `state_ptr` must point to a valid
+/// `DispatcherState<R, E>` for THIS R, E. The per-call references
+/// it holds (dyn_slots, ctx, event, fn_arg_values) must be live
+/// for the duration of this call. KirNode::update ensures both.
+pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
+    state_ptr: *mut u8,
+    fn_index: u32,
+    args: *mut poolshark::local::LPooled<Vec<Value>>,
+    ret_kind: u8,
+) -> u64 {
+    let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
+    let slots = unsafe { &mut *state.dyn_slots };
+    let fn_arg_values = unsafe { &*state.fn_arg_values };
+    let ctx = unsafe { &mut *state.ctx };
+    let event = unsafe { &mut *state.event };
+    // Drain args buf — helper takes ownership.
+    let args_vec: Vec<Value> = unsafe {
+        let mut owned = *Box::from_raw(args);
+        owned.drain(..).collect()
+    };
+    let slot = &mut slots[fn_index as usize];
+    let lambda_v = &fn_arg_values[fn_index as usize];
+    match slot.dispatch(lambda_v, ctx, event, &args_vec) {
+        Some(v) => match ret_kind {
+            0 => {
+                // Scalar return: pack the Value's bits into u64.
+                pack_value_to_u64(&v)
+            }
+            1 => {
+                // Composite ValArray return: extract the inner array,
+                // box, transfer ownership.
+                match v {
+                    Value::Array(arr) => {
+                        Box::into_raw(Box::new(arr)) as u64
+                    }
+                    other => panic!(
+                        "DynCall return ABI: ret_kind=1 (ValArray) but \
+                         got {other:?}"
+                    ),
+                }
+            }
+            2 => {
+                // Variant return: box the whole Value.
+                Box::into_raw(Box::new(v)) as u64
+            }
+            _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
+        },
+        None => {
+            crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+            0
+        }
+    }
+}
+
+/// Pack a [`Value`]'s scalar bits into a u64 for the DynCall ABI's
+/// scalar return path. Same encoding as
+/// [`crate::kir_jit::pack_reg_to_u64`] — go through a `RegValue`
+/// first to centralize the bit pattern.
+fn pack_value_to_u64(v: &Value) -> u64 {
+    let prim = match v {
+        Value::I8(_) => PrimType::I8,
+        Value::I16(_) => PrimType::I16,
+        Value::I32(_) => PrimType::I32,
+        Value::I64(_) => PrimType::I64,
+        Value::U8(_) => PrimType::U8,
+        Value::U16(_) => PrimType::U16,
+        Value::U32(_) => PrimType::U32,
+        Value::U64(_) => PrimType::U64,
+        Value::F32(_) => PrimType::F32,
+        Value::F64(_) => PrimType::F64,
+        Value::Bool(_) => PrimType::Bool,
+        other => panic!(
+            "DynCall scalar return: callee produced non-scalar {other:?}"
+        ),
+    };
+    let r = RegValue::from_value(v, prim).unwrap_or_else(|| {
+        panic!("pack_value_to_u64: from_value failed for prim {prim:?}")
+    });
+    crate::kir_jit::pack_reg_to_u64(&r)
 }
 
 /// Wraps a [`KirKernel`] as an [`Apply<R, E>`] so the runtime can call
@@ -1558,22 +2013,24 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for KirNode<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> KirNode<R, E> {
-    /// Construct a fresh KirNode for `kernel`, sized to match `n_args`
-    /// input slots (which must equal `kernel.params.len() +
-    /// kernel.fn_params.len()` — the input slice the runtime passes
-    /// into `update` mixes prim and fn args). Runs through the
-    /// interpreter; use [`Self::with_jit`] for synchronous JIT or
-    /// [`Self::with_async_jit`] for background-compiled JIT.
-    ///
-    /// `scope` and `top_id` are used to initialize per-DynCall-slot
-    /// state (the inner Applies that DynCall dispatches into).
-    pub fn new(
+    /// Single construction chokepoint. Builds the KirNode and runs
+    /// both pre-init helpers (`pre_init_binding_slots` for binding-
+    /// source fn_params, `pre_init_builtin_slots` for builtin-source
+    /// fn_params). Without those, the first `DynCall` into the kernel
+    /// either silently fails to drive its inner Apply (binding case)
+    /// or panics with "fn-arg value isn't a LambdaDef" (builtin case).
+    /// Having one chokepoint makes that bug class impossible — every
+    /// public constructor goes through this.
+    fn build(
+        ctx: &mut crate::ExecCtx<R, E>,
         kernel: Arc<KirKernel>,
         n_args: usize,
+        jit: Option<Arc<crate::kir_jit::WrappedKernel>>,
+        async_jit: Option<Arc<crate::kir_jit::AsyncJitSlot>>,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
-    ) -> Self {
+    ) -> ::anyhow::Result<Self> {
         debug_assert_eq!(
             n_args,
             total_kernel_arity(&kernel),
@@ -1585,44 +2042,53 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
             .map(|fp| DynCallSlot::new(fp, scope.clone(), top_id))
             .collect();
         let arg_layout = build_arg_layout(&kernel);
-        Self {
+        let mut node = Self {
             kernel,
             args: vec![None; n_args].into_boxed_slice(),
-            jit: None,
-            async_jit: None,
+            jit,
+            async_jit,
             registry,
             dyn_slots,
             arg_layout,
-        }
+        };
+        node.pre_init_binding_slots(ctx);
+        node.pre_init_builtin_slots(ctx)?;
+        Ok(node)
+    }
+
+    /// Construct a fresh KirNode for `kernel`, sized to match `n_args`
+    /// input slots (which must equal `kernel.params.len() +
+    /// kernel.fn_params.len()` — the input slice the runtime passes
+    /// into `update` mixes prim and fn args). Runs through the
+    /// interpreter; use [`Self::with_jit`] for synchronous JIT or
+    /// [`Self::with_async_jit`] for background-compiled JIT.
+    ///
+    /// `scope` and `top_id` are used to initialize per-DynCall-slot
+    /// state (the inner Applies that DynCall dispatches into).
+    pub fn new(
+        ctx: &mut crate::ExecCtx<R, E>,
+        kernel: Arc<KirKernel>,
+        n_args: usize,
+        registry: Arc<KernelRegistry>,
+        scope: crate::Scope,
+        top_id: crate::expr::ExprId,
+    ) -> ::anyhow::Result<Self> {
+        Self::build(ctx, kernel, n_args, None, None, registry, scope, top_id)
     }
 
     /// Construct a KirNode whose `update` dispatches into a JIT'd
     /// kernel via `wrapped`. JIT path is only used for kernels that
     /// don't contain `KirOp::Call` or `KirOp::DynCall`.
     pub fn with_jit(
+        ctx: &mut crate::ExecCtx<R, E>,
         kernel: Arc<KirKernel>,
         n_args: usize,
         wrapped: Arc<crate::kir_jit::WrappedKernel>,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
-    ) -> Self {
-        debug_assert_eq!(n_args, total_kernel_arity(&kernel));
-        let dyn_slots = kernel
-            .fn_params
-            .iter()
-            .map(|fp| DynCallSlot::new(fp, scope.clone(), top_id))
-            .collect();
-        let arg_layout = build_arg_layout(&kernel);
-        Self {
-            kernel,
-            args: vec![None; n_args].into_boxed_slice(),
-            jit: Some(wrapped),
-            async_jit: None,
-            registry,
-            dyn_slots,
-            arg_layout,
-        }
+    ) -> ::anyhow::Result<Self> {
+        Self::build(ctx, kernel, n_args, Some(wrapped), None, registry, scope, top_id)
     }
 
     /// Eagerly initialize each binding-source DynCall slot so the
@@ -1660,33 +2126,43 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         }
     }
 
+    /// Eagerly construct the Apply for each `FnSource::Builtin`
+    /// fn_param. Must be called once after `KirNode::new` (typically
+    /// right next to `pre_init_binding_slots`) — without it, the
+    /// builtin slots stay empty and the first DynCall into them
+    /// panics. Construction routes through `ctx.builtins[name].init`
+    /// with the resolved FnType the analyzer captured at fusion time.
+    pub fn pre_init_builtin_slots(
+        &mut self,
+        ctx: &mut crate::ExecCtx<R, E>,
+    ) -> ::anyhow::Result<()> {
+        for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
+            if let crate::kernel_ir::FnSource::Builtin { name, typ, layout } =
+                &fp.source
+            {
+                let name = name.clone();
+                let typ = typ.clone();
+                let layout = layout.clone();
+                self.dyn_slots[fn_idx]
+                    .pre_bind_builtin(ctx, name.as_str(), &typ, &layout)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Construct a KirNode that interprets initially and atomic-
     /// swaps to a JIT'd wrapper when the async worker finishes
     /// compiling.
     pub fn with_async_jit(
+        ctx: &mut crate::ExecCtx<R, E>,
         kernel: Arc<KirKernel>,
         n_args: usize,
         slot: Arc<crate::kir_jit::AsyncJitSlot>,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
-    ) -> Self {
-        debug_assert_eq!(n_args, total_kernel_arity(&kernel));
-        let dyn_slots = kernel
-            .fn_params
-            .iter()
-            .map(|fp| DynCallSlot::new(fp, scope.clone(), top_id))
-            .collect();
-        let arg_layout = build_arg_layout(&kernel);
-        Self {
-            kernel,
-            args: vec![None; n_args].into_boxed_slice(),
-            jit: None,
-            async_jit: Some(slot),
-            registry,
-            dyn_slots,
-            arg_layout,
-        }
+    ) -> ::anyhow::Result<Self> {
+        Self::build(ctx, kernel, n_args, None, Some(slot), registry, scope, top_id)
     }
 }
 
@@ -1722,6 +2198,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     break;
                 }
             }
+        }
+        // Zero-input kernels (no `from` slots, no fn_params) need a
+        // way to fire on init. Module kernels for a pure-constant
+        // top-level let-chain (`let a = 5; let b = a + 1; …`) hit
+        // this — there's no external input, but the kernel still
+        // needs to compute and publish on startup. Subsequent
+        // cycles never re-fire (nothing can change), which is the
+        // correct semantics for an all-constant chain.
+        if !any_updated
+            && from.is_empty()
+            && self.kernel.fn_params.is_empty()
+            && event.init
+        {
+            any_updated = true;
         }
         if !any_updated {
             return None;
@@ -1896,8 +2386,47 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 }
                 let mut out: u64 = 0;
                 let f = unsafe { wrapped.fn_ptr() };
+                // Set up the DynCall dispatcher handle so the JIT'd
+                // code can invoke fn-typed params via `graphix_dyncall`.
+                // Save the previous handle so nested JIT-to-JIT
+                // HOF dispatches stack correctly.
+                //
+                // SAFETY: `state` lives on this stack frame for the
+                // entire `f(...)` call. The raw pointers in it refer
+                // to live mutable borrows of self/ctx/event/fn_arg_values
+                // which we hold through the call. `dispatch_typed::<R, E>`
+                // is monomorphized for THIS R, E so the typed downcast
+                // inside it is sound.
+                let mut state = DispatcherState::<R, E> {
+                    dyn_slots: &mut self.dyn_slots[..] as *mut [DynCallSlot<R, E>],
+                    fn_arg_values: &fn_arg_values[..] as *const [Value],
+                    ctx: ctx as *mut ExecCtx<R, E>,
+                    event: event as *mut Event<E>,
+                };
+                let handle = crate::kir_jit_helpers::DynDispatchHandle {
+                    dispatch: dispatch_typed::<R, E>,
+                    state: (&mut state) as *mut _ as *mut u8,
+                };
+                let prev_handle = crate::kir_jit_helpers::DYN_DISPATCH_HANDLE
+                    .with(|c| c.replace(&handle as *const _));
+                // Always reset the pending flag before the call so
+                // we can distinguish "this kernel pended" from
+                // "some earlier kernel left the flag set."
+                crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
                 unsafe {
                     f(slots.as_ptr(), &mut out);
+                }
+                crate::kir_jit_helpers::DYN_DISPATCH_HANDLE
+                    .with(|c| c.set(prev_handle));
+                let pending = crate::kir_jit_helpers::DYNCALL_PENDING
+                    .with(|c| c.replace(false));
+                if pending {
+                    // The kernel's *out slot is either a garbage
+                    // scalar (no deref needed) or a null pointer
+                    // (for composite returns; the JIT emitted a
+                    // sentinel from the pre_pending block). Either
+                    // way, discard and re-fire next cycle.
+                    return None;
                 }
                 // Decode the wrapper's *out slot according to the
                 // kernel's declared return type:
@@ -1928,6 +2457,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                         let owned = unsafe { *Box::from_raw(ptr) };
                         EvalResult::Variant(owned)
                     }
+                    // Unit-returning kernel: the JIT writes 0 into
+                    // *out (see `compile_into_function`'s ret_kind
+                    // dispatch); nothing to decode. The wrapper-level
+                    // caller (FusedRegion / CallSite) discards via
+                    // `KirStmt::Discard` so this EvalResult is
+                    // never inspected — a scalar bool placeholder is
+                    // type-correct and cheap.
+                    KirType::Unit => EvalResult::Scalar(RegValue::Bool(false)),
+                    // String-returning kernels fall back to the
+                    // interpreter via the `kernel_contains_string`
+                    // guard, so the JIT never compiles them and
+                    // this branch never fires.
+                    KirType::String => unreachable!(
+                        "JIT decode for KirType::String kernel return — \
+                         kernel_contains_string guard should have routed \
+                         to the interpreter"
+                    ),
                 }
             }
         };
@@ -1985,7 +2531,6 @@ mod tests {
             name: ArcStr::from(name),
             prim,
             bind_id: None,
-            rust_name: name.to_string(),
         }
     }
 
@@ -2132,7 +2677,7 @@ mod tests {
     }
 
     /// Build mandelbrot's iterate KIR by hand and check known-output
-    /// cases. The shape mirrors what `fusion::emit_function_kernel`
+    /// cases. The shape mirrors what `fusion::build_kir_kernel`
     /// produces — this test is the M5 differential's spiritual ancestor.
     fn mandelbrot_iterate_kernel() -> KirKernel {
         // body of select arm 1: return 0 (when i == 0)
@@ -2507,9 +3052,8 @@ mod tests {
             fn_params: vec![],
             array_params: vec![ArrayInput {
                 name: ArcStr::from("arr"),
-                elem: PrimType::F64,
+                elem: KirType::Prim(PrimType::F64),
                 bind_id: None,
-                rust_name: "arr".to_string(),
             }],
             tuple_params: vec![],
             struct_params: vec![],
@@ -2565,9 +3109,8 @@ mod tests {
             fn_params: vec![],
             array_params: vec![ArrayInput {
                 name: ArcStr::from("arr"),
-                elem: PrimType::F64,
+                elem: KirType::Prim(PrimType::F64),
                 bind_id: None,
-                rust_name: "arr".to_string(),
             }],
             tuple_params: vec![],
             struct_params: vec![],
@@ -2618,9 +3161,8 @@ mod tests {
             fn_params: vec![],
             array_params: vec![ArrayInput {
                 name: ArcStr::from("arr"),
-                elem: PrimType::I64,
+                elem: KirType::Prim(PrimType::I64),
                 bind_id: None,
-                rust_name: "arr".to_string(),
             }],
             tuple_params: vec![],
             struct_params: vec![],
