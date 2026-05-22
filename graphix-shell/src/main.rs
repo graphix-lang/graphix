@@ -191,14 +191,13 @@ struct Params {
     /// exclusive with --no-jit; ignored if --no-jit is also set.
     #[arg(long = "jit-async")]
     jit_async: bool,
-    /// run the M8.4 whole-graph fusion analyzer: carve each top-
-    /// level expression into maximal sync subgraphs and splice a
-    /// `FusedRegion` runtime node in place of each region's
-    /// compiled tree. Default off; the existing per-lambda lazy
-    /// path still runs alongside. Useful for A/B differential
-    /// testing against `--no-fusion`.
-    #[arg(long = "whole-graph")]
-    whole_graph: bool,
+    /// disable the M8.4 whole-graph fusion analyzer. On by default
+    /// since M8.4 step (g): each top-level expression is carved into
+    /// maximal sync subgraphs and replaced by a `FusedRegion`
+    /// runtime node. Use `--no-whole-graph` to fall back to per-
+    /// lambda lazy fusion only (useful for A/B differential testing).
+    #[arg(long = "no-whole-graph")]
+    no_whole_graph: bool,
     /// run the program in the specified file instead of starting the REPL
     file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,
@@ -316,7 +315,6 @@ async fn handle_package(action: PackageAction) -> Result<()> {
 fn tokio_main(
     p: Params,
     cfg: Result<Config>,
-    fusion_config: graphix_compiler::FusionConfig,
     run_on_main: MainThreadHandle,
 ) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -351,7 +349,6 @@ fn tokio_main(
             p.program_args.iter().map(|s| ArcStr::from(s.as_str())).collect();
         shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
-        shell = shell.fusion_config(fusion_config);
         if let Some(t) = p.publish_timeout {
             shell = shell.publish_timeout(Duration::from_secs(t));
         }
@@ -406,22 +403,6 @@ fn tokio_main(
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
     let p = Params::parse();
-    // Translate CLI knobs into the FusionConfig that will be threaded
-    // through to the runtime's ExecCtx. Defaults: fusion on, JIT
-    // sync. --no-fusion / --no-jit disable each path; --jit-async
-    // picks the background-compile mode; --no-jit wins over
-    // --jit-async if both are passed.
-    let fusion_config = graphix_compiler::FusionConfig {
-        fusion_disabled: p.no_fusion,
-        jit_mode: if p.no_jit {
-            graphix_compiler::JitMode::Off
-        } else if p.jit_async {
-            graphix_compiler::JitMode::Async
-        } else {
-            graphix_compiler::JitMode::Sync
-        },
-        whole_graph: p.whole_graph,
-    };
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
         Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
@@ -434,7 +415,7 @@ fn main() -> Result<()> {
     let (handle, main_rx) = MainThreadHandle::new();
     let tokio_handle = std::thread::Builder::new()
         .name("graphix-tokio".into())
-        .spawn(move || tokio_main(p, cfg, fusion_config, handle))
+        .spawn(move || tokio_main(p, cfg, handle))
         .expect("failed to spawn tokio thread");
     while let Ok(f) = main_rx.recv() {
         f();

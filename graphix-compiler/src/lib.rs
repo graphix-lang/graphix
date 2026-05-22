@@ -117,20 +117,6 @@ pub fn trace() -> bool {
 
 // ─── Fusion / JIT mode ───────────────────────────────────────────
 //
-// Per-runtime fusion/JIT configuration lives on [`ExecCtx`] as
-// [`FusionConfig`]. The CLI in graphix-shell parses `--no-fusion` /
-// `--no-jit` / `--jit-async` and sets the field on the ctx it
-// builds. Concurrent in-process runtimes (e.g. the differential
-// test harness) can hold different modes independently — no shared
-// global state.
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JitMode {
-    Off,
-    Sync,
-    Async,
-}
-
 #[macro_export]
 macro_rules! tdbg {
     ($e:expr) => {
@@ -513,6 +499,91 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 }
 
+/// Exhaustive typed view of the compiled node graph.
+///
+/// `Node` (`Box<dyn Update>`) is optimized for execution: vtable
+/// dispatch is what LLVM does best for the hot update loop. But for
+/// compile-time analysis — fusion, linting, dead-code detection,
+/// escape analysis, refactoring — a closed enum is what you want.
+///
+/// `NodeView` is that enum: one variant per concrete `Update` impl
+/// in the compiler. The two forms coexist by specializing: `Node`
+/// keeps the vtable for runtime, `NodeView<'a>` provides a borrowed,
+/// pattern-matchable view for analysis.
+///
+/// **No `Other` catch-all.** Adding a new node type requires picking
+/// a variant; adding a new variant requires reviewing every
+/// exhaustive match (across all analysis tools) that consumes
+/// `NodeView`. This is the project's "compiler tracks what humans
+/// would otherwise have to remember" pattern, applied to the node
+/// graph itself.
+#[allow(missing_docs)]
+pub enum NodeView<'a, R: Rt, E: UserEvent> {
+    // Fusion-relevant containers
+    Bind(&'a crate::node::bind::Bind<R, E>),
+    Lambda(&'a crate::node::lambda::Lambda),
+    Block(&'a crate::node::Block<R, E>),
+    Module(&'a crate::node::module::Module<R, E>),
+    // Child-bearing non-container
+    CallSite(&'a crate::node::callsite::CallSite<R, E>),
+    Select(&'a crate::node::select::Select<R, E>),
+    TryCatch(&'a crate::node::error::TryCatch<R, E>),
+    Qop(&'a crate::node::error::Qop<R, E>),
+    OrNever(&'a crate::node::error::OrNever<R, E>),
+    ExplicitParens(&'a crate::node::ExplicitParens<R, E>),
+    TypeCast(&'a crate::node::TypeCast<R, E>),
+    Connect(&'a crate::node::Connect<R, E>),
+    ConnectDeref(&'a crate::node::ConnectDeref<R, E>),
+    StringInterpolate(&'a crate::node::StringInterpolate<R, E>),
+    Any(&'a crate::node::Any<R, E>),
+    Sample(&'a crate::node::Sample<R, E>),
+    // Producers
+    Struct(&'a crate::node::data::Struct<R, E>),
+    StructWith(&'a crate::node::data::StructWith<R, E>),
+    Tuple(&'a crate::node::data::Tuple<R, E>),
+    Variant(&'a crate::node::data::Variant<R, E>),
+    Array(&'a crate::node::array::Array<R, E>),
+    Map(&'a crate::node::map::Map<R, E>),
+    // Accessors
+    StructRef(&'a crate::node::data::StructRef<R, E>),
+    TupleRef(&'a crate::node::data::TupleRef<R, E>),
+    ArrayRef(&'a crate::node::array::ArrayRef<R, E>),
+    ArraySlice(&'a crate::node::array::ArraySlice<R, E>),
+    MapRef(&'a crate::node::map::MapRef<R, E>),
+    // Binding access
+    Ref(&'a crate::node::bind::Ref),
+    ByRef(&'a crate::node::bind::ByRef<R, E>),
+    Deref(&'a crate::node::bind::Deref<R, E>),
+    // Arithmetic — one variant per macro-generated struct in node/op.rs
+    Add(&'a crate::node::op::Add<R, E>),
+    Sub(&'a crate::node::op::Sub<R, E>),
+    Mul(&'a crate::node::op::Mul<R, E>),
+    Div(&'a crate::node::op::Div<R, E>),
+    Mod(&'a crate::node::op::Mod<R, E>),
+    CheckedAdd(&'a crate::node::op::CheckedAdd<R, E>),
+    CheckedSub(&'a crate::node::op::CheckedSub<R, E>),
+    CheckedMul(&'a crate::node::op::CheckedMul<R, E>),
+    CheckedDiv(&'a crate::node::op::CheckedDiv<R, E>),
+    CheckedMod(&'a crate::node::op::CheckedMod<R, E>),
+    // Comparison + logical
+    Eq(&'a crate::node::op::Eq<R, E>),
+    Ne(&'a crate::node::op::Ne<R, E>),
+    Lt(&'a crate::node::op::Lt<R, E>),
+    Gt(&'a crate::node::op::Gt<R, E>),
+    Lte(&'a crate::node::op::Lte<R, E>),
+    Gte(&'a crate::node::op::Gte<R, E>),
+    And(&'a crate::node::op::And<R, E>),
+    Or(&'a crate::node::op::Or<R, E>),
+    Not(&'a crate::node::op::Not<R, E>),
+    // Leaves and declarations
+    Constant(&'a crate::node::Constant),
+    Use(&'a crate::node::Use),
+    TypeDef(&'a crate::node::TypeDef),
+    Nop(&'a crate::node::Nop),
+    // Synthetic — produced by fusion itself.
+    FusedKernel(&'a crate::fusion::FusedKernel<R, E>),
+}
+
 /// Update represents a regular graph node, as opposed to a function
 /// application represented by Apply. Regular graph nodes are used for
 /// every built in node except for builtin functions.
@@ -553,6 +624,13 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 
     /// put the node to sleep, called on unselected branches
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
+
+    /// Return a typed view of this node for compile-time analysis.
+    /// **Required, no default impl** — every `Update` impl picks a
+    /// `NodeView` variant. Adding a new node type can't compile
+    /// without choosing a variant; adding a new variant forces
+    /// every exhaustive match consuming `NodeView` to be reviewed.
+    fn view(&self) -> NodeView<'_, R, E>;
 }
 
 pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
@@ -938,141 +1016,38 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// time it's invoked, recording the scope it was called with.
     /// IDE tooling reads this to answer `cursor → scope` queries.
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// Side channel for fusion's self-recursion detection: when
-    /// `Bind::compile` descends into a `let X = lambda` form, it
-    /// stashes `Some(X)` here before recursing, restoring the prior
-    /// value after. `Lambda::compile` reads it, captures it into the
-    /// init closure, and uses it as the synthetic `fn_name` for the
-    /// fusion attempt — so a body that calls `X(...)` is recognised
-    /// as recursive. Cleared (or restored) at every Bind boundary, so
-    /// stray reads pick up `None` rather than a stale outer name.
-    pub current_binding_name: Option<ArcStr>,
-    /// Compile-time-known primitive constants visible in the current
-    /// lexical scope. Populated by `Bind::compile` when a binding's
-    /// value evaluates to a constant (or a constant-foldable
-    /// expression over already-known constants). Snapshotted by
-    /// `Lambda::compile` and threaded into `fusion::build_kir_kernel`
-    /// so an unannotated callback like `|idx| idx * scale` that
-    /// references an outer-scope `let scale = 2.0` can fuse with the
-    /// constant inlined as a literal. Saved/restored at Block /
-    /// Module boundaries so a binding inside a block doesn't leak
-    /// into outer scope.
-    pub fusion_known_consts:
-        std::collections::BTreeMap<ArcStr, crate::kernel_ir::KnownConst>,
-    /// Let-bound lambdas registered by `Bind::compile`, keyed by
-    /// binding name. The lazy fusion path (`fusion::lazy_resolve_kernel`)
-    /// looks here when a kernel's body references `name(...)`, locks
-    /// the entry's cache, and builds the callee's kernel on demand.
-    /// Cycles are broken by the entry cache's `InProgress` state.
-    pub fusion_lambdas: std::collections::BTreeMap<ArcStr, sync::Arc<FusionLazyEntry>>,
-    /// Names of bindings that are the target of a `<-` (Connect)
-    /// somewhere in the program. Lazy-fusion's cross-kernel call
-    /// resolution refuses to register these in `fusion_lambdas`
-    /// because a future rebind would silently dispatch into stale
-    /// native code. Populate via `fusion::scan_connect_targets` at
-    /// compile entry; empty by default. (Once `KirOp::DynCall` lands
-    /// the same names should produce DynCall sites instead of being
-    /// dropped.)
-    pub unstable_bindings: std::collections::BTreeSet<ArcStr>,
-    /// Per-runtime fusion / JIT configuration. Read by
-    /// [`crate::node::lambda::Lambda::compile`] when deciding whether
-    /// to build a fused kernel and how to dispatch it. Set once at
-    /// runtime construction (typically from CLI flags or test setup);
-    /// changing it mid-program produces undefined behavior because
-    /// already-compiled lambdas snapshot it at their compile site.
+    /// BindIds of bindings that are the target of a `<-` (Connect)
+    /// somewhere in the program. Populated lazily by
+    /// [`crate::node::Connect::compile`] — every Connect resolves
+    /// its target name to a BindId via `env.lookup_bind`, and that
+    /// BindId is recorded here. Fusion's stability checks consult
+    /// this set to determine whether a Bind's value can be safely
+    /// fused (a `<-` target rebinds at runtime, so a static splice
+    /// into native code would dispatch into stale state).
+    pub unstable_bindings: nohash::IntSet<BindId>,
+    /// Per-context JIT state — cranelift module + cross-kernel-call
+    /// cache. Lives here so each `ExecCtx` instance has its own
+    /// isolated JIT compile target (no shared global module, no
+    /// races across concurrent in-process runtimes).
     ///
-    /// Default: fusion enabled, JIT off (interpreter dispatch via
-    /// kir_interp). Library callers that want JIT-compiled fused
-    /// kernels should set `jit_mode = JitMode::Sync` before any
-    /// `compile` call.
-    pub fusion_config: FusionConfig,
-}
-
-/// Per-runtime fusion / JIT configuration. Lives on [`ExecCtx`] so
-/// concurrent runtimes in the same process can hold different modes
-/// without racing on a shared global.
-#[derive(Debug, Clone, Copy)]
-pub struct FusionConfig {
-    /// Skip the fused-kernel path entirely. Every lambda runs as
-    /// `GXLambda` (the regular node-graph interpreter). Useful for
-    /// A/B differential testing.
-    pub fusion_disabled: bool,
-    /// JIT mode for fused kernels. See [`JitMode`].
-    pub jit_mode: JitMode,
-    /// Run the whole-graph fusion analyzer (M8.4):
-    /// `fusion::analyze_program` carves each top-level expression
-    /// into maximal sync subgraphs and splices a `FusedRegion`
-    /// runtime node in place of each region's compiled tree. When
-    /// off (the default until M8.4 step g flips it), compilation
-    /// behaves exactly as it did before — the existing per-lambda
-    /// lazy fusion path is the only fusion mechanism.
-    pub whole_graph: bool,
-}
-
-impl Default for FusionConfig {
-    fn default() -> Self {
-        Self {
-            fusion_disabled: false,
-            jit_mode: JitMode::Off,
-            whole_graph: false,
-        }
-    }
-}
-
-/// A let-bound lambda visible for cross-kernel-call resolution.
-/// Inserted by `Bind::compile` whenever it sees `let X = lambda`;
-/// looked up by the lazy fusion path when a kernel's body references
-/// `X(...)`. The cache builds at most once per entry, on demand.
-///
-/// `spec_id` is the `ExprId` of the wrapping `Expr` (the bind's
-/// value). `spec_typ` shares that Expr's `typ` cell so lazy
-/// resolution reads the lambda's resolved `FnType` directly off the
-/// typed AST — unannotated callees (whose argspec `constraint`
-/// fields are all `None`) fuse correctly using the types the
-/// typechecker inferred from their call sites.
-///
-/// `effect` is the lambda's intrinsic sync/async classification.
-/// Populated by the M6 `fusion::infer_effects` fixed-point pass that
-/// runs after compilation. Read by fusion's call-site lowering to
-/// decide whether a `KirOp::Call` to this lambda can be absorbed into
-/// the caller's sync kernel. Default is `Sync`; the inference pass
-/// flips to `Async` if the body invokes an async-effect builtin or
-/// calls another async user lambda.
-#[derive(Debug)]
-pub struct FusionLazyEntry {
-    pub fn_name: ArcStr,
-    pub spec_id: crate::expr::ExprId,
-    /// The lambda's source-spec typ cell — shared with the source
-    /// `Expr.typ`, so TVar refinement after the entry is registered
-    /// is visible through this Arc. `try_build_lazy` reads this as
-    /// its fallback FnType source when no call-site hint is given.
-    /// Replaces the previously-used `ctx.fn_types[spec_id]` sidecar.
-    pub spec_typ: triomphe::Arc<std::sync::OnceLock<crate::typ::Type>>,
-    pub lambda: triomphe::Arc<expr::LambdaExpr>,
-    pub cache: parking_lot::Mutex<FusionLazyCache>,
-    pub effect: parking_lot::Mutex<EffectKind>,
-}
-
-#[derive(Debug, Clone)]
-pub enum FusionLazyCache {
-    /// We haven't tried to fuse this lambda yet. Lazy build will
-    /// transition through `InProgress` and land at `Built` or
-    /// `Failed`.
-    NotAttempted,
-    /// A fusion attempt is already on the stack (we recursed into
-    /// this entry from itself or from a callee that calls back).
-    /// Treated as unresolved by the caller's fusion — breaks cycles
-    /// in mutually-recursive sets without infinite loop.
-    InProgress,
-    /// Fusion succeeded; signature for compile-time call lowering,
-    /// kernel for runtime dispatch.
-    Built {
-        signature: crate::kernel_ir::KnownFusedFn,
-        kernel: sync::Arc<crate::kernel_ir::KirKernel>,
-    },
-    /// Fusion failed (unannotated argspec, body uses unsupported
-    /// constructs, etc.). Future requests return None immediately.
-    Failed,
+    /// Wrapped in a `parking_lot::Mutex` solely to satisfy the
+    /// `Sync` bound the graphix-rt async machinery puts on
+    /// `ExecCtx` (the underlying cranelift `JITModule` uses
+    /// `RefCell` internally so isn't auto-`Sync`). Not an
+    /// `Arc<Mutex>` — there's no shared ownership; the Mutex is
+    /// just interior mutability. Access is exclusively through
+    /// `ctx.jit.lock()` followed by the usual `&mut Jit` API.
+    /// JIT operations are compile-time only (rare, never on hot
+    /// paths), so the lock cost is negligible.
+    ///
+    /// Kernels with `KirOp::Call` compile into this module via
+    /// [`crate::kir_jit::compile_kernel_with_callees`]; kernels
+    /// without any calls use the single-kernel path
+    /// [`crate::kir_jit::compile_kernel_with_wrapper`] which creates
+    /// its own private `JitCtx` per call (no interaction with this
+    /// field). The async-JIT worker thread (`JIT_WORKER`) likewise
+    /// uses the single-kernel path and doesn't touch this field.
+    pub jit: parking_lot::Mutex<kir_jit::Jit>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1106,11 +1081,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
-            current_binding_name: None,
-            fusion_known_consts: std::collections::BTreeMap::new(),
-            fusion_lambdas: std::collections::BTreeMap::new(),
-            unstable_bindings: std::collections::BTreeSet::new(),
-            fusion_config: FusionConfig::default(),
+            unstable_bindings: nohash::IntSet::default(),
+            jit: parking_lot::Mutex::new(kir_jit::Jit::new()?,),
         })
     }
 
@@ -1243,5 +1215,14 @@ pub fn compile<R: Rt, E: UserEvent>(
         }
     }
     info!("typecheck time {:?}", st.elapsed());
+    // Fusion phase: walk the typed node graph, build kernels, splice
+    // in place. Currently a no-op stub — see fusion/mod.rs::fuse and
+    // the implementation plan for the iteration sequence.
+    let st = Instant::now();
+    if let Err(e) = crate::fusion::fuse(&mut node, ctx) {
+        ctx.env = env;
+        return Err(e);
+    }
+    info!("fusion time {:?}", st.elapsed());
     Ok(node)
 }

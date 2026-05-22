@@ -349,19 +349,11 @@ impl<X: GXExt> GX<X> {
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
-        // Same pre-compile setup as `compile`: `scan_connect_targets`
-        // must populate `ctx.unstable_bindings` before any fusion
-        // pass runs, otherwise reads of `<-` targets get
-        // misclassified as Sync and would be fused across a cycle
-        // boundary. `compile_root` historically skipped this; now
-        // it's required (M8.4 step e).
+        // Reset the unstable-bindings set for this batch. `Connect::compile`
+        // re-populates it lazily during the `compile` pass below — every
+        // `<-` site inserts the resolved BindId, so by the time the
+        // fusion passes run, the set reflects all Connect targets.
         self.ctx.unstable_bindings.clear();
-        for e in exprs.iter() {
-            graphix_compiler::fusion::scan_connect_targets(
-                e,
-                &mut self.ctx.unstable_bindings,
-            );
-        }
         let mut nodes = exprs
             .iter()
             .map(|e| {
@@ -370,12 +362,11 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<Result<LPooled<Vec<_>>>>()
             .with_context(|| ori.clone())?;
-        graphix_compiler::fusion::infer_effects(&self.ctx);
         for (e, n) in exprs.iter().zip(nodes.drain(..)) {
             self.ctx.rt.updated.insert(e.id, true);
             self.nodes.insert(e.id, n);
         }
-        self.maybe_splice_fused_regions(&scope, &exprs);
+        let _ = &scope;
         Ok(())
     }
 
@@ -387,28 +378,17 @@ impl<X: GXExt> GX<X> {
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
         // Pre-scan for `<-` (Connect) targets across the whole
-        // program so the lazy fusion path can refuse to register
-        // those bindings. Without this, fused callers would silently
-        // dispatch into stale native code after a runtime rebind.
+        // program so the fusion call-resolution path can refuse to
+        // register those bindings. `Connect::compile` populates
+        // `ctx.unstable_bindings` with the resolved BindId as each
+        // `<-` site is compiled — clear the carry-over from a
+        // previous batch, then let compile populate.
         self.ctx.unstable_bindings.clear();
-        for e in exprs.iter() {
-            graphix_compiler::fusion::scan_connect_targets(
-                e,
-                &mut self.ctx.unstable_bindings,
-            );
-        }
         let mut nodes = exprs
             .iter()
             .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))
             .collect::<Result<LPooled<Vec<_>>>>()
             .with_context(|| ori.clone())?;
-        // Effect inference (M6): with all let-bound lambdas now
-        // registered in `fusion_lambdas`, walk each one's body to a
-        // fixed point and classify it Sync vs Async. Read by fusion's
-        // call-site lowering to decide whether a `KirOp::Call` to this
-        // lambda can be absorbed into the caller's sync kernel.
-        graphix_compiler::fusion::infer_effects(&self.ctx);
-        let raw_exprs = exprs.clone();
         let comp_exprs = exprs
             .iter()
             .zip(nodes.drain(..))
@@ -420,71 +400,8 @@ impl<X: GXExt> GX<X> {
                 CompExp { id: e.id, output, typ, rt: rt.clone() }
             })
             .collect::<SmallVec<[_; 1]>>();
-        self.maybe_splice_fused_regions(&scope, &raw_exprs);
+        let _ = &scope;
         Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() })
-    }
-
-    /// M8.4 step e: run `analyze_program` and splice a `FusedRegion`
-    /// node in place of each carved region's compiled top-level
-    /// subtree. Gated on `ctx.fusion_config.whole_graph`; a noop
-    /// when off, so existing behavior is preserved by default. Only
-    /// regions whose `root_id` is a top-level expr `ExprId` get
-    /// spliced (interior regions stay as the existing node graph
-    /// for now — a step-f / follow-up).
-    fn maybe_splice_fused_regions(
-        &mut self,
-        scope: &Scope,
-        exprs: &[Expr],
-    ) {
-        if !self.ctx.fusion_config.whole_graph {
-            return;
-        }
-        let regions =
-            graphix_compiler::fusion::analyze_program(exprs, &mut self.ctx);
-        let mut spliced = 0usize;
-        let mut total_with_kernel = 0usize;
-        for (region, top_expr) in regions
-            .iter()
-            .filter_map(|r| {
-                exprs
-                    .iter()
-                    .find(|e| e.id == r.root_id)
-                    .map(|e| (r, e))
-            })
-        {
-            if region.kernel.is_none() {
-                continue;
-            }
-            total_with_kernel += 1;
-            match graphix_compiler::node::region::FusedRegion::from_subgraph(
-                &mut self.ctx, scope, top_expr.clone(), region,
-            ) {
-                Ok(new_node) => {
-                    if let Some(mut old) =
-                        self.nodes.shift_remove(&region.root_id)
-                    {
-                        old.delete(&mut self.ctx);
-                    }
-                    self.nodes.insert(region.root_id, new_node);
-                    spliced += 1;
-                }
-                Err(e) => {
-                    log::warn!(
-                        "FusedRegion splice for {:?}: {e:#}; keeping \
-                         the original node graph",
-                        region.root_id
-                    );
-                }
-            }
-        }
-        log::debug!(
-            "whole-graph: {} region(s), {} buildable, {} spliced \
-             (n_top_level_exprs={})",
-            regions.len(),
-            total_with_kernel,
-            spliced,
-            exprs.len(),
-        );
     }
 
     async fn load_exprs(&self, source: &Source) -> Result<(Origin, Arc<[Expr]>)> {
@@ -679,15 +596,11 @@ impl<X: GXExt> GX<X> {
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
         info!("resolve time: {:?}", st.elapsed());
-        // Same pre-fusion scan as `compile`: populate
-        // `unstable_bindings` before any analyzer/effect pass.
+        // Clear the carry-over `unstable_bindings`; `Connect::compile`
+        // re-populates with resolved BindIds as each `<-` site is
+        // compiled in the loop below, so the set reflects all
+        // Connect targets by the time the fusion passes run.
         self.ctx.unstable_bindings.clear();
-        for e in exprs.iter() {
-            graphix_compiler::fusion::scan_connect_targets(
-                e,
-                &mut self.ctx.unstable_bindings,
-            );
-        }
         let mut res = smallvec![];
         for e in exprs.iter() {
             let top_id = e.id;
@@ -698,92 +611,6 @@ impl<X: GXExt> GX<X> {
             self.nodes.insert(top_id, n);
             self.ctx.rt.updated.insert(top_id, true);
             res.push(CompExp { id: top_id, output: has_out, typ, rt: rt.clone() })
-        }
-        graphix_compiler::fusion::infer_effects(&self.ctx);
-        // M8.4 step f: when whole-graph fusion is on, try to build a
-        // *module kernel* — one kernel that computes every sync top-
-        // level `let` value and publishes each via `ctx.set_var`. The
-        // splice step (f.2) will replace the individual Bind nodes
-        // with a `FusedRegion`; for now we just verify the kernel
-        // builds and log what it covers.
-        if self.ctx.fusion_config.whole_graph {
-            let module_name = match source {
-                Source::File(p) => {
-                    format!("module_{}", p.display())
-                }
-                Source::Netidx(p) => format!("module_{}", p),
-                _ => "module".to_string(),
-            };
-            match graphix_compiler::fusion::build_module_kernel(
-                &exprs,
-                &scope,
-                &mut self.ctx,
-                &module_name,
-            ) {
-                Some(mk) => {
-                    log::info!(
-                        "whole-graph: built module kernel {} \
-                         ({} export(s), {} input(s), {} subsumed)",
-                        module_name,
-                        mk.exports.len(),
-                        mk.inputs.len(),
-                        mk.subsumed_top_ids.len(),
-                    );
-                    let top_id = ExprId::new();
-                    // Use the first exported Bind's spec as a stand-
-                    // in for the FusedRegion's `spec()` — it gives
-                    // diagnostics a reasonable source position even
-                    // though the region covers multiple top-levels.
-                    let region_spec = exprs
-                        .iter()
-                        .find(|e| matches!(e.kind, ExprKind::Bind(_)))
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            ExprKind::NoOp.to_expr_nopos()
-                        });
-                    let mk_for_build = mk;
-                    match graphix_compiler::node::region::FusedRegion::from_module_kernel(
-                        &mut self.ctx,
-                        &scope,
-                        region_spec,
-                        top_id,
-                        &mk_for_build,
-                    ) {
-                        Ok(fr) => {
-                            // M8.4 step f/g handoff: leave the
-                            // original Bind / side-effect nodes in
-                            // place alongside the new FusedRegion.
-                            // Both compute the same values; the
-                            // kernel publishes via `set_var` and the
-                            // original Bind nodes do the same, so
-                            // dependent downstream nodes (`println`,
-                            // etc.) keep seeing their inputs through
-                            // the original dependency chain. The
-                            // duplicate compute is wasteful but
-                            // correct; the cleanup pass (M8.4 step
-                            // g) will remove the originals once
-                            // their downstream dependencies have
-                            // been rewired to the kernel's
-                            // published BindIds.
-                            self.nodes.insert(top_id, fr);
-                            self.ctx.rt.updated.insert(top_id, true);
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "whole-graph: FusedRegion::from_module_kernel \
-                                 failed: {e:#}; keeping original Bind nodes",
-                            );
-                        }
-                    }
-                }
-                None => {
-                    log::info!(
-                        "whole-graph: module kernel did not build (no \
-                         fusable top-level binds, or batch has unsupported \
-                         constructs)"
-                    );
-                }
-            }
         }
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }

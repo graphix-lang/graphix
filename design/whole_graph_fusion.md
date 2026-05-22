@@ -553,8 +553,53 @@ stability check needed. Remove during M8.
 - `graphix-compiler/src/typ/` — sidecar effect annotation on
   expressions
 
+## Status (May 2026)
+
+Milestones M5–M9 from the implementation plan are all complete.
+Past the original plan, several follow-up milestones landed under
+the M8.4 banner — most notably *maximal sync subgraph splitting*,
+where an Async sub-expression doesn't split a region, it becomes
+a kernel input fed by a separately-compiled feeder Node
+(`RegionInputSource::Lifted`). The fusion pipeline today carves
+regions whose internal Sync ops absorb into a single KIR kernel,
+JIT-compiles via cranelift (region kernels included, not just
+lambda kernels), and feeds Async edges through the runtime
+variable system.
+
+The dispatch granularity bottleneck the design called out is
+substantially closed: per-element array operations inline into
+the surrounding kernel via `emit_array_map` / `emit_array_fold`,
+and anonymous lambdas register the same way named ones do.
+Predictable-perf cliffs that emerged in practice (the user's
+explicit reasoning, captured under [[feedback-predictable-fusion]]):
+each one fixed in turn — JIT string support, string locals on
+both backends, anonymous-lambda fusion, composite-element
+producer ops, BindId-keyed unstable bindings, FusedRegion JIT
+path, module-kernel async lifting.
+
+Remaining cliffs identified by the post-landings audit (May 2026):
+composite-element arrays (`array::map(arr_of_tuples, ...)`),
+missing `emit_expr` arms for `StructWith`/`Array`-literal/etc.,
+composite variant payloads, composite-pattern select destructuring,
+free-var string region inputs. These are real work but not
+load-bearing on any current correctness story — each one is a
+specific KirType-widening or new emit_expr arm following the
+patterns already established. See `CLAUDE.md`'s "Post-landings
+audit fixes" entry for the catalog.
+
+JIT-side memory safety has been audited three times. Two
+bug-finding audit rounds (Dec 2025 pending-path bugs +
+May 2026 string/tailcall leaks + nullable panic + select
+soundness) and the rest of the surface — refcount discipline,
+two-register Value ABI, owned/borrowed classification,
+KernelStrings shared-module lifetime, scope-exit drop discipline
+across composites/variants/nullables/strings — has been verified
+clean.
+
 ## See also
 
 - `design/fusion_architecture.md` — Per-lambda fusion + KIR + JIT
   pipeline (foundation this builds on)
 - `design/queue_fn.md` — queue_fn feature, parked
+- `CLAUDE.md` "Recent Changes" — chronological catalog of every
+  May 2026 fusion/JIT landing with file:line references

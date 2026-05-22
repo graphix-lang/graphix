@@ -54,7 +54,7 @@ pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
 }
 
 #[derive(Debug)]
-pub(crate) struct TryCatch<R: Rt, E: UserEvent> {
+pub struct TryCatch<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     nodes: LPooled<Vec<Node<R, E>>>,
@@ -142,10 +142,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
         }
         self.handler.refs(refs);
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::TryCatch(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Qop<R: Rt, E: UserEvent> {
+pub struct Qop<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     id: Option<BindId>,
@@ -308,10 +312,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         }
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Qop(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct OrNever<R: Rt, E: UserEvent> {
+pub struct OrNever<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     n: Node<R, E>,
@@ -376,5 +384,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         let rtyp = self.n.typ().diff(&ctx.env, &err)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         Ok(())
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::OrNever(self)
     }
 }

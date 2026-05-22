@@ -245,7 +245,7 @@ static TYP: LazyLock<Type> = LazyLock::new(|| {
 });
 
 #[derive(Debug)]
-pub(super) struct Module<R: Rt, E: UserEvent> {
+pub struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
     source: Node<R, E>,
@@ -257,9 +257,9 @@ pub(super) struct Module<R: Rt, E: UserEvent> {
     dynamic_sig_env: Option<Env>,
     env: Env,
     sig: Sig,
-    scope: Scope,
+    pub(crate) scope: Scope,
     proxy: IntMap<BindId, BindId>,
-    nodes: Box<[Node<R, E>]>,
+    pub(crate) nodes: Box<[Node<R, E>]>,
     top_id: ExprId,
 }
 
@@ -478,5 +478,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         wrap!(self.source, self.source.typecheck(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Module(self)
     }
 }

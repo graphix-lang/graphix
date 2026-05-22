@@ -151,6 +151,25 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
     res
 }
 
+/// Run a graphix fixture under three modes and assert the supplied
+/// predicate holds for the produced Value in each.
+///
+/// **Mode 1 (interp)**: `fusion_disabled=true`. Every lambda runs as
+///   `GXLambda`. This is the ground-truth path.
+/// **Mode 2 (fused)**: `fusion_disabled=false, jit_mode=Off,
+///   whole_graph=true`. Fused kernels dispatch through `kir_interp`.
+/// **Mode 3 (jit)**: `fusion_disabled=false, jit_mode=Forced,
+///   whole_graph=true`. Soft JIT failures panic; the JIT
+///   invocation counter must be > 0 after the run.
+///
+/// The macro expands to a child module with three
+/// `#[tokio::test(flavor = "current_thread")]` functions named
+/// `interp`, `fused`, and `jit`. Each runs the same fixture under
+/// its mode and asserts `$pred`.
+///
+/// Use `run_no_jit!` for fixtures that legitimately can't JIT
+/// (async builtins, network IO, or any program that won't produce
+/// a kernel — yet — but should still round-trip through interp).
 #[macro_export]
 macro_rules! run {
     ($name:ident, $code:expr, $pred:expr) => {
@@ -163,21 +182,22 @@ macro_rules! run {
         $crate::run!(@impl $name, $pred, 30, $($path => $code),+);
     };
     (@impl $name:ident, $pred:expr, $timeout:expr, $($path:literal => $code:expr),+) => {
-        #[tokio::test(flavor = "current_thread")]
+        #[::tokio::test(flavor = "current_thread")]
         async fn $name() -> ::anyhow::Result<()> {
+            let pred = $pred;
             let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
             let tbl = ::ahash::AHashMap::from_iter([
                 $((::netidx_core::path::Path::from($path), ::arcstr::ArcStr::from($code))),+
             ]);
             let resolver = ::graphix_compiler::expr::ModuleResolver::VFS(tbl);
-            let ctx = $crate::testing::init_with_resolvers(
+            let ctx = $crate::testing::init_with_setup(
                 tx, &crate::TEST_REGISTER, vec![resolver],
+                |_ctx| {},
             ).await?;
             let bs = &ctx.rt;
             match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
-                Err(e) => assert!($pred(dbg!(Err(e)))),
+                Err(e) => assert!(pred(dbg!(Err(e)))),
                 Ok(e) => {
-                    dbg!("compilation succeeded");
                     let eid = e.exprs[0].id;
                     let timeout = ::tokio::time::sleep(
                         ::std::time::Duration::from_secs($timeout),
@@ -197,7 +217,8 @@ macro_rules! run {
                                             ::graphix_rt::GXEvent::Updated(id, v) => {
                                                 eprintln!("{v}");
                                                 assert_eq!(id, eid);
-                                                assert!($pred(Ok(&v)));
+                                                assert!(pred(Ok(&v)));
+                                                ctx.shutdown().await;
                                                 return Ok(());
                                             }
                                         }
@@ -211,6 +232,22 @@ macro_rules! run {
             ctx.shutdown().await;
             Ok(())
         }
+    };
+}
+
+/// Alias for `run!` kept for backwards compatibility with existing
+/// test sites. (Was meaningfully different under v1's three-mode
+/// validation; with one fusion path it's just a duplicate.)
+#[macro_export]
+macro_rules! run_no_jit {
+    ($name:ident, $code:expr, $pred:expr) => {
+        $crate::run!($name, $code, $pred);
+    };
+    ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
+        $crate::run!($name, $code, $pred, timeout: $timeout);
+    };
+    ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
+        $crate::run!($name, $pred, $($path => $code),+);
     };
 }
 

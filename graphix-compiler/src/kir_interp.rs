@@ -213,6 +213,18 @@ pub enum EvalResult {
     /// these into `Value::String` at the kernel boundary (DynCall
     /// arg push, kernel return).
     String(arcstr::ArcStr),
+    /// `KirType::Null` result — the singleton `null` value
+    /// produced by `KirOp::ConstNull`. Marshals to `Value::Null`
+    /// at the kernel boundary.
+    Null,
+    /// `KirType::Nullable` result — a value of graphix's `[T, null]`
+    /// option shape. Inner `Value` is either `Value::Null` (the null
+    /// case) or `T`'s runtime form (the non-null case). Produced
+    /// when an `IfChain` whose declared type is `Nullable<T>` merges
+    /// mixed `T`/`null` arms, and when reading a `Nullable<T>` local
+    /// out of `env.nullables`. `KirOp::IsNull` matches this variant
+    /// whenever its inner `Value` is `Value::Null`.
+    Nullable(Value),
 }
 
 impl EvalResult {
@@ -223,6 +235,8 @@ impl EvalResult {
             EvalResult::ValArray(a) => Value::Array(a),
             EvalResult::Variant(v) => v,
             EvalResult::String(s) => Value::String(s),
+            EvalResult::Null => Value::Null,
+            EvalResult::Nullable(v) => v,
         }
     }
 
@@ -287,6 +301,20 @@ struct InterpEnv {
     /// uniformly `ValArray`. `KirOp::VariantTagEq` /
     /// `KirOp::VariantPayload` dispatch on the Value shape.
     variants: Vec<(arcstr::ArcStr, Value)>,
+    /// Nullable parameters / let-bindings — graphix's `[T, null]`
+    /// option shape. Slot value is either `Value::Null` or `T`'s
+    /// runtime form (no discriminator tag). Kept separate from
+    /// `variants` for semantic clarity; both happen to store `Value`
+    /// but the consumer ops differ (`KirOp::IsNull` here vs.
+    /// `KirOp::VariantTagEq`/`Payload` on `variants`).
+    nullables: Vec<(arcstr::ArcStr, Value)>,
+    /// String let-bindings (no string params on either backend — the
+    /// shape rejects on tail-call rebind by design). Slot value is
+    /// an owned `ArcStr`; reads via `KirOp::Local` for a
+    /// `KirType::String`-typed expression return a clone (refcount
+    /// bump), so each consumer site gets its own owned ArcStr without
+    /// disturbing the env's slot.
+    strings: Vec<(arcstr::ArcStr, arcstr::ArcStr)>,
     /// Tail-call slot map for the kernel currently being evaluated.
     /// Source-arg order; entry `i` describes the destination of the
     /// `i`th tail-call arg. Empty for non-tail kernels.
@@ -302,6 +330,8 @@ impl InterpEnv {
             param_count: params,
             arrays: Vec::new(),
             variants: Vec::new(),
+            nullables: Vec::new(),
+            strings: Vec::new(),
             tail_call_slots: Vec::new(),
         }
     }
@@ -355,24 +385,57 @@ impl InterpEnv {
         self.variants.push((name, value));
     }
 
+    fn lookup_nullable(&self, name: &str) -> Option<&Value> {
+        self.nullables.iter().rev().find_map(
+            |(n, v)| if n.as_str() == name { Some(v) } else { None },
+        )
+    }
+
+    fn push_nullable(&mut self, name: arcstr::ArcStr, value: Value) {
+        self.nullables.push((name, value));
+    }
+
+    fn rebind_nullable(&mut self, name: &str, value: Value) {
+        for (n, slot) in self.nullables.iter_mut() {
+            if n.as_str() == name {
+                *slot = value;
+                return;
+            }
+        }
+        panic!("rebind_nullable: name `{name}` not bound — KIR malformed");
+    }
+
+    fn lookup_string(&self, name: &str) -> Option<&arcstr::ArcStr> {
+        self.strings.iter().rev().find_map(
+            |(n, v)| if n.as_str() == name { Some(v) } else { None },
+        )
+    }
+
+    fn push_string(&mut self, name: arcstr::ArcStr, value: arcstr::ArcStr) {
+        self.strings.push((name, value));
+    }
+
     fn push(&mut self, name: arcstr::ArcStr, value: RegValue) {
         self.locals.push((name, value));
     }
 
     /// Push a let-binding into the right env table based on the
     /// EvalResult kind. Composite locals live alongside composite
-    /// params in `arrays` / `variants`.
+    /// params in `arrays` / `variants` / `nullables`.
     fn push_local(&mut self, name: arcstr::ArcStr, value: EvalResult) {
         match value {
             EvalResult::Scalar(r) => self.push(name, r),
             EvalResult::ValArray(a) => self.push_array(name, a),
             EvalResult::Variant(v) => self.push_variant(name, v),
-            // String locals not supported yet — would need a
-            // `string_inputs`-like env table. `emit_bind_stmt`
-            // rejects String-typed lets so this shouldn't fire.
-            EvalResult::String(_) => panic!(
-                "EvalResult::String pushed as local — kernel build \
-                 should have rejected, KIR is malformed"
+            EvalResult::Nullable(v) => self.push_nullable(name, v),
+            EvalResult::String(s) => self.push_string(name, s),
+            // The singleton `null` value (KirType::Null) has no
+            // useful storage form on its own — every site that would
+            // produce one is wrapped to `Nullable<T>` first. A bare
+            // `Null` reaching this slot means KIR is malformed.
+            EvalResult::Null => panic!(
+                "EvalResult::Null pushed as local — kernel build \
+                 should have widened to Nullable<T>, KIR is malformed"
             ),
         }
     }
@@ -473,14 +536,16 @@ pub fn eval_kernel_with_dispatch_and_arrays(
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
 ) -> Option<EvalResult> {
-    eval_kernel_full(kernel, args, array_args, &[], &[], &[], registry, dispatch)
+    eval_kernel_full(
+        kernel, args, array_args, &[], &[], &[], &[], registry, dispatch,
+    )
 }
 
 /// Most-general kernel entry. Each composite arg list parallels the
 /// matching `kernel.*_params` in declaration order. Variants take
 /// `Value` (their runtime layout: `String` for nullary, `Array` for
 /// with-payload); tuples and structs share the `ValArray` boundary
-/// with arrays.
+/// with arrays; nullables take `Value` (`Null` or `T`'s form).
 pub fn eval_kernel_full(
     kernel: &KirKernel,
     args: &[RegValue],
@@ -488,6 +553,7 @@ pub fn eval_kernel_full(
     tuple_args: &[ValArray],
     struct_args: &[ValArray],
     variant_args: &[Value],
+    nullable_args: &[Value],
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
 ) -> Option<EvalResult> {
@@ -516,6 +582,11 @@ pub fn eval_kernel_full(
         kernel.variant_params.len(),
         "eval_kernel: variant arity mismatch"
     );
+    debug_assert_eq!(
+        nullable_args.len(),
+        kernel.nullable_params.len(),
+        "eval_kernel: nullable arity mismatch"
+    );
     let mut env = InterpEnv::new(kernel.params.len());
     for (p, v) in kernel.params.iter().zip(args) {
         debug_assert_eq!(
@@ -537,6 +608,9 @@ pub fn eval_kernel_full(
     }
     for (p, v) in kernel.variant_params.iter().zip(variant_args) {
         env.push_variant(p.name.clone(), v.clone());
+    }
+    for (p, v) in kernel.nullable_params.iter().zip(nullable_args) {
+        env.push_nullable(p.name.clone(), v.clone());
     }
     // Hand the tail-call slot map to the env so KirStmt::TailCall
     // can route each new arg into the right slot list.
@@ -632,9 +706,16 @@ fn eval_body(
                             EvalResult::Variant(val) => {
                                 env.rebind_variant(&slot.name, val);
                             }
+                            EvalResult::Nullable(val) => {
+                                env.rebind_nullable(&slot.name, val);
+                            }
                             EvalResult::String(_) => panic!(
                                 "TailCall rebind of String — string \
                                  params aren't supported"
+                            ),
+                            EvalResult::Null => panic!(
+                                "TailCall rebind of bare Null — \
+                                 should have widened to Nullable<T>"
                             ),
                         }
                     }
@@ -685,6 +766,24 @@ fn eval_expr(
     Some(match &e.op {
         KirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
         KirOp::ConstStr(s) => EvalResult::String(s.clone()),
+        KirOp::ConstNull => EvalResult::Null,
+        KirOp::IsNull(inner) => {
+            // True if the operand evaluates to a null shape — either the
+            // singleton `EvalResult::Null` (from `KirOp::ConstNull`) or
+            // an `EvalResult::Nullable(Value::Null)` (from a Nullable
+            // local read, an IfChain whose taken arm produced null, or
+            // a DynCall return). A `Variant(Value::Null)` would mean
+            // somebody mis-typed a Nullable slot — debug check on it
+            // for now, but treat it as null for resilience.
+            let v = eval_expr(env, inner, registry, dispatch)?;
+            let is_null = match &v {
+                EvalResult::Null => true,
+                EvalResult::Nullable(Value::Null) => true,
+                EvalResult::Variant(Value::Null) => true,
+                _ => false,
+            };
+            EvalResult::Scalar(RegValue::Bool(is_null))
+        }
         KirOp::Concat(parts) => {
             // Render each part — String children emit bare (no quoting,
             // matching how `"x=[s]"` outputs `s`'s contents directly);
@@ -733,6 +832,13 @@ fn eval_expr(
                     })
                     .clone(),
             ),
+            KirType::Nullable(_) => EvalResult::Nullable(
+                env.lookup_nullable(name)
+                    .unwrap_or_else(|| {
+                        panic!("undefined nullable local `{name}` — KIR is malformed")
+                    })
+                    .clone(),
+            ),
             // Unit-typed locals don't exist — `emit_bind_stmt` routes
             // them through `KirStmt::Discard` without registering a
             // local. A `Local` ref of Unit type is a malformed kernel.
@@ -740,13 +846,25 @@ fn eval_expr(
                 "Local(`{name}`) has KirType::Unit — emit_bind_stmt \
                  should have emitted Discard, KIR is malformed"
             ),
-            // String-typed locals aren't supported yet — no
-            // `string_inputs` slot list. `emit_bind_stmt` rejects
-            // String-typed lets, so this shouldn't appear in a
-            // well-formed kernel.
-            KirType::String => panic!(
-                "Local(`{name}`) has KirType::String — kernel build \
-                 should have rejected, KIR is malformed"
+            // String-typed local: clone the slot's owned ArcStr —
+            // each read produces a fresh owned ArcStr (refcount
+            // bump) so the consumer can pass it through helpers
+            // that take ownership (push_arcstr, etc.) without
+            // disturbing the env slot.
+            KirType::String => EvalResult::String(
+                env.lookup_string(name)
+                    .unwrap_or_else(|| {
+                        panic!("undefined string local `{name}` — KIR is malformed")
+                    })
+                    .clone(),
+            ),
+            // Bare `KirType::Null` locals don't exist — the singleton
+            // null is always either an inline `KirOp::ConstNull` or
+            // widened to `Nullable<T>` before binding. A `Local` ref
+            // of Null type means KIR is malformed.
+            KirType::Null => panic!(
+                "Local(`{name}`) has KirType::Null — kernel build \
+                 should have widened to Nullable<T>, KIR is malformed"
             ),
         },
         KirOp::Bin { op, lhs, rhs } => {
@@ -838,6 +956,15 @@ fn eval_expr(
                     (KirType::String, EvalResult::String(s)) => {
                         Value::String(s)
                     }
+                    // Nullable arg: an `EvalResult::Nullable(value)`
+                    // unwraps directly; a bare `Null` widens to
+                    // `Value::Null`; a `Scalar` carrying the non-null
+                    // T case (e.g. an inline IfChain that hadn't been
+                    // normalized) widens via `to_value()`.
+                    (KirType::Nullable(_), EvalResult::Nullable(v)) => v,
+                    (KirType::Nullable(_), EvalResult::Null) => Value::Null,
+                    (KirType::Nullable(_), EvalResult::Scalar(s)) => s.to_value(),
+                    (KirType::Null, EvalResult::Null) => Value::Null,
                     // `KirType::Unit` is a return-only shape — never
                     // a DynCall arg type.
                     (KirType::Unit, _) => panic!(
@@ -885,12 +1012,29 @@ fn eval_expr(
                         "DynCall declared String return but got {other:?}"
                     ),
                 },
+                // Nullable-returning DynCall: the called function
+                // produced a `Value` that's either `Value::Null` or
+                // `T`'s runtime form. Wrap as `Nullable` for downstream
+                // consumers (`IsNull`, kernel return marshalling).
+                KirType::Nullable(_) => EvalResult::Nullable(result),
+                // Bare `KirType::Null` return: the function's only
+                // possible runtime value is `Value::Null`. Surface
+                // as the singleton `EvalResult::Null` for parity with
+                // `KirOp::ConstNull`.
+                KirType::Null => match result {
+                    Value::Null => EvalResult::Null,
+                    other => panic!(
+                        "DynCall declared Null return but got {other:?}"
+                    ),
+                },
             }
         }
         KirOp::Block { lets, tail } => {
             let mark = env.mark();
             let array_mark = env.arrays.len();
             let variant_mark = env.variants.len();
+            let nullable_mark = env.nullables.len();
+            let string_mark = env.strings.len();
             for l in lets {
                 let v = eval_expr(env, &l.value, registry, dispatch)?;
                 env.push_local(l.local.clone(), v);
@@ -899,9 +1043,18 @@ fn eval_expr(
             env.truncate(mark);
             env.arrays.truncate(array_mark);
             env.variants.truncate(variant_mark);
+            env.nullables.truncate(nullable_mark);
+            env.strings.truncate(string_mark);
             result?
         }
         KirOp::IfChain { arms } => {
+            // If the chain's declared type is `Nullable<T>`, arms may
+            // produce a mix of scalar `T` and bare null — the
+            // unification happened at fusion time but each arm body
+            // still emits its own native shape. Normalize here so the
+            // caller sees a single `Nullable` shape regardless of
+            // which arm fired.
+            let want_nullable = matches!(e.typ, KirType::Nullable(_));
             for (cond, body) in arms {
                 let matches = match cond {
                     None => true,
@@ -910,7 +1063,13 @@ fn eval_expr(
                         .as_bool(),
                 };
                 if matches {
-                    return eval_expr(env, body, registry, dispatch);
+                    let r = eval_expr(env, body, registry, dispatch)?;
+                    let r = if want_nullable {
+                        normalize_to_nullable(r)
+                    } else {
+                        r
+                    };
+                    return Some(r);
                 }
             }
             panic!("if-chain fell through without a match — KIR is malformed");
@@ -1040,39 +1199,42 @@ fn eval_expr(
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::TupleNew { fields, elem_types } => {
+        KirOp::TupleNew { fields, elem_types: _ } => {
             // Tuples are flat: ValArray([Value::T0(v0), Value::T1(v1), ...]).
+            // Composite field values flow through their `into_value`
+            // conversion (Value::Array for tuple/struct, the inner
+            // Value for variant/nullable, Value::String for string).
             let mut out: poolshark::local::LPooled<Vec<Value>> =
                 poolshark::local::LPooled::take();
             out.reserve(fields.len());
-            for (f, t) in fields.iter().zip(elem_types.iter()) {
-                let r = eval_expr(env, f, registry, dispatch)?.into_scalar();
-                debug_assert_eq!(r.typ(), *t, "TupleNew slot type mismatch");
-                out.push(r.to_value());
+            for f in fields.iter() {
+                let r = eval_expr(env, f, registry, dispatch)?;
+                out.push(r.into_value());
             }
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::StructNew { sorted_fields, sorted_types } => {
+        KirOp::StructNew { sorted_fields, sorted_types: _ } => {
             // Structs are kv-pairs in sorted-name order:
-            // ValArray([ValArray([name, val]), ...]).
+            // ValArray([ValArray([name, val]), ...]). Composite field
+            // values use `into_value` (parallels TupleNew).
             let mut out: poolshark::local::LPooled<Vec<Value>> =
                 poolshark::local::LPooled::take();
             out.reserve(sorted_fields.len());
-            for ((fname, fexpr), (_, ftyp)) in
-                sorted_fields.iter().zip(sorted_types.iter())
-            {
-                let r = eval_expr(env, fexpr, registry, dispatch)?.into_scalar();
-                debug_assert_eq!(r.typ(), *ftyp, "StructNew field type mismatch");
+            for (fname, fexpr) in sorted_fields.iter() {
+                let r = eval_expr(env, fexpr, registry, dispatch)?;
                 let kv = ValArray::from_iter_exact(
-                    [Value::String(fname.clone()), r.to_value()].into_iter(),
+                    [Value::String(fname.clone()), r.into_value()].into_iter(),
                 );
                 out.push(Value::Array(kv));
             }
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::VariantNew { tag, payloads, payload_types } => {
+        KirOp::VariantNew { tag, payloads, payload_types: _ } => {
             // Nullary → Value::String(tag).
             // With-payload → Value::Array([Value::String(tag), p0, p1, ...]).
+            // Composite payload values go through `into_value` so
+            // nested variants/tuples/etc. produce the right Value
+            // shape inside the outer array.
             if payloads.is_empty() {
                 EvalResult::Variant(Value::String(tag.clone()))
             } else {
@@ -1080,10 +1242,9 @@ fn eval_expr(
                     poolshark::local::LPooled::take();
                 out.reserve(payloads.len() + 1);
                 out.push(Value::String(tag.clone()));
-                for (p, t) in payloads.iter().zip(payload_types.iter()) {
-                    let r = eval_expr(env, p, registry, dispatch)?.into_scalar();
-                    debug_assert_eq!(r.typ(), *t, "VariantNew payload type mismatch");
-                    out.push(r.to_value());
+                for p in payloads.iter() {
+                    let r = eval_expr(env, p, registry, dispatch)?;
+                    out.push(r.into_value());
                 }
                 EvalResult::Variant(Value::Array(ValArray::from_iter_exact(
                     out.drain(..),
@@ -1166,6 +1327,25 @@ fn eval_expr(
 /// Panics if the slot type doesn't match the runtime value's shape
 /// — that would mean KIR is malformed (typecheck should have
 /// rejected the program before it got this far).
+/// Convert an arbitrary `EvalResult` into the `Nullable(Value)`
+/// shape. Used at every site where the declared type widens to
+/// `KirType::Nullable<T>` but an arm of the underlying production
+/// happened to return a narrower shape — an `IfChain` arm that
+/// produced a bare `T` scalar or the singleton `Null`.
+///
+/// A `Nullable` input passes through unchanged; everything else
+/// goes through `into_value()` and is re-wrapped. Strings and
+/// composites are *not* expected here (we only widen `T`+`null`
+/// in fusion today), so they fall through to the `into_value()`
+/// path and the wrapped `Value` carries the runtime form — which
+/// is correct even if not currently exercised.
+fn normalize_to_nullable(r: EvalResult) -> EvalResult {
+    match r {
+        EvalResult::Nullable(v) => EvalResult::Nullable(v),
+        other => EvalResult::Nullable(other.into_value()),
+    }
+}
+
 fn extract_composite_or_scalar(
     arr: &ValArray,
     idx: usize,
@@ -1191,9 +1371,23 @@ fn extract_composite_or_scalar(
                 "string slot {idx}: expected Value::String, got {v:?}"
             ),
         },
+        // Nullable slot: runtime representation is the inner Value
+        // (either Value::Null or T's form). Match the same shape
+        // used elsewhere (e.g. KirOp::Local for Nullable, the
+        // DynCall Nullable return decode). Producer ops that
+        // populate composite slots with a Nullable field push the
+        // EvalResult through `into_value` which produces either
+        // Value::Null or the wrapped T — both round-trip cleanly.
+        KirType::Nullable(_) => EvalResult::Nullable(arr[idx].clone()),
         KirType::Unit => panic!(
             "Unit slot at {idx} — Unit isn't usefully extractable, \
              KIR is malformed"
+        ),
+        // Bare `KirType::Null` (the singleton) never appears as a
+        // composite-slot type — fusion widens to `Nullable<T>` at
+        // construction sites before binding.
+        KirType::Null => panic!(
+            "bare Null slot at {idx} — should have widened to Nullable<T>"
         ),
     }
 }
@@ -1731,6 +1925,12 @@ pub(crate) fn kir_type_to_graphix_type(
             flags.insert(netidx_value::Typ::String);
             Type::Primitive(flags)
         }
+        // Null maps back to `Type::Primitive(Typ::Null)`; Nullable
+        // is `[T, null]`. Not yet exercised — kernel build should
+        // reject these before they reach DynCall arg conversion.
+        KirType::Null | KirType::Nullable(_) => panic!(
+            "Null/Nullable not yet supported in kir_type_to_graphix_type"
+        ),
     }
 }
 
@@ -1772,7 +1972,8 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
     ret_kind: u8,
-) -> u64 {
+) -> crate::kir_jit_helpers::DynCallRet {
+    use crate::kir_jit_helpers::DynCallRet;
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
     let fn_arg_values = unsafe { &*state.fn_arg_values };
@@ -1788,16 +1989,18 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     match slot.dispatch(lambda_v, ctx, event, &args_vec) {
         Some(v) => match ret_kind {
             0 => {
-                // Scalar return: pack the Value's bits into u64.
-                pack_value_to_u64(&v)
+                // Scalar return: pack the Value's bits into word0;
+                // word1 unused.
+                DynCallRet { word0: pack_value_to_u64(&v), word1: 0 }
             }
             1 => {
-                // Composite ValArray return: extract the inner array,
-                // box, transfer ownership.
+                // Composite ValArray return: extract the inner
+                // array, box, transfer ownership. word1 unused.
                 match v {
-                    Value::Array(arr) => {
-                        Box::into_raw(Box::new(arr)) as u64
-                    }
+                    Value::Array(arr) => DynCallRet {
+                        word0: Box::into_raw(Box::new(arr)) as u64,
+                        word1: 0,
+                    },
                     other => panic!(
                         "DynCall return ABI: ret_kind=1 (ValArray) but \
                          got {other:?}"
@@ -1805,14 +2008,30 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                 }
             }
             2 => {
-                // Variant return: box the whole Value.
-                Box::into_raw(Box::new(v)) as u64
+                // Variant / Nullable return: hand back the Value's
+                // two `repr(u64)` words directly — no Box. The JIT
+                // reads both registers and treats the result as the
+                // (disc, payload) pair of a Value it now owns.
+                //
+                // SAFETY: Value is `#[repr(u64)]`, 16 bytes /
+                // 8-byte aligned — layout pinned by
+                // `kir_jit_helpers`. `ManuallyDrop` prevents the
+                // local `v`'s Drop from running while we transmute
+                // its bits out; ownership transfers to the caller.
+                let v = std::mem::ManuallyDrop::new(v);
+                let words: [u64; 2] =
+                    unsafe { std::mem::transmute_copy(&*v) };
+                DynCallRet { word0: words[0], word1: words[1] }
+            }
+            3 => {
+                // Unit return: caller discards. Both words zero.
+                DynCallRet { word0: 0, word1: 0 }
             }
             _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
         },
         None => {
             crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
-            0
+            DynCallRet { word0: 0, word1: 0 }
         }
     }
 }
@@ -1904,6 +2123,7 @@ enum ArgKind {
     Tuple(u32),
     Struct(u32),
     Variant(u32),
+    Nullable(u32),
 }
 
 /// Total number of input slots the runtime passes into a KirNode for
@@ -1940,6 +2160,7 @@ fn build_arg_layout(kernel: &KirKernel) -> Vec<ArgKind> {
     let mut tuple_idx: u32 = 0;
     let mut struct_idx: u32 = 0;
     let mut variant_idx: u32 = 0;
+    let mut nullable_idx: u32 = 0;
     // Count of HOF-arg fn_params (Binding-source ones don't take a
     // positional input). Combined with `tail_call_slots.len()` to
     // size the layout.
@@ -1995,6 +2216,10 @@ fn build_arg_layout(kernel: &KirKernel) -> Vec<ArgKind> {
             TailCallSlotKind::Variant => {
                 out.push(ArgKind::Variant(variant_idx));
                 variant_idx += 1;
+            }
+            TailCallSlotKind::Nullable => {
+                out.push(ArgKind::Nullable(nullable_idx));
+                nullable_idx += 1;
             }
         }
     }
@@ -2230,6 +2455,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
             smallvec::SmallVec::with_capacity(self.kernel.struct_params.len());
         let mut variant_args: smallvec::SmallVec<[Value; 4]> =
             smallvec::SmallVec::with_capacity(self.kernel.variant_params.len());
+        let mut nullable_args: smallvec::SmallVec<[Value; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.nullable_params.len());
         let mut fn_arg_values: smallvec::SmallVec<[Value; 4]> =
             smallvec::SmallVec::with_capacity(self.kernel.fn_params.len());
         for _ in 0..self.kernel.fn_params.len() {
@@ -2286,6 +2513,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     debug_assert_eq!(idx as usize, variant_args.len());
                     variant_args.push(v.clone());
                 }
+                ArgKind::Nullable(idx) => {
+                    // Nullable args arrive as a `Value` that is either
+                    // `Value::Null` or the non-null `T` runtime form.
+                    // No tag bit / wrapping — fusion's job to keep the
+                    // type lined up.
+                    debug_assert_eq!(idx as usize, nullable_args.len());
+                    nullable_args.push(v.clone());
+                }
             }
         }
         // Resolve Binding-source fn slots by reading the BindId out
@@ -2338,6 +2573,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     &tuple_args,
                     &struct_args,
                     &variant_args,
+                    &nullable_args,
                     &self.registry,
                     &mut dispatch,
                 )?;
@@ -2364,7 +2600,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     + array_args.len()
                     + tuple_args.len()
                     + struct_args.len()
-                    + variant_args.len();
+                    + 2 * variant_args.len()
+                    + 2 * nullable_args.len();
                 let mut slots: smallvec::SmallVec<[u64; 16]> =
                     smallvec::SmallVec::with_capacity(n_slots);
                 for r in &reg_args {
@@ -2379,12 +2616,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 for a in &struct_args {
                     slots.push(a as *const ValArray as u64);
                 }
+                // Variant / Nullable boundary: pack the borrowed
+                // `Value` as its two `repr(u64)` words (disc, payload).
+                // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
+                // aligned, layout pinned by the const_assert in
+                // `kir_jit_helpers`. We don't transfer ownership —
+                // the kernel refcount-bumps on entry via
+                // `graphix_value_clone`.
                 for v in &variant_args {
-                    // Variant boundary: pointer to the borrowed
-                    // `Value` in this SmallVec slot.
-                    slots.push(v as *const Value as u64);
+                    let p = v as *const Value as *const u64;
+                    unsafe {
+                        slots.push(*p);
+                        slots.push(*p.add(1));
+                    }
                 }
-                let mut out: u64 = 0;
+                for v in &nullable_args {
+                    let p = v as *const Value as *const u64;
+                    unsafe {
+                        slots.push(*p);
+                        slots.push(*p.add(1));
+                    }
+                }
+                let mut out: [u64; 2] = [0, 0];
                 let f = unsafe { wrapped.fn_ptr() };
                 // Set up the DynCall dispatcher handle so the JIT'd
                 // code can invoke fn-typed params via `graphix_dyncall`.
@@ -2414,7 +2667,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 // "some earlier kernel left the flag set."
                 crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
                 unsafe {
-                    f(slots.as_ptr(), &mut out);
+                    f(slots.as_ptr(), out.as_mut_ptr());
                 }
                 crate::kir_jit_helpers::DYN_DISPATCH_HANDLE
                     .with(|c| c.set(prev_handle));
@@ -2428,33 +2681,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     // way, discard and re-fire next cycle.
                     return None;
                 }
-                // Decode the wrapper's *out slot according to the
+                // Decode the wrapper's *out slot(s) according to the
                 // kernel's declared return type:
                 //
-                // - Prim: u64 bits → RegValue
-                // - Array/Tuple/Struct: u64 holds a `*mut ValArray`
-                //   we own; reclaim via Box::from_raw, wrap in
-                //   EvalResult::ValArray (KirNode::update.into_value
-                //   later wraps in Value::Array).
-                // - Variant: u64 holds a `*mut Value` we own; reclaim
-                //   similarly and wrap in EvalResult::Variant.
+                // - Prim: out[0] bits → RegValue.
+                // - Array/Tuple/Struct: out[0] holds a `*mut ValArray`
+                //   we own; reclaim via Box::from_raw.
+                // - Variant/Nullable: out[0] = Value disc, out[1] =
+                //   payload. Transmute the two u64s back into a Value
+                //   (Value is `#[repr(u64)]`, 16 bytes / 8-byte
+                //   aligned — layout pinned by `kir_jit_helpers`).
                 use crate::kernel_ir::KirType;
                 match &self.kernel.return_type {
                     KirType::Prim(p) => {
                         EvalResult::Scalar(
-                            crate::kir_jit::unpack_u64_to_reg(out, *p),
+                            crate::kir_jit::unpack_u64_to_reg(out[0], *p),
                         )
                     }
                     KirType::Array(_)
                     | KirType::Tuple(_)
                     | KirType::Struct(_) => {
-                        let ptr = out as *mut ValArray;
+                        let ptr = out[0] as *mut ValArray;
                         let owned = unsafe { *Box::from_raw(ptr) };
                         EvalResult::ValArray(owned)
                     }
                     KirType::Variant(_) => {
-                        let ptr = out as *mut Value;
-                        let owned = unsafe { *Box::from_raw(ptr) };
+                        let owned: Value =
+                            unsafe { std::mem::transmute(out) };
                         EvalResult::Variant(owned)
                     }
                     // Unit-returning kernel: the JIT writes 0 into
@@ -2465,14 +2718,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     // never inspected — a scalar bool placeholder is
                     // type-correct and cheap.
                     KirType::Unit => EvalResult::Scalar(RegValue::Bool(false)),
-                    // String-returning kernels fall back to the
-                    // interpreter via the `kernel_contains_string`
-                    // guard, so the JIT never compiles them and
-                    // this branch never fires.
-                    KirType::String => unreachable!(
-                        "JIT decode for KirType::String kernel return — \
-                         kernel_contains_string guard should have routed \
-                         to the interpreter"
+                    // String-returning kernel: `out[0]` is the
+                    // ArcStr's thin pointer (transferred ownership).
+                    // Reclaim via `from_raw`-style transmute — ArcStr
+                    // is `repr(transparent)` over `NonNull<ThinInner>`,
+                    // so the raw u64 is a valid `ArcStr` bit pattern.
+                    KirType::String => {
+                        let raw = out[0];
+                        // SAFETY: the JIT'd kernel produced this via
+                        // `graphix_arcstr_clone_from_static` or
+                        // `graphix_string_buf_finalize`, both of which
+                        // return owned ArcStr values. Transmute the
+                        // raw pointer into an owned `arcstr::ArcStr`.
+                        let s: arcstr::ArcStr = unsafe {
+                            std::mem::transmute::<u64, arcstr::ArcStr>(raw)
+                        };
+                        EvalResult::String(s)
+                    }
+                    KirType::Nullable(_) => {
+                        // Nullable return: out[0] = disc, out[1] =
+                        // payload. Transmute the two u64s back into
+                        // a Value (`#[repr(u64)]`, 16-byte layout
+                        // pinned by `kir_jit_helpers`).
+                        let owned: Value =
+                            unsafe { std::mem::transmute(out) };
+                        EvalResult::Nullable(owned)
+                    }
+                    KirType::Null => unreachable!(
+                        "JIT decode for KirType::Null/Nullable kernel \
+                         return — JIT should have bailed out before \
+                         producing such a kernel"
                     ),
                 }
             }
@@ -2564,6 +2839,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -2606,6 +2882,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -2642,6 +2919,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -2667,6 +2945,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -2788,6 +3067,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -2874,6 +3154,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -2914,6 +3195,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -2965,6 +3247,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -2985,6 +3268,224 @@ mod tests {
     }
 
     #[test]
+    fn nullable_let_and_is_null_local() {
+        // Kernel modelling:
+        //   |n: i64| -> i64 {
+        //     let nullable: [i64, null] =
+        //       if n > 0 { n } else { null };
+        //     if IsNull(nullable) { -1 } else { 0 }
+        //   }
+        // — exercises the IfChain Nullable widening, the Nullable
+        // local binding via push_local, the Local read returning
+        // EvalResult::Nullable, and IsNull matching the Nullable
+        // shape. Both branches must round-trip identically.
+        use crate::kernel_ir::{Let};
+        let widen_chain = KirExpr {
+            op: KirOp::IfChain {
+                arms: vec![
+                    (
+                        Some(
+                            cmp(
+                                loc("n", PrimType::I64),
+                                const_expr(ConstVal::I64(0)),
+                                CmpOp::Gt,
+                            )
+                            .unwrap(),
+                        ),
+                        loc("n", PrimType::I64),
+                    ),
+                    (
+                        None,
+                        KirExpr {
+                            op: KirOp::ConstNull,
+                            typ: KirType::Null,
+                        },
+                    ),
+                ],
+            },
+            typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+        };
+        let is_null_check = KirExpr {
+            op: KirOp::IsNull(Box::new(KirExpr {
+                op: KirOp::Local(ArcStr::from("nullable")),
+                typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+            })),
+            typ: KirType::Prim(PrimType::Bool),
+        };
+        let dispatch = KirExpr {
+            op: KirOp::IfChain {
+                arms: vec![
+                    (Some(is_null_check), const_expr(ConstVal::I64(-1))),
+                    (None, const_expr(ConstVal::I64(0))),
+                ],
+            },
+            typ: KirType::Prim(PrimType::I64),
+        };
+        let body = KirExpr {
+            op: KirOp::Block {
+                lets: vec![Let {
+                    local: ArcStr::from("nullable"),
+                    value: widen_chain,
+                }],
+                tail: Box::new(dispatch),
+            },
+            typ: KirType::Prim(PrimType::I64),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("classify"),
+            params: vec![input("n", PrimType::I64)],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        // Kernel touches Null/Nullable → must route to interp.
+        assert!(crate::kernel_ir::kernel_contains_null(&kernel));
+        assert_eq!(
+            eval_kernel(&kernel, &[RegValue::I64(5)]),
+            RegValue::I64(0),
+            "positive n widens to Nullable(non-null), IsNull false → 0"
+        );
+        assert_eq!(
+            eval_kernel(&kernel, &[RegValue::I64(0)]),
+            RegValue::I64(-1),
+            "zero n widens to Nullable(Null), IsNull true → -1"
+        );
+        assert_eq!(
+            eval_kernel(&kernel, &[RegValue::I64(-3)]),
+            RegValue::I64(-1),
+            "negative n widens to Nullable(Null), IsNull true → -1"
+        );
+    }
+
+    #[test]
+    fn nullable_kernel_param_round_trip() {
+        // Kernel modelling:
+        //   |x: [i64, null]| -> i64 select x { null as _ => -1, _ => 7 }
+        // — exercises the Nullable kernel-param path end-to-end: the
+        // arg arrives as a `Value` via the boundary, gets pushed into
+        // env.nullables, read back via KirOp::Local (yielding
+        // EvalResult::Nullable), and IsNull dispatches on it.
+        let is_null_check = KirExpr {
+            op: KirOp::IsNull(Box::new(KirExpr {
+                op: KirOp::Local(ArcStr::from("x")),
+                typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+            })),
+            typ: KirType::Prim(PrimType::Bool),
+        };
+        let chain = KirExpr {
+            op: KirOp::IfChain {
+                arms: vec![
+                    (Some(is_null_check), const_expr(ConstVal::I64(-1))),
+                    (None, const_expr(ConstVal::I64(7))),
+                ],
+            },
+            typ: KirType::Prim(PrimType::I64),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("nullable_arg"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![crate::kernel_ir::NullableInput {
+                name: ArcStr::from("x"),
+                elem: KirType::Prim(PrimType::I64),
+                bind_id: None,
+            }],
+            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+                name: ArcStr::from("x"),
+                kind: crate::kernel_ir::TailCallSlotKind::Nullable,
+            }],
+            return_type: KirType::Prim(PrimType::I64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(chain)],
+        };
+        assert!(crate::kernel_ir::kernel_contains_null(&kernel));
+        let registry = KernelRegistry::default();
+        let mut dispatch = no_dyn_dispatch;
+        // Pass a non-null i64 — IsNull false → return 7.
+        let r = eval_kernel_full(
+            &kernel,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[Value::I64(42)],
+            &registry,
+            &mut dispatch,
+        )
+        .unwrap()
+        .into_scalar();
+        assert_eq!(r, RegValue::I64(7));
+        // Pass Value::Null — IsNull true → return -1.
+        let r = eval_kernel_full(
+            &kernel,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[Value::Null],
+            &registry,
+            &mut dispatch,
+        )
+        .unwrap()
+        .into_scalar();
+        assert_eq!(r, RegValue::I64(-1));
+    }
+
+    #[test]
+    fn const_null_and_is_null() {
+        // Kernel: |x: i64| if IsNull(ConstNull) { 1 } else { 0 }
+        // — exercises ConstNull producing EvalResult::Null and IsNull
+        // converting that to a Bool. The condition is statically true,
+        // so this should always return 1 regardless of `x`.
+        let is_null_check = KirExpr {
+            op: KirOp::IsNull(Box::new(KirExpr {
+                op: KirOp::ConstNull,
+                typ: KirType::Null,
+            })),
+            typ: KirType::Prim(PrimType::Bool),
+        };
+        let chain = KirExpr {
+            op: KirOp::IfChain {
+                arms: vec![
+                    (Some(is_null_check), const_expr(ConstVal::I64(1))),
+                    (None, const_expr(ConstVal::I64(0))),
+                ],
+            },
+            typ: KirType::Prim(PrimType::I64),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("is_null_const"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            tail_call_slots: vec![],
+            return_type: KirType::Prim(PrimType::I64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(chain)],
+        };
+        // Confirm the kernel routes to interp (the guard fires).
+        assert!(crate::kernel_ir::kernel_contains_null(&kernel));
+        assert_eq!(eval_kernel(&kernel, &[RegValue::I64(42)]), RegValue::I64(1));
+    }
+
+    #[test]
     fn integer_overflow_wraps() {
         // i64::MAX + 1 wraps to i64::MIN, matching Rust release-mode
         // arithmetic and what the AOT-emitted Rust does.
@@ -3002,6 +3503,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3058,6 +3560,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3115,6 +3618,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3167,6 +3671,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::U64),
             has_tail_loop: false,

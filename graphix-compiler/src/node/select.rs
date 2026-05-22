@@ -269,4 +269,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn spec(&self) -> &Expr {
         &self.spec
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Select(self)
+    }
 }

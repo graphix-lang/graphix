@@ -88,7 +88,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 }
 
 #[derive(Debug)]
-pub(crate) struct CallSite<R: Rt, E: UserEvent> {
+pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<FnType>,
     pub(super) resolved_ftype: Option<FnType>,
@@ -635,5 +635,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for n in &self.arg_refs {
             n.refs(refs);
         }
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::CallSite(self)
     }
 }

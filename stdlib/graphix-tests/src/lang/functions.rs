@@ -1,7 +1,7 @@
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 
 const LAMBDA: &str = r#"

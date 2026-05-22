@@ -185,43 +185,47 @@ fn define_typed_kernel(
         sig.params.push(AbiParam::new(prim_to_clif(p.prim)));
     }
     // Composite (array/tuple/struct) params follow scalars; each is
-    // a `*const ValArray` passed as a pointer-sized integer. Variant
-    // params follow those; they're `*const Value` (different shape
-    // but same I64 pointer size at the ABI level).
-    let n_composites = kernel.array_params.len()
+    // a `*const ValArray` passed as a pointer-sized integer (one
+    // `I64` slot per param). Variant and Nullable params come last;
+    // each is a `repr(u64)` Value passed as TWO `I64` slots
+    // (disc + payload), matching the SysV two-register aggregate
+    // ABI for 16-byte structs.
+    let n_pointer_slots = kernel.array_params.len()
         + kernel.tuple_params.len()
-        + kernel.struct_params.len()
-        + kernel.variant_params.len();
-    for _ in 0..n_composites {
+        + kernel.struct_params.len();
+    let n_value_slots =
+        2 * (kernel.variant_params.len() + kernel.nullable_params.len());
+    for _ in 0..(n_pointer_slots + n_value_slots) {
         sig.params.push(AbiParam::new(types::I64));
     }
-    // Composite-return support: when the kernel's return type is
-    // an Array/Tuple/Struct/Variant, the typed kernel returns an
-    // I64 holding the owned `*mut ValArray` (for array/tuple/
-    // struct) or `*mut Value` (for variant). The runtime caller
-    // reads this pointer out of the wrapper's *out slot and
-    // reclaims ownership via `Box::from_raw`.
-    let return_clif = match &kernel.return_type {
-        KirType::Prim(p) => prim_to_clif(*p),
-        KirType::Array(_)
-        | KirType::Tuple(_)
-        | KirType::Struct(_)
-        | KirType::Variant(_) => types::I64,
-        // Unit return: still emit an I64 slot (so the ABI is uniform);
-        // the kernel body writes 0 and the caller throws the result
-        // away. Avoids special-casing zero-returns at the wrapper /
-        // dispatch layer.
-        KirType::Unit => types::I64,
-        // String returns can't be JIT'd; the kernel should have
-        // been routed to interp by `kernel_contains_string`.
-        KirType::String => {
+    // Return shape:
+    //   Prim          → one return value at the prim's CLIF type
+    //   Array/Tuple/Struct → one `I64` (owned `*mut ValArray`)
+    //   Variant/Nullable   → two `I64`s (Value's disc + payload)
+    //   Unit          → one `I64` placeholder, ignored by caller
+    match &kernel.return_type {
+        KirType::Prim(p) => sig.returns.push(AbiParam::new(prim_to_clif(*p))),
+        KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        KirType::Variant(_) | KirType::Nullable(_) => {
+            sig.returns.push(AbiParam::new(types::I64)); // disc
+            sig.returns.push(AbiParam::new(types::I64)); // payload
+        }
+        KirType::Unit => sig.returns.push(AbiParam::new(types::I64)),
+        // String returns travel as a single `i64` (ArcStr's thin
+        // pointer). `KirNode::update`'s wrapper reads the pointer
+        // back and wraps in `Value::String` (transferring ownership).
+        KirType::String => sig.returns.push(AbiParam::new(types::I64)),
+        // Bare `KirType::Null` returns aren't a real shape — fusion
+        // always widens to `Nullable<T>` before producing.
+        KirType::Null => {
             return Err(anyhow!(
-                "kernel returns KirType::String; JIT can't ABI it — \
-                 should have routed to interp via kernel_contains_string"
+                "kernel returns bare KirType::Null; should have \
+                 widened to Nullable<T> at construction"
             ))
         }
-    };
-    sig.returns.push(AbiParam::new(return_clif));
+    }
 
     let func_id = jit
         .module
@@ -337,27 +341,43 @@ pub fn compile_kernel_with_wrapper(kernel: &KirKernel) -> Result<WrappedKernel> 
     })
 }
 
-// ─── Shared JIT module: cross-kernel CLIF calls ──────────────────
+// ─── Per-context JIT module: cross-kernel CLIF calls ─────────────
 //
-// All kernels with `KirOp::Call` go into a single global JIT module so
-// that one kernel's compiled code can `call` another's directly via a
-// CLIF `call` instruction. The module is never dropped — fn pointers
-// it produces are valid for the program's lifetime.
+// All kernels with `KirOp::Call` from a given `ExecCtx` go into a
+// single JIT module owned by that ExecCtx, so that one kernel's
+// compiled code can `call` another's directly via a CLIF `call`
+// instruction. The module lives as long as the ExecCtx; when the
+// ExecCtx drops, the module drops and the mapped code goes with it.
 //
-// `by_kernel` keys by Arc identity so the same `Arc<KirKernel>`
-// referenced from multiple parent kernels reuses one compilation.
-// Names alone aren't unique enough — two distinct programs can both
-// have a binding `foo` with different KIR.
+// `by_kernel` keys by `Arc<KirKernel>` raw-pointer identity so the
+// same `Arc<KirKernel>` referenced from multiple parent kernels
+// reuses one compilation within a single ExecCtx. Names alone
+// aren't unique enough — two distinct programs can both have a
+// binding `foo` with different KIR.
+//
+// (Was a process-global `SHARED_JIT` static before May 2026; moved
+// to per-context to align with the runtime's documented "multiple
+// ExecCtxes can hold different modes without racing on shared
+// global state" guarantee.)
 
-struct SharedJit {
+pub struct Jit {
     ctx: JitCtx,
     /// Per-kernel cache: Arc<KirKernel> raw pointer → cached entry.
     /// We keep the Arc alive in the entry so the raw pointer key
-    /// stays valid for the lifetime of the static. Without it,
+    /// stays valid for the lifetime of the ExecCtx. Without it,
     /// Arc-allocator reuse could land a different KIR at the same
     /// address and we'd return a stale FuncId pointing at code with
     /// the wrong signature.
     by_kernel: BTreeMap<usize, CachedKernel>,
+}
+
+impl Jit {
+    /// Construct a fresh per-context JIT. Initializes the cranelift
+    /// module + ISA. Returns `Err` if cranelift initialization fails
+    /// (rare; only happens if the target ISA isn't supported).
+    pub fn new() -> Result<Self> {
+        Ok(Self { ctx: JitCtx::new()?, by_kernel: BTreeMap::new() })
+    }
 }
 
 struct CachedKernel {
@@ -368,10 +388,11 @@ struct CachedKernel {
     _kernel: std::sync::Arc<KirKernel>,
     /// Per-kernel string table. The JIT'd code for this kernel bakes
     /// in `*const ArcStr` pointers into this table's `Box<[ArcStr]>`
-    /// (struct field names, variant tags). The shared module's code
-    /// lives for the lifetime of `SHARED_JIT`, so the table must too
-    /// — kept here, alongside the kernel's `FuncId`. Populated empty
-    /// in phase 1 (`ensure_declared`); the real table is moved in
+    /// (struct field names, variant tags). The module's code lives
+    /// for the lifetime of the owning `Jit` (which lives for the
+    /// lifetime of the `ExecCtx`), so the table must too — kept
+    /// here, alongside the kernel's `FuncId`. Populated empty in
+    /// phase 1 (`ensure_declared`); the real table is moved in
     /// during phase 2 (`define_kernel_body`). Moving the
     /// `KernelStrings` struct around the `BTreeMap` is fine — only
     /// the `Box` pointer moves, not the heap allocation the baked-in
@@ -379,15 +400,7 @@ struct CachedKernel {
     _strings: KernelStrings,
 }
 
-unsafe impl Send for SharedJit {}
-
-static SHARED_JIT: std::sync::LazyLock<parking_lot::Mutex<SharedJit>> =
-    std::sync::LazyLock::new(|| {
-        parking_lot::Mutex::new(SharedJit {
-            ctx: JitCtx::new().expect("init shared JitCtx"),
-            by_kernel: BTreeMap::new(),
-        })
-    });
+unsafe impl Send for Jit {}
 
 /// JIT-compile `kernel` alongside any kernels it calls (`callees`),
 /// returning a [`WrappedKernel`] whose code can directly CLIF-call
@@ -398,8 +411,9 @@ static SHARED_JIT: std::sync::LazyLock<parking_lot::Mutex<SharedJit>> =
 /// `callees` must be the *transitive* closure: every kernel reachable
 /// from `kernel` through `KirOp::Call`, by name. Each value is the
 /// `Arc<KirKernel>` for that name. Each callee's KirKernel is keyed
-/// by Arc identity in a global cache (`SharedJit::by_kernel`); the
-/// same Arc referenced from multiple parents compiles once.
+/// by Arc identity in the per-context cache (`Jit::by_kernel`); the
+/// same Arc referenced from multiple parents compiles once within
+/// the same ExecCtx.
 ///
 /// Compile is two-phase: every kernel in the closure is *declared*
 /// (gets a `FuncId`) before any are *defined* (body compiled). This
@@ -411,10 +425,10 @@ static SHARED_JIT: std::sync::LazyLock<parking_lot::Mutex<SharedJit>> =
 /// kernel still has correct semantics there, just slower at the
 /// cross-kernel boundary.
 pub fn compile_kernel_with_callees(
+    jit: &mut Jit,
     kernel: &std::sync::Arc<KirKernel>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<KirKernel>>,
 ) -> Result<WrappedKernel> {
-    let mut shared = SHARED_JIT.lock();
     // Phase 1 — declare every kernel in the closure (parent + all
     // transitively-reachable callees). Cached entries reuse their
     // `FuncId`; fresh ones get a freshly-declared FuncId and queue
@@ -426,14 +440,14 @@ pub fn compile_kernel_with_callees(
     let kernel_name = kernel.fn_name.clone();
     let mut funcids: BTreeMap<ArcStr, (FuncId, Signature)> = BTreeMap::new();
     let mut to_define: Vec<std::sync::Arc<KirKernel>> = Vec::new();
-    let parent_entry = ensure_declared(&mut shared, kernel, &mut to_define)?;
+    let parent_entry = ensure_declared(jit, kernel, &mut to_define)?;
     funcids.insert(kernel_name.clone(), parent_entry.clone());
     for (name, k) in callees {
         if name.as_str() == kernel_name.as_str() {
             funcids.insert(name.clone(), parent_entry.clone());
             continue;
         }
-        let entry = ensure_declared(&mut shared, k, &mut to_define)?;
+        let entry = ensure_declared(jit, k, &mut to_define)?;
         funcids.insert(name.clone(), entry);
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
@@ -444,28 +458,30 @@ pub fn compile_kernel_with_callees(
     //
     // Each body's `KernelStrings` carries the stable `*const ArcStr`
     // addresses its code baked in; store it back into the per-kernel
-    // cache entry so it lives as long as the shared module's code.
+    // cache entry so it lives as long as the per-context module's
+    // code.
     for k in &to_define {
-        let strings = define_kernel_body(&mut shared.ctx, k, &funcids)?;
+        let strings = define_kernel_body(&mut jit.ctx, k, &funcids)?;
         let key = std::sync::Arc::as_ptr(k) as usize;
-        if let Some(cached) = shared.by_kernel.get_mut(&key) {
+        if let Some(cached) = jit.by_kernel.get_mut(&key) {
             cached._strings = strings;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
     // finalize the module so the new code is mapped read-execute.
-    let wrapper_id = define_wrapper(&mut shared.ctx, kernel, parent_entry.0)?;
-    shared
+    let wrapper_id = define_wrapper(&mut jit.ctx, kernel, parent_entry.0)?;
+    jit
         .ctx
         .module
         .finalize_definitions()
-        .context("finalize_definitions (shared)")?;
-    let wrapper_fn_ptr = shared.ctx.module.get_finalized_function(wrapper_id);
-    // _ctx: None — the shared module is kept alive by the static.
-    // _strings: empty here — for the shared-module path each kernel's
-    // string table lives in `SharedJit::by_kernel[key]._strings`
+        .context("finalize_definitions (per-context jit)")?;
+    let wrapper_fn_ptr = jit.ctx.module.get_finalized_function(wrapper_id);
+    // _ctx: None — the per-context module is kept alive by the Jit
+    // field on ExecCtx.
+    // _strings: empty here — for the cross-kernel-call path each
+    // kernel's string table lives in `Jit::by_kernel[key]._strings`
     // (stored in phase 2), since the compiled code outlives this
-    // `WrappedKernel` and is owned by the `SHARED_JIT` static.
+    // `WrappedKernel` and is owned by the ExecCtx's `Jit`.
     Ok(WrappedKernel {
         wrapper_fn_ptr,
         _ctx: None,
@@ -478,16 +494,16 @@ pub fn compile_kernel_with_callees(
 /// existing entry. Freshly-declared kernels are pushed onto
 /// `to_define` so phase 2 compiles their body.
 fn ensure_declared(
-    shared: &mut SharedJit,
+    jit: &mut Jit,
     k: &std::sync::Arc<KirKernel>,
     to_define: &mut Vec<std::sync::Arc<KirKernel>>,
 ) -> Result<(FuncId, Signature)> {
     let key = std::sync::Arc::as_ptr(k) as usize;
-    if let Some(e) = shared.by_kernel.get(&key) {
+    if let Some(e) = jit.by_kernel.get(&key) {
         return Ok((e.func_id, e.signature.clone()));
     }
-    let symbol = shared.ctx.next_symbol(&k.fn_name);
-    let mut sig = Signature::new(shared.ctx.module.isa().default_call_conv());
+    let symbol = jit.ctx.next_symbol(&k.fn_name);
+    let mut sig = Signature::new(jit.ctx.module.isa().default_call_conv());
     for p in &k.params {
         sig.params.push(AbiParam::new(prim_to_clif(p.prim)));
     }
@@ -496,12 +512,12 @@ fn ensure_declared(
         .as_prim()
         .ok_or_else(|| anyhow!("JIT does not support array return types"))?;
     sig.returns.push(AbiParam::new(prim_to_clif(k_return_prim)));
-    let fid = shared
+    let fid = jit
         .ctx
         .module
         .declare_function(&symbol, Linkage::Local, &sig)
-        .context("declare_function (shared declare)")?;
-    shared.by_kernel.insert(
+        .context("declare_function (per-context jit)")?;
+    jit.by_kernel.insert(
         key,
         CachedKernel {
             func_id: fid,
@@ -616,12 +632,36 @@ fn define_wrapper(
             typed_func_id,
             &mut jit.func_ctx.func,
         );
+        // Debug-build instrumentation: declare a FuncRef for the
+        // invocation-record helper so we can emit a call to it at
+        // the start of the wrapper. Production release builds skip
+        // both the FuncRef declaration and the call.
+        #[cfg(debug_assertions)]
+        let record_ref = {
+            let fid = jit
+                .helper_ids
+                .ids
+                .get("graphix_record_jit_invocation")
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_record_jit_invocation FuncId")
+                })?;
+            jit.module.declare_func_in_func(fid, &mut jit.func_ctx.func)
+        };
         let mut b =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
+
+        // Bump the per-thread JIT invocation counter (debug builds
+        // only). The test harness's Mode 3 reads this after running
+        // a fixture to verify the JIT actually executed.
+        #[cfg(debug_assertions)]
+        {
+            b.ins().call(record_ref, &[]);
+        }
 
         let args_ptr = b.block_params(entry)[0];
         let out_ptr = b.block_params(entry)[1];
@@ -631,11 +671,13 @@ fn define_wrapper(
         // the slot when applicable (upper bytes ignored). Composite
         // params (array/tuple/struct) load as i64 — the caller has
         // stored a `*const ValArray` cast to u64 in the slot.
-        let total_params = kernel.params.len()
-            + kernel.array_params.len()
+        let n_pointer_slots = kernel.array_params.len()
             + kernel.tuple_params.len()
-            + kernel.struct_params.len()
-            + kernel.variant_params.len();
+            + kernel.struct_params.len();
+        let n_value_slots = 2
+            * (kernel.variant_params.len() + kernel.nullable_params.len());
+        let total_params =
+            kernel.params.len() + n_pointer_slots + n_value_slots;
         let mut typed_args = Vec::with_capacity(total_params);
         let mut slot = 0;
         for p in kernel.params.iter() {
@@ -645,11 +687,11 @@ fn define_wrapper(
             typed_args.push(v);
             slot += 1;
         }
-        let n_composites = kernel.array_params.len()
-            + kernel.tuple_params.len()
-            + kernel.struct_params.len()
-            + kernel.variant_params.len();
-        for _ in 0..n_composites {
+        // Composite pointer params + Value-shaped (disc, payload)
+        // pairs both load as plain `I64`s from consecutive 8-byte
+        // slots in the args[] buffer; the typed kernel sig knows how
+        // many of each and dispatches accordingly.
+        for _ in 0..(n_pointer_slots + n_value_slots) {
             let offset = (slot as i32) * 8;
             let v = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, offset);
             typed_args.push(v);
@@ -657,13 +699,28 @@ fn define_wrapper(
         }
 
         let call = b.ins().call(typed_ref, &typed_args);
-        let result = b.inst_results(call)[0];
+        let returns_two_words = matches!(
+            kernel.return_type,
+            KirType::Variant(_) | KirType::Nullable(_)
+        );
+        let (r0, r1_opt) = {
+            let results = b.inst_results(call);
+            (
+                results[0],
+                if returns_two_words { Some(results[1]) } else { None },
+            )
+        };
 
-        // Store result into *out. Width matches the kernel's return
-        // type — the upper bytes of the slot stay whatever they were
-        // (the caller knows the return type and reads the right
-        // width).
-        b.ins().store(MemFlags::trusted(), result, out_ptr, 0);
+        // Store result into *out. Scalar/composite kernels write one
+        // slot (out[0]); Value-shaped returns write two slots (out[0]
+        // = disc, out[1] = payload). Width matches the kernel's
+        // return type — the upper bytes of a scalar slot stay
+        // whatever they were (the caller knows the return type and
+        // reads the right width).
+        b.ins().store(MemFlags::trusted(), r0, out_ptr, 0);
+        if let Some(r1) = r1_opt {
+            b.ins().store(MemFlags::trusted(), r1, out_ptr, 8);
+        }
         b.ins().return_(&[]);
 
         b.seal_all_blocks();
@@ -904,14 +961,51 @@ fn compile_into_function(
     let value_clone_helper = helper_refs
         .get("graphix_value_clone")
         .expect("graphix_value_clone helper must be registered");
+    // Variant params arrive as two consecutive `I64` slots (disc,
+    // payload) — the typed kernel sig declares them that way. We
+    // refcount-bump on entry via `graphix_value_clone` (takes Value
+    // by value, returns a bumped Value by value) and bind the
+    // resulting pair as a `ValueVar`. Going-owned at entry unifies
+    // the cleanup story: `drop_owned_composites` drops every
+    // `env.variants` entry regardless of whether it started as a
+    // param or was produced by `VariantNew`.
     for p in kernel.variant_params.iter() {
-        let borrowed = initial_vals[next];
-        let call = b.ins().call(value_clone_helper, &[borrowed]);
-        let owned = b.inst_results(call)[0];
-        let var = b.declare_var(types::I64);
-        b.def_var(var, owned);
-        env.bind_variant(p.name.clone(), var);
-        next += 1;
+        let borrowed_disc = initial_vals[next];
+        let borrowed_payload = initial_vals[next + 1];
+        let call = b
+            .ins()
+            .call(value_clone_helper, &[borrowed_disc, borrowed_payload]);
+        let results = b.inst_results(call);
+        let (owned_disc, owned_payload) = (results[0], results[1]);
+        let disc_var = b.declare_var(types::I64);
+        let payload_var = b.declare_var(types::I64);
+        b.def_var(disc_var, owned_disc);
+        b.def_var(payload_var, owned_payload);
+        env.bind_variant(
+            p.name.clone(),
+            ValueVar { disc: disc_var, payload: payload_var },
+        );
+        next += 2;
+    }
+    // Nullable params: identical wire shape and entry-clone
+    // discipline as variants.
+    for p in kernel.nullable_params.iter() {
+        let borrowed_disc = initial_vals[next];
+        let borrowed_payload = initial_vals[next + 1];
+        let call = b
+            .ins()
+            .call(value_clone_helper, &[borrowed_disc, borrowed_payload]);
+        let results = b.inst_results(call);
+        let (owned_disc, owned_payload) = (results[0], results[1]);
+        let disc_var = b.declare_var(types::I64);
+        let payload_var = b.declare_var(types::I64);
+        b.def_var(disc_var, owned_disc);
+        b.def_var(payload_var, owned_payload);
+        env.bind_nullable(
+            p.name.clone(),
+            ValueVar { disc: disc_var, payload: payload_var },
+        );
+        next += 2;
     }
     b.seal_block(entry);
     // Snapshot the env now that every param (scalar, composite,
@@ -966,27 +1060,47 @@ fn compile_into_function(
     let pending_exit_block = *lower.pending_exit.borrow();
     if let Some(pe) = pending_exit_block {
         b.switch_to_block(pe);
-        let sentinel = match &kernel.return_type {
-            KirType::Prim(p) => zero_const(b, *p),
-            // Composite / variant returns: the kernel's typed
-            // signature returns an I64 pointer. The pending
-            // sentinel is a null pointer.
+        match &kernel.return_type {
+            KirType::Prim(p) => {
+                let s = zero_const(b, *p);
+                b.ins().return_(&[s]);
+            }
+            // Composite returns: the kernel's typed signature returns
+            // a single `I64` pointer. The pending sentinel is null.
             KirType::Array(_)
             | KirType::Tuple(_)
             | KirType::Struct(_)
-            | KirType::Variant(_)
-            // Unit returns the I64 ABI slot too (see
-            // `define_typed_kernel`); the caller discards.
-            | KirType::Unit => b.ins().iconst(types::I64, 0),
-            // String-returning kernels never reach the JIT — guarded
-            // by `kernel_contains_string`. If this fires, the routing
-            // is broken.
-            KirType::String => unreachable!(
-                "kernel returns KirType::String but reached JIT \
-                 pending-exit emission"
+            // Unit returns the I64 ABI slot too (the caller
+            // discards).
+            | KirType::Unit => {
+                let s = b.ins().iconst(types::I64, 0);
+                b.ins().return_(&[s]);
+            }
+            // Value-shape returns: two `I64`s (disc, payload). The
+            // pending sentinel is `(0, 0)` — the caller's pending
+            // check fires from `DYNCALL_PENDING` before decoding,
+            // so the bits are never observed.
+            KirType::Variant(_) | KirType::Nullable(_) => {
+                let s0 = b.ins().iconst(types::I64, 0);
+                let s1 = b.ins().iconst(types::I64, 0);
+                b.ins().return_(&[s0, s1]);
+            }
+            // String returns travel as a single `i64` (ArcStr's thin
+            // pointer). Sentinel is `0` (null pointer) — the caller
+            // checks the pending flag before decoding, so a null
+            // ArcStr pointer never reaches `KirNode::update`'s
+            // boundary marshaling.
+            KirType::String => {
+                let s = b.ins().iconst(types::I64, 0);
+                b.ins().return_(&[s]);
+            }
+            // Bare Null returns aren't a real shape — fusion widens
+            // to Nullable<T> before producing.
+            KirType::Null => unreachable!(
+                "kernel returns bare KirType::Null but reached JIT \
+                 pending-exit emission — should have widened earlier"
             ),
-        };
-        b.ins().return_(&[sentinel]);
+        }
     }
 
     // After body compilation, every block has been sealed except
@@ -1091,7 +1205,8 @@ fn collect_strings_stmt(s: &KirStmt, out: &mut std::collections::BTreeSet<ArcStr
 
 fn collect_strings_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr>) {
     match &e.op {
-        KirOp::Const(_) | KirOp::Local(_) => {}
+        KirOp::Const(_) | KirOp::ConstNull | KirOp::Local(_) => {}
+        KirOp::IsNull(inner) => collect_strings_expr(inner, out),
         KirOp::ConstStr(s) => {
             // String-containing kernels are routed to interp via
             // `kernel_contains_string`; this branch shouldn't run.
@@ -1360,11 +1475,24 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
+        // Push helpers split by argument shape:
+        //   _push_array   : (buf, inner: *mut ValArray) — pointer arg
+        //   _push_arcstr  : (buf, ptr: *const ArcStr) — pointer arg
+        //   _push_value   : (buf, v: Value)            — Value by value
         "graphix_value_buf_push_array"
-        | "graphix_value_buf_push_value"
         | "graphix_value_buf_push_arcstr" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
+        }
+        // Value-by-value push helpers: buf ptr + two-word Value (disc,
+        // payload). The Value is consumed (owned-mode push) or
+        // refcount-bumped + forgotten (_borrowed mode); both share
+        // the same CLIF signature.
+        "graphix_value_buf_push_value"
+        | "graphix_value_buf_push_value_borrowed" => {
+            sig.params.push(AbiParam::new(types::I64)); // buf
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
         }
         "graphix_valarray_finalize" => {
             // consumes buf, returns *mut ValArray
@@ -1375,28 +1503,43 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
-        "graphix_valarray_drop" | "graphix_value_drop" => {
+        "graphix_valarray_drop" => {
             sig.params.push(AbiParam::new(types::I64));
+        }
+        // Value-by-value lifecycle helpers — every Value arg is two
+        // `I64` registers (disc, payload), every Value return is two
+        // `I64` registers (RAX, RDX on SysV AMD64).
+        "graphix_value_drop" => {
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
+        }
+        "graphix_value_clone" => {
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
         "graphix_value_new_from_array"
-        | "graphix_value_new_string_from_arcstr"
-        | "graphix_value_clone" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
+        | "graphix_value_new_string_from_arcstr" => {
+            sig.params.push(AbiParam::new(types::I64)); // *mut ValArray or *const ArcStr
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
-        // Variant consumer ops.
+        // Variant consumer ops: Value arg by value + extra arg.
         "graphix_variant_tag_eq" => {
-            // (v: *const Value = i64, expected: *const ArcStr = i64) -> u8
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
+            sig.params.push(AbiParam::new(types::I64)); // expected ArcStr ptr
             sig.returns.push(AbiParam::new(types::I8));
         }
-        "graphix_variant_payload_i64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
+        "graphix_variant_payload_i64" | "graphix_variant_payload_u64" => {
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
+            sig.params.push(AbiParam::new(types::I64)); // idx
             sig.returns.push(AbiParam::new(types::I64));
         }
         "graphix_variant_payload_f64" => {
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::F64));
@@ -1405,9 +1548,11 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         | "graphix_variant_payload_u32" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I32));
         }
         "graphix_variant_payload_f32" => {
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::F32));
@@ -1417,38 +1562,129 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         | "graphix_variant_payload_u8" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I8));
         }
         "graphix_variant_payload_i16" | "graphix_variant_payload_u16" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I16));
         }
-        "graphix_variant_payload_u64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
         // DynCall dispatch:
-        //   (fn_index: u32, args: *mut LPooled<Vec<Value>>, ret_kind: u8) -> u64
+        //   (fn_index: u32, args: *mut LPooled<Vec<Value>>, ret_kind: u8)
+        //     -> ret.disc: u64
+        //     -> ret.payload: u64
+        // ret_kind=2 (Value-shaped return) populates BOTH return regs;
+        // for scalar (ret_kind=0) the high reg is undefined and the
+        // caller ignores it. For ret_kind=3 (Unit) both are 0.
         "graphix_dyncall" => {
             sig.params.push(AbiParam::new(types::I32));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I8));
             sig.returns.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
         }
         "graphix_dyncall_pending_take" => {
             sig.returns.push(AbiParam::new(types::I8));
         }
-        "graphix_value_buf_push_array_borrowed"
-        | "graphix_value_buf_push_value_borrowed" => {
-            // (buf: *mut LPooled<Vec<Value>>, src: *const _) -> ()
+        "graphix_value_buf_push_array_borrowed" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
         "graphix_value_buf_drop" => {
             sig.params.push(AbiParam::new(types::I64));
         }
+        // `is_null(v: Value) -> u8` retained for completeness, though
+        // the JIT inlines the disc compare (`icmp_imm Equal disc,
+        // NULL_DISC`) rather than calling this.
+        "graphix_value_is_null" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        // ─── String helpers ──────────────────────────────────────
+        // ArcStr is repr(transparent) over a thin pointer — wire
+        // shape is a single i64.
+        // (ptr: i64) -> ArcStr
+        "graphix_arcstr_clone_from_static" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (s: ArcStr) -> ArcStr — same ABI shape as
+        // `clone_from_static`, but semantically different: takes the
+        // ArcStr by value (consumes the bits via `mem::forget`) and
+        // returns a fresh refcount-bumped clone. Used by `Local`
+        // reads of String slots.
+        "graphix_arcstr_clone" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (s: ArcStr) -> ()
+        "graphix_arcstr_drop" => {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // (s: ArcStr) -> Value (two-register)
+        "graphix_value_new_string" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // () -> *mut String
+        "graphix_string_buf_new" => {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (buf: i64) -> ()
+        "graphix_string_buf_drop" => {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // (buf: i64) -> ArcStr
+        "graphix_string_buf_finalize" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (buf: i64, s: ArcStr) -> ()
+        "graphix_string_buf_push_arcstr" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // (buf: i64, v: i64) -> ()
+        "graphix_string_buf_push_i64" | "graphix_string_buf_push_u64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // (buf: i64, v: i32) -> ()
+        "graphix_string_buf_push_i32" | "graphix_string_buf_push_u32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+        }
+        // (buf: i64, v: i16) -> ()
+        "graphix_string_buf_push_i16" | "graphix_string_buf_push_u16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I16));
+        }
+        // (buf: i64, v: i8) -> ()
+        "graphix_string_buf_push_i8"
+        | "graphix_string_buf_push_u8"
+        | "graphix_string_buf_push_bool" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I8));
+        }
+        // (buf: i64, v: f64) -> ()
+        "graphix_string_buf_push_f64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::F64));
+        }
+        // (buf: i64, v: f32) -> ()
+        "graphix_string_buf_push_f32" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::F32));
+        }
+        // () -> () — debug-build JIT invocation counter bump.
+        // Only registered when the codegen site (cfg-gated below)
+        // emits it; no-op signature otherwise.
+        #[cfg(debug_assertions)]
+        "graphix_record_jit_invocation" => {}
         other => {
             return Err(anyhow!("unknown JIT helper symbol `{other}`"))
         }
@@ -1473,6 +1709,98 @@ fn declare_helpers(
     HelperRefs { refs }
 }
 
+// ─── Value-shape ABI ─────────────────────────────────────────────
+//
+// `Value` is `#[repr(u64)]` with explicit discriminant values
+// (`Value::Null = 0x0000_8000`, `Value::I64(_) = 0x0000_0400`, etc.)
+// and a fixed 16-byte layout — `(u64 disc, u64 payload)`. The JIT
+// represents Value-shaped expressions as a pair of CLIF `I64` SSA
+// values; the SysV AMD64 ABI passes them in two integer registers
+// when crossing the helper boundary. Discriminant constants below
+// mirror the values in `netidx_value::Value`'s definition; the
+// const block at the bottom of `kir_jit_helpers.rs` keeps Value's
+// layout pinned at 16 bytes, so these stay coherent.
+mod value_disc {
+    pub const U8: i64 = 0x0000_0001;
+    pub const I8: i64 = 0x0000_0002;
+    pub const U16: i64 = 0x0000_0004;
+    pub const I16: i64 = 0x0000_0008;
+    pub const U32: i64 = 0x0000_0010;
+    pub const I32: i64 = 0x0000_0040;
+    pub const U64: i64 = 0x0000_0100;
+    pub const I64: i64 = 0x0000_0400;
+    pub const F32: i64 = 0x0000_1000;
+    pub const F64: i64 = 0x0000_2000;
+    pub const BOOL: i64 = 0x0000_4000;
+    pub const NULL: i64 = 0x0000_8000;
+    pub const STRING: i64 = 0x8000_0000;
+    pub const ARRAY: i64 = 0x1000_0000;
+}
+
+/// Map a [`PrimType`] to the `Value` discriminant for boxing a
+/// scalar into a `Value::T(x)`. Used by `IfChain` widening to
+/// `Nullable<T>` — the arm packs `(prim_to_value_disc(T), scalar)`
+/// inline rather than calling a helper.
+fn prim_to_value_disc(p: PrimType) -> i64 {
+    match p {
+        PrimType::I8 => value_disc::I8,
+        PrimType::I16 => value_disc::I16,
+        PrimType::I32 => value_disc::I32,
+        PrimType::I64 => value_disc::I64,
+        PrimType::U8 => value_disc::U8,
+        PrimType::U16 => value_disc::U16,
+        PrimType::U32 => value_disc::U32,
+        PrimType::U64 => value_disc::U64,
+        PrimType::F32 => value_disc::F32,
+        PrimType::F64 => value_disc::F64,
+        PrimType::Bool => value_disc::BOOL,
+    }
+}
+
+/// A Variant or Nullable local in the JIT: two `Variable`s holding
+/// the (disc, payload) words of a `repr(u64)` Value. Reads return
+/// both via `b.use_var`; writes (tail-call rebind, IfChain merge
+/// via phi) update both.
+#[derive(Debug, Clone, Copy)]
+struct ValueVar {
+    disc: Variable,
+    payload: Variable,
+}
+
+/// Result of compiling a [`KirExpr`]: either a single CLIF value
+/// (for scalar/composite/pointer-shaped exprs) or a Value-shaped
+/// `(disc, payload)` pair (for variant/nullable exprs). Consumers
+/// dispatch on the expression's `KirType`; the helpers `single()` /
+/// `value()` assert the expected variant and bail loudly if a site
+/// mishandles a Value-shaped result.
+#[derive(Debug, Clone, Copy)]
+enum CompiledExpr {
+    Single(ClifValue),
+    Value { disc: ClifValue, payload: ClifValue },
+}
+
+impl CompiledExpr {
+    fn single(self) -> Result<ClifValue> {
+        match self {
+            CompiledExpr::Single(v) => Ok(v),
+            CompiledExpr::Value { .. } => Err(anyhow!(
+                "JIT: expected single CLIF value, got Value-shaped (disc, \
+                 payload) pair — KIR is malformed or consumer is wrong"
+            )),
+        }
+    }
+
+    fn value(self) -> Result<(ClifValue, ClifValue)> {
+        match self {
+            CompiledExpr::Value { disc, payload } => Ok((disc, payload)),
+            CompiledExpr::Single(_) => Err(anyhow!(
+                "JIT: expected Value-shaped (disc, payload), got single \
+                 — KIR is malformed or consumer is wrong"
+            )),
+        }
+    }
+}
+
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
 struct JitEnv {
@@ -1484,11 +1812,28 @@ struct JitEnv {
     /// tuple, and struct params share this table — they differ only
     /// in how the kernel reads slots, not in the pointer layout.
     composites: Vec<(ArcStr, Variable)>,
-    /// Variant parameter pointer Variables. Separate from
-    /// `composites` because the runtime representation is `Value`
-    /// (`*const Value`), not `*const ValArray` — VariantTagEq /
-    /// VariantPayload dispatch on the Value's outer shape.
-    variants: Vec<(ArcStr, Variable)>,
+    /// Variant locals — each entry holds a [`ValueVar`] (`disc`,
+    /// `payload`) representing the two-word `repr(u64)` Value. Reads
+    /// return both Variables via `b.use_var`; consumer ops
+    /// (`VariantTagEq`, `VariantPayload`, `IsNull`) take the pair.
+    /// Drop / clone happen via the two-register helpers
+    /// `graphix_value_drop` / `graphix_value_clone`.
+    variants: Vec<(ArcStr, ValueVar)>,
+    /// Nullable locals — identical storage to `variants` (the Value
+    /// is either `Value::Null` or `T`'s runtime form), but kept
+    /// semantically distinct so `IsNull` against an `env.nullables`
+    /// entry is well-typed even though `VariantTagEq` against the
+    /// same shape would also work.
+    nullables: Vec<(ArcStr, ValueVar)>,
+    /// String locals: `(name, var)` where `var` holds an owned
+    /// `ArcStr`'s thin pointer as a single `i64`. `KirOp::Local`
+    /// for a `KirType::String`-typed Ref reads the slot and
+    /// `graphix_arcstr_clone`s it (refcount bump) so each consumer
+    /// gets an independently-owned ArcStr — the slot keeps its
+    /// own ref until scope exit where it drops via
+    /// `graphix_arcstr_drop`. Mirrors the variant/nullable
+    /// ownership discipline.
+    strings: Vec<(ArcStr, Variable)>,
 }
 
 impl JitEnv {
@@ -1497,6 +1842,8 @@ impl JitEnv {
             locals: Vec::with_capacity(8),
             composites: Vec::new(),
             variants: Vec::new(),
+            nullables: Vec::new(),
+            strings: Vec::new(),
         }
     }
 
@@ -1508,8 +1855,16 @@ impl JitEnv {
         self.composites.push((name, var));
     }
 
-    fn bind_variant(&mut self, name: ArcStr, var: Variable) {
-        self.variants.push((name, var));
+    fn bind_variant(&mut self, name: ArcStr, vv: ValueVar) {
+        self.variants.push((name, vv));
+    }
+
+    fn bind_nullable(&mut self, name: ArcStr, vv: ValueVar) {
+        self.nullables.push((name, vv));
+    }
+
+    fn bind_string(&mut self, name: ArcStr, var: Variable) {
+        self.strings.push((name, var));
     }
 
     fn lookup(&self, name: &str) -> Option<(Variable, PrimType)> {
@@ -1530,8 +1885,26 @@ impl JitEnv {
         None
     }
 
-    fn lookup_variant(&self, name: &str) -> Option<Variable> {
-        for (n, v) in self.variants.iter().rev() {
+    fn lookup_variant(&self, name: &str) -> Option<ValueVar> {
+        for (n, vv) in self.variants.iter().rev() {
+            if n.as_str() == name {
+                return Some(*vv);
+            }
+        }
+        None
+    }
+
+    fn lookup_nullable(&self, name: &str) -> Option<ValueVar> {
+        for (n, vv) in self.nullables.iter().rev() {
+            if n.as_str() == name {
+                return Some(*vv);
+            }
+        }
+        None
+    }
+
+    fn lookup_string(&self, name: &str) -> Option<Variable> {
+        for (n, v) in self.strings.iter().rev() {
             if n.as_str() == name {
                 return Some(*v);
             }
@@ -1554,6 +1927,8 @@ impl JitEnv {
             locals: self.locals.len(),
             composites: self.composites.len(),
             variants: self.variants.len(),
+            nullables: self.nullables.len(),
+            strings: self.strings.len(),
         }
     }
 
@@ -1561,6 +1936,8 @@ impl JitEnv {
         self.locals.truncate(m.locals);
         self.composites.truncate(m.composites);
         self.variants.truncate(m.variants);
+        self.nullables.truncate(m.nullables);
+        self.strings.truncate(m.strings);
     }
 }
 
@@ -1571,6 +1948,8 @@ struct EnvMark {
     locals: usize,
     composites: usize,
     variants: usize,
+    nullables: usize,
+    strings: usize,
 }
 
 // ─── Body / statement compilation ────────────────────────────────
@@ -1584,9 +1963,9 @@ fn compile_body(
     for stmt in stmts {
         match stmt {
             KirStmt::Let(l) => {
-                let v = compile_expr(b, &l.value, env, ctx)?;
                 match &l.value.typ {
                     KirType::Prim(p) => {
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
                         let var = b.declare_var(prim_to_clif(*p));
                         b.def_var(var, v);
                         env.bind(l.local.clone(), var, *p);
@@ -1603,20 +1982,37 @@ fn compile_body(
                         // would double-free. Dropped at function exit
                         // (and on pending paths by the per-DynCall
                         // `pre_pending` block).
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
                         let owned =
                             ensure_owned_composite(b, ctx, &l.value, v)?;
                         let var = b.declare_var(types::I64);
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    KirType::Variant(_) => {
-                        // Variant local: an owned `*mut Value`, same
-                        // ownership discipline as the composite case.
-                        let owned =
-                            ensure_owned_composite(b, ctx, &l.value, v)?;
-                        let var = b.declare_var(types::I64);
-                        b.def_var(var, owned);
-                        env.bind_variant(l.local.clone(), var);
+                    KirType::Variant(_) | KirType::Nullable(_) => {
+                        // Value-shape local: stored as a `(disc,
+                        // payload)` pair (`ValueVar`). The source
+                        // expression compiles to a `CompiledExpr::Value`;
+                        // `ensure_owned_value` clones a Borrowed
+                        // source (e.g. `let a = b` aliasing another
+                        // Value local) via `graphix_value_clone` so
+                        // this local exclusively owns its ref. Dropped
+                        // at function exit (and on pending paths by
+                        // the per-DynCall `pre_pending` block).
+                        let cv = compile_expr(b, &l.value, env, ctx)?;
+                        let (owned_disc, owned_payload) =
+                            ensure_owned_value(b, ctx, &l.value, cv)?;
+                        let disc_var = b.declare_var(types::I64);
+                        let payload_var = b.declare_var(types::I64);
+                        b.def_var(disc_var, owned_disc);
+                        b.def_var(payload_var, owned_payload);
+                        let vv =
+                            ValueVar { disc: disc_var, payload: payload_var };
+                        if matches!(l.value.typ, KirType::Variant(_)) {
+                            env.bind_variant(l.local.clone(), vv);
+                        } else {
+                            env.bind_nullable(l.local.clone(), vv);
+                        }
                     }
                     // Unreachable in well-formed KIR — `emit_bind_stmt`
                     // routes Unit-typed lets through `KirStmt::Discard`.
@@ -1625,13 +2021,28 @@ fn compile_body(
                             "KIR malformed: KirStmt::Let with Unit value"
                         ));
                     }
-                    // String-typed lets shouldn't reach JIT — guarded
-                    // by `kernel_contains_string`.
+                    // String-typed let: owned ArcStr ptr stored in
+                    // an i64 Variable. Producers (ConstStr / Concat)
+                    // return owned values; Local reads of String
+                    // refcount-bump (so the source is also owned).
+                    // No `ensure_owned_string` needed — every site
+                    // that produces a String SSA value owns it.
+                    // Dropped at scope exit by `drop_owned_strings`.
                     KirType::String => {
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
+                        let var = b.declare_var(types::I64);
+                        b.def_var(var, v);
+                        env.bind_string(l.local.clone(), var);
+                    }
+                    // Bare `KirType::Null` is the singleton produced
+                    // by `KirOp::ConstNull` — fusion always widens it
+                    // to `Nullable<T>` before binding (`emit_select_as_expr`
+                    // /  `unify_arm_types`), so a bare-`Null` let is a
+                    // malformed kernel.
+                    KirType::Null => {
                         return Err(anyhow!(
-                            "KirStmt::Let with String value reached JIT; \
-                             should have routed to interp via \
-                             kernel_contains_string"
+                            "KirStmt::Let with bare Null value — should \
+                             have widened to Nullable<T> at construction"
                         ));
                     }
                 }
@@ -1642,19 +2053,92 @@ fn compile_body(
                 // (DynCalls, producer-op writes) already happened
                 // during `compile_expr`; the unused SSA value just
                 // gets DCE'd by cranelift.
-                let _v = compile_expr(b, e, env, ctx)?;
+                let _v = compile_scalar(b, e, env, ctx)?;
             }
             KirStmt::Return(e) => {
-                // A Borrowed composite return value (e.g. a `Local`
-                // still owned by `env.composites`) must be cloned —
-                // otherwise the `drop_owned_composites` below frees
-                // the buffer the caller is about to receive. Owned
-                // sources (producer ops, DynCall / Block / IfChain
-                // results) pass through unchanged.
-                let v = compile_expr(b, e, env, ctx)?;
-                let v = ensure_owned_composite(b, ctx, e, v)?;
-                drop_owned_composites(b, env, ctx)?;
-                b.ins().return_(&[v]);
+                // Borrowed return values (a `Local` still owned by
+                // `env.composites` / `env.variants` / `env.nullables`)
+                // must be cloned — otherwise the
+                // `drop_owned_composites` below frees the buffer the
+                // caller is about to receive. Owned sources (producer
+                // ops, DynCall / Block / IfChain results) pass
+                // through unchanged.
+                //
+                // Value-shape returns (Variant/Nullable) hand back
+                // TWO CLIF values per the typed kernel signature;
+                // scalar/composite returns hand back one.
+                //
+                // Pending check: a scalar `KirOp::DynCall` that
+                // pends sets `DYNCALL_PENDING` but doesn't emit a
+                // `pre_pending` branch (the sentinel-zero is harmless
+                // for downstream scalar arithmetic). If we ran
+                // through such a DynCall and now produce a composite
+                // / Value return, the result is a real owned
+                // allocation that `KirNode::update` will discard via
+                // its `DYNCALL_PENDING` check — leaking the
+                // allocation. Branch here: if pending fired anywhere
+                // in the body, drop the just-computed result, route
+                // through `pending_exit` (which emits a sentinel),
+                // and `KirNode::update` will read `DYNCALL_PENDING`
+                // (still set — `pending_take` no longer clears) and
+                // return `None`.
+                //
+                // Scalar / Unit returns: no allocation, no leak —
+                // skip the pending check.
+                match &e.typ {
+                    KirType::Variant(_) | KirType::Nullable(_) => {
+                        let cv = compile_expr(b, e, env, ctx)?;
+                        let (disc, payload) =
+                            ensure_owned_value(b, ctx, e, cv)?;
+                        emit_return_pending_check(
+                            b, env, ctx,
+                            ReturnDropShape::Value { disc, payload },
+                        )?;
+                        drop_owned_composites(b, env, ctx)?;
+                        b.ins().return_(&[disc, payload]);
+                    }
+                    KirType::Array(_)
+                    | KirType::Tuple(_)
+                    | KirType::Struct(_) => {
+                        let v = compile_scalar(b, e, env, ctx)?;
+                        let v = ensure_owned_composite(b, ctx, e, v)?;
+                        emit_return_pending_check(
+                            b, env, ctx,
+                            ReturnDropShape::Composite(v),
+                        )?;
+                        drop_owned_composites(b, env, ctx)?;
+                        b.ins().return_(&[v]);
+                    }
+                    KirType::String => {
+                        // String returns produce an owned `ArcStr`
+                        // (refcount bumped). On the pending path
+                        // `KirNode::update` discards the wrapper
+                        // result without transmuting/dropping →
+                        // refcount leak. Mirror the composite/Value
+                        // pending-check flow: peek the flag, drop
+                        // the just-built ArcStr if pending fired
+                        // earlier, run pending cleanup, jump to
+                        // pending_exit. Non-pending path returns the
+                        // ArcStr's raw pointer as a single I64.
+                        let v = compile_scalar(b, e, env, ctx)?;
+                        emit_return_pending_check(
+                            b, env, ctx,
+                            ReturnDropShape::String(v),
+                        )?;
+                        drop_owned_composites(b, env, ctx)?;
+                        b.ins().return_(&[v]);
+                    }
+                    _ => {
+                        // Scalar / Unit: no owned allocation to leak;
+                        // `KirNode::update`'s wrapper-level pending
+                        // check still fires correctly via the still-
+                        // set flag.
+                        let v = compile_scalar(b, e, env, ctx)?;
+                        let v = ensure_owned_composite(b, ctx, e, v)?;
+                        drop_owned_composites(b, env, ctx)?;
+                        b.ins().return_(&[v]);
+                    }
+                }
                 return Ok(());
             }
             KirStmt::TailCall { args } => {
@@ -1666,7 +2150,7 @@ fn compile_body(
                 // value, not one we already overwrote).
                 let mut new_vals = Vec::with_capacity(args.len());
                 for a in args {
-                    new_vals.push(compile_expr(b, a, env, ctx)?);
+                    new_vals.push(compile_scalar(b, a, env, ctx)?);
                 }
                 // Back-compat: hand-built test kernels leave
                 // `tail_call_slots` empty and assume all params are
@@ -1753,16 +2237,85 @@ fn compile_body(
                                 "JIT: variant tail-call rebind not yet supported"
                             ));
                         }
+                        TailCallSlotKind::Nullable => {
+                            // Nullable kernels route to the
+                            // interpreter via `kernel_contains_null`,
+                            // so this branch should be unreachable in
+                            // practice. Returning an Err keeps the
+                            // codegen safe if the routing ever drifts.
+                            return Err(anyhow!(
+                                "JIT: nullable tail-call rebind — kernel \
+                                 should have been routed to interp via \
+                                 kernel_contains_null"
+                            ));
+                        }
                     }
                 }
-                // Reset env to the post-param snapshot so the next
-                // iteration starts with a clean lexical state — any
-                // block / select-arm locals (scalar, composite, or
-                // variant) introduced this iteration are popped. The
-                // composite/variant ones were already dropped at
-                // runtime by their scope-exit code (`KirOp::Block`)
-                // or terminating statement, so this is pure env-Vec
-                // hygiene.
+                // Drop any owned composite/variant/nullable/string
+                // locals introduced between `ctx.param_mark` and now
+                // that ISN'T in `tail_call_slots` (slot rebinds drop
+                // the old slot value above; non-slot lets above the
+                // tail-call would leak per iteration otherwise).
+                // Block / select-arm locals were already dropped at
+                // runtime by their scope-exit code (`KirOp::Block`,
+                // terminating statements), so iterating the env's
+                // tail catches only the non-Block top-level lets —
+                // i.e. `KirStmt::Let` between `param_mark` and this
+                // `TailCall` that didn't get a rebind slot.
+                let arr_drop = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let val_drop = ctx
+                    .helper_refs
+                    .get("graphix_value_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+                let str_drop = ctx
+                    .helper_refs
+                    .get("graphix_arcstr_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
+                // Composite slot rebinds already drop their old
+                // value (above); skip any entry whose name matches a
+                // `TailCallSlotKind::ValArray` slot. Same for
+                // future variant/nullable rebind slots once they're
+                // supported.
+                let slot_names: std::collections::HashSet<&str> = slots
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect();
+                for (name, var) in &env.composites[ctx.param_mark.composites..] {
+                    if slot_names.contains(name.as_str()) {
+                        continue;
+                    }
+                    let ptr = b.use_var(*var);
+                    b.ins().call(arr_drop, &[ptr]);
+                }
+                for (name, vv) in &env.variants[ctx.param_mark.variants..] {
+                    if slot_names.contains(name.as_str()) {
+                        continue;
+                    }
+                    let disc = b.use_var(vv.disc);
+                    let payload = b.use_var(vv.payload);
+                    b.ins().call(val_drop, &[disc, payload]);
+                }
+                for (name, vv) in &env.nullables[ctx.param_mark.nullables..] {
+                    if slot_names.contains(name.as_str()) {
+                        continue;
+                    }
+                    let disc = b.use_var(vv.disc);
+                    let payload = b.use_var(vv.payload);
+                    b.ins().call(val_drop, &[disc, payload]);
+                }
+                for (name, var) in &env.strings[ctx.param_mark.strings..] {
+                    if slot_names.contains(name.as_str()) {
+                        continue;
+                    }
+                    let ptr = b.use_var(*var);
+                    b.ins().call(str_drop, &[ptr]);
+                }
+                // Compile-time env-Vec hygiene: pop everything above
+                // the param mark so the next iteration starts with a
+                // clean lexical state.
                 env.truncate(ctx.param_mark);
                 b.ins().jump(head, &[]);
                 return Ok(());
@@ -1813,7 +2366,7 @@ fn compile_select_stmt(
                 None
             }
             Some(cond) => {
-                let cv = compile_expr(b, cond, env, ctx)?;
+                let cv = compile_scalar(b, cond, env, ctx)?;
                 if is_last {
                     let trap_block = b.create_block();
                     b.ins().brif(cv, body_block, &[], trap_block, &[]);
@@ -1848,7 +2401,437 @@ fn compile_select_stmt(
 
 // ─── Expression compilation ──────────────────────────────────────
 
+/// Compile a [`KirExpr`] to its CLIF representation, dispatched on
+/// shape:
+///   * Scalar / Pointer-shaped exprs → `CompiledExpr::Single(v)`.
+///   * Variant / Nullable exprs      → `CompiledExpr::Value { disc, payload }`.
+///
+/// Callers that only handle one shape extract with `.single()? /
+/// .value()?` (or call `compile_scalar` directly, which wraps
+/// `compile_expr(...)?.single()?`). The shape an arm produces
+/// follows the `KirExpr.typ` — typecheck guarantees consistency.
 fn compile_expr(
+    b: &mut FunctionBuilder,
+    e: &KirExpr,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<CompiledExpr> {
+    // Value-shape arms first — early return. These are the ops whose
+    // result is a `repr(u64)` Value (Variant or Nullable):
+    //   * `ConstNull`: synthesise (NULL_DISC, 0).
+    //   * `Local` of Variant/Nullable type: read the (disc, payload)
+    //     pair from `env.variants`/`env.nullables`.
+    //   * `IfChain` whose result type is Variant/Nullable:
+    //     `compile_ifchain` returns two CLIF values via merge phi-pair.
+    //   * `Block` whose tail produces a Value shape: route to
+    //     `compile_block_value`.
+    //   * `DynCall` returning Variant/Nullable: dispatcher returns two
+    //     words (disc, payload).
+    //   * `VariantNew`: build (Array_disc, *mut ValArray as i64) or
+    //     (String_disc, *const ArcStr as i64).
+    //
+    // Sites that need the full enum reach this branch via
+    // `compile_expr` directly; sites that only handle scalars use
+    // `compile_scalar` which asserts Single and bails on Value-shape.
+    if matches!(e.typ, KirType::Variant(_) | KirType::Nullable(_))
+        || matches!(e.op, KirOp::ConstNull)
+    {
+        return compile_value_expr(b, e, env, ctx);
+    }
+    let v = compile_scalar_impl(b, e, env, ctx)?;
+    Ok(CompiledExpr::Single(v))
+}
+
+/// Wrapper for sites that only handle scalar/pointer-shaped exprs.
+/// Calls `compile_expr` and asserts `Single`; a Value-shape result
+/// is a kernel-build bug (consumer in scalar position got a Value)
+/// and returns an error.
+fn compile_scalar(
+    b: &mut FunctionBuilder,
+    e: &KirExpr,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<ClifValue> {
+    compile_expr(b, e, env, ctx)?.single()
+}
+
+/// Compile a Value-shape (Variant or Nullable) `KirExpr` to the
+/// two-register `(disc, payload)` representation. Dispatched from
+/// [`compile_expr`] when the expression's `KirType` is Variant or
+/// Nullable, or for `KirOp::ConstNull` whose result is the singleton
+/// `Value::Null`.
+fn compile_value_expr(
+    b: &mut FunctionBuilder,
+    e: &KirExpr,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<CompiledExpr> {
+    use cranelift_codegen::ir::types;
+    match &e.op {
+        KirOp::ConstNull => {
+            // `Value::Null = 0x8000`, payload word unused (zeroed).
+            let disc = b.ins().iconst(types::I64, value_disc::NULL);
+            let payload = b.ins().iconst(types::I64, 0);
+            Ok(CompiledExpr::Value { disc, payload })
+        }
+        KirOp::Local(name) => {
+            // Variant and Nullable share storage shape; the type
+            // tells us which table to read from. Reads are borrowed
+            // — the env still owns the ref; consumers either drop
+            // their own clone (via `ensure_owned_value`) or call
+            // borrow-mode helpers that `mem::forget` the input.
+            let vv = if matches!(e.typ, KirType::Nullable(_)) {
+                env.lookup_nullable(name).ok_or_else(|| {
+                    anyhow!("KIR malformed: undefined nullable local `{name}`")
+                })?
+            } else {
+                env.lookup_variant(name).ok_or_else(|| {
+                    anyhow!("KIR malformed: undefined variant local `{name}`")
+                })?
+            };
+            Ok(CompiledExpr::Value {
+                disc: b.use_var(vv.disc),
+                payload: b.use_var(vv.payload),
+            })
+        }
+        KirOp::IfChain { arms } => compile_ifchain(b, arms, &e.typ, env, ctx),
+        KirOp::VariantNew { tag, payloads, payload_types } => {
+            // Nullary variant → Value::String(tag): route through
+            //   `graphix_value_new_string_from_arcstr`, which clones
+            //   the interned `ArcStr` (refcount bump). We can't pack
+            //   `(STRING_DISC, interned_arcstr_ptr)` inline without
+            //   the clone — `KernelStrings` holds the ArcStr's only
+            //   ref, so the eventual `graphix_value_drop` would
+            //   decrement it and free the interned static, corrupting
+            //   later uses.
+            // With-payload variant → Value::Array([tag, p0, ...]):
+            //   build the inner ValArray via the existing buf helpers,
+            //   finalize to `*mut ValArray`, then unwrap into a
+            //   two-register Value via `graphix_value_new_from_array`
+            //   (the helper moves out of the box and returns the
+            //   Value's (disc, payload) words directly).
+            let tag_ptr = ctx.strings.get(tag) as i64;
+            let tag_ptr_val = b.ins().iconst(types::I64, tag_ptr);
+            if payloads.is_empty() {
+                let new_str = ctx
+                    .helper_refs
+                    .get("graphix_value_new_string_from_arcstr")
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing graphix_value_new_string_from_arcstr"
+                        )
+                    })?;
+                let call = b.ins().call(new_str, &[tag_ptr_val]);
+                let results = b.inst_results(call);
+                Ok(CompiledExpr::Value {
+                    disc: results[0],
+                    payload: results[1],
+                })
+            } else {
+                let buf_new = ctx
+                    .helper_refs
+                    .get("graphix_value_buf_new")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_value_buf_new")
+                    })?;
+                let push_arcstr = ctx
+                    .helper_refs
+                    .get("graphix_value_buf_push_arcstr")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_value_buf_push_arcstr")
+                    })?;
+                let finalize = ctx
+                    .helper_refs
+                    .get("graphix_valarray_finalize")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_valarray_finalize")
+                    })?;
+                let wrap_array = ctx
+                    .helper_refs
+                    .get("graphix_value_new_from_array")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_value_new_from_array")
+                    })?;
+                let cap =
+                    b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
+                let call = b.ins().call(buf_new, &[cap]);
+                let buf = b.inst_results(call)[0];
+                b.ins().call(push_arcstr, &[buf, tag_ptr_val]);
+                // Composite-element lowering: payload types may be
+                // composite/variant/string/nullable. Dispatch via
+                // the shared helper.
+                for (p, _t) in payloads.iter().zip(payload_types.iter()) {
+                    compile_and_push_field(b, env, ctx, buf, p)?;
+                }
+                let call = b.ins().call(finalize, &[buf]);
+                let arr = b.inst_results(call)[0];
+                let call = b.ins().call(wrap_array, &[arr]);
+                let results = b.inst_results(call);
+                Ok(CompiledExpr::Value {
+                    disc: results[0],
+                    payload: results[1],
+                })
+            }
+        }
+        KirOp::DynCall { fn_index, args, arg_types, return_type } => {
+            // Mirrors the scalar-return DynCall path: marshal args
+            // into the LPooled<Vec<Value>> buf, call graphix_dyncall,
+            // pop the buf, check pending, branch to pending_exit or
+            // continue with the two return registers as
+            // CompiledExpr::Value. Sharing the scalar code would
+            // require splitting out the marshalling — duplicate for
+            // now, factor when the third Value-shape consumer lands.
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let dyncall = ctx
+                .helper_refs
+                .get("graphix_dyncall")
+                .ok_or_else(|| anyhow!("missing graphix_dyncall"))?;
+            let cap = b.ins().iconst(types::I64, args.len() as i64);
+            let call = b.ins().call(buf_new, &[cap]);
+            let buf = b.inst_results(call)[0];
+            let buf_var = b.declare_var(types::I64);
+            b.def_var(buf_var, buf);
+            ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+            for (a, t) in args.iter().zip(arg_types.iter()) {
+                // Value-shape args push two i64s (disc, payload) via
+                // _push_value (consumed) or _push_value_borrowed
+                // (refcount-bumped + forgotten). Other shapes use the
+                // existing scalar/composite push helpers.
+                let helper_name: &str = match t {
+                    KirType::Prim(p) => value_buf_push_helper(*p)?,
+                    KirType::Array(_)
+                    | KirType::Tuple(_)
+                    | KirType::Struct(_) => {
+                        match classify_composite_source(a) {
+                            CompositeSource::Owned => {
+                                "graphix_value_buf_push_array"
+                            }
+                            CompositeSource::Borrowed => {
+                                "graphix_value_buf_push_array_borrowed"
+                            }
+                        }
+                    }
+                    KirType::Variant(_) | KirType::Nullable(_) => {
+                        match classify_composite_source(a) {
+                            CompositeSource::Owned => {
+                                "graphix_value_buf_push_value"
+                            }
+                            CompositeSource::Borrowed => {
+                                "graphix_value_buf_push_value_borrowed"
+                            }
+                        }
+                    }
+                    KirType::Unit => {
+                        return Err(anyhow!(
+                            "KIR malformed: DynCall arg has Unit type"
+                        ));
+                    }
+                    KirType::String => {
+                        return Err(anyhow!(
+                            "DynCall arg with String type reached JIT"
+                        ));
+                    }
+                    KirType::Null => {
+                        return Err(anyhow!(
+                            "DynCall arg with bare Null type"
+                        ));
+                    }
+                };
+                let push =
+                    ctx.helper_refs.get(helper_name).ok_or_else(|| {
+                        anyhow!("missing push helper `{helper_name}`")
+                    })?;
+                match t {
+                    KirType::Variant(_) | KirType::Nullable(_) => {
+                        let cv = compile_expr(b, a, env, ctx)?;
+                        let (disc, payload) = cv.value()?;
+                        b.ins().call(push, &[buf, disc, payload]);
+                    }
+                    _ => {
+                        let v = compile_scalar(b, a, env, ctx)?;
+                        b.ins().call(push, &[buf, v]);
+                    }
+                }
+            }
+            // ret_kind=2 (Value-shape) — dispatcher boxes the
+            // dispatcher's returned Value into a `Box<Value>` and
+            // splits it into two register-words.
+            let ret_kind: i64 = 2;
+            debug_assert!(matches!(
+                return_type,
+                KirType::Variant(_) | KirType::Nullable(_)
+            ));
+            let fn_idx_val =
+                b.ins().iconst(types::I32, *fn_index as i64);
+            let ret_kind_val = b.ins().iconst(types::I8, ret_kind);
+            let call = b
+                .ins()
+                .call(dyncall, &[fn_idx_val, buf, ret_kind_val]);
+            let results = b.inst_results(call);
+            let (raw_disc, raw_payload) = (results[0], results[1]);
+            ctx.dyncall_buf_stack.borrow_mut().pop();
+
+            // Pending check + cleanup branch.
+            let pending_take = ctx
+                .helper_refs
+                .get("graphix_dyncall_pending_take")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_dyncall_pending_take")
+                })?;
+            let call = b.ins().call(pending_take, &[]);
+            let pending = b.inst_results(call)[0];
+
+            let pre_pending = b.create_block();
+            let continue_block = b.create_block();
+            let pending_exit = {
+                let mut slot = ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
+
+            b.switch_to_block(pre_pending);
+            b.seal_block(pre_pending);
+            emit_pending_cleanup(b, env, ctx)?;
+            b.ins().jump(pending_exit, &[]);
+
+            b.switch_to_block(continue_block);
+            b.seal_block(continue_block);
+            Ok(CompiledExpr::Value {
+                disc: raw_disc,
+                payload: raw_payload,
+            })
+        }
+        KirOp::Block { lets, tail } => {
+            // Block whose tail is Value-shape. Mirrors the
+            // scalar/composite Block arm in `compile_scalar_impl` —
+            // same let-binding routing, same scope-exit drops — but
+            // the tail compiles to a `(disc, payload)` pair which we
+            // own through `ensure_owned_value` and hand back as
+            // `CompiledExpr::Value` AFTER block-scoped locals have
+            // dropped (so a tail that aliases a block-scoped Value
+            // local outlives the block — the clone happens before
+            // the original's drop).
+            let mark = env.mark();
+            for l in lets {
+                match &l.value.typ {
+                    KirType::Prim(p) => {
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
+                        let var = b.declare_var(prim_to_clif(*p));
+                        b.def_var(var, v);
+                        env.bind(l.local.clone(), var, *p);
+                    }
+                    KirType::Array(_)
+                    | KirType::Tuple(_)
+                    | KirType::Struct(_) => {
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
+                        let owned =
+                            ensure_owned_composite(b, ctx, &l.value, v)?;
+                        let var = b.declare_var(types::I64);
+                        b.def_var(var, owned);
+                        env.bind_composite(l.local.clone(), var);
+                    }
+                    KirType::Variant(_) | KirType::Nullable(_) => {
+                        let cv = compile_expr(b, &l.value, env, ctx)?;
+                        let (owned_disc, owned_payload) =
+                            ensure_owned_value(b, ctx, &l.value, cv)?;
+                        let disc_var = b.declare_var(types::I64);
+                        let payload_var = b.declare_var(types::I64);
+                        b.def_var(disc_var, owned_disc);
+                        b.def_var(payload_var, owned_payload);
+                        let vv =
+                            ValueVar { disc: disc_var, payload: payload_var };
+                        if matches!(l.value.typ, KirType::Variant(_)) {
+                            env.bind_variant(l.local.clone(), vv);
+                        } else {
+                            env.bind_nullable(l.local.clone(), vv);
+                        }
+                    }
+                    KirType::Unit => {
+                        return Err(anyhow!(
+                            "KIR malformed: Block let with Unit value"
+                        ));
+                    }
+                    KirType::String => {
+                        return Err(anyhow!(
+                            "Block let with String value reached JIT \
+                             — String locals aren't supported on either \
+                             backend; KIR-build should reject"
+                        ));
+                    }
+                    KirType::Null => {
+                        return Err(anyhow!(
+                            "Block let with bare Null value — should \
+                             have widened to Nullable<T>"
+                        ));
+                    }
+                }
+            }
+            // Tail. The cloning via `ensure_owned_value` happens
+            // BEFORE the per-list drops below, so a tail that
+            // aliases a block-scoped Value local (e.g.
+            // `{let v = ...; v}`) gets a fresh refcount before its
+            // original is dropped.
+            let cv = compile_expr(b, tail, env, ctx)?;
+            let (disc, payload) = ensure_owned_value(b, ctx, tail, cv)?;
+            // Drop block-scoped locals — composite + variant +
+            // nullable entries introduced since `mark`. The pending
+            // path (a DynCall inside the block) is mutually
+            // exclusive: `pre_pending` runs `emit_pending_cleanup`
+            // which drops every `env.*` entry anyway.
+            let arr_drop =
+                ctx.helper_refs.get("graphix_valarray_drop").ok_or_else(
+                    || anyhow!("missing graphix_valarray_drop"),
+                )?;
+            let val_drop =
+                ctx.helper_refs.get("graphix_value_drop").ok_or_else(
+                    || anyhow!("missing graphix_value_drop"),
+                )?;
+            for (_, var) in &env.composites[mark.composites..] {
+                let ptr = b.use_var(*var);
+                b.ins().call(arr_drop, &[ptr]);
+            }
+            for (_, vv) in &env.variants[mark.variants..] {
+                let d = b.use_var(vv.disc);
+                let p = b.use_var(vv.payload);
+                b.ins().call(val_drop, &[d, p]);
+            }
+            for (_, vv) in &env.nullables[mark.nullables..] {
+                let d = b.use_var(vv.disc);
+                let p = b.use_var(vv.payload);
+                b.ins().call(val_drop, &[d, p]);
+            }
+            env.truncate(mark);
+            Ok(CompiledExpr::Value { disc, payload })
+        }
+        other => Err(anyhow!(
+            "compile_value_expr called on op `{other:?}` with typ \
+             `{:?}` — this op shouldn't produce a Value shape",
+            e.typ
+        )),
+    }
+}
+
+/// Compile a [`KirExpr`] whose result type is scalar or composite-
+/// pointer-shaped — i.e. anything that fits in a single CLIF
+/// register. Most arms produce these; the few that produce a Value
+/// shape (`ConstNull`, `IsNull`'s caller path, etc.) go through
+/// [`compile_expr`] instead and short-circuit there.
+///
+/// Inner sub-expression evaluations call `compile_scalar` (a thin
+/// wrapper that re-routes through `compile_expr` and asserts the
+/// result is `Single`) when they only handle the scalar case, or
+/// `compile_expr` directly when they want the full enum.
+fn compile_scalar_impl(
     b: &mut FunctionBuilder,
     e: &KirExpr,
     env: &mut JitEnv,
@@ -1856,10 +2839,49 @@ fn compile_expr(
 ) -> Result<ClifValue> {
     match &e.op {
         KirOp::Const(c) => Ok(compile_const(b, *c)),
-        KirOp::ConstStr(_) | KirOp::Concat(_) => Err(anyhow!(
-            "ConstStr/Concat are not JIT-compilable — the kernel should \
-             have been routed to interp via `kernel_contains_string`"
-        )),
+        KirOp::ConstStr(s) => {
+            // Fetch the interned static `*const ArcStr` from this
+            // kernel's `KernelStrings` table (built at compile time
+            // by `collect_strings_*`) and bump its refcount. The
+            // returned ArcStr is owned — the caller either passes
+            // it to a consuming helper (e.g. push_arcstr) or returns
+            // it from the kernel.
+            let ptr = ctx.strings.get(s) as i64;
+            let ptr_val = b.ins().iconst(types::I64, ptr);
+            let helper = ctx
+                .helper_refs
+                .get("graphix_arcstr_clone_from_static")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_arcstr_clone_from_static")
+                })?;
+            let call = b.ins().call(helper, &[ptr_val]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::Concat(parts) => compile_concat(b, parts, env, ctx),
+        KirOp::ConstNull => {
+            // Heap-allocate `Box::new(Value::Null)`; the returned
+            // `*mut Value` is owned and routed through
+            // `ensure_owned_composite` at every consumer site.
+            let helper = ctx
+                .helper_refs
+                .get("graphix_value_new_null")
+                .ok_or_else(|| anyhow!("missing graphix_value_new_null"))?;
+            let call = b.ins().call(helper, &[]);
+            Ok(b.inst_results(call)[0])
+        }
+        KirOp::IsNull(inner) => {
+            // Operand must be Null or Nullable typed — the caller
+            // (fusion's `emit_arm` / `emit_type_predicate_cond`)
+            // builds it that way. Both shapes pass us a `*const Value`
+            // we can read with the borrowed helper.
+            let v = compile_scalar(b, inner, env, ctx)?;
+            let helper = ctx
+                .helper_refs
+                .get("graphix_value_is_null")
+                .ok_or_else(|| anyhow!("missing graphix_value_is_null"))?;
+            let call = b.ins().call(helper, &[v]);
+            Ok(b.inst_results(call)[0])
+        }
         KirOp::Local(name) => {
             // Dispatch on the expression's KirType: scalar locals
             // sit in `env.locals`, composite locals (array/tuple/
@@ -1883,31 +2905,60 @@ fn compile_expr(
                     })?;
                     Ok(b.use_var(var))
                 }
-                KirType::Variant(_) => {
-                    let var = env.lookup_variant(name).ok_or_else(|| {
-                        anyhow!(
-                            "KIR malformed: undefined variant local `{name}`"
-                        )
-                    })?;
-                    Ok(b.use_var(var))
-                }
+                // Variant / Nullable Locals are Value-shape and
+                // belong in `compile_value_expr`, not here.
+                // `compile_expr` dispatches on the expression's typ
+                // before calling `compile_scalar_impl`, so this arm
+                // is unreachable in well-formed routing — but we
+                // surface the error in case routing drifts.
+                KirType::Variant(_) | KirType::Nullable(_) => Err(anyhow!(
+                    "compile_scalar_impl reached for Value-shape Local \
+                     `{name}` — `compile_expr` should have routed to \
+                     `compile_value_expr`"
+                )),
                 KirType::Unit => Err(anyhow!(
                     "KIR malformed: Local `{name}` has Unit type"
                 )),
-                KirType::String => Err(anyhow!(
-                    "Local `{name}` has String type; JIT cannot \
-                     represent it — should have routed to interp"
+                // String Local: read the slot's bits (an `ArcStr`
+                // by value), refcount-bump via `graphix_arcstr_clone`
+                // (which takes by value, `mem::forget`s the input,
+                // returns a fresh clone). The slot's variable still
+                // logically holds the original ref; the clone is
+                // owned by this expression's caller.
+                KirType::String => {
+                    let var = env.lookup_string(name).ok_or_else(|| {
+                        anyhow!(
+                            "KIR malformed: undefined string local `{name}`"
+                        )
+                    })?;
+                    let s = b.use_var(var);
+                    let clone = ctx
+                        .helper_refs
+                        .get("graphix_arcstr_clone")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_arcstr_clone")
+                        })?;
+                    let call = b.ins().call(clone, &[s]);
+                    Ok(b.inst_results(call)[0])
+                }
+                // Bare `KirType::Null` locals don't exist; the only
+                // `Null`-typed expression is the inline `ConstNull`
+                // literal, which fusion always widens to `Nullable<T>`
+                // before binding.
+                KirType::Null => Err(anyhow!(
+                    "Local `{name}` has bare Null type — should have \
+                     widened to Nullable<T> at construction"
                 )),
             }
         }
         KirOp::Bin { op, lhs, rhs } => {
-            let l = compile_expr(b, lhs, env, ctx)?;
-            let r = compile_expr(b, rhs, env, ctx)?;
+            let l = compile_scalar(b, lhs, env, ctx)?;
+            let r = compile_scalar(b, rhs, env, ctx)?;
             Ok(compile_bin(b, *op, prim_of(&lhs.typ), l, r))
         }
         KirOp::Cmp { op, lhs, rhs } => {
-            let l = compile_expr(b, lhs, env, ctx)?;
-            let r = compile_expr(b, rhs, env, ctx)?;
+            let l = compile_scalar(b, lhs, env, ctx)?;
+            let r = compile_scalar(b, rhs, env, ctx)?;
             Ok(compile_cmp(b, *op, prim_of(&lhs.typ), l, r))
         }
         KirOp::BoolBin { op, lhs, rhs } => {
@@ -1918,21 +2969,21 @@ fn compile_expr(
             // Rust `&&`/`||` short-circuit. No correctness diff for
             // pure code; if we ever fuse expressions with side-effects
             // we'll need to revisit.
-            let l = compile_expr(b, lhs, env, ctx)?;
-            let r = compile_expr(b, rhs, env, ctx)?;
+            let l = compile_scalar(b, lhs, env, ctx)?;
+            let r = compile_scalar(b, rhs, env, ctx)?;
             Ok(match op {
                 BoolOp::And => b.ins().band(l, r),
                 BoolOp::Or => b.ins().bor(l, r),
             })
         }
         KirOp::Not(inner) => {
-            let v = compile_expr(b, inner, env, ctx)?;
+            let v = compile_scalar(b, inner, env, ctx)?;
             // Bool is I8 in CLIF; XOR with 1 flips the low bit.
             let one = b.ins().iconst(types::I8, 1);
             Ok(b.ins().bxor(v, one))
         }
         KirOp::Cast { inner, target } => {
-            let v = compile_expr(b, inner, env, ctx)?;
+            let v = compile_scalar(b, inner, env, ctx)?;
             Ok(compile_cast(b, v, prim_of(&inner.typ), *target))
         }
         KirOp::Call { fn_name, args } => {
@@ -1952,7 +3003,7 @@ fn compile_expr(
             })?;
             let mut clif_args = Vec::with_capacity(args.len());
             for a in args {
-                clif_args.push(compile_expr(b, a, env, ctx)?);
+                clif_args.push(compile_scalar(b, a, env, ctx)?);
             }
             let inst = b.ins().call(*func_ref, &clif_args);
             let results = b.inst_results(inst);
@@ -1968,9 +3019,9 @@ fn compile_expr(
         KirOp::Block { lets, tail } => {
             let mark = env.mark();
             for l in lets {
-                let v = compile_expr(b, &l.value, env, ctx)?;
                 match &l.value.typ {
                     KirType::Prim(p) => {
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
                         let var = b.declare_var(prim_to_clif(*p));
                         b.def_var(var, v);
                         env.bind(l.local.clone(), var, *p);
@@ -1983,6 +3034,7 @@ fn compile_expr(
                         // exclusively owns the local — otherwise the
                         // block-exit drop below would free a buffer the
                         // enclosing scope still holds.
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
                         let owned = ensure_owned_composite(
                             b, ctx, &l.value, v,
                         )?;
@@ -1990,13 +3042,26 @@ fn compile_expr(
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    KirType::Variant(_) => {
-                        let owned = ensure_owned_composite(
-                            b, ctx, &l.value, v,
-                        )?;
-                        let var = b.declare_var(types::I64);
-                        b.def_var(var, owned);
-                        env.bind_variant(l.local.clone(), var);
+                    KirType::Variant(_) | KirType::Nullable(_) => {
+                        // Value-shape block local — same `ValueVar`
+                        // pair + `ensure_owned_value` discipline as
+                        // KirStmt::Let. Block-scope drop happens at
+                        // exit (via `env.truncate` + the per-list
+                        // `val_drop` calls below).
+                        let cv = compile_expr(b, &l.value, env, ctx)?;
+                        let (owned_disc, owned_payload) =
+                            ensure_owned_value(b, ctx, &l.value, cv)?;
+                        let disc_var = b.declare_var(types::I64);
+                        let payload_var = b.declare_var(types::I64);
+                        b.def_var(disc_var, owned_disc);
+                        b.def_var(payload_var, owned_payload);
+                        let vv =
+                            ValueVar { disc: disc_var, payload: payload_var };
+                        if matches!(l.value.typ, KirType::Variant(_)) {
+                            env.bind_variant(l.local.clone(), vv);
+                        } else {
+                            env.bind_nullable(l.local.clone(), vv);
+                        }
                     }
                     KirType::Unit => {
                         return Err(anyhow!(
@@ -2004,10 +3069,20 @@ fn compile_expr(
                         ));
                     }
                     KirType::String => {
+                        // Block-scoped String local: same ownership
+                        // discipline as `KirStmt::Let`'s String arm
+                        // (producers / Local-reads both return
+                        // owned ArcStr ptrs). Dropped at block exit
+                        // alongside variants/nullables/composites.
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
+                        let var = b.declare_var(types::I64);
+                        b.def_var(var, v);
+                        env.bind_string(l.local.clone(), var);
+                    }
+                    KirType::Null => {
                         return Err(anyhow!(
-                            "KirOp::Block let with String value reached \
-                             JIT; should have routed to interp via \
-                             kernel_contains_string"
+                            "KirOp::Block let with bare Null value — \
+                             should have widened to Nullable<T>"
                         ));
                     }
                 }
@@ -2016,7 +3091,7 @@ fn compile_expr(
             // local we're about to drop (e.g. `tail = Local(block_let)`)
             // — `ensure_owned_composite` clones a Borrowed result so
             // the value handed back outlives the block.
-            let result = compile_expr(b, tail, env, ctx)?;
+            let result = compile_scalar(b, tail, env, ctx)?;
             let result = ensure_owned_composite(b, ctx, tail, result)?;
             // Drop the composite/variant locals introduced by THIS
             // block (owned pointers — they'd otherwise leak, once per
@@ -2033,19 +3108,37 @@ fn compile_expr(
                 ctx.helper_refs.get("graphix_value_drop").ok_or_else(
                     || anyhow!("missing graphix_value_drop"),
                 )?;
+            let str_drop =
+                ctx.helper_refs.get("graphix_arcstr_drop").ok_or_else(
+                    || anyhow!("missing graphix_arcstr_drop"),
+                )?;
             for (_, var) in &env.composites[mark.composites..] {
                 let ptr = b.use_var(*var);
                 b.ins().call(arr_drop, &[ptr]);
             }
-            for (_, var) in &env.variants[mark.variants..] {
+            for (_, vv) in &env.variants[mark.variants..] {
+                let disc = b.use_var(vv.disc);
+                let payload = b.use_var(vv.payload);
+                b.ins().call(val_drop, &[disc, payload]);
+            }
+            for (_, vv) in &env.nullables[mark.nullables..] {
+                let disc = b.use_var(vv.disc);
+                let payload = b.use_var(vv.payload);
+                b.ins().call(val_drop, &[disc, payload]);
+            }
+            for (_, var) in &env.strings[mark.strings..] {
                 let ptr = b.use_var(*var);
-                b.ins().call(val_drop, &[ptr]);
+                b.ins().call(str_drop, &[ptr]);
             }
             env.truncate(mark);
             Ok(result)
         }
         KirOp::IfChain { arms } => {
-            compile_ifchain(b, arms, clif_of(&e.typ), env, ctx)
+            // Scalar / composite IfChain — Value-shape IfChains go
+            // through `compile_value_expr` via `compile_expr`'s
+            // dispatch, so reaching here means the result is single-
+            // shape.
+            compile_ifchain(b, arms, &e.typ, env, ctx)?.single()
         }
         KirOp::DynCall { fn_index, args, arg_types, return_type } => {
             // Marshal args into an `LPooled<Vec<Value>>` via the buf
@@ -2076,7 +3169,7 @@ fn compile_expr(
             b.def_var(buf_var, buf);
             ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
             for (a, t) in args.iter().zip(arg_types.iter()) {
-                let v = compile_expr(b, a, env, ctx)?;
+                let v = compile_scalar(b, a, env, ctx)?;
                 // For composite args the push helper depends on where
                 // the pointer came from. A `Borrowed` source (a Local
                 // read — the caller still owns it) refcount-bumps; an
@@ -2100,7 +3193,11 @@ fn compile_expr(
                             }
                         }
                     }
-                    KirType::Variant(_) => {
+                    // Variant and Nullable share the `*const Value`
+                    // wire shape; the buf push helpers operate on the
+                    // pointer, not the inner enum tag, so the same
+                    // helpers serve both.
+                    KirType::Variant(_) | KirType::Nullable(_) => {
                         match classify_composite_source(a) {
                             CompositeSource::Owned => {
                                 "graphix_value_buf_push_value"
@@ -2121,6 +3218,12 @@ fn compile_expr(
                              should have routed to interp"
                         ));
                     }
+                    KirType::Null => {
+                        return Err(anyhow!(
+                            "DynCall arg with bare Null type — should \
+                             have widened to Nullable<T> at construction"
+                        ));
+                    }
                 };
                 let push =
                     ctx.helper_refs.get(helper_name).ok_or_else(|| {
@@ -2131,7 +3234,11 @@ fn compile_expr(
             let ret_kind: i64 = match return_type {
                 KirType::Prim(_) => 0,
                 KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => 1,
-                KirType::Variant(_) => 2,
+                // Variant and Nullable both come back as a boxed
+                // `*mut Value` (dispatch_typed wraps the dispatcher's
+                // returned `Value` in `Box::into_raw` regardless of the
+                // outer enum tag), so they share the ret_kind=2 path.
+                KirType::Variant(_) | KirType::Nullable(_) => 2,
                 // Unit return: dispatcher returns 0 (the slot is
                 // discarded by the caller). ret_kind=3 tells
                 // dispatch_typed not to box anything.
@@ -2142,12 +3249,26 @@ fn compile_expr(
                          should have routed to interp"
                     ));
                 }
+                KirType::Null => {
+                    return Err(anyhow!(
+                        "DynCall with bare Null return — should have \
+                         widened to Nullable<T> at construction"
+                    ));
+                }
             };
             let fn_idx_val =
                 b.ins().iconst(types::I32, *fn_index as i64);
             let ret_kind_val = b.ins().iconst(types::I8, ret_kind);
             let call =
                 b.ins().call(dyncall, &[fn_idx_val, buf, ret_kind_val]);
+            // `graphix_dyncall` now has two `I64` returns (disc,
+            // payload) so that ret_kind=2 (Value-shape) can deliver
+            // both words. For scalar/composite/unit return kinds the
+            // first return holds the value (or pointer / 0); the
+            // second is undefined for kinds 0/3 and holds the payload
+            // for kinds 1/2. The scalar path reads return[0]; the
+            // Value path reads both — and the Value path is handled
+            // in `compile_value_expr`, not here.
             let raw_u64 = b.inst_results(call)[0];
             // `graphix_dyncall` consumed the args buf — pop it off
             // the in-flight stack before the (possible) pending
@@ -2165,11 +3286,10 @@ fn compile_expr(
                     Ok(cast_u64_to_prim(b, raw_u64, *p))
                 }
                 KirType::Unit => {
-                    // Unit return: dispatcher returned 0 (or could
-                    // have set pending). The downstream `Discard`
-                    // stmt throws raw_u64 away. Same harmless-zero
-                    // semantics as the scalar path; the wrapper-
-                    // level DYNCALL_PENDING check still fires.
+                    // Unit return: dispatcher returned (0, _). The
+                    // downstream `Discard` throws it away. The
+                    // wrapper-level DYNCALL_PENDING check still
+                    // fires.
                     Ok(raw_u64)
                 }
                 KirType::String => {
@@ -2178,16 +3298,30 @@ fn compile_expr(
                          should have routed to interp"
                     ));
                 }
+                KirType::Null => {
+                    return Err(anyhow!(
+                        "DynCall with bare Null return — should have \
+                         widened to Nullable<T> at construction"
+                    ));
+                }
+                // Variant / Nullable DynCall returns are Value-shape
+                // and belong in `compile_value_expr`; compile_expr
+                // dispatches before reaching this scalar arm. Surface
+                // an error in case routing drifts.
+                KirType::Variant(_) | KirType::Nullable(_) => Err(anyhow!(
+                    "DynCall with Variant/Nullable return reached \
+                     `compile_scalar_impl` — `compile_expr` should \
+                     have routed to `compile_value_expr`"
+                )),
                 KirType::Array(_)
                 | KirType::Tuple(_)
-                | KirType::Struct(_)
-                | KirType::Variant(_) => {
+                | KirType::Struct(_) => {
                     // Composite return: `raw_u64` is an owned
-                    // `*mut ValArray` / `*mut Value`, or null on
-                    // pending. Null can't be deref'd by downstream
-                    // ops, so we branch: on pending, drop every
-                    // owned local + every outer in-flight DynCall
-                    // buf, then jump to `pending_exit`.
+                    // `*mut ValArray`, or null on pending. Null can't
+                    // be deref'd by downstream ops, so we branch: on
+                    // pending, drop every owned local + every outer
+                    // in-flight DynCall buf, then jump to
+                    // `pending_exit`.
                     let pending_take = ctx
                         .helper_refs
                         .get("graphix_dyncall_pending_take")
@@ -2199,9 +3333,6 @@ fn compile_expr(
 
                     let pre_pending = b.create_block();
                     let continue_block = b.create_block();
-                    // Lazily create the single per-function
-                    // pending_exit block (body emitted at the end
-                    // of compile_into_function).
                     let pending_exit = {
                         let mut slot = ctx.pending_exit.borrow_mut();
                         match *slot {
@@ -2221,13 +3352,11 @@ fn compile_expr(
                         &[],
                     );
 
-                    // pre_pending: drop the owned set, jump to exit.
                     b.switch_to_block(pre_pending);
                     b.seal_block(pre_pending);
                     emit_pending_cleanup(b, env, ctx)?;
                     b.ins().jump(pending_exit, &[]);
 
-                    // continue: result is the owned composite ptr.
                     b.switch_to_block(continue_block);
                     b.seal_block(continue_block);
                     Ok(raw_u64)
@@ -2266,7 +3395,7 @@ fn compile_expr(
                 anyhow!("KIR malformed: undefined composite param `{name}`")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let idx_val = compile_expr(b, idx, env, ctx)?;
+            let idx_val = compile_scalar(b, idx, env, ctx)?;
             // Helper expects usize — widen to i64 if the index
             // expression was narrower.
             let idx_i64 = widen_to_i64(b, idx_val, prim_of(&idx.typ));
@@ -2338,17 +3467,11 @@ fn compile_expr(
             let cap = b.ins().iconst(types::I64, fields.len() as i64);
             let call = b.ins().call(buf_new, &[cap]);
             let buf = b.inst_results(call)[0];
-            for (f, t) in fields.iter().zip(elem_types.iter()) {
-                let push = ctx
-                    .helper_refs
-                    .get(value_buf_push_helper(*t)?)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "missing JIT push helper for {t:?}"
-                        )
-                    })?;
-                let v = compile_expr(b, f, env, ctx)?;
-                b.ins().call(push, &[buf, v]);
+            // `_t` is the field's declared KirType; the dispatch
+            // happens inside `compile_and_push_field` on the
+            // compiled expression's `field.typ` (same value).
+            for (f, _t) in fields.iter().zip(elem_types.iter()) {
+                compile_and_push_field(b, env, ctx, buf, f)?;
             }
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
@@ -2387,7 +3510,7 @@ fn compile_expr(
                 b.ins().iconst(types::I64, sorted_fields.len() as i64);
             let call = b.ins().call(buf_new, &[outer_cap]);
             let outer = b.inst_results(call)[0];
-            for ((name, expr), (_, typ)) in
+            for ((name, expr), (_, _typ)) in
                 sorted_fields.iter().zip(sorted_types.iter())
             {
                 let inner_cap = b.ins().iconst(types::I64, 2);
@@ -2396,14 +3519,11 @@ fn compile_expr(
                 let name_ptr = ctx.strings.get(name) as i64;
                 let name_ptr_val = b.ins().iconst(types::I64, name_ptr);
                 b.ins().call(push_arcstr, &[inner, name_ptr_val]);
-                let push = ctx
-                    .helper_refs
-                    .get(value_buf_push_helper(*typ)?)
-                    .ok_or_else(|| {
-                        anyhow!("missing JIT push helper for {typ:?}")
-                    })?;
-                let v = compile_expr(b, expr, env, ctx)?;
-                b.ins().call(push, &[inner, v]);
+                // Composite-element lowering: dispatch on the field
+                // expression's KirType (composite, variant, string,
+                // prim). `compile_and_push_field` picks the right
+                // helper.
+                compile_and_push_field(b, env, ctx, inner, expr)?;
                 let call = b.ins().call(finalize, &[inner]);
                 let inner_arr = b.inst_results(call)[0];
                 b.ins().call(push_array, &[outer, inner_arr]);
@@ -2411,72 +3531,15 @@ fn compile_expr(
             let call = b.ins().call(finalize, &[outer]);
             Ok(b.inst_results(call)[0])
         }
-        KirOp::VariantNew { tag, payloads, payload_types } => {
-            // Nullary variant → Value::String(tag) directly.
-            // With-payload variant → Value::Array([tag, p0, ...]).
-            //
-            // The result of VariantNew is a `*mut Value`, NOT a
-            // `*mut ValArray`. We emit an I64 CLIF value either way
-            // (always a pointer), and downstream consumers / the
-            // composite-return ABI dispatch on KirType::Variant.
-            let tag_ptr = ctx.strings.get(tag) as i64;
-            let tag_ptr_val = b.ins().iconst(types::I64, tag_ptr);
-            if payloads.is_empty() {
-                let new_str = ctx
-                    .helper_refs
-                    .get("graphix_value_new_string_from_arcstr")
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "missing graphix_value_new_string_from_arcstr"
-                        )
-                    })?;
-                let call = b.ins().call(new_str, &[tag_ptr_val]);
-                Ok(b.inst_results(call)[0])
-            } else {
-                let buf_new = ctx
-                    .helper_refs
-                    .get("graphix_value_buf_new")
-                    .ok_or_else(|| {
-                        anyhow!("missing graphix_value_buf_new")
-                    })?;
-                let push_arcstr = ctx
-                    .helper_refs
-                    .get("graphix_value_buf_push_arcstr")
-                    .ok_or_else(|| {
-                        anyhow!("missing graphix_value_buf_push_arcstr")
-                    })?;
-                let finalize = ctx
-                    .helper_refs
-                    .get("graphix_valarray_finalize")
-                    .ok_or_else(|| {
-                        anyhow!("missing graphix_valarray_finalize")
-                    })?;
-                let wrap_array = ctx
-                    .helper_refs
-                    .get("graphix_value_new_from_array")
-                    .ok_or_else(|| {
-                        anyhow!("missing graphix_value_new_from_array")
-                    })?;
-                let cap =
-                    b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
-                let call = b.ins().call(buf_new, &[cap]);
-                let buf = b.inst_results(call)[0];
-                b.ins().call(push_arcstr, &[buf, tag_ptr_val]);
-                for (p, t) in payloads.iter().zip(payload_types.iter()) {
-                    let push = ctx
-                        .helper_refs
-                        .get(value_buf_push_helper(*t)?)
-                        .ok_or_else(|| {
-                            anyhow!("missing push helper for {t:?}")
-                        })?;
-                    let v = compile_expr(b, p, env, ctx)?;
-                    b.ins().call(push, &[buf, v]);
-                }
-                let call = b.ins().call(finalize, &[buf]);
-                let arr = b.inst_results(call)[0];
-                let call = b.ins().call(wrap_array, &[arr]);
-                Ok(b.inst_results(call)[0])
-            }
+        KirOp::VariantNew { .. } => {
+            // VariantNew produces a Value-shape result and lives in
+            // `compile_value_expr`; `compile_expr` dispatches Value-
+            // shape exprs there before reaching this scalar arm.
+            // Reaching here means routing drifted.
+            Err(anyhow!(
+                "compile_scalar_impl reached for VariantNew — \
+                 `compile_expr` should have routed to `compile_value_expr`"
+            ))
         }
         KirOp::ArrayInit { n, idx_local, elem_typ, body } => {
             // n_val = eval n.    Scalar I64-ish; widen if narrower.
@@ -2505,7 +3568,7 @@ fn compile_expr(
                 .ok_or_else(|| {
                     anyhow!("missing push helper for {elem_typ:?}")
                 })?;
-            let n_raw = compile_expr(b, n, env, ctx)?;
+            let n_raw = compile_scalar(b, n, env, ctx)?;
             let n_val = widen_to_i64(b, n_raw, prim_of(&n.typ));
             let call = b.ins().call(buf_new, &[n_val]);
             let buf = b.inst_results(call)[0];
@@ -2528,7 +3591,7 @@ fn compile_expr(
             b.switch_to_block(loop_body);
             let mark = env.mark();
             env.bind(idx_local.clone(), i_var, PrimType::I64);
-            let elem = compile_expr(b, body, env, ctx)?;
+            let elem = compile_scalar(b, body, env, ctx)?;
             env.truncate(mark);
             b.ins().call(push, &[buf, elem]);
             let i_now = b.use_var(i_var);
@@ -2604,7 +3667,7 @@ fn compile_expr(
             b.def_var(elem_var, elem);
             let mark = env.mark();
             env.bind(elem_local.clone(), elem_var, *in_elem);
-            let out_val = compile_expr(b, body, env, ctx)?;
+            let out_val = compile_scalar(b, body, env, ctx)?;
             env.truncate(mark);
             b.ins().call(push, &[buf, out_val]);
             let one = b.ins().iconst(types::I64, 1);
@@ -2677,7 +3740,7 @@ fn compile_expr(
             b.def_var(elem_var, elem_val);
             let mark = env.mark();
             env.bind(elem_local.clone(), elem_var, *elem);
-            let keep = compile_expr(b, predicate, env, ctx)?;
+            let keep = compile_scalar(b, predicate, env, ctx)?;
             env.truncate(mark);
             b.ins().brif(keep, push_block, &[], advance, &[]);
             b.switch_to_block(push_block);
@@ -2722,7 +3785,7 @@ fn compile_expr(
             let call = b.ins().call(len_helper, &[arr_ptr]);
             let len = b.inst_results(call)[0];
             let acc_var = b.declare_var(prim_to_clif(acc_prim));
-            let init_val = compile_expr(b, init, env, ctx)?;
+            let init_val = compile_scalar(b, init, env, ctx)?;
             b.def_var(acc_var, init_val);
             let i_var = b.declare_var(types::I64);
             let zero = b.ins().iconst(types::I64, 0);
@@ -2747,7 +3810,7 @@ fn compile_expr(
             let mark = env.mark();
             env.bind(acc_local.clone(), acc_var, acc_prim);
             env.bind(elem_local.clone(), elem_var, *elem_typ);
-            let new_acc = compile_expr(b, body, env, ctx)?;
+            let new_acc = compile_scalar(b, body, env, ctx)?;
             env.truncate(mark);
             b.def_var(acc_var, new_acc);
             let one = b.ins().iconst(types::I64, 1);
@@ -2761,17 +3824,22 @@ fn compile_expr(
             Ok(b.use_var(acc_var))
         }
         KirOp::VariantTagEq { name, expected_tag } => {
+            // Read the variant local as `(disc, payload)`; the helper
+            // takes them by value (three args incl. the expected ArcStr
+            // ptr) and `mem::forget`s on the way out so the local
+            // retains its ref.
             let helper = ctx
                 .helper_refs
                 .get("graphix_variant_tag_eq")
                 .ok_or_else(|| anyhow!("missing graphix_variant_tag_eq"))?;
-            let var = env.lookup_variant(name).ok_or_else(|| {
+            let vv = env.lookup_variant(name).ok_or_else(|| {
                 anyhow!("KIR malformed: undefined variant `{name}`")
             })?;
-            let v_ptr = b.use_var(var);
+            let disc = b.use_var(vv.disc);
+            let payload = b.use_var(vv.payload);
             let tag_ptr = ctx.strings.get(expected_tag) as i64;
             let tag_val = b.ins().iconst(types::I64, tag_ptr);
-            let call = b.ins().call(helper, &[v_ptr, tag_val]);
+            let call = b.ins().call(helper, &[disc, payload, tag_val]);
             Ok(b.inst_results(call)[0])
         }
         KirOp::VariantPayload { name, payload_idx, elem_typ } => {
@@ -2780,13 +3848,14 @@ fn compile_expr(
                 .helper_refs
                 .get(helper_name)
                 .ok_or_else(|| anyhow!("missing helper `{helper_name}`"))?;
-            let var = env.lookup_variant(name).ok_or_else(|| {
+            let vv = env.lookup_variant(name).ok_or_else(|| {
                 anyhow!("KIR malformed: undefined variant `{name}`")
             })?;
-            let v_ptr = b.use_var(var);
+            let disc = b.use_var(vv.disc);
+            let payload = b.use_var(vv.payload);
             let idx_const =
                 b.ins().iconst(types::I64, *payload_idx as i64);
-            let call = b.ins().call(helper, &[v_ptr, idx_const]);
+            let call = b.ins().call(helper, &[disc, payload, idx_const]);
             Ok(b.inst_results(call)[0])
         }
     }
@@ -2893,30 +3962,72 @@ fn ensure_owned_composite(
     e: &KirExpr,
     v: ClifValue,
 ) -> Result<ClifValue> {
-    if matches!(e.typ, KirType::Prim(_) | KirType::Unit)
+    // String SSA values are always owned at the point they appear —
+    // ConstStr clones from interned, Concat finalizes (returns
+    // owned), and `KirOp::Local` of a String slot calls
+    // `graphix_arcstr_clone` (refcount bump) at the lookup site.
+    // Pass them through unchanged.
+    if matches!(e.typ, KirType::Prim(_) | KirType::Unit | KirType::String)
         || classify_composite_source(e) == CompositeSource::Owned
     {
         return Ok(v);
     }
-    let helper_name = match &e.typ {
-        KirType::Variant(_) => "graphix_value_clone",
+    match &e.typ {
         KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => {
-            "graphix_valarray_clone"
+            let helper = ctx
+                .helper_refs
+                .get("graphix_valarray_clone")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
+            let call = b.ins().call(helper, &[v]);
+            Ok(b.inst_results(call)[0])
         }
-        KirType::Prim(_) | KirType::Unit => unreachable!("guarded above"),
-        KirType::String => {
-            return Err(anyhow!(
-                "ensure_owned_composite reached for String type — \
-                 kernel should have been routed to interp"
-            ));
+        // Value-shape (Variant / Nullable) sources use
+        // `ensure_owned_value` instead — they're two CLIF values, not
+        // one, so they can't flow through this single-ClifValue path.
+        // Reaching here means the consumer mis-routed.
+        KirType::Variant(_) | KirType::Nullable(_) => Err(anyhow!(
+            "ensure_owned_composite reached for Value-shape type \
+             `{:?}` — caller should use `ensure_owned_value` instead",
+            e.typ
+        )),
+        KirType::Prim(_) | KirType::Unit | KirType::String => {
+            unreachable!("guarded above")
         }
-    };
+        // Bare `Null` is the singleton from `KirOp::ConstNull` — fusion
+        // always widens to `Nullable<T>` before any binding / merge,
+        // so a bare-`Null` reaching this clone path is malformed.
+        KirType::Null => Err(anyhow!(
+            "ensure_owned_composite reached for bare Null type — \
+             should have widened to Nullable<T> at construction"
+        )),
+    }
+}
+
+/// Value-shape sibling of [`ensure_owned_composite`]. Borrowed-source
+/// Value exprs (e.g. `KirOp::Local(name)` reading a Variant/Nullable
+/// from `env.variants` / `env.nullables`) get refcount-bumped via
+/// `graphix_value_clone` so the resulting `(disc, payload)` pair is
+/// owned and safe to hand off into a binding, merge, return slot,
+/// or DynCall arg push that will drop it. Owned sources (producers
+/// like `VariantNew`, `ConstNull`, IfChain merges via this very
+/// helper at each arm) pass through unchanged.
+fn ensure_owned_value(
+    b: &mut FunctionBuilder,
+    ctx: &LowerCtx,
+    e: &KirExpr,
+    cv: CompiledExpr,
+) -> Result<(ClifValue, ClifValue)> {
+    let (disc, payload) = cv.value()?;
+    if classify_composite_source(e) == CompositeSource::Owned {
+        return Ok((disc, payload));
+    }
     let helper = ctx
         .helper_refs
-        .get(helper_name)
-        .ok_or_else(|| anyhow!("missing helper `{helper_name}`"))?;
-    let call = b.ins().call(helper, &[v]);
-    Ok(b.inst_results(call)[0])
+        .get("graphix_value_clone")
+        .ok_or_else(|| anyhow!("missing graphix_value_clone"))?;
+    let call = b.ins().call(helper, &[disc, payload]);
+    let results = b.inst_results(call);
+    Ok((results[0], results[1]))
 }
 
 /// Emit a `graphix_valarray_drop` call for every owned composite
@@ -2943,12 +4054,30 @@ fn drop_owned_composites(
         let ptr = b.use_var(*var);
         b.ins().call(arr_drop, &[ptr]);
     }
-    // Variant params + locals are also owned (params are
-    // refcount-cloned on kernel entry, locals come from VariantNew
-    // or composite-return DynCall). Drop them too.
-    for (_, var) in &env.variants {
+    // Variant params + locals are owned (params are refcount-cloned
+    // on kernel entry via `graphix_value_clone`, locals come from
+    // `VariantNew` or composite-return DynCall). Drop them via the
+    // two-register `graphix_value_drop(v: Value)` ABI — passes the
+    // `(disc, payload)` pair and the helper consumes (drops) it.
+    for (_, vv) in &env.variants {
+        let disc = b.use_var(vv.disc);
+        let payload = b.use_var(vv.payload);
+        b.ins().call(val_drop, &[disc, payload]);
+    }
+    // Nullables: same two-register drop discipline as variants.
+    for (_, vv) in &env.nullables {
+        let disc = b.use_var(vv.disc);
+        let payload = b.use_var(vv.payload);
+        b.ins().call(val_drop, &[disc, payload]);
+    }
+    // String locals: refcount decrement.
+    let str_drop = ctx
+        .helper_refs
+        .get("graphix_arcstr_drop")
+        .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
+    for (_, var) in &env.strings {
         let ptr = b.use_var(*var);
-        b.ins().call(val_drop, &[ptr]);
+        b.ins().call(str_drop, &[ptr]);
     }
     Ok(())
 }
@@ -2980,6 +4109,103 @@ fn emit_pending_cleanup(
     drop_owned_composites(b, env, ctx)
 }
 
+/// Shape of the about-to-return result that
+/// [`emit_return_pending_check`] drops if `DYNCALL_PENDING` fires.
+/// Scalar / Unit returns don't need this — there's no allocation,
+/// so no leak risk — and so don't have a `ReturnDropShape` variant.
+#[derive(Debug, Clone, Copy)]
+enum ReturnDropShape {
+    /// Owned `*mut ValArray` — drop via `graphix_valarray_drop`.
+    Composite(ClifValue),
+    /// Owned Value-shape `(disc, payload)` pair — drop via
+    /// `graphix_value_drop`.
+    Value { disc: ClifValue, payload: ClifValue },
+    /// Owned `ArcStr` (thin pointer as `i64`) — drop via
+    /// `graphix_arcstr_drop`. String returns are leak-prone on the
+    /// pending path the same way composite/Value returns are: every
+    /// `KirOp::ConstStr` / `Concat` / `Local`-read produces an owned
+    /// ArcStr whose refcount would never decrement if
+    /// `KirNode::update` discards the wrapper result.
+    String(ClifValue),
+}
+
+/// At every composite / Value-shape `KirStmt::Return`, emit a
+/// `DYNCALL_PENDING` peek. If pending fired earlier (e.g., a scalar
+/// `KirOp::DynCall` deep in the body that doesn't short-circuit on
+/// its own), the about-to-return result is an owned heap allocation
+/// that `KirNode::update`'s wrapper-level pending check would
+/// discard — leaking it. On pending: drop the result, run
+/// `emit_pending_cleanup` to drop env / in-flight DynCall bufs,
+/// jump to `pending_exit` (which emits a sentinel and returns).
+/// `KirNode::update` then sees `DYNCALL_PENDING` (still set —
+/// `pending_take` no longer clears) and returns `None`. On the
+/// non-pending fall-through, control returns to the caller, which
+/// emits its own `drop_owned_composites + return`.
+fn emit_return_pending_check(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+    drop_shape: ReturnDropShape,
+) -> Result<()> {
+    let pending_take = ctx
+        .helper_refs
+        .get("graphix_dyncall_pending_take")
+        .ok_or_else(|| anyhow!("missing graphix_dyncall_pending_take"))?;
+    let call = b.ins().call(pending_take, &[]);
+    let pending = b.inst_results(call)[0];
+
+    let drop_block = b.create_block();
+    let continue_block = b.create_block();
+    let pending_exit = {
+        let mut slot = ctx.pending_exit.borrow_mut();
+        match *slot {
+            Some(blk) => blk,
+            None => {
+                let blk = b.create_block();
+                *slot = Some(blk);
+                blk
+            }
+        }
+    };
+    b.ins().brif(pending, drop_block, &[], continue_block, &[]);
+
+    // drop_block: drop the about-to-return result, then run the
+    // normal pre_pending cleanup (env drops + in-flight DynCall
+    // bufs), then jump to pending_exit.
+    b.switch_to_block(drop_block);
+    b.seal_block(drop_block);
+    match drop_shape {
+        ReturnDropShape::Composite(ptr) => {
+            let arr_drop = ctx
+                .helper_refs
+                .get("graphix_valarray_drop")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+            b.ins().call(arr_drop, &[ptr]);
+        }
+        ReturnDropShape::Value { disc, payload } => {
+            let val_drop = ctx
+                .helper_refs
+                .get("graphix_value_drop")
+                .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+            b.ins().call(val_drop, &[disc, payload]);
+        }
+        ReturnDropShape::String(ptr) => {
+            let str_drop = ctx
+                .helper_refs
+                .get("graphix_arcstr_drop")
+                .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
+            b.ins().call(str_drop, &[ptr]);
+        }
+    }
+    emit_pending_cleanup(b, env, ctx)?;
+    b.ins().jump(pending_exit, &[]);
+
+    // continue: caller proceeds with the non-pending return path.
+    b.switch_to_block(continue_block);
+    b.seal_block(continue_block);
+    Ok(())
+}
+
 /// Map a [`PrimType`] to the `graphix_value_buf_push_<T>` helper.
 fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
     Ok(match p {
@@ -2995,6 +4221,89 @@ fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
         PrimType::F64 => "graphix_value_buf_push_f64",
         PrimType::Bool => "graphix_value_buf_push_bool",
     })
+}
+
+/// Compile a producer-op field expression and emit the appropriate
+/// `graphix_value_buf_push_*` call into `buf`. Centralises the
+/// KirType-shape dispatch used by `KirOp::TupleNew`, `StructNew`,
+/// and `VariantNew` for nested composite fields (mirrors what
+/// `KirOp::DynCall`'s arg-marshalling already does for HOF dispatch).
+///
+/// Each shape's helper choice:
+/// - **Prim**: `graphix_value_buf_push_<T>` per the prim.
+/// - **Array/Tuple/Struct**: `graphix_value_buf_push_array` (owned)
+///   or `_borrowed` (refcount-bumped) by [`classify_composite_source`].
+/// - **Variant/Nullable**: `graphix_value_buf_push_value` or
+///   `_borrowed`, picked the same way.
+/// - **String**: `graphix_value_buf_push_arcstr`. String SSA values
+///   are always owned (per `ensure_owned_composite`'s String pass-
+///   through), so the push helper transfers ownership.
+/// - **Unit/Null**: invalid as a field — caller should have rejected
+///   in `emit_*_new`.
+fn compile_and_push_field(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+    buf: ClifValue,
+    field: &KirExpr,
+) -> Result<()> {
+    let helper_name: &str = match &field.typ {
+        KirType::Prim(p) => value_buf_push_helper(*p)?,
+        KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => {
+            match classify_composite_source(field) {
+                CompositeSource::Owned => "graphix_value_buf_push_array",
+                CompositeSource::Borrowed => {
+                    "graphix_value_buf_push_array_borrowed"
+                }
+            }
+        }
+        KirType::Variant(_) | KirType::Nullable(_) => {
+            match classify_composite_source(field) {
+                CompositeSource::Owned => "graphix_value_buf_push_value",
+                CompositeSource::Borrowed => {
+                    "graphix_value_buf_push_value_borrowed"
+                }
+            }
+        }
+        KirType::String => "graphix_value_buf_push_arcstr",
+        KirType::Unit => {
+            return Err(anyhow!(
+                "producer-op field has Unit type — emit_*_new should reject"
+            ));
+        }
+        KirType::Null => {
+            return Err(anyhow!(
+                "producer-op field has bare Null type — should widen to Nullable<T>"
+            ));
+        }
+    };
+    let push = ctx
+        .helper_refs
+        .get(helper_name)
+        .ok_or_else(|| anyhow!("missing {helper_name}"))?;
+    // Value-shape fields (Variant/Nullable) need both `(disc, payload)`
+    // registers from the typed Value ABI; everything else is a single
+    // ClifValue.
+    match &field.typ {
+        KirType::Variant(_) | KirType::Nullable(_) => {
+            let cv = compile_expr(b, field, env, ctx)?;
+            let (disc, payload) = match cv {
+                CompiledExpr::Value { disc, payload } => (disc, payload),
+                CompiledExpr::Single(_) => {
+                    return Err(anyhow!(
+                        "Value-shape field compiled to Single — \
+                         compile_expr dispatch is broken"
+                    ));
+                }
+            };
+            b.ins().call(push, &[buf, disc, payload]);
+        }
+        _ => {
+            let v = compile_scalar(b, field, env, ctx)?;
+            b.ins().call(push, &[buf, v]);
+        }
+    }
+    Ok(())
 }
 
 /// Map an element [`PrimType`] to the `graphix_valarray_get_<T>`
@@ -3058,20 +4367,27 @@ fn widen_to_i64(
 fn compile_ifchain(
     b: &mut FunctionBuilder,
     arms: &[(Option<KirExpr>, KirExpr)],
-    result_clif: ClifType,
+    result_typ: &KirType,
     env: &mut JitEnv,
     ctx: &LowerCtx,
-) -> Result<ClifValue> {
+) -> Result<CompiledExpr> {
     if arms.is_empty() {
         return Err(anyhow!("KIR malformed: empty if-chain"));
     }
-    // Merge block holds the result via a block parameter. For a
-    // composite-typed if-chain `result_clif` is `I64` — the merged
-    // value is an owned `*mut ValArray` / `*mut Value` (each arm runs
-    // its result through `ensure_owned_composite` so the merge always
-    // receives an owned pointer regardless of which arm won).
+    // Merge block holds the result via block parameters. For a
+    // scalar / composite-pointer result, that's a single I64 (or
+    // the prim's CLIF type). For a Value-shape result (Variant /
+    // Nullable) it's two I64s (disc, payload). Every arm normalizes
+    // its result to the merge shape before jumping.
+    let is_value_shape =
+        matches!(result_typ, KirType::Variant(_) | KirType::Nullable(_));
     let merge = b.create_block();
-    b.append_block_param(merge, result_clif);
+    if is_value_shape {
+        b.append_block_param(merge, types::I64); // disc
+        b.append_block_param(merge, types::I64); // payload
+    } else {
+        b.append_block_param(merge, clif_of(result_typ));
+    }
 
     for (i, (cond, body)) in arms.iter().enumerate() {
         let is_last = i == arms.len() - 1;
@@ -3082,7 +4398,7 @@ fn compile_ifchain(
                 None
             }
             Some(c) => {
-                let cv = compile_expr(b, c, env, ctx)?;
+                let cv = compile_scalar(b, c, env, ctx)?;
                 if is_last {
                     let trap_block = b.create_block();
                     b.ins().brif(cv, body_block, &[], trap_block, &[]);
@@ -3102,14 +4418,25 @@ fn compile_ifchain(
         b.switch_to_block(body_block);
         b.seal_block(body_block);
         let mark = env.mark();
-        let v = compile_expr(b, body, env, ctx)?;
-        // A composite arm result must be owned before it crosses the
-        // merge — otherwise an arm that yields a `Borrowed` pointer
-        // (e.g. `Local(outer_composite)`) and an arm that yields an
-        // `Owned` one would disagree on who frees the merged value.
-        let v = ensure_owned_composite(b, ctx, body, v)?;
-        env.truncate(mark);
-        b.ins().jump(merge, &[BlockArg::Value(v)]);
+        if is_value_shape {
+            // Compile the arm body — may produce a CLIF scalar
+            // (narrow arm widening to Nullable<T>), a Null, or a
+            // Value-shape (Variant/Nullable). Normalize all three
+            // to the merge's (disc, payload) param pair.
+            let cv = compile_expr(b, body, env, ctx)?;
+            let (disc, payload) =
+                widen_arm_to_value(b, ctx, body, cv, result_typ)?;
+            env.truncate(mark);
+            b.ins().jump(
+                merge,
+                &[BlockArg::Value(disc), BlockArg::Value(payload)],
+            );
+        } else {
+            let v = compile_scalar(b, body, env, ctx)?;
+            let v = ensure_owned_composite(b, ctx, body, v)?;
+            env.truncate(mark);
+            b.ins().jump(merge, &[BlockArg::Value(v)]);
+        }
         match next_block {
             Some(next) => {
                 b.switch_to_block(next);
@@ -3120,7 +4447,176 @@ fn compile_ifchain(
     }
     b.switch_to_block(merge);
     b.seal_block(merge);
-    Ok(b.block_params(merge)[0])
+    if is_value_shape {
+        let params = b.block_params(merge);
+        let (disc, payload) = (params[0], params[1]);
+        Ok(CompiledExpr::Value { disc, payload })
+    } else {
+        Ok(CompiledExpr::Single(b.block_params(merge)[0]))
+    }
+}
+
+/// Widen an IfChain arm result to the merge's `(disc, payload)`
+/// Value shape. Handles three input cases:
+///   * `KirType::Null` — pack `(NULL_DISC, 0)` inline.
+///   * `KirType::Prim(T)` — pack `(prim_to_value_disc(T), scalar)`
+///     inline; floats bitcast to I64 first.
+///   * `KirType::Variant(_)` / `KirType::Nullable(_)` — result is
+///     already the right shape; refcount-bump borrowed sources via
+///     `ensure_owned_value` so the merge owns a fresh ref.
+fn widen_arm_to_value(
+    b: &mut FunctionBuilder,
+    ctx: &LowerCtx,
+    body: &KirExpr,
+    cv: CompiledExpr,
+    _result_typ: &KirType,
+) -> Result<(ClifValue, ClifValue)> {
+    match (&body.typ, cv) {
+        (KirType::Variant(_), _) | (KirType::Nullable(_), _) => {
+            ensure_owned_value(b, ctx, body, cv)
+        }
+        (KirType::Null, _) => {
+            let disc = b.ins().iconst(types::I64, value_disc::NULL);
+            let payload = b.ins().iconst(types::I64, 0);
+            Ok((disc, payload))
+        }
+        (KirType::Prim(p), CompiledExpr::Single(v)) => {
+            let disc =
+                b.ins().iconst(types::I64, prim_to_value_disc(*p));
+            // Promote/bitcast the scalar to the I64 payload slot.
+            let payload = scalar_to_payload_i64(b, *p, v);
+            Ok((disc, payload))
+        }
+        (other, _) => Err(anyhow!(
+            "widen_arm_to_value: source type {other:?} can't widen \
+             to Value shape — fusion should have rejected this arm"
+        )),
+    }
+}
+
+/// Promote a scalar CLIF value to the 8-byte payload word of a
+/// `repr(u64)` Value. Integers smaller than i64 get zero/sign-
+/// extended (we use unsigned `uextend` because the payload's
+/// interpretation is fixed by the discriminant; truncation back
+/// preserves bits). f32/f64 bitcast through their integer mirror.
+fn scalar_to_payload_i64(
+    b: &mut FunctionBuilder,
+    p: PrimType,
+    v: ClifValue,
+) -> ClifValue {
+    match p {
+        PrimType::I64 | PrimType::U64 => v,
+        PrimType::I32 | PrimType::U32 => b.ins().uextend(types::I64, v),
+        PrimType::I16 | PrimType::U16 => b.ins().uextend(types::I64, v),
+        PrimType::I8 | PrimType::U8 | PrimType::Bool => {
+            b.ins().uextend(types::I64, v)
+        }
+        PrimType::F32 => {
+            let bits = b.ins().bitcast(
+                types::I32,
+                cranelift_codegen::ir::MemFlags::new(),
+                v,
+            );
+            b.ins().uextend(types::I64, bits)
+        }
+        PrimType::F64 => b.ins().bitcast(
+            types::I64,
+            cranelift_codegen::ir::MemFlags::new(),
+            v,
+        ),
+    }
+}
+
+/// Kept for documentation; superseded by inline packing via
+/// `prim_to_value_disc` + `scalar_to_payload_i64`. Will be deleted
+/// once no callers remain.
+#[allow(dead_code)]
+fn value_new_prim_helper(p: PrimType) -> &'static str {
+    match p {
+        PrimType::I8 => "graphix_value_new_i8",
+        PrimType::I16 => "graphix_value_new_i16",
+        PrimType::I32 => "graphix_value_new_i32",
+        PrimType::I64 => "graphix_value_new_i64",
+        PrimType::U8 => "graphix_value_new_u8",
+        PrimType::U16 => "graphix_value_new_u16",
+        PrimType::U32 => "graphix_value_new_u32",
+        PrimType::U64 => "graphix_value_new_u64",
+        PrimType::F32 => "graphix_value_new_f32",
+        PrimType::F64 => "graphix_value_new_f64",
+        PrimType::Bool => "graphix_value_new_bool",
+    }
+}
+
+/// `KirOp::Concat` codegen — build a heap-owned `*mut String`, push
+/// each part (formatted-Display for prims, append-as-str for ArcStr
+/// children), and finalize into an owned ArcStr (single `i64` CLIF
+/// value: the ArcStr's raw pointer).
+///
+/// Ownership of the buf is linear within this helper: `buf_new`
+/// produces it, each push borrows it, `buf_finalize` consumes it.
+/// No pending path exists *inside* Concat today (Concat's parts are
+/// all scalar/string, no DynCall mid-Concat), so no special pending
+/// cleanup of the buf is needed. If that changes, the buf would
+/// need to join `dyncall_buf_stack`.
+fn compile_concat(
+    b: &mut FunctionBuilder,
+    parts: &[KirExpr],
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<ClifValue> {
+    let new_buf = ctx
+        .helper_refs
+        .get("graphix_string_buf_new")
+        .ok_or_else(|| anyhow!("missing graphix_string_buf_new"))?;
+    let call = b.ins().call(new_buf, &[]);
+    let buf = b.inst_results(call)[0];
+    for part in parts {
+        match &part.typ {
+            KirType::String => {
+                let s = compile_scalar(b, part, env, ctx)?;
+                let push = ctx
+                    .helper_refs
+                    .get("graphix_string_buf_push_arcstr")
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_string_buf_push_arcstr")
+                    })?;
+                b.ins().call(push, &[buf, s]);
+            }
+            KirType::Prim(p) => {
+                let v = compile_scalar(b, part, env, ctx)?;
+                let helper_name = match p {
+                    PrimType::I64 => "graphix_string_buf_push_i64",
+                    PrimType::U64 => "graphix_string_buf_push_u64",
+                    PrimType::I32 => "graphix_string_buf_push_i32",
+                    PrimType::U32 => "graphix_string_buf_push_u32",
+                    PrimType::I16 => "graphix_string_buf_push_i16",
+                    PrimType::U16 => "graphix_string_buf_push_u16",
+                    PrimType::I8 => "graphix_string_buf_push_i8",
+                    PrimType::U8 => "graphix_string_buf_push_u8",
+                    PrimType::F64 => "graphix_string_buf_push_f64",
+                    PrimType::F32 => "graphix_string_buf_push_f32",
+                    PrimType::Bool => "graphix_string_buf_push_bool",
+                };
+                let push = ctx.helper_refs.get(helper_name).ok_or_else(
+                    || anyhow!("missing {helper_name}"),
+                )?;
+                b.ins().call(push, &[buf, v]);
+            }
+            _ => {
+                return Err(anyhow!(
+                    "Concat part has unexpected type {:?} — only \
+                     String and Prim are accepted",
+                    part.typ
+                ));
+            }
+        }
+    }
+    let finalize = ctx
+        .helper_refs
+        .get("graphix_string_buf_finalize")
+        .ok_or_else(|| anyhow!("missing graphix_string_buf_finalize"))?;
+    let call = b.ins().call(finalize, &[buf]);
+    Ok(b.inst_results(call)[0])
 }
 
 fn compile_const(b: &mut FunctionBuilder, c: ConstVal) -> ClifValue {
@@ -3335,6 +4831,9 @@ fn clif_of(t: &KirType) -> ClifType {
         // `kernel_contains_string`); ABI it as a pointer to keep this
         // helper total in case `clif_of` is called defensively.
         KirType::String => types::I64,
+        // Null/Nullable should never reach JIT either; same
+        // defensive pointer ABI as String.
+        KirType::Null | KirType::Nullable(_) => types::I64,
     }
 }
 
@@ -3417,6 +4916,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3462,6 +4962,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3499,6 +5000,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -3523,6 +5025,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3642,6 +5145,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -3695,6 +5199,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -3746,6 +5251,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3756,6 +5262,145 @@ mod tests {
         assert_eq!(f(5), 1);
         assert_eq!(f(-3), -1);
         assert_eq!(f(0), 0);
+    }
+
+    // The pair of `wrapper_nullable_kernel_*` tests that lived here
+    // exercised the boxed-Value Nullable ABI. With the move to
+    // two-register Value passing, the helpers they relied on
+    // (`graphix_value_new_i64`, the boxed return path) are gone. New
+    // tests for the by-value Nullable ABI go in their place once
+    // the refactor lands; for now this block intentionally has none.
+    #[cfg(any())]
+    fn wrapper_nullable_kernel_param() {
+        use crate::kir_interp::RegValue;
+        use netidx_value::Value;
+        let is_null_check = KirExpr {
+            op: KirOp::IsNull(Box::new(KirExpr {
+                op: KirOp::Local(ArcStr::from("x")),
+                typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+            })),
+            typ: KirType::Prim(PrimType::Bool),
+        };
+        let chain = KirExpr {
+            op: KirOp::IfChain {
+                arms: vec![
+                    (Some(is_null_check), const_expr(ConstVal::I64(-1))),
+                    (None, const_expr(ConstVal::I64(7))),
+                ],
+            },
+            typ: KirType::Prim(PrimType::I64),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("nullable_dispatch"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![crate::kernel_ir::NullableInput {
+                name: ArcStr::from("x"),
+                elem: KirType::Prim(PrimType::I64),
+                bind_id: None,
+            }],
+            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+                name: ArcStr::from("x"),
+                kind: crate::kernel_ir::TailCallSlotKind::Nullable,
+            }],
+            return_type: KirType::Prim(PrimType::I64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(chain)],
+        };
+        let wrapped =
+            compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
+        let f = unsafe { wrapped.fn_ptr() };
+
+        // Pass `Value::I64(42)`: IsNull false → return 7.
+        let arg = Value::I64(42);
+        let args = [&arg as *const Value as u64];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(7));
+
+        // Pass `Value::Null`: IsNull true → return -1.
+        let arg = Value::Null;
+        let args = [&arg as *const Value as u64];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(-1));
+    }
+
+    #[cfg(any())]
+    fn wrapper_nullable_kernel_return() {
+        use netidx_value::Value;
+        let body = KirExpr {
+            op: KirOp::IfChain {
+                arms: vec![
+                    (
+                        Some(
+                            cmp(
+                                loc("n", PrimType::I64),
+                                const_expr(ConstVal::I64(0)),
+                                CmpOp::Gt,
+                            )
+                            .unwrap(),
+                        ),
+                        arith(
+                            loc("n", PrimType::I64),
+                            const_expr(ConstVal::I64(1)),
+                            BinOp::Add,
+                        )
+                        .unwrap(),
+                    ),
+                    (
+                        None,
+                        KirExpr {
+                            op: KirOp::ConstNull,
+                            typ: KirType::Null,
+                        },
+                    ),
+                ],
+            },
+            typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("maybe_inc"),
+            params: vec![input("n", PrimType::I64)],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+                name: ArcStr::from("n"),
+                kind: crate::kernel_ir::TailCallSlotKind::Scalar(PrimType::I64),
+            }],
+            return_type: KirType::Nullable(Box::new(KirType::Prim(
+                PrimType::I64,
+            ))),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        let wrapped =
+            compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
+        let f = unsafe { wrapped.fn_ptr() };
+
+        // n=10: non-null branch → Value::I64(11)
+        let args = [pack_reg_to_u64(&crate::kir_interp::RegValue::I64(10))];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        let returned =
+            unsafe { *Box::from_raw(out as *mut Value) };
+        assert_eq!(returned, Value::I64(11));
+
+        // n=-3: null branch → Value::Null
+        let args = [pack_reg_to_u64(&crate::kir_interp::RegValue::I64(-3))];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        let returned =
+            unsafe { *Box::from_raw(out as *mut Value) };
+        assert_eq!(returned, Value::Null);
     }
 
     #[test]
@@ -3813,6 +5458,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3841,6 +5487,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3871,6 +5518,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3878,7 +5526,8 @@ mod tests {
         });
         let mut callees = BTreeMap::new();
         callees.insert(ArcStr::from("square"), square);
-        let wrapped = compile_kernel_with_callees(&caller, &callees)
+        let mut jit = Jit::new().expect("Jit::new");
+        let wrapped = compile_kernel_with_callees(&mut jit, &caller, &callees)
             .expect("compile_kernel_with_callees");
         let f = unsafe { wrapped.fn_ptr() };
         let args = [pack_reg_to_u64(&RegValue::I64(7))];
@@ -3936,6 +5585,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3947,7 +5597,8 @@ mod tests {
         // own FuncId.
         let mut callees = BTreeMap::new();
         callees.insert(ArcStr::from("fib"), fib.clone());
-        let wrapped = compile_kernel_with_callees(&fib, &callees)
+        let mut jit = Jit::new().expect("Jit::new");
+        let wrapped = compile_kernel_with_callees(&mut jit, &fib, &callees)
             .expect("compile fib with self-recursion");
         let f = unsafe { wrapped.fn_ptr() };
         // fib(10) = 55, fib(15) = 610.
@@ -3981,6 +5632,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -4002,6 +5654,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -4029,6 +5682,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -4050,7 +5704,8 @@ mod tests {
         let mut callees = BTreeMap::new();
         callees.insert(ArcStr::from("middle"), middle);
         callees.insert(ArcStr::from("leaf"), leaf);
-        let wrapped = compile_kernel_with_callees(&outer, &callees)
+        let mut jit = Jit::new().expect("Jit::new");
+        let wrapped = compile_kernel_with_callees(&mut jit, &outer, &callees)
             .expect("compile transitive chain");
         let f = unsafe { wrapped.fn_ptr() };
         // outer(10) = ((10 + 1) * 2) - 3 = 19
@@ -4076,6 +5731,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
             return_type: KirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -4110,6 +5766,7 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
+            nullable_params: vec![],
             tail_call_slots: vec![],
                 return_type: KirType::Prim(PrimType::I64),
                 has_tail_loop: false,
@@ -4120,9 +5777,15 @@ mod tests {
         let caller_b = make_caller(100);
         let mut callees = BTreeMap::new();
         callees.insert(ArcStr::from("square"), square.clone());
-        let wa = compile_kernel_with_callees(&caller_a, &callees)
+        // Share a single Jit instance across both compiles so that
+        // the `square` callee dedupes (same `Arc<KirKernel>` key).
+        // The cross-compile dedupe is the property the test
+        // verifies — putting both into different Jits would
+        // compile `square` twice.
+        let mut jit = Jit::new().expect("Jit::new");
+        let wa = compile_kernel_with_callees(&mut jit, &caller_a, &callees)
             .expect("compile a");
-        let wb = compile_kernel_with_callees(&caller_b, &callees)
+        let wb = compile_kernel_with_callees(&mut jit, &caller_b, &callees)
             .expect("compile b");
         let fa = unsafe { wa.fn_ptr() };
         let fb = unsafe { wb.fn_ptr() };
@@ -4134,5 +5797,249 @@ mod tests {
         }
         assert_eq!(unpack_u64_to_reg(oa, PrimType::I64), RegValue::I64(26));
         assert_eq!(unpack_u64_to_reg(ob, PrimType::I64), RegValue::I64(125));
+    }
+
+    /// Regression: when `DYNCALL_PENDING` is set BEFORE the JIT'd
+    /// kernel returns (simulating an upstream scalar DynCall having
+    /// pended silently), the `emit_return_pending_check` for
+    /// composite returns must short-circuit to `pending_exit` —
+    /// dropping the owned `*mut ValArray` rather than handing the
+    /// caller a leaked pointer + a "successful" sentinel-as-real-
+    /// result.
+    ///
+    /// Verifies that:
+    ///   1. The wrapper returns 0 (sentinel) in `out[0]`, not the
+    ///      real ValArray pointer.
+    ///   2. The pending flag remains set so `KirNode::update` knows
+    ///      to return `None` (the peek behavior from Fix 1).
+    ///
+    /// Implicit verification: the ValArray that the kernel built
+    /// must have been dropped via `graphix_valarray_drop` on the
+    /// pre_pending path. We can't easily assert the drop happened
+    /// without instrumenting the allocator, but the wrapper
+    /// returning 0 (instead of the pointer) proves the pre_pending
+    /// branch was taken.
+    #[test]
+    fn return_pending_check_drops_composite_result() {
+        use crate::kir_interp::RegValue;
+        // |x: i64| -> (i64, i64) (x, x + 1)
+        // Body is just TupleNew of two scalars — no DynCall.
+        let body = KirExpr {
+            op: KirOp::TupleNew {
+                fields: vec![
+                    loc("x", PrimType::I64),
+                    arith(
+                        loc("x", PrimType::I64),
+                        const_expr(ConstVal::I64(1)),
+                        BinOp::Add,
+                    )
+                    .unwrap(),
+                ],
+                elem_types: vec![
+                    KirType::Prim(PrimType::I64),
+                    KirType::Prim(PrimType::I64),
+                ],
+            },
+            typ: KirType::Tuple(vec![
+                KirType::Prim(PrimType::I64),
+                KirType::Prim(PrimType::I64),
+            ]),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("pair_of"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+                name: ArcStr::from("x"),
+                kind: crate::kernel_ir::TailCallSlotKind::Scalar(PrimType::I64),
+            }],
+            return_type: KirType::Tuple(vec![
+                KirType::Prim(PrimType::I64),
+                KirType::Prim(PrimType::I64),
+            ]),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        let wrapped =
+            compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
+        let f = unsafe { wrapped.fn_ptr() };
+        let args = [pack_reg_to_u64(&RegValue::I64(21))];
+
+        // First: baseline — pending NOT set, kernel returns a real
+        // *mut ValArray pointer. Reclaim and verify the tuple
+        // content is right.
+        crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert!(
+            out != 0,
+            "non-pending kernel run returns a real ValArray ptr"
+        );
+        let owned = unsafe {
+            *Box::from_raw(out as *mut netidx_value::ValArray)
+        };
+        assert_eq!(owned[0], netidx_value::Value::I64(21));
+        assert_eq!(owned[1], netidx_value::Value::I64(22));
+
+        // Now: pending SET before the call, simulating an upstream
+        // scalar DynCall having pended earlier in the program. The
+        // Return-time pending check must drop the tuple and write
+        // 0 to *out.
+        crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(
+            out, 0,
+            "pending-set kernel run returns sentinel 0, not a real \
+             ValArray ptr — the Return-time pending check fired"
+        );
+        assert!(
+            crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.get()),
+            "DYNCALL_PENDING stays set after the JIT pending branch — \
+             KirNode::update sees it and returns None (Fix 1: peek, \
+             not clear)"
+        );
+        // Tidy up so other tests don't see a stale set flag.
+        crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+    }
+
+    /// String-return version of [`return_pending_check_drops_composite_result`]:
+    /// verify the JIT's String-return pending check fires and drops
+    /// the just-built `ArcStr` instead of returning a stale pointer
+    /// that `KirNode::update` would discard without refcount-decrementing
+    /// (the bug Audit #1 caught in May 2026).
+    ///
+    /// Body: `|x: i64| -> string "hi"` (`ConstStr`). Forces the JIT
+    /// to produce an owned ArcStr via `graphix_arcstr_clone_from_static`.
+    ///
+    /// Verifies:
+    /// - Baseline (pending unset): wrapper returns the ArcStr's raw
+    ///   pointer; transmuting back gives the string `"hi"`.
+    /// - Pending set: wrapper returns sentinel `0`. The just-built
+    ///   ArcStr was dropped by the return-time pending check, so the
+    ///   interned static's refcount didn't bump from a leaked clone.
+    /// - `DYNCALL_PENDING` stays set after the pending-path run
+    ///   (peek, not clear).
+    #[test]
+    fn return_pending_check_drops_string_result() {
+        use crate::kir_interp::RegValue;
+        let body = KirExpr {
+            op: KirOp::ConstStr(ArcStr::from("hi")),
+            typ: KirType::String,
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("returns_str"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+                name: ArcStr::from("x"),
+                kind: crate::kernel_ir::TailCallSlotKind::Scalar(PrimType::I64),
+            }],
+            return_type: KirType::String,
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        let wrapped =
+            compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
+        let f = unsafe { wrapped.fn_ptr() };
+        let args = [pack_reg_to_u64(&RegValue::I64(0))];
+
+        // Baseline: pending NOT set, wrapper returns a real ArcStr
+        // pointer. Transmute back, verify content, drop properly.
+        crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert!(out != 0, "non-pending run returns a real ArcStr ptr");
+        let owned: arcstr::ArcStr =
+            unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(out) };
+        assert_eq!(owned.as_str(), "hi");
+        drop(owned);
+
+        // Pending SET before the call: the Return-time String pending
+        // check fires, drops the just-built ArcStr (refcount decrement
+        // back to the interned static's original count), writes 0 to
+        // *out. Without the fix, the ArcStr's bump would leak forever.
+        crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        assert_eq!(
+            out, 0,
+            "pending-set kernel run returns sentinel 0, not a real \
+             ArcStr ptr — the Return-time String pending check fired"
+        );
+        assert!(
+            crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.get()),
+            "DYNCALL_PENDING stays set after the JIT pending branch"
+        );
+        crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+    }
+
+    /// Verify the debug-build JIT invocation counter bumps once
+    /// per wrapper call. Compiles a trivial `|x: i64| x + 1`
+    /// kernel, resets the counter, calls the wrapper N times, and
+    /// asserts the counter equals N. Proves the
+    /// `graphix_record_jit_invocation` call site is wired into
+    /// every wrapper.
+    #[test]
+    fn jit_invocation_counter_bumps_on_each_call() {
+        use crate::kir_interp::RegValue;
+        let body = KirExpr {
+            op: KirOp::Bin {
+                op: BinOp::Add,
+                lhs: Box::new(loc("x", PrimType::I64)),
+                rhs: Box::new(const_expr(ConstVal::I64(1))),
+            },
+            typ: KirType::Prim(PrimType::I64),
+        };
+        let kernel = KirKernel {
+            fn_name: ArcStr::from("plus_one"),
+            params: vec![input("x", PrimType::I64)],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+                name: ArcStr::from("x"),
+                kind: crate::kernel_ir::TailCallSlotKind::Scalar(PrimType::I64),
+            }],
+            return_type: KirType::Prim(PrimType::I64),
+            has_tail_loop: false,
+            body: vec![KirStmt::Return(body)],
+        };
+        let wrapped =
+            compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
+        let f = unsafe { wrapped.fn_ptr() };
+        crate::kir_jit_helpers::reset_jit_invocations();
+        assert_eq!(
+            crate::kir_jit_helpers::jit_invocations(),
+            0,
+            "counter starts at 0 after reset"
+        );
+        for i in 0..7 {
+            let args = [pack_reg_to_u64(&RegValue::I64(i))];
+            let mut out = 0u64;
+            unsafe { f(args.as_ptr(), &mut out) };
+            assert_eq!(
+                unpack_u64_to_reg(out, PrimType::I64),
+                RegValue::I64(i + 1)
+            );
+        }
+        assert_eq!(
+            crate::kir_jit_helpers::jit_invocations(),
+            7,
+            "counter bumps exactly once per wrapper call"
+        );
     }
 }

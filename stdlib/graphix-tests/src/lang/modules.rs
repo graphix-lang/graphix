@@ -1,7 +1,7 @@
 // Tests for dynamic modules
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 
 const DYNAMIC_MODULE0: &str = r#"

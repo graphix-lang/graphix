@@ -1,7 +1,7 @@
 // Tests for try/catch and error handling
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 
 // unchecked arithmetic: 2 + 2 works normally

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use chrono::prelude::*;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 use std::time::Duration;
 

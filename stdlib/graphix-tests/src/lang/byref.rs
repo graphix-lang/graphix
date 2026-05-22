@@ -1,7 +1,7 @@
 // Tests for by-reference operations
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 
 const BYREF_DEREF: &str = r#"

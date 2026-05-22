@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, testing, ProgramArgs};
+use graphix_package_core::{run, run_no_jit, testing, ProgramArgs};
 use netidx::publisher::Value;
 
 const ARGS_EMPTY: &str = r#"

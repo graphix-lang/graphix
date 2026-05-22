@@ -14,7 +14,7 @@ use triomphe::Arc;
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 
 #[derive(Debug)]
-pub(crate) struct ArrayRef<R: Rt, E: UserEvent> {
+pub struct ArrayRef<R: Rt, E: UserEvent> {
     source: Cached<R, E>,
     i: Cached<R, E>,
     spec: Expr,
@@ -137,10 +137,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.source.sleep(ctx);
         self.i.sleep(ctx);
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::ArrayRef(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct ArraySlice<R: Rt, E: UserEvent> {
+pub struct ArraySlice<R: Rt, E: UserEvent> {
     source: Cached<R, E>,
     start: Option<Cached<R, E>>,
     end: Option<Cached<R, E>>,
@@ -296,10 +300,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     fn spec(&self) -> &Expr {
         &self.spec
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::ArraySlice(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Array<R: Rt, E: UserEvent> {
+pub struct Array<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     n: Box<[Cached<R, E>]>,
@@ -373,5 +381,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
             t => Type::Array(Arc::new(t)),
         };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Array(self)
     }
 }

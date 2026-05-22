@@ -1,7 +1,7 @@
 // Tests for type system features: type checking, annotations, type variables
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 
 const SIMPLE_TYPECHECK: &str = r#"

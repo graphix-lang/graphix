@@ -98,6 +98,10 @@ macro_rules! compare_op {
                 )?;
                 wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
             }
+
+            fn view(&self) -> $crate::NodeView<'_, R, E> {
+                $crate::NodeView::$name(self)
+            }
         }
     };
 }
@@ -192,6 +196,10 @@ macro_rules! bool_op {
                 wrap!(self.rhs.node, bt.check_contains(&ctx.env, self.rhs.node.typ()))?;
                 wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
             }
+
+            fn view(&self) -> $crate::NodeView<'_, R, E> {
+                $crate::NodeView::$name(self)
+            }
         }
     };
 }
@@ -260,6 +268,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         let bt = Type::Primitive(Typ::Bool.into());
         wrap!(self.n, bt.check_contains(&ctx.env, self.n.typ()))?;
         wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Not(self)
     }
 }
 
@@ -464,6 +476,10 @@ macro_rules! arith_op {
                 };
                 wrap!(self, self.typ.check_contains(&ctx.env, &ut))?;
                 Ok(())
+            }
+
+            fn view(&self) -> $crate::NodeView<'_, R, E> {
+                $crate::NodeView::$name(self)
             }
         }
     }

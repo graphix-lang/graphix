@@ -15,10 +15,15 @@ use triomphe::Arc;
 
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
-    pub(super) spec: Expr,
-    pub(super) typ: Type,
-    pub(super) pattern: StructPatternNode,
-    pub(super) node: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub(crate) typ: Type,
+    pub(crate) pattern: StructPatternNode,
+    pub(crate) node: Node<R, E>,
+    /// Module scope at the binding's declaration point. Recorded so
+    /// post-compile analysis tools (e.g. fusion's NodeView walk) can
+    /// determine whether the binding is publishable at module level
+    /// or block-scoped.
+    pub(crate) scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
@@ -32,8 +37,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         node: Node<R, E>,
         typ: Type,
         spec: Expr,
+        scope: Scope,
     ) -> Node<R, E> {
-        Box::new(Self { spec, typ, pattern, node })
+        Box::new(Self { spec, typ, pattern, node, scope })
     }
 
     pub(crate) fn compile(
@@ -45,21 +51,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         b: &expr::BindExpr,
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern, typ, value } = b;
-        // Side-channel for fusion: when value is a Lambda (directly,
-        // not wrapped), publish the binding name on ctx so
-        // `Lambda::compile` can capture it and use it as the
-        // synthetic `fn_name` during fusion. Required for self-
-        // recursion detection (`let rec X = |...| X(...)`). Restored
-        // at the end of the bind so sibling/outer Binds aren't
-        // affected.
-        let saved_binding = if matches!(&value.kind, ExprKind::Lambda(_)) {
-            Some(std::mem::replace(
-                &mut ctx.current_binding_name,
-                pattern.single_bind().cloned(),
-            ))
-        } else {
-            None
-        };
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -118,60 +109,10 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             .with_context(|| expr::ErrorContext(spec.clone()))?;
             (node, pattern, typ)
         };
-        if let Some(prior) = saved_binding {
-            ctx.current_binding_name = prior;
-        }
-        // Record outer-scope const bindings so subsequent inner-
-        // lambda fusion attempts (e.g. unannotated callbacks) can
-        // inline references to this name as a literal. No-op for
-        // non-const-foldable values like subscriptions or runtime
-        // computations.
-        if let Some(name) = b.pattern.single_bind() {
-            crate::fusion::record_const_binding(
-                name,
-                &b.value,
-                &mut ctx.fusion_known_consts,
-            );
-        }
-        // Lazy-fusion registry: when value is a Lambda, register it
-        // in `ctx.fusion_lambdas` keyed by binding name. The lazy
-        // path (`fusion::lazy_resolve_kernel`) looks here when an
-        // inner kernel's body calls this name. Build is on demand;
-        // we just record the lambda + a NotAttempted cache slot
-        // here.
-        //
-        // Skip registration when the binding is in
-        // `ctx.unstable_bindings` (i.e. the name is the target of a
-        // `<-` somewhere in the program). Cross-kernel `KirOp::Call`
-        // bakes the callee in at fusion time; if the binding gets
-        // rebound at runtime, fused callers would silently dispatch
-        // into stale native code. With the binding skipped, callers
-        // fail to lower the call as `KirOp::Call` and fall back to
-        // GXLambda — correct, just slower. (When `KirOp::DynCall`
-        // lands these become late-bound calls instead of fall-back.)
-        if let (Some(name), ExprKind::Lambda(la)) =
-            (b.pattern.single_bind(), &b.value.kind)
-        {
-            if !ctx.unstable_bindings.contains(name) {
-                let entry = std::sync::Arc::new(crate::FusionLazyEntry {
-                    fn_name: name.clone(),
-                    spec_id: b.value.id,
-                    // Share the source Expr's typ cell so TVar
-                    // refinement during typecheck flows through.
-                    spec_typ: b.value.typ.clone(),
-                    lambda: la.clone(),
-                    cache: parking_lot::Mutex::new(
-                        crate::FusionLazyCache::NotAttempted,
-                    ),
-                    effect: parking_lot::Mutex::new(crate::effects::EffectKind::Sync),
-                });
-                ctx.fusion_lambdas.insert(name.clone(), entry);
-            }
-        }
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        Ok(Box::new(Self { spec, typ, pattern, node }))
+        Ok(Box::new(Self { spec, typ, pattern, node, scope: scope.clone() }))
     }
 
     /// Return the id if this bind has only a single binding, otherwise return None
@@ -233,12 +174,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Bind(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct Ref {
     pub(super) spec: Arc<Expr>,
-    pub(super) typ: Type,
+    pub(crate) typ: Type,
     pub(super) id: BindId,
     pub(super) top_id: ExprId,
 }
@@ -323,12 +268,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Ref(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct ByRef<R: Rt, E: UserEvent> {
-    pub(super) spec: Expr,
-    pub(super) typ: Type,
+    pub(crate) spec: Expr,
+    pub(crate) typ: Type,
     pub(super) child: Node<R, E>,
     pub(super) id: BindId,
 }
@@ -403,12 +352,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         let t = Type::ByRef(Arc::new(self.child.typ().clone()));
         wrap!(self, self.typ.check_contains(&ctx.env, &t))
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::ByRef(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct Deref<R: Rt, E: UserEvent> {
-    pub(super) spec: Expr,
-    pub(super) typ: Type,
+    pub(crate) spec: Expr,
+    pub(crate) typ: Type,
     pub(super) child: Node<R, E>,
     pub(super) id: Option<BindId>,
     pub(super) top_id: ExprId,
@@ -492,5 +445,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         };
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
         Ok(())
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Deref(self)
     }
 }

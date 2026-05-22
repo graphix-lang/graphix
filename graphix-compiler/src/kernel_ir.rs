@@ -194,15 +194,33 @@ pub enum KirType {
     /// sync side-effect builtins as `FnSource::Builtin` slots.
     Unit,
     /// `ArcStr`-backed string. Lives outside [`PrimType`] because
-    /// strings don't fit in a JIT register — the interpreter holds
-    /// them via [`crate::kir_interp::EvalResult::String`], and JIT
-    /// codegen falls back to the interpreter for kernels that touch
-    /// strings (gated by `kernel_contains_string`). Produced by
+    /// `ArcStr` isn't `Copy` (a refcounted thin pointer). The
+    /// interpreter holds strings via
+    /// [`crate::kir_interp::EvalResult::String`]; the JIT lowers
+    /// String SSA values as a single `i64` (ArcStr's thin pointer)
+    /// with explicit clone/drop helpers. Produced by
     /// [`KirOp::ConstStr`] and [`KirOp::Concat`]; consumed by
     /// `KirOp::DynCall` arg-marshalling to push a `Value::String`.
     /// Like `Unit`, treated as a **leaf type** — `Array<String>`,
     /// `Tuple<[String, _]>`, etc. aren't expressible at this layer.
     String,
+    /// The single-value `null` type — graphix's `Type::Primitive(Typ::Null)`.
+    /// Runtime representation is `Value::Null`. Used as the None case
+    /// of [`Nullable`](`KirType::Nullable`) and to type the literal
+    /// expression `null`. Like other leaves (`Unit`, `String`), Null
+    /// is not composable directly into Tuple/Struct/Variant payload
+    /// positions — those want a real T; nullability is expressed via
+    /// `Nullable(Box<T>)`.
+    Null,
+    /// `[T, null]` — graphix's option shape. The runtime value is
+    /// either `Value::Null` or `T`'s runtime form (no discriminator
+    /// tag in between). Produced by builtins like
+    /// `array::filter_map`'s callback return, struct fields typed
+    /// `[T, null]`, etc. Consumed by `select x { null as _ => …, t as
+    /// v => … }` patterns. Nesting (`Array<Nullable<T>>`,
+    /// `Tuple<[Nullable<T>, _]>`, etc.) is expressible — the runtime
+    /// just sees a slot whose value may be Null.
+    Nullable(Box<KirType>),
 }
 
 impl KirType {
@@ -302,6 +320,18 @@ impl KirType {
                 _ => None,
             })
         }
+        // Helper: identify a `Type::Primitive` whose only variant is
+        // `Typ::Null`. Used both as a top-level lowering (→
+        // `KirType::Null`) and as the marker arm of a
+        // `[T, null]` Set (→ `KirType::Nullable(T)`).
+        fn is_null_primitive(t: &Type) -> bool {
+            t.with_deref(|resolved| match resolved {
+                Some(Type::Primitive(p)) => {
+                    p.contains(netidx_value::Typ::Null) && p.iter().count() == 1
+                }
+                _ => false,
+            })
+        }
         t.with_deref(|resolved| match resolved? {
             // `_` (Bottom) is the return type of side-effect-only
             // builtins. Lower it to `KirType::Unit` so dispatch can
@@ -315,6 +345,15 @@ impl KirType {
                     && p.iter().count() == 1 =>
             {
                 Some(KirType::String)
+            }
+            // Null primitive lowers to `KirType::Null` — the
+            // single-value null shape. (Multi-flag primitives with
+            // Null + other variants fall through to `PrimType::from_type`,
+            // which rejects them.)
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
+            {
+                Some(KirType::Null)
             }
             Type::Array(inner) => {
                 KirType::from_type(inner).map(|t| KirType::Array(Box::new(t)))
@@ -331,6 +370,24 @@ impl KirType {
                 variant_case(resolved?).map(|c| KirType::Variant(vec![c]))
             }
             Type::Set(members) => {
+                // First try `[T, null]` shape (graphix's `Option<T>`):
+                // exactly two members, one of which is the null
+                // primitive. Order-independent — `[T, null]` and
+                // `[null, T]` both lower to `KirType::Nullable(T)`.
+                if members.len() == 2 {
+                    let (null_idx, t_idx) =
+                        match (is_null_primitive(&members[0]), is_null_primitive(&members[1])) {
+                            (true, false) => (0, 1),
+                            (false, true) => (1, 0),
+                            _ => (usize::MAX, usize::MAX),
+                        };
+                    if null_idx != usize::MAX {
+                        if let Some(inner) = KirType::from_type(&members[t_idx]) {
+                            return Some(KirType::Nullable(Box::new(inner)));
+                        }
+                        return None;
+                    }
+                }
                 // Variant unions: `[ \`Foo(...), \`Bar(...) ]` parses
                 // as a Set of single-Variant types. Match this
                 // shape; reject Sets with non-variant members
@@ -503,6 +560,29 @@ pub struct VariantInput {
     pub bind_id: Option<BindId>,
 }
 
+/// A nullable-typed kernel input — graphix's `[T, null]` option
+/// shape. Runtime representation is a `Value` that is either
+/// `Value::Null` or `T`'s runtime form. `elem` is the inner type
+/// (always non-null; the nullability is implicit in this slot
+/// list's identity).
+#[derive(Debug, Clone)]
+pub struct NullableInput {
+    pub name: ArcStr,
+    pub elem: KirType,
+    pub bind_id: Option<BindId>,
+}
+
+/// A string-typed kernel let-binding. Strings only appear as
+/// in-kernel locals — never as kernel params (no string args on
+/// either backend) and never as `RegionInput` (no string region-
+/// input shape). Runtime representation is an owned `ArcStr` slot
+/// in the env's string table.
+#[derive(Debug, Clone)]
+pub struct StringInput {
+    pub name: ArcStr,
+    pub bind_id: Option<BindId>,
+}
+
 /// Per-source-arg metadata used by the tail-call renderer to assign
 /// each new value to the right destination. Populated by
 /// `build_kir_kernel` in lambda argspec order — so
@@ -525,6 +605,12 @@ pub enum TailCallSlotKind {
     /// nullary, `Array` for with-payload). Body signature receives
     /// `&Value`; tail-call rebinding clones an owned `Value`.
     Variant,
+    /// `[T, null]` option shape — runtime representation is `Value`
+    /// (either `Value::Null` or `T`'s form). Tail-call rebinding
+    /// clones an owned `Value` into the shadowed local via
+    /// `rebind_nullable`. Same wire format as `Variant` but routed
+    /// to `env.nullables` rather than `env.variants`.
+    Nullable,
 }
 
 /// Signature of a function the emitter has already seen fuse
@@ -589,6 +675,16 @@ pub enum KirOp {
     /// renderer `StringInterpolate` uses at non-fusion time).
     /// Result type is [`KirType::String`].
     Concat(Vec<KirExpr>),
+    /// The literal `null`. Result type is [`KirType::Null`]. Runtime
+    /// representation is `Value::Null`. The JIT can't lower this op
+    /// today — kernels containing it route to the interpreter via
+    /// `kernel_contains_null` (same fallback shape as `String`).
+    ConstNull,
+    /// Test whether a nullable value is `null`. The operand must be
+    /// [`KirType::Null`] or [`KirType::Nullable`]; result is
+    /// `Bool`. Emitted as the condition for `select` arms whose
+    /// type-predicate is `null`. JIT-gated by `kernel_contains_null`.
+    IsNull(Box<KirExpr>),
     /// Reference to a function arg or let-bound local. Identified by
     /// name; the Rust backend uses the name directly, the CLIF backend
     /// looks it up in its `Variable` table.
@@ -634,10 +730,10 @@ pub enum KirOp {
     /// args), invokes the resulting `LambdaDef`'s `Apply`, and
     /// converts the result back to a `RegValue`.
     ///
-    /// The JIT path doesn't support `DynCall` (kernels containing it
-    /// fall back to the interpreter). Lifts in M4g v3 if the perf
-    /// signal warrants it; for now the interpreter is fast enough
-    /// for the common HOF-callback patterns.
+    /// The cranelift JIT supports `DynCall` end-to-end (scalar /
+    /// composite args, scalar / composite / Value-shape returns,
+    /// pending-path correctness). See the JIT codegen notes in
+    /// `CLAUDE.md` for the dispatch ABI and pending-path discipline.
     ///
     /// Type info is carried on the op rather than re-derived at
     /// runtime so the interpreter doesn't have to look up
@@ -799,14 +895,14 @@ pub enum KirOp {
         elem_typ: KirType,
     },
     /// Build a tuple from per-slot expressions. Each `fields[i]`
-    /// emits to its own scalar KIR; the renderer wraps each in
-    /// `Value::<variant>(x)` and feeds them through
-    /// `ValArray::from_iter_exact`. Result type is
-    /// `KirType::Tuple(elem_types)` where `elem_types[i] ==
-    /// fields[i].typ.as_prim().unwrap()`.
+    /// emits to a KIR expression of type `elem_types[i]`; the
+    /// interpreter / JIT wrap primitives in `Value::<variant>(x)`
+    /// and feed composite values (tuples, structs, variants, arrays,
+    /// nullables, strings) through the appropriate boundary helper.
+    /// Result type is `KirType::Tuple(elem_types)`.
     TupleNew {
         fields: Vec<KirExpr>,
-        elem_types: Vec<PrimType>,
+        elem_types: Vec<KirType>,
     },
     /// Read struct field `field` from `name` (a struct kernel
     /// parameter), at the sorted index `sorted_idx`. Result type
@@ -823,10 +919,12 @@ pub enum KirOp {
     /// Build a struct from per-field expressions. `sorted_fields` is
     /// the canonical alphabetical order (graphix's runtime layout).
     /// Lowers identically to `TupleNew` — the runtime doesn't
-    /// distinguish tuples from structs at the ValArray level.
+    /// distinguish tuples from structs at the ValArray level. Field
+    /// types in `sorted_types` may be composite (mirroring TupleNew's
+    /// generalisation).
     StructNew {
         sorted_fields: Vec<(ArcStr, KirExpr)>,
-        sorted_types: Vec<(ArcStr, PrimType)>,
+        sorted_types: Vec<(ArcStr, KirType)>,
     },
     /// Test whether a variant param's runtime tag matches a
     /// compile-time-known tag string. Reads `name`'s slot 0 (the
@@ -850,11 +948,13 @@ pub enum KirOp {
     /// Build a variant value: `` `Tag(p0, p1, ...) ``. Lowers to
     /// `ValArray::from_iter_exact([Value::String("Tag"), Value::T0(p0), ...])`.
     /// Result `KirExpr.typ` is `KirType::Variant([(tag, payload_types)])`
-    /// — exactly one case (the one being constructed).
+    /// — exactly one case (the one being constructed). Payload types
+    /// may be composite (mirroring TupleNew/StructNew's
+    /// generalisation).
     VariantNew {
         tag: ArcStr,
         payloads: Vec<KirExpr>,
-        payload_types: Vec<PrimType>,
+        payload_types: Vec<KirType>,
     },
 }
 
@@ -930,6 +1030,12 @@ pub struct KirKernel {
     /// reference these by name; the runtime layout puts the tag string
     /// at slot 0 and payloads at slots 1..N.
     pub variant_params: Vec<VariantInput>,
+    /// `[T, null]` option-shape parameters. `KirOp::IsNull` and Local
+    /// reads against names here yield the slot's `Value` (either
+    /// `Value::Null` or `T`'s runtime form). Stored separately from
+    /// `variant_params` even though both use `Value` at runtime —
+    /// the consumer ops and the env slot list differ.
+    pub nullable_params: Vec<NullableInput>,
     /// Per-source-position metadata so the tail-call renderer can
     /// assign each new arg value to the right destination
     /// regardless of which slot list (scalar / array / tuple /
@@ -1143,9 +1249,11 @@ fn expr_has_call(e: &KirExpr) -> bool {
         KirOp::Call { .. } | KirOp::DynCall { .. } => true,
         KirOp::Const(_)
         | KirOp::ConstStr(_)
+        | KirOp::ConstNull
         | KirOp::Local(_)
         | KirOp::ArrayLen { .. } => false,
         KirOp::Concat(parts) => parts.iter().any(expr_has_call),
+        KirOp::IsNull(inner) => expr_has_call(inner),
         KirOp::Bin { lhs, rhs, .. }
         | KirOp::Cmp { lhs, rhs, .. }
         | KirOp::BoolBin { lhs, rhs, .. } => {
@@ -1175,29 +1283,6 @@ fn expr_has_call(e: &KirExpr) -> bool {
     }
 }
 
-/// True if the kernel's body contains any [`KirOp::DynCall`] —
-/// distinguishes "needs to dispatch through `Apply::update` at
-/// runtime" from "needs static cross-kernel calls" (which the JIT
-/// already handles). Kernels containing DynCall fall back to the
-/// interpreter; the JIT lowering returns Err.
-pub fn kernel_contains_dyncall(kernel: &KirKernel) -> bool {
-    kernel.body.iter().any(stmt_has_dyncall)
-}
-
-/// True if the kernel references the [`KirType::String`] shape
-/// anywhere — via [`KirOp::ConstStr`], [`KirOp::Concat`], a
-/// `String` arg/return on a `DynCall`, or a `KirExpr.typ` of
-/// `String`. The JIT can't lower String today (ArcStr doesn't fit
-/// a register, no string helpers in `kir_jit_helpers`), so such
-/// kernels route through the interpreter — same fallback shape as
-/// `kernel_contains_dyncall`.
-pub fn kernel_contains_string(kernel: &KirKernel) -> bool {
-    if matches!(kernel.return_type, KirType::String) {
-        return true;
-    }
-    kernel.body.iter().any(stmt_has_string)
-}
-
 /// True if the kernel contains a `TupleGet` / `StructGet` (and
 /// eventually array / variant accessors) whose `elem_typ` is a
 /// composite (non-`Prim`) `KirType`. The JIT's primitive-only
@@ -1206,6 +1291,78 @@ pub fn kernel_contains_string(kernel: &KirKernel) -> bool {
 /// `extract_composite_or_scalar` handles both cases).
 pub fn kernel_contains_composite_element_op(kernel: &KirKernel) -> bool {
     kernel.body.iter().any(stmt_has_composite_element_op)
+}
+
+/// True if the kernel references [`KirType::Null`] or
+/// [`KirType::Nullable`] anywhere — via [`KirOp::ConstNull`],
+/// [`KirOp::IsNull`], a Null/Nullable arg/return on a `DynCall`,
+/// or any `KirExpr.typ` of that shape. The JIT can't lower these
+/// today, so such kernels route through the interpreter — same
+/// fallback shape as `kernel_contains_string`.
+pub fn kernel_contains_null(kernel: &KirKernel) -> bool {
+    if matches!(kernel.return_type, KirType::Null | KirType::Nullable(_)) {
+        return true;
+    }
+    kernel.body.iter().any(stmt_has_null)
+}
+
+fn stmt_has_null(s: &KirStmt) -> bool {
+    match s {
+        KirStmt::Let(l) => expr_has_null(&l.value),
+        KirStmt::Return(e) => expr_has_null(e),
+        KirStmt::Discard(e) => expr_has_null(e),
+        KirStmt::TailCall { args } => args.iter().any(expr_has_null),
+        KirStmt::Select { arms } => arms.iter().any(|a| {
+            a.cond.as_ref().is_some_and(expr_has_null)
+                || a.body.iter().any(stmt_has_null)
+        }),
+    }
+}
+
+fn expr_has_null(e: &KirExpr) -> bool {
+    if matches!(e.typ, KirType::Null | KirType::Nullable(_)) {
+        return true;
+    }
+    match &e.op {
+        KirOp::ConstNull | KirOp::IsNull(_) => true,
+        KirOp::Const(_) | KirOp::ConstStr(_) | KirOp::Local(_)
+        | KirOp::ArrayLen { .. } | KirOp::TupleGet { .. }
+        | KirOp::StructGet { .. } | KirOp::VariantTagEq { .. }
+        | KirOp::VariantPayload { .. } => false,
+        KirOp::Concat(parts) => parts.iter().any(expr_has_null),
+        KirOp::Bin { lhs, rhs, .. }
+        | KirOp::Cmp { lhs, rhs, .. }
+        | KirOp::BoolBin { lhs, rhs, .. } => {
+            expr_has_null(lhs) || expr_has_null(rhs)
+        }
+        KirOp::Not(inner) | KirOp::Cast { inner, .. } => expr_has_null(inner),
+        KirOp::ArrayGet { idx, .. } => expr_has_null(idx),
+        KirOp::ArrayFold { init, body, .. } => {
+            expr_has_null(init) || expr_has_null(body)
+        }
+        KirOp::ArrayInit { n, body, .. } => expr_has_null(n) || expr_has_null(body),
+        KirOp::ArrayMap { body, .. } => expr_has_null(body),
+        KirOp::ArrayFilter { predicate, .. } => expr_has_null(predicate),
+        KirOp::TupleNew { fields, .. } => fields.iter().any(expr_has_null),
+        KirOp::StructNew { sorted_fields, .. } => {
+            sorted_fields.iter().any(|(_, e)| expr_has_null(e))
+        }
+        KirOp::VariantNew { payloads, .. } => payloads.iter().any(expr_has_null),
+        KirOp::Block { lets, tail } => {
+            lets.iter().any(|l| expr_has_null(&l.value)) || expr_has_null(tail)
+        }
+        KirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
+            c.as_ref().is_some_and(expr_has_null) || expr_has_null(v)
+        }),
+        KirOp::Call { args, .. } => args.iter().any(expr_has_null),
+        KirOp::DynCall { args, arg_types, return_type, .. } => {
+            matches!(return_type, KirType::Null | KirType::Nullable(_))
+                || arg_types.iter().any(|t| {
+                    matches!(t, KirType::Null | KirType::Nullable(_))
+                })
+                || args.iter().any(expr_has_null)
+        }
+    }
 }
 
 fn stmt_has_composite_element_op(s: &KirStmt) -> bool {
@@ -1234,10 +1391,11 @@ fn expr_has_composite_element_op(e: &KirExpr) -> bool {
             !matches!(e.typ, KirType::Prim(_))
                 || expr_has_composite_element_op(idx)
         }
-        KirOp::Const(_) | KirOp::ConstStr(_) | KirOp::Local(_)
-        | KirOp::ArrayLen { .. } | KirOp::VariantTagEq { .. }
-        | KirOp::VariantPayload { .. } => false,
+        KirOp::Const(_) | KirOp::ConstStr(_) | KirOp::ConstNull
+        | KirOp::Local(_) | KirOp::ArrayLen { .. }
+        | KirOp::VariantTagEq { .. } | KirOp::VariantPayload { .. } => false,
         KirOp::Concat(parts) => parts.iter().any(expr_has_composite_element_op),
+        KirOp::IsNull(inner) => expr_has_composite_element_op(inner),
         KirOp::Bin { lhs, rhs, .. }
         | KirOp::Cmp { lhs, rhs, .. }
         | KirOp::BoolBin { lhs, rhs, .. } => {
@@ -1279,123 +1437,6 @@ fn expr_has_composite_element_op(e: &KirExpr) -> bool {
         KirOp::Call { args, .. } | KirOp::DynCall { args, .. } => {
             args.iter().any(expr_has_composite_element_op)
         }
-    }
-}
-
-fn stmt_has_string(s: &KirStmt) -> bool {
-    match s {
-        KirStmt::Let(l) => expr_has_string(&l.value),
-        KirStmt::Return(e) => expr_has_string(e),
-        KirStmt::Discard(e) => expr_has_string(e),
-        KirStmt::TailCall { args } => args.iter().any(expr_has_string),
-        KirStmt::Select { arms } => arms.iter().any(|a| {
-            a.cond.as_ref().is_some_and(expr_has_string)
-                || a.body.iter().any(stmt_has_string)
-        }),
-    }
-}
-
-fn expr_has_string(e: &KirExpr) -> bool {
-    if matches!(e.typ, KirType::String) {
-        return true;
-    }
-    match &e.op {
-        KirOp::Const(_) | KirOp::Local(_) | KirOp::ArrayLen { .. } => false,
-        KirOp::ConstStr(_) => true,
-        KirOp::Concat(parts) => parts.iter().any(expr_has_string),
-        KirOp::Bin { lhs, rhs, .. }
-        | KirOp::Cmp { lhs, rhs, .. }
-        | KirOp::BoolBin { lhs, rhs, .. } => {
-            expr_has_string(lhs) || expr_has_string(rhs)
-        }
-        KirOp::Not(inner) | KirOp::Cast { inner, .. } => expr_has_string(inner),
-        KirOp::ArrayGet { idx, .. } => expr_has_string(idx),
-        KirOp::ArrayFold { init, body, .. } => {
-            expr_has_string(init) || expr_has_string(body)
-        }
-        KirOp::ArrayInit { n, body, .. } => {
-            expr_has_string(n) || expr_has_string(body)
-        }
-        KirOp::ArrayMap { body, .. } => expr_has_string(body),
-        KirOp::ArrayFilter { predicate, .. } => expr_has_string(predicate),
-        KirOp::TupleGet { .. } | KirOp::StructGet { .. } => false,
-        KirOp::TupleNew { fields, .. } => fields.iter().any(expr_has_string),
-        KirOp::StructNew { sorted_fields, .. } => {
-            sorted_fields.iter().any(|(_, e)| expr_has_string(e))
-        }
-        KirOp::VariantTagEq { .. } | KirOp::VariantPayload { .. } => false,
-        KirOp::VariantNew { payloads, .. } => {
-            payloads.iter().any(expr_has_string)
-        }
-        KirOp::Block { lets, tail } => {
-            lets.iter().any(|l| expr_has_string(&l.value))
-                || expr_has_string(tail)
-        }
-        KirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
-            c.as_ref().is_some_and(expr_has_string) || expr_has_string(v)
-        }),
-        KirOp::Call { args, .. } => args.iter().any(expr_has_string),
-        KirOp::DynCall { args, arg_types, return_type, .. } => {
-            matches!(return_type, KirType::String)
-                || arg_types.iter().any(|t| matches!(t, KirType::String))
-                || args.iter().any(expr_has_string)
-        }
-    }
-}
-
-fn stmt_has_dyncall(s: &KirStmt) -> bool {
-    match s {
-        KirStmt::Let(l) => expr_has_dyncall(&l.value),
-        KirStmt::Return(e) => expr_has_dyncall(e),
-        KirStmt::Discard(e) => expr_has_dyncall(e),
-        KirStmt::TailCall { args } => args.iter().any(expr_has_dyncall),
-        KirStmt::Select { arms } => arms.iter().any(|a| {
-            a.cond.as_ref().is_some_and(expr_has_dyncall)
-                || a.body.iter().any(stmt_has_dyncall)
-        }),
-    }
-}
-
-fn expr_has_dyncall(e: &KirExpr) -> bool {
-    match &e.op {
-        KirOp::DynCall { .. } => true,
-        KirOp::Call { args, .. } => args.iter().any(expr_has_dyncall),
-        KirOp::Const(_)
-        | KirOp::ConstStr(_)
-        | KirOp::Local(_)
-        | KirOp::ArrayLen { .. } => false,
-        KirOp::Concat(parts) => parts.iter().any(expr_has_dyncall),
-        KirOp::Bin { lhs, rhs, .. }
-        | KirOp::Cmp { lhs, rhs, .. }
-        | KirOp::BoolBin { lhs, rhs, .. } => {
-            expr_has_dyncall(lhs) || expr_has_dyncall(rhs)
-        }
-        KirOp::Not(inner) | KirOp::Cast { inner, .. } => expr_has_dyncall(inner),
-        KirOp::ArrayGet { idx, .. } => expr_has_dyncall(idx),
-        KirOp::ArrayFold { init, body, .. } => {
-            expr_has_dyncall(init) || expr_has_dyncall(body)
-        }
-        KirOp::ArrayInit { n, body, .. } => {
-            expr_has_dyncall(n) || expr_has_dyncall(body)
-        }
-        KirOp::ArrayMap { body, .. } => expr_has_dyncall(body),
-        KirOp::ArrayFilter { predicate, .. } => expr_has_dyncall(predicate),
-        KirOp::TupleGet { .. } | KirOp::StructGet { .. } => false,
-        KirOp::TupleNew { fields, .. } => fields.iter().any(expr_has_dyncall),
-        KirOp::StructNew { sorted_fields, .. } => {
-            sorted_fields.iter().any(|(_, e)| expr_has_dyncall(e))
-        }
-        KirOp::VariantTagEq { .. } | KirOp::VariantPayload { .. } => false,
-        KirOp::VariantNew { payloads, .. } => {
-            payloads.iter().any(expr_has_dyncall)
-        }
-        KirOp::Block { lets, tail } => {
-            lets.iter().any(|l| expr_has_dyncall(&l.value))
-                || expr_has_dyncall(tail)
-        }
-        KirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
-            c.as_ref().is_some_and(expr_has_dyncall) || expr_has_dyncall(v)
-        }),
     }
 }
 
@@ -1457,6 +1498,7 @@ fn walk_call_sites_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr
         }
         KirOp::Const(_)
         | KirOp::ConstStr(_)
+        | KirOp::ConstNull
         | KirOp::Local(_)
         | KirOp::ArrayLen { .. } => {}
         KirOp::Bin { lhs, rhs, .. }
@@ -1466,6 +1508,7 @@ fn walk_call_sites_expr(e: &KirExpr, out: &mut std::collections::BTreeSet<ArcStr
             walk_call_sites_expr(rhs, out);
         }
         KirOp::Not(inner) | KirOp::Cast { inner, .. } => walk_call_sites_expr(inner, out),
+        KirOp::IsNull(inner) => walk_call_sites_expr(inner, out),
         KirOp::ArrayGet { idx, .. } => walk_call_sites_expr(idx, out),
         KirOp::ArrayFold { init, body, .. } => {
             walk_call_sites_expr(init, out);

@@ -1,7 +1,7 @@
 use graphix_package_core::testing::escape_path;
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use graphix_rt::GXEvent;
 use netidx::subscriber::Value;
 use poolshark::global::GPooled;

@@ -15,7 +15,7 @@ use triomphe::Arc;
 defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 
 #[derive(Debug)]
-pub(crate) struct Map<R: Rt, E: UserEvent> {
+pub struct Map<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     keys: Box<[Cached<R, E>]>,
@@ -109,10 +109,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Map(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct MapRef<R: Rt, E: UserEvent> {
+pub struct MapRef<R: Rt, E: UserEvent> {
     source: Cached<R, E>,
     key: Cached<R, E>,
     spec: Expr,
@@ -194,5 +198,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.sleep(ctx);
         self.key.sleep(ctx);
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::MapRef(self)
     }
 }

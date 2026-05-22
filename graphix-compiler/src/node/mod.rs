@@ -23,7 +23,6 @@ pub(crate) mod map;
 pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
-pub mod region;
 pub(crate) mod select;
 
 #[macro_export]
@@ -105,7 +104,7 @@ pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
 });
 
 #[derive(Debug)]
-pub(crate) struct Nop {
+pub struct Nop {
     pub typ: Type,
 }
 
@@ -141,10 +140,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
     }
 
     fn refs(&self, _refs: &mut Refs) {}
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Nop(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct ExplicitParens<R: Rt, E: UserEvent> {
+pub struct ExplicitParens<R: Rt, E: UserEvent> {
     spec: Expr,
     n: Node<R, E>,
 }
@@ -190,6 +193,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
     fn refs(&self, refs: &mut Refs) {
         self.n.refs(refs);
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::ExplicitParens(self)
+    }
 }
 
 /// Wraps a child `Node` with its last-produced value cached for the
@@ -232,7 +239,7 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Use {
+pub struct Use {
     spec: Expr,
     scope: Scope,
     name: ModPath,
@@ -294,10 +301,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     fn typ(&self) -> &Type {
         &Type::Bottom
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Use(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct TypeDef {
+pub struct TypeDef {
     spec: Expr,
     scope: ModPath,
     name: ArcStr,
@@ -357,6 +368,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
     fn typ(&self) -> &Type {
         &Type::Bottom
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::TypeDef(self)
+    }
 }
 
 #[derive(Debug)]
@@ -415,14 +430,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn spec(&self) -> &Expr {
         &self.spec
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Constant(self)
+    }
 }
 
 // used for both mod and do
 #[derive(Debug)]
 pub struct Block<R: Rt, E: UserEvent> {
-    pub(super) module: bool,
-    pub(super) spec: Expr,
-    pub(super) children: Box<[Node<R, E>]>,
+    pub(crate) module: bool,
+    pub(crate) spec: Expr,
+    pub(crate) children: Box<[Node<R, E>]>,
+    /// Module scope at the block's declaration point. For
+    /// `Block { module: true }` this is the *containing* scope —
+    /// the inner module's scope is `scope.append(name)`. For
+    /// `Block { module: false }` (Do block at expression position)
+    /// this is the lexical scope the Do is in.
+    pub(crate) scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
@@ -434,8 +459,9 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         module: bool,
         children: Box<[Node<R, E>]>,
         spec: Expr,
+        scope: Scope,
     ) -> Node<R, E> {
-        Box::new(Self { module, spec, children })
+        Box::new(Self { module, spec, children, scope })
     }
 
     pub(crate) fn compile(
@@ -449,18 +475,12 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     ) -> Result<Node<R, E>> {
         // Snapshot fusion-visibility state so binds *inside* this
         // block don't leak their consts into the outer scope.
-        // (`fusion_lambdas` doesn't need save/restore — it's keyed
-        // by binding name and only used at runtime by the lazy
-        // resolver, which only runs when a kernel actually
-        // references one of those names.)
-        let saved_consts = ctx.fusion_known_consts.clone();
         let result: Result<Box<[Node<R, E>]>> = exprs
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect();
-        ctx.fusion_known_consts = saved_consts;
         let children = result?;
-        Ok(Box::new(Self { module, spec, children }))
+        Ok(Box::new(Self { module, spec, children, scope: scope.clone() }))
     }
 }
 
@@ -510,10 +530,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     fn spec(&self) -> &Expr {
         &self.spec
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Block(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct StringInterpolate<R: Rt, E: UserEvent> {
+pub struct StringInterpolate<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     typs: Box<[Type]>,
@@ -599,11 +623,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::StringInterpolate(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct Connect<R: Rt, E: UserEvent> {
-    pub(super) spec: Expr,
+    pub(crate) spec: Expr,
     pub(super) node: Node<R, E>,
     pub(super) id: BindId,
 }
@@ -628,6 +656,12 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             None => bailat!(spec, "{name} is undefined"),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
+        // Record `id` as a `<-` target so downstream fusion call-site
+        // lowering (`emit_known_fused_call`, `resolve_binding_fn_input`,
+        // etc.) can refuse to register it as a static call target. Keyed
+        // by BindId so an inner shadow of a Connect-target name stays
+        // stable (only the specific BindId being written is unstable).
+        ctx.unstable_bindings.insert(id);
         if ctx.env.lsp_mode {
             ctx.references.push(crate::ReferenceSite {
                 pos: spec.pos,
@@ -679,11 +713,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         };
         wrap!(self, bind.typ.check_contains(&ctx.env, self.node.typ()))
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Connect(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
-    pub(super) spec: Expr,
+    pub(crate) spec: Expr,
     pub(super) rhs: Cached<R, E>,
     pub(super) src_id: BindId,
     pub(super) target_id: Option<BindId>,
@@ -789,10 +827,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         let typ = Type::ByRef(Arc::new(self.rhs.node.typ().clone()));
         wrap!(self, bind.typ.check_contains(&ctx.env, &typ))
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::ConnectDeref(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct TypeCast<R: Rt, E: UserEvent> {
+pub struct TypeCast<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     target: Type,
@@ -847,10 +889,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(wrap!(self.n, self.n.typecheck(ctx))?)
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::TypeCast(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Any<R: Rt, E: UserEvent> {
+pub struct Any<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     n: Box<[Node<R, E>]>,
@@ -914,10 +960,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.typ.check_contains(&ctx.env, &rtyp)?;
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Any(self)
+    }
 }
 
 #[derive(Debug)]
-struct Sample<R: Rt, E: UserEvent> {
+pub struct Sample<R: Rt, E: UserEvent> {
     spec: Expr,
     triggered: usize,
     typ: Type,
@@ -996,5 +1046,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.trigger, self.trigger.typecheck(ctx))?;
         wrap!(self.arg.node, self.arg.node.typecheck(ctx))
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Sample(self)
     }
 }

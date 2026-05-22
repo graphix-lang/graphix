@@ -141,11 +141,6 @@ pub struct Shell<X: GXExt> {
     /// program arguments to pass to the graphix script
     #[builder(default)]
     program_args: Vec<ArcStr>,
-    /// per-runtime fusion / JIT configuration. Defaults to fusion
-    /// on, JIT off (kir_interp dispatch). The CLI sets JIT to Sync
-    /// for production binary users; library callers can override.
-    #[builder(default)]
-    fusion_config: graphix_compiler::FusionConfig,
     #[builder(setter(skip), default)]
     _phantom: PhantomData<X>,
 }
@@ -159,7 +154,6 @@ impl<X: GXExt> Shell<X> {
         let subscriber = self.subscriber.clone();
         let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
             .context("creating graphix context")?;
-        ctx.fusion_config = self.fusion_config;
         let mut args = vec![];
         if let Mode::Script(source) | Mode::Check(source) = &self.mode {
             if let Source::File(p) = source {

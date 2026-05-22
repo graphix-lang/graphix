@@ -15,7 +15,7 @@ use std::iter;
 use triomphe::Arc;
 
 #[derive(Debug)]
-pub(crate) struct Struct<R: Rt, E: UserEvent> {
+pub struct Struct<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     names: Box<[ArcStr]>,
@@ -102,6 +102,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         }
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Struct(self)
+    }
 }
 
 #[derive(Debug)]
@@ -112,7 +116,7 @@ struct Replace<R: Rt, E: UserEvent> {
 }
 
 #[derive(Debug)]
-pub(crate) struct StructWith<R: Rt, E: UserEvent> {
+pub struct StructWith<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     source: Node<R, E>,
@@ -263,10 +267,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         )?;
         wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::StructWith(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct StructRef<R: Rt, E: UserEvent> {
+pub struct StructRef<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     source: Node<R, E>,
@@ -376,10 +384,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.field = Some(idx);
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::StructRef(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Tuple<R: Rt, E: UserEvent> {
+pub struct Tuple<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     n: Box<[Cached<R, E>]>,
@@ -454,10 +466,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         }
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Tuple(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Variant<R: Rt, E: UserEvent> {
+pub struct Variant<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     tag: ArcStr,
@@ -545,10 +561,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         }
         Ok(())
     }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::Variant(self)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct TupleRef<R: Rt, E: UserEvent> {
+pub struct TupleRef<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
     source: Node<R, E>,
@@ -620,5 +640,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         );
         let etyp = wrap!(self, etyp)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
+    }
+
+    fn view(&self) -> crate::NodeView<'_, R, E> {
+        crate::NodeView::TupleRef(self)
     }
 }

@@ -5,7 +5,7 @@
 // Abstract types are opaque - the caller cannot see the concrete type.
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, run_no_jit};
 use netidx::publisher::Value;
 
 // =============================================================================
