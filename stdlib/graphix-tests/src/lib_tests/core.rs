@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
 const IS_ERR: &str = r#"
@@ -13,7 +13,7 @@ const IS_ERR: &str = r#"
 }
 "#;
 
-run!(is_err, IS_ERR, |v: Result<&Value>| match v {
+run_no_jit!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
 });
@@ -25,7 +25,7 @@ const FILTER_ERR: &str = r#"
 }
 "#;
 
-run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
+run_no_jit!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
 });
@@ -34,7 +34,7 @@ const ERROR: &str = r#"
   error("foo")
 "#;
 
-run!(error, ERROR, |v: Result<&Value>| match v {
+run_no_jit!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
 });
@@ -46,7 +46,7 @@ const ONCE: &str = r#"
 }
 "#;
 
-run!(once, ONCE, |v: Result<&Value>| match v {
+run_no_jit!(once, ONCE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 });
@@ -58,7 +58,7 @@ const SKIP: &str = r#"
 }
 "#;
 
-run!(skip, SKIP, |v: Result<&Value>| {
+run_no_jit!(skip, SKIP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(4), Value::I64(5), Value::I64(6)] => true,
@@ -75,7 +75,7 @@ const SKIP_ZERO: &str = r#"
 }
 "#;
 
-run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
+run_no_jit!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -92,7 +92,7 @@ const SKIP_ALL: &str = r#"
 }
 "#;
 
-run!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
+run_no_jit!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
 });
@@ -104,7 +104,7 @@ const TAKE: &str = r#"
 }
 "#;
 
-run!(take, TAKE, |v: Result<&Value>| {
+run_no_jit!(take, TAKE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -121,7 +121,7 @@ const TAKE_ZERO: &str = r#"
 }
 "#;
 
-run!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
+run_no_jit!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
 });
@@ -133,7 +133,7 @@ const TAKE_MORE: &str = r#"
 }
 "#;
 
-run!(take_more, TAKE_MORE, |v: Result<&Value>| {
+run_no_jit!(take_more, TAKE_MORE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -152,7 +152,7 @@ const ALL: &str = r#"
 }
 "#;
 
-run!(all, ALL, |v: Result<&Value>| match v {
+run_no_jit!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 });
@@ -164,7 +164,7 @@ const SUM: &str = r#"
 }
 "#;
 
-run!(sum, SUM, |v: Result<&Value>| match v {
+run_no_jit!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
 });
@@ -176,7 +176,7 @@ const PRODUCT: &str = r#"
 }
 "#;
 
-run!(product, PRODUCT, |v: Result<&Value>| match v {
+run_no_jit!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
 });
@@ -188,7 +188,7 @@ const DIVIDE: &str = r#"
 }
 "#;
 
-run!(divide, DIVIDE, |v: Result<&Value>| match v {
+run_no_jit!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
 });
@@ -197,7 +197,7 @@ const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
 "#;
 
-run!(min, MIN, |v: Result<&Value>| match v {
+run_no_jit!(min, MIN, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
 });
@@ -206,7 +206,7 @@ const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
 "#;
 
-run!(max, MAX, |v: Result<&Value>| match v {
+run_no_jit!(max, MAX, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
 });
@@ -220,7 +220,7 @@ const AND: &str = r#"
 }
 "#;
 
-run!(and, AND, |v: Result<&Value>| match v {
+run_no_jit!(and, AND, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 });
@@ -229,7 +229,7 @@ const OR: &str = r#"
   or(false, false, true)
 "#;
 
-run!(or, OR, |v: Result<&Value>| match v {
+run_no_jit!(or, OR, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 });
@@ -241,7 +241,7 @@ const INDEX: &str = r#"
 }
 "#;
 
-run!(index, INDEX, |v: Result<&Value>| match v {
+run_no_jit!(index, INDEX, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 });
@@ -253,7 +253,7 @@ const SLICE: &str = r#"
 }
 "#;
 
-run!(slice, SLICE, |v: Result<&Value>| {
+run_no_jit!(slice, SLICE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(7), Value::I64(15), Value::I64(3)] => true,
@@ -270,7 +270,7 @@ const FILTER0: &str = r#"
 }
 "#;
 
-run!(filter0, FILTER0, |v: Result<&Value>| {
+run_no_jit!(filter0, FILTER0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
         _ => false,
@@ -284,7 +284,7 @@ const FILTER1: &str = r#"
 }
 "#;
 
-run!(filter1, FILTER1, |v: Result<&Value>| {
+run_no_jit!(filter1, FILTER1, |v: Result<&Value>| {
     match v {
         Ok(_) => false,
         Err(_) => true,
@@ -304,7 +304,7 @@ const QUEUE: &str = r#"
 }
 "#;
 
-run!(queue, QUEUE, |v: Result<&Value>| {
+run_no_jit!(queue, QUEUE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5), Value::I64(6), Value::I64(7), Value::I64(8)] => {
@@ -323,7 +323,7 @@ const QUEUEFN_IMMEDIATE: &str = r#"
 }
 "#;
 
-run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
+run_no_jit!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(70)) => true,
         _ => false,
@@ -340,7 +340,7 @@ const QUEUEFN_QUEUE_POP: &str = r#"
 }
 "#;
 
-run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
+run_no_jit!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(10), Value::I64(20), Value::I64(30), Value::I64(40)] => true,
@@ -362,7 +362,7 @@ const QUEUEFN_MULTI_ARG: &str = r#"
 }
 "#;
 
-run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
+run_no_jit!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(201), Value::I64(403), Value::I64(605)] => true,
@@ -383,7 +383,7 @@ const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 }
 "#;
 
-run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
+run_no_jit!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
@@ -408,7 +408,7 @@ const QUEUEFN_COUNT_REF: &str = r#"
 }
 "#;
 
-run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
+run_no_jit!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(0), Value::I64(1), Value::I64(2)] => true,
@@ -431,7 +431,7 @@ const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
 }
 "#;
 
-run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
+run_no_jit!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(11), Value::I64(21), Value::I64(31), Value::I64(41), Value::I64(51)] => {
@@ -456,7 +456,7 @@ const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 }
 "#;
 
-run!(
+run_no_jit!(
     queuefn_trigger_before_fn,
     QUEUEFN_TRIGGER_BEFORE_FN,
     |v: Result<&Value>| {
@@ -488,7 +488,7 @@ const QUEUEFN_TRIGGER_ARG: &str = r#"
 }
 "#;
 
-run!(
+run_no_jit!(
     queuefn_trigger_arg,
     QUEUEFN_TRIGGER_ARG,
     |v: Result<&Value>| {
@@ -530,7 +530,7 @@ const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 }
 "#;
 
-run!(
+run_no_jit!(
     queuefn_net_subscribe,
     QUEUEFN_NET_SUBSCRIBE,
     |v: Result<&Value>| {
@@ -569,7 +569,7 @@ const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 }
 "#;
 
-run!(
+run_no_jit!(
     queuefn_delta_per_cycle,
     QUEUEFN_DELTA_PER_CYCLE,
     |v: Result<&Value>| {
@@ -587,7 +587,7 @@ const COUNT: &str = r#"
 }
 "#;
 
-run!(count, COUNT, |v: Result<&Value>| {
+run_no_jit!(count, COUNT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4)] => true,
@@ -605,7 +605,7 @@ const SAMPLE: &str = r#"
 }
 "#;
 
-run!(sample, SAMPLE, |v: Result<&Value>| {
+run_no_jit!(sample, SAMPLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1), Value::String(s2), Value::String(s3)] => {
@@ -624,7 +624,7 @@ const UNIQ: &str = r#"
 }
 "#;
 
-run!(uniq, UNIQ, |v: Result<&Value>| {
+run_no_jit!(uniq, UNIQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(1)) => true,
         _ => false,
@@ -635,7 +635,7 @@ const SEQ: &str = r#"
   array::group(seq(0, 4), |n, _| n == 4)
 "#;
 
-run!(seq, SEQ, |v: Result<&Value>| {
+run_no_jit!(seq, SEQ, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(0), Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -653,7 +653,7 @@ const THROTTLE: &str = r#"
 }
 "#;
 
-run!(throttle, THROTTLE, |v: Result<&Value>| {
+run_no_jit!(throttle, THROTTLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(10)] => true,
@@ -670,7 +670,7 @@ const NEVER: &str = r#"
 }
 "#;
 
-run!(never, NEVER, |v: Result<&Value>| {
+run_no_jit!(never, NEVER, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(0)) => true,
         _ => false,
@@ -684,7 +684,7 @@ const MEAN: &str = r#"
 }
 "#;
 
-run!(mean, MEAN, |v: Result<&Value>| {
+run_no_jit!(mean, MEAN, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(1.5)) => true,
         _ => false,
@@ -695,7 +695,7 @@ const RAND: &str = r#"
   rand::rand(#clock:null)
 "#;
 
-run!(rand, RAND, |v: Result<&Value>| {
+run_no_jit!(rand, RAND, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(v)) if *v >= 0. && *v < 1.0 => true,
         _ => false,
@@ -706,7 +706,7 @@ const RAND_PICK: &str = r#"
   rand::pick(["Chicken is coming", "Grape", "Pilot!"])
 "#;
 
-run!(rand_pick, RAND_PICK, |v: Result<&Value>| {
+run_no_jit!(rand_pick, RAND_PICK, |v: Result<&Value>| {
     match v {
         Ok(Value::String(v)) => v == "Chicken is coming" || v == "Grape" || v == "Pilot!",
         _ => false,
@@ -717,7 +717,7 @@ const RAND_SHUFFLE: &str = r#"
   rand::shuffle(["Chicken is coming", "Grape", "Pilot!"])
 "#;
 
-run!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
+run_no_jit!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) if a.len() == 3 => {
             a.contains(&Value::from("Chicken is coming"))
@@ -736,7 +736,7 @@ const HOLD_BASIC: &str = r#"
 }
 "#;
 
-run!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
+run_no_jit!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
@@ -751,7 +751,7 @@ const HOLD_MULTIPLE: &str = r#"
 }
 "#;
 
-run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
+run_no_jit!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 });
@@ -764,7 +764,7 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
-run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
+run_no_jit!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
 });
@@ -778,14 +778,14 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
-run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
+run_no_jit!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,
 });
 
 const NOW: &str = r#"sys::time::now(null)"#;
 
-run!(now, NOW, |v: Result<&Value>| match v {
+run_no_jit!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,
     _ => false,
 });

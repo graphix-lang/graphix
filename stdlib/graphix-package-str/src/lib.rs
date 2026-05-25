@@ -431,6 +431,7 @@ macro_rules! escape_fn {
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
             const NEEDS_CALLSITE: bool = false;
+            const EFFECT: EffectKind = EffectKind::Sync;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

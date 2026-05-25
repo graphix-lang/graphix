@@ -1,7 +1,7 @@
 // Tests for select/match expressions
 
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 const SELECT0: &str = r#"
@@ -17,7 +17,7 @@ const SELECT0: &str = r#"
 }
 "#;
 
-run!(select0, SELECT0, |v: Result<&Value>| match v {
+run_no_jit!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,
 });
@@ -34,7 +34,7 @@ const LOOPING_SELECT: &str = r#"
 }
 "#;
 
-run!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
+run_no_jit!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
 });
@@ -50,7 +50,7 @@ const SELECTSTRUCT: &str = r#"
 }
 "#;
 
-run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
+run_no_jit!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
 });
@@ -63,7 +63,7 @@ select 42 {
 }
 "#;
 
-run!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| match v {
+run_no_jit!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -76,7 +76,7 @@ select 42 {
 }
 "#;
 
-run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
+run_no_jit!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
@@ -90,7 +90,7 @@ const NESTEDMATCH0: &str = r#"
 }
 "#;
 
-run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
+run_no_jit!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
 });
@@ -105,7 +105,7 @@ const NESTEDMATCH1: &str = r#"
 }
 "#;
 
-run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
+run_no_jit!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
 });
@@ -119,7 +119,7 @@ const NESTEDMATCH2: &str = r#"
 }
 "#;
 
-run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
+run_no_jit!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
     Err(e) => {
         dbg!(e);
         true
@@ -137,7 +137,7 @@ const NESTEDMATCH3: &str = r#"
 }
 "#;
 
-run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
+run_no_jit!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
 });

@@ -1,8 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
-run!(sqlite_open_memory, r#"{
+run_no_jit!(sqlite_open_memory, r#"{
     let db = sqlite::open(":memory:")?;
     sqlite::close(db)?;
     true
@@ -11,7 +11,7 @@ run!(sqlite_open_memory, r#"{
 });
 
 // typed struct query: exec_batch creates schema, query reads back as structs
-run!(sqlite_typed_query, r#"{
+run_no_jit!(sqlite_typed_query, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
         CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT);
@@ -25,7 +25,7 @@ run!(sqlite_typed_query, r#"{
 });
 
 // raw map query: same data, but annotated as Map
-run!(sqlite_raw_map_query, r#"{
+run_no_jit!(sqlite_raw_map_query, r#"{
     type SqlVal = [i64, f64, string, bytes, null];
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -44,7 +44,7 @@ run!(sqlite_raw_map_query, r#"{
 });
 
 // exec with params, verify via typed query
-run!(sqlite_exec_params, r#"{
+run_no_jit!(sqlite_exec_params, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(id INTEGER PRIMARY KEY, val REAL)")$;
     let inserted = sqlite::exec(setup ~ db, "INSERT INTO t(id, val) VALUES(?, ?)", [1, 3.14])$;
@@ -55,7 +55,7 @@ run!(sqlite_exec_params, r#"{
 });
 
 // transaction commit
-run!(sqlite_transaction, r#"{
+run_no_jit!(sqlite_transaction, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
         CREATE TABLE t(x INTEGER);
@@ -71,7 +71,7 @@ run!(sqlite_transaction, r#"{
 });
 
 // rollback
-run!(sqlite_rollback, r#"{
+run_no_jit!(sqlite_rollback, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
         CREATE TABLE t(x INTEGER);
@@ -87,7 +87,7 @@ run!(sqlite_rollback, r#"{
 });
 
 // nullable fields: [i64, null] for a column that may be NULL
-run!(sqlite_nullable_field, r#"{
+run_no_jit!(sqlite_nullable_field, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
         CREATE TABLE t(x INTEGER);
@@ -105,7 +105,7 @@ run!(sqlite_nullable_field, r#"{
 });
 
 // empty result: typed query on empty table returns empty array
-run!(sqlite_empty_result, r#"{
+run_no_jit!(sqlite_empty_result, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(x INTEGER)")$;
     let rows: Array<{x: i64}> = sqlite::query(setup ~ db, "SELECT x FROM t", [])$;

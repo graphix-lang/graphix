@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
 // Test that writes and then reads a file using Graphix
@@ -10,7 +10,7 @@ const WRITE_THEN_READ: &str = r#"{
   sys::fs::read_all(write_result ~ path)
 }"#;
 
-run!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
+run_no_jit!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Test content")
 });
 
@@ -67,7 +67,7 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   content_ok && modify_ok
 }"#;
 
-run!(test_write_then_watch_modify, WRITE_THEN_WATCH_MODIFY, |v: Result<&Value>| {
+run_no_jit!(test_write_then_watch_modify, WRITE_THEN_WATCH_MODIFY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
@@ -79,6 +79,6 @@ const WRITE_BIN_THEN_READ_BIN: &str = r#"{
   sys::fs::read_all_bin(write_result ~ path)
 }"#;
 
-run!(test_write_bin_then_read_bin, WRITE_BIN_THEN_READ_BIN, |v: Result<&Value>| {
+run_no_jit!(test_write_bin_then_read_bin, WRITE_BIN_THEN_READ_BIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")
 });

@@ -1,7 +1,7 @@
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 const LAMBDA: &str = r#"
@@ -12,7 +12,7 @@ const LAMBDA: &str = r#"
 }
 "#;
 
-run!(lambda, LAMBDA, |v: Result<&Value>| match v {
+run_no_jit!(lambda, LAMBDA, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
 });
@@ -25,7 +25,7 @@ const FIRST_CLASS_LAMBDAS: &str = r#"
 }
 "#;
 
-run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
+run_no_jit!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 });
@@ -37,7 +37,7 @@ const LABELED_ARGS: &str = r#"
 }
 "#;
 
-run!(labeled_args, LABELED_ARGS, |v: Result<&Value>| match v {
+run_no_jit!(labeled_args, LABELED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
@@ -49,7 +49,7 @@ const REQUIRED_ARGS: &str = r#"
 }
 "#;
 
-run!(required_args, REQUIRED_ARGS, |v: Result<&Value>| match v {
+run_no_jit!(required_args, REQUIRED_ARGS, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -61,7 +61,7 @@ const MIXED_ARGS: &str = r#"
 }
 "#;
 
-run!(mixed_args, MIXED_ARGS, |v: Result<&Value>| match v {
+run_no_jit!(mixed_args, MIXED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
@@ -74,7 +74,7 @@ const ARG_SUBTYPING: &str = r#"
 }
 "#;
 
-run!(arg_subtyping, ARG_SUBTYPING, |v: Result<&Value>| match v {
+run_no_jit!(arg_subtyping, ARG_SUBTYPING, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,
 });
@@ -87,7 +87,7 @@ const ARG_NAME_SHORT: &str = r#"
 }
 "#;
 
-run!(arg_name_short, ARG_NAME_SHORT, |v: Result<&Value>| match v {
+run_no_jit!(arg_name_short, ARG_NAME_SHORT, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,
 });
@@ -102,7 +102,7 @@ const LATE_BINDING0: &str = r#"
 }
 "#;
 
-run!(late_binding0, LATE_BINDING0, |v: Result<&Value>| match v {
+run_no_jit!(late_binding0, LATE_BINDING0, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 });
@@ -122,7 +122,7 @@ const LATE_BINDING1: &str = r#"
 }
 "#;
 
-run!(late_binding1, LATE_BINDING1, |v: Result<&Value>| match v {
+run_no_jit!(late_binding1, LATE_BINDING1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2)] => true,
         _ => false,
@@ -138,7 +138,7 @@ const LATE_BINDING2: &str = r#"
 }
 "#;
 
-run!(late_binding2, LATE_BINDING2, |v: Result<&Value>| match v {
+run_no_jit!(late_binding2, LATE_BINDING2, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 });
@@ -152,7 +152,7 @@ const LATE_BINDING3: &str = r#"
 }
 "#;
 
-run!(late_binding3, LATE_BINDING3, |v: Result<&Value>| match v {
+run_no_jit!(late_binding3, LATE_BINDING3, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
 });
@@ -169,7 +169,7 @@ const LATE_BINDING4: &str = r#"
 }
 "#;
 
-run!(late_binding4, LATE_BINDING4, |v: Result<&Value>| match v {
+run_no_jit!(late_binding4, LATE_BINDING4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[i64; 3]>() {
         Ok([0, 0, 55]) => true,
         Ok(_) | Err(_) => false,
@@ -184,7 +184,7 @@ const RECURSIVE_LAMBDA0: &str = r#"
 }
 "#;
 
-run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
+run_no_jit!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
     Ok(Value::I64(10)) => true,
     _ => false,
 });
@@ -201,7 +201,7 @@ const KIR_FUSED_ARITH: &str = r#"
 }
 "#;
 
-run!(kir_fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
+run_no_jit!(kir_fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
     Ok(Value::I64(25)) => true,
     _ => false,
 });
@@ -220,7 +220,7 @@ const KIR_FUSED_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(kir_fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
+run_no_jit!(kir_fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
@@ -240,7 +240,7 @@ const KIR_FUSED_MANDELBROT: &str = r#"
 }
 "#;
 
-run!(kir_fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
+run_no_jit!(kir_fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
     // c=1+0i: trace 0 → 1 → 2 → 5 → escape; |5|² = 25 > 4 at i=7.
     Ok(Value::I64(7)) => true,
     _ => false,
@@ -260,7 +260,7 @@ const KIR_FUSED_DEFERRED_MAP: &str = r#"
 }
 "#;
 
-run!(kir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
+run_no_jit!(kir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
     // sum_{i=0}^{99} 2i = 2 * 99*100/2 = 9900
     Ok(Value::I64(9900)) => true,
     _ => false,
@@ -284,7 +284,7 @@ const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
 }
 "#;
 
-run!(kir_lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
+run_no_jit!(kir_lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
@@ -311,7 +311,7 @@ const KIR_LAZY_THREE_LEVEL: &str = r#"
 }
 "#;
 
-run!(kir_lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
+run_no_jit!(kir_lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
 });
@@ -331,7 +331,7 @@ const KIR_DYNCALL_HOF: &str = r#"
 }
 "#;
 
-run!(kir_dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
+run_no_jit!(kir_dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
 });
@@ -353,7 +353,7 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 }
 "#;
 
-run!(
+run_no_jit!(
     kir_dyncall_static_nonfusable,
     KIR_DYNCALL_STATIC_NONFUSABLE,
     |v: Result<&Value>| match v {
@@ -371,7 +371,7 @@ const LAMBDAMATCH0: &str = r#"
 }
 "#;
 
-run!(lambdamatch0, LAMBDAMATCH0, |v: Result<&Value>| match v {
+run_no_jit!(lambdamatch0, LAMBDAMATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
 });
@@ -385,7 +385,7 @@ const LAMBDAMATCH1: &str = r#"
 }
 "#;
 
-run!(lambdamatch1, LAMBDAMATCH1, |v: Result<&Value>| match v {
+run_no_jit!(lambdamatch1, LAMBDAMATCH1, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -398,7 +398,7 @@ const LAMBDAMATCH2: &str = r#"
 }
 "#;
 
-run!(lambdamatch2, LAMBDAMATCH2, |v: Result<&Value>| match v {
+run_no_jit!(lambdamatch2, LAMBDAMATCH2, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
 });
@@ -410,7 +410,7 @@ const LAMBDAMATCH3: &str = r#"
 }
 "#;
 
-run!(lambdamatch3, LAMBDAMATCH3, |v: Result<&Value>| match v {
+run_no_jit!(lambdamatch3, LAMBDAMATCH3, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -422,7 +422,7 @@ const LAMBDAMATCH4: &str = r#"
 }
 "#;
 
-run!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
+run_no_jit!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
 });
@@ -434,7 +434,7 @@ const LAMBDAMATCH5: &str = r#"
 }
 "#;
 
-run!(lambdamatch5, LAMBDAMATCH5, |v: Result<&Value>| match v {
+run_no_jit!(lambdamatch5, LAMBDAMATCH5, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -451,7 +451,7 @@ const NESTED_OPTIONAL0: &str = r#"
 }
 "#;
 
-run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
+run_no_jit!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
@@ -479,7 +479,7 @@ const ARG_UPDATE_BEFORE_BIND: &str = r#"
 }
 "#;
 
-run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
+run_no_jit!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
     Ok(Value::I64(31)) => true,
     _ => false,
 });
@@ -498,7 +498,7 @@ const ARG_UPDATE_AFTER_BIND: &str = r#"
 }
 "#;
 
-run!(arg_update_after_bind, ARG_UPDATE_AFTER_BIND, |v: Result<&Value>| match v {
+run_no_jit!(arg_update_after_bind, ARG_UPDATE_AFTER_BIND, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[i64; 4]>() {
         Ok([0, 10, 20, 30]) => true,
         _ => false,
@@ -511,7 +511,7 @@ const VARGS0: &str = r#"
 array::push([1, 2], 3, 4, 5)
 "#;
 
-run!(vargs0, VARGS0, |v: Result<&Value>| match v {
+run_no_jit!(vargs0, VARGS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] => true,
         _ => false,

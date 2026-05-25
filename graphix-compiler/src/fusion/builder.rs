@@ -81,13 +81,25 @@ pub fn build_region<'a, R: Rt, E: UserEvent>(
     candidate: &KernelCandidate<'a, R, E>,
     fn_name: &str,
     inputs: &[crate::fusion::RegionInput],
+    discovery: crate::fusion::BuiltinCallDiscovery,
 ) -> Result<BuiltKernel> {
     let body = match &candidate.kind {
         CandidateKind::Region { body, .. } => *body,
         _ => return Err(anyhow!("build_region called on non-Region candidate")),
     };
-    let (kernel, _signature) = build_region_kernel(fn_name, body, inputs)
-        .ok_or_else(|| anyhow!("KIR emission failed for region {fn_name}"))?;
+    let known = std::collections::BTreeMap::new();
+    let consts = std::collections::BTreeMap::new();
+    let (kernel, _signature) = crate::fusion::build_kir_kernel_from_region(
+        fn_name,
+        body,
+        inputs,
+        &discovery.fn_params,
+        None,
+        &known,
+        &consts,
+        discovery.apply_sites,
+    )
+    .ok_or_else(|| anyhow!("KIR emission failed for region {fn_name}"))?;
     Ok(BuiltKernel {
         fn_name: arcstr::ArcStr::from(fn_name),
         kernel: StdArc::new(kernel),
@@ -104,103 +116,93 @@ pub fn build_region<'a, R: Rt, E: UserEvent>(
 /// `Update`-implementing Node. Holds the compiled kernel + JIT
 /// artifact and dispatches at `update()` time.
 ///
-/// **Phase 3c scope**: zero-input Region kernels with scalar
-/// return only. Input plumbing (feeder nodes subscribing to
-/// BindIds), interp fallback, and non-Prim return types land in
-/// follow-up iterations.
+/// **Current scope**: kernels with zero or more scalar (primitive)
+/// inputs and a scalar return. Composite inputs / returns are
+/// follow-up work — `fuse()` filters them out so the kernel never
+/// reaches this struct.
 pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: crate::typ::Type,
-    kernel: StdArc<KirKernel>,
-    wrapped: StdArc<WrappedKernel>,
-    /// Has this kernel produced its value this run? Zero-input
-    /// kernels are constant — we fire once on initial cycle and
-    /// then return None (no change).
-    fired: bool,
-    /// `fn() -> (R, E)` instead of `(R, E)` so `Send + Sync` are
-    /// unconditional — the standard "no actual storage, just
-    /// covariant in the generic" pattern.
+    /// One feeder Node per kernel input slot. Driven by
+    /// `KirNode::update` via the `from` slice.
+    feeders: Box<[Node<R, E>]>,
+    /// The actual kernel executor — handles JIT/interp dispatch,
+    /// `DYN_DISPATCH_HANDLE` setup, builtin slot pre-binding,
+    /// pending-flag propagation, composite-return marshalling.
+    /// Routing through `KirNode` (instead of re-implementing the
+    /// dispatch surface) keeps FusedKernel minimal.
+    inner: crate::kir_interp::KirNode<R, E>,
     _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
 impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FusedKernel")
-            .field("fn_name", &self.kernel.fn_name)
-            .field("return_type", &self.kernel.return_type)
-            .field("fired", &self.fired)
+            .field("inputs", &self.feeders.len())
             .finish()
     }
 }
 
 impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     pub fn new(
+        ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         typ: crate::typ::Type,
         kernel: StdArc<KirKernel>,
-        wrapped: StdArc<WrappedKernel>,
-    ) -> Node<R, E> {
-        Box::new(Self {
+        wrapped: Option<StdArc<WrappedKernel>>,
+        feeders: Box<[Node<R, E>]>,
+        scope: crate::Scope,
+        top_id: crate::expr::ExprId,
+    ) -> Result<Node<R, E>> {
+        let n_args = feeders.len();
+        let registry =
+            StdArc::new(crate::kir_interp::KernelRegistry::default());
+        let inner = match wrapped {
+            Some(w) => crate::kir_interp::KirNode::with_jit(
+                ctx, kernel, n_args, w, registry, scope, top_id,
+            )?,
+            None => crate::kir_interp::KirNode::new(
+                ctx, kernel, n_args, registry, scope, top_id,
+            )?,
+        };
+        Ok(Box::new(Self {
             spec,
             typ,
-            kernel,
-            wrapped,
-            fired: false,
+            feeders,
+            inner,
             _phantom: std::marker::PhantomData,
-        })
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     fn update(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        _event: &mut Event<E>,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
     ) -> Option<Value> {
-        // Zero-input kernel: fire once on the initial cycle, then
-        // hold the value (return None to indicate no change).
-        if self.fired {
-            return None;
-        }
-        // Invoke the wrapper. Zero-arg kernel takes an empty args
-        // slice; out is a 2-slot buffer (the wrapper writes its
-        // result into out[0..n] depending on the return type).
-        let args: [u64; 0] = [];
-        let mut out: [u64; 2] = [0; 2];
-        let f = unsafe { self.wrapped.fn_ptr() };
-        unsafe {
-            f(args.as_ptr(), out.as_mut_ptr());
-        }
-        self.fired = true;
-        // Decode the result based on the kernel's return type.
-        match &self.kernel.return_type {
-            KirType::Prim(p) => {
-                let reg = crate::kir_jit::unpack_u64_to_reg(out[0], *p);
-                Some(reg.to_value())
-            }
-            // Non-Prim returns: deferred to Phase 3d / 3e.
-            other => {
-                log::warn!(
-                    "fusion_v2: non-Prim return type {other:?} not yet \
-                     supported in FusedKernel; producing None"
-                );
-                None
-            }
+        // Delegate to KirNode (Apply) — drives the feeders, sets up
+        // the DynCall dispatch handle, invokes JIT (or interp), and
+        // decodes the return value.
+        use crate::Apply;
+        self.inner.update(ctx, &mut self.feeders, event)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        use crate::Apply;
+        self.inner.delete(ctx);
+        for feeder in self.feeders.iter_mut() {
+            feeder.delete(ctx);
         }
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Zero-input kernel has no child nodes to delete.
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Reset on sleep so the next wakeup re-fires.
-        self.fired = false;
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for feeder in self.feeders.iter_mut() {
+            feeder.sleep(ctx);
+        }
     }
 
     fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // The body's typechecking was done by the original compile
-        // pass before fusion. Nothing more to do here.
         Ok(())
     }
 
@@ -208,9 +210,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         &self.typ
     }
 
-    fn refs(&self, _refs: &mut Refs) {
-        // Zero-input kernel: no input BindIds to register. Input
-        // plumbing lands in the next iteration.
+    fn refs(&self, refs: &mut Refs) {
+        for feeder in self.feeders.iter() {
+            feeder.refs(refs);
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -226,22 +229,31 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
 /// produces a `FusedKernel<R, E>` Update node that the caller
 /// installs in the runtime's `nodes` map at `built.source_id`.
 ///
-/// Requires the kernel to have been JIT-compiled — callers pass
-/// the `WrappedKernel` alongside the built kernel. Pure-interp
-/// fallback lands later.
+/// `wrapped` is the JIT artifact when fusion JIT-compiled the
+/// kernel, or `None` when the `JitDisabled` compile flag was set —
+/// the resulting `FusedKernel` dispatches via `kir_interp` in that
+/// case.
 pub fn splice<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
     built: &BuiltKernel,
-    wrapped: StdArc<WrappedKernel>,
+    wrapped: Option<StdArc<WrappedKernel>>,
     spec: Expr,
     typ: crate::typ::Type,
+    feeders: Box<[Node<R, E>]>,
+    scope: crate::Scope,
+    top_id: crate::expr::ExprId,
 ) -> Result<Node<R, E>> {
     match built.splice {
-        SpliceTarget::NodeReplaceById => Ok(FusedKernel::<R, E>::new(
+        SpliceTarget::NodeReplaceById => FusedKernel::<R, E>::new(
+            ctx,
             spec,
             typ,
             built.kernel.clone(),
             wrapped,
-        )),
+            feeders,
+            scope,
+            top_id,
+        ),
         SpliceTarget::InitFnCache => Err(anyhow!(
             "splice: InitFnCache target not yet supported (LambdaBind path)"
         )),
@@ -262,7 +274,14 @@ fn build_region_kernel(
     let known = std::collections::BTreeMap::new();
     let consts = std::collections::BTreeMap::new();
     crate::fusion::build_kir_kernel_from_region(
-        fn_name, body, inputs, &extras, None, &known, &consts,
+        fn_name,
+        body,
+        inputs,
+        &extras,
+        None,
+        &known,
+        &consts,
+        nohash::IntMap::default(),
     )
 }
 

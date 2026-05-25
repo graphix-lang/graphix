@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 const MAP0: &str = r#"
@@ -12,7 +12,7 @@ const MAP0: &str = r#"
 }
 "#;
 
-run!(map0, MAP0, |v: Result<&Value>| match v {
+run_no_jit!(map0, MAP0, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
             && m.get(&Value::String("a".into()))
@@ -34,7 +34,7 @@ const MAP1: &str = r#"
 }
 "#;
 
-run!(map1, MAP1, |v: Result<&Value>| match v {
+run_no_jit!(map1, MAP1, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
             && m.get(&Value::I64(1))
@@ -56,7 +56,7 @@ const MAP2: &str = r#"
 }
 "#;
 
-run!(map2, MAP2, |v: Result<&Value>| match v {
+run_no_jit!(map2, MAP2, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
             && m.get(&Value::Bool(true))
@@ -75,7 +75,7 @@ const MAP_EMPTY: &str = r#"
 }
 "#;
 
-run!(map_empty, MAP_EMPTY, |v: Result<&Value>| match v {
+run_no_jit!(map_empty, MAP_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) => m.len() == 0,
     _ => false,
 });
@@ -87,7 +87,7 @@ const MAP_REF0: &str = r#"
 }
 "#;
 
-run!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
+run_no_jit!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
 });
@@ -99,7 +99,7 @@ const MAP_REF1: &str = r#"
 }
 "#;
 
-run!(map_ref1, MAP_REF1, |v: Result<&Value>| match v {
+run_no_jit!(map_ref1, MAP_REF1, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "two" => true,
     _ => false,
 });
@@ -111,7 +111,7 @@ const MAP_REF2: &str = r#"
 }
 "#;
 
-run!(map_ref2, MAP_REF2, |v: Result<&Value>| match v {
+run_no_jit!(map_ref2, MAP_REF2, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "yes" => true,
     _ => false,
 });
@@ -123,7 +123,7 @@ const MAP_REF_MISSING: &str = r#"
 }
 "#;
 
-run!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
+run_no_jit!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
     Ok(Value::Error(e)) => {
         if let Ok((tag, msg)) = e.as_ref().clone().cast_to::<(ArcStr, ArcStr)>() {
             tag.as_str() == "MapKeyError" && msg.as_str().contains("not found")
@@ -141,7 +141,7 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 }
 "#;
 
-run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, |v: Result<&Value>| match v {
+run_no_jit!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, |v: Result<&Value>| match v {
     Err(_) => true, // Type error at compile time is expected
     _ => false,
 });
@@ -153,7 +153,7 @@ const MAP_NESTED: &str = r#"
 }
 "#;
 
-run!(map_nested, MAP_NESTED, |v: Result<&Value>| match v {
+run_no_jit!(map_nested, MAP_NESTED, |v: Result<&Value>| match v {
     Ok(Value::Map(inner_map)) => {
         inner_map
             .get(&Value::String("inner".into()))
@@ -172,7 +172,7 @@ const MAP_COMPLEX_KEYS: &str = r#"
 }
 "#;
 
-run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
+run_no_jit!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<(Value, Value)>() {
         Ok((Value::String(s1), Value::String(s2)))
             if s1.as_str() == "john_value" && s2.as_str() == "jane_value" =>
@@ -189,7 +189,7 @@ const MAP_WITH_ARRAYS: &str = r#"
 }
 "#;
 
-run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
+run_no_jit!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
     Ok(Value::Array(arr)) => {
         arr.len() == 3
             && arr.get(0).map(|v| *v == Value::I64(1)).unwrap_or(false)

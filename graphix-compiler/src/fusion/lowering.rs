@@ -101,6 +101,463 @@ pub struct FusionCtx {
     /// ([`RegionInput`] with [`RegionInputSource::Lifted`]). Empty for
     /// non-region kernel builds (lambdas, the legacy lazy path).
     pub lifted_inputs: nohash::IntMap<crate::expr::ExprId, ArcStr>,
+    /// Apply-site lookup table for builtin DynCalls. Populated by
+    /// `discover_builtin_calls` before `emit_body` runs; each entry
+    /// maps the source `Apply.spec.id` to the marshalling info
+    /// `emit_expr` needs to emit a [`KirOp::DynCall`] against the
+    /// corresponding [`crate::kernel_ir::FnSource::Builtin`] slot
+    /// in `fn_inputs`/`fn_params`.
+    pub builtin_apply_sites:
+        nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
+}
+
+/// Per-Apply-site info captured by `discover_builtin_calls` for use
+/// by `emit_known_fused_call`'s builtin DynCall arm.
+///
+/// `fn_index` is the slot index in `KirKernel.fn_params` for this
+/// call site's [`crate::kernel_ir::FnSource::Builtin`] entry.
+///
+/// `marshal_arg_indices` maps each kernel-level marshalled DynCall
+/// arg position to its index in `Apply.args` (source order). At
+/// emit time, `emit_known_fused_call` walks these in order and
+/// lowers each named `Apply.args[idx].1` into KIR for the DynCall
+/// `args` vector. Skip-positions (labeled args resolved to defaults)
+/// are not in this list — they have no marshalled value; the
+/// builtin slot's `LabeledDefault` handles them runtime-side.
+///
+/// For variadic builtins, every variadic positional consumed at the
+/// call site appears as its own entry here (each filling one
+/// position in the marshalled args list, all with the same
+/// arg-type clone of the variadic element type).
+#[derive(Debug, Clone)]
+pub struct BuiltinCallSiteInfo {
+    pub fn_index: u32,
+    pub marshal_arg_indices: Vec<usize>,
+    pub arg_types: Vec<KirType>,
+    pub return_type: KirType,
+}
+
+/// Output of `discover_builtin_calls`.
+#[derive(Debug, Default, Clone)]
+pub struct BuiltinCallDiscovery {
+    /// `FnParam` slots to install in the kernel's `fn_inputs` —
+    /// one per discovered builtin Apply site, in walk order.
+    pub fn_params: Vec<crate::kernel_ir::FnParam>,
+    /// `Apply.spec.id → BuiltinCallSiteInfo` lookup so
+    /// `emit_known_fused_call` can recognise the call site at emit
+    /// time and lower it to a `KirOp::DynCall`.
+    pub apply_sites:
+        nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
+}
+
+/// Walk `body` looking for `Apply` sites whose target resolves to a
+/// sync builtin binding registered in `ctx.builtin_bindings`. For
+/// each such site build a [`crate::kernel_ir::FnParam`] with
+/// [`crate::kernel_ir::FnSource::Builtin`], capturing the layout
+/// fusion needs to dispatch via the runtime's builtin Apply
+/// machinery.
+///
+/// Lambdas inside `body` are NOT descended into — they are separate
+/// kernels and their own discovery pass handles their bodies.
+///
+/// Sites whose argument shape can't be lowered (any arg with a
+/// non-`PrimType` graphix type that isn't yet supported, async
+/// builtins, mismatched arity, etc.) are simply omitted — the
+/// kernel build falls back to `None` if `emit_expr` later needs
+/// the missing entry, and a `None` build means the candidate stays
+/// unfused.
+pub fn discover_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
+    body: &Expr,
+    ctx: &crate::ExecCtx<R, E>,
+    scope: &crate::expr::ModPath,
+) -> BuiltinCallDiscovery {
+    let mut out = BuiltinCallDiscovery::default();
+    walk_for_builtin_calls(body, ctx, scope, &mut out);
+    out
+}
+
+fn walk_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
+    expr: &Expr,
+    ctx: &crate::ExecCtx<R, E>,
+    scope: &crate::expr::ModPath,
+    out: &mut BuiltinCallDiscovery,
+) {
+    use crate::expr::ExprKind::*;
+    if let Apply(a) = &expr.kind {
+        // Try to register this Apply as a builtin DynCall site.
+        // Failure leaves out unchanged — the kernel build will bail
+        // when `emit_expr` can't lower this Apply.
+        try_register_builtin_call(expr, a, ctx, scope, out);
+    }
+    match &expr.kind {
+        // Leaves — nothing to recurse into.
+        Constant(_) | NoOp | Use { .. } | Ref { .. } | TypeDef { .. } => {}
+        // Lambdas are separate kernels — their bodies belong to
+        // their own discovery pass.
+        Lambda(_) => {}
+        // Unresolved module decls have nothing fusable inside.
+        Module { .. } => {}
+        // Recursive container forms — walk every child.
+        ExplicitParens(e) | Qop(e) | OrNever(e) | ByRef(e) | Deref(e)
+        | Not { expr: e } | TypeCast { expr: e, .. } => {
+            walk_for_builtin_calls(e, ctx, scope, out);
+        }
+        StructRef { source, .. } | TupleRef { source, .. } => {
+            walk_for_builtin_calls(source, ctx, scope, out);
+        }
+        ArrayRef { source, i } => {
+            walk_for_builtin_calls(source, ctx, scope, out);
+            walk_for_builtin_calls(i, ctx, scope, out);
+        }
+        ArraySlice { source, start, end } => {
+            walk_for_builtin_calls(source, ctx, scope, out);
+            if let Some(s) = start {
+                walk_for_builtin_calls(s, ctx, scope, out);
+            }
+            if let Some(e) = end {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        MapRef { source, key } => {
+            walk_for_builtin_calls(source, ctx, scope, out);
+            walk_for_builtin_calls(key, ctx, scope, out);
+        }
+        Do { exprs } => {
+            for e in exprs.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        Bind(b) => walk_for_builtin_calls(&b.value, ctx, scope, out),
+        Connect { value, .. } => {
+            walk_for_builtin_calls(value, ctx, scope, out);
+        }
+        StructWith(crate::expr::StructWithExpr { source, replace }) => {
+            walk_for_builtin_calls(source, ctx, scope, out);
+            for (_, e) in replace.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        Apply(a) => {
+            walk_for_builtin_calls(&a.function, ctx, scope, out);
+            for (_, e) in a.args.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        Any { args }
+        | Array { args }
+        | Tuple { args }
+        | Variant { args, .. }
+        | StringInterpolate { args } => {
+            for e in args.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        Map { args } => {
+            for (k, v) in args.iter() {
+                walk_for_builtin_calls(k, ctx, scope, out);
+                walk_for_builtin_calls(v, ctx, scope, out);
+            }
+        }
+        Struct(crate::expr::StructExpr { args }) => {
+            for (_, e) in args.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        Select(crate::expr::SelectExpr { arg, arms }) => {
+            walk_for_builtin_calls(arg, ctx, scope, out);
+            for (_, e) in arms.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        TryCatch(tc) => {
+            walk_for_builtin_calls(&tc.handler, ctx, scope, out);
+            for e in tc.exprs.iter() {
+                walk_for_builtin_calls(e, ctx, scope, out);
+            }
+        }
+        Sample { lhs, rhs }
+        | Eq { lhs, rhs }
+        | Ne { lhs, rhs }
+        | Lt { lhs, rhs }
+        | Gt { lhs, rhs }
+        | Lte { lhs, rhs }
+        | Gte { lhs, rhs }
+        | And { lhs, rhs }
+        | Or { lhs, rhs }
+        | Add { lhs, rhs }
+        | CheckedAdd { lhs, rhs }
+        | Sub { lhs, rhs }
+        | CheckedSub { lhs, rhs }
+        | Mul { lhs, rhs }
+        | CheckedMul { lhs, rhs }
+        | Div { lhs, rhs }
+        | CheckedDiv { lhs, rhs }
+        | Mod { lhs, rhs }
+        | CheckedMod { lhs, rhs } => {
+            walk_for_builtin_calls(lhs, ctx, scope, out);
+            walk_for_builtin_calls(rhs, ctx, scope, out);
+        }
+    }
+}
+
+/// If `a`'s function resolves to a sync builtin binding registered
+/// in `ctx.builtin_bindings`, build the `FnParam` + layout and
+/// register the call site in `out`. On any rejection (async,
+/// unsupported arg shape, etc.) silently returns without
+/// registering — the kernel build path treats the site as an
+/// ordinary Apply, which will then fail to lower.
+fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
+    apply_expr: &Expr,
+    a: &crate::expr::ApplyExpr,
+    ctx: &crate::ExecCtx<R, E>,
+    scope: &crate::expr::ModPath,
+    out: &mut BuiltinCallDiscovery,
+) {
+    let apply_id = apply_expr.id;
+    let path = match &a.function.kind {
+        crate::expr::ExprKind::Ref { name } => name,
+        _ => return,
+    };
+    let (_, bind) = match ctx.env.lookup_bind(scope, path) {
+        Some(b) => b,
+        None => return,
+    };
+    let key = (bind.scope.clone(), bind.name.clone());
+    let info = match ctx.builtin_bindings.get(&key) {
+        Some(i) => i.clone(),
+        None => return,
+    };
+    let _ = apply_id;
+    // Async builtins can't be fused — they may produce values on a
+    // later cycle than the trigger.
+    use crate::effects::EffectKind;
+    match ctx.builtin_effects.get(info.name.as_str()) {
+        Some(EffectKind::Sync) => {}
+        _ => return,
+    }
+    // Resolve the call-site-specific FnType (the binding's FnType
+    // may be generic — e.g. `fn(x: 'a) -> 'a`; the typed-AST cell
+    // on `a.function` holds the concrete instantiation).
+    let fn_type = match a.function.typ.get() {
+        Some(crate::typ::Type::Fn(ft)) => ft.clone(),
+        _ => info.typ.clone(),
+    };
+    // Partition the call-site args by positional vs labeled. For
+    // each formal arg, decide whether it's satisfied positionally,
+    // by label (matching call-site label name), or by default.
+    let mut call_positional: Vec<(usize, &Expr)> = Vec::new();
+    let mut call_labeled: ahash::AHashMap<&str, (usize, &Expr)> =
+        ahash::AHashMap::default();
+    for (call_idx, (label, e)) in a.args.iter().enumerate() {
+        match label {
+            Some(name) => {
+                call_labeled.insert(name.as_str(), (call_idx, e));
+            }
+            None => call_positional.push((call_idx, e)),
+        }
+    }
+    let mut layout: Vec<crate::kernel_ir::BuiltinSlot> = Vec::new();
+    let mut arg_types: Vec<KirType> = Vec::new();
+    let mut marshal_arg_indices: Vec<usize> = Vec::new();
+    let mut pos_iter = call_positional.iter();
+    for fa in fn_type.args.iter() {
+        use crate::typ::FnArgKind;
+        match &fa.kind {
+            FnArgKind::Positional { .. } => {
+                let (call_idx, arg_expr) = match pos_iter.next() {
+                    Some(p) => p,
+                    None => return, // missing positional — typecheck
+                                    // should have caught
+                };
+                // Use the call-site arg's RESOLVED type (post-
+                // typecheck). The formal arg's type may still be a
+                // TVar for generic builtins like `bit_and`; the
+                // call-site Expr's typ cell has the concrete
+                // instantiation.
+                let arg_typ = arg_expr.typ.get().cloned().or_else(|| {
+                    fa.typ.with_deref(|t| t.cloned())
+                });
+                let arg_typ = match arg_typ {
+                    Some(t) => t,
+                    None => return,
+                };
+                let kt = match KirType::from_type(&arg_typ) {
+                    Some(t) => t,
+                    None => return,
+                };
+                let slot_idx = arg_types.len();
+                layout.push(crate::kernel_ir::BuiltinSlot::Positional(slot_idx));
+                arg_types.push(kt);
+                marshal_arg_indices.push(*call_idx);
+            }
+            FnArgKind::Labeled { name, has_default } => {
+                if let Some((call_idx, arg_expr)) =
+                    call_labeled.remove(name.as_str())
+                {
+                    // Same TVar-resolution issue as the positional
+                    // arm — prefer the call-site arg's resolved
+                    // type.
+                    let arg_typ = arg_expr.typ.get().cloned().or_else(|| {
+                        fa.typ.with_deref(|t| t.cloned())
+                    });
+                    let arg_typ = match arg_typ {
+                        Some(t) => t,
+                        None => return,
+                    };
+                    let kt = match KirType::from_type(&arg_typ) {
+                        Some(t) => t,
+                        None => return,
+                    };
+                    let slot_idx = arg_types.len();
+                    layout.push(
+                        crate::kernel_ir::BuiltinSlot::Positional(slot_idx),
+                    );
+                    arg_types.push(kt);
+                    marshal_arg_indices.push(call_idx);
+                } else if *has_default {
+                    // Find the default expr in the binding's
+                    // source argspec.
+                    let default = info.argspec.iter().find_map(|src| {
+                        let n = src.pattern.single_bind()?;
+                        if n.as_str() != name.as_str() {
+                            return None;
+                        }
+                        if let Some(Some(d)) = &src.labeled {
+                            Some(d.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let default = match default {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    layout.push(
+                        crate::kernel_ir::BuiltinSlot::LabeledDefault(default),
+                    );
+                } else {
+                    // Required labeled arg missing — typecheck
+                    // should have caught this.
+                    return;
+                }
+            }
+        }
+    }
+    // Any remaining positional call args are varargs. Allowed only
+    // if the FnType declares vargs. Each call-site varg's type is
+    // resolved INDIVIDUALLY from its own typed-AST cell, not from
+    // the formal `fn_type.vargs` — that formal type can be a union
+    // like `[string, Array<string>]` (e.g. `str::concat`), which
+    // `KirType::from_type` rejects. The per-arg cell holds the
+    // concrete instantiation post-typecheck, so each push uses the
+    // right helper for that specific value's runtime shape.
+    let remaining: Vec<_> = pos_iter.collect();
+    if !remaining.is_empty() {
+        if fn_type.vargs.is_none() {
+            return; // extra positionals but no vargs declaration
+        }
+        let from_call_idx = arg_types.len();
+        let count = remaining.len();
+        layout.push(crate::kernel_ir::BuiltinSlot::Variadic {
+            from_call_idx,
+            count,
+        });
+        for (call_idx, arg_expr) in remaining {
+            let arg_typ = arg_expr.typ.get().cloned().or_else(|| {
+                fn_type
+                    .vargs
+                    .as_ref()
+                    .and_then(|t| t.with_deref(|t| t.cloned()))
+            });
+            let arg_typ = match arg_typ {
+                Some(t) => t,
+                None => return,
+            };
+            let kt = match KirType::from_type(&arg_typ) {
+                Some(t) => t,
+                None => return,
+            };
+            arg_types.push(kt);
+            marshal_arg_indices.push(*call_idx);
+        }
+    }
+    // Reject unused labeled call args (the typechecker should have
+    // caught these, but defensive).
+    if !call_labeled.is_empty() {
+        return;
+    }
+    // Use the call-site's resolved return type (the Apply Expr's
+    // own typ cell). The fn_type's rtype may still be a TVar for
+    // generic builtins; the Apply Expr's typ holds the concrete
+    // instantiation post-typecheck.
+    let ret_typ = apply_expr.typ.get().cloned().or_else(|| {
+        fn_type.rtype.with_deref(|t| t.cloned())
+    });
+    let ret_typ = match ret_typ {
+        Some(t) => t,
+        None => return,
+    };
+    let return_type = match KirType::from_type(&ret_typ) {
+        Some(t) => t,
+        None => return,
+    };
+    // Skip shapes the JIT's DynCall ABI doesn't accept yet — the
+    // JIT codegen would error mid-compile, corrupting the cranelift
+    // `func_ctx`. Filter here so the candidate stays unfused and
+    // the interpreter runs it normally.
+    fn is_dyncall_supported(kt: &KirType) -> bool {
+        match kt {
+            KirType::Prim(_)
+            | KirType::Array(_)
+            | KirType::Tuple(_)
+            | KirType::Struct(_)
+            | KirType::Variant(_)
+            | KirType::Nullable(_)
+            | KirType::String => true,
+            // Bare Unit args don't appear in practice (Unit is a
+            // return-only shape). Bare Null is always widened to
+            // Nullable<T> by the IR builder before construction.
+            KirType::Unit | KirType::Null => false,
+        }
+    }
+    if !arg_types.iter().all(is_dyncall_supported) {
+        return;
+    }
+    let return_ok = match &return_type {
+        KirType::Prim(_)
+        | KirType::Array(_)
+        | KirType::Tuple(_)
+        | KirType::Struct(_)
+        | KirType::Variant(_)
+        | KirType::Nullable(_)
+        | KirType::Unit
+        | KirType::String => true,
+        KirType::Null => false,
+    };
+    if !return_ok {
+        return;
+    }
+    let fn_index = out.fn_params.len() as u32;
+    out.fn_params.push(crate::kernel_ir::FnParam {
+        name: info.name.clone(),
+        source: crate::kernel_ir::FnSource::Builtin {
+            name: info.name.clone(),
+            typ: std::sync::Arc::new((*fn_type).clone()),
+            layout: std::sync::Arc::from(layout),
+            lambda_id: info.lambda_id,
+        },
+        arg_types: arg_types.clone(),
+        return_type: return_type.clone(),
+    });
+    out.apply_sites.insert(
+        apply_id,
+        BuiltinCallSiteInfo {
+            fn_index,
+            marshal_arg_indices,
+            arg_types,
+            return_type,
+        },
+    );
 }
 
 impl FusionCtx {
@@ -359,10 +816,43 @@ fn combine_cond_and_guard(
 
 /// Emit an `Apply` call whose target is a Ref to a function already in
 /// `ctx.known_fns`. Lowers to a [`KirOp::Call`].
+///
+/// Builtin DynCall sites take priority — if the Apply's spec.id is
+/// registered in `ctx.builtin_apply_sites` (populated by
+/// `discover_builtin_calls` before kernel-body emission), emit a
+/// `KirOp::DynCall` against the matching `FnSource::Builtin` slot
+/// regardless of label shape. This is the primary path for stdlib
+/// function calls inside a fused kernel; the bare-name `ctx.known_fns`
+/// path below handles cross-kernel `Call` references and the
+/// hand-written `array::len` / `array::map` etc. intercepts further
+/// down handle the small set of stdlib HOFs we inline directly.
 fn emit_known_fused_call(
+    apply_id: crate::expr::ExprId,
     a: &crate::expr::ApplyExpr,
     ctx: &FusionCtx,
 ) -> Option<KirExpr> {
+    // Builtin DynCall path.
+    if let Some(info) = ctx.builtin_apply_sites.get(&apply_id) {
+        let info = info.clone();
+        let mut args = Vec::with_capacity(info.marshal_arg_indices.len());
+        for (slot_idx, &call_idx) in info.marshal_arg_indices.iter().enumerate() {
+            let arg_expr = &a.args[call_idx].1;
+            let e = emit_expr(arg_expr, ctx)?;
+            if e.typ != info.arg_types[slot_idx] {
+                return None;
+            }
+            args.push(e);
+        }
+        return Some(KirExpr {
+            op: KirOp::DynCall {
+                fn_index: info.fn_index,
+                args,
+                arg_types: info.arg_types.clone(),
+                return_type: info.return_type.clone(),
+            },
+            typ: info.return_type,
+        });
+    }
     if a.args.iter().any(|(label, _)| label.is_some()) {
         return None;
     }
@@ -819,6 +1309,42 @@ fn emit_tuple_new(args: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
     })
 }
 
+/// Lower `[a, b, c]` to a TupleNew op tagged as `KirType::Array(elem)`.
+/// The runtime shape (a `ValArray<Value>`) is identical to TupleNew;
+/// only the outer KirType differs, so we reuse the TupleNew producer
+/// op instead of carrying a parallel ArrayNew variant through every
+/// IR walker. The element KirType is read from the expression's
+/// typed-AST cell (`Type::Array(inner)`) so empty literals still
+/// have a concrete elem type.
+fn emit_array_new(
+    expr: &Expr,
+    args: &[Expr],
+    ctx: &FusionCtx,
+) -> Option<KirExpr> {
+    let arr_typ = expr.typ.get()?;
+    let elem_typ = arr_typ.with_deref(|resolved| match resolved? {
+        crate::typ::Type::Array(inner) => KirType::from_type(inner),
+        _ => None,
+    })?;
+    if matches!(elem_typ, KirType::Unit | KirType::Null) {
+        return None;
+    }
+    let mut fields: Vec<KirExpr> = Vec::with_capacity(args.len());
+    let mut elem_types: Vec<KirType> = Vec::with_capacity(args.len());
+    for a in args {
+        let e = emit_expr(a, ctx)?;
+        if e.typ != elem_typ {
+            return None;
+        }
+        elem_types.push(elem_typ.clone());
+        fields.push(e);
+    }
+    Some(KirExpr {
+        op: KirOp::TupleNew { fields, elem_types },
+        typ: KirType::Array(Box::new(elem_typ)),
+    })
+}
+
 /// Lower a `{x: a, y: b}` struct literal to `KirOp::StructNew`.
 /// Sorts the fields alphabetically by name (graphix's canonical
 /// struct layout). Each field value must emit as scalar KIR.
@@ -1047,20 +1573,30 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
             })
         }
         ExprKind::Ref { name } => {
-            let ident = ident_of(name)?;
-            // Prefer lambda-arg / let-bound locals (any shape), then
-            // fall back to the known-constants registry (outer-scope
-            // `let x = <lit>;` bindings inlined at compile time).
-            if let Some(expr) = ctx.lookup_local(ident) {
-                return Some(expr);
+            // Bare-ident Refs (kernel-local lets, lambda args,
+            // root-scope external inputs registered by bare name).
+            if let Some(ident) = ident_of(name) {
+                if let Some(expr) = ctx.lookup_local(ident) {
+                    return Some(expr);
+                }
+                if let Some(c) = ctx.find_const(ident) {
+                    // Inlining a known-const: clone the stored KIR.
+                    // The const's expr is closed (no free locals),
+                    // so cloning it into this position is always
+                    // sound.
+                    return Some(c.expr.clone());
+                }
+                return None;
             }
-            if let Some(c) = ctx.find_const(ident) {
-                // Inlining a known-const: clone the stored KIR. The
-                // const's expr is closed (no free locals), so cloning
-                // it into this position is always sound.
-                return Some(c.expr.clone());
-            }
-            None
+            // Multi-segment path Ref (e.g. `test::result`). Match
+            // against external Ref inputs registered under their
+            // bare name via `fusion::fuse`'s `collect_scalar_inputs`.
+            // First match wins, so an in-kernel local that happens
+            // to share the basename would already have matched in
+            // the bare-ident arm above — only true externals reach
+            // here.
+            let base = netidx::path::Path::basename(name.0.as_ref())?;
+            ctx.lookup_local(base)
         }
         ExprKind::ExplicitParens(inner) => emit_expr(inner, ctx),
         ExprKind::Add { lhs, rhs } => {
@@ -1114,7 +1650,7 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         // Direct call to an already-fused function — lowered to a Call.
         // Special-cased Apply forms (e.g. `array::len(arr)`) are
         // handled inside `emit_known_fused_call`.
-        ExprKind::Apply(a) => emit_known_fused_call(a, ctx),
+        ExprKind::Apply(a) => emit_known_fused_call(expr.id, a, ctx),
         // `arr[i]` — when `arr` is an array param of the kernel, this
         // lowers to a `KirOp::ArrayGet`. The element type comes from
         // the param's `elem`. Anything else (nested arrays, an
@@ -1132,6 +1668,12 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         // `(a, b, c)` literal — every field must lower to scalar KIR;
         // result type is `KirType::Tuple(per-slot prim types)`.
         ExprKind::Tuple { args } => emit_tuple_new(args, ctx),
+        // `[a, b, c]` literal — uniform-element array. Lowers to
+        // `KirOp::TupleNew` (same runtime shape — `ValArray<Value>`)
+        // but the outer KirType is `Array(elem)`, taken from the
+        // expression's typed-AST cell (`Type::Array(inner)`). An
+        // empty `[]` still gets its elem type from the typ cell.
+        ExprKind::Array { args } => emit_array_new(expr, args, ctx),
         // `{x: a, y: b}` literal — fields are sorted alphabetically,
         // each field value lowers to scalar KIR; result type is
         // `KirType::Struct(sorted fields)`.
@@ -1154,7 +1696,21 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         // inner expression. If the runtime would actually error, our
         // fusion candidate-selection rejects the expression upstream —
         // we only emit fused code for operations that can't fail.
-        ExprKind::OrNever(inner) | ExprKind::Qop(inner) => emit_expr(inner, ctx),
+        // `$` (OrNever) and `?` (Qop) strip the error case from a
+        // `Result<T, E>` (lowered to `KirType::Nullable<T>` by our
+        // Set-with-Error recognition). For fusion to honor this we'd
+        // need to emit a runtime null-check + branch — refuse instead
+        // and let the interpreter handle it. The check is conservative
+        // (also refuses `?` on a real `Option<T>` aka `[T, null]`),
+        // but those are rarer and the interpreter handles them
+        // correctly.
+        ExprKind::OrNever(inner) | ExprKind::Qop(inner) => {
+            let lowered = emit_expr(inner, ctx)?;
+            if matches!(lowered.typ, KirType::Nullable(_)) {
+                return None;
+            }
+            Some(lowered)
+        }
         // Deliberately not-yet-supported: Bind (at non-statement
         // position), Lambda, checked arithmetic, Sample, and anything
         // reactive. Presence of those inside a fusion candidate
@@ -2008,6 +2564,7 @@ fn build_kernel(
     self_info: Option<&SelfInfo>,
     known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
+    builtin_apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
 ) -> Option<(KirKernel, KnownFusedFn)> {
     let mut ctx = FusionCtx {
         inputs: vec![],
@@ -2021,6 +2578,7 @@ fn build_kernel(
         known_fns: known.clone(),
         known_consts: consts.clone(),
         lifted_inputs: nohash::IntMap::default(),
+        builtin_apply_sites,
     };
     let mut p = KernelParams::default();
     p.fn_params.extend(fn_inputs.iter().cloned());
@@ -2142,6 +2700,7 @@ pub fn build_kir_kernel_from_region(
     return_type: Option<KirType>,
     known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
+    builtin_apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
 ) -> Option<(KirKernel, KnownFusedFn)> {
     // Regions have no self-recursion, no tail loop. Inputs and
     // fn_inputs are already in the unified shape — everything
@@ -2156,6 +2715,7 @@ pub fn build_kir_kernel_from_region(
         None,
         known,
         consts,
+        builtin_apply_sites,
     )
 }
 
@@ -2271,6 +2831,7 @@ pub fn record_const_binding(
         known_fns: std::collections::BTreeMap::new(),
         known_consts: consts.clone(),
         lifted_inputs: nohash::IntMap::default(),
+        builtin_apply_sites: nohash::IntMap::default(),
     };
     if let Some(e) = emit_expr(value, &probe) {
         consts.insert(name.clone(), KnownConst { expr: e });
@@ -2777,6 +3338,7 @@ mod tests {
             Some(KirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
+            nohash::IntMap::default(),
         )
         .expect("region builds");
         assert_eq!(sig.arg_types, vec![KirType::Prim(PrimType::I64)]);
@@ -2813,6 +3375,7 @@ mod tests {
             Some(KirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
+            nohash::IntMap::default(),
         )
         .expect("region builds");
         assert_eq!(
@@ -2836,6 +3399,7 @@ mod tests {
             Some(KirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
+            nohash::IntMap::default(),
         )
         .expect("region builds");
         assert!(sig.arg_types.is_empty());
@@ -2859,6 +3423,7 @@ mod tests {
                 Some(KirType::Prim(PrimType::I64)),
                 &Default::default(),
                 &Default::default(),
+                nohash::IntMap::default(),
             )
             .is_none()
         );
@@ -2901,6 +3466,7 @@ mod tests {
             Some(KirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
+            nohash::IntMap::default(),
         )
         .expect("lifted-input region builds");
         // Kernel takes one scalar param named after the synth slot,

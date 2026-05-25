@@ -1,7 +1,7 @@
 // Tests for try/catch and error handling
 
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 // unchecked arithmetic: 2 + 2 works normally
@@ -9,7 +9,7 @@ const UNCHECKED0: &str = r#"
 2 + 2
 "#;
 
-run!(unchecked0, UNCHECKED0, |v: Result<&Value>| match v {
+run_no_jit!(unchecked0, UNCHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
 });
@@ -19,7 +19,7 @@ const CHECKED0: &str = r#"
 2 +? 2
 "#;
 
-run!(checked0, CHECKED0, |v: Result<&Value>| match v {
+run_no_jit!(checked0, CHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
 });
@@ -36,7 +36,7 @@ const CHECKED_DIV0: &str = r#"
 }
 "#;
 
-run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
+run_no_jit!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
 });
@@ -51,7 +51,7 @@ catch(e) => select (e.0).error {
 }
 "#;
 
-run!(catch1, CATCH1, |v: Result<&Value>| match v {
+run_no_jit!(catch1, CATCH1, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 });
@@ -75,7 +75,7 @@ const CATCH4: &str = r#"
 }
 "#;
 
-run!(catch4, CATCH4, |v: Result<&Value>| match v
+run_no_jit!(catch4, CATCH4, |v: Result<&Value>| match v
     .and_then(|v| v.clone().cast_to::<[Value; 2]>())
 {
     Ok([Value::Error(_), Value::Error(_)]) => true,
@@ -90,7 +90,7 @@ const CHECKED_DOLLAR: &str = r#"
 }
 "#;
 
-run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
+run_no_jit!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
 });

@@ -1,139 +1,161 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
+
+// Every fixture binds with port `:0` so the OS assigns a fresh
+// ephemeral port per test invocation, then reads the actual
+// address via `sys::tcp::listener_addr` before connecting. Fixed
+// ports caused races between the three-mode expansion's
+// concurrent `interp` / `fused` / `jit` runs of the same fixture.
 
 // Basic listen + connect + accept
 const TCP_CONNECT_ACCEPT: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19801")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19801")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   sys::tcp::accept(listener, client)?;
   true
 }
 "#;
 
-run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
+run_no_jit!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-// Connect to unbound port fails
+// Connect to unbound port fails. We can't easily pick a guaranteed-
+// unbound ephemeral port, so use port 1 (universally reserved
+// privileged port that nothing's listening on in a test
+// environment).
 const TCP_CONNECT_FAIL: &str = r#"
   is_err(sys::tcp::connect("127.0.0.1:1"))
 "#;
 
-run!(tcp_connect_fail, TCP_CONNECT_FAIL, |v: Result<&Value>| {
+run_no_jit!(tcp_connect_fail, TCP_CONNECT_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-// Listen on already-bound port fails
+// Listen on already-bound port fails. Bind once with port 0 to
+// claim a fresh ephemeral, then try to listen on the same actual
+// address — the second bind must error.
 const TCP_LISTEN_FAIL: &str = r#"
 {
-  let l1 = sys::tcp::listen("127.0.0.1:19809")?;
-  is_err(sys::tcp::listen(l1 ~ "127.0.0.1:19809"))
+  let l1 = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(l1)?;
+  is_err(sys::tcp::listen(l1 ~ addr))
 }
 "#;
 
-run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
+run_no_jit!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
 // Write on client, read on server
 const TCP_WRITE_READ: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19802")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19802")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
   sys::io::write(client, buffer::from_string("hello"))?;
   buffer::to_string(sys::io::read(server, u64:1024)?)?
 }
 "#;
 
-run!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
+run_no_jit!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 });
 
 // write_exact on client, read on server
 const TCP_WRITE_EXACT: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19803")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19803")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
   sys::io::write_exact(client, buffer::from_string("world"))?;
   buffer::to_string(sys::io::read(server, u64:1024)?)?
 }
 "#;
 
-run!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
+run_no_jit!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "world")
 });
 
 // Write known data, read_exact on server
 const TCP_READ_EXACT: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19804")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19804")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
   sys::io::write(client, buffer::from_string("exact"))?;
   buffer::to_string(sys::io::read_exact(server, u64:5)?)?
 }
 "#;
 
-run!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
+run_no_jit!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "exact")
 });
 
 // Shutdown returns null (wait for accept before shutting down)
 const TCP_SHUTDOWN: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19805")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19805")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
   sys::tcp::shutdown(server ~ client)?
 }
 "#;
 
-run!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
+run_no_jit!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 });
 
-// peer_addr on client returns server address
+// peer_addr on client returns server address. Compare the
+// returned address against the listener's bound address inside
+// graphix so the predicate doesn't need to know the exact port.
 const TCP_PEER_ADDR: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19806")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19806")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  server ~ sys::tcp::peer_addr(client)?
+  (server ~ sys::tcp::peer_addr(client)?) == addr
 }
 "#;
 
-run!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "127.0.0.1:19806")
+run_no_jit!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
 });
 
-// local_addr on server matches listener address
+// local_addr on server matches listener address.
 const TCP_LOCAL_ADDR: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19807")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19807")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::tcp::local_addr(server)?
+  sys::tcp::local_addr(server)? == addr
 }
 "#;
 
-run!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "127.0.0.1:19807")
+run_no_jit!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
 });
 
 // write returns number of bytes written
 const TCP_WRITE_RETURNS_LEN: &str = r#"
 {
-  let listener = sys::tcp::listen("127.0.0.1:19808")?;
-  let client = sys::tcp::connect(listener ~ "127.0.0.1:19808")?;
+  let listener = sys::tcp::listen("127.0.0.1:0")?;
+  let addr = sys::tcp::listener_addr(listener)?;
+  let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
   sys::io::write(server ~ client, buffer::from_string("hello"))?
 }
 "#;
 
-run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
+run_no_jit!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
 });

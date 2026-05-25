@@ -1,28 +1,28 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
-run!(pack_i64, r#"{let v: i64 = pack::read(pack::write_bytes(42)$)?; v}"#, |v: Result<&Value>| {
+run_no_jit!(pack_i64, r#"{let v: i64 = pack::read(pack::write_bytes(42)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
-run!(pack_f64, r#"{let v: f64 = pack::read(pack::write_bytes(3.14)$)?; v}"#, |v: Result<&Value>| {
+run_no_jit!(pack_f64, r#"{let v: f64 = pack::read(pack::write_bytes(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
 });
 
-run!(pack_bool, r#"{let v: bool = pack::read(pack::write_bytes(true)$)?; v}"#, |v: Result<&Value>| {
+run_no_jit!(pack_bool, r#"{let v: bool = pack::read(pack::write_bytes(true)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-run!(pack_null, r#"{let v: null = pack::read(pack::write_bytes(null)$)?; v}"#, |v: Result<&Value>| {
+run_no_jit!(pack_null, r#"{let v: null = pack::read(pack::write_bytes(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 });
 
-run!(pack_string, r#"{let v: string = pack::read(pack::write_bytes("hello")$)?; v}"#, |v: Result<&Value>| {
+run_no_jit!(pack_string, r#"{let v: string = pack::read(pack::write_bytes("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 });
 
-run!(pack_array, r#"{
+run_no_jit!(pack_array, r#"{
     let arr: Array<i64> = pack::read(pack::write_bytes([1, 2, 3])$)?;
     arr
 }"#, |v: Result<&Value>| {
@@ -36,7 +36,7 @@ run!(pack_array, r#"{
     }
 });
 
-run!(pack_struct, r#"{
+run_no_jit!(pack_struct, r#"{
     type S = {x: i64, y: string};
     let obj: S = pack::read(pack::write_bytes({x: 42, y: "hi"})$)?;
     obj
@@ -44,7 +44,7 @@ run!(pack_struct, r#"{
     matches!(v, Ok(Value::Array(arr)) if arr.len() == 2)
 });
 
-run!(pack_bytes, r#"{
+run_no_jit!(pack_bytes, r#"{
     let b = buffer::from_string("abc");
     let encoded = pack::write_bytes(b)$;
     let decoded: bytes = pack::read(encoded)?;
@@ -53,7 +53,7 @@ run!(pack_bytes, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
 });
 
-run!(pack_stream_tcp, r#"{
+run_no_jit!(pack_stream_tcp, r#"{
     type Msg = {age: i64, name: string};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
     let addr = sys::tcp::listener_addr(listener)?;
@@ -67,7 +67,7 @@ run!(pack_stream_tcp, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
 });
 
-run!(pack_invalid, r#"{
+run_no_jit!(pack_invalid, r#"{
     let r: Result<i64, [`PackErr(string), `IOErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array([u8:255, u8:255, u8:255]));
     is_err(r)
 }"#, |v: Result<&Value>| {

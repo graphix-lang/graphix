@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 // sin(0) == 0

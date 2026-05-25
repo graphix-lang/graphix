@@ -5,7 +5,7 @@
 // Abstract types are opaque - the caller cannot see the concrete type.
 
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 // =============================================================================
@@ -13,7 +13,7 @@ use netidx::publisher::Value;
 // =============================================================================
 
 // Basic abstract type: interface declares abstract type, implementation provides concrete
-run!(
+run_no_jit!(
     abstract_type_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -33,7 +33,7 @@ run!(
 );
 
 // Abstract type implemented as a struct
-run!(
+run_no_jit!(
     abstract_type_struct_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
     "/test.gx" => r#"
@@ -53,7 +53,7 @@ run!(
 );
 
 // Interface without abstract types (regression test - should still work)
-run!(
+run_no_jit!(
     interface_no_abstract_types,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(30))),
     "/test.gx" => r#"
@@ -73,7 +73,7 @@ run!(
 // =============================================================================
 
 // Multiple abstract types in same interface
-run!(
+run_no_jit!(
     abstract_type_multiple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
     "/test.gx" => r#"
@@ -98,7 +98,7 @@ run!(
 );
 
 // Two modules using same abstract type name with different definitions
-run!(
+run_no_jit!(
     abstract_type_different_modules,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(142))),
     "/test.gx" => r#"
@@ -129,7 +129,7 @@ run!(
 );
 
 // Abstract type used in exported type definition
-run!(
+run_no_jit!(
     abstract_type_in_typedef,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(77))),
     "/test.gx" => r#"
@@ -155,7 +155,7 @@ run!(
 // =============================================================================
 
 // Abstract type in variant (exported type references abstract type)
-run!(
+run_no_jit!(
     abstract_type_in_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -180,7 +180,7 @@ run!(
 );
 
 // Abstract type in tuple
-run!(
+run_no_jit!(
     abstract_type_in_tuple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
     "/test.gx" => r#"
@@ -201,7 +201,7 @@ run!(
 );
 
 // Abstract type in array
-run!(
+run_no_jit!(
     abstract_type_in_array,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
     "/test.gx" => r#"
@@ -225,7 +225,7 @@ run!(
 // =============================================================================
 
 // Abstract type used in recursive type
-run!(
+run_no_jit!(
     abstract_type_recursive,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
     "/test.gx" => r#"
@@ -255,7 +255,7 @@ run!(
 // =============================================================================
 
 // Abstract type with byref parameter - collects values to verify update
-run!(
+run_no_jit!(
     abstract_type_byref,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -288,7 +288,7 @@ run!(
 // =============================================================================
 
 // Nested module with abstract type
-run!(
+run_no_jit!(
     abstract_type_nested_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(99))),
     "/test.gx" => r#"
@@ -318,7 +318,7 @@ run!(
 // =============================================================================
 
 // Dynamic module with abstract type in signature
-run!(
+run_no_jit!(
     abstract_type_dynamic_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
     "/test.gx" => r#"
@@ -348,7 +348,7 @@ run!(
 // =============================================================================
 
 // Error: missing concrete definition for abstract type
-run!(
+run_no_jit!(
     abstract_type_missing_definition,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -365,7 +365,7 @@ run!(
 );
 
 // Abstract type in implementation is allowed (type stays opaque)
-run!(
+run_no_jit!(
     abstract_type_still_abstract,
     |v: Result<&Value>| v.map(|v| v == &Value::I64(0)).unwrap_or(false),
     "/test.gx" => r#"
@@ -383,7 +383,7 @@ run!(
 );
 
 // Error: signature type mismatch (function returns wrong type)
-run!(
+run_no_jit!(
     abstract_type_sig_mismatch,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -401,7 +401,7 @@ run!(
 );
 
 // Error: abstract type parameter constraint mismatch
-run!(
+run_no_jit!(
     abstract_type_constraint_mismatch,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -421,7 +421,7 @@ run!(
 // Abstract type constraint is automatically enforced on functions
 // The constraint on type Box<'a: Number> should propagate to wrap/unwrap
 // without needing to repeat the constraint in the val declarations
-run!(
+run_no_jit!(
     abstract_type_constraint_auto_enforced,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -443,7 +443,7 @@ run!(
 
 // Error: abstract type constraint violation - string doesn't satisfy Number
 // The constraint from type Box<'a: Number> should reject non-Number types
-run!(
+run_no_jit!(
     abstract_type_constraint_auto_enforced_error,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -464,7 +464,7 @@ run!(
 );
 
 // Error: extra type parameter in implementation
-run!(
+run_no_jit!(
     abstract_type_extra_param,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -483,7 +483,7 @@ run!(
 
 // Error: function argument type doesn't match abstract type
 // Signature says get takes T, but implementation's concrete type doesn't match
-run!(
+run_no_jit!(
     abstract_type_wrong_arg,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -505,7 +505,7 @@ run!(
 // =============================================================================
 
 // Basic parameterized abstract type
-run!(
+run_no_jit!(
     abstract_type_parameterized_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -526,7 +526,7 @@ run!(
 );
 
 // Parameterized abstract type instantiated with different concrete types
-run!(
+run_no_jit!(
     abstract_type_parameterized_multi_instantiation,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
     "/test.gx" => r#"
@@ -550,7 +550,7 @@ run!(
 // Parameterized abstract type with constraint - use concrete type in interface
 // Note: Constrained type parameters in val declarations use a different syntax.
 // This test uses a concrete instantiation to sidestep that complexity.
-run!(
+run_no_jit!(
     abstract_type_parameterized_constrained,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
     "/test.gx" => r#"
@@ -571,7 +571,7 @@ run!(
 );
 
 // Parameterized abstract type in nested position (Array of Box)
-run!(
+run_no_jit!(
     abstract_type_parameterized_nested,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
     "/test.gx" => r#"
@@ -593,7 +593,7 @@ run!(
 );
 
 // Parameterized abstract type with two type parameters
-run!(
+run_no_jit!(
     abstract_type_parameterized_two_params,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
     "/test.gx" => r#"
@@ -620,7 +620,7 @@ run!(
 // =============================================================================
 
 // Abstract type as Map key
-run!(
+run_no_jit!(
     abstract_type_map_key,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "found"),
     "/test.gx" => r#"
@@ -645,7 +645,7 @@ run!(
 );
 
 // Abstract type as Map value
-run!(
+run_no_jit!(
     abstract_type_map_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -670,7 +670,7 @@ run!(
 );
 
 // Abstract types as both Map key and value
-run!(
+run_no_jit!(
     abstract_type_map_key_and_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(100))),
     "/test.gx" => r#"
@@ -704,7 +704,7 @@ run!(
 // =============================================================================
 
 // Abstract type as error payload in throws clause
-run!(
+run_no_jit!(
     abstract_type_in_throws,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -729,7 +729,7 @@ run!(
 
 // Abstract type used with a function that has throws clause
 // This tests that functions returning abstract types can be declared with throws
-run!(
+run_no_jit!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -766,7 +766,7 @@ run!(
 // resolution. The following tests demonstrate simpler patterns that work.
 
 // Two modules with separate abstract types, combined at the caller level
-run!(
+run_no_jit!(
     abstract_type_two_modules_combined,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
     "/test.gx" => r#"

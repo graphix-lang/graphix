@@ -1570,6 +1570,15 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// can't change). `dispatch` short-circuits the LambdaDef
     /// downcast + rebind check for these slots.
     pre_bound: bool,
+    /// External BindIds referenced by labeled-default Node trees of
+    /// `BuiltinSlot::LabeledDefault` slots. At every dispatch cycle
+    /// `KirNode::update` primes `event.variables[id]` from
+    /// `ctx.cached[id]` for each entry here, so the default's `Ref`
+    /// node finds its value (mirrors `CallSite::bind`'s default-arg
+    /// priming step at the inner `compile_default!` call). Empty
+    /// for non-builtin slots and for builtin slots whose defaults
+    /// are pure literals with no external refs.
+    default_external_refs: Vec<crate::BindId>,
     /// Lexical scope at the kernel's definition site. Re-passed to
     /// the inner Apply's `init` so it sees the right environment.
     scope: crate::Scope,
@@ -1617,7 +1626,15 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             );
             arg_refs.push(node);
         }
-        Self { bind_ids, arg_refs, current: None, pre_bound: false, scope, top_id }
+        Self {
+            bind_ids,
+            arg_refs,
+            current: None,
+            pre_bound: false,
+            default_external_refs: Vec::new(),
+            scope,
+            top_id,
+        }
     }
 
     /// Construct the builtin's `Apply<R, E>` immediately via its
@@ -1643,9 +1660,31 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         builtin_name: &str,
         typ: &crate::typ::FnType,
         layout: &[crate::kernel_ir::BuiltinSlot],
+        lambda_id: Option<crate::LambdaId>,
     ) -> ::anyhow::Result<()> {
         use ::anyhow::anyhow;
         use crate::kernel_ir::BuiltinSlot;
+        // Restore the lambda's env + lexical scope so labeled-default
+        // expressions that reference free variables visible only in
+        // the lambda's original module scope (e.g. `default_escape`
+        // in `str::escape`'s `#esc = default_escape`) resolve at
+        // compile time. Mirrors `CallSite::bind`'s `compile_default!`
+        // macro. Without this, defaults that aren't pure literals
+        // fail with "binding not in scope" and the kernel's
+        // pre-binding bails — fusion silently falls back to interp.
+        //
+        // The default-compile context: lookup the runtime `LambdaDef`
+        // by id, use its env (Arc-shared, cheap to clone) and lexical
+        // scope. Dynamic scope stays as the kernel's own (callsite-
+        // like). If `lambda_id` is None or the lookup fails we keep
+        // the kernel's own scope/env — works for defaults that are
+        // pure literals (no free vars).
+        let default_env_scope = lambda_id
+            .and_then(|id| ctx.lambda_defs.get(&id).cloned())
+            .and_then(|val| {
+                val.downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
+                    .map(|d| (d.env.clone(), d.scope.lexical.clone()))
+            });
         let (init, _needs_callsite) =
             ctx.builtins.get(builtin_name).copied().ok_or_else(|| {
                 anyhow!(
@@ -1687,20 +1726,51 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     new_arg_refs.push(r);
                 }
                 BuiltinSlot::LabeledDefault(expr) => {
-                    // Compile the default expression in the kernel's
-                    // scope. The `_top_id` is the kernel's top-level
-                    // ExprId so any `ref_var` subscriptions inside
-                    // the default tie back here. Defaults are
-                    // typically simple literals (`` `Stdout ``, `0`,
-                    // …) so the compile is cheap and the resulting
-                    // Node's update fires once and caches.
-                    let node = crate::node::compiler::compile(
-                        ctx,
-                        enumflags2::BitFlags::empty(),
-                        expr.clone(),
-                        &self.scope,
-                        self.top_id,
-                    )?;
+                    // Compile the default expression. When we have the
+                    // owning lambda's env + lexical scope, restore them
+                    // first (mirrors `CallSite::bind`'s `compile_default!`)
+                    // — a default that names another binding in the
+                    // module (`#esc = default_escape`) needs the
+                    // module-scope env to resolve. Pure-literal defaults
+                    // (rand's `0.0` / `1.0`) work either way.
+                    let node = match &default_env_scope {
+                        Some((env, lex)) => ctx.with_restored(
+                            env.clone(),
+                            |ctx| {
+                                let scope = crate::Scope {
+                                    dynamic: self.scope.dynamic.clone(),
+                                    lexical: lex.clone(),
+                                };
+                                crate::node::compiler::compile(
+                                    ctx,
+                                    enumflags2::BitFlags::empty(),
+                                    expr.clone(),
+                                    &scope,
+                                    self.top_id,
+                                )
+                            },
+                        )?,
+                        None => crate::node::compiler::compile(
+                            ctx,
+                            enumflags2::BitFlags::empty(),
+                            expr.clone(),
+                            &self.scope,
+                            self.top_id,
+                        )?,
+                    };
+                    // Mirror `compile_default!`'s priming: walk the
+                    // default node's external Refs and record them so
+                    // `KirNode::update` can prime `event.variables[id]`
+                    // from `ctx.cached[id]` at every cycle. Without
+                    // this, a default like `default_escape` (Ref to
+                    // a module-level binding) reads None on the first
+                    // dispatch — the binding's value is in ctx.cached
+                    // but never copied into the per-cycle event.
+                    let mut refs = crate::Refs::default();
+                    node.refs(&mut refs);
+                    refs.with_external_refs(|id| {
+                        self.default_external_refs.push(id);
+                    });
                     new_arg_refs.push(node);
                 }
                 BuiltinSlot::Variadic { from_call_idx, count } => {
@@ -1925,12 +1995,28 @@ pub(crate) fn kir_type_to_graphix_type(
             flags.insert(netidx_value::Typ::String);
             Type::Primitive(flags)
         }
-        // Null maps back to `Type::Primitive(Typ::Null)`; Nullable
-        // is `[T, null]`. Not yet exercised — kernel build should
-        // reject these before they reach DynCall arg conversion.
-        KirType::Null | KirType::Nullable(_) => panic!(
-            "Null/Nullable not yet supported in kir_type_to_graphix_type"
-        ),
+        // Bare Null maps back to the null primitive (used by
+        // `KirOp::ConstNull` — fusion always widens to Nullable
+        // before binding, but the singleton type still appears
+        // transiently during lowering).
+        KirType::Null => {
+            let mut flags =
+                enumflags2::BitFlags::<netidx_value::Typ>::empty();
+            flags.insert(netidx_value::Typ::Null);
+            Type::Primitive(flags)
+        }
+        // Nullable is `[T, null]` — a `Type::Set` of the inner
+        // graphix type and the null primitive. Used by DynCall
+        // arg-binders for `KirType::Nullable` slots (Option /
+        // lowered-Result returns).
+        KirType::Nullable(inner) => {
+            let inner_ty = kir_type_to_graphix_type(inner);
+            let mut null_flags =
+                enumflags2::BitFlags::<netidx_value::Typ>::empty();
+            null_flags.insert(netidx_value::Typ::Null);
+            let null_ty = Type::Primitive(null_flags);
+            Type::Set(triomphe::Arc::from_iter([inner_ty, null_ty]))
+        }
     }
 }
 
@@ -2026,6 +2112,29 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             3 => {
                 // Unit return: caller discards. Both words zero.
                 DynCallRet { word0: 0, word1: 0 }
+            }
+            4 => {
+                // String return: extract ArcStr from Value::String,
+                // transfer ownership through word0 as raw bits.
+                // ArcStr is `repr(transparent)` over `NonNull<ThinInner>`
+                // so the raw u64 is a valid ArcStr bit pattern; the
+                // caller's String SSA reads it directly without a
+                // boundary decode (the kernel-return path at
+                // `KirNode::update`'s String arm uses the same
+                // transmute pattern).
+                match v {
+                    Value::String(s) => {
+                        let s = std::mem::ManuallyDrop::new(s);
+                        let bits: u64 = unsafe {
+                            std::mem::transmute_copy::<arcstr::ArcStr, u64>(&*s)
+                        };
+                        DynCallRet { word0: bits, word1: 0 }
+                    }
+                    other => panic!(
+                        "DynCall return ABI: ret_kind=4 (String) but \
+                         got {other:?}"
+                    ),
+                }
             }
             _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
         },
@@ -2362,14 +2471,24 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::kernel_ir::FnSource::Builtin { name, typ, layout } =
-                &fp.source
+            if let crate::kernel_ir::FnSource::Builtin {
+                name,
+                typ,
+                layout,
+                lambda_id,
+            } = &fp.source
             {
                 let name = name.clone();
                 let typ = typ.clone();
                 let layout = layout.clone();
-                self.dyn_slots[fn_idx]
-                    .pre_bind_builtin(ctx, name.as_str(), &typ, &layout)?;
+                let lambda_id = *lambda_id;
+                self.dyn_slots[fn_idx].pre_bind_builtin(
+                    ctx,
+                    name.as_str(),
+                    &typ,
+                    &layout,
+                    lambda_id,
+                )?;
             }
         }
         Ok(())
@@ -2424,22 +2543,58 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 }
             }
         }
-        // Zero-input kernels (no `from` slots, no fn_params) need a
-        // way to fire on init. Module kernels for a pure-constant
-        // top-level let-chain (`let a = 5; let b = a + 1; …`) hit
-        // this — there's no external input, but the kernel still
-        // needs to compute and publish on startup. Subsequent
-        // cycles never re-fire (nothing can change), which is the
-        // correct semantics for an all-constant chain.
+        // Zero-DYNAMIC-input kernels need a way to fire on init.
+        // "Dynamic" inputs are anything that can change between
+        // cycles: `from` slots, Binding-source fn_params (their
+        // LambdaDef can rebind), and Param-source fn_params
+        // (passed in by the caller each cycle). `Builtin`-source
+        // fn_params are pre-bound at construction and never
+        // change, so they don't gate firing.
+        //
+        // Module kernels for a pure-constant top-level let-chain
+        // (`let a = 5; let b = a + 1; …`) hit this. So do region
+        // kernels whose only "input" is a sync builtin call like
+        // `bit_and(i64:0xFF, i64:0x0F)` — the args are inlined
+        // constants and the builtin's behavior is fixed. The
+        // kernel needs to compute and publish on startup;
+        // subsequent cycles never re-fire (nothing can change),
+        // which is the correct semantics.
+        let has_dynamic_fn_params = self.kernel.fn_params.iter().any(|fp| {
+            matches!(
+                fp.source,
+                crate::kernel_ir::FnSource::Param { .. }
+                    | crate::kernel_ir::FnSource::Binding { .. }
+            )
+        });
         if !any_updated
             && from.is_empty()
-            && self.kernel.fn_params.is_empty()
+            && !has_dynamic_fn_params
             && event.init
         {
             any_updated = true;
         }
         if !any_updated {
             return None;
+        }
+        // Prime per-cycle `event.variables` from `ctx.cached` for
+        // every external Ref appearing inside a `BuiltinSlot::
+        // LabeledDefault`'s compiled Node. Mirrors `CallSite::bind`'s
+        // priming step at the inner `compile_default!` site —
+        // without it, a default that names another binding (e.g.
+        // `#esc = default_escape`) reads None on dispatch because
+        // its `Ref::update` only consults `event.variables` and
+        // the binding's value lives in `ctx.cached`. Skipping
+        // already-set entries is essential: an outer caller may
+        // have updated `id` this cycle and we don't want to
+        // clobber its new value with the stale cache.
+        for slot in self.dyn_slots.iter() {
+            for id in slot.default_external_refs.iter() {
+                if !event.variables.contains_key(id) {
+                    if let Some(v) = ctx.cached.get(id) {
+                        event.variables.insert(*id, v.clone());
+                    }
+                }
+            }
         }
         // Classify into prim args (RegValue), composite args
         // (ValArray or Value for variants), and fn arg values (kept

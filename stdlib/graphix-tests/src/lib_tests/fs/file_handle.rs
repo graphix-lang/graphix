@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
 // write + seek + read round-trip
@@ -16,7 +16,7 @@ const WRITE_SEEK_READ: &str = r#"{
   buffer::to_string(sys::io::read(f, n)?)
 }"#;
 
-run!(test_write_seek_read, WRITE_SEEK_READ, |v: Result<&Value>| {
+run_no_jit!(test_write_seek_read, WRITE_SEEK_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 });
 
@@ -33,7 +33,7 @@ const WRITE_EXACT_READ_EXACT: &str = r#"{
   buffer::to_string(sys::io::read_exact(seeked ~ f, u64:1024)?)
 }"#;
 
-run!(test_write_exact_read_exact, WRITE_EXACT_READ_EXACT, |v: Result<&Value>| {
+run_no_jit!(test_write_exact_read_exact, WRITE_EXACT_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello world")
 });
 
@@ -43,7 +43,7 @@ const OPEN_NONEXISTENT: &str = r#"{
   open(`Read, "/this/does/not/exist/at/all.txt")
 }"#;
 
-run!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
+run_no_jit!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
 });
 
@@ -60,7 +60,7 @@ const FSTAT_AFTER_WRITE: &str = r#"{
   md.len == u64:5
 }"#;
 
-run!(test_fstat_after_write, FSTAT_AFTER_WRITE, |v: Result<&Value>| {
+run_no_jit!(test_fstat_after_write, FSTAT_AFTER_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
@@ -79,7 +79,7 @@ const TRUNCATE_TEST: &str = r#"{
   buffer::to_string(sys::io::read_exact(seeked ~ f, u64:1024)?)
 }"#;
 
-run!(test_truncate, TRUNCATE_TEST, |v: Result<&Value>| {
+run_no_jit!(test_truncate, TRUNCATE_TEST, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 });
 
@@ -94,6 +94,6 @@ const CREATE_NEW_EXISTING: &str = r#"{
   written? ~ open(`CreateNew, path)
 }"#;
 
-run!(test_create_new_existing, CREATE_NEW_EXISTING, |v: Result<&Value>| {
+run_no_jit!(test_create_new_existing, CREATE_NEW_EXISTING, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
 });

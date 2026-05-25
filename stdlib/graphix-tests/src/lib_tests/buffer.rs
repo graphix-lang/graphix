@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
 // from_string + to_string round-trip
@@ -7,7 +7,7 @@ const BYTES_ROUND_TRIP: &str = r#"
   buffer::to_string(buffer::from_string("hello"))
 "#;
 
-run!(bytes_round_trip, BYTES_ROUND_TRIP, |v: Result<&Value>| {
+run_no_jit!(bytes_round_trip, BYTES_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 });
 
@@ -16,7 +16,7 @@ const BYTES_TO_STRING_LOSSY: &str = r#"
   buffer::to_string_lossy(buffer::from_string("hello"))
 "#;
 
-run!(bytes_to_string_lossy, BYTES_TO_STRING_LOSSY, |v: Result<&Value>| {
+run_no_jit!(bytes_to_string_lossy, BYTES_TO_STRING_LOSSY, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 });
 
@@ -26,7 +26,7 @@ const BYTES_TO_STRING_INVALID: &str = r#"{
   is_err(buffer::to_string(b))
 }"#;
 
-run!(bytes_to_string_invalid, BYTES_TO_STRING_INVALID, |v: Result<&Value>| {
+run_no_jit!(bytes_to_string_invalid, BYTES_TO_STRING_INVALID, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
@@ -36,7 +36,7 @@ const BYTES_TO_STRING_LOSSY_INVALID: &str = r#"{
   str::len(buffer::to_string_lossy(b)) > 0
 }"#;
 
-run!(bytes_to_string_lossy_invalid, BYTES_TO_STRING_LOSSY_INVALID, |v: Result<
+run_no_jit!(bytes_to_string_lossy_invalid, BYTES_TO_STRING_LOSSY_INVALID, |v: Result<
     &Value,
 >| {
     matches!(v, Ok(Value::Bool(true)))
@@ -49,7 +49,7 @@ const BYTES_CONCAT: &str = r#"{
   buffer::to_string(buffer::concat(a, b))
 }"#;
 
-run!(bytes_concat, BYTES_CONCAT, |v: Result<&Value>| {
+run_no_jit!(bytes_concat, BYTES_CONCAT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello world")
 });
 
@@ -60,7 +60,7 @@ const BYTES_ARRAY_ROUND_TRIP: &str = r#"{
   buffer::to_string(buffer::from_array(arr))
 }"#;
 
-run!(bytes_array_round_trip, BYTES_ARRAY_ROUND_TRIP, |v: Result<&Value>| {
+run_no_jit!(bytes_array_round_trip, BYTES_ARRAY_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
 });
 
@@ -69,7 +69,7 @@ const BYTES_LEN: &str = r#"
   buffer::len(buffer::from_string("hello"))
 "#;
 
-run!(bytes_len, BYTES_LEN, |v: Result<&Value>| { matches!(v, Ok(Value::U64(5))) });
+run_no_jit!(bytes_len, BYTES_LEN, |v: Result<&Value>| { matches!(v, Ok(Value::U64(5))) });
 
 // bytes indexing
 const BYTES_INDEX: &str = r#"{
@@ -77,7 +77,7 @@ const BYTES_INDEX: &str = r#"{
   b[0]
 }"#;
 
-run!(bytes_index, BYTES_INDEX, |v: Result<&Value>| {
+run_no_jit!(bytes_index, BYTES_INDEX, |v: Result<&Value>| {
     // 'h' is ASCII 104
     matches!(v, Ok(Value::U8(104)))
 });
@@ -88,7 +88,7 @@ const BYTES_NEG_INDEX: &str = r#"{
   b[-1]
 }"#;
 
-run!(bytes_neg_index, BYTES_NEG_INDEX, |v: Result<&Value>| {
+run_no_jit!(bytes_neg_index, BYTES_NEG_INDEX, |v: Result<&Value>| {
     // 'o' is ASCII 111
     matches!(v, Ok(Value::U8(111)))
 });
@@ -99,7 +99,7 @@ const BYTES_SLICE: &str = r#"{
   buffer::to_string(b[1..4]?)
 }"#;
 
-run!(bytes_slice, BYTES_SLICE, |v: Result<&Value>| {
+run_no_jit!(bytes_slice, BYTES_SLICE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "ell")
 });
 
@@ -109,7 +109,7 @@ const BYTES_SLICE_FROM: &str = r#"{
   buffer::to_string(b[2..]?)
 }"#;
 
-run!(bytes_slice_from, BYTES_SLICE_FROM, |v: Result<&Value>| {
+run_no_jit!(bytes_slice_from, BYTES_SLICE_FROM, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "llo")
 });
 
@@ -119,7 +119,7 @@ const BYTES_SLICE_TO: &str = r#"{
   buffer::to_string(b[..3]?)
 }"#;
 
-run!(bytes_slice_to, BYTES_SLICE_TO, |v: Result<&Value>| {
+run_no_jit!(bytes_slice_to, BYTES_SLICE_TO, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hel")
 });
 
@@ -135,7 +135,7 @@ const ENCODE_FIXED_SIZES: &str = r#"{
   (buffer::len(b1), buffer::len(b2), buffer::len(b4), buffer::len(b8), buffer::len(bf))
 }"#;
 
-run!(encode_fixed_sizes, ENCODE_FIXED_SIZES, |v: Result<&Value>| match v {
+run_no_jit!(encode_fixed_sizes, ENCODE_FIXED_SIZES, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(
         &a[..],
         [Value::U64(2), Value::U64(4), Value::U64(8), Value::U64(16), Value::U64(12)]
@@ -149,7 +149,7 @@ const ENCODE_BYTES_PAD: &str = r#"{
   buffer::len(b)
 }"#;
 
-run!(encode_bytes_pad, ENCODE_BYTES_PAD, |v: Result<&Value>| {
+run_no_jit!(encode_bytes_pad, ENCODE_BYTES_PAD, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
 });
 
@@ -159,7 +159,7 @@ const ENCODE_PAD_ZEROS: &str = r#"{
   buffer::to_array(b)
 }"#;
 
-run!(encode_pad_zeros, ENCODE_PAD_ZEROS, |v: Result<&Value>| match v {
+run_no_jit!(encode_pad_zeros, ENCODE_PAD_ZEROS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) =>
         matches!(&a[..], [Value::U8(0), Value::U8(0), Value::U8(0), Value::U8(0)]),
     _ => false,
@@ -172,7 +172,7 @@ const ENCODE_ENDIANNESS: &str = r#"{
   (le, be)
 }"#;
 
-run!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
+run_no_jit!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if a.len() == 2 => {
         let le = match &a[0] {
             Value::Array(a) => a,
@@ -199,7 +199,7 @@ const DECODE_I64_ROUND_TRIP: &str = r#"{
   x
 }"#;
 
-run!(decode_i64_round_trip, DECODE_I64_ROUND_TRIP, |v: Result<&Value>| {
+run_no_jit!(decode_i64_round_trip, DECODE_I64_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
@@ -211,7 +211,7 @@ const DECODE_U32_ROUND_TRIP: &str = r#"{
   x
 }"#;
 
-run!(decode_u32_round_trip, DECODE_U32_ROUND_TRIP, |v: Result<&Value>| {
+run_no_jit!(decode_u32_round_trip, DECODE_U32_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U32(12345)))
 });
 
@@ -229,7 +229,7 @@ const DECODE_LENGTH_PREFIXED: &str = r#"{
   decoded_name
 }"#;
 
-run!(decode_length_prefixed, DECODE_LENGTH_PREFIXED, |v: Result<&Value>| {
+run_no_jit!(decode_length_prefixed, DECODE_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello world")
 });
 
@@ -246,7 +246,7 @@ const DECODE_BYTES_ROUND_TRIP: &str = r#"{
   buffer::to_string(decoded_data)?
 }"#;
 
-run!(decode_bytes_round_trip, DECODE_BYTES_ROUND_TRIP, |v: Result<&Value>| {
+run_no_jit!(decode_bytes_round_trip, DECODE_BYTES_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "abc")
 });
 
@@ -257,7 +257,7 @@ const DECODE_INSUFFICIENT: &str = r#"{
   is_err(buffer::decode(short, [`I64(&x)]))
 }"#;
 
-run!(decode_insufficient, DECODE_INSUFFICIENT, |v: Result<&Value>| {
+run_no_jit!(decode_insufficient, DECODE_INSUFFICIENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
@@ -270,7 +270,7 @@ const DECODE_INVALID_UTF8: &str = r#"{
   is_err(buffer::decode(bad, [`U64(&slen), `UTF8(&slen, &s)]))
 }"#;
 
-run!(decode_invalid_utf8, DECODE_INVALID_UTF8, |v: Result<&Value>| {
+run_no_jit!(decode_invalid_utf8, DECODE_INVALID_UTF8, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
@@ -283,7 +283,7 @@ const DECODE_SKIP: &str = r#"{
   x
 }"#;
 
-run!(decode_skip, DECODE_SKIP, |v: Result<&Value>| {
+run_no_jit!(decode_skip, DECODE_SKIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
 });
 
@@ -295,7 +295,7 @@ const DECODE_REMAINING: &str = r#"{
   buffer::len(rest)
 }"#;
 
-run!(decode_remaining, DECODE_REMAINING, |v: Result<&Value>| {
+run_no_jit!(decode_remaining, DECODE_REMAINING, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
 });
 
@@ -309,7 +309,7 @@ const VARINT_ROUND_TRIP: &str = r#"{
   x
 }"#;
 
-run!(varint_round_trip, VARINT_ROUND_TRIP, |v: Result<&Value>| {
+run_no_jit!(varint_round_trip, VARINT_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(300)))
 });
 
@@ -319,7 +319,7 @@ const VARINT_SMALL: &str = r#"{
   buffer::len(b)
 }"#;
 
-run!(varint_small, VARINT_SMALL, |v: Result<&Value>| {
+run_no_jit!(varint_small, VARINT_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
 });
 
@@ -329,7 +329,7 @@ const VARINT_LARGE: &str = r#"{
   buffer::len(b)
 }"#;
 
-run!(varint_large, VARINT_LARGE, |v: Result<&Value>| {
+run_no_jit!(varint_large, VARINT_LARGE, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
 });
 
@@ -341,7 +341,7 @@ const ZIGZAG_NEGATIVE: &str = r#"{
   x
 }"#;
 
-run!(zigzag_negative, ZIGZAG_NEGATIVE, |v: Result<&Value>| {
+run_no_jit!(zigzag_negative, ZIGZAG_NEGATIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-42)))
 });
 
@@ -353,7 +353,7 @@ const ZIGZAG_POSITIVE: &str = r#"{
   x
 }"#;
 
-run!(zigzag_positive, ZIGZAG_POSITIVE, |v: Result<&Value>| {
+run_no_jit!(zigzag_positive, ZIGZAG_POSITIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
@@ -363,7 +363,7 @@ const ZIGZAG_SMALL: &str = r#"{
   buffer::len(b)
 }"#;
 
-run!(zigzag_small, ZIGZAG_SMALL, |v: Result<&Value>| {
+run_no_jit!(zigzag_small, ZIGZAG_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
 });
 
@@ -377,7 +377,7 @@ const VARINT_LENGTH_PREFIXED: &str = r#"{
   buffer::to_string(decoded)?
 }"#;
 
-run!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
+run_no_jit!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello")
 });
 
@@ -387,7 +387,7 @@ const DECODE_REF_TO_LITERAL: &str = r#"{
   is_err(buffer::decode(encoded, [`U8(&u8:0)]))
 }"#;
 
-run!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
+run_no_jit!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
@@ -400,6 +400,6 @@ const DECODE_SKIP_UNRESOLVED: &str = r#"{
   x
 }"#;
 
-run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
+run_no_jit!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
 });

@@ -77,7 +77,7 @@ const CORE_USE: &str = r#"
 }
 "#;
 
-run!(core_use, CORE_USE, |v: Result<&Value>| match v {
+run_no_jit!(core_use, CORE_USE, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(84)] => true,
     _ => false,
 });
@@ -89,7 +89,7 @@ const NAME_MODPATH: &str = r#"
 }
 "#;
 
-run!(name_modpath, NAME_MODPATH, |v: Result<&Value>| match v {
+run_no_jit!(name_modpath, NAME_MODPATH, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "foo, bar, baz",
     _ => false,
 });
@@ -102,7 +102,7 @@ const STATIC_SCOPE: &str = r#"
 }
 "#;
 
-run!(static_scope, STATIC_SCOPE, |v: Result<&Value>| match v {
+run_no_jit!(static_scope, STATIC_SCOPE, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -116,7 +116,7 @@ const UNDEFINED: &str = r#"
 }
 "#;
 
-run!(undefined, UNDEFINED, |v: Result<&Value>| match v {
+run_no_jit!(undefined, UNDEFINED, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -130,7 +130,7 @@ const ANY0: &str = r#"
 }
 "#;
 
-run!(any0, ANY0, |v: Result<&Value>| match v {
+run_no_jit!(any0, ANY0, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 });
@@ -144,7 +144,7 @@ const ANY1: &str = r#"
 }
 "#;
 
-run!(any1, ANY1, |v: Result<&Value>| match v {
+run_no_jit!(any1, ANY1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s0), Value::String(s1)] => {
             &**s0 == "1 + 1" && s0 == s1
@@ -161,7 +161,7 @@ const OR_NEVER: &str = r#"
 }
 "#;
 
-run!(or_never, OR_NEVER, |v: Result<&Value>| match v {
+run_no_jit!(or_never, OR_NEVER, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });

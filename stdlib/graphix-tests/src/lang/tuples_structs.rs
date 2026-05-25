@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 const TUPLES0: &str = r#"
@@ -12,7 +12,7 @@ const TUPLES0: &str = r#"
 }
 "#;
 
-run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
+run_no_jit!(tuples0, TUPLES0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s), Value::I64(42), Value::F64(23.5)] => &*s == "foo",
         _ => false,
@@ -28,7 +28,7 @@ const TUPLES1: &str = r#"
 }
 "#;
 
-run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
+run_no_jit!(tuples1, TUPLES1, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
 });
@@ -43,7 +43,7 @@ const TUPLES2: &str = r#"
 }
 "#;
 
-run!(tuples2, TUPLES2, |v: Result<&Value>| match v {
+run_no_jit!(tuples2, TUPLES2, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
 });
@@ -55,7 +55,7 @@ const TUPLEACCESSOR: &str = r#"
 }
 "#;
 
-run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
+run_no_jit!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 });
@@ -67,7 +67,7 @@ const STRUCTS0: &str = r#"
 }
 "#;
 
-run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
+run_no_jit!(structs0, STRUCTS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if a.len() == 3 => match &a[..] {
         [Value::Array(f0), Value::Array(f1), Value::Array(f2)]
             if f0.len() == 2 && f1.len() == 2 && f2.len() == 2 =>
@@ -99,7 +99,7 @@ const BINDSTRUCT: &str = r#"
 }
 "#;
 
-run!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
+run_no_jit!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
 });
@@ -111,7 +111,7 @@ const STRUCTACCESSOR: &str = r#"
 }
 "#;
 
-run!(structaccessor, STRUCTACCESSOR, |v: Result<&Value>| match v {
+run_no_jit!(structaccessor, STRUCTACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => s == "bar",
     _ => false,
 });
@@ -124,7 +124,7 @@ const STRUCTWITH0: &str = r#"
 }
 "#;
 
-run!(structwith0, STRUCTWITH0, |v: Result<&Value>| match v {
+run_no_jit!(structwith0, STRUCTWITH0, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
 });
@@ -137,7 +137,7 @@ const STRUCTWITH1: &str = r#"
 }
 "#;
 
-run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
+run_no_jit!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
     Ok(Value::F64(85.0)) => true,
     _ => false,
 });
@@ -150,7 +150,7 @@ const STRUCTWITH2: &str = r#"
 }
 "#;
 
-run!(structwith2, STRUCTWITH2, |v: Result<&Value>| match v {
+run_no_jit!(structwith2, STRUCTWITH2, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
         _ => false,
@@ -165,7 +165,7 @@ const STRUCTWITH3: &str = r#"
 }
 "#;
 
-run!(structwith3, STRUCTWITH3, |v: Result<&Value>| match v {
+run_no_jit!(structwith3, STRUCTWITH3, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
         _ => false,
@@ -199,7 +199,7 @@ const STRUCTWITH4: &str = r#"
 }
 "#;
 
-run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
+run_no_jit!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 4]>() {
         Ok(
             [[(f00, 0), (f01, -1)], [(f10, 0), (f11, 0)], [(f20, -1), (f21, 0)], [(f30, 0), (f31, 0)]],
@@ -231,7 +231,7 @@ const STRUCTWITH5: &str = r#"
 }
 "#;
 
-run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
+run_no_jit!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 1]>() {
         Ok([[(f00, 0), (f01, -1)]]) if f00 == "x" && f01 == "y" => true,
         _ => false,

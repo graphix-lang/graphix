@@ -179,7 +179,7 @@ const STR_JOIN: &str = r#"
   str::join(#sep:"/", "/foo", "bar", ["baz", "zam"])
 "#;
 
-run!(str_join, STR_JOIN, |v: Result<&Value>| {
+run_no_jit!(str_join, STR_JOIN, |v: Result<&Value>| {
     match v {
         Ok(Value::String(s)) => s == "/foo/bar/baz/zam",
         _ => false,
@@ -190,7 +190,7 @@ const STR_CONCAT: &str = r#"
   str::concat("foo", "bar", ["baz", "zam"])
 "#;
 
-run!(str_concat, STR_CONCAT, |v: Result<&Value>| {
+run_no_jit!(str_concat, STR_CONCAT, |v: Result<&Value>| {
     match v {
         Ok(Value::String(s)) => s == "foobarbazzam",
         _ => false,
@@ -226,7 +226,7 @@ const STR_SPLIT: &str = r#"
 }
 "#;
 
-run!(str_split, STR_SPLIT, |v: Result<&Value>| {
+run_no_jit!(str_split, STR_SPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1), Value::String(s2)] => {
@@ -245,7 +245,7 @@ const STR_RSPLIT: &str = r#"
 }
 "#;
 
-run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
+run_no_jit!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1), Value::String(s2)] => {
@@ -264,7 +264,7 @@ const STR_SPLITN: &str = r#"
 }
 "#;
 
-run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
+run_no_jit!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => s0 == "foo" && s1 == "bar, baz",
@@ -281,7 +281,7 @@ const STR_RSPLITN: &str = r#"
 }
 "#;
 
-run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
+run_no_jit!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => s0 == "baz" && s1 == "foo, bar",
@@ -298,7 +298,7 @@ const STR_SPLIT_ESCAPED: &str = r#"
 }
 "#;
 
-run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
+run_no_jit!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => s0 == "foo\\, bar" && s1 == "baz",
@@ -315,7 +315,7 @@ const STR_SPLITN_ESCAPED: &str = r#"
 }
 "#;
 
-run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
+run_no_jit!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => {

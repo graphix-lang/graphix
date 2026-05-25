@@ -387,6 +387,32 @@ impl KirType {
                         }
                         return None;
                     }
+                    // `[T, Error<X>]` shape (graphix's `Result<T, X>`):
+                    // exactly two members, one a `Type::Error`. Lowered
+                    // to `KirType::Nullable(T)` — the wire shape is
+                    // identical (Value-shape two-register) and the
+                    // boundary marshals the inner `Value` through
+                    // opaquely, so a `Value::Error(...)` flows through
+                    // as-is to downstream consumers that store it
+                    // (Bind) or read it (Ref). Pattern-matching the
+                    // Error case won't dispatch correctly — that's a
+                    // documented cliff requiring a real `KirType::Result`
+                    // variant.
+                    let is_err = |t: &Type| -> bool {
+                        t.with_deref(|r| matches!(r, Some(Type::Error(_))))
+                    };
+                    let (err_idx, t_idx) =
+                        match (is_err(&members[0]), is_err(&members[1])) {
+                            (true, false) => (0, 1),
+                            (false, true) => (1, 0),
+                            _ => (usize::MAX, usize::MAX),
+                        };
+                    if err_idx != usize::MAX {
+                        if let Some(inner) = KirType::from_type(&members[t_idx]) {
+                            return Some(KirType::Nullable(Box::new(inner)));
+                        }
+                        return None;
+                    }
                 }
                 // Variant unions: `[ \`Foo(...), \`Bar(...) ]` parses
                 // as a Set of single-Variant types. Match this
@@ -1111,6 +1137,16 @@ pub enum FnSource {
         name: ArcStr,
         typ: std::sync::Arc<crate::typ::FnType>,
         layout: std::sync::Arc<[BuiltinSlot]>,
+        /// Lambda ID of the binding this call resolves to (when the
+        /// fusion discovery pass could identify it). Used by
+        /// `KirNode::pre_bind_builtin` to look up the lambda's
+        /// env+scope so a `BuiltinSlot::LabeledDefault` whose
+        /// expression references free variables visible only in
+        /// the lambda's original module scope (e.g. `default_escape`
+        /// in `str::escape`'s `#esc = default_escape`) compiles
+        /// correctly. `None` is safe — pre_bind_builtin falls back
+        /// to compiling defaults in the kernel's own scope.
+        lambda_id: Option<crate::LambdaId>,
     },
 }
 

@@ -289,6 +289,18 @@ pub unsafe extern "C" fn graphix_value_buf_push_arcstr(
     unsafe { (*buf).push(Value::String((*ptr).clone())) }
 }
 
+/// Push an owned `ArcStr` onto the dyncall arg buffer, wrapping it in
+/// `Value::String`. Used for `KirType::String` DynCall args — the
+/// caller's SSA holds an owned ArcStr (bit-equivalent to its raw
+/// thin pointer) and transfers ownership into the buf.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_push_string(
+    buf: *mut LPooled<Vec<Value>>,
+    s: arcstr::ArcStr,
+) {
+    unsafe { (*buf).push(Value::String(s)) }
+}
+
 /// Finalize the buffer into an owned `ValArray`. The returned
 /// pointer is `Box::into_raw(Box::new(arr))` — caller must
 /// `Box::from_raw` to reclaim or `graphix_valarray_drop` to free.
@@ -670,46 +682,41 @@ thread_local! {
     /// discarded and `update` itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
 
-    /// Debug-build-only counter of JIT'd kernel invocations on this
-    /// thread. Incremented at the start of every JIT'd wrapper via
-    /// an inline `call graphix_record_jit_invocation` emitted by
-    /// `compile_into_function`. Read by the test harness's Mode 3
-    /// to assert that the JIT actually executed (a kernel build
-    /// that silently fell back to interp leaves this at zero).
+    /// Per-thread JIT invocation counter, debug-build only.
+    /// Bumped by `graphix_record_jit_invocation` (called inline
+    /// at the start of every JIT'd wrapper). Read by the test
+    /// harness's `jit` mode to prove the JIT actually ran for
+    /// each fixture — kernels that silently fell back to interp
+    /// would leave this at zero and the test asserts `> 0`.
     ///
-    /// Gated on `cfg(debug_assertions)` — production release builds
-    /// pay no instrumentation overhead. The codegen site is gated
-    /// the same way, so the helper is only registered and called
-    /// when the JIT-compiled code itself was built under debug
-    /// assertions.
+    /// `cfg(debug_assertions)`-gated so production release builds
+    /// pay no instrumentation overhead. The codegen call site and
+    /// the helper registration are gated the same way.
     #[cfg(debug_assertions)]
     pub static JIT_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// JIT-emitted code calls this at the start of every wrapper
-/// function. Bumps the per-thread `JIT_INVOCATIONS` counter so
-/// tests can verify the JIT path actually executed.
-///
-/// `cfg(debug_assertions)`-gated: in release builds the helper
-/// doesn't exist, isn't registered in `all_symbols`, and the
-/// codegen site that would call it is dead-coded out — zero
-/// instrumentation overhead in production.
+/// function to bump the per-thread `JIT_INVOCATIONS` counter.
+/// `cfg(debug_assertions)`-gated; in release builds the helper
+/// is absent, the registration is dead-coded out, and the
+/// codegen call site is `#[cfg]`-disabled — zero overhead.
 #[cfg(debug_assertions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_record_jit_invocation() {
     JIT_INVOCATIONS.with(|c| c.set(c.get().wrapping_add(1)));
 }
 
-/// Test helper: read the current thread's JIT invocation count.
-/// Returns 0 if no JIT'd kernel has run since the last reset.
-/// Available only under `cfg(debug_assertions)`.
+/// Read the current thread's JIT invocation count. Returns `0`
+/// if no JIT'd kernel has run since the last reset. Available
+/// only under `cfg(debug_assertions)`.
 #[cfg(debug_assertions)]
 pub fn jit_invocations() -> u64 {
     JIT_INVOCATIONS.with(|c| c.get())
 }
 
-/// Test helper: reset the current thread's JIT invocation count
-/// to zero. Available only under `cfg(debug_assertions)`.
+/// Reset the current thread's JIT invocation count to zero.
+/// Available only under `cfg(debug_assertions)`.
 #[cfg(debug_assertions)]
 pub fn reset_jit_invocations() {
     JIT_INVOCATIONS.with(|c| c.set(0));
@@ -950,6 +957,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_value_buf_push_bool", graphix_value_buf_push_bool as *const u8),
         ("graphix_value_buf_push_array", graphix_value_buf_push_array as *const u8),
         ("graphix_value_buf_push_arcstr", graphix_value_buf_push_arcstr as *const u8),
+        ("graphix_value_buf_push_string", graphix_value_buf_push_string as *const u8),
         ("graphix_valarray_finalize", graphix_valarray_finalize as *const u8),
         ("graphix_valarray_clone", graphix_valarray_clone as *const u8),
         ("graphix_valarray_drop", graphix_valarray_drop as *const u8),
@@ -1042,8 +1050,8 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
          graphix_string_buf_push_bool as *const u8),
         // ─── Debug-build instrumentation ────────────────────────
         // Bumps the per-thread `JIT_INVOCATIONS` counter on every
-        // wrapper entry; lets the test harness assert the JIT
-        // actually executed. Excluded from release builds.
+        // wrapper entry; lets the test harness's `jit` mode assert
+        // the JIT actually executed. Excluded from release builds.
         #[cfg(debug_assertions)]
         ("graphix_record_jit_invocation",
          graphix_record_jit_invocation as *const u8),

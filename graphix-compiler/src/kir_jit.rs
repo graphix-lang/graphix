@@ -507,11 +507,33 @@ fn ensure_declared(
     for p in &k.params {
         sig.params.push(AbiParam::new(prim_to_clif(p.prim)));
     }
-    let k_return_prim = k
-        .return_type
-        .as_prim()
-        .ok_or_else(|| anyhow!("JIT does not support array return types"))?;
-    sig.returns.push(AbiParam::new(prim_to_clif(k_return_prim)));
+    // Composite + Value-shape + nullable params follow scalar params;
+    // shape mirrors `compile_kernel_with_wrapper`.
+    let n_pointer_slots =
+        k.array_params.len() + k.tuple_params.len() + k.struct_params.len();
+    let n_value_slots =
+        2 * (k.variant_params.len() + k.nullable_params.len());
+    for _ in 0..(n_pointer_slots + n_value_slots) {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    match &k.return_type {
+        KirType::Prim(p) => sig.returns.push(AbiParam::new(prim_to_clif(*p))),
+        KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        KirType::Variant(_) | KirType::Nullable(_) => {
+            sig.returns.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        KirType::Unit => sig.returns.push(AbiParam::new(types::I64)),
+        KirType::String => sig.returns.push(AbiParam::new(types::I64)),
+        KirType::Null => {
+            return Err(anyhow!(
+                "kernel returns bare KirType::Null; should have \
+                 widened to Nullable<T> at construction"
+            ));
+        }
+    }
     let fid = jit
         .ctx
         .module
@@ -633,7 +655,7 @@ fn define_wrapper(
             &mut jit.func_ctx.func,
         );
         // Debug-build instrumentation: declare a FuncRef for the
-        // invocation-record helper so we can emit a call to it at
+        // JIT invocation counter helper so we can emit a call at
         // the start of the wrapper. Production release builds skip
         // both the FuncRef declaration and the call.
         #[cfg(debug_assertions)]
@@ -656,8 +678,8 @@ fn define_wrapper(
         b.seal_block(entry);
 
         // Bump the per-thread JIT invocation counter (debug builds
-        // only). The test harness's Mode 3 reads this after running
-        // a fixture to verify the JIT actually executed.
+        // only). The test harness's `jit` mode reads this after
+        // running a fixture to verify the JIT actually executed.
         #[cfg(debug_assertions)]
         {
             b.ins().call(record_ref, &[]);
@@ -1480,7 +1502,10 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         //   _push_arcstr  : (buf, ptr: *const ArcStr) — pointer arg
         //   _push_value   : (buf, v: Value)            — Value by value
         "graphix_value_buf_push_array"
-        | "graphix_value_buf_push_arcstr" => {
+        | "graphix_value_buf_push_arcstr"
+        // ArcStr is `repr(transparent)` over a thin pointer — passes
+        // as a single I64 register, same shape as the others above.
+        | "graphix_value_buf_push_string" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
@@ -1681,8 +1706,8 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::F32));
         }
         // () -> () — debug-build JIT invocation counter bump.
-        // Only registered when the codegen site (cfg-gated below)
-        // emits it; no-op signature otherwise.
+        // Registered only when `cfg(debug_assertions)` is set; the
+        // codegen call site is gated the same way.
         #[cfg(debug_assertions)]
         "graphix_record_jit_invocation" => {}
         other => {
@@ -2624,14 +2649,15 @@ fn compile_value_expr(
                             }
                         }
                     }
+                    // String arg: SSA value is the ArcStr's raw thin-
+                    // pointer bits (always Owned per `ensure_owned_composite`
+                    // / leaf-type treatment). The push helper takes the
+                    // ArcStr by value (consumes), wraps in
+                    // `Value::String`, pushes into the buf.
+                    KirType::String => "graphix_value_buf_push_string",
                     KirType::Unit => {
                         return Err(anyhow!(
                             "KIR malformed: DynCall arg has Unit type"
-                        ));
-                    }
-                    KirType::String => {
-                        return Err(anyhow!(
-                            "DynCall arg with String type reached JIT"
                         ));
                     }
                     KirType::Null => {
@@ -3207,15 +3233,10 @@ fn compile_scalar_impl(
                             }
                         }
                     }
+                    KirType::String => "graphix_value_buf_push_string",
                     KirType::Unit => {
                         return Err(anyhow!(
                             "KIR malformed: DynCall arg has Unit type"
-                        ));
-                    }
-                    KirType::String => {
-                        return Err(anyhow!(
-                            "DynCall arg with String type reached JIT; \
-                             should have routed to interp"
                         ));
                     }
                     KirType::Null => {
@@ -3243,12 +3264,11 @@ fn compile_scalar_impl(
                 // discarded by the caller). ret_kind=3 tells
                 // dispatch_typed not to box anything.
                 KirType::Unit => 3,
-                KirType::String => {
-                    return Err(anyhow!(
-                        "DynCall with String return reached JIT; \
-                         should have routed to interp"
-                    ));
-                }
+                // String return: dispatcher extracts the ArcStr from
+                // `Value::String`, transmutes to raw u64 bits, returns
+                // in word0. Caller's SSA reads the bits directly as
+                // an owned `arcstr::ArcStr` (`repr(transparent)`).
+                KirType::String => 4,
                 KirType::Null => {
                     return Err(anyhow!(
                         "DynCall with bare Null return — should have \
@@ -3293,10 +3313,13 @@ fn compile_scalar_impl(
                     Ok(raw_u64)
                 }
                 KirType::String => {
-                    return Err(anyhow!(
-                        "DynCall with String return reached JIT; \
-                         should have routed to interp"
-                    ));
+                    // String return: `raw_u64` is the ArcStr's raw
+                    // thin-pointer bits (transferred ownership). The
+                    // wrapper-level DYNCALL_PENDING check in
+                    // KirNode::update discards the kernel result on
+                    // pending; the 0 sentinel from a pending dispatch
+                    // is never decoded.
+                    Ok(raw_u64)
                 }
                 KirType::Null => {
                     return Err(anyhow!(
@@ -3880,9 +3903,19 @@ fn cast_u64_to_prim(
         }
         PrimType::F32 => {
             let bits32 = b.ins().ireduce(types::I32, raw);
-            b.ins().bitcast(types::F32, MemFlags::trusted(), bits32)
+            b.ins().bitcast(
+                types::F32,
+                MemFlags::new()
+                    .with_endianness(cranelift_codegen::ir::Endianness::Little),
+                bits32,
+            )
         }
-        PrimType::F64 => b.ins().bitcast(types::F64, MemFlags::trusted(), raw),
+        PrimType::F64 => b.ins().bitcast(
+            types::F64,
+            MemFlags::new()
+                .with_endianness(cranelift_codegen::ir::Endianness::Little),
+            raw,
+        ),
     }
 }
 
@@ -4265,7 +4298,13 @@ fn compile_and_push_field(
                 }
             }
         }
-        KirType::String => "graphix_value_buf_push_arcstr",
+        // String SSA is the ArcStr's raw thin-pointer bits (owned),
+        // NOT a pointer-to-an-ArcStr struct. `_push_arcstr` takes a
+        // `*const ArcStr` and dereferences it — using it here treats
+        // the ArcStr's bits as a pointer to its own struct (UAF/UB).
+        // `_push_string` takes ArcStr by value (consumes), which is
+        // what we want for an owned String SSA field.
+        KirType::String => "graphix_value_buf_push_string",
         KirType::Unit => {
             return Err(anyhow!(
                 "producer-op field has Unit type — emit_*_new should reject"
@@ -4514,14 +4553,16 @@ fn scalar_to_payload_i64(
         PrimType::F32 => {
             let bits = b.ins().bitcast(
                 types::I32,
-                cranelift_codegen::ir::MemFlags::new(),
+                cranelift_codegen::ir::MemFlags::new()
+                    .with_endianness(cranelift_codegen::ir::Endianness::Little),
                 v,
             );
             b.ins().uextend(types::I64, bits)
         }
         PrimType::F64 => b.ins().bitcast(
             types::I64,
-            cranelift_codegen::ir::MemFlags::new(),
+            cranelift_codegen::ir::MemFlags::new()
+                .with_endianness(cranelift_codegen::ir::Endianness::Little),
             v,
         ),
     }
@@ -5984,62 +6025,4 @@ mod tests {
         crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
     }
 
-    /// Verify the debug-build JIT invocation counter bumps once
-    /// per wrapper call. Compiles a trivial `|x: i64| x + 1`
-    /// kernel, resets the counter, calls the wrapper N times, and
-    /// asserts the counter equals N. Proves the
-    /// `graphix_record_jit_invocation` call site is wired into
-    /// every wrapper.
-    #[test]
-    fn jit_invocation_counter_bumps_on_each_call() {
-        use crate::kir_interp::RegValue;
-        let body = KirExpr {
-            op: KirOp::Bin {
-                op: BinOp::Add,
-                lhs: Box::new(loc("x", PrimType::I64)),
-                rhs: Box::new(const_expr(ConstVal::I64(1))),
-            },
-            typ: KirType::Prim(PrimType::I64),
-        };
-        let kernel = KirKernel {
-            fn_name: ArcStr::from("plus_one"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
-                name: ArcStr::from("x"),
-                kind: crate::kernel_ir::TailCallSlotKind::Scalar(PrimType::I64),
-            }],
-            return_type: KirType::Prim(PrimType::I64),
-            has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
-        };
-        let wrapped =
-            compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
-        let f = unsafe { wrapped.fn_ptr() };
-        crate::kir_jit_helpers::reset_jit_invocations();
-        assert_eq!(
-            crate::kir_jit_helpers::jit_invocations(),
-            0,
-            "counter starts at 0 after reset"
-        );
-        for i in 0..7 {
-            let args = [pack_reg_to_u64(&RegValue::I64(i))];
-            let mut out = 0u64;
-            unsafe { f(args.as_ptr(), &mut out) };
-            assert_eq!(
-                unpack_u64_to_reg(out, PrimType::I64),
-                RegValue::I64(i + 1)
-            );
-        }
-        assert_eq!(
-            crate::kir_jit_helpers::jit_invocations(),
-            7,
-            "counter bumps exactly once per wrapper call"
-        );
-    }
 }

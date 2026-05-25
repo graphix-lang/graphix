@@ -1,7 +1,7 @@
 use graphix_package_core::testing::escape_path;
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use graphix_rt::GXEvent;
 use netidx::subscriber::Value;
 use poolshark::global::GPooled;
@@ -601,7 +601,7 @@ watch_test! {
 }
 
 // Test create with params
-run!(
+run_no_jit!(
     test_watch_create_with_params,
     r#"{ use sys::fs::watch; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }

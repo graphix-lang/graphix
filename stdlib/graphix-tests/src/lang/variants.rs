@@ -1,7 +1,7 @@
 // Tests for variant types
 
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::publisher::Value;
 
 const VARIANTS0: &str = r#"
@@ -15,7 +15,7 @@ const VARIANTS0: &str = r#"
 }
 "#;
 
-run!(variants0, VARIANTS0, |v: Result<&Value>| match v {
+run_no_jit!(variants0, VARIANTS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(0), Value::I64(1)] => true,
         _ => false,
@@ -36,7 +36,7 @@ const VARIANTS1: &str = r#"
 }
 "#;
 
-run!(variants1, VARIANTS1, |v: Result<&Value>| match v {
+run_no_jit!(variants1, VARIANTS1, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
 });

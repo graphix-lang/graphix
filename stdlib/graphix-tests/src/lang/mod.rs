@@ -6,6 +6,7 @@ mod byref;
 mod datetime;
 mod errors;
 mod functions;
+mod fusion;
 mod interfaces;
 mod maps;
 mod modules;

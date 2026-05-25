@@ -525,6 +525,66 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // Propagate concrete types from labeled-default expressions
+        // into formal-arg TVars that the explicit args didn't refine.
+        //
+        // Why this matters: a polymorphic lambda like
+        // `'a: [Int, Float] |#x: 'a = 0.0, …|` invoked without any
+        // call-site arg that touches 'a would otherwise leave 'a
+        // unresolved at this call site — the runtime later evaluates
+        // the default and picks a concrete type, but compile-time
+        // inference never sees that. The resulting Apply's return
+        // type stays as a constraint-set TVar, which downstream
+        // consumers (fusion, type-directed dispatch) can't lower.
+        //
+        // We run AFTER the args loop above so any explicit positional
+        // or labeled-with-value arg has already refined 'a — `value:
+        // &"option_a"` setting 'a=string takes precedence over a
+        // sibling `#selected: &'a = &null` default. If both refine
+        // and disagree, the unification here surfaces a real type
+        // error rather than masking it.
+        //
+        // For a callee backed by a single LambdaDef (the common case
+        // for stdlib direct calls), `ftype.lambda_ids` has one entry;
+        // multi-lambda call sites (control flow yielding different
+        // lambdas) are skipped — too ambiguous to refine soundly.
+        let lambda_ids_for_defaults: Vec<LambdaId> = ftype
+            .lambda_ids
+            .read()
+            .iter()
+            .copied()
+            .collect();
+        if lambda_ids_for_defaults.len() == 1 {
+            let id = lambda_ids_for_defaults[0];
+            if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
+                if let Some(ldef) = val.downcast_ref::<LambdaDef<R, E>>() {
+                    for farg in ftype.args.iter() {
+                        let name = match &farg.kind {
+                            FnArgKind::Labeled { name, has_default: true } => {
+                                name
+                            }
+                            _ => continue,
+                        };
+                        let arg = match self.args.get(&ArgKey::Named(name.clone())) {
+                            Some(a) if a.is_default => a,
+                            _ => continue,
+                        };
+                        let _ = arg;
+                        let def_typ = ldef.argspec.iter().find_map(|src| {
+                            let n = src.pattern.single_bind()?;
+                            if n.as_str() != name.as_str() {
+                                return None;
+                            }
+                            let d = src.labeled.as_ref()?.as_ref()?;
+                            d.typ.get().cloned()
+                        });
+                        if let Some(dt) = def_typ {
+                            wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
+                        }
+                    }
+                }
+            }
+        }
         // Typecheck vargs
         if let Some(typ) = &ftype.vargs {
             loop {

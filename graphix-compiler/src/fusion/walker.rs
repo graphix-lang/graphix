@@ -140,6 +140,14 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
         match n.view() {
             NodeView::Bind(b) => self.visit_bind(b),
             NodeView::Block(blk) if blk.module => self.visit_module_block(blk),
+            // Top-level `Do` block (non-module) — descend into its
+            // children so each statement gets its own visit instead
+            // of registering the whole `Do` as one Region. The
+            // trailing expression-shape child is what produces the
+            // file's value, so it gets the Region candidate;
+            // earlier `Bind`/`Module`/etc. statements get their own
+            // appropriate candidates (or none).
+            NodeView::Block(blk) => self.visit_do_block(blk),
             NodeView::Module(m) => self.visit_sig_module(m),
             NodeView::Use(_) | NodeView::TypeDef(_) | NodeView::Nop(_) => {}
             _ => {
@@ -164,6 +172,25 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
                 // AnonymousLambda candidate.
             }
         }
+    }
+
+    /// Descend into a `Block { module: false }` (Do block) at a
+    /// top-level dispatch position. Each child is dispatched via
+    /// `visit_top_level`, but `module_top_level` is suppressed for
+    /// every child except the trailing one — only the Do's trailing
+    /// expression can usefully be a Region candidate (it carries
+    /// the block's value). Earlier statements get their own
+    /// appropriate visits: `Bind` → `visit_bind`, `Module` →
+    /// `visit_sig_module`, etc.
+    fn visit_do_block(&mut self, blk: &'a Block<R, E>) {
+        let n = blk.children.len();
+        let saved_top = self.module_top_level;
+        for (i, child) in blk.children.iter().enumerate() {
+            let is_last = i + 1 == n;
+            self.module_top_level = is_last && saved_top;
+            self.visit_top_level(&**child);
+        }
+        self.module_top_level = saved_top;
     }
 
     fn visit_bind(&mut self, b: &'a Bind<R, E>) {

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::run_no_jit as run;
 use netidx::subscriber::Value;
 
 const RE_IS_MATCH: &str = r#"

@@ -112,6 +112,58 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
+        // If the bind's value is a builtin lambda (`let foo = |...| 'name`),
+        // stash the metadata on `ctx.builtin_bindings` so the fusion
+        // pass can recognise `Apply { function: Ref(foo) }` sites as
+        // direct calls to a builtin and lower them via
+        // `FnSource::Builtin`. Only fires for single-bind patterns
+        // (multi-bind destructure of a lambda doesn't happen in
+        // practice) and when the lambda body is the `'name` form.
+        // If the bind's value is a builtin lambda (`let foo = |...| 'name`)
+        // and the pattern is a simple `let <name> = ...`, register
+        // the builtin metadata on `ctx.builtin_bindings` keyed by
+        // (scope, name). Fusion's discovery pass looks up by
+        // (scope, name) at every `Apply` site, so it doesn't
+        // matter that sig and impl get different `BindId`s.
+        if let ExprKind::Bind(be) = &spec.kind {
+            if let crate::expr::StructurePattern::Bind(bind_name) =
+                &be.pattern
+            {
+                if let ExprKind::Lambda(lam) = &value.kind {
+                    if let netidx::utils::Either::Right(builtin_name) =
+                        &lam.body
+                    {
+                        if let crate::typ::Type::Fn(fn_type) = node.typ() {
+                            // Lambda Node's def field holds the
+                            // LambdaDef; downcast through NodeView::Lambda
+                            // to pull its id. Used at fusion time to
+                            // look up the lambda's env+scope when
+                            // compiling labeled-default arg expressions.
+                            let lambda_id = match node.view() {
+                                crate::NodeView::Lambda(l) => {
+                                    l.lambda_id::<R, E>()
+                                }
+                                _ => None,
+                            };
+                            ctx.builtin_bindings.insert(
+                                (
+                                    scope.lexical.clone(),
+                                    compact_str::CompactString::from(
+                                        bind_name.as_str(),
+                                    ),
+                                ),
+                                crate::BuiltinBindInfo {
+                                    name: builtin_name.clone(),
+                                    argspec: lam.args.clone(),
+                                    typ: fn_type.clone(),
+                                    lambda_id,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
         Ok(Box::new(Self { spec, typ, pattern, node, scope: scope.clone() }))
     }
 
@@ -177,6 +229,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Bind(self)
+    }
+
+    fn splice_child(
+        &mut self,
+        target: ExprId,
+        replacement: crate::Node<R, E>,
+    ) -> std::result::Result<crate::Node<R, E>, crate::Node<R, E>> {
+        if self.node.spec().id == target {
+            Ok(std::mem::replace(&mut self.node, replacement))
+        } else {
+            self.node.splice_child(target, replacement)
+        }
     }
 }
 

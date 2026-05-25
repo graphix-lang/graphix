@@ -63,9 +63,13 @@ cargo build -p graphix-compiler      # Build compiler
 Run tests:
 ```bash
 cargo test                           # Run all tests in workspace
-cargo test -p graphix-compiler       # Test specific crate
+cargo test -p graphix-tests          # Test specific crate
 cargo test pattern                   # Run tests matching name
 ```
+
+Note, the compiler is designed to support multiple instances in a process,
+therefore tests should be designed to run in parallel, running with
+test-threads=1 should be avoided.
 
 Run the Graphix shell:
 ```bash
@@ -1616,3 +1620,217 @@ agree on `I64(38)`, proving the inner-x classification doesn't
 regress correctness.
 
 154/154 compiler + 674/674 integration all green.
+
+### F64 DynCall bitcast endianness fix (May 2026)
+
+`cast_u64_to_prim` (decode of `dispatch_typed`'s scalar return) and
+`pack_reg_to_u64` (encode of float args to the kernel ABI) both used
+`MemFlags::trusted()` for their bitcast instructions. `trusted()` sets
+`notrap + aligned` but NOT endianness — and cranelift's verifier
+rejects a `bitcast` whose memory flags don't carry `big` or `little`.
+The path stayed dormant until builtin DynCall coverage exposed an F64
+return (`math::sin(f64:0.0)` etc.); both bitcast sites in the F64/F32
+arms then started erroring with "The bitcast instruction only accepts
+the `big` or `little` memory flags". One failed compile poisoned the
+shared cranelift `func_ctx` for every subsequent kernel in the same
+process, so the diagnostic cascaded across unrelated kernels.
+
+Fix: switch both sites to `MemFlags::new().with_endianness(Endianness
+::Little)` (host endianness on x86_64 / ARM; no big-endian target is
+supported today). `trusted()` is also incompatible because it sets
+`aligned`, which only applies to memory loads/stores — not to a
+register-level bitcast.
+
+Coverage: `lib_tests/math.rs` (48 tests; 16 fixtures × 3 modes)
+migrated from `run_no_jit!` back to `run!` and all `::jit` arms pass.
+`lib_tests/bitwise.rs` (36 tests; 12 fixtures × 3 modes) similarly
+migrated. Confirms the new sync-builtin DynCall path works end-to-end
+across the F64 math builtins and the u8 bitwise builtins.
+
+`shuffle_array` / `shuffle_empty` stay `run_no_jit!` (array literal
+arg `[1, 2, 3]` not yet handled by `emit_expr`). All re-package tests
+(`stdlib/graphix-package-re/src/test.rs`) migrated to `run_no_jit!` —
+all of `re::*` returns `Result<T, ReError(string)>` (a Set type),
+which `PrimType::from_type` rejects, so the outer Region kernel can't
+form. The Apply itself could fuse via the new DynCall path once
+String args are JIT-supported (currently filtered by
+`is_dyncall_supported`).
+
+### Typechecker propagates labeled-default types into call-site TVars (May 2026)
+
+`rand_float_default` (`rand::rand(#clock:1)`) failed JIT mode despite
+the bitcast fix — the call site's return type was an unresolved TVar
+with constraint `[Int, Float]`. Without explicit `#start`/`#end`,
+no call-site arg refined 'a, so typecheck left the apply's return
+type ambiguous. The runtime later evaluated the f64 defaults and
+picked f64, but that runtime decision didn't feed back into
+compile-time inference.
+
+Root cause was in `CallSite::typecheck_inner`. When a labeled arg
+with a default was missing from the call site, the code at line ~451
+inserted a `Nop::new(arg.typ.clone())` placeholder — a Nop carrying
+the formal arg's *unresolved TVar*. The subsequent type check at
+line 506 unified `farg.typ` with the Nop's `n.typ()` — which was
+literally the same TVar — a trivial no-op. The default expression's
+concrete type never reached 'a.
+
+Fix is in two parts:
+
+1. **Always insert the lambda's ID into `FnType.lambda_ids`**
+   (`lambda.rs:394`, was previously gated on `needs_callsite ||
+   lsp_mode`). The gate was a performance opt — non-callsite-needing
+   lambdas don't need the deferred HOF refinement check, so why
+   bother recording. But the ID is also the only handle from
+   `FnType` back to `LambdaDef.argspec` (where defaults live).
+   Recording always is cheap (single-element IntSet entry) and
+   the deferred check at `callsite.rs:670` is a no-op when
+   `ldef.check` is None (only populated when needs_callsite).
+
+2. **Walk the lambda's argspec AFTER the main args typecheck loop**
+   (`callsite.rs` immediately before the vargs typecheck), find
+   missing-default args, look up the default expression's resolved
+   type, unify into the formal arg's TVar. The ordering matters:
+   explicit positional and labeled args refine the TVar FIRST. If
+   `value: &"option_a"` set 'a=string, then later seeing a sibling
+   `#selected: &'a = &null` default — whose type tries to set
+   'a=null — should surface as a *real* unification error (which
+   `farg.typ.check_contains(&ctx.env, &dt)` does), not be silently
+   masked by being applied before the explicit args.
+
+   For a callee backed by a single LambdaDef (the common case for
+   stdlib direct calls), `ftype.lambda_ids` has one entry; we look
+   up `ctx.lambda_defs[id]`, downcast to `LambdaDef`, scan argspec
+   for the entry whose pattern's single-bind matches the missing
+   arg's `name`, pull its default `Expr` and read `default.typ.get()`
+   — the OnceLock is populated when the lambda's own typecheck
+   compiles the default into `faux_args[i]` at `lambda.rs:496`.
+   Multi-lambda call sites (`if cond then foo else bar`) skip the
+   refinement; their defaults aren't necessarily uniform and
+   soundness would require checking all match.
+
+After this, `apply_expr.typ.get()` returns the concrete monomorphized
+type post-typecheck (`Primitive(F64)` for `rand::rand(#clock:1)`),
+and fusion lowers normally — no special-case fallback in
+`try_register_builtin_call`. The radio widget (which has
+`#selected: &'a = &null` alongside positional `value: &'a`) still
+typechecks correctly because we unify defaults AFTER explicit args:
+the positional `value` sets 'a, the default's `&null` then fails
+the containment check against the now-bound 'a — but only when 'a's
+actual value is incompatible with null, which is the correct error.
+
+`rand_float_default::jit` and `rand_float_range::jit` both pass.
+
+### String args/return in JIT DynCall (May 2026)
+
+Lifted the String filter in `is_dyncall_supported` so sync builtins
+with string args (most of `str::*`) JIT end-to-end. Three changes:
+
+1. **`graphix_value_buf_push_string` helper** — takes `(buf,
+   arcstr::ArcStr)`. ArcStr is `repr(transparent)` over a thin
+   pointer so it passes as one I64. The helper wraps in
+   `Value::String` and pushes (consumes the ArcStr).
+2. **`dispatch_typed` ret_kind=4** — for `KirType::String` return,
+   extracts ArcStr from `Value::String(s)`, `ManuallyDrop`s it,
+   `transmute_copy<ArcStr, u64>` to bits, returns in `word0`.
+   Caller's SSA reads the bits directly as an owned `arcstr::ArcStr`
+   (no boundary decode needed — same pattern as String kernel
+   return).
+3. **`ensure_declared` shape match** — the shared-module pre-pass
+   was prim-only (`return_type.as_prim()`); widened to mirror
+   `compile_kernel_with_wrapper`'s full match (composite pointers,
+   Value-shape pair, Unit/String single-I64). Without this, any
+   kernel with a non-prim return signature failed at "JIT does not
+   support array return types" before its body was ever compiled.
+
+Also widened the `fuse()` Region splice's return-type filter
+(`fusion/mod.rs`) from prim-only to allow Array/Tuple/Struct/
+Variant/Nullable/String; only `Unit` and bare `Null` skip.
+
+Test coverage: `lib_tests/str_tests` migrated to `run!` — 88 of 99
+fixtures pass JIT mode (the 11 remaining are real cliffs, not
+String-related: `str::concat`/`str::join` use variadic args,
+`str::split`/`escape` family have array literals as args or
+Array<string>/Option<string> returns). The 11 stay `run_no_jit!`
+until variadic args + array literals land in `emit_expr`.
+
+The `re::*` family still stays `run_no_jit!` — their return is
+`Result<T, ReError(string)>`, a Set with an Error member that
+`KirType::from_type` can't lower (not a simple `[T, null]` shape
+and not a uniform variant union). Different cliff, separate fix.
+
+### Array literals, variadic args, Result-return lowering (May 2026)
+
+Pushed on the second-wave fusion cliffs to unlock more of the
+`stdlib/graphix-tests/src/lib_tests` corpus. Four pieces:
+
+1. **Array literals (`[a, b, c]`) in fused expressions.** Added an
+   `ExprKind::Array` arm to `emit_expr` that lowers via the existing
+   `KirOp::TupleNew` op (runtime shape — `ValArray<Value>` — is
+   identical to a tuple) but tags the outer KirExpr's `typ` as
+   `KirType::Array(elem)`. Elem type comes from the literal's own
+   typed-AST cell (`Type::Array(inner)`) so empty `[]` still gets a
+   concrete elem. Single new `emit_array_new` helper; no parallel
+   `KirOp::ArrayNew` variant to thread through every walker.
+
+2. **Result returns (`Result<T, E>` = `[T, Error<E>]`).** Extended
+   `KirType::from_type`'s `Type::Set` arm to recognize this shape
+   alongside the existing `[T, null]` (Option) shape; both lower to
+   `KirType::Nullable(T)`. The wire shape at the JIT boundary is
+   already Value-shape two-register, so a `Value::Error(...)` flows
+   through opaquely to downstream consumers that store-and-read
+   (Bind → Ref). Refused at `?` (Qop) / `$` (OrNever) — those need
+   real null-check codegen to honor "propagate the error" semantics,
+   not yet wired up. Refusing means `let v: i64 = str::parse("x")?;`
+   stays on interp while `let result = str::escape(...)` fuses.
+
+3. **`KirNode::pre_bind_builtin` env+scope restoration.** When a
+   labeled-default expression references free variables visible only
+   in the lambda's original module scope (e.g. `default_escape` in
+   `str::escape`'s `#esc = default_escape`), compiling it in the
+   kernel's own scope produces "binding not in scope". Fix mirrors
+   `CallSite::bind`'s `compile_default!` macro:
+   - `FnSource::Builtin` carries an `Option<LambdaId>` capturing
+     the owning lambda's id at fusion-discovery time.
+   - `BuiltinBindInfo` gains the same `Option<LambdaId>`, populated
+     when the binding is compiled by reading the Lambda Node's
+     `def.id` through a new `Lambda::lambda_id<R, E>()` accessor
+     + the existing `NodeView::Lambda` view.
+   - `pre_bind_builtin` takes `lambda_id`, looks up
+     `ctx.lambda_defs[id]`, and wraps the default-compile call in
+     `ctx.with_restored(lambda_def.env.clone(), |ctx| …)` with
+     scope `{ dynamic: kernel scope.dynamic, lexical: lambda_def.
+     scope.lexical }`. Falls back to the kernel's own scope when
+     `lambda_id` is None (works for pure-literal defaults).
+   - Per-cycle priming: `DynCallSlot` records the external `BindId`s
+     each `LabeledDefault` Node references via `node.refs()`.
+     `KirNode::update` walks each slot's `default_external_refs`
+     and primes `event.variables[id]` from `ctx.cached[id]` (only
+     when `event.variables` doesn't already have a value, so an
+     outer caller's fresh update isn't clobbered). Without the
+     priming, `Ref::update`'s `event.variables.get` reads `None`
+     and the inner Apply's `CachedArgs` never has a complete arg
+     set — the kernel hangs producing nothing forever.
+
+4. **`str` package `escape_fn!` macro had no `EFFECT` constant** and
+   was defaulting to `Async`. Added `const EFFECT: EffectKind =
+   EffectKind::Sync;` — pure string transforms have no async
+   dependency. Sync is the precondition for fusion-discovery to
+   register the call.
+
+Test coverage:
+- New `load_array_literal_jits` — program body `[1, 2, 3]` returns
+  Array<i64>, JIT_INVOCATIONS > 0.
+- New `load_variadic_and_jits` — `and(true, true, false)` variadic
+  builtin with uniform `@args: bool` slot, JIT_INVOCATIONS > 0.
+- `lib_tests/str_tests`: 91 of 99 fixtures pass `run!` (was 88).
+  Newly-JITting: `str_escape`, `str_unescape`, `str_sub`,
+  `str_split_once`, `str_rsplit_once`. The 8 still on
+  `run_no_jit!`:
+  - `str_concat`/`str_join` — variadic args of union type
+    `[string, Array<string>]`. The discovery's variadic-slot
+    builder uses `KirType::from_type(fn_type.vargs)` which rejects
+    Sets that aren't Option-shape.
+  - `str_split` family (6 fixtures) — fixtures wrap the call in a
+    Block with `array::map(arr, |s| str::trim(s))` HOF. Needs both
+    intra-kernel array-iterator lowering AND nested anonymous-
+    lambda fusion. Multi-cliff; out of scope.

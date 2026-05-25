@@ -31,7 +31,8 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
-use enumflags2::{bitflags, BitFlags};
+use enumflags2::bitflags;
+pub use enumflags2::BitFlags;
 use expr::Expr;
 use futures::channel::mpsc;
 use log::info;
@@ -73,6 +74,18 @@ pub enum CFlag {
     WarnUnhandled,
     WarnUnused,
     WarningsAreErrors,
+    /// Skip the fusion phase entirely. `compile()` runs build +
+    /// typecheck and returns the regular Node graph; no kernels
+    /// are built, no splicing happens. Used by the test harness's
+    /// `interp` mode as ground truth — the program executes
+    /// purely through the Update-trait node-graph interpreter.
+    FusionDisabled,
+    /// Run the fusion phase but skip JIT-compilation. Kernels are
+    /// still built (KIR emission, splicing) and `FusedKernel`
+    /// dispatches via [`crate::kir_interp`] instead of native
+    /// code. Used by the test harness's `fused` mode to validate
+    /// KIR translation independently of the JIT backend.
+    JitDisabled,
 }
 
 #[allow(dead_code)]
@@ -343,6 +356,41 @@ pub struct ScopeMapEntry {
     pub pos: SourcePosition,
     pub ori: Arc<expr::Origin>,
     pub scope: Scope,
+}
+
+/// Metadata captured for every `let foo = |...| 'builtin_name`
+/// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
+/// binding's [`BindId`] so the fusion pass can lower `Apply` sites
+/// targeting this binding into a [`crate::kernel_ir::FnSource::Builtin`]
+/// slot without round-tripping through the runtime's `LambdaDef`
+/// value.
+///
+/// `name` is the canonical builtin identifier (e.g. `core_once`) —
+/// matches the key used by [`ExecCtx::register_builtin`] and
+/// [`ExecCtx::builtins`].
+///
+/// `argspec` is the original source-level argument list (including
+/// each labeled arg's default expression, if any), needed to
+/// construct the per-formal-arg [`crate::kernel_ir::BuiltinSlot`]
+/// layout at fusion time.
+///
+/// `typ` is the binding's resolved function type at the binding
+/// site. The fusion pass also reads the per-call-site resolved
+/// `FnType` off the `Apply.function.typ` cell when generic; this
+/// site-level `typ` is the declared binding signature, useful for
+/// quick rejections.
+#[derive(Debug, Clone)]
+pub struct BuiltinBindInfo {
+    pub name: ArcStr,
+    pub argspec: triomphe::Arc<[expr::Arg]>,
+    pub typ: triomphe::Arc<typ::FnType>,
+    /// Lambda definition ID for this binding's value (if it was
+    /// compiled as a lambda — every binding registered here was).
+    /// Used by `KirNode::pre_bind_builtin` to look up the lambda's
+    /// env+scope when compiling a `BuiltinSlot::LabeledDefault`
+    /// expression — defaults may reference free variables visible
+    /// only in the lambda's original definition scope.
+    pub lambda_id: Option<LambdaId>,
 }
 
 /// A textual occurrence of a type reference (e.g. `Foo` in `let x: Foo`).
@@ -631,6 +679,34 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// without choosing a variant; adding a new variant forces
     /// every exhaustive match consuming `NodeView` to be reviewed.
     fn view(&self) -> NodeView<'_, R, E>;
+
+    /// Find the descendant Node whose `spec().id == target` and
+    /// replace it with `replacement`. Used by the fusion splice
+    /// phase to swap a subtree for its kernel-backed equivalent.
+    ///
+    /// - `Ok(old_node)` — match found and replaced. The caller is
+    ///   responsible for deleting `old_node` from the `ExecCtx`
+    ///   (calling `.delete(ctx)`) before dropping.
+    /// - `Err(replacement)` — no match in this subtree. The
+    ///   `replacement` is returned unchanged so the caller can try
+    ///   elsewhere.
+    ///
+    /// The default impl treats `self` as a leaf (no children to
+    /// descend) and always returns `Err(replacement)`. Container
+    /// nodes (`Block`, `Module`, `Bind`) override to iterate
+    /// children and forward the search.
+    ///
+    /// `self.spec().id == target` is **not** checked here — that's
+    /// the caller's responsibility (handled at the top of
+    /// `fusion::builder::splice_into`). This method only descends
+    /// into children.
+    fn splice_child(
+        &mut self,
+        _target: expr::ExprId,
+        replacement: Node<R, E>,
+    ) -> std::result::Result<Node<R, E>, Node<R, E>> {
+        Err(replacement)
+    }
 }
 
 pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
@@ -1025,6 +1101,29 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// fused (a `<-` target rebinds at runtime, so a static splice
     /// into native code would dispatch into stale state).
     pub unstable_bindings: nohash::IntSet<BindId>,
+    /// `(scope, name)` → builtin metadata for bindings whose value
+    /// is a builtin lambda (i.e. `let foo = |...| 'builtin_name`).
+    /// Keyed by name+scope rather than `BindId` because sig and
+    /// impl share the same `(scope, name)` but get distinct
+    /// `BindId`s — external Refs resolve to the SIG id while
+    /// `Bind::compile` registers under the IMPL id, so a `BindId`-
+    /// keyed map would miss external lookups. Name+scope is the
+    /// single canonical key that both sides see consistently.
+    ///
+    /// The info captures everything fusion needs to lower an
+    /// `Apply` site whose `function` resolves to this binding into
+    /// a `KirOp::DynCall` against a
+    /// [`crate::kernel_ir::FnSource::Builtin`] slot: the canonical
+    /// builtin `name` (matches `ctx.builtins`), the source-level
+    /// `argspec` (with default expressions for labeled args), and
+    /// the resolved `FnType`.
+    ///
+    /// Populated by [`crate::node::bind::Bind::compile`] when the
+    /// value being bound is an `ExprKind::Lambda` with
+    /// `body == Either::Right(name)`. User-lambda bindings leave
+    /// no entry here; only builtin lambdas appear.
+    pub builtin_bindings:
+        ahash::AHashMap<(expr::ModPath, compact_str::CompactString), BuiltinBindInfo>,
     /// Per-context JIT state — cranelift module + cross-kernel-call
     /// cache. Lives here so each `ExecCtx` instance has its own
     /// isolated JIT compile target (no shared global module, no
@@ -1082,6 +1181,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             unstable_bindings: nohash::IntSet::default(),
+            builtin_bindings: ahash::AHashMap::default(),
             jit: parking_lot::Mutex::new(kir_jit::Jit::new()?,),
         })
     }
@@ -1219,7 +1319,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     // in place. Currently a no-op stub — see fusion/mod.rs::fuse and
     // the implementation plan for the iteration sequence.
     let st = Instant::now();
-    if let Err(e) = crate::fusion::fuse(&mut node, ctx) {
+    if let Err(e) = crate::fusion::fuse(&mut node, ctx, flags) {
         ctx.env = env;
         return Err(e);
     }

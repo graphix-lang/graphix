@@ -175,29 +175,6 @@ struct Params {
     /// type checks.
     #[arg(long = "check")]
     check: bool,
-    /// disable kernel fusion. Every lambda runs as the regular node-
-    /// graph interpreter. Use to A/B against the fused execution
-    /// path for differential testing.
-    #[arg(long = "no-fusion")]
-    no_fusion: bool,
-    /// disable the JIT entirely. Fused kernels still run, but
-    /// through the KIR interpreter instead of cranelift-generated
-    /// native code.
-    #[arg(long = "no-jit")]
-    no_jit: bool,
-    /// JIT-compile each fused kernel in a background worker thread.
-    /// Until the worker finishes, the kernel runs via the interp;
-    /// the runtime atomic-swaps to native code when ready. Mutually
-    /// exclusive with --no-jit; ignored if --no-jit is also set.
-    #[arg(long = "jit-async")]
-    jit_async: bool,
-    /// disable the M8.4 whole-graph fusion analyzer. On by default
-    /// since M8.4 step (g): each top-level expression is carved into
-    /// maximal sync subgraphs and replaced by a `FusedRegion`
-    /// runtime node. Use `--no-whole-graph` to fall back to per-
-    /// lambda lazy fusion only (useful for A/B differential testing).
-    #[arg(long = "no-whole-graph")]
-    no_whole_graph: bool,
     /// run the program in the specified file instead of starting the REPL
     file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,

@@ -2,7 +2,7 @@ use super::{compiler::compile, Nop};
 use crate::{
     effects::EffectKind,
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId, ExprKind, Origin},
+    expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     node::pattern::StructPatternNode,
     typ::{FnArgKind, FnArgType, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
@@ -276,6 +276,17 @@ pub struct Lambda {
 }
 
 impl Lambda {
+    /// LambdaId of this lambda's definition — pulled from the
+    /// `LambdaDef` stored as a `Value`. Used by `Bind::compile`
+    /// to thread the id into `BuiltinBindInfo` so the fusion
+    /// pre-binding pass can later look up the lambda's env+scope
+    /// for compiling labeled-default expressions.
+    pub fn lambda_id<R: Rt, E: UserEvent>(&self) -> Option<crate::LambdaId> {
+        self.def.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+    }
+}
+
+impl Lambda {
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -391,9 +402,7 @@ impl Lambda {
             })
         };
         typ.alias_tvars(&mut LPooled::take());
-        if needs_callsite || ctx.env.lsp_mode {
-            typ.lambda_ids.write().insert(id);
-        }
+        typ.lambda_ids.write().insert(id);
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();

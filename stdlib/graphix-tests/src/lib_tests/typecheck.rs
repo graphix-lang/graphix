@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run_no_jit;
 use netidx::subscriber::Value;
 
 // ============================================================================
@@ -7,25 +7,25 @@ use netidx::subscriber::Value;
 // ============================================================================
 
 // json::read without concrete return type → compile error
-run!(json_no_type, r#"json::read("42")"#, |v: Result<&Value>| v.is_err());
+run_no_jit!(json_no_type, r#"json::read("42")"#, |v: Result<&Value>| v.is_err());
 
 // toml::read without concrete return type → compile error
-run!(toml_no_type, r#"toml::read("x = 42")"#, |v: Result<&Value>| v.is_err());
+run_no_jit!(toml_no_type, r#"toml::read("x = 42")"#, |v: Result<&Value>| v.is_err());
 
 // pack::read without concrete return type → compile error
-run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| v
+run_no_jit!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| v
     .is_err());
 
 // str::parse without concrete return type → compile error
-run!(str_parse_no_type, r#"str::parse("42")"#, |v: Result<&Value>| v.is_err());
+run_no_jit!(str_parse_no_type, r#"str::parse("42")"#, |v: Result<&Value>| v.is_err());
 
 // json::read with concrete type → compiles and runs
-run!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
+run_no_jit!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
 // json::read with struct type → compiles and casts
-run!(
+run_no_jit!(
     json_typed_struct,
     r#"{
     type P = {x: i64, y: string};
@@ -40,7 +40,7 @@ run!(
 // ============================================================================
 
 // Late binding: deserializer stored in variable, called with concrete type
-run!(
+run_no_jit!(
     late_bind_var,
     r#"{
     let decoder = json::read;
@@ -51,7 +51,7 @@ run!(
 );
 
 // Late binding: function wraps a deserializer with explicit return type
-run!(
+run_no_jit!(
     late_bind_wrap,
     r#"{
     let decode = |data: [string, bytes]| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(data);
@@ -62,7 +62,7 @@ run!(
 );
 
 // Late binding: multiple calls to same typed wrapper with json
-run!(
+run_no_jit!(
     late_bind_multi_json,
     r#"{
     let apply = |f: fn(x: [string, bytes]) -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>, data| f(data);
@@ -75,7 +75,7 @@ run!(
 
 // Late binding: json + pack through same typed call site using bytes input
 // (both accept bytes; error types unify to the superset)
-run!(
+run_no_jit!(
     late_bind_mixed_deser,
     r#"{
     let apply = |f: fn(x: bytes) -> Result<i64, [`JsonErr(string), `PackErr(string), `IOErr(string), `InvalidCast(string)]>, data| f(data);
@@ -87,7 +87,7 @@ run!(
 );
 
 // Late binding with struct types through typed wrapper
-run!(
+run_no_jit!(
     late_bind_struct,
     r#"{
     type Point = {x: i64, y: i64};
@@ -108,7 +108,7 @@ run!(
 // CallSite must propagate through MapQ to json::read. Currently this fails:
 // MapQ::typecheck ignores the phase and returns Done, so the deferred check
 // cascade never reaches json::read, leaving its cast_typ unset.
-run!(
+run_no_jit!(
     hof_map_json_read,
     r#"{
     let data = [json::write_str(42)$];
@@ -123,7 +123,7 @@ run!(
     }
 );
 
-run!(
+run_no_jit!(
     hof_map_json_untyped,
     r#"{
     let data = [json::write_str(42)$];
@@ -134,7 +134,7 @@ run!(
 );
 
 // array::fold — FoldQ: json::read in fold closure, type must propagate
-run!(
+run_no_jit!(
     hof_fold_json_read,
     r#"{
         let data = [
@@ -151,7 +151,7 @@ run!(
 // type must propagate through Init's resolved mftyp
 // let results: Array<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
 //        array::init(1, |i| json::read(s));
-run!(
+run_no_jit!(
     hof_init_json_read,
     r#"{
     let s = json::write_str(42)$;
@@ -164,7 +164,7 @@ run!(
 
 // list::init — ListInit: json::read in unannotated init closure,
 // type must propagate through ListInit's resolved mftyp
-run!(
+run_no_jit!(
     hof_list_init_json_read,
     r#"{
     use list;
@@ -182,7 +182,7 @@ run!(
 // This is a known limitation of the current single-pass deferred check
 // scheduling: by the time the outer CallSite phase fires, the inner
 // array::map's callsite has already been checked and won't re-schedule.
-run!(
+run_no_jit!(
     hof_nested_map_json_read,
     r#"{
     let data = [[json::write_str(1)$, json::write_str(2)$], [json::write_str(3)$]];
@@ -196,7 +196,7 @@ run!(
 
 // core::filter — Filter: json::read piped through filter,
 // type must propagate through Filter's resolved predicate type
-run!(
+run_no_jit!(
     hof_filter_json_read,
     r#"{
     let s = json::write_str(42)$;
@@ -211,7 +211,7 @@ run!(
 // ============================================================================
 
 // subscribe with typed result
-run!(
+run_no_jit!(
     subscribe_typed_i64,
     r#"{
     sys::net::publish("/local/typed_sub", 42);
@@ -222,7 +222,7 @@ run!(
 );
 
 // subscribe with Primitive (backwards compatible, no cast)
-run!(
+run_no_jit!(
     subscribe_primitive,
     r#"{
     sys::net::publish("/local/prim_sub", 42);
@@ -233,7 +233,7 @@ run!(
 );
 
 // subscribe without type annotation → compile error
-run!(
+run_no_jit!(
     subscribe_no_type,
     r#"{
     sys::net::publish("/local/untyped_sub", 42);
@@ -247,7 +247,7 @@ run!(
 // ============================================================================
 
 // call with typed result
-run!(
+run_no_jit!(
     call_typed,
     r#"{
     sys::net::rpc(
@@ -267,7 +267,7 @@ run!(
 // ============================================================================
 
 // on_write callback with typed arg
-run!(
+run_no_jit!(
     publish_typed_onwrite,
     r#"{
     let p = "/local/typed_pub";
@@ -291,7 +291,7 @@ run!(
 // ============================================================================
 
 // rpc with typed struct callback arg
-run!(
+run_no_jit!(
     rpc_typed_struct,
     r#"{
     sys::net::rpc(

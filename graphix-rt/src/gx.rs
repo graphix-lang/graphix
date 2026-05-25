@@ -45,7 +45,11 @@ use crate::{
 };
 
 fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
-    match &n.spec().kind {
+    is_output_kind(&n.spec().kind)
+}
+
+fn is_output_kind(kind: &ExprKind) -> bool {
+    match kind {
         ExprKind::Bind { .. }
         | ExprKind::Lambda { .. }
         | ExprKind::Use { .. }
@@ -53,6 +57,32 @@ fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
         | ExprKind::Module { .. }
         | ExprKind::TypeDef { .. } => false,
         _ => true,
+    }
+}
+
+/// Wrap a sequence of top-level Exprs from a file into a synthetic
+/// `ExprKind::Do`. Per the unified-fusion design (§ "Files-as-
+/// modules"), this gives the compiler ONE Expr to compile and ONE
+/// Node back — fusion runs over the whole file's graph in one
+/// pass, with cross-Bind dependencies visible because they're all
+/// inside the one Do block.
+///
+/// `Do` was chosen over `Module` for the wrap because the file's
+/// last expression value needs to propagate out as the runtime
+/// output; `Module` blocks discard their last value while `Do`
+/// blocks return it. The "file IS a module" framing in the design
+/// applies to module-resolver imports — when another file does
+/// `mod foo;` against this file, the resolver inserts a real
+/// `ExprKind::Module` in the importing file's AST. The
+/// load-execution wrap is purely an execution-time scope to make
+/// fusion see the whole file at once.
+fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
+    Expr {
+        id: ExprId::new(),
+        ori,
+        pos: Default::default(),
+        kind: ExprKind::Do { exprs },
+        typ: Arc::new(std::sync::OnceLock::new()),
     }
 }
 
@@ -596,22 +626,25 @@ impl<X: GXExt> GX<X> {
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
         info!("resolve time: {:?}", st.elapsed());
+        // Wrap the file's top-level Exprs in a synthetic Do block
+        // so the compiler sees ONE Expr and produces ONE Node. The
+        // fusion pass then walks the file's entire graph in a
+        // single pass with cross-Bind dependencies visible inside
+        // the Do's Block.
+        let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
+        let wrapped =
+            wrap_file_in_do(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
+        let top_id = wrapped.id;
         // Clear the carry-over `unstable_bindings`; `Connect::compile`
         // re-populates with resolved BindIds as each `<-` site is
-        // compiled in the loop below, so the set reflects all
-        // Connect targets by the time the fusion passes run.
+        // compiled below.
         self.ctx.unstable_bindings.clear();
-        let mut res = smallvec![];
-        for e in exprs.iter() {
-            let top_id = e.id;
-            let n = compile(&mut self.ctx, self.flags, &scope, e.clone())
-                .with_context(|| ori.clone())?;
-            let has_out = is_output(&n);
-            let typ = n.typ().clone();
-            self.nodes.insert(top_id, n);
-            self.ctx.rt.updated.insert(top_id, true);
-            res.push(CompExp { id: top_id, output: has_out, typ, rt: rt.clone() })
-        }
+        let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
+            .with_context(|| ori.clone())?;
+        let typ = n.typ().clone();
+        self.nodes.insert(top_id, n);
+        self.ctx.rt.updated.insert(top_id, true);
+        let res = smallvec![CompExp { id: top_id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
 
