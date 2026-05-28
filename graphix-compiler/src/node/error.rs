@@ -55,10 +55,10 @@ pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
 
 #[derive(Debug)]
 pub struct TryCatch<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    nodes: LPooled<Vec<Node<R, E>>>,
-    handler: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub nodes: LPooled<Vec<Node<R, E>>>,
+    pub handler: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> TryCatch<R, E> {
@@ -150,10 +150,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
 
 #[derive(Debug)]
 pub struct Qop<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    id: Option<BindId>,
-    n: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub id: Option<BindId>,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
@@ -320,9 +320,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 
 #[derive(Debug)]
 pub struct OrNever<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {

@@ -13,7 +13,7 @@ use triomphe::Arc;
 
 pub(crate) mod array;
 pub(crate) mod bind;
-pub(crate) mod callsite;
+pub mod callsite;
 pub(crate) mod compiler;
 pub(crate) mod data;
 pub(crate) mod error;
@@ -148,8 +148,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
 #[derive(Debug)]
 pub struct ExplicitParens<R: Rt, E: UserEvent> {
-    spec: Expr,
-    n: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
@@ -377,8 +377,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
 #[derive(Debug)]
 pub struct Constant {
     pub(super) spec: Arc<Expr>,
-    pub(super) value: Value,
-    pub(super) typ: Type,
+    pub value: Value,
+    pub typ: Type,
 }
 
 impl Constant {
@@ -447,6 +447,7 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// the inner module's scope is `scope.append(name)`. For
     /// `Block { module: false }` (Do block at expression position)
     /// this is the lexical scope the Do is in.
+    #[allow(dead_code)]
     pub(crate) scope: Scope,
 }
 
@@ -555,10 +556,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 
 #[derive(Debug)]
 pub struct StringInterpolate<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    typs: Box<[Type]>,
-    args: Box<[Cached<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub(crate) typs: Box<[Type]>,
+    pub args: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
@@ -852,10 +853,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
 
 #[derive(Debug)]
 pub struct TypeCast<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    target: Type,
-    n: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub target: Type,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> TypeCast<R, E> {
@@ -914,9 +915,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 
 #[derive(Debug)]
 pub struct Any<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Box<[Node<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Node<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Any<R, E> {
@@ -985,13 +986,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 
 #[derive(Debug)]
 pub struct Sample<R: Rt, E: UserEvent> {
-    spec: Expr,
+    pub(crate) spec: Expr,
     triggered: usize,
-    typ: Type,
+    pub typ: Type,
     id: BindId,
     top_id: ExprId,
-    trigger: Node<R, E>,
-    arg: Cached<R, E>,
+    pub trigger: Node<R, E>,
+    pub arg: Cached<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Sample<R, E> {

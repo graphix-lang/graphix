@@ -1,28 +1,28 @@
-# M7 — KIR coverage for `array::*`
+# M7 — GIR coverage for `array::*`
 
 A focused implementation plan for the array half of M7 from
 `whole_graph_fusion.md`. Picks up where the M5/M6 work left off:
 builtin effects are classified, user-lambda effect inference runs,
 `apply_site_effect` computes call-site joins. The next missing piece
-is KIR ops that can absorb `array::map` / `fold` / `init` / `filter`
+is GIR ops that can absorb `array::map` / `fold` / `init` / `filter`
 into a kernel rather than dispatching per-element through the runtime.
 
 ## Where we are
 
-- `KirType` enum exists in `graphix-compiler/src/kernel_ir.rs`
+- `GirType` enum exists in `graphix-compiler/src/gir.rs`
   (`Prim(PrimType)` | `Array(PrimType)`) with `as_prim`, `as_array_elem`,
   `rust_name`, `from_type`, `From<PrimType>` impls. **No existing field
   uses it yet.** Build is green.
-- Existing scalar pipeline (`Input.prim`, `KirExpr.typ`,
-  `KnownFusedFn.{arg_types,return_type}`, `KirKernel.return_type`) all
-  still typed `PrimType`. Roughly 290 sites across `kernel_ir.rs`,
-  `fusion.rs`, `kir_interp.rs`, `kir_jit.rs` read or construct values
+- Existing scalar pipeline (`Input.prim`, `GirExpr.typ`,
+  `KnownFusedFn.{arg_types,return_type}`, `GirKernel.return_type`) all
+  still typed `PrimType`. Roughly 290 sites across `gir.rs`,
+  `fusion.rs`, `gir_interp.rs`, `gir_jit.rs` read or construct values
   with `PrimType`-typed fields.
 
 ## Why a single big-bang refactor stalls
 
-Naively flipping `KirExpr.typ: PrimType` → `KirType` cascades to ~290
-mismatched-type errors. Each is mechanical (wrap in `KirType::Prim`,
+Naively flipping `GirExpr.typ: PrimType` → `GirType` cascades to ~290
+mismatched-type errors. Each is mechanical (wrap in `GirType::Prim`,
 or insert `.as_prim().unwrap()` for scalar-only sites) but the change
 crosses too many files at once to verify incrementally — the tree is
 broken at every checkpoint until the last fix lands. **Don't do this.**
@@ -35,7 +35,7 @@ support alongside (not in place of) the existing PrimType fields.
 
 ### Step 1 — Array inputs as a separate slot list
 
-Add a sibling field to `KirKernel`:
+Add a sibling field to `GirKernel`:
 
 ```rust
 pub array_params: Vec<ArrayInput>,  // alongside `params: Vec<Input>`
@@ -57,50 +57,50 @@ input gain entries in `array_params`. The Rust emitter renders them as
 `Vec<i64>` parameters; the interp/jit reads them from a parallel
 `array_inputs: Vec<ValArray>` table.
 
-### Step 2 — `KirOp::ArrayLen { name }`, `KirOp::ArrayGet { name, idx }`
+### Step 2 — `GirOp::ArrayLen { name }`, `GirOp::ArrayGet { name, idx }`
 
 These produce scalar output (`PrimType::U64` for len, `elem` for get),
-so `KirExpr.typ` stays `PrimType`. The new ops reference an array param
+so `GirExpr.typ` stays `PrimType`. The new ops reference an array param
 by name (not by `Local`, since locals are scalar). Lower `array::len(arr)`
 and `arr[i]` Apply expressions in fusion's `emit_expr`.
 
 This validates the array-input plumbing end-to-end without touching
-`KirExpr.typ`.
+`GirExpr.typ`.
 
 ### Step 3 — `array::fold` as a special-cased Apply
 
 `array::fold(arr_param, init: Scalar, |acc, x| body)` lowers to:
 
 ```rust
-KirOp::ArrayFold {
+GirOp::ArrayFold {
     array: ArcStr,           // name of an array_param
-    init: Box<KirExpr>,      // scalar
+    init: Box<GirExpr>,      // scalar
     acc_local: ArcStr,
     elem_local: ArcStr,
-    body: Box<KirExpr>,      // scalar (typ = init.typ)
+    body: Box<GirExpr>,      // scalar (typ = init.typ)
 }
 ```
 
-Result type is the scalar `init.typ` — still fits in `KirExpr.typ:
+Result type is the scalar `init.typ` — still fits in `GirExpr.typ:
 PrimType`. The body inlines the callback's body with `acc` and `x` as
 locals. Closes the reduction half of `vectorize_dot`.
 
 ### Step 4 — Array-typed expressions
 
 Now we need composition: `array::map(...)` produces an array that
-`array::fold` consumes downstream. This is where `KirExpr.typ` must
-become `KirType`.
+`array::fold` consumes downstream. This is where `GirExpr.typ` must
+become `GirType`.
 
 Two options:
 
-1. **Big refactor**: flip `KirExpr.typ` to `KirType` in one shot, fix
+1. **Big refactor**: flip `GirExpr.typ` to `GirType` in one shot, fix
    all ~290 cascade sites mechanically. Best done as its own focused
    chunk of work — budget ~half a day with a known recipe (wrap
    constructors, `.as_prim().unwrap()` on scalar reads).
 
-2. **Sibling expression type**: add a parallel `KirArrayExpr` with
-   `typ: PrimType` (the element type) and `op: KirArrayOp`. Producer
-   ops (`ArrayInit`, `ArrayMap`) build `KirArrayExpr`; consumer ops
+2. **Sibling expression type**: add a parallel `GirArrayExpr` with
+   `typ: PrimType` (the element type) and `op: GirArrayOp`. Producer
+   ops (`ArrayInit`, `ArrayMap`) build `GirArrayExpr`; consumer ops
    that take arrays and produce scalars (`ArrayFold`) bridge between
    the two trees. Lots of duplication but no scalar-pipeline churn.
 
@@ -112,11 +112,11 @@ cleaner than maintaining two parallel expression trees indefinitely.
 
 After step 4, add:
 
-- `ArrayInit { n: Box<KirExpr>, idx_local: ArcStr, body: Box<KirExpr>, elem_typ: PrimType }`
-  — `arr.typ = KirType::Array(elem_typ)`
-- `ArrayMap { input: Box<KirExpr>, elem_local: ArcStr, body: Box<KirExpr>, result_elem: PrimType }`
-- `ArrayFilter { input: Box<KirExpr>, elem_local: ArcStr, predicate: Box<KirExpr> }`
-  — predicate is `KirType::Prim(PrimType::Bool)`; result preserves elem type
+- `ArrayInit { n: Box<GirExpr>, idx_local: ArcStr, body: Box<GirExpr>, elem_typ: PrimType }`
+  — `arr.typ = GirType::Array(elem_typ)`
+- `ArrayMap { input: Box<GirExpr>, elem_local: ArcStr, body: Box<GirExpr>, result_elem: PrimType }`
+- `ArrayFilter { input: Box<GirExpr>, elem_local: ArcStr, predicate: Box<GirExpr> }`
+  — predicate is `GirType::Prim(PrimType::Bool)`; result preserves elem type
 
 Lower `array::init`, `array::map`, `array::filter` Apply sites to
 these in fusion. Recognise the lambdas via the existing
@@ -129,7 +129,7 @@ these in fusion. Recognise the lambdas via the existing
   `arr.iter().map(|elem| body).collect()`, `ArrayFold` as
   `arr.iter().fold(init, |acc, &elem| body)`. LLVM should vectorize
   these.
-- **KIR interp**: evaluate over `ValArray` directly. Per-element
+- **GIR interp**: evaluate over `ValArray` directly. Per-element
   dispatch through the existing scalar interpreter; no SIMD but no
   runtime-graph dispatch either, which is the whole win.
 - **CLIF JIT**: emit a basic-block loop (header / body / latch /
@@ -150,18 +150,18 @@ and confirm:
 
 ## Files to touch
 
-- `graphix-compiler/src/kernel_ir.rs` — new ops, type extension
+- `graphix-compiler/src/gir.rs` — new ops, type extension
 - `graphix-compiler/src/fusion.rs` — `emit_expr` cases for `array::*`
   Apply sites, `build_kir_kernel` for array-typed lambda args
-- `graphix-compiler/src/kir_interp.rs` — evaluate new ops
-- `graphix-compiler/src/kir_jit.rs` — fall back to interp for kernels
+- `graphix-compiler/src/gir_interp.rs` — evaluate new ops
+- `graphix-compiler/src/gir_jit.rs` — fall back to interp for kernels
   containing array ops in v1 (gate via a flag on the kernel)
 - `bench/vectorize_dot.gx`, `bench/sum_squares.gx` — verify
 
 ## Estimated effort
 
 - Steps 1–3 (array inputs, len/get, fold): ~2 days
-- Step 4 (KirType refactor): ~1 day if focused
+- Step 4 (GirType refactor): ~1 day if focused
 - Steps 5–6 (producer ops + backends): ~2-3 days
 - Step 7 (bench, fixes): ~1 day
 
@@ -173,7 +173,7 @@ Graphix tuples and structs share the array runtime representation
 (`Value::Array(ValArray)`), so the unsafe per-slot extraction we
 added for arrays (`ValArray::get_unchecked<T>(i)`) drops in directly.
 The hard part — boundary plumbing, `from_iter_exact` output path,
-KirType cascade — is already done. M7.7 / M7.8 are small extensions.
+GirType cascade — is already done. M7.7 / M7.8 are small extensions.
 
 ### Why this is mostly mechanical
 
@@ -192,7 +192,7 @@ KirType cascade — is already done. M7.7 / M7.8 are small extensions.
 
 - **Per-slot types instead of one element type.** `Array<f64>` has
   uniform `PrimType::F64`; `(i64, f64, bool)` has three different
-  ones. So slot definitions and KirType variants carry
+  ones. So slot definitions and GirType variants carry
   `Vec<PrimType>` (tuple) or `Vec<(ArcStr, PrimType)>` (struct,
   sorted by field name).
 - **Static accessor.** Tuple/struct field positions are known at
@@ -208,11 +208,11 @@ KirType cascade — is already done. M7.7 / M7.8 are small extensions.
   `[x_value, y_value]`. The lowering does the name → sorted_index
   lookup at compile time.
 
-### Concrete KIR additions
+### Concrete GIR additions
 
 ```rust
-KirType::Tuple(Vec<PrimType>),
-KirType::Struct(Vec<(ArcStr, PrimType)>),  // sorted by name
+GirType::Tuple(Vec<PrimType>),
+GirType::Struct(Vec<(ArcStr, PrimType)>),  // sorted by name
 
 // New input slot variants (sibling to ArrayInput):
 struct TupleInput {
@@ -229,10 +229,10 @@ struct StructInput {
 }
 
 // New ops:
-KirOp::TupleGet  { name: ArcStr, idx: usize, elem_typ: PrimType },
-KirOp::StructGet { name: ArcStr, sorted_idx: usize, elem_typ: PrimType },
-KirOp::TupleNew  { fields: Vec<KirExpr>, elem_types: Vec<PrimType> },
-KirOp::StructNew { fields: Vec<(ArcStr, KirExpr)>, sorted_types: Vec<(ArcStr, PrimType)> },
+GirOp::TupleGet  { name: ArcStr, idx: usize, elem_typ: PrimType },
+GirOp::StructGet { name: ArcStr, sorted_idx: usize, elem_typ: PrimType },
+GirOp::TupleNew  { fields: Vec<GirExpr>, elem_types: Vec<PrimType> },
+GirOp::StructNew { fields: Vec<(ArcStr, GirExpr)>, sorted_types: Vec<(ArcStr, PrimType)> },
 ```
 
 `TupleGet` lowers byte-identically to `ArrayGet`. `TupleNew` lowers
@@ -260,18 +260,18 @@ to `ValArray::from_iter_exact([Value::I64(f0), Value::F64(f1), ...].into_iter())
 
 ### Estimated effort
 
-- M7.7 (Tuple): ~half a day. KirType variant, TupleInput slot,
+- M7.7 (Tuple): ~half a day. GirType variant, TupleInput slot,
   TupleGet/TupleNew ops, fusion lowering for `ExprKind::Tuple` and
   `ExprKind::TupleRef`, Rust emitter, two tests.
 - M7.8 (Struct): ~half a day. Same structure plus the
   field-name-to-sorted-index helper.
 
-Total ~1 day for both; the KirType refactor cost has already been
+Total ~1 day for both; the GirType refactor cost has already been
 paid.
 
 ## Schedule
 
-The original plan was: M7.1 KirType → M7.2 Array{Len,Get} →
+The original plan was: M7.1 GirType → M7.2 Array{Len,Get} →
 M7.3 ArrayFold → M7.4 Array{Init,Map} → M7.5 ArrayFilter → M7.6
 bench. Tuples/structs slot in *after* the bench validates the array
 machinery, not before — the bench is a sanity check on whether the
@@ -295,20 +295,20 @@ original ~1 week M7 estimate.
 ## Out of scope for M7
 
 - Stateful sync ops (`count`, `sum`, `hold`, `take`, `skip`, `mean`)
-  — separate KIR work, parallel to arrays. Mentioned in design doc;
+  — separate GIR work, parallel to arrays. Mentioned in design doc;
   pick up after the array win is on the bench board.
 - `str::*` ops over current strings — needs a `Type::String` extension
-  in `KirType`, low priority until UI fusion benches show it matters.
+  in `GirType`, low priority until UI fusion benches show it matters.
 - `select` over arbitrary patterns — already mostly covered, audit
   during step 5 if anything trips.
 - Reference ops (`&`, `*`, `*r <- v`) — already partial in fusion
   per the design doc; leave alone.
 - Vectorization/SIMD via cranelift — defer past M7.
 - **Variants** (`` `Foo(i64) ``, `` `Bar ``). Tagged unions need
-  pattern-match-on-discriminant in KIR (we already have `select`;
+  pattern-match-on-discriminant in GIR (we already have `select`;
   the missing piece is reading the variant tag from a `Value`).
   Worth a separate milestone after structs/tuples land — same
   ValArray-boundary pattern but with a tag dispatch on top.
 - **Maps**. Heterogeneous-keyed runtime structures don't fit the
-  "Vec<PrimType> slot list" model; would need a hash-table KIR
+  "Vec<PrimType> slot list" model; would need a hash-table GIR
   primitive. No bench motivation yet.

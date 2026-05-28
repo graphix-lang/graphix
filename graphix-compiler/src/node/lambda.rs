@@ -91,14 +91,62 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
     }
 }
 
+/// Runtime representation of a graphix-language lambda (i.e. a user
+/// `fn` defined in `.gx` source). Produced by [`LambdaDef::init`]
+/// when a `CallSite` resolves to this lambda — either lazily on
+/// first runtime use, or eagerly at compile time by the
+/// `static_resolve` pass.
+///
+/// Public surface for fusion: `Apply::view()` on `GXLambda` returns
+/// [`crate::ApplyView::Lambda(&self)`], letting fusion's walker
+/// reach `self.body()` and inline the lambda body into the kernel
+/// being built.
 #[derive(Debug)]
-struct GXLambda<R: Rt, E: UserEvent> {
+pub struct GXLambda<R: Rt, E: UserEvent> {
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
 }
 
+impl<R: Rt, E: UserEvent> GXLambda<R, E> {
+    /// The compiled body Node — the lambda's expression tree.
+    /// Fusion walks this via [`crate::Update::view`] /
+    /// [`crate::NodeView`].
+    pub fn body(&self) -> &Node<R, E> {
+        &self.body
+    }
+
+    /// Mutable body — for fusion's splicing of inner sub-kernels.
+    pub fn body_mut(&mut self) -> &mut Node<R, E> {
+        &mut self.body
+    }
+
+    /// Argument-binding patterns, in signature order. Parallel to
+    /// `self.typ().args`. Each pattern binds one positional or
+    /// labeled arg from the call-site `arg_refs` into the body's
+    /// scope.
+    pub fn args(&self) -> &[StructPatternNode] {
+        &self.args
+    }
+
+    /// The fully-resolved `FnType` of this lambda. Same as what
+    /// `Apply::typ()` returns; provided as a direct accessor for
+    /// consumers that have a `&GXLambda` without going through the
+    /// trait.
+    pub fn typ(&self) -> &Arc<FnType> {
+        &self.typ
+    }
+}
+
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
+    fn view(&self) -> crate::ApplyView<'_, R, E> {
+        crate::ApplyView::Lambda(self)
+    }
+
+    fn view_mut(&mut self) -> crate::ApplyViewMut<'_, R, E> {
+        crate::ApplyViewMut::Lambda(self)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -203,6 +251,17 @@ struct BuiltInLambda<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
+    /// Pass-through to the inner builtin. `BuiltInLambda` is a
+    /// runtime-plumbing wrapper (typecheck/refs); fusion sees the
+    /// wrapped builtin's own view as if the wrapper weren't here.
+    fn view(&self) -> crate::ApplyView<'_, R, E> {
+        self.apply.view()
+    }
+
+    fn view_mut(&mut self) -> crate::ApplyViewMut<'_, R, E> {
+        self.apply.view_mut()
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -283,6 +342,20 @@ impl Lambda {
     /// for compiling labeled-default expressions.
     pub fn lambda_id<R: Rt, E: UserEvent>(&self) -> Option<crate::LambdaId> {
         self.def.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+    }
+
+    /// Borrow the underlying `LambdaDef`. The static-call resolution
+    /// pass uses this to call `InitFn` (or construct a `GXLambda`
+    /// directly) at compile time when it can prove the call site's
+    /// function expression always resolves to this Lambda.
+    pub fn def<R: Rt, E: UserEvent>(&self) -> Option<&LambdaDef<R, E>> {
+        self.def.downcast_ref::<LambdaDef<R, E>>()
+    }
+
+    /// The wrapped `LambdaDef` `Value`. Equivalent to the value the
+    /// Lambda Node emits on its init event.
+    pub fn def_value(&self) -> &Value {
+        &self.def
     }
 }
 

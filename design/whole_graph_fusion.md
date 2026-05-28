@@ -1,6 +1,6 @@
 # Whole-graph fusion via sync/async effect tracking
 
-A plan for extending the per-lambda fusion + KIR + JIT pipeline
+A plan for extending the per-lambda fusion + GIR + JIT pipeline
 (`design/fusion_architecture.md`) to fuse arbitrary sync subgraphs of
 the dataflow, not just lambda bodies. Captures the design we converged
 on in conversation; open items called out as such. Last updated
@@ -11,7 +11,7 @@ on in conversation; open items called out as such. Last updated
 Per-lambda fusion has hit its ceiling. From the bench data in
 `fusion_architecture.md`:
 
-- KIR JIT is 50-70× over the node graph on mandelbrot, but **only 5-15%
+- GIR JIT is 50-70× over the node graph on mandelbrot, but **only 5-15%
   over the interpreter** on most workloads. Per-call overhead dominates
   inner-loop work.
 - Vectorization-shaped benches (`sum_of_squares`, `dot product`) show
@@ -24,7 +24,7 @@ Per-lambda fusion has hit its ceiling. From the bench data in
 
 The bottleneck is **dispatch granularity**. The runtime orchestrates
 every node: each `array::init` element runs through `Apply::update`,
-arg marshalling, `KirNode::update`, `KirNode::evaluate`, with `Value`
+arg marshalling, `GirNode::update`, `GirNode::evaluate`, with `Value`
 boxing on every input/output. The fused kernel is fast; the path to
 and from it is not.
 
@@ -174,7 +174,7 @@ effect alongside its type.
 
 If the call site is sync, the HOF body inlines into the surrounding
 fused kernel along with the resolved fn args. If async, fall back to
-dispatch-style execution via `KirOp::DynCall` or equivalent.
+dispatch-style execution via `GirOp::DynCall` or equivalent.
 
 #### Simple rule vs tight rule
 
@@ -199,7 +199,7 @@ be invoked at runtime — the runtime might have any function in that
 slot.
 
 Conservative classification: such call sites are **async**, dispatched
-via runtime indirection (`KirOp::DynCall`-style). Aligns with how
+via runtime indirection (`GirOp::DynCall`-style). Aligns with how
 M4g v1's stability gate already handles unstable callees.
 
 #### Composition
@@ -261,7 +261,7 @@ let increment = || unstable <- unstable + 1  // sync — returns null,
 ## Fusion model
 
 The dataflow graph is partitioned into **sync subgraphs** separated by
-**async edges**. Each maximal sync subgraph compiles to one fused KIR
+**async edges**. Each maximal sync subgraph compiles to one fused GIR
 kernel. The runtime orchestrates kernels through async edges using its
 existing event-batch mechanism.
 
@@ -292,20 +292,20 @@ A fused kernel:
 - Runs synchronously on each invocation (one cycle of work).
 
 The runtime sees a fused kernel as a single `Apply<R, E>` — the same
-interface `KirNode` already exposes. No fundamentally new runtime
+interface `GirNode` already exposes. No fundamentally new runtime
 machinery; just bigger fused chunks.
 
 ### Cross-kernel calls
 
 **Default: inline aggressively.** Within a sync subgraph, fuse every
 sync operation into a single kernel. Across kernels, prefer inlining
-the callee's KIR into the caller's kernel rather than emitting a
-cross-kernel call. The KIR is dramatically faster than node-graph
+the callee's GIR into the caller's kernel rather than emitting a
+cross-kernel call. The GIR is dramatically faster than node-graph
 dispatch per-op; the worst-case fused-and-inlined kernel is still
 faster than the equivalent node graph hopping through `Apply::update`
 + HashMap variable bindings + `Value` boxing.
 
-Separate kernels (using the existing `KirOp::Call` machinery from
+Separate kernels (using the existing `GirOp::Call` machinery from
 M4d v2/v3) only when forced:
 
 - **Mutual recursion** — A and B call each other; one of them must
@@ -394,9 +394,9 @@ expression with sync/async.
 
 **Estimated effort**: ~1 week.
 
-### M7 — Extend KIR coverage
+### M7 — Extend GIR coverage
 
-**What**: Add KIR ops for sync builtins not yet lowered. Priority by
+**What**: Add GIR ops for sync builtins not yet lowered. Priority by
 benchmark impact.
 
 **Priority order**:
@@ -412,7 +412,7 @@ benchmark impact.
 6. `map::*` and `re::*` — lower priority, smaller bench impact.
 
 **Open**: Some sync ops have complex state (e.g., `array::window`).
-KIR registers may not be expressive enough; may need richer state
+GIR registers may not be expressive enough; may need richer state
 slots. Address per-op as we hit them.
 
 **Estimated effort**: 2-3 weeks (depending on coverage breadth).
@@ -420,7 +420,7 @@ slots. Address per-op as we hit them.
 ### M8 — Whole-graph fusion analyzer
 
 **What**: Replace the per-lambda fusion entry with a top-level
-analyzer that finds maximal sync subgraphs and builds one KIR kernel
+analyzer that finds maximal sync subgraphs and builds one GIR kernel
 per subgraph.
 
 **Concretely**:
@@ -430,11 +430,11 @@ per subgraph.
   to async user functions).
 - Each maximal sync region between async edges is a subgraph.
 - For each subgraph, run the existing `build_kir_kernel` to produce
-  a `KirKernel`.
+  a `GirKernel`.
 - Wire each kernel into the runtime as a single `Apply<R, E>`.
 
 **Existing reuse**:
-- `build_kir_kernel` for KIR construction.
+- `build_kir_kernel` for GIR construction.
 - Lazy resolution / `apply_site_hint` for call-site type/effect.
 - JIT compilation pipeline (cranelift, shared module, async worker).
 
@@ -448,7 +448,7 @@ unstable bindings mediate cycle transitions via the existing variable
 machinery.
 
 **Concretely**:
-- The compiler produces a graph of `KirNode` (fused kernels) and
+- The compiler produces a graph of `GirNode` (fused kernels) and
   individual nodes for async-effect builtins, connected via runtime
   variable bindings.
 - The runtime's existing event-batch loop drives this unchanged.
@@ -487,7 +487,7 @@ Defer to v2.
 ### Debugging and error attribution
 
 Errors thrown from deep inside a fused kernel currently lose source
-mapping (per `fusion_architecture.md`). Maintain a KIR-op → ExprId
+mapping (per `fusion_architecture.md`). Maintain a GIR-op → ExprId
 map; emit ExprId in error messages so users can locate the source.
 Already partial; finish during M7.
 
@@ -507,18 +507,18 @@ without a JIT engine — a deployment concern, not a perf one.
 
 **Position**: AOT is no longer load-bearing for performance.
 Maintain it through M5–M7 in case it stays useful, but drop it if
-it becomes friction. Specifically, if extending KIR coverage in M7
+it becomes friction. Specifically, if extending GIR coverage in M7
 requires substantial new work in the Rust-source emitter
-(`fusion::kir_to_rust_kernel`) and the JIT path is on track to
+(`fusion::gir_to_rust_kernel`) and the JIT path is on track to
 match AOT performance, deleting the ~1500 lines of AOT-specific
-code (`kir_to_rust_kernel`, `rewrite_program`, `emit_package`,
+code (`gir_to_rust_kernel`, `rewrite_program`, `emit_package`,
 `render_lib_rs`/`cargo_toml`, the standalone-build pipeline) is the
 right call. The single-binary distribution case can be revisited
 later as a separate effort if it matters.
 
 ### Interaction with stability gate (M4g v1)
 
-Today's stability gate (`unstable_bindings` blocks `KirOp::Call`)
+Today's stability gate (`unstable_bindings` blocks `GirOp::Call`)
 implements a coarse version of what whole-graph fusion does
 properly. The gate becomes redundant once M8 lands — async-tagged
 values flowing into a callee make the call site async, no separate
@@ -545,8 +545,8 @@ stability check needed. Remove during M8.
   inference pass
 - `graphix-compiler/src/fusion.rs` — extended with whole-graph
   analyzer
-- `graphix-compiler/src/kernel_ir.rs` — new sync ops
-- `graphix-compiler/src/kir_interp.rs`, `kir_jit.rs` — lower new ops
+- `graphix-compiler/src/gir.rs` — new sync ops
+- `graphix-compiler/src/gir_interp.rs`, `gir_jit.rs` — lower new ops
 - `graphix-compiler/src/lib.rs` — `BuiltIn` trait extension for
   `EffectKind`
 - All `stdlib/graphix-package-*/src/lib.rs` — annotate builtins
@@ -561,7 +561,7 @@ the M8.4 banner — most notably *maximal sync subgraph splitting*,
 where an Async sub-expression doesn't split a region, it becomes
 a kernel input fed by a separately-compiled feeder Node
 (`RegionInputSource::Lifted`). The fusion pipeline today carves
-regions whose internal Sync ops absorb into a single KIR kernel,
+regions whose internal Sync ops absorb into a single GIR kernel,
 JIT-compiles via cranelift (region kernels included, not just
 lambda kernels), and feeds Async edges through the runtime
 variable system.
@@ -583,7 +583,7 @@ missing `emit_expr` arms for `StructWith`/`Array`-literal/etc.,
 composite variant payloads, composite-pattern select destructuring,
 free-var string region inputs. These are real work but not
 load-bearing on any current correctness story — each one is a
-specific KirType-widening or new emit_expr arm following the
+specific GirType-widening or new emit_expr arm following the
 patterns already established. See `CLAUDE.md`'s "Post-landings
 audit fixes" entry for the catalog.
 
@@ -598,7 +598,7 @@ clean.
 
 ## See also
 
-- `design/fusion_architecture.md` — Per-lambda fusion + KIR + JIT
+- `design/fusion_architecture.md` — Per-lambda fusion + GIR + JIT
   pipeline (foundation this builds on)
 - `design/queue_fn.md` — queue_fn feature, parked
 - `CLAUDE.md` "Recent Changes" — chronological catalog of every

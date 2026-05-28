@@ -247,8 +247,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 #[derive(Debug)]
 pub struct Ref {
     pub(super) spec: Arc<Expr>,
-    pub(crate) typ: Type,
-    pub(super) id: BindId,
+    pub typ: Type,
+    pub id: BindId,
     pub(super) top_id: ExprId,
 }
 
@@ -341,9 +341,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 #[derive(Debug)]
 pub struct ByRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
-    pub(crate) typ: Type,
-    pub(super) child: Node<R, E>,
-    pub(super) id: BindId,
+    pub typ: Type,
+    pub child: Node<R, E>,
+    pub id: BindId,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
@@ -425,9 +425,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 #[derive(Debug)]
 pub struct Deref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
-    pub(crate) typ: Type,
-    pub(super) child: Node<R, E>,
-    pub(super) id: Option<BindId>,
+    pub typ: Type,
+    pub child: Node<R, E>,
+    pub id: Option<BindId>,
     pub(super) top_id: ExprId,
 }
 

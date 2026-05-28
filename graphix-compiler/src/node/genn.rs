@@ -97,5 +97,7 @@ pub fn apply<R: Rt, E: UserEvent>(
         fnode,
         function: None,
         top_id,
+        statically_resolved: false,
+        first_static_update: false,
     })
 }

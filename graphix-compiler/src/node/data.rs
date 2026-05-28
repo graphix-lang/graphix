@@ -16,10 +16,10 @@ use triomphe::Arc;
 
 #[derive(Debug)]
 pub struct Struct<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    names: Box<[ArcStr]>,
-    n: Box<[Cached<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub names: Box<[ArcStr]>,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Struct<R, E> {
@@ -109,19 +109,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 }
 
 #[derive(Debug)]
-struct Replace<R: Rt, E: UserEvent> {
+pub struct Replace<R: Rt, E: UserEvent> {
     index: Option<usize>,
-    name: Value,
-    n: Cached<R, E>,
+    pub name: Value,
+    pub n: Cached<R, E>,
 }
 
 #[derive(Debug)]
 pub struct StructWith<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    source: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub source: Node<R, E>,
     current: Option<ValArray>,
-    replace: Box<[Replace<R, E>]>,
+    pub replace: Box<[Replace<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> StructWith<R, E> {
@@ -275,11 +275,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
 #[derive(Debug)]
 pub struct StructRef<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    source: Node<R, E>,
-    field: Option<usize>,
-    field_name: ArcStr,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub source: Node<R, E>,
+    pub field: Option<usize>,
+    pub field_name: ArcStr,
 }
 
 impl<R: Rt, E: UserEvent> StructRef<R, E> {
@@ -392,9 +392,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 
 #[derive(Debug)]
 pub struct Tuple<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Box<[Cached<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Tuple<R, E> {
@@ -474,10 +474,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 
 #[derive(Debug)]
 pub struct Variant<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    tag: ArcStr,
-    n: Box<[Cached<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub tag: ArcStr,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Variant<R, E> {
@@ -569,10 +569,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
 
 #[derive(Debug)]
 pub struct TupleRef<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    source: Node<R, E>,
-    field: usize,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub source: Node<R, E>,
+    pub field: usize,
 }
 
 impl<R: Rt, E: UserEvent> TupleRef<R, E> {

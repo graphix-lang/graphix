@@ -1,32 +1,32 @@
 # Graphix fusion architecture
 
 Captures the design decisions and remaining work for the fusion +
-KIR + JIT system on the `graphix-cranelift` branch. Written for
+GIR + JIT system on the `graphix-cranelift` branch. Written for
 future-me to pick up without rebuilding context. Last updated
 2026-04-30.
 
 ## What we have today
 
-Three execution paths share the same kernel IR (`KirKernel`):
+Three execution paths share the same kernel IR (`GirKernel`):
 
 1. **Node graph** (existing). Default fallback. Every Graphix lambda
    compiles to a tree of `Box<dyn Update>` nodes. Slow but always
    correct, with full reactive semantics.
 
-2. **KIR interpreter** (`kir_interp.rs`). Tree-walking interpreter
+2. **GIR interpreter** (`gir_interp.rs`). Tree-walking interpreter
    over typed `RegValue`s with a scope-stack env. ~9-50× faster than
-   the node graph depending on workload. Wrapped as `KirNode` (an
+   the node graph depending on workload. Wrapped as `GirNode` (an
    `Apply<R, E>`) so the rest of the runtime sees a normal function
    value.
 
-3. **KIR JIT** (`kir_jit.rs`). Cranelift codegen. Each kernel becomes
+3. **GIR JIT** (`gir_jit.rs`). Cranelift codegen. Each kernel becomes
    a typed CLIF function plus a uniform `extern "C" fn(*const u64,
-   *mut u64)` wrapper for type-erased dispatch from `KirNode`.
+   *mut u64)` wrapper for type-erased dispatch from `GirNode`.
    Sync (`GRAPHIX_JIT=1`) compiles at Lambda::compile; async
    (`GRAPHIX_JIT_ASYNC=1`) queues to a background worker that
    atomic-fills a `OnceLock` slot.
 
-4. **AOT** (`fusion::rewrite_program` + `kir_to_rust_kernel` +
+4. **AOT** (`fusion::rewrite_program` + `gir_to_rust_kernel` +
    `emit_package`). `graphix compile` rewrites the AST so fusable
    lambda bodies become builtin references, emits a Cargo crate
    where each kernel is a Rust source function, rustc/LLVM compiles
@@ -34,7 +34,7 @@ Three execution paths share the same kernel IR (`KirKernel`):
    (vectorization, alias analysis).
 
 `fusion::build_kir_kernel` is shared between (2/3) and (4) — both
-paths consume the same `KirKernel`.
+paths consume the same `GirKernel`.
 
 ## The fragility problem (and why it points at lazy fusion)
 
@@ -49,7 +49,7 @@ closure. Two consequences:
   breaks.
 - **Annotation dependency**. If iterate isn't fully annotated, its
   eager fusion fails, the snapshot is empty, and the outer kernel's
-  `iterate(...)` call can't lower as `KirOp::Call`. Mandelbrot drops
+  `iterate(...)` call can't lower as `GirOp::Call`. Mandelbrot drops
   from 53× back to ~14×.
 - **Startup cost**. Eager JIT compiles every fusable kernel at parse
   time. Acceptable for small programs; quadratic-feeling for big ones.
@@ -68,7 +68,7 @@ pub struct LambdaDef<R, E> {
 pub enum KernelCache {
     NotAttempted,
     InProgress,                               // breaks cycles
-    Built { kernel: Arc<KirKernel>, signature: KnownFusedFn },
+    Built { kernel: Arc<GirKernel>, signature: KnownFusedFn },
     Failed,
 }
 ```
@@ -87,19 +87,19 @@ pub enum KernelCache {
   it as unresolved, and returns None. v1 limit: mutual recursion
   doesn't fuse cross-kernel.
 
-This naturally gives the progression: GXLambda → KirNode (interp) →
-KirNode (JIT) per function as it heats up. No snapshot fragility,
+This naturally gives the progression: GXLambda → GirNode (interp) →
+GirNode (JIT) per function as it heats up. No snapshot fragility,
 no order dependency, no parse-time cost beyond what every kernel
 actually needs.
 
-## `KirOp::Call` vs `KirOp::DynCall`
+## `GirOp::Call` vs `GirOp::DynCall`
 
-Critical for correctness with rebindable function values. KIR
+Critical for correctness with rebindable function values. GIR
 needs *both* call shapes:
 
-### `KirOp::Call { fn_name: ArcStr, args: Vec<KirExpr> }`
+### `GirOp::Call { fn_name: ArcStr, args: Vec<GirExpr> }`
 
-Static, baked-in dispatch to a specific KirKernel. The interpreter
+Static, baked-in dispatch to a specific GirKernel. The interpreter
 resolves `fn_name` against a `KernelRegistry` (snapshot of stable
 kernels visible at fusion time); the JIT (when M4d v2 lands) emits
 a direct cranelift call to the callee's compiled function.
@@ -117,16 +117,16 @@ Emitting `Call` when the binding is unstable causes silent wrong
 output: a later `<-` to the binding doesn't propagate to the call
 site.
 
-### `KirOp::DynCall { fn_value: Box<KirExpr>, args: Vec<KirExpr> }`
+### `GirOp::DynCall { fn_value: Box<GirExpr>, args: Vec<GirExpr> }`
 
-Dynamic dispatch. `fn_value` is a KIR expression that evaluates to
-a function value (typically `KirOp::Local("callback")` for a HOF
+Dynamic dispatch. `fn_value` is a GIR expression that evaluates to
+a function value (typically `GirOp::Local("callback")` for a HOF
 arg, or a Ref-resolution to an unstable binding). The interpreter:
 
 1. Evaluates `fn_value` → `Value::Abstract(LambdaDef)`
 2. Calls `lambda_def.init` to get a fresh `Apply<R, E>` (or reuses
    one, depending on how we handle CallSite reuse)
-3. Packages KIR args as netidx Values (via RegValue::to_value)
+3. Packages GIR args as netidx Values (via RegValue::to_value)
 4. Calls `apply.update` with the args
 5. Unpacks the result Value back to RegValue
 
@@ -179,24 +179,24 @@ Re-bench on a stable power state if you want firm numbers.
 | benchmark | path | time | speedup vs node graph |
 |---|---|---|---|
 | mandelbrot (annotated, Graphix iterate + outer callback) | node graph | 9.62s | 1× |
-| | KIR interpreter | 0.206s | 47× |
-| | KIR JIT sync (M4d v2 cross-module) | 0.157s | 61× |
-| | KIR JIT async | 0.191s | (gates leaf only) |
+| | GIR interpreter | 0.206s | 47× |
+| | GIR JIT sync (M4d v2 cross-module) | 0.157s | 61× |
+| | GIR JIT async | 0.191s | (gates leaf only) |
 | mandelbrot (unannotated) | node graph | 10.45s | 1× |
-| | KIR interpreter | 0.187s | 56× |
-| | KIR JIT sync (M4d v2 cross-module) | 0.149s | 70× |
+| | GIR interpreter | 0.187s | 56× |
+| | GIR JIT sync (M4d v2 cross-module) | 0.149s | 70× |
 | mandelbrot_fullfused (Rust pixel_auto) | node graph | 0.33s | — |
-| | KIR JIT (also fuses fold callback) | 0.14s | — |
+| | GIR JIT (also fuses fold callback) | 0.14s | — |
 | fold_squared (1M unannotated HOF) | node graph | 65.1s | 1× |
-| | KIR interpreter | 6.6s | 9.9× |
-| | KIR JIT | 6.4s | 10.2× |
-| sum_tail (10M tight loop, single call) | KIR interpreter | 0.700s | — |
-| | KIR JIT sync | 0.118s | 5.9× over interp |
-| | KIR JIT async | 0.660s | (slot doesn't fill before single call returns) |
-| sum_of_squares (1M reduction over array) | KIR interpreter | ~10s | — |
-| | KIR JIT sync | ~10s | (no win — array machinery dominates) |
-| dot product (1M two-array elementwise) | KIR interpreter | ~85s | — |
-| | KIR JIT | ~85s | (same — array/fold dispatch is the bottleneck) |
+| | GIR interpreter | 6.6s | 9.9× |
+| | GIR JIT | 6.4s | 10.2× |
+| sum_tail (10M tight loop, single call) | GIR interpreter | 0.700s | — |
+| | GIR JIT sync | 0.118s | 5.9× over interp |
+| | GIR JIT async | 0.660s | (slot doesn't fill before single call returns) |
+| sum_of_squares (1M reduction over array) | GIR interpreter | ~10s | — |
+| | GIR JIT sync | ~10s | (no win — array machinery dominates) |
+| dot product (1M two-array elementwise) | GIR interpreter | ~85s | — |
+| | GIR JIT | ~85s | (same — array/fold dispatch is the bottleneck) |
 
 **M4d v2 impact** (mandelbrot): JIT sync was 0.176s pre-M4d v2 (when
 outer fell back to interpreter because it had a Call); now ~0.15s
@@ -205,8 +205,8 @@ iterate directly. About 12% faster, putting JIT within ~5% of the
 AOT-fullfused 0.14s baseline.
 
 **M4d v3 impact** (three-level hot loop, 100k iterations):
-- KIR interpreter: 0.866s
-- KIR JIT sync (full transitive JIT): 0.835s
+- GIR interpreter: 0.866s
+- GIR JIT sync (full transitive JIT): 0.835s
 
 JIT sync is ~4% faster than interpreter — pre-M4d v3 the outer
 kernel would fall back to interp because middle had a Call (to
@@ -220,11 +220,11 @@ Observations:
   marshalling) dominates over the inner loop in any pattern that
   invokes the kernel many times over short bodies. JIT only wins
   decisively in `sum_tail` where one call runs 10M inner iterations.
-- **The JIT and AOT are now neck-and-neck on mandelbrot**. KIR JIT
+- **The JIT and AOT are now neck-and-neck on mandelbrot**. GIR JIT
   is 0.16s, AOT-fullfused (Rust `pixel_auto` callback) is 0.14s.
   Within 14%. The remaining gap is interpreter-dispatched
-  `KirOp::Call` from outer to iterate; closing it requires either
-  cross-module CLIF calls or KIR-level inlining.
+  `GirOp::Call` from outer to iterate; closing it requires either
+  cross-module CLIF calls or GIR-level inlining.
 - **Vectorization-shaped benches (sum_of_squares, dot product) don't
   show meaningful JIT/interp gap** because the array-construction
   and fold-dispatch overhead is so large it dwarfs the inner-loop
@@ -244,7 +244,7 @@ consequences:
    The kernel is fast; getting it faster doesn't help when 90%+ of
    time is in array plumbing.
 
-2. **Mandelbrot's 49× speedup (with KIR JIT and interp basically
+2. **Mandelbrot's 49× speedup (with GIR JIT and interp basically
    tied) reflects this.** The per-pixel `array::init` dispatch +
    slot Apply construction is the dominant cost; even in fully-
    fused mode the inner iterate loop is a small fraction of total
@@ -277,7 +277,7 @@ dominates total runtime. Three options:
 - **A new array primitive that takes a fused kernel and a slice and
   runs the loop directly** (something like `array::fold_native(arr,
   init, fn)` where the fold loop is in Rust and the per-element
-  call dispatches into the KIR interpreter or JIT'd wrapper
+  call dispatches into the GIR interpreter or JIT'd wrapper
   directly, no Apply tree per slot). This is the version that
   actually moves the perf needle for users — it lets fusion's gains
   reach data-parallel patterns. Probably the right next-tier
@@ -293,7 +293,7 @@ than expected for the workloads we have:
 - **Mandelbrot AOT is 0.14s vs JIT 0.16s** — within 14%. The gap
   closes more with M4d v2 (cross-module JIT calls).
 - **Code cost**: ~1500 lines for the AOT-specific path
-  (`kir_to_rust_kernel` + `rewrite_program` + `emit_package` +
+  (`gir_to_rust_kernel` + `rewrite_program` + `emit_package` +
   `render_lib_rs/cargo_toml` + the standalone-build pipeline).
 
 **The case for keeping AOT**:
@@ -321,14 +321,14 @@ justify. Specifically, we need:
 ## Roadmap (priority order)
 
 ### Done
-- M1 KIR + AOT refactor
-- M2 KIR interpreter + KirNode
+- M1 GIR + AOT refactor
+- M2 GIR interpreter + GirNode
 - M3 Cranelift JIT lowering
 - M4 v1 Lambda::compile wiring (eager + deferred)
 - M4b v1 Sync JIT integration
 - M4c v1 Deferred fusion (resolved-FnType injection for unannotated)
 - M4c v2 Outer-scope const inlining at runtime
-- M4d v1 Kernel registry + interpreter `KirOp::Call`
+- M4d v1 Kernel registry + interpreter `GirOp::Call`
 - M4d v2 Cross-module JIT calls (shared JITModule, sync path)
 - M4d v3 Transitive fan-out via two-phase declare-then-define
 - M4e v1 Async JIT compile via background worker
@@ -372,7 +372,7 @@ runs at ~0.18s, identical to the annotated form. **Fully-annotated
 and unannotated lambdas now fuse equivalently through arbitrary
 nesting.**
 
-The kir_lazy_no_annotations and kir_lazy_three_level tests in
+The gir_lazy_no_annotations and gir_lazy_three_level tests in
 `graphix-tests/src/lang/functions.rs` cover the unannotated /
 multi-level cases.
 
@@ -411,21 +411,21 @@ runs it before the inner compile loop, populating
 `ctx.unstable_bindings`. `Bind::compile` checks the set before
 inserting into `fusion_lambdas` — unstable bindings just don't get
 registered as fusable callees, so cross-kernel calls to them can't
-lower as `KirOp::Call` and the caller's kernel falls back to
+lower as `GirOp::Call` and the caller's kernel falls back to
 GXLambda. Correct, conservative, ~50 lines. Other gx.rs entries
 (`check_inner` and the variants further down) don't yet run the
 scan; not bench-blocking.
 
-**M4g v2 — `KirOp::DynCall`.** ✅ Done (HOF args + static-non-
+**M4g v2 — `GirOp::DynCall`.** ✅ Done (HOF args + static-non-
 fusable callees, interpreter only).
 
-KIR additions:
-- `KirKernel.fn_params: Vec<FnParam>` — function-typed parameters
+GIR additions:
+- `GirKernel.fn_params: Vec<FnParam>` — function-typed parameters
   alongside the primitive `params`. Each `FnParam` carries a
   [`FnSource`] (`Param { arg_pos }` for HOF args / `Binding {
   bind_id }` for stable-bound non-fusable callees) + the callee's
   prim arg/return types.
-- `KirOp::DynCall { fn_index, args, arg_types, return_type }` —
+- `GirOp::DynCall { fn_index, args, arg_types, return_type }` —
   lowers `Apply{Ref(name)}` against a fn-typed param. fn_index is
   the position in `kernel.fn_params`.
 
@@ -434,7 +434,7 @@ callee signature is all-primitive) and registers them as fn_inputs
 in `FusionCtx`. `emit_known_fused_call` checks fn_inputs first; a
 hit emits `DynCall` instead of `Call`.
 
-Interpreter: `KirNode<R, E>` is now generic, holding a
+Interpreter: `GirNode<R, E>` is now generic, holding a
 `Vec<DynCallSlot<R, E>>` with one slot per fn-param. Each slot has
 pre-allocated `BindId`s + `Ref` arg-nodes (one per callee arg) +
 a cached `(LambdaDef*, Box<dyn Apply<R, E>>)` invalidated when the
@@ -447,7 +447,7 @@ Returns `Option<Value>` — `None` propagates up as a "Pending"
 `BodyResult` so the kernel returns `None` this cycle when a
 DynCall callee has no value yet.
 
-JIT: `KirOp::DynCall` errors out in the JIT lowering. Kernels
+JIT: `GirOp::DynCall` errors out in the JIT lowering. Kernels
 containing it fall back to the interpreter (the fall-back path was
 already there for other reasons; just doesn't break).
 
@@ -465,16 +465,16 @@ Limitations of v1:
   fusable lambda it'll fuse on its own first call.
 
 Tests:
-- `kir_dyncall_hof` (`combine(square, 5) → 26`) — HOF args path.
-- `kir_dyncall_static_nonfusable` (`outer(5) → 51` where
+- `gir_dyncall_hof` (`combine(square, 5) → 26`) — HOF args path.
+- `gir_dyncall_static_nonfusable` (`outer(5) → 51` where
   `helper`'s body uses `array::fold`, can't fuse) — Binding-source
   path.
 
 **M4d v2 / v3 — Cross-module JIT calls.** ✅ Done (sync path).
 
-Implemented as a single shared `JITModule` in `kir_jit::SHARED_JIT`
-(a static `Mutex<SharedJit>`). Kernels with `KirOp::Call` go
-through `kir_jit::compile_kernel_with_callees`, which uses a
+Implemented as a single shared `JITModule` in `gir_jit::SHARED_JIT`
+(a static `Mutex<SharedJit>`). Kernels with `GirOp::Call` go
+through `gir_jit::compile_kernel_with_callees`, which uses a
 two-phase declare-then-define so transitive fan-out and mutual
 recursion both work:
 
@@ -485,7 +485,7 @@ Cached entries (keyed by `Arc::as_ptr`) reuse their existing
 FuncIds; fresh kernels queue for phase-2 body compilation.
 
 **Phase 2 — define each freshly-declared body**. For each kernel,
-walk its body for `KirOp::Call` sites and `declare_func_in_func`
+walk its body for `GirOp::Call` sites and `declare_func_in_func`
 each callee's `FuncId` (already declared in phase 1). The body
 emits direct CLIF `call` against the resulting `FuncRef`. Self-
 recursion (e.g. naive `fib`'s `fib(n-1) + fib(n-2)`) is just a
@@ -497,15 +497,15 @@ mapped read-execute.
 
 The caller (lambda.rs `InitFn`) is responsible for passing the
 *transitive* closure of callees. After lazy-resolving immediate
-callees, it walks each resolved kernel for further `KirOp::Call`
-sites via `kernel_ir::collect_call_sites` and pulls those in too.
+callees, it walks each resolved kernel for further `GirOp::Call`
+sites via `gir::collect_call_sites` and pulls those in too.
 
 The lambda.rs `InitFn` still routes leaf kernels through
 `compile_kernel_with_wrapper` (private module — cheaper, no
 mutex contention); kernels with calls go through the shared
 path.
 
-`SharedJit::by_kernel` stores `Arc<KirKernel>` alongside the
+`SharedJit::by_kernel` stores `Arc<GirKernel>` alongside the
 FuncId+Sig — without this, dropped Arcs could free their memory,
 the allocator could land a new (different-content) Arc at the
 same address, and a stale FuncId would bind to the wrong code.
@@ -519,18 +519,18 @@ Limitations:
 - Cranelift doesn't inline across function boundaries, so a
   tight cross-kernel call still pays one `call`/`ret` per
   invocation. Closing the residual gap to AOT (~5-12% on
-  mandelbrot) would require KIR-level inlining or building a
+  mandelbrot) would require GIR-level inlining or building a
   single super-function from the call chain.
 
-Tests: `kir_jit::tests::shared_module_cross_kernel_call`,
+Tests: `gir_jit::tests::shared_module_cross_kernel_call`,
 `shared_module_self_recursion` (non-tail fib via Call),
 `shared_module_callee_dedup` (same Arc shared across parents),
 `shared_module_transitive_fan_out` (3-level chain in one
 compile session).
 
-**M4e v2 — IR-hash cache.** Hash KirKernel structurally; dedupe JIT
+**M4e v2 — IR-hash cache.** Hash GirKernel structurally; dedupe JIT
 compiles across distinct `Lambda::compile` invocations that produce
-identical KIR. Marginal on bench programs but real for codebases
+identical GIR. Marginal on bench programs but real for codebases
 with shared utility lambdas.
 
 ### Considered + parked
@@ -541,29 +541,29 @@ is provably within ~10% of AOT on a real vectorization bench, the
 
 ## Key invariants to preserve
 
-- `KirNode` is *not* generic over `R/E` (only its `Apply<R, E>` impl
+- `GirNode` is *not* generic over `R/E` (only its `Apply<R, E>` impl
   is). The struct has no `PhantomData<(R, E)>`. Required because
   `Apply<R, E>` requires `Send + Sync` and we don't want to bound
   R/E with those everywhere.
-- `KirKernel` is `Send + Sync` (auto-derived). Keep it that way so
+- `GirKernel` is `Send + Sync` (auto-derived). Keep it that way so
   the JIT worker thread can ship them across.
 - `WrappedKernel` carries its `JitCtx` so the mmap'd code stays
   alive. Don't separate them.
-- `kir_jit::pack_reg_to_u64` / `unpack_u64_to_reg` are the only sane
+- `gir_jit::pack_reg_to_u64` / `unpack_u64_to_reg` are the only sane
   way to cross the wrapper ABI. Don't transmute around them.
-- The KIR has typed `KirExpr { op: KirOp, typ: PrimType }`. Every
+- The GIR has typed `GirExpr { op: GirOp, typ: PrimType }`. Every
   expression carries its result type; backends rely on this. Don't
   introduce untyped variants.
 
 ## Files
 
-- `graphix-compiler/src/kernel_ir.rs` — KIR types + Rust-source
+- `graphix-compiler/src/gir.rs` — GIR types + Rust-source
   backend
-- `graphix-compiler/src/kir_interp.rs` — Tree-walking interpreter +
-  `KirNode<R, E>`
-- `graphix-compiler/src/kir_jit.rs` — Cranelift JIT + uniform-ABI
+- `graphix-compiler/src/gir_interp.rs` — Tree-walking interpreter +
+  `GirNode<R, E>`
+- `graphix-compiler/src/gir_jit.rs` — Cranelift JIT + uniform-ABI
   wrapper + async worker
-- `graphix-compiler/src/fusion.rs` — Front end: Graphix Expr → KIR.
+- `graphix-compiler/src/fusion.rs` — Front end: Graphix Expr → GIR.
   Also AOT package emission.
 - `graphix-compiler/src/node/lambda.rs` — Lambda::compile, InitFn
   closure with eager + deferred + JIT wiring

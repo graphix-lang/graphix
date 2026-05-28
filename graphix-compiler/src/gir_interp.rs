@@ -1,7 +1,7 @@
 //! Tree-walking interpreter for the kernel IR.
 //!
 //! This is the universal "fusable lambda" execution path: every lambda
-//! whose body fuses into [`KirKernel`] runs through this interpreter
+//! whose body fuses into [`GirKernel`] runs through this interpreter
 //! instead of being compiled into a tree of `Box<dyn Update>` nodes.
 //! For pure-arithmetic kernels (mandelbrot, fib, anything with a hot
 //! inner loop on primitives) the interpreter is strictly faster than
@@ -15,7 +15,7 @@
 //! - Doesn't carry per-node reactive machinery (`sleep`, `refs`,
 //!   per-op caching) for nodes whose only trigger is "an arg changed".
 //!
-//! Inputs cross the boundary as `Value` once at the [`KirNode::update`]
+//! Inputs cross the boundary as `Value` once at the [`GirNode::update`]
 //! boundary, get unpacked into [`RegValue`]s, and the interpreter runs
 //! over typed primitives until the kernel returns.
 //!
@@ -25,8 +25,8 @@
 //! interpreter remains as the always-available fallback.
 
 use crate::{
-    kernel_ir::{
-        BinOp, BoolOp, CmpOp, ConstVal, KirExpr, KirKernel, KirOp, KirStmt, KirType,
+    gir::{
+        BinOp, BoolOp, CmpOp, ConstVal, GirExpr, GirKernel, GirOp, GirStmt, GirType,
         PrimType,
     },
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
@@ -136,7 +136,7 @@ impl RegValue {
     fn as_bool(self) -> bool {
         match self {
             RegValue::Bool(b) => b,
-            _ => panic!("as_bool: not a Bool — KIR is malformed"),
+            _ => panic!("as_bool: not a Bool — GIR is malformed"),
         }
     }
 
@@ -154,7 +154,7 @@ impl RegValue {
             RegValue::U32(x) => x as usize,
             RegValue::U64(x) => x as usize,
             RegValue::F32(_) | RegValue::F64(_) | RegValue::Bool(_) => {
-                panic!("as_usize: non-integer index — KIR is malformed")
+                panic!("as_usize: non-integer index — GIR is malformed")
             }
         }
     }
@@ -207,22 +207,22 @@ pub enum EvalResult {
     Scalar(RegValue),
     ValArray(ValArray),
     Variant(Value),
-    /// `KirType::String` result — kernel evaluation produces
-    /// strings via `KirOp::ConstStr` (string literals) and
-    /// `KirOp::Concat` (StringInterpolate). The runtime marshals
+    /// `GirType::String` result — kernel evaluation produces
+    /// strings via `GirOp::ConstStr` (string literals) and
+    /// `GirOp::Concat` (StringInterpolate). The runtime marshals
     /// these into `Value::String` at the kernel boundary (DynCall
     /// arg push, kernel return).
     String(arcstr::ArcStr),
-    /// `KirType::Null` result — the singleton `null` value
-    /// produced by `KirOp::ConstNull`. Marshals to `Value::Null`
+    /// `GirType::Null` result — the singleton `null` value
+    /// produced by `GirOp::ConstNull`. Marshals to `Value::Null`
     /// at the kernel boundary.
     Null,
-    /// `KirType::Nullable` result — a value of graphix's `[T, null]`
+    /// `GirType::Nullable` result — a value of graphix's `[T, null]`
     /// option shape. Inner `Value` is either `Value::Null` (the null
     /// case) or `T`'s runtime form (the non-null case). Produced
     /// when an `IfChain` whose declared type is `Nullable<T>` merges
     /// mixed `T`/`null` arms, and when reading a `Nullable<T>` local
-    /// out of `env.nullables`. `KirOp::IsNull` matches this variant
+    /// out of `env.nullables`. `GirOp::IsNull` matches this variant
     /// whenever its inner `Value` is `Value::Null`.
     Nullable(Value),
 }
@@ -244,7 +244,7 @@ impl EvalResult {
         match self {
             EvalResult::Scalar(r) => r,
             other => panic!(
-                "EvalResult: expected scalar, got {other:?} — KIR is malformed"
+                "EvalResult: expected scalar, got {other:?} — GIR is malformed"
             ),
         }
     }
@@ -254,7 +254,7 @@ impl EvalResult {
         match self {
             EvalResult::ValArray(a) => a,
             other => panic!(
-                "EvalResult: expected ValArray, got {other:?} — KIR is malformed"
+                "EvalResult: expected ValArray, got {other:?} — GIR is malformed"
             ),
         }
     }
@@ -264,7 +264,7 @@ impl EvalResult {
         match self {
             EvalResult::Variant(v) => v,
             other => panic!(
-                "EvalResult: expected variant Value, got {other:?} — KIR is malformed"
+                "EvalResult: expected variant Value, got {other:?} — GIR is malformed"
             ),
         }
     }
@@ -291,27 +291,27 @@ struct InterpEnv {
     param_count: usize,
     /// Array / tuple / struct parameters bound at kernel entry. All
     /// three share the `ValArray` runtime layout, so they live in one
-    /// table looked up by name from `KirOp::ArrayLen` /
-    /// `KirOp::ArrayGet` / `KirOp::TupleGet` / `KirOp::StructGet`.
+    /// table looked up by name from `GirOp::ArrayLen` /
+    /// `GirOp::ArrayGet` / `GirOp::TupleGet` / `GirOp::StructGet`.
     /// Don't shadow scalar locals — fusion enforces disjoint names.
     arrays: Vec<(arcstr::ArcStr, ValArray)>,
     /// Variant parameters bound at kernel entry. Kept separate from
     /// `arrays` because the runtime representation is `Value`
     /// (`String` for nullary, `Array` for with-payload), not
-    /// uniformly `ValArray`. `KirOp::VariantTagEq` /
-    /// `KirOp::VariantPayload` dispatch on the Value shape.
+    /// uniformly `ValArray`. `GirOp::VariantTagEq` /
+    /// `GirOp::VariantPayload` dispatch on the Value shape.
     variants: Vec<(arcstr::ArcStr, Value)>,
     /// Nullable parameters / let-bindings — graphix's `[T, null]`
     /// option shape. Slot value is either `Value::Null` or `T`'s
     /// runtime form (no discriminator tag). Kept separate from
     /// `variants` for semantic clarity; both happen to store `Value`
-    /// but the consumer ops differ (`KirOp::IsNull` here vs.
-    /// `KirOp::VariantTagEq`/`Payload` on `variants`).
+    /// but the consumer ops differ (`GirOp::IsNull` here vs.
+    /// `GirOp::VariantTagEq`/`Payload` on `variants`).
     nullables: Vec<(arcstr::ArcStr, Value)>,
     /// String let-bindings (no string params on either backend — the
     /// shape rejects on tail-call rebind by design). Slot value is
-    /// an owned `ArcStr`; reads via `KirOp::Local` for a
-    /// `KirType::String`-typed expression return a clone (refcount
+    /// an owned `ArcStr`; reads via `GirOp::Local` for a
+    /// `GirType::String`-typed expression return a clone (refcount
     /// bump), so each consumer site gets its own owned ArcStr without
     /// disturbing the env's slot.
     strings: Vec<(arcstr::ArcStr, arcstr::ArcStr)>,
@@ -320,7 +320,7 @@ struct InterpEnv {
     /// `i`th tail-call arg. Empty for non-tail kernels.
     /// `std::mem::take`d during tail-call handling to satisfy the
     /// borrow checker, then put back.
-    tail_call_slots: Vec<crate::kernel_ir::TailCallSlot>,
+    tail_call_slots: Vec<crate::gir::TailCallSlot>,
 }
 
 impl InterpEnv {
@@ -343,7 +343,7 @@ impl InterpEnv {
                 return;
             }
         }
-        panic!("rebind_array: name `{name}` not bound — KIR malformed");
+        panic!("rebind_array: name `{name}` not bound — GIR malformed");
     }
 
     fn rebind_variant(&mut self, name: &str, value: Value) {
@@ -353,7 +353,7 @@ impl InterpEnv {
                 return;
             }
         }
-        panic!("rebind_variant: name `{name}` not bound — KIR malformed");
+        panic!("rebind_variant: name `{name}` not bound — GIR malformed");
     }
 
     fn lookup(&self, name: &str) -> Option<RegValue> {
@@ -402,7 +402,7 @@ impl InterpEnv {
                 return;
             }
         }
-        panic!("rebind_nullable: name `{name}` not bound — KIR malformed");
+        panic!("rebind_nullable: name `{name}` not bound — GIR malformed");
     }
 
     fn lookup_string(&self, name: &str) -> Option<&arcstr::ArcStr> {
@@ -429,13 +429,13 @@ impl InterpEnv {
             EvalResult::Variant(v) => self.push_variant(name, v),
             EvalResult::Nullable(v) => self.push_nullable(name, v),
             EvalResult::String(s) => self.push_string(name, s),
-            // The singleton `null` value (KirType::Null) has no
+            // The singleton `null` value (GirType::Null) has no
             // useful storage form on its own — every site that would
             // produce one is wrapped to `Nullable<T>` first. A bare
-            // `Null` reaching this slot means KIR is malformed.
+            // `Null` reaching this slot means GIR is malformed.
             EvalResult::Null => panic!(
                 "EvalResult::Null pushed as local — kernel build \
-                 should have widened to Nullable<T>, KIR is malformed"
+                 should have widened to Nullable<T>, GIR is malformed"
             ),
         }
     }
@@ -461,17 +461,17 @@ enum BodyResult {
     /// Tail call — params already updated in env, locals beyond params
     /// already truncated. Caller re-enters the body from the top.
     TailCall,
-    /// A `KirOp::DynCall` returned `None` this cycle (the late-bound
+    /// A `GirOp::DynCall` returned `None` this cycle (the late-bound
     /// callee had no value yet). Kernel as a whole returns `None`,
     /// so the caller can re-fire when the callee produces.
     Pending,
 }
 
 /// Type-erased late-bound dispatcher passed through the interpreter
-/// for `KirOp::DynCall`. Takes the kernel's `fn_index` plus the args
+/// for `GirOp::DynCall`. Takes the kernel's `fn_index` plus the args
 /// already converted to [`Value`]s, and returns `Some(value)` if the
 /// callee produced a value this cycle or `None` if it didn't. The
-/// closure body is created in [`KirNode`]'s `Apply<R, E>` impl and
+/// closure body is created in [`GirNode`]'s `Apply<R, E>` impl and
 /// captures the per-slot Apply state, so this trait-object is the
 /// only place R/E generics surface in eval_kernel.
 pub type DynDispatch<'a> = &'a mut dyn FnMut(u32, &[Value]) -> Option<Value>;
@@ -479,27 +479,27 @@ pub type DynDispatch<'a> = &'a mut dyn FnMut(u32, &[Value]) -> Option<Value>;
 /// Dispatch closure that panics on any DynCall — used by callers
 /// (and tests) that build kernels without HOF args.
 fn no_dyn_dispatch(_idx: u32, _args: &[Value]) -> Option<Value> {
-    panic!("KirOp::DynCall encountered but no dispatcher supplied")
+    panic!("GirOp::DynCall encountered but no dispatcher supplied")
 }
 
 // ─── Public entry points ─────────────────────────────────────────
 
-/// Evaluate a [`KirKernel`] given a slice of typed argument values.
+/// Evaluate a [`GirKernel`] given a slice of typed argument values.
 /// Returns the kernel's return value as a [`RegValue`]. Uses an
-/// empty registry and panics on any `KirOp::DynCall` — for kernels
+/// empty registry and panics on any `GirOp::DynCall` — for kernels
 /// that contain DynCall sites, use [`eval_kernel_with_dispatch`].
-pub fn eval_kernel(kernel: &KirKernel, args: &[RegValue]) -> RegValue {
+pub fn eval_kernel(kernel: &GirKernel, args: &[RegValue]) -> RegValue {
     let empty = KernelRegistry::default();
     eval_kernel_with_registry(kernel, args, &empty)
 }
 
-/// Evaluate a [`KirKernel`], resolving any `KirOp::Call` against
-/// `registry`. Panics on `KirOp::DynCall` — use
+/// Evaluate a [`GirKernel`], resolving any `GirOp::Call` against
+/// `registry`. Panics on `GirOp::DynCall` — use
 /// [`eval_kernel_with_dispatch`] for those. Convenience wrapper
 /// for scalar-result kernels; if the kernel returns a composite,
 /// use [`eval_kernel_with_dispatch`] directly.
 pub fn eval_kernel_with_registry(
-    kernel: &KirKernel,
+    kernel: &GirKernel,
     args: &[RegValue],
     registry: &KernelRegistry,
 ) -> RegValue {
@@ -509,15 +509,15 @@ pub fn eval_kernel_with_registry(
         .into_scalar()
 }
 
-/// Evaluate a [`KirKernel`] resolving `KirOp::Call` via `registry`
-/// and `KirOp::DynCall` via `dispatch`. Returns `None` if a DynCall
+/// Evaluate a [`GirKernel`] resolving `GirOp::Call` via `registry`
+/// and `GirOp::DynCall` via `dispatch`. Returns `None` if a DynCall
 /// produced no value this cycle (synchronous-only v1: the kernel
 /// short-circuits and the caller must re-fire when the callee
 /// catches up). Returns the kernel's full `EvalResult` (scalar /
 /// ValArray / Variant) — callers that know the kernel's return type
 /// can destructure via `.into_scalar()` etc.
 pub fn eval_kernel_with_dispatch(
-    kernel: &KirKernel,
+    kernel: &GirKernel,
     args: &[RegValue],
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
@@ -530,7 +530,7 @@ pub fn eval_kernel_with_dispatch(
 /// declaration order. Tuple, struct, and variant args are empty
 /// here — use [`eval_kernel_full`] for those.
 pub fn eval_kernel_with_dispatch_and_arrays(
-    kernel: &KirKernel,
+    kernel: &GirKernel,
     args: &[RegValue],
     array_args: &[ValArray],
     registry: &KernelRegistry,
@@ -547,7 +547,7 @@ pub fn eval_kernel_with_dispatch_and_arrays(
 /// with-payload); tuples and structs share the `ValArray` boundary
 /// with arrays; nullables take `Value` (`Null` or `T`'s form).
 pub fn eval_kernel_full(
-    kernel: &KirKernel,
+    kernel: &GirKernel,
     args: &[RegValue],
     array_args: &[ValArray],
     tuple_args: &[ValArray],
@@ -612,7 +612,7 @@ pub fn eval_kernel_full(
     for (p, v) in kernel.nullable_params.iter().zip(nullable_args) {
         env.push_nullable(p.name.clone(), v.clone());
     }
-    // Hand the tail-call slot map to the env so KirStmt::TailCall
+    // Hand the tail-call slot map to the env so GirStmt::TailCall
     // can route each new arg into the right slot list.
     env.tail_call_slots = kernel.tail_call_slots.clone();
     loop {
@@ -631,20 +631,20 @@ pub fn eval_kernel_full(
 
 fn eval_body(
     env: &mut InterpEnv,
-    stmts: &[KirStmt],
+    stmts: &[GirStmt],
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
 ) -> BodyResult {
     for stmt in stmts {
         match stmt {
-            KirStmt::Let(l) => {
+            GirStmt::Let(l) => {
                 let v = match eval_expr(env, &l.value, registry, dispatch) {
                     Some(v) => v,
                     None => return BodyResult::Pending,
                 };
                 env.push_local(l.local.clone(), v);
             }
-            KirStmt::Discard(e) => {
+            GirStmt::Discard(e) => {
                 // Evaluate for side effects; throw away the result.
                 // `None` here still means "pending" (an inner
                 // DynCall hasn't produced a value this cycle yet) —
@@ -654,13 +654,13 @@ fn eval_body(
                     None => return BodyResult::Pending,
                 }
             }
-            KirStmt::Return(e) => {
+            GirStmt::Return(e) => {
                 return match eval_expr(env, e, registry, dispatch) {
                     Some(v) => BodyResult::Return(v),
                     None => BodyResult::Pending,
                 };
             }
-            KirStmt::TailCall { args } => {
+            GirStmt::TailCall { args } => {
                 // Evaluate all args first so an arg expression that
                 // reads an old param sees the old value, not one we
                 // already overwrote. Each arg can be scalar or
@@ -724,7 +724,7 @@ fn eval_body(
                 env.truncate(env.param_count);
                 return BodyResult::TailCall;
             }
-            KirStmt::Select { arms } => {
+            GirStmt::Select { arms } => {
                 for arm in arms {
                     let matches = match &arm.cond {
                         None => true,
@@ -746,30 +746,30 @@ fn eval_body(
                 }
                 panic!(
                     "select fell through — typecheck should forbid; \
-                     KIR is malformed"
+                     GIR is malformed"
                 );
             }
         }
     }
     panic!(
-        "body fell through without a return or tail call — KIR is \
+        "body fell through without a return or tail call — GIR is \
          malformed"
     );
 }
 
 fn eval_expr(
     env: &mut InterpEnv,
-    e: &KirExpr,
+    e: &GirExpr,
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
 ) -> Option<EvalResult> {
     Some(match &e.op {
-        KirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
-        KirOp::ConstStr(s) => EvalResult::String(s.clone()),
-        KirOp::ConstNull => EvalResult::Null,
-        KirOp::IsNull(inner) => {
+        GirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
+        GirOp::ConstStr(s) => EvalResult::String(s.clone()),
+        GirOp::ConstNull => EvalResult::Null,
+        GirOp::IsNull(inner) => {
             // True if the operand evaluates to a null shape — either the
-            // singleton `EvalResult::Null` (from `KirOp::ConstNull`) or
+            // singleton `EvalResult::Null` (from `GirOp::ConstNull`) or
             // an `EvalResult::Nullable(Value::Null)` (from a Nullable
             // local read, an IfChain whose taken arm produced null, or
             // a DynCall return). A `Variant(Value::Null)` would mean
@@ -784,7 +784,69 @@ fn eval_expr(
             };
             EvalResult::Scalar(RegValue::Bool(is_null))
         }
-        KirOp::Concat(parts) => {
+        GirOp::QopUnwrap { inner, success_typ } => {
+            // Evaluate inner — must be Nullable. If the inner Value
+            // is `Value::Error(...)` (Result error case), signal
+            // pending — the wrapper's pending check returns `None`,
+            // mirroring `Qop::update`'s "return None on Error" path.
+            // For non-error values, extract `T` from the Value
+            // according to `success_typ`. `EvalResult::Null` /
+            // `Nullable(Value::Null)` is a legal "no-error null"
+            // value and passes through (graphix's `?` doesn't
+            // propagate plain null, only `Value::Error`).
+            let v = eval_expr(env, inner, registry, dispatch)?;
+            let inner_value = match v {
+                EvalResult::Nullable(v) => v,
+                other => {
+                    // Caller should only emit QopUnwrap with a
+                    // Nullable inner. Anything else is a GIR bug.
+                    panic!(
+                        "GirOp::QopUnwrap: inner expected Nullable, \
+                         got {other:?}"
+                    )
+                }
+            };
+            if matches!(inner_value, Value::Error(_)) {
+                // Signal pending — wrapper-level check returns None.
+                crate::gir_jit_helpers::DYNCALL_PENDING
+                    .with(|c| c.set(true));
+                return None;
+            }
+            // Extract success T from the Value. The shape depends on
+            // `success_typ`: a primitive extracts as Scalar; a String
+            // wraps as String; composite shapes pass the Value
+            // through (Array/Tuple/Struct ride as Value::Array;
+            // Variant/Nullable as the inner enum).
+            match success_typ {
+                GirType::Prim(p) => match RegValue::from_value(&inner_value, *p) {
+                    Some(r) => EvalResult::Scalar(r),
+                    None => panic!(
+                        "QopUnwrap: Value {inner_value:?} doesn't match \
+                         success_typ {p:?}"
+                    ),
+                },
+                GirType::String => match inner_value {
+                    Value::String(s) => EvalResult::String(s),
+                    other => panic!(
+                        "QopUnwrap: expected Value::String, got {other:?}"
+                    ),
+                },
+                GirType::Array(_)
+                | GirType::Tuple(_)
+                | GirType::Struct(_) => match inner_value {
+                    Value::Array(a) => EvalResult::ValArray(a),
+                    other => panic!(
+                        "QopUnwrap: expected Value::Array, got {other:?}"
+                    ),
+                },
+                GirType::Variant(_) => EvalResult::Variant(inner_value),
+                GirType::Nullable(_) => EvalResult::Nullable(inner_value),
+                GirType::Unit | GirType::Null => panic!(
+                    "QopUnwrap: success_typ {success_typ:?} unsupported"
+                ),
+            }
+        }
+        GirOp::Concat(parts) => {
             // Render each part — String children emit bare (no quoting,
             // matching how `"x=[s]"` outputs `s`'s contents directly);
             // non-string children render via `NakedValue`, which strips
@@ -806,78 +868,78 @@ fn eval_expr(
                     }
                     other => panic!(
                         "Concat child has unexpected EvalResult: \
-                         {other:?} — KIR is malformed"
+                         {other:?} — GIR is malformed"
                     ),
                 }
             }
             EvalResult::String(arcstr::ArcStr::from(buf.as_str()))
         }
-        KirOp::Local(name) => match &e.typ {
-            KirType::Prim(_) => EvalResult::Scalar(env.lookup(name).unwrap_or_else(
-                || panic!("undefined scalar local `{name}` — KIR is malformed"),
+        GirOp::Local(name) => match &e.typ {
+            GirType::Prim(_) => EvalResult::Scalar(env.lookup(name).unwrap_or_else(
+                || panic!("undefined scalar local `{name}` — GIR is malformed"),
             )),
-            KirType::Array(_)
-            | KirType::Tuple(_)
-            | KirType::Struct(_) => EvalResult::ValArray(
+            GirType::Array(_)
+            | GirType::Tuple(_)
+            | GirType::Struct(_) => EvalResult::ValArray(
                 env.lookup_array(name)
                     .unwrap_or_else(|| {
-                        panic!("undefined composite local `{name}` — KIR is malformed")
+                        panic!("undefined composite local `{name}` — GIR is malformed")
                     })
                     .clone(),
             ),
-            KirType::Variant(_) => EvalResult::Variant(
+            GirType::Variant(_) => EvalResult::Variant(
                 env.lookup_variant(name)
                     .unwrap_or_else(|| {
-                        panic!("undefined variant local `{name}` — KIR is malformed")
+                        panic!("undefined variant local `{name}` — GIR is malformed")
                     })
                     .clone(),
             ),
-            KirType::Nullable(_) => EvalResult::Nullable(
+            GirType::Nullable(_) => EvalResult::Nullable(
                 env.lookup_nullable(name)
                     .unwrap_or_else(|| {
-                        panic!("undefined nullable local `{name}` — KIR is malformed")
+                        panic!("undefined nullable local `{name}` — GIR is malformed")
                     })
                     .clone(),
             ),
             // Unit-typed locals don't exist — `emit_bind_stmt` routes
-            // them through `KirStmt::Discard` without registering a
+            // them through `GirStmt::Discard` without registering a
             // local. A `Local` ref of Unit type is a malformed kernel.
-            KirType::Unit => panic!(
-                "Local(`{name}`) has KirType::Unit — emit_bind_stmt \
-                 should have emitted Discard, KIR is malformed"
+            GirType::Unit => panic!(
+                "Local(`{name}`) has GirType::Unit — emit_bind_stmt \
+                 should have emitted Discard, GIR is malformed"
             ),
             // String-typed local: clone the slot's owned ArcStr —
             // each read produces a fresh owned ArcStr (refcount
             // bump) so the consumer can pass it through helpers
             // that take ownership (push_arcstr, etc.) without
             // disturbing the env slot.
-            KirType::String => EvalResult::String(
+            GirType::String => EvalResult::String(
                 env.lookup_string(name)
                     .unwrap_or_else(|| {
-                        panic!("undefined string local `{name}` — KIR is malformed")
+                        panic!("undefined string local `{name}` — GIR is malformed")
                     })
                     .clone(),
             ),
-            // Bare `KirType::Null` locals don't exist — the singleton
-            // null is always either an inline `KirOp::ConstNull` or
+            // Bare `GirType::Null` locals don't exist — the singleton
+            // null is always either an inline `GirOp::ConstNull` or
             // widened to `Nullable<T>` before binding. A `Local` ref
-            // of Null type means KIR is malformed.
-            KirType::Null => panic!(
-                "Local(`{name}`) has KirType::Null — kernel build \
-                 should have widened to Nullable<T>, KIR is malformed"
+            // of Null type means GIR is malformed.
+            GirType::Null => panic!(
+                "Local(`{name}`) has GirType::Null — kernel build \
+                 should have widened to Nullable<T>, GIR is malformed"
             ),
         },
-        KirOp::Bin { op, lhs, rhs } => {
+        GirOp::Bin { op, lhs, rhs } => {
             let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
             let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
             EvalResult::Scalar(eval_bin(*op, l, r))
         }
-        KirOp::Cmp { op, lhs, rhs } => {
+        GirOp::Cmp { op, lhs, rhs } => {
             let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
             let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
             EvalResult::Scalar(eval_cmp(*op, l, r))
         }
-        KirOp::BoolBin { op, lhs, rhs } => {
+        GirOp::BoolBin { op, lhs, rhs } => {
             // Short-circuit to match Rust && / ||.
             let l = eval_expr(env, lhs, registry, dispatch)?
                 .into_scalar()
@@ -896,16 +958,16 @@ fn eval_expr(
             };
             EvalResult::Scalar(RegValue::Bool(result))
         }
-        KirOp::Not(inner) => EvalResult::Scalar(RegValue::Bool(
+        GirOp::Not(inner) => EvalResult::Scalar(RegValue::Bool(
             !eval_expr(env, inner, registry, dispatch)?
                 .into_scalar()
                 .as_bool(),
         )),
-        KirOp::Cast { inner, target } => {
+        GirOp::Cast { inner, target } => {
             let v = eval_expr(env, inner, registry, dispatch)?.into_scalar();
             EvalResult::Scalar(eval_cast(v, *target))
         }
-        KirOp::Call { fn_name, args } => {
+        GirOp::Call { fn_name, args } => {
             // Look up the callee in the registry, evaluate args (in
             // the caller's env), then recursively eval the callee
             // with its own fresh env. Args are scalar today
@@ -914,7 +976,7 @@ fn eval_expr(
             // need this list of smallvecs extended.
             let callee = registry.kernels.get(fn_name).unwrap_or_else(|| {
                 panic!(
-                    "KirOp::Call to `{fn_name}` not in kernel registry \
+                    "GirOp::Call to `{fn_name}` not in kernel registry \
                      — Lambda::compile should have populated this"
                 )
             });
@@ -926,14 +988,14 @@ fn eval_expr(
             }
             eval_kernel_with_dispatch(callee, &call_args, registry, dispatch)?
         }
-        KirOp::DynCall {
+        GirOp::DynCall {
             fn_index,
             args,
             arg_types,
             return_type,
         } => {
             // Evaluate args, convert each to a `Value` per its
-            // declared `KirType` (scalar prim, composite ValArray,
+            // declared `GirType` (scalar prim, composite ValArray,
             // or variant Value), call the dispatcher, then decode
             // the result based on `return_type`. Pending (`None`)
             // propagates up via `?`.
@@ -943,17 +1005,17 @@ fn eval_expr(
             for (a, t) in args.iter().zip(arg_types.iter()) {
                 let r = eval_expr(env, a, registry, dispatch)?;
                 value_args.push(match (t, r) {
-                    (KirType::Prim(p), EvalResult::Scalar(s)) => {
+                    (GirType::Prim(p), EvalResult::Scalar(s)) => {
                         debug_assert_eq!(s.typ(), *p, "DynCall scalar arg mismatch");
                         s.to_value()
                     }
-                    (KirType::Array(_)
-                    | KirType::Tuple(_)
-                    | KirType::Struct(_), EvalResult::ValArray(a)) => {
+                    (GirType::Array(_)
+                    | GirType::Tuple(_)
+                    | GirType::Struct(_), EvalResult::ValArray(a)) => {
                         Value::Array(a)
                     }
-                    (KirType::Variant(_), EvalResult::Variant(v)) => v,
-                    (KirType::String, EvalResult::String(s)) => {
+                    (GirType::Variant(_), EvalResult::Variant(v)) => v,
+                    (GirType::String, EvalResult::String(s)) => {
                         Value::String(s)
                     }
                     // Nullable arg: an `EvalResult::Nullable(value)`
@@ -961,14 +1023,14 @@ fn eval_expr(
                     // `Value::Null`; a `Scalar` carrying the non-null
                     // T case (e.g. an inline IfChain that hadn't been
                     // normalized) widens via `to_value()`.
-                    (KirType::Nullable(_), EvalResult::Nullable(v)) => v,
-                    (KirType::Nullable(_), EvalResult::Null) => Value::Null,
-                    (KirType::Nullable(_), EvalResult::Scalar(s)) => s.to_value(),
-                    (KirType::Null, EvalResult::Null) => Value::Null,
-                    // `KirType::Unit` is a return-only shape — never
+                    (GirType::Nullable(_), EvalResult::Nullable(v)) => v,
+                    (GirType::Nullable(_), EvalResult::Null) => Value::Null,
+                    (GirType::Nullable(_), EvalResult::Scalar(s)) => s.to_value(),
+                    (GirType::Null, EvalResult::Null) => Value::Null,
+                    // `GirType::Unit` is a return-only shape — never
                     // a DynCall arg type.
-                    (KirType::Unit, _) => panic!(
-                        "DynCall arg has declared type Unit — KIR is malformed"
+                    (GirType::Unit, _) => panic!(
+                        "DynCall arg has declared type Unit — GIR is malformed"
                     ),
                     (decl, actual) => panic!(
                         "DynCall arg shape mismatch: declared {decl:?}, \
@@ -978,7 +1040,7 @@ fn eval_expr(
             }
             let result = dispatch(*fn_index, &value_args)?;
             match return_type {
-                KirType::Prim(p) => EvalResult::Scalar(
+                GirType::Prim(p) => EvalResult::Scalar(
                     RegValue::from_value(&result, *p).unwrap_or_else(|| {
                         panic!(
                             "DynCall returned a Value not matching the \
@@ -986,27 +1048,27 @@ fn eval_expr(
                         )
                     }),
                 ),
-                KirType::Array(_)
-                | KirType::Tuple(_)
-                | KirType::Struct(_) => match result {
+                GirType::Array(_)
+                | GirType::Tuple(_)
+                | GirType::Struct(_) => match result {
                     Value::Array(a) => EvalResult::ValArray(a),
                     other => panic!(
                         "DynCall declared composite return but got {other:?}"
                     ),
                 },
-                KirType::Variant(_) => EvalResult::Variant(result),
+                GirType::Variant(_) => EvalResult::Variant(result),
                 // Unit-typed DynCall: discard the runtime Value. The
-                // caller is `KirStmt::Discard`, which throws away the
+                // caller is `GirStmt::Discard`, which throws away the
                 // EvalResult. Return a Scalar(Bool(false)) as a
                 // placeholder — the Discard arm in `eval_body`
                 // pattern-matches on `Some(_)` so the actual value
                 // is never observed.
-                KirType::Unit => {
+                GirType::Unit => {
                     EvalResult::Scalar(RegValue::Bool(false))
                 }
                 // String return: the runtime gave us a Value::String;
                 // wrap it.
-                KirType::String => match result {
+                GirType::String => match result {
                     Value::String(s) => EvalResult::String(s),
                     other => panic!(
                         "DynCall declared String return but got {other:?}"
@@ -1016,12 +1078,12 @@ fn eval_expr(
                 // produced a `Value` that's either `Value::Null` or
                 // `T`'s runtime form. Wrap as `Nullable` for downstream
                 // consumers (`IsNull`, kernel return marshalling).
-                KirType::Nullable(_) => EvalResult::Nullable(result),
-                // Bare `KirType::Null` return: the function's only
+                GirType::Nullable(_) => EvalResult::Nullable(result),
+                // Bare `GirType::Null` return: the function's only
                 // possible runtime value is `Value::Null`. Surface
                 // as the singleton `EvalResult::Null` for parity with
-                // `KirOp::ConstNull`.
-                KirType::Null => match result {
+                // `GirOp::ConstNull`.
+                GirType::Null => match result {
                     Value::Null => EvalResult::Null,
                     other => panic!(
                         "DynCall declared Null return but got {other:?}"
@@ -1029,7 +1091,7 @@ fn eval_expr(
                 },
             }
         }
-        KirOp::Block { lets, tail } => {
+        GirOp::Block { lets, tail } => {
             let mark = env.mark();
             let array_mark = env.arrays.len();
             let variant_mark = env.variants.len();
@@ -1047,14 +1109,14 @@ fn eval_expr(
             env.strings.truncate(string_mark);
             result?
         }
-        KirOp::IfChain { arms } => {
+        GirOp::IfChain { arms } => {
             // If the chain's declared type is `Nullable<T>`, arms may
             // produce a mix of scalar `T` and bare null — the
             // unification happened at fusion time but each arm body
             // still emits its own native shape. Normalize here so the
             // caller sees a single `Nullable` shape regardless of
             // which arm fired.
-            let want_nullable = matches!(e.typ, KirType::Nullable(_));
+            let want_nullable = matches!(e.typ, GirType::Nullable(_));
             for (cond, body) in arms {
                 let matches = match cond {
                     None => true,
@@ -1072,15 +1134,15 @@ fn eval_expr(
                     return Some(r);
                 }
             }
-            panic!("if-chain fell through without a match — KIR is malformed");
+            panic!("if-chain fell through without a match — GIR is malformed");
         }
-        KirOp::ArrayLen { name } => {
+        GirOp::ArrayLen { name } => {
             let arr = env.lookup_array(name).unwrap_or_else(|| {
-                panic!("undefined array `{name}` — KIR is malformed")
+                panic!("undefined array `{name}` — GIR is malformed")
             });
             EvalResult::Scalar(RegValue::U64(arr.len() as u64))
         }
-        KirOp::ArrayGet { name, idx } => {
+        GirOp::ArrayGet { name, idx } => {
             // Clone the ValArray (refcount bump only) so the immutable
             // env borrow is released before we recurse into eval_expr
             // for `idx`. Result type follows `e.typ` — primitive uses
@@ -1089,7 +1151,7 @@ fn eval_expr(
             let arr = env
                 .lookup_array(name)
                 .unwrap_or_else(|| {
-                    panic!("undefined array `{name}` — KIR is malformed")
+                    panic!("undefined array `{name}` — GIR is malformed")
                 })
                 .clone();
             let idx_val =
@@ -1097,28 +1159,28 @@ fn eval_expr(
             let i = idx_val.as_usize();
             extract_composite_or_scalar(&arr, i, &e.typ)
         }
-        KirOp::TupleGet { name, idx, elem_typ } => {
+        GirOp::TupleGet { name, idx, elem_typ } => {
             // Tuple values are flat ValArrays. Branch on the slot's
-            // KirType — primitive slots use the fast unsafe scalar
+            // GirType — primitive slots use the fast unsafe scalar
             // extraction; composite slots read the `Value` and wrap
             // it in the matching `EvalResult` (`ValArray` for
             // array/tuple/struct, `Variant` for variant).
             let arr = env
                 .lookup_array(name)
                 .unwrap_or_else(|| {
-                    panic!("undefined tuple `{name}` — KIR is malformed")
+                    panic!("undefined tuple `{name}` — GIR is malformed")
                 })
                 .clone();
             extract_composite_or_scalar(&arr, *idx, elem_typ)
         }
-        KirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
+        GirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
             // Runtime struct layout is `[Array([name, val]), ...]` —
             // each field is a 2-element kv-pair subarray. Two-level
             // read: outer[sorted_idx] gives the kv pair, then [1]
             // gives the value. Branch on `elem_typ` for the
             // primitive/composite distinction (same as TupleGet).
             let outer = env.lookup_array(name).unwrap_or_else(|| {
-                panic!("undefined struct `{name}` — KIR is malformed")
+                panic!("undefined struct `{name}` — GIR is malformed")
             });
             let kv_pair = match &outer[*sorted_idx] {
                 Value::Array(a) => a.clone(),
@@ -1128,7 +1190,7 @@ fn eval_expr(
             };
             extract_composite_or_scalar(&kv_pair, 1, elem_typ)
         }
-        KirOp::ArrayInit { n, idx_local, elem_typ, body } => {
+        GirOp::ArrayInit { n, idx_local, elem_typ, body } => {
             // Evaluate `n` once, allocate a single output buffer,
             // then loop the body with `idx_local` bound to 0..n,
             // pushing each scalar result. Mirrors the AOT lowering
@@ -1150,11 +1212,11 @@ fn eval_expr(
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
+        GirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
             let arr = env
                 .lookup_array(array)
                 .unwrap_or_else(|| {
-                    panic!("undefined array `{array}` — KIR is malformed")
+                    panic!("undefined array `{array}` — GIR is malformed")
                 })
                 .clone();
             let mark = env.mark();
@@ -1173,11 +1235,11 @@ fn eval_expr(
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::ArrayFilter { array, elem, elem_local, predicate } => {
+        GirOp::ArrayFilter { array, elem, elem_local, predicate } => {
             let arr = env
                 .lookup_array(array)
                 .unwrap_or_else(|| {
-                    panic!("undefined array `{array}` — KIR is malformed")
+                    panic!("undefined array `{array}` — GIR is malformed")
                 })
                 .clone();
             let mark = env.mark();
@@ -1199,7 +1261,7 @@ fn eval_expr(
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::TupleNew { fields, elem_types: _ } => {
+        GirOp::TupleNew { fields, elem_types: _ } => {
             // Tuples are flat: ValArray([Value::T0(v0), Value::T1(v1), ...]).
             // Composite field values flow through their `into_value`
             // conversion (Value::Array for tuple/struct, the inner
@@ -1213,7 +1275,7 @@ fn eval_expr(
             }
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::StructNew { sorted_fields, sorted_types: _ } => {
+        GirOp::StructNew { sorted_fields, sorted_types: _ } => {
             // Structs are kv-pairs in sorted-name order:
             // ValArray([ValArray([name, val]), ...]). Composite field
             // values use `into_value` (parallels TupleNew).
@@ -1229,7 +1291,7 @@ fn eval_expr(
             }
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        KirOp::VariantNew { tag, payloads, payload_types: _ } => {
+        GirOp::VariantNew { tag, payloads, payload_types: _ } => {
             // Nullary → Value::String(tag).
             // With-payload → Value::Array([Value::String(tag), p0, p1, ...]).
             // Composite payload values go through `into_value` so
@@ -1251,11 +1313,11 @@ fn eval_expr(
                 )))
             }
         }
-        KirOp::VariantTagEq { name, expected_tag } => {
+        GirOp::VariantTagEq { name, expected_tag } => {
             // Variants are `Value::String(tag)` for nullary or
             // `Value::Array([tag, payload...])` for with-payload.
             let v = env.lookup_variant(name).unwrap_or_else(|| {
-                panic!("undefined variant `{name}` — KIR is malformed")
+                panic!("undefined variant `{name}` — GIR is malformed")
             });
             let matched = match v {
                 Value::String(s) => s.as_str() == expected_tag.as_str(),
@@ -1271,9 +1333,9 @@ fn eval_expr(
             };
             EvalResult::Scalar(RegValue::Bool(matched))
         }
-        KirOp::VariantPayload { name, payload_idx, elem_typ } => {
+        GirOp::VariantPayload { name, payload_idx, elem_typ } => {
             let v = env.lookup_variant(name).unwrap_or_else(|| {
-                panic!("undefined variant `{name}` — KIR is malformed")
+                panic!("undefined variant `{name}` — GIR is malformed")
             });
             match v {
                 Value::Array(a) => {
@@ -1288,11 +1350,11 @@ fn eval_expr(
                 ),
             }
         }
-        KirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
+        GirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
             let arr = env
                 .lookup_array(array)
                 .unwrap_or_else(|| {
-                    panic!("undefined array `{array}` — KIR is malformed")
+                    panic!("undefined array `{array}` — GIR is malformed")
                 })
                 .clone();
             let mut acc =
@@ -1325,11 +1387,11 @@ fn eval_expr(
 /// struct, `Variant` for variant, `String` for string).
 ///
 /// Panics if the slot type doesn't match the runtime value's shape
-/// — that would mean KIR is malformed (typecheck should have
+/// — that would mean GIR is malformed (typecheck should have
 /// rejected the program before it got this far).
 /// Convert an arbitrary `EvalResult` into the `Nullable(Value)`
 /// shape. Used at every site where the declared type widens to
-/// `KirType::Nullable<T>` but an arm of the underlying production
+/// `GirType::Nullable<T>` but an arm of the underlying production
 /// happened to return a narrower shape — an `IfChain` arm that
 /// produced a bare `T` scalar or the singleton `Null`.
 ///
@@ -1349,14 +1411,14 @@ fn normalize_to_nullable(r: EvalResult) -> EvalResult {
 fn extract_composite_or_scalar(
     arr: &ValArray,
     idx: usize,
-    slot_typ: &crate::kernel_ir::KirType,
+    slot_typ: &crate::gir::GirType,
 ) -> EvalResult {
-    use crate::kernel_ir::KirType;
+    use crate::gir::GirType;
     match slot_typ {
-        KirType::Prim(p) => EvalResult::Scalar(unsafe {
+        GirType::Prim(p) => EvalResult::Scalar(unsafe {
             RegValue::from_array_elem(arr, idx, *p)
         }),
-        KirType::Array(_) | KirType::Tuple(_) | KirType::Struct(_) => {
+        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
             match &arr[idx] {
                 Value::Array(inner) => EvalResult::ValArray(inner.clone()),
                 v => panic!(
@@ -1364,8 +1426,8 @@ fn extract_composite_or_scalar(
                 ),
             }
         }
-        KirType::Variant(_) => EvalResult::Variant(arr[idx].clone()),
-        KirType::String => match &arr[idx] {
+        GirType::Variant(_) => EvalResult::Variant(arr[idx].clone()),
+        GirType::String => match &arr[idx] {
             Value::String(s) => EvalResult::String(s.clone()),
             v => panic!(
                 "string slot {idx}: expected Value::String, got {v:?}"
@@ -1373,20 +1435,20 @@ fn extract_composite_or_scalar(
         },
         // Nullable slot: runtime representation is the inner Value
         // (either Value::Null or T's form). Match the same shape
-        // used elsewhere (e.g. KirOp::Local for Nullable, the
+        // used elsewhere (e.g. GirOp::Local for Nullable, the
         // DynCall Nullable return decode). Producer ops that
         // populate composite slots with a Nullable field push the
         // EvalResult through `into_value` which produces either
         // Value::Null or the wrapped T — both round-trip cleanly.
-        KirType::Nullable(_) => EvalResult::Nullable(arr[idx].clone()),
-        KirType::Unit => panic!(
+        GirType::Nullable(_) => EvalResult::Nullable(arr[idx].clone()),
+        GirType::Unit => panic!(
             "Unit slot at {idx} — Unit isn't usefully extractable, \
-             KIR is malformed"
+             GIR is malformed"
         ),
-        // Bare `KirType::Null` (the singleton) never appears as a
+        // Bare `GirType::Null` (the singleton) never appears as a
         // composite-slot type — fusion widens to `Nullable<T>` at
         // construction sites before binding.
-        KirType::Null => panic!(
+        GirType::Null => panic!(
             "bare Null slot at {idx} — should have widened to Nullable<T>"
         ),
     }
@@ -1443,7 +1505,7 @@ fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> RegValue {
         (RegValue::F32(a), RegValue::F32(b)) => float_arith!(a, b, F32),
         (RegValue::F64(a), RegValue::F64(b)) => float_arith!(a, b, F64),
         _ => panic!(
-            "eval_bin: type mismatch ({:?} vs {:?}) — KIR is malformed",
+            "eval_bin: type mismatch ({:?} vs {:?}) — GIR is malformed",
             lhs.typ(),
             rhs.typ()
         ),
@@ -1476,7 +1538,7 @@ fn eval_cmp(op: CmpOp, lhs: RegValue, rhs: RegValue) -> RegValue {
         (RegValue::F64(a), RegValue::F64(b)) => cmp_dispatch!(a, b),
         (RegValue::Bool(a), RegValue::Bool(b)) => cmp_dispatch!(a, b),
         _ => panic!(
-            "eval_cmp: type mismatch ({:?} vs {:?}) — KIR is malformed",
+            "eval_cmp: type mismatch ({:?} vs {:?}) — GIR is malformed",
             lhs.typ(),
             rhs.typ()
         ),
@@ -1498,7 +1560,7 @@ fn eval_cast(v: RegValue, target: PrimType) -> RegValue {
                 PrimType::F32 => RegValue::F32($x as f32),
                 PrimType::F64 => RegValue::F64($x as f64),
                 PrimType::Bool => panic!(
-                    "cast to Bool not supported (kernel_ir::cast \
+                    "cast to Bool not supported (gir::cast \
                      refuses bool↔int)"
                 ),
             }
@@ -1516,7 +1578,7 @@ fn eval_cast(v: RegValue, target: PrimType) -> RegValue {
         RegValue::F32(x) => cast_from!(x),
         RegValue::F64(x) => cast_from!(x),
         RegValue::Bool(_) => panic!(
-            "cast from Bool not supported (kernel_ir::cast refuses \
+            "cast from Bool not supported (gir::cast refuses \
              bool↔int)"
         ),
     }
@@ -1524,21 +1586,21 @@ fn eval_cast(v: RegValue, target: PrimType) -> RegValue {
 
 // ─── Cross-kernel call dispatch ──────────────────────────────────
 
-/// Runtime lookup table for `KirOp::Call`. Each kernel that fuses at
+/// Runtime lookup table for `GirOp::Call`. Each kernel that fuses at
 /// `Lambda::compile` time gets registered here under its source-level
 /// binding name; an inner lambda whose body calls one of those names
-/// produces a `KirOp::Call`, and the interpreter walks this map to
+/// produces a `GirOp::Call`, and the interpreter walks this map to
 /// dispatch.
 ///
 /// The registry is built once per Lambda::compile (snapshot of the
 /// fusion-visibility scope at that point) and shared via `Arc` into
-/// every `KirNode` the lambda's init produces.
+/// every `GirNode` the lambda's init produces.
 #[derive(Debug, Default)]
 pub struct KernelRegistry {
-    pub kernels: BTreeMap<ArcStr, Arc<KirKernel>>,
+    pub kernels: BTreeMap<ArcStr, Arc<GirKernel>>,
 }
 
-// ─── KirNode: the Apply<R, E> wrapper ────────────────────────────
+// ─── GirNode: the Apply<R, E> wrapper ────────────────────────────
 
 /// Per-DynCall-site state. For each fn-typed param of the kernel we
 /// pre-allocate a slot containing the BindIds the side-channel uses,
@@ -1550,7 +1612,7 @@ pub struct KernelRegistry {
 /// Generic over `R, E` because the cached `Box<dyn Apply<R, E>>` and
 /// the arg-ref nodes are.
 pub struct DynCallSlot<R: Rt, E: UserEvent> {
-    /// One BindId per callee argument. Pre-allocated at KirNode
+    /// One BindId per callee argument. Pre-allocated at GirNode
     /// construction. The DynCall-time dispatcher writes the converted
     /// arg `Value` into `event.variables[bind_ids[i]]`; the matching
     /// `Ref` node in `arg_refs` reads it back inside the inner
@@ -1565,14 +1627,14 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// pre-bound slots (`pre_bound = true`) the pointer is a stable
     /// sentinel and `dispatch` never re-inits.
     current: Option<(*const u8, Box<dyn Apply<R, E>>)>,
-    /// `true` when the slot was bound at KirNode construction time
+    /// `true` when the slot was bound at GirNode construction time
     /// (e.g. `FnSource::Builtin` — the call target is fixed and
     /// can't change). `dispatch` short-circuits the LambdaDef
     /// downcast + rebind check for these slots.
     pre_bound: bool,
     /// External BindIds referenced by labeled-default Node trees of
     /// `BuiltinSlot::LabeledDefault` slots. At every dispatch cycle
-    /// `KirNode::update` primes `event.variables[id]` from
+    /// `GirNode::update` primes `event.variables[id]` from
     /// `ctx.cached[id]` for each entry here, so the default's `Ref`
     /// node finds its value (mirrors `CallSite::bind`'s default-arg
     /// priming step at the inner `compile_default!` call). Empty
@@ -1603,7 +1665,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// the expected types of the callee's args; we allocate one
     /// BindId + one [`crate::node::bind::Ref`] node per arg.
     pub fn new(
-        fn_param: &crate::kernel_ir::FnParam,
+        fn_param: &crate::gir::FnParam,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> Self {
@@ -1615,9 +1677,9 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             bind_ids.push(id);
             // Ref reads `event.variables[id]` (or falls back to
             // `ctx.cached[id]`) on each `update`. `typ` matches
-            // the FnParam's declared `KirType` (scalar prim,
+            // the FnParam's declared `GirType` (scalar prim,
             // composite, or variant).
-            let typ = kir_type_to_graphix_type(arg_kty);
+            let typ = gir_type_to_graphix_type(arg_kty);
             let node = crate::node::bind::Ref::new::<R, E>(
                 id,
                 typ,
@@ -1641,7 +1703,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// registered init fn and stash it as a pre-bound slot.
     /// Dispatch will route every call into this Apply without ever
     /// re-binding. Used for `FnSource::Builtin` fn_params at
-    /// `KirNode::new` time.
+    /// `GirNode::new` time.
     ///
     /// `layout` describes the callee's full formal-arg list (one
     /// entry per `typ.args` slot, declaration order). For each:
@@ -1659,11 +1721,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
         builtin_name: &str,
         typ: &crate::typ::FnType,
-        layout: &[crate::kernel_ir::BuiltinSlot],
+        layout: &[crate::gir::BuiltinSlot],
         lambda_id: Option<crate::LambdaId>,
     ) -> ::anyhow::Result<()> {
         use ::anyhow::anyhow;
-        use crate::kernel_ir::BuiltinSlot;
+        use crate::gir::BuiltinSlot;
         // Restore the lambda's env + lexical scope so labeled-default
         // expressions that reference free variables visible only in
         // the lambda's original module scope (e.g. `default_escape`
@@ -1760,7 +1822,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     };
                     // Mirror `compile_default!`'s priming: walk the
                     // default node's external Refs and record them so
-                    // `KirNode::update` can prime `event.variables[id]`
+                    // `GirNode::update` can prime `event.variables[id]`
                     // from `ctx.cached[id]` at every cycle. Without
                     // this, a default like `default_escape` (Ref to
                     // a module-level binding) reads None on the first
@@ -1818,7 +1880,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     }
 
     /// Eagerly initialize the inner Apply against `lambda_value`'s
-    /// LambdaDef. Used at KirNode construction for binding-source
+    /// LambdaDef. Used at GirNode construction for binding-source
     /// fn_params whose callee is known up front. Pre-initializing
     /// matters because the inner Apply's body wires up bind_id
     /// subscriptions via `ref_var(..., top_id)` during init — if we
@@ -1947,31 +2009,31 @@ fn prim_type_to_graphix_type(p: PrimType) -> crate::typ::Type {
     crate::typ::Type::Primitive(flags)
 }
 
-/// Reverse the `KirType::from_type` lowering: produce a graphix
+/// Reverse the `GirType::from_type` lowering: produce a graphix
 /// [`crate::typ::Type`] that the DynCall arg `Ref` node can carry
 /// for diagnostics / typecheck. The exact shape matters for the
 /// runtime's internal type assertions; structural equivalence to
 /// the user's source-level type is sufficient.
-pub(crate) fn kir_type_to_graphix_type(
-    t: &crate::kernel_ir::KirType,
+pub(crate) fn gir_type_to_graphix_type(
+    t: &crate::gir::GirType,
 ) -> crate::typ::Type {
-    use crate::kernel_ir::KirType;
+    use crate::gir::GirType;
     use crate::typ::Type;
     match t {
-        KirType::Prim(p) => prim_type_to_graphix_type(*p),
-        KirType::Array(elem) => Type::Array(
-            triomphe::Arc::new(kir_type_to_graphix_type(elem)),
+        GirType::Prim(p) => prim_type_to_graphix_type(*p),
+        GirType::Array(elem) => Type::Array(
+            triomphe::Arc::new(gir_type_to_graphix_type(elem)),
         ),
-        KirType::Tuple(elems) => Type::Tuple(
-            elems.iter().map(kir_type_to_graphix_type).collect(),
+        GirType::Tuple(elems) => Type::Tuple(
+            elems.iter().map(gir_type_to_graphix_type).collect(),
         ),
-        KirType::Struct(fields) => Type::Struct(
+        GirType::Struct(fields) => Type::Struct(
             fields
                 .iter()
-                .map(|(n, p)| (n.clone(), kir_type_to_graphix_type(p)))
+                .map(|(n, p)| (n.clone(), gir_type_to_graphix_type(p)))
                 .collect(),
         ),
-        KirType::Variant(cases) => {
+        GirType::Variant(cases) => {
             // Reconstruct a `[\`Tag(payload...), ...]` shape by
             // building a Type::Set of Variant cases.
             let cases_ty: triomphe::Arc<[Type]> = cases
@@ -1979,7 +2041,7 @@ pub(crate) fn kir_type_to_graphix_type(
                 .map(|(tag, payload_kts)| {
                     let payload_types: triomphe::Arc<[Type]> = payload_kts
                         .iter()
-                        .map(kir_type_to_graphix_type)
+                        .map(gir_type_to_graphix_type)
                         .collect();
                     Type::Variant(tag.clone(), payload_types)
                 })
@@ -1987,19 +2049,19 @@ pub(crate) fn kir_type_to_graphix_type(
             Type::Set(cases_ty)
         }
         // Unit is the discard-return shape; source-level `_` → Bottom.
-        KirType::Unit => Type::Bottom,
+        GirType::Unit => Type::Bottom,
         // String maps back to `Type::Primitive(Typ::String)`.
-        KirType::String => {
+        GirType::String => {
             let mut flags =
                 enumflags2::BitFlags::<netidx_value::Typ>::empty();
             flags.insert(netidx_value::Typ::String);
             Type::Primitive(flags)
         }
         // Bare Null maps back to the null primitive (used by
-        // `KirOp::ConstNull` — fusion always widens to Nullable
+        // `GirOp::ConstNull` — fusion always widens to Nullable
         // before binding, but the singleton type still appears
         // transiently during lowering).
-        KirType::Null => {
+        GirType::Null => {
             let mut flags =
                 enumflags2::BitFlags::<netidx_value::Typ>::empty();
             flags.insert(netidx_value::Typ::Null);
@@ -2007,10 +2069,10 @@ pub(crate) fn kir_type_to_graphix_type(
         }
         // Nullable is `[T, null]` — a `Type::Set` of the inner
         // graphix type and the null primitive. Used by DynCall
-        // arg-binders for `KirType::Nullable` slots (Option /
+        // arg-binders for `GirType::Nullable` slots (Option /
         // lowered-Result returns).
-        KirType::Nullable(inner) => {
-            let inner_ty = kir_type_to_graphix_type(inner);
+        GirType::Nullable(inner) => {
+            let inner_ty = gir_type_to_graphix_type(inner);
             let mut null_flags =
                 enumflags2::BitFlags::<netidx_value::Typ>::empty();
             null_flags.insert(netidx_value::Typ::Null);
@@ -2022,15 +2084,15 @@ pub(crate) fn kir_type_to_graphix_type(
 
 // ─── DynCall dispatch for JIT'd kernels ──────────────────────────
 //
-// When a JIT'd kernel calls a HOF (KirOp::DynCall), the emitted code
+// When a JIT'd kernel calls a HOF (GirOp::DynCall), the emitted code
 // invokes `graphix_dyncall` which indirects through the thread-local
 // `DYN_DISPATCH_HANDLE` to a monomorphized `dispatch_typed::<R, E>`.
-// `KirNode::update` populates the handle before calling the wrapper,
+// `GirNode::update` populates the handle before calling the wrapper,
 // passing a `DispatcherState` whose erased pointer holds the per-call
 // references (`dyn_slots`, `fn_arg_values`, `ctx`, `event`).
 
-/// Per-call state shared between Rust-side `KirNode::update` and the
-/// JIT-side `graphix_dyncall` dispatcher. Held by `KirNode::update`
+/// Per-call state shared between Rust-side `GirNode::update` and the
+/// JIT-side `graphix_dyncall` dispatcher. Held by `GirNode::update`
 /// on its stack for the duration of the wrapper call; the handle's
 /// `state` pointer references this struct.
 ///
@@ -2047,19 +2109,19 @@ struct DispatcherState<R: Rt, E: UserEvent> {
 }
 
 /// Monomorphized DynCall dispatcher. The function pointer is stored
-/// in `DynDispatchHandle.dispatch` per-call by `KirNode::update`.
+/// in `DynDispatchHandle.dispatch` per-call by `GirNode::update`.
 ///
 /// SAFETY contract: `state_ptr` must point to a valid
 /// `DispatcherState<R, E>` for THIS R, E. The per-call references
 /// it holds (dyn_slots, ctx, event, fn_arg_values) must be live
-/// for the duration of this call. KirNode::update ensures both.
+/// for the duration of this call. GirNode::update ensures both.
 pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     state_ptr: *mut u8,
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
     ret_kind: u8,
-) -> crate::kir_jit_helpers::DynCallRet {
-    use crate::kir_jit_helpers::DynCallRet;
+) -> crate::gir_jit_helpers::DynCallRet {
+    use crate::gir_jit_helpers::DynCallRet;
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
     let fn_arg_values = unsafe { &*state.fn_arg_values };
@@ -2101,7 +2163,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                 //
                 // SAFETY: Value is `#[repr(u64)]`, 16 bytes /
                 // 8-byte aligned — layout pinned by
-                // `kir_jit_helpers`. `ManuallyDrop` prevents the
+                // `gir_jit_helpers`. `ManuallyDrop` prevents the
                 // local `v`'s Drop from running while we transmute
                 // its bits out; ownership transfers to the caller.
                 let v = std::mem::ManuallyDrop::new(v);
@@ -2120,7 +2182,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                 // so the raw u64 is a valid ArcStr bit pattern; the
                 // caller's String SSA reads it directly without a
                 // boundary decode (the kernel-return path at
-                // `KirNode::update`'s String arm uses the same
+                // `GirNode::update`'s String arm uses the same
                 // transmute pattern).
                 match v {
                     Value::String(s) => {
@@ -2139,7 +2201,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
         },
         None => {
-            crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+            crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
             DynCallRet { word0: 0, word1: 0 }
         }
     }
@@ -2147,7 +2209,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
 
 /// Pack a [`Value`]'s scalar bits into a u64 for the DynCall ABI's
 /// scalar return path. Same encoding as
-/// [`crate::kir_jit::pack_reg_to_u64`] — go through a `RegValue`
+/// [`crate::gir_jit::pack_reg_to_u64`] — go through a `RegValue`
 /// first to centralize the bit pattern.
 fn pack_value_to_u64(v: &Value) -> u64 {
     let prim = match v {
@@ -2169,10 +2231,10 @@ fn pack_value_to_u64(v: &Value) -> u64 {
     let r = RegValue::from_value(v, prim).unwrap_or_else(|| {
         panic!("pack_value_to_u64: from_value failed for prim {prim:?}")
     });
-    crate::kir_jit::pack_reg_to_u64(&r)
+    crate::gir_jit::pack_reg_to_u64(&r)
 }
 
-/// Wraps a [`KirKernel`] as an [`Apply<R, E>`] so the runtime can call
+/// Wraps a [`GirKernel`] as an [`Apply<R, E>`] so the runtime can call
 /// into the interpreter through the same dispatch path it uses for
 /// every other function. On each `update` cycle we drive the input
 /// nodes, cache their values, and (once every input slot is populated)
@@ -2183,11 +2245,11 @@ fn pack_value_to_u64(v: &Value) -> u64 {
 /// `Box<dyn Apply<R, E>>` and `Node<R, E>`. (Pre-DynCall versions
 /// were intentionally non-generic; the tradeoff is now in DynCall's
 /// favor.)
-pub struct KirNode<R: Rt, E: UserEvent> {
+pub struct GirNode<R: Rt, E: UserEvent> {
     /// The IR. `Arc` so structurally-identical kernels can share
     /// state (and, in M4e, share the JIT-compiled function pointer
     /// via an IR-hash cache).
-    kernel: Arc<KirKernel>,
+    kernel: Arc<GirKernel>,
     /// Per-cycle input cache, parallel to the `from` slice the runtime
     /// passes into `update`. `None` means "haven't seen a value yet";
     /// the kernel runs once every slot is `Some`.
@@ -2195,15 +2257,15 @@ pub struct KirNode<R: Rt, E: UserEvent> {
     /// Synchronously-compiled JIT wrapper, when available. Filled at
     /// `Lambda::compile` time when JIT mode is `Sync`. Update
     /// dispatch checks this first.
-    jit: Option<Arc<crate::kir_jit::WrappedKernel>>,
+    jit: Option<Arc<crate::gir_jit::WrappedKernel>>,
     /// Async JIT slot. Filled by the global background worker once
     /// it finishes compiling. `update` polls the slot on each call;
     /// before it's filled the interpreter runs, after it the JIT'd
     /// wrapper does. Set when JIT mode is `Async`.
-    async_jit: Option<Arc<crate::kir_jit::AsyncJitSlot>>,
+    async_jit: Option<Arc<crate::gir_jit::AsyncJitSlot>>,
     /// Fused kernels visible at this lambda's compile site, shared
     /// across all instantiations of the lambda. The interpreter uses
-    /// this to dispatch `KirOp::Call`. Empty registry is fine —
+    /// this to dispatch `GirOp::Call`. Empty registry is fine —
     /// kernels that don't reference any cross-kernel calls just
     /// never look up.
     registry: Arc<KernelRegistry>,
@@ -2235,12 +2297,12 @@ enum ArgKind {
     Nullable(u32),
 }
 
-/// Total number of input slots the runtime passes into a KirNode for
+/// Total number of input slots the runtime passes into a GirNode for
 /// this kernel — scalar params + all composite params + HOF-arg fn
 /// params (Binding-source fn params resolve through ctx.cached and
 /// don't count). Equals `arg_layout.len()`.
-pub fn total_kernel_arity(kernel: &KirKernel) -> usize {
-    use crate::kernel_ir::FnSource;
+pub fn total_kernel_arity(kernel: &GirKernel) -> usize {
+    use crate::gir::FnSource;
     let param_source_count = kernel
         .fn_params
         .iter()
@@ -2249,8 +2311,8 @@ pub fn total_kernel_arity(kernel: &KirKernel) -> usize {
     kernel.tail_call_slots.len() + param_source_count
 }
 
-fn build_arg_layout(kernel: &KirKernel) -> Vec<ArgKind> {
-    use crate::kernel_ir::{FnSource, TailCallSlotKind};
+fn build_arg_layout(kernel: &GirKernel) -> Vec<ArgKind> {
+    use crate::gir::{FnSource, TailCallSlotKind};
     // `tail_call_slots` is populated for every kernel and lists
     // params in source-declared order. Each slot carries a name
     // matching one of the kernel's *_params lists. Walking this list
@@ -2335,9 +2397,9 @@ fn build_arg_layout(kernel: &KirKernel) -> Vec<ArgKind> {
     out
 }
 
-impl<R: Rt, E: UserEvent> std::fmt::Debug for KirNode<R, E> {
+impl<R: Rt, E: UserEvent> std::fmt::Debug for GirNode<R, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KirNode")
+        f.debug_struct("GirNode")
             .field("fn_name", &self.kernel.fn_name)
             .field("params", &self.kernel.params.len())
             .field("fn_params", &self.kernel.fn_params.len())
@@ -2346,8 +2408,8 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for KirNode<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> KirNode<R, E> {
-    /// Single construction chokepoint. Builds the KirNode and runs
+impl<R: Rt, E: UserEvent> GirNode<R, E> {
+    /// Single construction chokepoint. Builds the GirNode and runs
     /// both pre-init helpers (`pre_init_binding_slots` for binding-
     /// source fn_params, `pre_init_builtin_slots` for builtin-source
     /// fn_params). Without those, the first `DynCall` into the kernel
@@ -2357,10 +2419,10 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
     /// public constructor goes through this.
     fn build(
         ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<KirKernel>,
+        kernel: Arc<GirKernel>,
         n_args: usize,
-        jit: Option<Arc<crate::kir_jit::WrappedKernel>>,
-        async_jit: Option<Arc<crate::kir_jit::AsyncJitSlot>>,
+        jit: Option<Arc<crate::gir_jit::WrappedKernel>>,
+        async_jit: Option<Arc<crate::gir_jit::AsyncJitSlot>>,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
@@ -2368,7 +2430,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         debug_assert_eq!(
             n_args,
             total_kernel_arity(&kernel),
-            "KirNode arity = sum of all slot kinds"
+            "GirNode arity = sum of all slot kinds"
         );
         let dyn_slots = kernel
             .fn_params
@@ -2390,7 +2452,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         Ok(node)
     }
 
-    /// Construct a fresh KirNode for `kernel`, sized to match `n_args`
+    /// Construct a fresh GirNode for `kernel`, sized to match `n_args`
     /// input slots (which must equal `kernel.params.len() +
     /// kernel.fn_params.len()` — the input slice the runtime passes
     /// into `update` mixes prim and fn args). Runs through the
@@ -2401,7 +2463,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
     /// state (the inner Applies that DynCall dispatches into).
     pub fn new(
         ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<KirKernel>,
+        kernel: Arc<GirKernel>,
         n_args: usize,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
@@ -2410,14 +2472,14 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         Self::build(ctx, kernel, n_args, None, None, registry, scope, top_id)
     }
 
-    /// Construct a KirNode whose `update` dispatches into a JIT'd
+    /// Construct a GirNode whose `update` dispatches into a JIT'd
     /// kernel via `wrapped`. JIT path is only used for kernels that
-    /// don't contain `KirOp::Call` or `KirOp::DynCall`.
+    /// don't contain `GirOp::Call` or `GirOp::DynCall`.
     pub fn with_jit(
         ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<KirKernel>,
+        kernel: Arc<GirKernel>,
         n_args: usize,
-        wrapped: Arc<crate::kir_jit::WrappedKernel>,
+        wrapped: Arc<crate::gir_jit::WrappedKernel>,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
@@ -2440,12 +2502,12 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source
+            if let crate::gir::FnSource::Binding { bind_id } = &fp.source
             {
                 if let Some(v) = ctx.cached.get(bind_id).cloned() {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
                         log::warn!(
-                            "kir_interp: pre_init for fn_param `{}` failed: \
+                            "gir_interp: pre_init for fn_param `{}` failed: \
                              {e:#}; falling back to lazy init (multi-cycle \
                              callees may hang)",
                             fp.name
@@ -2461,7 +2523,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
     }
 
     /// Eagerly construct the Apply for each `FnSource::Builtin`
-    /// fn_param. Must be called once after `KirNode::new` (typically
+    /// fn_param. Must be called once after `GirNode::new` (typically
     /// right next to `pre_init_binding_slots`) — without it, the
     /// builtin slots stay empty and the first DynCall into them
     /// panics. Construction routes through `ctx.builtins[name].init`
@@ -2471,7 +2533,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::kernel_ir::FnSource::Builtin {
+            if let crate::gir::FnSource::Builtin {
                 name,
                 typ,
                 layout,
@@ -2494,14 +2556,14 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
         Ok(())
     }
 
-    /// Construct a KirNode that interprets initially and atomic-
+    /// Construct a GirNode that interprets initially and atomic-
     /// swaps to a JIT'd wrapper when the async worker finishes
     /// compiling.
     pub fn with_async_jit(
         ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<KirKernel>,
+        kernel: Arc<GirKernel>,
         n_args: usize,
-        slot: Arc<crate::kir_jit::AsyncJitSlot>,
+        slot: Arc<crate::gir_jit::AsyncJitSlot>,
         registry: Arc<KernelRegistry>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
@@ -2510,7 +2572,7 @@ impl<R: Rt, E: UserEvent> KirNode<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
+impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2535,7 +2597,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
         // dispatches. Without this check, a kernel that DynCalls
         // into `helper` never reruns after helper's first publish.
         for fp in self.kernel.fn_params.iter() {
-            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source
+            if let crate::gir::FnSource::Binding { bind_id } = &fp.source
             {
                 if event.variables.contains_key(bind_id) {
                     any_updated = true;
@@ -2562,8 +2624,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
         let has_dynamic_fn_params = self.kernel.fn_params.iter().any(|fp| {
             matches!(
                 fp.source,
-                crate::kernel_ir::FnSource::Param { .. }
-                    | crate::kernel_ir::FnSource::Binding { .. }
+                crate::gir::FnSource::Param { .. }
+                    | crate::gir::FnSource::Binding { .. }
             )
         });
         if !any_updated
@@ -2628,7 +2690,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     let prim = self.kernel.params[prim_idx as usize].prim;
                     let r = RegValue::from_value(v, prim).unwrap_or_else(|| {
                         panic!(
-                            "KirNode: arg {i} ({}) has wrong runtime type \
+                            "GirNode: arg {i} ({}) has wrong runtime type \
                              for declared {prim:?}",
                             self.kernel.params[prim_idx as usize].name
                         )
@@ -2644,7 +2706,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     let a = match v {
                         Value::Array(a) => a.clone(),
                         _ => panic!(
-                            "KirNode: arg {i} expected Value::Array for \
+                            "GirNode: arg {i} expected Value::Array for \
                              composite param, got {v:?}"
                         ),
                     };
@@ -2684,7 +2746,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
         // neither has a value yet, the kernel can't run — return
         // None and try again next cycle.
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source
+            if let crate::gir::FnSource::Binding { bind_id } = &fp.source
             {
                 let v = event
                     .variables
@@ -2702,7 +2764,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
         // INPUTS (each composite param is a pointer in the wrapper's
         // arg slot — `*const ValArray` for array/tuple/struct,
         // `*const Value` for variant). Fn-typed params (HOF args)
-        // still bail at the kir_jit compile path, so `self.jit` is
+        // still bail at the gir_jit compile path, so `self.jit` is
         // None for those — no extra gate needed here.
         let wrapper = match &self.jit {
             Some(w) => Some(w.clone()),
@@ -2740,7 +2802,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 // the wrapper, unpack the result.
                 //
                 // Slot order matches the typed kernel signature in
-                // `kir_jit::define_typed_kernel`: scalar params
+                // `gir_jit::define_typed_kernel`: scalar params
                 // first, then array_params, then tuple_params, then
                 // struct_params. Variants would come after structs
                 // but aren't supported in this slice (we bail above).
@@ -2760,7 +2822,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 let mut slots: smallvec::SmallVec<[u64; 16]> =
                     smallvec::SmallVec::with_capacity(n_slots);
                 for r in &reg_args {
-                    slots.push(crate::kir_jit::pack_reg_to_u64(r));
+                    slots.push(crate::gir_jit::pack_reg_to_u64(r));
                 }
                 for a in &array_args {
                     slots.push(a as *const ValArray as u64);
@@ -2775,7 +2837,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 // `Value` as its two `repr(u64)` words (disc, payload).
                 // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
                 // aligned, layout pinned by the const_assert in
-                // `kir_jit_helpers`. We don't transfer ownership —
+                // `gir_jit_helpers`. We don't transfer ownership —
                 // the kernel refcount-bumps on entry via
                 // `graphix_value_clone`.
                 for v in &variant_args {
@@ -2811,22 +2873,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     ctx: ctx as *mut ExecCtx<R, E>,
                     event: event as *mut Event<E>,
                 };
-                let handle = crate::kir_jit_helpers::DynDispatchHandle {
+                let handle = crate::gir_jit_helpers::DynDispatchHandle {
                     dispatch: dispatch_typed::<R, E>,
                     state: (&mut state) as *mut _ as *mut u8,
                 };
-                let prev_handle = crate::kir_jit_helpers::DYN_DISPATCH_HANDLE
+                let prev_handle = crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
                     .with(|c| c.replace(&handle as *const _));
                 // Always reset the pending flag before the call so
                 // we can distinguish "this kernel pended" from
                 // "some earlier kernel left the flag set."
-                crate::kir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+                crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
                 unsafe {
                     f(slots.as_ptr(), out.as_mut_ptr());
                 }
-                crate::kir_jit_helpers::DYN_DISPATCH_HANDLE
+                crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
                     .with(|c| c.set(prev_handle));
-                let pending = crate::kir_jit_helpers::DYNCALL_PENDING
+                let pending = crate::gir_jit_helpers::DYNCALL_PENDING
                     .with(|c| c.replace(false));
                 if pending {
                     // The kernel's *out slot is either a garbage
@@ -2845,22 +2907,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                 // - Variant/Nullable: out[0] = Value disc, out[1] =
                 //   payload. Transmute the two u64s back into a Value
                 //   (Value is `#[repr(u64)]`, 16 bytes / 8-byte
-                //   aligned — layout pinned by `kir_jit_helpers`).
-                use crate::kernel_ir::KirType;
+                //   aligned — layout pinned by `gir_jit_helpers`).
+                use crate::gir::GirType;
                 match &self.kernel.return_type {
-                    KirType::Prim(p) => {
+                    GirType::Prim(p) => {
                         EvalResult::Scalar(
-                            crate::kir_jit::unpack_u64_to_reg(out[0], *p),
+                            crate::gir_jit::unpack_u64_to_reg(out[0], *p),
                         )
                     }
-                    KirType::Array(_)
-                    | KirType::Tuple(_)
-                    | KirType::Struct(_) => {
+                    GirType::Array(_)
+                    | GirType::Tuple(_)
+                    | GirType::Struct(_) => {
                         let ptr = out[0] as *mut ValArray;
                         let owned = unsafe { *Box::from_raw(ptr) };
                         EvalResult::ValArray(owned)
                     }
-                    KirType::Variant(_) => {
+                    GirType::Variant(_) => {
                         let owned: Value =
                             unsafe { std::mem::transmute(out) };
                         EvalResult::Variant(owned)
@@ -2869,16 +2931,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                     // *out (see `compile_into_function`'s ret_kind
                     // dispatch); nothing to decode. The wrapper-level
                     // caller (FusedRegion / CallSite) discards via
-                    // `KirStmt::Discard` so this EvalResult is
+                    // `GirStmt::Discard` so this EvalResult is
                     // never inspected — a scalar bool placeholder is
                     // type-correct and cheap.
-                    KirType::Unit => EvalResult::Scalar(RegValue::Bool(false)),
+                    GirType::Unit => EvalResult::Scalar(RegValue::Bool(false)),
                     // String-returning kernel: `out[0]` is the
                     // ArcStr's thin pointer (transferred ownership).
                     // Reclaim via `from_raw`-style transmute — ArcStr
                     // is `repr(transparent)` over `NonNull<ThinInner>`,
                     // so the raw u64 is a valid `ArcStr` bit pattern.
-                    KirType::String => {
+                    GirType::String => {
                         let raw = out[0];
                         // SAFETY: the JIT'd kernel produced this via
                         // `graphix_arcstr_clone_from_static` or
@@ -2890,17 +2952,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
                         };
                         EvalResult::String(s)
                     }
-                    KirType::Nullable(_) => {
+                    GirType::Nullable(_) => {
                         // Nullable return: out[0] = disc, out[1] =
                         // payload. Transmute the two u64s back into
                         // a Value (`#[repr(u64)]`, 16-byte layout
-                        // pinned by `kir_jit_helpers`).
+                        // pinned by `gir_jit_helpers`).
                         let owned: Value =
                             unsafe { std::mem::transmute(out) };
                         EvalResult::Nullable(owned)
                     }
-                    KirType::Null => unreachable!(
-                        "JIT decode for KirType::Null/Nullable kernel \
+                    GirType::Null => unreachable!(
+                        "JIT decode for GirType::Null/Nullable kernel \
                          return — JIT should have bailed out before \
                          producing such a kernel"
                     ),
@@ -2917,14 +2979,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
     }
 
     fn refs(&self, refs: &mut crate::Refs) {
-        // KirNode replaces a CallSite for fused lambdas. The
+        // GirNode replaces a CallSite for fused lambdas. The
         // CallSite would have walked its inner Apply's refs to
         // build subscription state — when those BindIds fire, the
         // runtime re-triggers the parent. We must do the same: walk
         // every DynCallSlot's inner Apply (the actual callee) plus
         // the slot's arg-ref nodes, and register binding-source
         // fn_param BindIds. Without this, the runtime never re-
-        // fires KirNode when the inner callee or its dependencies
+        // fires GirNode when the inner callee or its dependencies
         // update — exactly the DynCall hang we caught with the
         // differential harness.
         for slot in &self.dyn_slots {
@@ -2939,7 +3001,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
             }
         }
         for fp in &self.kernel.fn_params {
-            if let crate::kernel_ir::FnSource::Binding { bind_id } = &fp.source {
+            if let crate::gir::FnSource::Binding { bind_id } = &fp.source {
                 refs.refed.insert(*bind_id);
             }
         }
@@ -2949,9 +3011,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for KirNode<R, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel_ir::{
+    use crate::gir::{
         arith, bool_op, cast, cmp, const_expr, local, BinOp, BoolOp, CmpOp,
-        ConstVal, Input, KirExpr, KirKernel, KirOp, KirStmt, KirType, Let, PrimType,
+        ConstVal, Input, GirExpr, GirKernel, GirOp, GirStmt, GirType, Let, PrimType,
         SelectArm,
     };
     use arcstr::ArcStr;
@@ -2964,7 +3026,7 @@ mod tests {
         }
     }
 
-    fn loc(name: &str, prim: PrimType) -> KirExpr {
+    fn loc(name: &str, prim: PrimType) -> GirExpr {
         local(ArcStr::from(name), prim)
     }
 
@@ -2982,7 +3044,7 @@ mod tests {
             BinOp::Add,
         )
         .unwrap();
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("ax_plus_bc"),
             params: vec![
                 input("a", PrimType::I64),
@@ -2996,9 +3058,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let r = eval_kernel(
             &kernel,
@@ -3025,11 +3087,11 @@ mod tests {
             BinOp::Mul,
         )
         .unwrap();
-        let body = KirExpr {
-            op: KirOp::Block { lets, tail: Box::new(tail) },
-            typ: KirType::Prim(PrimType::F64),
+        let body = GirExpr {
+            op: GirOp::Block { lets, tail: Box::new(tail) },
+            typ: GirType::Prim(PrimType::F64),
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("scaled"),
             params: vec![input("a", PrimType::F64), input("b", PrimType::F64)],
             fn_params: vec![],
@@ -3039,9 +3101,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::F64),
+            return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let r = eval_kernel(&kernel, &[RegValue::F64(3.0), RegValue::F64(5.0)]);
         assert_eq!(r, RegValue::F64(16.0));
@@ -3066,7 +3128,7 @@ mod tests {
             BoolOp::And,
         )
         .unwrap();
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("range_check"),
             params: vec![input("x", PrimType::F64), input("y", PrimType::F64)],
             fn_params: vec![],
@@ -3076,9 +3138,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::Bool),
+            return_type: GirType::Prim(PrimType::Bool),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let r = eval_kernel(&kernel, &[RegValue::F64(5.0), RegValue::F64(7.0)]);
         assert_eq!(r, RegValue::Bool(true));
@@ -3092,7 +3154,7 @@ mod tests {
     fn cast_int_to_float() {
         // |i| cast<f64>(i)
         let body = cast(loc("i", PrimType::I64), PrimType::F64).unwrap();
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("itof"),
             params: vec![input("i", PrimType::I64)],
             fn_params: vec![],
@@ -3102,18 +3164,18 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::F64),
+            return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let r = eval_kernel(&kernel, &[RegValue::I64(42)]);
         assert_eq!(r, RegValue::F64(42.0));
     }
 
-    /// Build mandelbrot's iterate KIR by hand and check known-output
+    /// Build mandelbrot's iterate GIR by hand and check known-output
     /// cases. The shape mirrors what `fusion::build_kir_kernel`
     /// produces — this test is the M5 differential's spiritual ancestor.
-    fn mandelbrot_iterate_kernel() -> KirKernel {
+    fn mandelbrot_iterate_kernel() -> GirKernel {
         // body of select arm 1: return 0 (when i == 0)
         let arm0 = SelectArm {
             cond: Some(
@@ -3124,7 +3186,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            body: vec![KirStmt::Return(const_expr(ConstVal::I64(0)))],
+            body: vec![GirStmt::Return(const_expr(ConstVal::I64(0)))],
         };
         // body of arm 2: return i (when escaped)
         let escaped_cond = cmp(
@@ -3150,7 +3212,7 @@ mod tests {
         .unwrap();
         let arm1 = SelectArm {
             cond: Some(escaped_cond),
-            body: vec![KirStmt::Return(loc("i", PrimType::I64))],
+            body: vec![GirStmt::Return(loc("i", PrimType::I64))],
         };
         // body of arm 3: tail-call iterate(zr*zr - zi*zi + cr, 2*zr*zi + ci, cr, ci, i-1)
         let new_zr = arith(
@@ -3198,7 +3260,7 @@ mod tests {
         .unwrap();
         let arm2 = SelectArm {
             cond: None,
-            body: vec![KirStmt::TailCall {
+            body: vec![GirStmt::TailCall {
                 args: vec![
                     new_zr,
                     new_zi,
@@ -3208,7 +3270,7 @@ mod tests {
                 ],
             }],
         };
-        KirKernel {
+        GirKernel {
             fn_name: ArcStr::from("iterate"),
             params: vec![
                 input("zr", PrimType::F64),
@@ -3224,9 +3286,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: true,
-            body: vec![KirStmt::Select { arms: vec![arm0, arm1, arm2] }],
+            body: vec![GirStmt::Select { arms: vec![arm0, arm1, arm2] }],
         }
     }
 
@@ -3288,11 +3350,11 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            body: vec![KirStmt::Return(const_expr(ConstVal::I64(0)))],
+            body: vec![GirStmt::Return(const_expr(ConstVal::I64(0)))],
         };
         let arm1 = SelectArm {
             cond: None,
-            body: vec![KirStmt::TailCall {
+            body: vec![GirStmt::TailCall {
                 args: vec![arith(
                     loc("n", PrimType::I64),
                     const_expr(ConstVal::I64(1)),
@@ -3301,7 +3363,7 @@ mod tests {
                 .unwrap()],
             }],
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("countdown"),
             params: vec![input("n", PrimType::I64)],
             fn_params: vec![],
@@ -3311,9 +3373,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: true,
-            body: vec![KirStmt::Select { arms: vec![arm0, arm1] }],
+            body: vec![GirStmt::Select { arms: vec![arm0, arm1] }],
         };
         let r = eval_kernel(&kernel, &[RegValue::I64(1_000_000)]);
         assert_eq!(r, RegValue::I64(0));
@@ -3326,8 +3388,8 @@ mod tests {
         // remain visible after the block).
         // We'll fold a block that pushes y, then add to x outside.
         // Body: { let y = x + 1; y } + x
-        let inner_block = KirExpr {
-            op: KirOp::Block {
+        let inner_block = GirExpr {
+            op: GirOp::Block {
                 lets: vec![Let {
                     local: ArcStr::from("y"),
                     value: arith(
@@ -3339,10 +3401,10 @@ mod tests {
                 }],
                 tail: Box::new(loc("y", PrimType::I64)),
             },
-            typ: KirType::Prim(PrimType::I64),
+            typ: GirType::Prim(PrimType::I64),
         };
         let body = arith(inner_block, loc("x", PrimType::I64), BinOp::Add).unwrap();
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("inner_y_plus_x"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
@@ -3352,9 +3414,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let r = eval_kernel(&kernel, &[RegValue::I64(10)]);
         // y = 10 + 1 = 11; result = 11 + 10 = 21
@@ -3364,8 +3426,8 @@ mod tests {
     #[test]
     fn ifchain_expression() {
         // |x: i64| if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
-        let chain = KirExpr {
-            op: KirOp::IfChain {
+        let chain = GirExpr {
+            op: GirOp::IfChain {
                 arms: vec![
                     (
                         Some(
@@ -3392,9 +3454,9 @@ mod tests {
                     (None, const_expr(ConstVal::I64(0))),
                 ],
             },
-            typ: KirType::Prim(PrimType::I64),
+            typ: GirType::Prim(PrimType::I64),
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("sign"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
@@ -3404,9 +3466,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(chain)],
+            body: vec![GirStmt::Return(chain)],
         };
         assert_eq!(
             eval_kernel(&kernel, &[RegValue::I64(5)]),
@@ -3434,9 +3496,9 @@ mod tests {
         // local binding via push_local, the Local read returning
         // EvalResult::Nullable, and IsNull matching the Nullable
         // shape. Both branches must round-trip identically.
-        use crate::kernel_ir::{Let};
-        let widen_chain = KirExpr {
-            op: KirOp::IfChain {
+        use crate::gir::{Let};
+        let widen_chain = GirExpr {
+            op: GirOp::IfChain {
                 arms: vec![
                     (
                         Some(
@@ -3451,42 +3513,42 @@ mod tests {
                     ),
                     (
                         None,
-                        KirExpr {
-                            op: KirOp::ConstNull,
-                            typ: KirType::Null,
+                        GirExpr {
+                            op: GirOp::ConstNull,
+                            typ: GirType::Null,
                         },
                     ),
                 ],
             },
-            typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+            typ: GirType::Nullable(Box::new(GirType::Prim(PrimType::I64))),
         };
-        let is_null_check = KirExpr {
-            op: KirOp::IsNull(Box::new(KirExpr {
-                op: KirOp::Local(ArcStr::from("nullable")),
-                typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+        let is_null_check = GirExpr {
+            op: GirOp::IsNull(Box::new(GirExpr {
+                op: GirOp::Local(ArcStr::from("nullable")),
+                typ: GirType::Nullable(Box::new(GirType::Prim(PrimType::I64))),
             })),
-            typ: KirType::Prim(PrimType::Bool),
+            typ: GirType::Prim(PrimType::Bool),
         };
-        let dispatch = KirExpr {
-            op: KirOp::IfChain {
+        let dispatch = GirExpr {
+            op: GirOp::IfChain {
                 arms: vec![
                     (Some(is_null_check), const_expr(ConstVal::I64(-1))),
                     (None, const_expr(ConstVal::I64(0))),
                 ],
             },
-            typ: KirType::Prim(PrimType::I64),
+            typ: GirType::Prim(PrimType::I64),
         };
-        let body = KirExpr {
-            op: KirOp::Block {
+        let body = GirExpr {
+            op: GirOp::Block {
                 lets: vec![Let {
                     local: ArcStr::from("nullable"),
                     value: widen_chain,
                 }],
                 tail: Box::new(dispatch),
             },
-            typ: KirType::Prim(PrimType::I64),
+            typ: GirType::Prim(PrimType::I64),
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("classify"),
             params: vec![input("n", PrimType::I64)],
             fn_params: vec![],
@@ -3496,12 +3558,12 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         // Kernel touches Null/Nullable → must route to interp.
-        assert!(crate::kernel_ir::kernel_contains_null(&kernel));
+        assert!(crate::gir::kernel_contains_null(&kernel));
         assert_eq!(
             eval_kernel(&kernel, &[RegValue::I64(5)]),
             RegValue::I64(0),
@@ -3525,25 +3587,25 @@ mod tests {
         //   |x: [i64, null]| -> i64 select x { null as _ => -1, _ => 7 }
         // — exercises the Nullable kernel-param path end-to-end: the
         // arg arrives as a `Value` via the boundary, gets pushed into
-        // env.nullables, read back via KirOp::Local (yielding
+        // env.nullables, read back via GirOp::Local (yielding
         // EvalResult::Nullable), and IsNull dispatches on it.
-        let is_null_check = KirExpr {
-            op: KirOp::IsNull(Box::new(KirExpr {
-                op: KirOp::Local(ArcStr::from("x")),
-                typ: KirType::Nullable(Box::new(KirType::Prim(PrimType::I64))),
+        let is_null_check = GirExpr {
+            op: GirOp::IsNull(Box::new(GirExpr {
+                op: GirOp::Local(ArcStr::from("x")),
+                typ: GirType::Nullable(Box::new(GirType::Prim(PrimType::I64))),
             })),
-            typ: KirType::Prim(PrimType::Bool),
+            typ: GirType::Prim(PrimType::Bool),
         };
-        let chain = KirExpr {
-            op: KirOp::IfChain {
+        let chain = GirExpr {
+            op: GirOp::IfChain {
                 arms: vec![
                     (Some(is_null_check), const_expr(ConstVal::I64(-1))),
                     (None, const_expr(ConstVal::I64(7))),
                 ],
             },
-            typ: KirType::Prim(PrimType::I64),
+            typ: GirType::Prim(PrimType::I64),
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("nullable_arg"),
             params: vec![],
             fn_params: vec![],
@@ -3551,20 +3613,20 @@ mod tests {
             tuple_params: vec![],
             struct_params: vec![],
             variant_params: vec![],
-            nullable_params: vec![crate::kernel_ir::NullableInput {
+            nullable_params: vec![crate::gir::NullableInput {
                 name: ArcStr::from("x"),
-                elem: KirType::Prim(PrimType::I64),
+                elem: GirType::Prim(PrimType::I64),
                 bind_id: None,
             }],
-            tail_call_slots: vec![crate::kernel_ir::TailCallSlot {
+            tail_call_slots: vec![crate::gir::TailCallSlot {
                 name: ArcStr::from("x"),
-                kind: crate::kernel_ir::TailCallSlotKind::Nullable,
+                kind: crate::gir::TailCallSlotKind::Nullable,
             }],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(chain)],
+            body: vec![GirStmt::Return(chain)],
         };
-        assert!(crate::kernel_ir::kernel_contains_null(&kernel));
+        assert!(crate::gir::kernel_contains_null(&kernel));
         let registry = KernelRegistry::default();
         let mut dispatch = no_dyn_dispatch;
         // Pass a non-null i64 — IsNull false → return 7.
@@ -3605,23 +3667,23 @@ mod tests {
         // — exercises ConstNull producing EvalResult::Null and IsNull
         // converting that to a Bool. The condition is statically true,
         // so this should always return 1 regardless of `x`.
-        let is_null_check = KirExpr {
-            op: KirOp::IsNull(Box::new(KirExpr {
-                op: KirOp::ConstNull,
-                typ: KirType::Null,
+        let is_null_check = GirExpr {
+            op: GirOp::IsNull(Box::new(GirExpr {
+                op: GirOp::ConstNull,
+                typ: GirType::Null,
             })),
-            typ: KirType::Prim(PrimType::Bool),
+            typ: GirType::Prim(PrimType::Bool),
         };
-        let chain = KirExpr {
-            op: KirOp::IfChain {
+        let chain = GirExpr {
+            op: GirOp::IfChain {
                 arms: vec![
                     (Some(is_null_check), const_expr(ConstVal::I64(1))),
                     (None, const_expr(ConstVal::I64(0))),
                 ],
             },
-            typ: KirType::Prim(PrimType::I64),
+            typ: GirType::Prim(PrimType::I64),
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("is_null_const"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
@@ -3631,12 +3693,12 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(chain)],
+            body: vec![GirStmt::Return(chain)],
         };
         // Confirm the kernel routes to interp (the guard fires).
-        assert!(crate::kernel_ir::kernel_contains_null(&kernel));
+        assert!(crate::gir::kernel_contains_null(&kernel));
         assert_eq!(eval_kernel(&kernel, &[RegValue::I64(42)]), RegValue::I64(1));
     }
 
@@ -3650,7 +3712,7 @@ mod tests {
             BinOp::Add,
         )
         .unwrap();
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("inc"),
             params: vec![input("x", PrimType::I64)],
             fn_params: vec![],
@@ -3660,9 +3722,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::I64),
+            return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let r = eval_kernel(&kernel, &[RegValue::I64(i64::MAX)]);
         assert_eq!(r, RegValue::I64(i64::MIN));
@@ -3694,22 +3756,22 @@ mod tests {
         // Validates ArrayLen plumbing isn't needed here, but ArrayGet
         // is — and the kernel reads two distinct indices through the
         // array param.
-        use crate::kernel_ir::{ArrayInput, KirExpr, KirOp};
-        let elem_at = |i: i64| KirExpr {
-            op: KirOp::ArrayGet {
+        use crate::gir::{ArrayInput, GirExpr, GirOp};
+        let elem_at = |i: i64| GirExpr {
+            op: GirOp::ArrayGet {
                 name: ArcStr::from("arr"),
                 idx: Box::new(const_expr(ConstVal::I64(i))),
             },
-            typ: KirType::Prim(PrimType::F64),
+            typ: GirType::Prim(PrimType::F64),
         };
         let body = arith(elem_at(0), elem_at(1), BinOp::Add).unwrap();
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("sum_two"),
             params: vec![],
             fn_params: vec![],
             array_params: vec![ArrayInput {
                 name: ArcStr::from("arr"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             tuple_params: vec![],
@@ -3717,9 +3779,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::F64),
+            return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let arr = ValArray::from_iter_exact(
             [Value::F64(1.5), Value::F64(2.25)].into_iter(),
@@ -3737,17 +3799,17 @@ mod tests {
 
     #[test]
     fn array_fold_sum_f64() {
-        // Manual ArrayFold KIR: sum over an Array<f64> starting from 0.0.
+        // Manual ArrayFold GIR: sum over an Array<f64> starting from 0.0.
         //   { let acc = 0.0; for x in arr { acc = acc + x; }; acc }
-        use crate::kernel_ir::{ArrayInput, KirExpr, KirOp};
+        use crate::gir::{ArrayInput, GirExpr, GirOp};
         let body = arith(
             local(ArcStr::from("acc"), PrimType::F64),
             local(ArcStr::from("x"), PrimType::F64),
             BinOp::Add,
         )
         .unwrap();
-        let fold = KirExpr {
-            op: KirOp::ArrayFold {
+        let fold = GirExpr {
+            op: GirOp::ArrayFold {
                 array: ArcStr::from("arr"),
                 elem_typ: PrimType::F64,
                 init: Box::new(const_expr(ConstVal::F64(0.0))),
@@ -3755,19 +3817,19 @@ mod tests {
                 elem_local: ArcStr::from("x"),
                 body: Box::new(body),
             },
-            typ: KirType::Prim(PrimType::F64),
+            typ: GirType::Prim(PrimType::F64),
         };
         // Wrap in a body so the kernel has a synthetic ArrayGet for the
         // emitter helpers; actually we don't need that — fold is the
         // whole body. Use the Block expression form to introduce a no-op
         // local before fold to exercise scope nesting.
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("sum_f64"),
             params: vec![],
             fn_params: vec![],
             array_params: vec![ArrayInput {
                 name: ArcStr::from("arr"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             tuple_params: vec![],
@@ -3775,9 +3837,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::F64),
+            return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(fold)],
+            body: vec![GirStmt::Return(fold)],
         };
         let arr = ValArray::from_iter_exact(
             [Value::F64(1.0), Value::F64(2.5), Value::F64(-0.5), Value::F64(10.0)]
@@ -3809,18 +3871,18 @@ mod tests {
     fn array_len_op() {
         // Kernel: fn len_of(arr: Array<i64>) -> u64 = array::len(arr)
         // Smoke-tests ArrayLen and the kernel-arity bookkeeping.
-        use crate::kernel_ir::{ArrayInput, KirExpr, KirOp};
-        let body = KirExpr {
-            op: KirOp::ArrayLen { name: ArcStr::from("arr") },
-            typ: KirType::Prim(PrimType::U64),
+        use crate::gir::{ArrayInput, GirExpr, GirOp};
+        let body = GirExpr {
+            op: GirOp::ArrayLen { name: ArcStr::from("arr") },
+            typ: GirType::Prim(PrimType::U64),
         };
-        let kernel = KirKernel {
+        let kernel = GirKernel {
             fn_name: ArcStr::from("len_of"),
             params: vec![],
             fn_params: vec![],
             array_params: vec![ArrayInput {
                 name: ArcStr::from("arr"),
-                elem: KirType::Prim(PrimType::I64),
+                elem: GirType::Prim(PrimType::I64),
                 bind_id: None,
             }],
             tuple_params: vec![],
@@ -3828,9 +3890,9 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![],
             tail_call_slots: vec![],
-            return_type: KirType::Prim(PrimType::U64),
+            return_type: GirType::Prim(PrimType::U64),
             has_tail_loop: false,
-            body: vec![KirStmt::Return(body)],
+            body: vec![GirStmt::Return(body)],
         };
         let arr = ValArray::from_iter_exact(
             [Value::I64(10), Value::I64(20), Value::I64(30)].into_iter(),

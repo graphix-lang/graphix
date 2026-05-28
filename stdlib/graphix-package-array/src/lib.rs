@@ -5,9 +5,12 @@
 use ahash::AHashSet;
 use anyhow::{bail, Result};
 use compact_str::format_compact;
+use arcstr::ArcStr;
 use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
+    fusion::lowering::{emit_expr_node, FusionCtx, Input},
+    gir::{GirExpr, GirOp, GirType, PrimType},
     node::genn,
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
@@ -37,6 +40,36 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             slots.iter().map(|s| s.cur.clone().unwrap()),
         )))
     }
+
+    fn emit_gir(
+        ctx: &mut FusionCtx,
+        array_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        elem_name: &ArcStr,
+        in_elem: PrimType,
+    ) -> Option<GirExpr> {
+        // Array param name (the array kernel input the loop reads).
+        let array_name = ctx.resolve_array_input(array_arg)?;
+        // Lower the callback body inside an extended ctx that has the
+        // per-element binding pushed as a kernel input. The body's
+        // `Ref`s to the param name resolve to a `GirOp::Local` over
+        // this slot.
+        let body_kir = ctx.with_input(
+            Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
+            |inner| emit_expr_node(body, inner),
+        )?;
+        let out_elem = body_kir.typ.as_prim()?;
+        Some(GirExpr {
+            op: GirOp::ArrayMap {
+                array: array_name,
+                in_elem,
+                elem_local: elem_name.clone(),
+                out_elem,
+                body: Box::new(body_kir),
+            },
+            typ: GirType::Array(Box::new(GirType::Prim(out_elem))),
+        })
+    }
 }
 
 type Map<R, E> = MapQ<R, E, MapImpl>;
@@ -56,6 +89,33 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
                 _ => None,
             },
         ))))
+    }
+
+    fn emit_gir(
+        ctx: &mut FusionCtx,
+        array_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        elem_name: &ArcStr,
+        in_elem: PrimType,
+    ) -> Option<GirExpr> {
+        let array_name = ctx.resolve_array_input(array_arg)?;
+        let pred_kir = ctx.with_input(
+            Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
+            |inner| emit_expr_node(body, inner),
+        )?;
+        // Predicate must return bool.
+        if pred_kir.typ != GirType::Prim(PrimType::Bool) {
+            return None;
+        }
+        Some(GirExpr {
+            op: GirOp::ArrayFilter {
+                array: array_name,
+                elem: in_elem,
+                elem_local: elem_name.clone(),
+                predicate: Box::new(pred_kir),
+            },
+            typ: GirType::Array(Box::new(GirType::Prim(in_elem))),
+        })
     }
 }
 
@@ -154,6 +214,46 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     type Collection = ValArray;
 
     const NAME: &str = "array_fold";
+
+    fn emit_gir(
+        ctx: &mut FusionCtx,
+        array_arg: &Node<R, E>,
+        init_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        acc_name: &ArcStr,
+        elem_name: &ArcStr,
+        in_elem: PrimType,
+    ) -> Option<GirExpr> {
+        let array_name = ctx.resolve_array_input(array_arg)?;
+        // Lower init in the outer ctx — no new locals needed.
+        let init_kir = emit_expr_node(init_arg, ctx)?;
+        let acc_typ = init_kir.typ.as_prim()?;
+        // Lower the body inside an extended ctx with both callback
+        // params pushed as kernel inputs.
+        let body_kir = ctx.with_input(
+            Input { name: acc_name.clone(), prim: acc_typ, bind_id: None },
+            |inner| {
+                inner.with_input(
+                    Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
+                    |inner2| emit_expr_node(body, inner2),
+                )
+            },
+        )?;
+        if body_kir.typ != GirType::Prim(acc_typ) {
+            return None;
+        }
+        Some(GirExpr {
+            op: GirOp::ArrayFold {
+                array: array_name,
+                elem_typ: in_elem,
+                init: Box::new(init_kir),
+                acc_local: acc_name.clone(),
+                elem_local: elem_name.clone(),
+                body: Box::new(body_kir),
+            },
+            typ: GirType::Prim(acc_typ),
+        })
+    }
 }
 
 type Fold<R, E> = FoldQ<R, E, FoldImpl>;

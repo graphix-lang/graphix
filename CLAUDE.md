@@ -288,7 +288,7 @@ ColumnSpec `on_resize` field fix: the .gxi types it as `&[fn(width: f64) -> Any,
 
 ### Composite-return DynCalls in the JIT (May 2026)
 
-`KirOp::DynCall` (HOF dispatch in the cranelift JIT) now supports
+`GirOp::DynCall` (HOF dispatch in the cranelift JIT) now supports
 fn-typed kernel params whose args *or* return are composite
 (tuple/struct/variant), not just scalars. Key pieces:
 
@@ -296,7 +296,7 @@ fn-typed kernel params whose args *or* return are composite
   and `source_args` builders in `fusion.rs` used to `return None` on
   any fn-typed param, so a HOF whose fn-param came from `lambda.args`
   (vs. an outer binding) never fused at all. They now `continue` past
-  fn-typed params — `build_arg_layout` (kir_interp) already
+  fn-typed params — `build_arg_layout` (gir_interp) already
   reconstructs fn-param positions separately by `FnSource::Param`'s
   `arg_pos`, so `tail_call_slots` / `source_args` intentionally
   *exclude* fn_params. A fn_param + tail-loop kernel still bails
@@ -325,7 +325,7 @@ fn-typed kernel params whose args *or* return are composite
   / new `graphix_value_buf_push_value`) when it's an `Owned` source
   (an inline `TupleNew`/`StructNew`/`VariantNew`, or a composite-return
   DynCall result not bound to a local). `classify_composite_source`
-  drives the choice and now classifies `KirOp::DynCall` as `Owned`.
+  drives the choice and now classifies `GirOp::DynCall` as `Owned`.
   Using the borrowed helper on an Owned source leaks the original;
   the move helper on a Borrowed source double-frees it.
 
@@ -334,7 +334,7 @@ fn-typed kernel params whose args *or* return are composite
 Pre-M8.4 hardening — bigger fused subgraphs hit two JIT codegen
 crashes that smaller kernels didn't:
 
-- **`KirOp::Block` with a composite let panicked.** The block-
+- **`GirOp::Block` with a composite let panicked.** The block-
   expression arm did `prim_of(&l.value.typ)` on every let — a panic
   for any tuple/struct/variant let. It also only `mark`/`truncate`d
   `env.locals`, so composite/variant block-lets leaked into the
@@ -345,7 +345,7 @@ crashes that smaller kernels didn't:
   block tail through `ensure_owned_composite` (so a tail that aliases
   a block-scoped local outlives the block).
 
-- **Composite `select`-as-expression (`KirOp::IfChain`) panicked.**
+- **Composite `select`-as-expression (`GirOp::IfChain`) panicked.**
   `compile_ifchain` took a `PrimType` and `prim_to_clif`'d it for the
   merge-block param — a panic for a tuple/variant-typed if-chain. It
   now takes a `ClifType` (via the new `clif_of`, composites → `I64`)
@@ -356,7 +356,7 @@ crashes that smaller kernels didn't:
   (`locals`, `composites`, `variants`) via an `EnvMark` snapshot — not
   just `locals`. `truncate` is compile-time `env`-Vec hygiene only
   (no runtime drops); drops are the job of scope-exit code
-  (`KirOp::Block`) and terminating statements (`KirStmt::Return` via
+  (`GirOp::Block`) and terminating statements (`GirStmt::Return` via
   `drop_owned_composites`). `LowerCtx::param_count` became
   `param_mark: EnvMark` so a `TailCall` rebind resets every list to
   the post-param state.
@@ -364,9 +364,9 @@ crashes that smaller kernels didn't:
 - **`ensure_owned_composite`** is the single ownership choke point:
   given a composite expr + its compiled value, it refcount-clones a
   `Borrowed` source and passes an `Owned` one through. Used by
-  `KirStmt::Let`, `KirStmt::Return`, the `KirOp::Block` tail, and each
+  `GirStmt::Let`, `GirStmt::Return`, the `GirOp::Block` tail, and each
   `compile_ifchain` arm. `classify_composite_source` now also
-  classifies `KirOp::Block` and `KirOp::IfChain` as `Owned` (correct
+  classifies `GirOp::Block` and `GirOp::IfChain` as `Owned` (correct
   *because* those sites pre-own their result via this helper).
 
 ### AOT pipeline removed (May 2026)
@@ -377,14 +377,14 @@ The ahead-of-time Rust-source-emission backend is gone — the JIT
 `rewrite_program*` / `rewrite_walk` / `RewriteState` / `FusedKernel`
 (the AST-rewriting program pass), `emit_package` / `render_*` /
 `write_package` (cargo-package emission), and `walk_and_fuse` /
-`try_fuse_lambda`; `kernel_ir.rs`'s `kir_to_rust_*` emitter plus the
+`try_fuse_lambda`; `gir.rs`'s `gir_to_rust_*` emitter plus the
 `rust_name`/`rust_op`/`rust_src` helper methods and the now-dead
 `rust_name` field on `Input`/`ArrayInput`/`TupleInput`/`StructInput`/
 `VariantInput`/`TailCallSlot`/`SelfArg`; and the `graphix compile`
 CLI subcommand (`handle_compile` + the standalone-binary build
 helpers) from `graphix-shell`. ~3700 lines net. The live fusion path
-is unchanged: `build_kir_kernel` → `KirKernel` → cranelift JIT (or
-`kir_interp`). This clears the deck for M8.4 — maximal sync subgraph
+is unchanged: `build_kir_kernel` → `GirKernel` → cranelift JIT (or
+`gir_interp`). This clears the deck for M8.4 — maximal sync subgraph
 splitting is implemented exactly once, in `analyze_program`.
 
 ### Fusion refactor — Phases 0–3 (May 2026)
@@ -403,7 +403,7 @@ runs `typecheck_inner` and propagates `self.typ()` into
 `self.spec().typ`. Every Update impl renamed via one sed sweep — no
 per-impl discipline needed, the compiler enforces propagation.
 
-**Phase 1a — Single KirNode init chokepoint.** All three KirNode
+**Phase 1a — Single GirNode init chokepoint.** All three GirNode
 constructors (`new`, `with_jit`, `with_async_jit`) now take
 `&mut ExecCtx` and route through a private `build` chokepoint that
 runs both `pre_init_binding_slots` + `pre_init_builtin_slots`
@@ -414,18 +414,18 @@ LambdaDef" on first DynCall into a fused stdlib builtin. Now
 impossible to skip.
 
 **Phase 1b — Consolidated let-routing.** Three near-duplicate `match
-KirType -> push to ctx.*_inputs` blocks (in `emit_do_as_expr`,
+GirType -> push to ctx.*_inputs` blocks (in `emit_do_as_expr`,
 `emit_bind_stmt`, and parameter-discovery) replaced with one helper
-`register_kir_binding(ctx, name, &KirType)`. Adding a new `KirType`
+`register_kir_binding(ctx, name, &GirType)`. Adding a new `GirType`
 variant is now one site instead of three.
 
-**Phase 2 — Widened KirType to support nested composites.**
-`Array(PrimType)` → `Array(Box<KirType>)`; `Tuple(Vec<PrimType>)` →
-`Tuple(Vec<KirType>)`; `Struct(Vec<(ArcStr, PrimType)>)` →
-`Struct(Vec<(ArcStr, KirType)>)`; `Variant(...Vec<PrimType>)` →
-`Variant(...Vec<KirType>)`. The `Input`/`ArrayInput`/`TupleInput`/
+**Phase 2 — Widened GirType to support nested composites.**
+`Array(PrimType)` → `Array(Box<GirType>)`; `Tuple(Vec<PrimType>)` →
+`Tuple(Vec<GirType>)`; `Struct(Vec<(ArcStr, PrimType)>)` →
+`Struct(Vec<(ArcStr, GirType)>)`; `Variant(...Vec<PrimType>)` →
+`Variant(...Vec<GirType>)`. The `Input`/`ArrayInput`/`TupleInput`/
 `StructInput`/`VariantInput` slot structs widened similarly. New
-`KirType::as_array_prim()` helper for sites that still need a flat
+`GirType::as_array_prim()` helper for sites that still need a flat
 `PrimType` (with `as_array_elem()` as the fully-general accessor).
 Runtime layer needed no changes — `ValArray<Value>` was already
 nested-capable. Today's consumers still call `as_prim()?` to bail
@@ -437,7 +437,7 @@ follow-up work can lower them.
 runs a parallel scope-tracking AST walk. After the self-recursion +
 known-fn short-circuit, it reads the cached type off `body.typ.get()`
 (populated by Phase 0's propagation) and translates via
-`KirType::from_type`. Falls through to `emit_expr` only for
+`GirType::from_type`. Falls through to `emit_expr` only for
 synthesized Exprs whose `typ` cell is empty (module-kernel synth
 tail, etc.). The Do/Select/ExplicitParens recursion is gone — the
 typed AST means the body's *resulting* type is known without walking
@@ -495,8 +495,8 @@ result, no sidecar indirection.
 **Phase 6 — composite-element accessor lowering.** Lifted the
 `as_prim()?` bail in `emit_tuple_ref` / `emit_struct_ref` /
 `emit_array_ref` so composite slot types can be read. Widened
-`KirOp::TupleGet.elem_typ` and `KirOp::StructGet.elem_typ` from
-`PrimType` to `KirType`; `KirOp::ArrayGet` reads its element type
+`GirOp::TupleGet.elem_typ` and `GirOp::StructGet.elem_typ` from
+`PrimType` to `GirType`; `GirOp::ArrayGet` reads its element type
 straight off `e.typ` (no separate field). The interpreter routes
 composite-typed accesses through a new `extract_composite_or_scalar`
 helper — primitive slots use the existing fast scalar extraction;
@@ -510,7 +510,7 @@ identically under `--no-fusion`, `--whole-graph`, and lazy modes.
 
 Producer ops (`TupleNew` / `StructNew` / `VariantNew`) still bail on
 composite fields — same pattern but more surgery (the producer
-KirOps' `elem_types: Vec<PrimType>` would need widening too, plus
+GirOps' `elem_types: Vec<PrimType>` would need widening too, plus
 interp/JIT side updates). Follow-up.
 
 **M8.4(g) — flip the switch + eager lambda fusion.** Three coupled
@@ -537,10 +537,10 @@ cuts:
    `node/lambda.rs::Lambda::compile`'s InitFn shrank from ~390 lines
    of inline discovery + build + JIT logic to ~50 lines of cache
    lookup. The closure now just reads the entry's `Built` slot and
-   wraps it in `KirNode::{new,with_jit,with_async_jit}`; if the
+   wraps it in `GirNode::{new,with_jit,with_async_jit}`; if the
    slot isn't `Built`, falls back to `GXLambda` (interpreter body).
    Calls to a fused lambda from any context — region inlining via
-   `KirOp::Call`, dynamic dispatch through `Apply::update`,
+   `GirOp::Call`, dynamic dispatch through `Apply::update`,
    anything else — go through the same cached kernel + JIT, no
    per-call-site re-build.
 
@@ -562,22 +562,22 @@ and `analyze_program` — its body wasn't unnecessary.
 - M8.4(h): cleanup + docs (M4g stability gate, etc.).
 - Anonymous-lambda eager fusion (currently fall back to interp).
 
-### `KirType::Null` + null-pattern lowering (May 2026)
+### `GirType::Null` + null-pattern lowering (May 2026)
 
 Foundation for fusing code that produces or pattern-matches on
 `null` (graphix's `[T, null]` option shape):
 
-- `KirOp::ConstNull` — the `null` literal. Result type
-  `KirType::Null`. `emit_expr` lowers
+- `GirOp::ConstNull` — the `null` literal. Result type
+  `GirType::Null`. `emit_expr` lowers
   `ExprKind::Constant(Value::Null)` to this op.
-- `KirOp::IsNull(KirExpr)` — boolean test. Operand must be
-  `KirType::Null` or `KirType::Nullable(_)`; result `Bool`.
+- `GirOp::IsNull(GirExpr)` — boolean test. Operand must be
+  `GirType::Null` or `GirType::Nullable(_)`; result `Bool`.
 - `EvalResult::Null` — interp marshalling for null values; `IsNull`
   matches either this variant or a `Variant(Value::Null)` slot (so
   the check works whether the operand is a literal or a Nullable
   local read).
 - `kernel_contains_null` JIT guard — mirrors `kernel_contains_string`.
-  Kernels that touch `KirType::Null`/`Nullable`/`ConstNull`/`IsNull`
+  Kernels that touch `GirType::Null`/`Nullable`/`ConstNull`/`IsNull`
   route to the interpreter. The JIT compile-expr arm returns an
   error rather than panicking; the guard makes that error
   unreachable in well-formed routing.
@@ -590,8 +590,8 @@ Foundation for fusing code that produces or pattern-matches on
   "always matches."
 
 What's still missing (next step): nullable lets aren't representable
-yet (`register_kir_binding` bails on `KirType::Nullable`), and
-`emit_select_as_expr` requires all arms to share a KirType so a
+yet (`register_kir_binding` bails on `GirType::Nullable`), and
+`emit_select_as_expr` requires all arms to share a GirType so a
 mixed `i64`/`null` IfChain can't unify into `Nullable<i64>`. Filter-
 map style code (predicate returning `[T, null]`) won't fuse end-to-
 end until those two pieces land; the IR + interp side is in place.
@@ -605,29 +605,29 @@ bails on null-touching kernels via `kernel_contains_null`):
 
 - **`EvalResult::Nullable(Value)`** — new variant; carries either
   `Value::Null` or `T`'s runtime form. `into_value` unwraps;
-  `KirOp::IsNull` matches against it in addition to
+  `GirOp::IsNull` matches against it in addition to
   `EvalResult::Null` and `EvalResult::Variant(Value::Null)`.
 - **`InterpEnv::nullables: Vec<(ArcStr, Value)>`** — dedicated
   slot list (semantically distinct from `variants`); paired with
   `lookup_nullable` / `push_nullable` / `rebind_nullable` helpers.
-  `KirOp::Block` truncates it on scope exit alongside `arrays` and
+  `GirOp::Block` truncates it on scope exit alongside `arrays` and
   `variants`. `push_local` routes `EvalResult::Nullable` here; the
-  bare `EvalResult::Null` case panics (KIR is malformed if it
+  bare `EvalResult::Null` case panics (GIR is malformed if it
   reaches the slot — every binding-time site widens first).
-- **`KirOp::Local` for Nullable typed reads** — returns
-  `EvalResult::Nullable(value)`. `KirOp::IfChain` whose declared
-  type is `KirType::Nullable<T>` normalizes each arm result via
+- **`GirOp::Local` for Nullable typed reads** — returns
+  `EvalResult::Nullable(value)`. `GirOp::IfChain` whose declared
+  type is `GirType::Nullable<T>` normalizes each arm result via
   `normalize_to_nullable` (a new helper) so a scalar-T arm and a
   null arm both surface as the `Nullable` shape regardless of
-  which branch fires. `KirOp::DynCall` with a `Nullable` return
+  which branch fires. `GirOp::DynCall` with a `Nullable` return
   type wraps similarly; with a `Null` return it surfaces as
   `EvalResult::Null`.
-- **`KirKernel` boundary** — nothing changes at the JIT boundary
+- **`GirKernel` boundary** — nothing changes at the JIT boundary
   (`kernel_contains_null` keeps null kernels off the JIT). The
   interp path's `into_value` already covers the marshalling.
 - **`NullableInput` kernel slot** — new struct (`name`, `elem`,
   `bind_id`); paired `FusionCtx::nullable_inputs` + `find_nullable`
-  helper. `register_kir_binding` now routes `KirType::Nullable` here
+  helper. `register_kir_binding` now routes `GirType::Nullable` here
   (used to bail). `emit_expr`'s `Ref` lookup checks `find_nullable`
   after `find_variant`.
 - **`emit_select_as_expr` mixed-arm unification** — new
@@ -638,7 +638,7 @@ bails on null-touching kernels via `kernel_contains_null`):
   into `emit_select_as_expr` (parallels the `emit_arm` flow added
   in the previous step).
 
-What's still missing: bare `KirType::Null` as a kernel param/let
+What's still missing: bare `GirType::Null` as a kernel param/let
 isn't a real shape — every site widens to `Nullable<T>`. Nullable
 *kernel parameters* (coming in from outside the kernel) aren't
 populated yet (`populate_kernel_inputs` doesn't have a Nullable
@@ -652,19 +652,19 @@ Closed the gap from the previous section — lambdas (and regions /
 modules) whose argspec or return shape contains `[T, null]` now
 fuse end-to-end through the interpreter:
 
-- **`KirKernel::nullable_params: Vec<NullableInput>`** — new slot
+- **`GirKernel::nullable_params: Vec<NullableInput>`** — new slot
   list paralleling `variant_params`. `eval_kernel_full` gained a
   matching `nullable_args: &[Value]` parameter that gets pushed
   into `env.nullables` at kernel entry.
-- **`RegionInputKind::Nullable(KirType)`** + `populate_kernel_inputs`
+- **`RegionInputKind::Nullable(GirType)`** + `populate_kernel_inputs`
   arm + `type_to_region_input_kind` arm + `region_input_kind_to_kir_type`
   arm — every region-input pathway recognises and routes Nullable
-  inputs through the new slot list. Bare `KirType::Null` is still
+  inputs through the new slot list. Bare `GirType::Null` is still
   rejected as a free-var type (it's a producer-only shape; widen
   before binding).
 - **`TailCallSlotKind::Nullable`** + `ArgKind::Nullable(u32)` —
   `build_arg_layout` walks `tail_call_slots` and routes Nullable
-  positions to the dedicated index. `KirNode::update` collects a
+  positions to the dedicated index. `GirNode::update` collects a
   `nullable_args` smallvec from the incoming `args` slice and feeds
   it through to `eval_kernel_full`.
 - **JIT-side**: `kernel_contains_null` already gates Nullable-
@@ -672,12 +672,12 @@ fuse end-to-end through the interpreter:
   doesn't need to learn the new shape. `TailCallSlotKind::Nullable`
   in the JIT tail-call rebind arm returns an `Err` (unreachable
   via the guard, but defends against routing drift).
-- **`KirNode::update` boundary marshalling for return** — already
-  worked: when a kernel's `return_type` is `KirType::Nullable<T>`,
+- **`GirNode::update` boundary marshalling for return** — already
+  worked: when a kernel's `return_type` is `GirType::Nullable<T>`,
   the body returns `EvalResult::Nullable(Value)` and `into_value()`
   unwraps to the boundary `Value` (`Null` or `T`'s form).
-- **Bulk schema update**: 30 `KirKernel { ... variant_params: vec![],
-  }` construction sites across `kir_interp.rs`, `kir_jit.rs`,
+- **Bulk schema update**: 30 `GirKernel { ... variant_params: vec![],
+  }` construction sites across `gir_interp.rs`, `gir_jit.rs`,
   `fusion.rs` were updated to add `nullable_params: vec![],` after
   `variant_params: vec![]` via a single `sed` pass — every site has
   the same structure.
@@ -708,7 +708,7 @@ every site (lets, IfChain merges, DynCall args, etc.) and doesn't
 help for `Nullable<composite>` anyway. Specialization can come
 later if perf demands.
 
-**New helpers** (`kir_jit_helpers.rs`):
+**New helpers** (`gir_jit_helpers.rs`):
 - `graphix_value_new_null() -> *mut Value` — boxes
   `Box::new(Value::Null)`.
 - `graphix_value_new_<T>(scalar) -> *mut Value` for every
@@ -716,26 +716,26 @@ later if perf demands.
   arm widening when a narrow scalar arm joins a `Nullable<T>` merge.
 - `graphix_value_is_null(*const Value) -> u8` — borrowed read.
 
-**JIT env** (`kir_jit.rs`):
+**JIT env** (`gir_jit.rs`):
 - `JitEnv::nullables: Vec<(ArcStr, Variable)>` slot, parallel to
   `variants`. Same `*const Value` wire shape, same
   `graphix_value_drop` cleanup. `EnvMark::nullables` extended.
 - `bind_nullable` / `lookup_nullable` helpers.
 
 **compile_expr arms**:
-- `KirOp::ConstNull` → `call graphix_value_new_null` → owned
+- `GirOp::ConstNull` → `call graphix_value_new_null` → owned
   `*mut Value`.
-- `KirOp::IsNull(inner)` → compile inner (must lower to
+- `GirOp::IsNull(inner)` → compile inner (must lower to
   `*const Value`), `call graphix_value_is_null` → bool.
-- `KirOp::Local` for `KirType::Nullable` → read from
+- `GirOp::Local` for `GirType::Nullable` → read from
   `env.nullables`.
 
-**Let** routes `KirType::Nullable` to `env.bind_nullable` via the
+**Let** routes `GirType::Nullable` to `env.bind_nullable` via the
 existing `ensure_owned_composite` (extended to clone via
 `graphix_value_clone` for Nullable sources).
 
 **IfChain widening**: `compile_ifchain` now takes the result
-`&KirType` (not just CLIF type). When the merge is `Nullable<T>`
+`&GirType` (not just CLIF type). When the merge is `Nullable<T>`
 and an arm produces `Prim<T>` or bare `Null`, `widen_to_nullable`
 calls the matching boxing helper before the arm jumps to the merge.
 Already-Nullable arms still go through `ensure_owned_composite`
@@ -744,7 +744,7 @@ Already-Nullable arms still go through `ensure_owned_composite`
 **ABI** (`define_kernel_body` + `compile_kernel_with_wrapper`):
 - `n_composites` count + the `*const Value` arg slot loop both
   extended to include `kernel.nullable_params.len()`.
-- `return_clif` includes `KirType::Nullable(_) => types::I64`
+- `return_clif` includes `GirType::Nullable(_) => types::I64`
   (boxed-pointer return, just like variant).
 - `compile_into_function` clones each `nullable_params` entry on
   kernel entry via `graphix_value_clone` (same discipline as
@@ -752,21 +752,21 @@ Already-Nullable arms still go through `ensure_owned_composite`
   drop logic stays uniform).
 
 **Scope cleanup**: `drop_owned_composites`,
-`emit_pending_cleanup`, and `KirOp::Block`'s scope-exit walk all
+`emit_pending_cleanup`, and `GirOp::Block`'s scope-exit walk all
 include `env.nullables` alongside `env.composites` /
 `env.variants` — every entry drops via `graphix_value_drop`.
 
-**DynCall**: arg push for `KirType::Nullable` uses the same
+**DynCall**: arg push for `GirType::Nullable` uses the same
 `graphix_value_buf_push_value` / `_borrowed` helpers as variants
 (distinguished by `classify_composite_source`); return decoding
-for `KirType::Nullable` uses `ret_kind=2` (Box the whole Value)
+for `GirType::Nullable` uses `ret_kind=2` (Box the whole Value)
 — `dispatch_typed` already wraps any Value uniformly for that
 ret_kind. `ret_kind=3` (Unit) decode arm added in
 `dispatch_typed` for symmetry.
 
-**KirNode::update boundary**: nullable_args added to the JIT slot-
+**GirNode::update boundary**: nullable_args added to the JIT slot-
 packing loop (pointers after variants); the return-decode arm for
-`KirType::Nullable` reclaims via `Box::from_raw` and wraps in
+`GirType::Nullable` reclaims via `Box::from_raw` and wraps in
 `EvalResult::Nullable`.
 
 **Gate removed**: `fusion.rs`'s `has_null` JIT guard deleted. The
@@ -775,7 +775,7 @@ only Nullable corner the JIT can't handle is a
 compile time and the caller logs a warn and falls back to interp.
 No separate guard needed.
 
-**JIT-direct tests** in `kir_jit::tests`:
+**JIT-direct tests** in `gir_jit::tests`:
 - `wrapper_nullable_kernel_param` — `Nullable<i64>` arg + IsNull
   dispatch, returns -1 for Null and 7 otherwise.
 - `wrapper_nullable_kernel_return` — IfChain widens scalar/null
@@ -802,7 +802,7 @@ boundary.
 pointers (silences the `improper_ctypes_definitions` lint without
 needing a module-level allow).
 
-**Compile-time pin**: `kir_jit_helpers.rs` const-asserts
+**Compile-time pin**: `gir_jit_helpers.rs` const-asserts
 `size_of::<Value>() == 16 && align_of::<Value>() == 8`. If a
 netidx release adds a wider variant payload the assertion fires.
 
@@ -823,14 +823,14 @@ both.
 **`compile_expr` shape dispatch**: returns `CompiledExpr` —
 either `Single(ClifValue)` (scalar/composite pointer) or `Value
 { disc, payload }` (Variant/Nullable). `compile_expr` itself
-dispatches on `KirType` and routes Value-shape exprs to
+dispatches on `GirType` and routes Value-shape exprs to
 `compile_value_expr`; everything else falls through to
 `compile_scalar_impl` (the old body, returning a single ClifValue
 wrapped as Single). A `compile_scalar` thin wrapper exists for
 the ~30 sites that only handle scalar — it asserts Single.
 
-**Inline construction**: `KirOp::ConstNull` emits `(iconst
-NULL_DISC, iconst 0)` inline; no helper call. `KirOp::IsNull`
+**Inline construction**: `GirOp::ConstNull` emits `(iconst
+NULL_DISC, iconst 0)` inline; no helper call. `GirOp::IsNull`
 emits `icmp_imm Equal disc NULL_DISC` inline. Nullary
 `VariantNew` (Value::String(tag)) emits `(STRING_DISC,
 tag_arcstr_ptr)` inline. IfChain widening to `Nullable<T>` for
@@ -847,7 +847,7 @@ CLIF scalar to the 8-byte payload word.
 **Kernel boundary ABI**: typed kernel signature + wrapper both
 slot Variant/Nullable params as TWO `I64` slots each (was one
 `*const Value`). Variant/Nullable returns: TWO `I64` return
-values each. `KirNode::update` packs the boundary by reading the
+values each. `GirNode::update` packs the boundary by reading the
 borrowed `Value`'s two `u64` words via `*(v as *const Value as
 *const u64)` and `.add(1)`; decode reclaims via `mem::transmute
 ::<[u64; 2], Value>`.
@@ -858,25 +858,25 @@ refcount-bump via `graphix_value_clone`; Owned sources (producers
 like `VariantNew`, `ConstNull`, IfChain merges) pass through.
 
 **Migrated to `compile_value_expr`**:
-- `KirOp::ConstNull` (inline, no helper).
-- `KirOp::Local` for Variant/Nullable (reads `ValueVar` pair).
-- `KirOp::IfChain` whose result type is Variant/Nullable —
+- `GirOp::ConstNull` (inline, no helper).
+- `GirOp::Local` for Variant/Nullable (reads `ValueVar` pair).
+- `GirOp::IfChain` whose result type is Variant/Nullable —
   `compile_ifchain` returns `CompiledExpr` with a two-word merge
   phi when the result is Value-shape; narrow arms widen inline
   via `widen_arm_to_value`.
-- `KirOp::VariantNew` — nullary inline; with-payload uses
+- `GirOp::VariantNew` — nullary inline; with-payload uses
   `graphix_value_new_from_array(arr) -> Value` to unbox the
   finalized ValArray Box and return the Value's (disc, payload)
   words.
 
-**Consumer ops updated**: `KirOp::VariantTagEq` and `VariantPayload`
+**Consumer ops updated**: `GirOp::VariantTagEq` and `VariantPayload`
 in `compile_scalar_impl` now read `ValueVar` pairs and pass three
 args (disc, payload, expected_or_idx) to the by-value helpers.
-`KirOp::IsNull` reads its operand via `compile_value_expr` and
+`GirOp::IsNull` reads its operand via `compile_value_expr` and
 inlines the disc compare.
 
 **Drop / cleanup**: `drop_owned_composites`, `emit_pending_cleanup`,
-and `KirOp::Block`'s scope-exit walk all iterate `env.variants` /
+and `GirOp::Block`'s scope-exit walk all iterate `env.variants` /
 `env.nullables` as `ValueVar` pairs and call `graphix_value_drop`
 with two args.
 
@@ -885,9 +885,9 @@ Value-shape kernels (was single).
 
 **Still unmigrated** (guarded via `kernel_contains_unmigrated_value_
 producer` in `fusion.rs`):
-- `KirOp::Block` whose tail is Value-shape — easy add (mirror the
+- `GirOp::Block` whose tail is Value-shape — easy add (mirror the
   scalar Block but unpack `CompiledExpr::Value` at the tail).
-- `KirOp::DynCall` returning Value-shape — `compile_value_expr`
+- `GirOp::DynCall` returning Value-shape — `compile_value_expr`
   has the arm but enabling it triggers SIGILL at runtime; needs
   the dispatch_typed / pending-take return contract verified end-
   to-end before re-enabling. Code is in place behind the guard.
@@ -904,7 +904,7 @@ Migrated the remaining Value-shape producers (Block-tail Value,
 DynCall returning Value, plus IfChain/VariantNew refinements)
 into `compile_value_expr`'s two-register `(disc, payload)` output.
 The interim `kernel_contains_unmigrated_value_producer` guard in
-`fusion.rs` is gone — there's no longer any Value-shape KIR
+`fusion.rs` is gone — there's no longer any Value-shape GIR
 shape the JIT routes to interp.
 
 **`graphix_dyncall`'s return ABI changed** to a `#[repr(C)] struct
@@ -939,13 +939,13 @@ pending machinery:
 **Fix 1 — `graphix_dyncall_pending_take` was clearing.** Latent UB
 on composite-DynCall pending paths: the JIT pre_pending block
 peeked-and-CLEARED the flag, jumped to `pending_exit` which
-emitted a null sentinel, and `KirNode::update`'s wrapper-level
+emitted a null sentinel, and `GirNode::update`'s wrapper-level
 pending check then saw `false` (because the JIT cleared it),
 skipped the early-return, and decoded the null sentinel — `Box
 ::from_raw(0)` for composite returns, `transmute([0, 0]) ->
 Value` for Value-shape returns (the all-zero discriminant isn't
 a valid Value variant). Fix: change `pending_take` to a peek —
-the flag stays set until `KirNode::update` resets at the top of
+the flag stays set until `GirNode::update` resets at the top of
 the NEXT kernel invocation. Existing tests didn't hit this
 because no test actually causes a composite DynCall to pend at
 runtime; pre-existing dyncall fixtures all resolve immediately.
@@ -956,9 +956,9 @@ Scalar DynCalls deliberately don't emit `pre_pending` branches
 when the surrounding kernel's return path produces an owned heap
 allocation (e.g., `let v = scalar_dyncall(); TupleNew(v, ...)`),
 the kernel runs to completion with garbage zeros, the
-`KirNode::update` wrapper-level pending check returns `None`, and
+`GirNode::update` wrapper-level pending check returns `None`, and
 the freshly-allocated ValArray is leaked. Fix: every
-`KirStmt::Return` for composite / Value-shape returns now emits
+`GirStmt::Return` for composite / Value-shape returns now emits
 `emit_return_pending_check` — peeks the flag, and on pending
 drops the about-to-return owned result via `graphix_valarray_drop`
 / `graphix_value_drop`, runs `emit_pending_cleanup` (env + in-
@@ -968,13 +968,13 @@ returns skip the check (no allocation, no leak risk).
 `ReturnDropShape` enum captures the drop-helper choice at the
 call site (`Composite(ptr)` vs. `Value { disc, payload }`).
 `emit_return_pending_check` lives next to `emit_pending_cleanup`
-in `kir_jit.rs` and reuses the lazy `pending_exit` slot.
+in `gir_jit.rs` and reuses the lazy `pending_exit` slot.
 
 **Direct tests**:
-- `kir_jit_helpers::tests::pending_take_is_peek_not_clear`:
+- `gir_jit_helpers::tests::pending_take_is_peek_not_clear`:
   asserts two successive `pending_take` calls both return 1 and
   the flag stays set.
-- `kir_jit::tests::return_pending_check_drops_composite_result`:
+- `gir_jit::tests::return_pending_check_drops_composite_result`:
   builds a kernel returning `(i64, i64)`, calls it once with
   pending unset (baseline — real ValArray returned), then again
   with pending pre-set (verifies the wrapper returns `0` sentinel
@@ -1033,7 +1033,7 @@ Async value via a separately-compiled Node arg_node.
   `input.source` — `Binding` keeps the existing synthetic `Ref`
   feeder, `Lifted(expr)` calls `crate::node::compiler::compile`
   on the Expr with `BitFlags::empty()` flags to get a standalone
-  Node. Same arg_nodes vector shape; KirNode's arg-packing
+  Node. Same arg_nodes vector shape; GirNode's arg-packing
   loop is unchanged.
 
 **Limits (today)**:
@@ -1066,7 +1066,7 @@ Two paired follow-ups after maximal-fusion landed:
 
 **FusedRegion JIT.** Region kernels (everything that comes out of
 `analyze_program` or `build_module_kernel`) used to always dispatch
-through `kir_interp` — only lambda kernels got JIT. Added `jit:
+through `gir_interp` — only lambda kernels got JIT. Added `jit:
 Option<SArc<WrappedKernel>>` + `async_jit: Option<SArc<AsyncJitSlot>>`
 to both `FusedSubgraph` and `ModuleKernel`. New private helper
 `jit_compile_for_kernel(&FusionConfig, kernel, callees, label)`
@@ -1074,7 +1074,7 @@ factors the eligibility gates + sync/async dispatch (mirrors the
 inline block in `eager_fuse_lambdas`). Region/module-kernel build
 sites call it right after `build_registry` and stash the artifacts
 on the carrier. `FusedRegion::from_subgraph` and
-`from_module_kernel` cascade through `KirNode::with_jit` → `with_async_jit`
+`from_module_kernel` cascade through `GirNode::with_jit` → `with_async_jit`
 → `new`, same precedence as `Lambda::compile` uses for lazy lambdas.
 
 Took `&FusionConfig` instead of `&ExecCtx<R, E>` so the helper is
@@ -1102,30 +1102,30 @@ existing `RegionInputSource` dispatch.
 
 154/154 compiler + 674/674 integration all green.
 
-### JIT KirType::String (May 2026)
+### JIT GirType::String (May 2026)
 
 The JIT used to bail on any string-touching kernel via a coarse
 `kernel_contains_string` gate, routing string-producing lambdas
-(typical `StringInterpolate` patterns) through `kir_interp`.
+(typical `StringInterpolate` patterns) through `gir_interp`.
 With strings being a major use case, that gate was a real perf
 miss. Now lowered end-to-end.
 
-**Wire shape**: a `KirType::String` SSA value is a single `i64`
+**Wire shape**: a `GirType::String` SSA value is a single `i64`
 CLIF value holding the ArcStr's thin pointer. `arcstr::ArcStr` is
 `#[repr(transparent)]` over `NonNull<ThinInner>` — the raw u64
 **is** a valid ArcStr bit pattern. Cheaper than the Value
 two-register shape used for Variant/Nullable, and string SSA
 doesn't need a discriminant.
 
-**Helpers** (`kir_jit_helpers.rs`):
+**Helpers** (`gir_jit_helpers.rs`):
 - `graphix_arcstr_clone_from_static(*const ArcStr) -> ArcStr` —
   refcount-bumps an interned static (kernel-strings table slot).
-  Lowering for `KirOp::ConstStr`.
+  Lowering for `GirOp::ConstStr`.
 - `graphix_arcstr_drop(ArcStr)` — refcount decrement; the leaf
   drop. Not called in today's codegen (ConstStr/Concat are linear,
   no String locals to scope-drop), but exposed for completeness.
 - `graphix_string_buf_{new,drop,finalize}` — heap-owned `Box<String>`
-  buffer for `KirOp::Concat`. `finalize` consumes the box, returns
+  buffer for `GirOp::Concat`. `finalize` consumes the box, returns
   the `ArcStr::from(s.as_str())`.
 - `graphix_string_buf_push_arcstr(buf, ArcStr)` — append the
   ArcStr's str slice, consume the ArcStr.
@@ -1136,23 +1136,23 @@ doesn't need a discriminant.
 - `graphix_value_new_string(ArcStr) -> Value` — boundary helper
   the wrapper *could* call when wrapping into a Value::String. The
   current implementation transmutes the raw u64 back into ArcStr
-  inside `KirNode::update` directly (single-instruction decode);
+  inside `GirNode::update` directly (single-instruction decode);
   the helper is registered for completeness.
 
-**Codegen** (`kir_jit.rs`):
-- `KirOp::ConstStr(s)` — fetches the interned `*const ArcStr` from
+**Codegen** (`gir_jit.rs`):
+- `GirOp::ConstStr(s)` — fetches the interned `*const ArcStr` from
   `ctx.strings.get(s)` (the existing `KernelStrings` table already
   pre-walked these), emits the ptr as an `iconst`, calls
   `graphix_arcstr_clone_from_static`. Returns the cloned ArcStr's
   pointer as a single CLIF `i64`.
-- `KirOp::Concat(parts)` — new `compile_concat` helper: call
+- `GirOp::Concat(parts)` — new `compile_concat` helper: call
   `buf_new`, dispatch each part by type (String → push_arcstr,
   Prim → push_<T>), call `buf_finalize`. Linear ownership: buf
   flows directly from new to finalize, no scope tracking needed
   (Concat parts can't contain DynCalls today, so no pending-path
   buf cleanup either).
-- **Kernel-return marshaling**: `KirType::String` return adds a
-  single `I64` to the typed sig (was an `Err`). `KirNode::update`'s
+- **Kernel-return marshaling**: `GirType::String` return adds a
+  single `I64` to the typed sig (was an `Err`). `GirNode::update`'s
   return-decode arm transmutes `out[0]: u64` back into
   `arcstr::ArcStr` (relies on the `repr(transparent)` layout) and
   wraps in `EvalResult::String`. Pending-path sentinel is `0` (null
@@ -1166,13 +1166,13 @@ doesn't need a discriminant.
 
 **Limits (today)**:
 - String locals / params still not supported on either backend
-  (interp's `JitEnv::push_local` panics; KIR-build rejects). The
+  (interp's `JitEnv::push_local` panics; GIR-build rejects). The
   JIT codegen's `Let` arms return defensive errors that read
-  "should reject in KIR-build" rather than panic, so a future
-  KIR change that forgot to update both backends would fail
+  "should reject in GIR-build" rather than panic, so a future
+  GIR change that forgot to update both backends would fail
   gracefully (kernel falls back to interp).
 - Strings in composite slots (`Array<String>`, `Tuple<[String,
-  _]>`, etc.) aren't expressible at the KIR layer — leaf-type
+  _]>`, etc.) aren't expressible at the GIR layer — leaf-type
   treatment matches `Unit`/`Null`.
 
 **Differential coverage**:
@@ -1201,7 +1201,7 @@ binding shouldn't move the lambda from fused → GXLambda.
 Previously: a `let s = "..."` inside a fusion-candidate lambda
 body forced fallback to `GXLambda`. Both backends panicked at
 `push_local` for `EvalResult::String`, and `register_kir_binding`
-returned None for `KirType::String`. So this code didn't fuse:
+returned None for `GirType::String`. So this code didn't fuse:
 
 ```graphix
 let f = |x: i64| -> string {
@@ -1213,27 +1213,27 @@ let f = |x: i64| -> string {
 **Now**: string locals are first-class on both backends, parallel
 to variant/nullable infrastructure.
 
-- **`kernel_ir::StringInput`** — new slot record (just `name` +
+- **`gir::StringInput`** — new slot record (just `name` +
   `bind_id`). No `elem` field — String is a leaf type.
 - **`FusionCtx::string_inputs`** + `find_string` + `lookup_local`
   String arm. `register_kir_binding`'s String arm routes here
   (was a bail).
 - **`InterpEnv::strings: Vec<(ArcStr, ArcStr)>`** with `push_string`
   + `lookup_string`. `push_local`'s String arm uses
-  `push_string` (was a panic). `KirOp::Local` for a `KirType::
+  `push_string` (was a panic). `GirOp::Local` for a `GirType::
   String`-typed Ref reads the slot and clones (refcount bump) so
-  each consumer gets its own owned ArcStr. `KirOp::Block`'s
+  each consumer gets its own owned ArcStr. `GirOp::Block`'s
   scope-exit snapshot/truncate includes `strings` alongside
   arrays/variants/nullables.
 - **`JitEnv::strings: Vec<(ArcStr, Variable)>`** with `bind_string`
   + `lookup_string`. `EnvMark` gains a `strings: usize` field;
-  `mark` / `truncate` cover it. `KirStmt::Let` + `KirOp::Block`'s
+  `mark` / `truncate` cover it. `GirStmt::Let` + `GirOp::Block`'s
   let arms for String type bind into this slot (were errors);
-  `compile_scalar_impl`'s `KirOp::Local` String arm reads via a
+  `compile_scalar_impl`'s `GirOp::Local` String arm reads via a
   new `graphix_arcstr_clone(s: ArcStr) -> ArcStr` helper (takes
   by value, `mem::forget`s the input, returns a fresh clone).
 - **Scope-exit drops**: `drop_owned_composites` (function exit)
-  and `KirOp::Block`'s scope-exit loop both drop `env.strings`
+  and `GirOp::Block`'s scope-exit loop both drop `env.strings`
   via `graphix_arcstr_drop` alongside composites / variants /
   nullables. `emit_pending_cleanup` inherits the drops via
   `drop_owned_composites`.
@@ -1274,7 +1274,7 @@ keyed by the binding name. Anonymous lambdas had no entry, so
 
 Now `Lambda::compile` registers anonymous lambdas itself when
 `ctx.current_binding_name` is `None`. The synth_name is the same
-`kir_<id>` already used as the InitFn's fusion-lookup key, so
+`gir_<id>` already used as the InitFn's fusion-lookup key, so
 both sides agree. The minted `BindId` is fresh (never reachable
 by name → never in `unstable_bindings` → entry always fusable).
 
@@ -1289,7 +1289,7 @@ just hooks into the anonymous branch.
 (`emit_array_map`, `emit_array_fold`, etc.) already inline the
 anonymous lambda's body directly into the surrounding kernel —
 they were fast pre-fix. The cliff this fix closes is anonymous
-lambdas dispatched *dynamically* — through `KirOp::DynCall`,
+lambdas dispatched *dynamically* — through `GirOp::DynCall`,
 through stored-in-binding-and-called-later patterns, or anywhere
 the lambda value flows through `Apply<R, E>::init` instead of
 being inlined at the call site. Those used to fall through to
@@ -1309,25 +1309,25 @@ composite-element accessors (`TupleGet` / `StructGet` / `ArrayGet`
 with composite slot types). The *write* side — the producer ops
 `TupleNew` / `StructNew` / `VariantNew` — was still primitive-only:
 `emit_tuple_new` etc. called `e.typ.as_prim()?` on each field and
-bailed for any non-primitive `KirType`. That left a real fusion
+bailed for any non-primitive `GirType`. That left a real fusion
 cliff — extracting an inner tuple into a let, then re-tupling it
 on the way out, lost fusion for no semantically meaningful reason.
 
-Now any `KirType` (Prim, Array, Tuple, Struct, Variant, Nullable,
+Now any `GirType` (Prim, Array, Tuple, Struct, Variant, Nullable,
 String) is a valid field shape. Unit and bare Null still reject
 (neither has a useful Value runtime representation; bare Null is
 always widened to `Nullable<T>` at the construction site).
 
-**KIR**: `KirOp::TupleNew::elem_types`, `StructNew::sorted_types`,
+**GIR**: `GirOp::TupleNew::elem_types`, `StructNew::sorted_types`,
 `VariantNew::payload_types` widened from `Vec<PrimType>` to
-`Vec<KirType>` (and `Vec<(ArcStr, KirType)>` for Struct).
+`Vec<GirType>` (and `Vec<(ArcStr, GirType)>` for Struct).
 
 **Emit side** (`fusion.rs`): the three `emit_*_new` functions drop
-their `as_prim()?` bails. Each field's KirType is recorded directly
-into the corresponding KirOp; the outer `KirExpr.typ` is built from
+their `as_prim()?` bails. Each field's GirType is recorded directly
+into the corresponding GirOp; the outer `GirExpr.typ` is built from
 the same vector.
 
-**Interpreter** (`kir_interp.rs`): the three producer-op arms drop
+**Interpreter** (`gir_interp.rs`): the three producer-op arms drop
 the `into_scalar()` / `to_value()` chain and use `into_value()`
 instead — which already handles every `EvalResult` variant
 (scalar → primitive Value, ValArray → Value::Array, Variant/
@@ -1337,7 +1337,7 @@ the runtime already uses for nested composites; consumer ops
 (`TupleGet` / `StructGet` etc., already-widened) read it back
 out.
 
-**JIT** (`kir_jit.rs`): new shared helper `compile_and_push_field`
+**JIT** (`gir_jit.rs`): new shared helper `compile_and_push_field`
 that dispatches the per-field push-helper choice on `field.typ`:
 - **Prim**: `graphix_value_buf_push_<T>` (unchanged).
 - **Array/Tuple/Struct**: `graphix_value_buf_push_array` (owned)
@@ -1350,10 +1350,10 @@ that dispatches the per-field push-helper choice on `field.typ`:
   always owned, per `ensure_owned_composite`'s String pass-
   through).
 
-All three producer-op arms (`KirOp::TupleNew`, `StructNew`,
+All three producer-op arms (`GirOp::TupleNew`, `StructNew`,
 `VariantNew`) call into this helper instead of the prim-only
 `value_buf_push_helper` dispatch. The arg-marshalling code at
-`KirOp::DynCall` (which already had the right dispatch inline)
+`GirOp::DynCall` (which already had the right dispatch inline)
 stays as it was — same logic, different inline.
 
 **Differential coverage**: two new fixtures in
@@ -1416,7 +1416,7 @@ instead of silently falling back. Two panic sites:
   to `run_no_jit!`".
 
 **Phase 3 — `JIT_INVOCATIONS` counter.** `cfg(debug_assertions)`-
-gated thread-local `Cell<u64>` in `kir_jit_helpers.rs`. JIT
+gated thread-local `Cell<u64>` in `gir_jit_helpers.rs`. JIT
 codegen emits a `call graphix_record_jit_invocation` at the start
 of every wrapper function (also `cfg(debug_assertions)`-gated).
 Release builds skip both helper registration and the codegen
@@ -1478,30 +1478,30 @@ Three-agent code review of the May 2026 fusion/JIT landings
 (fusion-cliff audit, JIT/ABI/lifetime audit, test-coverage audit)
 found four real issues fixed in this round:
 
-1. **String pending-leak in `KirStmt::Return`** (`kir_jit.rs:2071`).
+1. **String pending-leak in `GirStmt::Return`** (`gir_jit.rs:2071`).
    The `_` arm grouped `Prim | Unit | String` together with a
    comment claiming "no owned allocation to leak." Untrue for
    String — `ConstStr` / `Concat` / `Local`-read of String all
    produce an *owned* `ArcStr` (refcount bumped). If an earlier
-   scalar `KirOp::DynCall` set `DYNCALL_PENDING`, the kernel runs
-   to completion and returns the ArcStr pointer; `KirNode::update`
+   scalar `GirOp::DynCall` set `DYNCALL_PENDING`, the kernel runs
+   to completion and returns the ArcStr pointer; `GirNode::update`
    sees pending, returns `None` without transmuting — the bumped
    refcount leaks. One leak per pended invocation.
    Mirrors the composite/Value bug fixed previously
    ([[pending-path correctness]]). Fix: new
-   `ReturnDropShape::String(ClifValue)` variant; `KirStmt::Return`'s
-   `KirType::String` arm calls `emit_return_pending_check` which
+   `ReturnDropShape::String(ClifValue)` variant; `GirStmt::Return`'s
+   `GirType::String` arm calls `emit_return_pending_check` which
    peek-checks `DYNCALL_PENDING`, drops the just-built ArcStr via
    `graphix_arcstr_drop`, runs `emit_pending_cleanup`, jumps to
    `pending_exit`. JIT-direct regression test
    `return_pending_check_drops_string_result` verifies the
    sentinel-0 return + flag-stays-set contract.
 
-2. **TailCall non-slot drops** (`kir_jit.rs:2213`). `KirStmt::TailCall`
+2. **TailCall non-slot drops** (`gir_jit.rs:2213`). `GirStmt::TailCall`
    emitted drops for *slot rebinds* (composite slot kind) but only
    called `env.truncate(ctx.param_mark)` for everything else —
    compile-time-only hygiene with no runtime drops. Any top-level
-   `KirStmt::Let` between `param_mark` and the `TailCall` (not in
+   `GirStmt::Let` between `param_mark` and the `TailCall` (not in
    a `Block` whose exit drops, not in `tail_call_slots`) leaked
    per iteration. Fix: before the truncate, iterate
    `env.{composites,variants,nullables,strings}[ctx.param_mark.*..]`,
@@ -1511,16 +1511,16 @@ found four real issues fixed in this round:
    `graphix_arcstr_drop` for the rest.
 
 3. **Latent Nullable panic in `extract_composite_or_scalar`**
-   (`kir_interp.rs:1378`). A composite slot with element type
-   `KirType::Nullable(_)` panicked at runtime ("not yet supported
+   (`gir_interp.rs:1378`). A composite slot with element type
+   `GirType::Nullable(_)` panicked at runtime ("not yet supported
    in interp"). The composite-element accessor read paths
    (`TupleGet` / `StructGet` / `ArrayGet`) already accepted any
-   KirType slot via Phase 6 of the refactor, so a fused
-   `let (n: i64, m: [i64,null]) = pair; m` would build the KIR
+   GirType slot via Phase 6 of the refactor, so a fused
+   `let (n: i64, m: [i64,null]) = pair; m` would build the GIR
    and then explode on the `.1` access. Fix: handle Nullable
    directly via `EvalResult::Nullable(arr[idx].clone())` (matches
-   the shape used elsewhere — `KirOp::Local` for Nullable,
-   `DynCall` Nullable return decode). Bare `KirType::Null`
+   the shape used elsewhere — `GirOp::Local` for Nullable,
+   `DynCall` Nullable return decode). Bare `GirType::Null`
    continues to panic since fusion always widens to
    `Nullable<T>` at construction; the panic message updated to
    reflect that.
@@ -1557,8 +1557,8 @@ each; tracked for follow-up):
 - **`emit_expr` missing arms** — `StructWith` (`{s with field: x}`),
   `Array` literal `[a, b, c]`, `Sample`, `Deref`, `ByRef`, `TryCatch`,
   `Map` (map literal). Each falls through to `_ => None`.
-- **Composite variant payloads** — `KirOp::VariantPayload.elem_typ:
-  PrimType` should be `KirType` (mirror of the producer-side
+- **Composite variant payloads** — `GirOp::VariantPayload.elem_typ:
+  PrimType` should be `GirType` (mirror of the producer-side
   widening from May 2026).
 - **Composite-pattern select** — `select pair { (0, y) => y, … }`
   bails (`emit_arm_condition` only handles scalar binds and tag
@@ -1729,7 +1729,7 @@ with string args (most of `str::*`) JIT end-to-end. Three changes:
    arcstr::ArcStr)`. ArcStr is `repr(transparent)` over a thin
    pointer so it passes as one I64. The helper wraps in
    `Value::String` and pushes (consumes the ArcStr).
-2. **`dispatch_typed` ret_kind=4** — for `KirType::String` return,
+2. **`dispatch_typed` ret_kind=4** — for `GirType::String` return,
    extracts ArcStr from `Value::String(s)`, `ManuallyDrop`s it,
    `transmute_copy<ArcStr, u64>` to bits, returns in `word0`.
    Caller's SSA reads the bits directly as an owned `arcstr::ArcStr`
@@ -1755,7 +1755,7 @@ until variadic args + array literals land in `emit_expr`.
 
 The `re::*` family still stays `run_no_jit!` — their return is
 `Result<T, ReError(string)>`, a Set with an Error member that
-`KirType::from_type` can't lower (not a simple `[T, null]` shape
+`GirType::from_type` can't lower (not a simple `[T, null]` shape
 and not a uniform variant union). Different cliff, separate fix.
 
 ### Array literals, variadic args, Result-return lowering (May 2026)
@@ -1765,17 +1765,17 @@ Pushed on the second-wave fusion cliffs to unlock more of the
 
 1. **Array literals (`[a, b, c]`) in fused expressions.** Added an
    `ExprKind::Array` arm to `emit_expr` that lowers via the existing
-   `KirOp::TupleNew` op (runtime shape — `ValArray<Value>` — is
-   identical to a tuple) but tags the outer KirExpr's `typ` as
-   `KirType::Array(elem)`. Elem type comes from the literal's own
+   `GirOp::TupleNew` op (runtime shape — `ValArray<Value>` — is
+   identical to a tuple) but tags the outer GirExpr's `typ` as
+   `GirType::Array(elem)`. Elem type comes from the literal's own
    typed-AST cell (`Type::Array(inner)`) so empty `[]` still gets a
    concrete elem. Single new `emit_array_new` helper; no parallel
-   `KirOp::ArrayNew` variant to thread through every walker.
+   `GirOp::ArrayNew` variant to thread through every walker.
 
 2. **Result returns (`Result<T, E>` = `[T, Error<E>]`).** Extended
-   `KirType::from_type`'s `Type::Set` arm to recognize this shape
+   `GirType::from_type`'s `Type::Set` arm to recognize this shape
    alongside the existing `[T, null]` (Option) shape; both lower to
-   `KirType::Nullable(T)`. The wire shape at the JIT boundary is
+   `GirType::Nullable(T)`. The wire shape at the JIT boundary is
    already Value-shape two-register, so a `Value::Error(...)` flows
    through opaquely to downstream consumers that store-and-read
    (Bind → Ref). Refused at `?` (Qop) / `$` (OrNever) — those need
@@ -1783,7 +1783,7 @@ Pushed on the second-wave fusion cliffs to unlock more of the
    not yet wired up. Refusing means `let v: i64 = str::parse("x")?;`
    stays on interp while `let result = str::escape(...)` fuses.
 
-3. **`KirNode::pre_bind_builtin` env+scope restoration.** When a
+3. **`GirNode::pre_bind_builtin` env+scope restoration.** When a
    labeled-default expression references free variables visible only
    in the lambda's original module scope (e.g. `default_escape` in
    `str::escape`'s `#esc = default_escape`), compiling it in the
@@ -1803,7 +1803,7 @@ Pushed on the second-wave fusion cliffs to unlock more of the
      `lambda_id` is None (works for pure-literal defaults).
    - Per-cycle priming: `DynCallSlot` records the external `BindId`s
      each `LabeledDefault` Node references via `node.refs()`.
-     `KirNode::update` walks each slot's `default_external_refs`
+     `GirNode::update` walks each slot's `default_external_refs`
      and primes `event.variables[id]` from `ctx.cached[id]` (only
      when `event.variables` doesn't already have a value, so an
      outer caller's fresh update isn't clobbered). Without the
@@ -1828,9 +1828,201 @@ Test coverage:
   `run_no_jit!`:
   - `str_concat`/`str_join` — variadic args of union type
     `[string, Array<string>]`. The discovery's variadic-slot
-    builder uses `KirType::from_type(fn_type.vargs)` which rejects
+    builder uses `GirType::from_type(fn_type.vargs)` which rejects
     Sets that aren't Option-shape.
   - `str_split` family (6 fixtures) — fixtures wrap the call in a
     Block with `array::map(arr, |s| str::trim(s))` HOF. Needs both
     intra-kernel array-iterator lowering AND nested anonymous-
     lambda fusion. Multi-cliff; out of scope.
+
+### Generalized variadic args — per-arg type discovery (May 2026)
+
+The previous variadic path read `fn_type.vargs` as a single uniform
+type and passed it through `GirType::from_type`. That works for
+homogeneous variadics like `and: fn(@args: bool) -> bool` but rejects
+union-typed varargs declared as `@args: [T, Array<T>]` (the "T or
+array of T" pattern used by `str::concat`, `str::join`,
+`array::concat`, `sum`, `product`, `min`/`max`, `mean`). Each
+individual call-site arg is a separate `Expr` with a concrete
+typed-AST cell — at fusion time we know whether THIS specific
+position is a `string` or an `Array<string>`, even though the
+formal accepts the union.
+
+Fix: in `try_register_builtin_call`'s varg-collection loop, drop
+the up-front `GirType::from_type(fn_type.vargs)` lookup. Iterate
+the remaining positional args and resolve each from its own
+`arg_expr.typ.get()` cell (falling back to the formal's deref only
+for synthesized exprs without a cell). Push the per-arg `GirType`
+into `arg_types`. The downstream JIT push-helper dispatch in
+`GirOp::DynCall` already picks the right helper per-`arg_types[i]`
+(scalar, composite-pointer, Value-shape, or String), so no JIT-
+side surgery was needed — the work was entirely in discovery.
+
+Test coverage:
+- `lib_tests/str_tests`: 91 → 99 (the previously-stuck `str_concat`
+  and `str_join` now JIT; all 33 fixtures × 3 modes green).
+- `lib_tests/array::array_concat` migrated from `run_no_jit!` to
+  `run!` (mixes `[1, 2, 3]` array literals as varg slots).
+- `and`/`sum`/`product` etc. still stay `run_no_jit!` because their
+  fixtures use Block-with-let bodies (`let arr = [...]; sum(arr)`)
+  that need Block lowering for the binding statements — separate
+  cliff from variadic.
+
+### Qop (`?`) on Result/Nullable returns (May 2026)
+
+Added `GirOp::QopUnwrap { inner, success_typ }` plus the surrounding
+plumbing so `?` on a `Result<T, E>` lowered to `Nullable<T>` can be
+fused intra-kernel.
+
+**Codegen.** The op evaluates `inner` to a Value-shape `(disc,
+payload)` pair, branches:
+- If `disc == Typ::Error` (`0x2000_0000`), call
+  `graphix_dyncall_set_pending`, emit cleanup, jump to
+  `pending_exit`. The wrapper-level pending check at
+  `GirNode::update` then returns `None` to the runtime — same path
+  as a regular DynCall pend. Doesn't write the error to the catch
+  handler's BindId yet (that needs runtime access from inside the
+  kernel — follow-up); today it just drops, matching the
+  non-fused Qop's "unhandled" path with no catch in scope.
+- Otherwise extract `T` from the payload according to `success_typ`:
+  Prim → `cast_u64_to_prim(payload, p)`, String → payload bits are
+  the owned `ArcStr`, composite → payload is the owned
+  `*mut ValArray`. Value-shape success types (Variant/Nullable)
+  bail with an error (`compile_expr` should have routed to
+  `compile_value_expr`; not yet wired for QopUnwrap's
+  Value-shape outcomes).
+
+**New helper.** `graphix_dyncall_set_pending()` — counterpart of
+the existing `_take` that the JIT emits when a kernel-internal
+error check fires; flips the same `DYNCALL_PENDING` thread-local
+the dispatcher uses.
+
+**Discovery `FnType.rtype` fix-up.** Some sync builtins (notably
+`str::parse`) read `resolved.rtype` at init time to decide their
+target type via `extract_cast_type`. Discovery was passing the
+*function-binding's* FnType — that's the lambda's signature with
+unbound polymorphic TVars (`'b` in `str::parse`'s case), so
+`extract_cast_type` saw a TVar and returned None, surfacing as
+"parse requires a concrete type annotation" at the first dispatch.
+Fix: in `try_register_builtin_call`, construct a new FnType for
+`FnSource::Builtin` with `rtype` replaced by the Apply Expr's
+typ-cell value (the post-typecheck monomorphized return), with
+`with_deref` applied so a TVar wrapping the resolved Set
+doesn't trip up the builtin's match-on-Set inspection.
+
+**`emit_array_map` type inference.** When the callback's parameter
+isn't annotated (`array::map(arr, |x| x + 1)`), the parse-time
+`constraint` is None and `emit_array_map` bailed. The typechecker
+already inferred the param type from the array's element type and
+stored it on the lambda Expr's typ cell — read it from there as a
+fallback before giving up. Doesn't help String elements yet
+(`ArrayMap.in_elem: PrimType` is still prim-only), but unblocks the
+common `|x| body` shape with prim element types.
+
+Test coverage:
+- New `load_qop_unwraps_result` (`re::is_match(...)?` at top
+  level — exercises QopUnwrap's success extraction).
+- `str_parse` migrated to `run!` — Block-with-let was already
+  supported in `emit_do_as_expr`; the missing piece was the
+  rtype-fixup so the runtime's `extract_cast_type` saw `Result<i64, _>`
+  instead of `Result<TVar, _>`. All 3 modes pass.
+- `re::*` family migrated to `run!` (14 of 15 fixtures). `re_captures`
+  stays `run_no_jit!` — its `Result<Array<Array<Option<string>>>, _>`
+  return is too nested for current Nullable-of-composite codegen.
+
+Outstanding cliffs:
+- **Catch handler propagation in Qop**: `?` should write the error
+  Value to the catch handler's BindId before pending. Needs runtime
+  access from inside the kernel (or a side-channel via the wrapper).
+- **String element types in HOFs**: `emit_array_map` /
+  `emit_array_filter` / `emit_array_fold` reject non-prim element
+  types. Extending requires widening `GirOp::ArrayMap.in_elem`
+  (and friends) from `PrimType` to `GirType` plus matching interp
+  + JIT codegen. Blocks the `str_split` family's `array::map(arr,
+  |s| str::trim(s))` patterns.
+
+### Static call resolution pass (May 2026)
+
+New post-typecheck compiler pass `static_resolve::resolve_static_calls`
+that pre-binds every CallSite whose function expression provably
+resolves to a single known `LambdaDef`. Runs between the deferred-
+checks fixpoint and `fusion::fuse` in `compile()`. Two payoffs:
+
+1. **Interpreter**: every dynamic call site previously paid
+   `fnode.update` + `Value` equality + optional downcast on every
+   invocation, plus a one-shot `bind()` on the first invocation.
+   Pre-resolving runs `bind()` once at compile time and gives every
+   subsequent runtime update a fast path that skips the lazy
+   resolution arm entirely.
+
+2. **Fusion (Stage 2, not yet wired)**: with the lambda eagerly
+   bound, the resulting `GXLambda` carries the lambda body as a
+   concrete `Node<R, E>`. Fusion's walker can in principle descend
+   through resolved CallSites straight into the body — eliminating
+   today's `LambdaBind`-as-fusion-candidate special case. That
+   descent requires extending NodeView (today the resolved Apply
+   is stored as `Box<dyn Apply>` so the body Node isn't visible
+   through `view()`) — tracked as task #109.
+
+**Resolvability rules** (mirrored in
+`static_resolve::try_resolve_callsite`):
+- `fnode` is `Ref(bind_id)`, `bind_id ∉ ctx.unstable_bindings` (no
+  `<-` Connect target), and `bind_id` was bound by a Bind whose
+  value Node is a `Lambda`.
+- `fnode` is a `Lambda` Node directly (rare: `(|x| x+1)(42)`).
+
+The first walk collects `bind_id → LambdaDef Value` from every
+Bind→Lambda pair under Module/Block/Bind containers. The second
+walk descends Module/Block/Bind/CallSite via `Any`-downcast on
+`&mut dyn Update`, calling `cs.resolve_static(ctx, def, fv)` at
+each candidate. `Update`'s `Any` supertrait + stable trait
+upcasting (Rust 1.86+/edition 2024) let the walker mutate without
+adding a `view_mut`/`for_each_child_mut` method to every node.
+
+**`CallSite::resolve_static`** mirrors `bind()` but is event-free:
+
+1. Resolve TVars to populate `resolved_ftype` if not already done.
+2. **Strip Nop placeholders** the typechecker inserted for missing
+   labeled-default args (callsite.rs:typecheck_inner). `bind()`
+   does the same cleanup at re-bind time — skipping it leaves a
+   `Nop` in `self.args` for the default slot, and `Nop::update`
+   always returns `None`, so the kernel never sees the default's
+   value and the entire CallSite returns `None` forever. (This was
+   the lone bug surfaced by the first integration test pass:
+   `labeled_args`/`mixed_args`/`arg_name_short`/`nested_optional0`
+   all timed out with one arg permanently missing from
+   `event.variables`.)
+3. Build `arg_refs` in function-signature order, compiling each
+   labeled default that the call site omitted.
+4. Call `(def.init)(...)`. For user lambdas this produces a
+   `GXLambda`; for builtins, the wrapped `BuiltInLambda`.
+5. Typecheck the resulting Apply with `TypecheckPhase::Lambda`.
+6. Store `self.function = Some((fv, rf))`. Set
+   `statically_resolved = true` and `first_static_update = true`.
+
+The runtime `CallSite::update` gains a fast-path arm at the top
+(after the standard arg-Node update loop):
+
+- If `statically_resolved`, skip `fnode` resolution entirely (the
+  `fnode` Node still updates for side effects but its produced
+  value is ignored at the call-site level).
+- On the first such update only (`first_static_update`), mirror
+  the dynamic `bind=true` arm: force `event.init = true` and prime
+  `event.variables` from `ctx.cached` for every external Ref the
+  function's body reads — without this, a body that references
+  outer bindings whose values fired earlier this cycle (or
+  earlier) would see `None` on its first execution.
+- All subsequent updates run the bare `f.update(...)` path with
+  no priming, matching the dynamic `bound=false` arm.
+
+**Tree-walker scope today**: Module, Block, Bind, CallSite. Select
+arms, TryCatch handlers, arithmetic operands, Sample, etc. aren't
+descended through yet — CallSites nested inside those are missed
+by static resolution and fall through to the dynamic path. Adding
+descent is mechanical (more `Any::downcast_mut` arms in
+`visit_mut`); the limitation is intentional staging while the
+architecture lands.
+
+**Verified**: 1767/1767 graphix-tests + 156/156 graphix-compiler
+unit tests pass after the landing. Includes all the failing-then-
+fixed labeled-default tests above.

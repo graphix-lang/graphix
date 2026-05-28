@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::{run, run_no_jit};
 use netidx::subscriber::Value;
 
 const ARRAY_MAP0: &str = r#"
@@ -204,7 +204,7 @@ const ARRAY_CONCAT: &str = r#"
   array::concat([1, 2, 3], [4, 5], [6])
 "#;
 
-run_no_jit!(array_concat, ARRAY_CONCAT, |v: Result<&Value>| {
+run!(array_concat, ARRAY_CONCAT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5), Value::I64(6)] => {

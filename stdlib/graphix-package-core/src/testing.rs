@@ -183,7 +183,7 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// **Mode 1 (interp)**: `fusion_disabled=true`. Every lambda runs as
 ///   `GXLambda`. This is the ground-truth path.
 /// **Mode 2 (fused)**: `fusion_disabled=false, jit_mode=Off,
-///   whole_graph=true`. Fused kernels dispatch through `kir_interp`.
+///   whole_graph=true`. Fused kernels dispatch through `gir_interp`.
 /// **Mode 3 (jit)**: `fusion_disabled=false, jit_mode=Forced,
 ///   whole_graph=true`. Soft JIT failures panic; the JIT
 ///   invocation counter must be > 0 after the run.
@@ -203,8 +203,8 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 ///   the program runs purely through the Update-trait node-graph
 ///   interpreter. Ground truth for differential testing.
 /// - **fused**: `CFlag::JitDisabled` set. Fusion builds and
-///   splices kernels but they dispatch via [`crate::kir_interp`]
-///   instead of native code. Validates the KIR translation
+///   splices kernels but they dispatch via [`crate::gir_interp`]
+///   instead of native code. Validates the GIR translation
 ///   independently of the JIT backend.
 /// - **jit**: no flags set. The full fusion + JIT path. Resets
 ///   the JIT invocation counter at start, runs, asserts the
@@ -256,7 +256,7 @@ macro_rules! run {
                 // below.
                 if reset_jit_counter_after_init {
                     #[cfg(debug_assertions)]
-                    ::graphix_compiler::kir_jit_helpers::reset_jit_invocations();
+                    ::graphix_compiler::gir_jit_helpers::reset_jit_invocations();
                 }
                 let bs = &ctx.rt;
                 match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
@@ -326,7 +326,7 @@ macro_rules! run {
                     return Ok(());
                 }
                 run_with_flags(::graphix_compiler::BitFlags::empty(), true).await?;
-                let inv = ::graphix_compiler::kir_jit_helpers::jit_invocations();
+                let inv = ::graphix_compiler::gir_jit_helpers::jit_invocations();
                 if inv == 0 {
                     ::anyhow::bail!(
                         "JIT_INVOCATIONS=0 — the JIT compiled but never \

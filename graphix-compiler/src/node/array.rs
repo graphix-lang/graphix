@@ -15,11 +15,11 @@ defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 
 #[derive(Debug)]
 pub struct ArrayRef<R: Rt, E: UserEvent> {
-    source: Cached<R, E>,
-    i: Cached<R, E>,
-    spec: Expr,
-    typ: Type,
-    etyp: Type,
+    pub source: Cached<R, E>,
+    pub i: Cached<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub etyp: Type,
 }
 
 impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
@@ -145,11 +145,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
 
 #[derive(Debug)]
 pub struct ArraySlice<R: Rt, E: UserEvent> {
-    source: Cached<R, E>,
-    start: Option<Cached<R, E>>,
-    end: Option<Cached<R, E>>,
-    spec: Expr,
-    typ: Type,
+    pub source: Cached<R, E>,
+    pub start: Option<Cached<R, E>>,
+    pub end: Option<Cached<R, E>>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
 }
 
 impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
@@ -308,9 +308,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
 
 #[derive(Debug)]
 pub struct Array<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Box<[Cached<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Array<R, E> {

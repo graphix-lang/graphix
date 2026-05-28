@@ -5,7 +5,7 @@
 //! Discovery half of the unified pass: walk the post-compile node
 //! graph and produce a flat list of `KernelCandidate`s. Each
 //! candidate identifies a piece of code the build phase will turn
-//! into a `KirKernel`.
+//! into a `GirKernel`.
 //!
 //! The walker dispatches on `NodeView` (see `lib.rs`'s `NodeView`).
 //! Compared to the AST-based `for_each_child` walker the legacy
@@ -18,7 +18,7 @@
 //! registers `Region` candidates for module-top-level non-Bind
 //! nodes. Recursion into nested anonymous lambdas inside Apply
 //! args / Select arms / etc. is deferred to Phase 3 (the build
-//! phase already walks via `node.spec()` Exprs for KIR emit).
+//! phase already walks via `node.spec()` Exprs for GIR emit).
 
 use crate::{
     expr::{ExprId, ModPath},
@@ -29,7 +29,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 
-/// A piece of code the build phase will lower into a `KirKernel`.
+/// A piece of code the build phase will lower into a `GirKernel`.
 /// Lifetimes tie back to the source node graph — candidates borrow
 /// into it and are consumed in the same pass.
 #[derive(Debug)]
@@ -69,11 +69,13 @@ pub enum CandidateKind<'a, R: Rt, E: UserEvent> {
     },
     /// A top-level Sync subexpression that isn't a Bind. Splice
     /// replaces the node identified by `source_id` in the
-    /// runtime's `nodes` map. `body` is the spec Expr the build
-    /// phase feeds to KIR emission.
+    /// runtime's `nodes` map. `body` is the compiled Node the build
+    /// phase feeds to GIR emission. The Node's `spec()` gives the
+    /// source `Expr` when needed (e.g. positional traversal of
+    /// Apply args).
     Region {
         source_id: ExprId,
-        body: &'a crate::expr::Expr,
+        body: &'a Node<R, E>,
     },
 }
 
@@ -118,7 +120,7 @@ pub fn walk<'a, R: Rt, E: UserEvent>(
         module_top_level: true,
     };
     for n in nodes {
-        w.visit_top_level(&**n);
+        w.visit_top_level(n);
     }
     Candidates { items: w.candidates }
 }
@@ -136,7 +138,7 @@ struct Walker<'a, R: Rt, E: UserEvent> {
 }
 
 impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
-    fn visit_top_level(&mut self, n: &'a dyn crate::Update<R, E>) {
+    fn visit_top_level(&mut self, n: &'a Node<R, E>) {
         match n.view() {
             NodeView::Bind(b) => self.visit_bind(b),
             NodeView::Block(blk) if blk.module => self.visit_module_block(blk),
@@ -152,17 +154,17 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
             NodeView::Use(_) | NodeView::TypeDef(_) | NodeView::Nop(_) => {}
             _ => {
                 if self.module_top_level {
-                    let spec = n.spec();
+                    let spec_id = n.spec().id;
                     self.candidates.push(KernelCandidate {
                         kind: CandidateKind::Region {
-                            source_id: spec.id,
-                            body: spec,
+                            source_id: spec_id,
+                            body: n,
                         },
                         scope: Scope {
                             lexical: self.scope.clone(),
                             dynamic: self.scope.clone(),
                         },
-                        source_id: spec.id,
+                        source_id: spec_id,
                     });
                 }
                 // Phase 2: don't descend into non-container nodes
@@ -188,7 +190,7 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
         for (i, child) in blk.children.iter().enumerate() {
             let is_last = i + 1 == n;
             self.module_top_level = is_last && saved_top;
-            self.visit_top_level(&**child);
+            self.visit_top_level(child);
         }
         self.module_top_level = saved_top;
     }
@@ -234,12 +236,12 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
                 // becomes a Do-block scope reset; if it's a nested
                 // Bind/Lambda/Module, we register those. Other node
                 // types: no-op (Phase 3).
-                self.descend_into_value(&*b.node);
+                self.descend_into_value(&b.node);
             }
             _ => {
                 // Multi-binding pattern: no single name/bind_id.
                 // Still descend.
-                self.descend_into_value(&*b.node);
+                self.descend_into_value(&b.node);
             }
         }
     }
@@ -255,7 +257,7 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
         let saved_scope = std::mem::replace(&mut self.scope, new_scope);
         let saved_top = std::mem::replace(&mut self.module_top_level, true);
         for child in blk.children.iter() {
-            self.visit_top_level(&**child);
+            self.visit_top_level(child);
         }
         self.scope = saved_scope;
         self.module_top_level = saved_top;
@@ -268,7 +270,7 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
             std::mem::replace(&mut self.scope, m.scope.lexical.clone());
         let saved_top = std::mem::replace(&mut self.module_top_level, true);
         for child in module_children(m).iter() {
-            self.visit_top_level(&**child);
+            self.visit_top_level(child);
         }
         self.scope = saved_scope;
         self.module_top_level = saved_top;
@@ -278,7 +280,7 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
     /// container variants — Bind, Block, Lambda — which need
     /// scope-aware traversal. Other variants: no-op (Phase 3 will
     /// add nested-lambda discovery via spec-Expr walk).
-    fn descend_into_value(&mut self, n: &'a dyn crate::Update<R, E>) {
+    fn descend_into_value(&mut self, n: &'a Node<R, E>) {
         match n.view() {
             NodeView::Bind(b) => self.visit_bind(b),
             NodeView::Block(blk) => {
@@ -289,7 +291,7 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
                     let saved_top =
                         std::mem::replace(&mut self.module_top_level, false);
                     for child in blk.children.iter() {
-                        self.visit_top_level(&**child);
+                        self.visit_top_level(child);
                     }
                     self.module_top_level = saved_top;
                 }

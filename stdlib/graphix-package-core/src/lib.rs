@@ -9,10 +9,10 @@ use graphix_compiler::{
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
-    node::genn,
+    node::{callsite::CallSite, genn},
     typ::{FnType, TVal, Type, TypeRef},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, UserEvent,
+    StaticFnArg, TypecheckPhase, UserEvent,
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
@@ -564,6 +564,45 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// a are guaranteed to have the same length. out\[i\].cur is
     /// guaranteed to be Some.
     fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
+
+    /// Compile-time codegen hook. Implementations return a [`GirExpr`]
+    /// that lowers a per-element HOF call site into a single fused
+    /// kernel op (e.g. `GirOp::ArrayMap`, `GirOp::ArrayFilter`).
+    /// Returning `None` (the default) falls back to today's runtime
+    /// HOF dispatch (per-element [`Apply`] Nodes via [`Self::finish`]).
+    ///
+    /// Implementors receive:
+    /// - `ctx`: the [`FusionCtx`] for emitting child Nodes and
+    ///   looking up kernel inputs.
+    /// - `array_arg`: the outer HOF call site's input array argument
+    ///   Node. Typically a `Ref` to an array kernel param; the
+    ///   implementor uses `FusionCtx::resolve_array_input` to confirm.
+    /// - `body`: the callback lambda's body Node, ready to walk via
+    ///   [`crate::FusionCtx::emit`] (or `emit_expr_node` during the
+    ///   migration). Provided by `MapQ`'s analysis-time setup —
+    ///   `None` if the callback isn't statically resolvable, in
+    ///   which case `MapQ`'s `GirEmitter::emit_gir` short-circuits
+    ///   before reaching this method.
+    /// - `elem_name`: the callback's parameter name (`x` in
+    ///   `|x| body`), used as the [`Input`] name when scoping the
+    ///   body emit so its body's `Ref` lookups find the kernel slot.
+    /// - `in_elem`: the array's element type as a [`PrimType`].
+    ///   Implementors that can't handle composite elements bail with
+    ///   `None`.
+    ///
+    /// Implementations live with each `MapFn` impl (i.e. in the
+    /// package that defines the runtime semantics), not in
+    /// `fusion::lowering` — the compiler stops knowing builtin
+    /// names.
+    fn emit_gir(
+        _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        _array_arg: &Node<R, E>,
+        _body: &Node<R, E>,
+        _elem_name: &ArcStr,
+        _in_elem: graphix_compiler::gir::PrimType,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -591,6 +630,22 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     slots: Vec<Slot<R, E>>,
     cur: T::Collection,
     t: T,
+    /// Analysis-only Slot pre-materialized by
+    /// [`Apply::static_resolve_fn_args`] when the callback is
+    /// statically resolvable. Mirrors what `update()` builds per
+    /// element at runtime, but with the inner CallSite already
+    /// resolved against the callback's `LambdaDef` so fusion's
+    /// walker can descend into the callback body via standard
+    /// `cs.resolved_apply() -> ApplyView::Lambda(&g) -> g.body()`.
+    ///
+    /// `None` when the callback is dynamic (passed via a binding
+    /// the compiler can't statically resolve); fusion falls back
+    /// to DynCall for those cases.
+    ///
+    /// **Strictly analysis-time.** `update()` ignores this field;
+    /// per-slot async state is preserved because runtime continues
+    /// to synthesize fresh Slots per array element.
+    pub analysis_pred: Option<Slot<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
@@ -626,6 +681,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
                     slots: vec![],
                     cur: Default::default(),
                     t: T::default(),
+                    analysis_pred: None,
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -634,6 +690,71 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
+    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
+        graphix_compiler::ApplyView::FusedBuiltin(self)
+    }
+
+    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
+        graphix_compiler::ApplyViewMut::FusedBuiltin(self)
+    }
+
+    fn static_resolve_fn_args(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        fn_args: &[StaticFnArg<'_, R, E>],
+    ) -> Result<()> {
+        // MapQ takes the callback at positional arg index 1.
+        // (Index 0 is the input array.)
+        let Some(cb) = fn_args.iter().find(|a| a.arg_idx == 1) else {
+            return Ok(());
+        };
+        // Synthesize a representative predicate Apply Node — mirrors
+        // exactly what `update()` builds per array element at runtime
+        // (see the `while self.slots.len() < a.len()` loop below).
+        // This is analysis-only: the runtime path continues to build
+        // its own fresh Slots per element so async callbacks
+        // (e.g. `array::map(a, |p| net::publish(p, ...))`) keep
+        // independent per-slot state.
+        let (id, x_node) = genn::bind(
+            ctx,
+            &self.scope.lexical,
+            "x",
+            self.etyp.clone(),
+            self.top_id,
+        );
+        let fnode = genn::reference(
+            ctx,
+            self.predid,
+            Type::Fn(self.mftyp.clone()),
+            self.top_id,
+        );
+        let mut pred = genn::apply(
+            fnode,
+            self.scope.clone(),
+            vec![x_node],
+            &self.mftyp,
+            self.top_id,
+        );
+        // Look up the callback's wrapped `Value` (the form
+        // `LambdaDef::init` -> Lambda Node emit), then statically
+        // resolve the synthetic CallSite directly against
+        // `cb.lambda`. We skip going through
+        // `resolve_static_calls` (the outer walker) because we
+        // know the resolution target — no need to rebuild the
+        // bind_id -> Lambda map.
+        let fv = match ctx.lambda_defs.get(&cb.lambda.id).cloned() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let any: &mut dyn Any = &mut *pred;
+        let Some(cs) = any.downcast_mut::<CallSite<R, E>>() else {
+            return Ok(());
+        };
+        cs.resolve_static(ctx, cb.lambda, fv)?;
+        self.analysis_pred = Some(Slot { id, pred, cur: None });
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -745,12 +866,18 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         for s in &self.slots {
             s.pred.refs(refs)
         }
+        if let Some(s) = &self.analysis_pred {
+            s.pred.refs(refs);
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.cached.remove(&self.predid);
         for sl in &mut self.slots {
             sl.delete(ctx)
+        }
+        if let Some(mut s) = self.analysis_pred.take() {
+            s.delete(ctx);
         }
     }
 
@@ -760,6 +887,60 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             sl.cur = None;
             sl.pred.sleep(ctx);
         }
+        // analysis_pred is analysis-only — never run at runtime, no
+        // need to put to sleep.
+    }
+}
+
+/// Fusion-time codegen for `MapQ`-built HOFs. Delegates to
+/// `T::emit_gir` (defined per `MapFn` impl) — `MapQ` itself only
+/// orchestrates the shared work: locate the array kernel param,
+/// extract the callback body via the analysis_pred's resolved
+/// CallSite, then hand the pieces to the per-`MapFn` codegen.
+impl<R: Rt, E: UserEvent, T: MapFn<R, E>> graphix_compiler::GirEmitter<R, E>
+    for MapQ<R, E, T>
+{
+    fn emit_gir(
+        &self,
+        callsite: &CallSite<R, E>,
+        _args: &[(Option<ArcStr>, &Node<R, E>)],
+        _arg_refs: &[Node<R, E>],
+        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        // No analysis_pred → callback wasn't statically resolvable
+        // → fall back to DynCall (`None` here = fusion bails).
+        let slot = self.analysis_pred.as_ref()?;
+        // Outer call site's positional args: array, callback.
+        let array_arg = callsite.arg_positional(0)?;
+        // Locate the callback's body Node through the synthesized
+        // inner CallSite's resolved Apply.
+        let pred_view = slot.pred.view();
+        let inner_cs = match pred_view {
+            graphix_compiler::NodeView::CallSite(cs) => cs,
+            _ => return None,
+        };
+        let inner_apply = inner_cs.resolved_apply()?;
+        let g = match inner_apply {
+            graphix_compiler::ApplyView::Lambda(g) => g,
+            _ => return None,
+        };
+        let body = g.body();
+        // Pull the callback's param name from its `FnType.args[0].kind`
+        // — used as the kernel input slot name so the body's `Ref`s
+        // (which carry the source-level `"x"` in their spec) resolve.
+        let elem_name = match &g.typ().args.first()?.kind {
+            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
+            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
+            _ => return None,
+        };
+        // Resolve the array kernel param name and its element type
+        // up-front — saves every `MapFn::emit_gir` impl from
+        // duplicating these lookups.
+        let array_name = ctx.resolve_array_input(array_arg)?;
+        let ai = ctx.find_array(&array_name)?;
+        let in_elem = ai.elem.as_prim()?;
+        // Delegate to the per-MapFn codegen.
+        T::emit_gir(ctx, array_arg, body, &elem_name, in_elem)
     }
 }
 
@@ -767,6 +948,52 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     type Collection: MapCollection;
 
     const NAME: &str;
+
+    /// Compile-time codegen hook. Returns a [`GirExpr`] lowering the
+    /// HOF call to a fused kernel op (e.g. `GirOp::ArrayFold`). See
+    /// [`MapFn::emit_gir`] for the design rationale.
+    ///
+    /// FoldFn's callback takes `(acc, elem)`. `acc_name` / `elem_name`
+    /// are the lambda parameter names — used to register kernel
+    /// inputs so the body's `Ref`s resolve. `init_arg` is the call
+    /// site's initial-accumulator value Node (positional arg 1).
+    fn emit_gir(
+        _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        _array_arg: &Node<R, E>,
+        _init_arg: &Node<R, E>,
+        _body: &Node<R, E>,
+        _acc_name: &ArcStr,
+        _elem_name: &ArcStr,
+        _in_elem: graphix_compiler::gir::PrimType,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        None
+    }
+}
+
+/// Pre-materialized analysis predicate for [`FoldQ`]. See
+/// [`MapQ::analysis_pred`] for the rationale — same shape adapted
+/// to the 2-arg `(acc, elem)` callback signature.
+#[derive(Debug)]
+pub struct FoldAnalysisPred<R: Rt, E: UserEvent> {
+    /// BindId the accumulator Ref reads from. Synthetic — runtime
+    /// uses the parallel `binds`/`initids` arrays in [`FoldQ`].
+    pub acc_id: BindId,
+    /// BindId the element Ref reads from. Synthetic, same.
+    pub elem_id: BindId,
+    /// The synthesized callback [`Apply`] Node. Statically resolved
+    /// against the callback's `LambdaDef`, so its `function` field
+    /// holds a `GXLambda` whose body is walkable.
+    pub pred: Node<R, E>,
+}
+
+impl<R: Rt, E: UserEvent> FoldAnalysisPred<R, E> {
+    pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.pred.delete(ctx);
+        ctx.cached.remove(&self.acc_id);
+        ctx.cached.remove(&self.elem_id);
+        ctx.env.unbind_variable(self.acc_id);
+        ctx.env.unbind_variable(self.elem_id);
+    }
 }
 
 #[derive(Debug)]
@@ -783,6 +1010,9 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     etyp: Type,
     ityp: Type,
     init: Option<Value>,
+    /// Analysis-only pre-materialized callback Apply. See
+    /// [`MapQ::analysis_pred`] for semantics.
+    pub analysis_pred: Option<FoldAnalysisPred<R, E>>,
     t: PhantomData<T>,
 }
 
@@ -819,6 +1049,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                         t => bail!("expected a function not {t}"),
                     },
                     init: None,
+                    analysis_pred: None,
                     t: PhantomData,
                 }))
             }
@@ -828,6 +1059,68 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
+    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
+        graphix_compiler::ApplyView::FusedBuiltin(self)
+    }
+
+    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
+        graphix_compiler::ApplyViewMut::FusedBuiltin(self)
+    }
+
+    fn static_resolve_fn_args(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        fn_args: &[StaticFnArg<'_, R, E>],
+    ) -> Result<()> {
+        // FoldQ: positional args are (input, init, callback).
+        // Callback at index 2.
+        let Some(cb) = fn_args.iter().find(|a| a.arg_idx == 2) else {
+            return Ok(());
+        };
+        // Synthesize a representative (acc, elem) -> ... predicate
+        // Apply Node — mirrors what `update()` builds per array
+        // element. Analysis-only; runtime continues per-element
+        // synthesis for independent state.
+        let (acc_id, acc_node) = genn::bind(
+            ctx,
+            &self.scope.lexical,
+            "acc",
+            self.ityp.clone(),
+            self.top_id,
+        );
+        let (elem_id, elem_node) = genn::bind(
+            ctx,
+            &self.scope.lexical,
+            "x",
+            self.etyp.clone(),
+            self.top_id,
+        );
+        let fnode = genn::reference(
+            ctx,
+            self.fid,
+            Type::Fn(self.mftype.clone()),
+            self.top_id,
+        );
+        let mut pred = genn::apply(
+            fnode,
+            self.scope.clone(),
+            vec![acc_node, elem_node],
+            &self.mftype,
+            self.top_id,
+        );
+        let fv = match ctx.lambda_defs.get(&cb.lambda.id).cloned() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let any: &mut dyn Any = &mut *pred;
+        let Some(cs) = any.downcast_mut::<CallSite<R, E>>() else {
+            return Ok(());
+        };
+        cs.resolve_static(ctx, cb.lambda, fv)?;
+        self.analysis_pred = Some(FoldAnalysisPred { acc_id, elem_id, pred });
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -966,6 +1259,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         for n in &self.nodes {
             n.refs(refs)
         }
+        if let Some(p) = &self.analysis_pred {
+            p.pred.refs(refs);
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -977,6 +1273,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         for n in &mut self.nodes {
             n.delete(ctx);
         }
+        if let Some(mut p) = self.analysis_pred.take() {
+            p.delete(ctx);
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -987,6 +1286,51 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         for n in &mut self.nodes {
             n.sleep(ctx)
         }
+        // analysis_pred is analysis-only — no runtime sleep needed.
+    }
+}
+
+/// Fusion-time codegen for `FoldQ`-built HOFs. Delegates to
+/// `T::emit_gir`. See `impl GirEmitter for MapQ` for the analogous
+/// MapFn version.
+impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> graphix_compiler::GirEmitter<R, E>
+    for FoldQ<R, E, T>
+{
+    fn emit_gir(
+        &self,
+        callsite: &CallSite<R, E>,
+        _args: &[(Option<ArcStr>, &Node<R, E>)],
+        _arg_refs: &[Node<R, E>],
+        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        let pred = self.analysis_pred.as_ref()?;
+        let array_arg = callsite.arg_positional(0)?;
+        let init_arg = callsite.arg_positional(1)?;
+        let pred_view = pred.pred.view();
+        let inner_cs = match pred_view {
+            graphix_compiler::NodeView::CallSite(cs) => cs,
+            _ => return None,
+        };
+        let g = match inner_cs.resolved_apply()? {
+            graphix_compiler::ApplyView::Lambda(g) => g,
+            _ => return None,
+        };
+        let body = g.body();
+        let mut params = g.typ().args.iter();
+        let acc_name = match &params.next()?.kind {
+            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
+            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
+            _ => return None,
+        };
+        let elem_name = match &params.next()?.kind {
+            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
+            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
+            _ => return None,
+        };
+        let array_name = ctx.resolve_array_input(array_arg)?;
+        let ai = ctx.find_array(&array_name)?;
+        let in_elem = ai.elem.as_prim()?;
+        T::emit_gir(ctx, array_arg, init_arg, body, &acc_name, &elem_name, in_elem)
     }
 }
 

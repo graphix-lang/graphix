@@ -1,4 +1,4 @@
-//! Fusion: graphix's KIR-emission + kernel-build + native-code
+//! Fusion: graphix's GIR-emission + kernel-build + native-code
 //! pipeline.
 //!
 //! Layered pipeline:
@@ -9,16 +9,16 @@
 //!    Bind, Lambda, Block-module, or Region that should be fused.
 //!
 //! 2. **Builder** ([`builder`]): consumes candidates, emits each
-//!    body's KIR via [`lowering::emit_expr`], wraps the result in a
-//!    [`crate::kernel_ir::KirKernel`]. Calls into the JIT
-//!    ([`crate::kir_jit`]) to produce native code.
+//!    body's GIR via [`lowering::emit_expr`], wraps the result in a
+//!    [`crate::gir::GirKernel`]. Calls into the JIT
+//!    ([`crate::gir_jit`]) to produce native code.
 //!
 //! 3. **Splicer** ([`builder::splice`]): replaces the original
 //!    `Node` in the runtime's node graph with a
 //!    [`builder::FusedKernel`] wrapper that holds the JIT artifact
 //!    and dispatches at `Update::update` time.
 //!
-//! 4. **Lowering** ([`lowering`]): the per-`ExprKind` → KirExpr
+//! 4. **Lowering** ([`lowering`]): the per-`ExprKind` → GirExpr
 //!    translation. This is the largest piece by line count — it
 //!    handles every shape of graphix expression we know how to
 //!    fuse. The translation is independent of the walker / builder
@@ -46,7 +46,7 @@ pub use lowering::*;
 ///
 /// Called by [`crate::compile`] between typecheck phase 2 and
 /// return. Walks the Node graph, identifies kernel candidates,
-/// builds KIR kernels, JIT-compiles them, splices them into the
+/// builds GIR kernels, JIT-compiles them, splices them into the
 /// Node tree in place.
 ///
 /// **Current scope**: zero-input `Region` candidates only — a
@@ -97,7 +97,9 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
                 // the Bind itself would skip the publish.)
                 let (source_id, body) = match c.kind {
                     CandidateKind::Region { source_id, body } => {
-                        (source_id, body.clone())
+                        // body is &Node<R, E>; extract its spec Expr
+                        // for passing to the GIR build path.
+                        (source_id, body.spec().clone())
                     }
                     CandidateKind::ValueBind { bind, .. } => {
                         let value_expr = match &bind.spec.kind {
@@ -120,8 +122,8 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
                 // refs. If we can't find it (shouldn't happen — we
                 // just got this ID from the same walker), skip the
                 // candidate.
-                let subtree = find_node_by_id::<R, E>(&**node, source_id)?;
-                let inputs = collect_scalar_inputs::<R, E>(subtree, ctx);
+                let subtree = find_node_by_id::<R, E>(node, source_id)?;
+                let inputs = collect_scalar_inputs::<R, E>(&**subtree, ctx);
                 Some(RegionPlan { source_id, body, inputs })
             })
             .collect()
@@ -146,15 +148,50 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
         // Walk the body for sync-builtin Apply sites so the kernel
         // build can lower them via `FnSource::Builtin` DynCalls.
         // Site discovery doesn't bind the runtime — the actual
-        // `Apply` impl is constructed at `KirNode::new` time via
+        // `Apply` impl is constructed at `GirNode::new` time via
         // `pre_init_builtin_slots`.
-        let discovery = crate::fusion::discover_builtin_calls::<R, E>(
-            &entry.body,
-            ctx,
-            &crate::expr::ModPath::root(),
-        );
+        //
+        // **Node-based discovery**: we walk the compiled Node tree
+        // (via `NodeView`) rather than the source Expr tree. At
+        // each `CallSite` we read the resolved call-site FnType
+        // off the Node directly (`CallSite::ftype()`), which has
+        // had its TVars unified with the call-site's concrete
+        // types during typecheck. The Expr-based walker reads the
+        // function expression's typed-AST cell — which carries the
+        // lambda's *generic* FnType, surfacing as a runtime error
+        // for builtins whose return type is polymorphic (e.g.
+        // `str::parse`: "requires a concrete type annotation").
+        let discovery = match find_node_by_id::<R, E>(
+            node,
+            entry.source_id,
+        ) {
+            Some(subtree) => {
+                let mut out = crate::fusion::BuiltinCallDiscovery::default();
+                crate::fusion::walk_node_for_builtin_calls::<R, E>(
+                    &**subtree,
+                    ctx,
+                    &crate::expr::ModPath::root(),
+                    &mut out,
+                );
+                out
+            }
+            None => crate::fusion::discover_builtin_calls::<R, E>(
+                &entry.body,
+                ctx,
+                &crate::expr::ModPath::root(),
+            ),
+        };
+        // Re-locate the body Node for the build step. `find_node_by_id`
+        // is fast (small constant scan of the tree) so doing this twice
+        // — once for discovery, once for the build — is cheap and
+        // keeps the borrow-scopes simple.
+        let body_node = match find_node_by_id::<R, E>(node, entry.source_id) {
+            Some(n) => n,
+            None => continue,
+        };
         let built = match builder::build_region(
-            &fake_candidate::<R, E>(&entry),
+            body_node,
+            entry.source_id,
             &fn_name,
             &region_inputs,
             discovery,
@@ -168,24 +205,24 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
         // proper kernel-return shape — and `Unit` is a side-effect-
         // only marker that we don't expose to the runtime here.
         match built.kernel.return_type {
-            crate::kernel_ir::KirType::Prim(_)
-            | crate::kernel_ir::KirType::Array(_)
-            | crate::kernel_ir::KirType::Tuple(_)
-            | crate::kernel_ir::KirType::Struct(_)
-            | crate::kernel_ir::KirType::Variant(_)
-            | crate::kernel_ir::KirType::Nullable(_)
-            | crate::kernel_ir::KirType::String => {}
-            crate::kernel_ir::KirType::Unit
-            | crate::kernel_ir::KirType::Null => continue,
+            crate::gir::GirType::Prim(_)
+            | crate::gir::GirType::Array(_)
+            | crate::gir::GirType::Tuple(_)
+            | crate::gir::GirType::Struct(_)
+            | crate::gir::GirType::Variant(_)
+            | crate::gir::GirType::Nullable(_)
+            | crate::gir::GirType::String => {}
+            crate::gir::GirType::Unit
+            | crate::gir::GirType::Null => continue,
         }
         // JIT-compile unless `JitDisabled` is set. The interp
         // fallback path inside `FusedKernel::update` handles the
-        // None case via `kir_interp`.
-        let wrapped: Option<std::sync::Arc<crate::kir_jit::WrappedKernel>> =
+        // None case via `gir_interp`.
+        let wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>> =
             if jit_disabled {
                 None
             } else {
-                match crate::kir_jit::compile_kernel_with_callees(
+                match crate::gir_jit::compile_kernel_with_callees(
                     &mut ctx.jit.lock(),
                     &built.kernel,
                     &Default::default(),
@@ -256,7 +293,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
 struct FreeVarInput {
     bind_id: crate::BindId,
     name: arcstr::ArcStr,
-    prim: crate::kernel_ir::PrimType,
+    prim: crate::gir::PrimType,
     typ: crate::typ::Type,
 }
 
@@ -266,22 +303,6 @@ struct RegionPlan {
     source_id: crate::expr::ExprId,
     body: crate::expr::Expr,
     inputs: Vec<FreeVarInput>,
-}
-
-/// Reconstruct a Region-shaped `KernelCandidate` from a plan. The
-/// builder's `build_region` only reads the `Region` body, so the
-/// other candidate fields are filler.
-fn fake_candidate<'a, R: crate::Rt, E: crate::UserEvent>(
-    plan: &'a RegionPlan,
-) -> KernelCandidate<'a, R, E> {
-    KernelCandidate {
-        kind: CandidateKind::Region {
-            source_id: plan.source_id,
-            body: &plan.body,
-        },
-        scope: crate::Scope::root(),
-        source_id: plan.source_id,
-    }
 }
 
 /// Walk the candidate subtree, collect every external Ref's
@@ -303,7 +324,7 @@ fn collect_scalar_inputs<R: crate::Rt, E: crate::UserEvent>(
             return;
         }
         let Some(b) = ctx.env.by_id.get(&id) else { return };
-        let Some(prim) = crate::kernel_ir::PrimType::from_type(&b.typ) else {
+        let Some(prim) = crate::gir::PrimType::from_type(&b.typ) else {
             return;
         };
         out.push(FreeVarInput {
@@ -317,11 +338,13 @@ fn collect_scalar_inputs<R: crate::Rt, E: crate::UserEvent>(
 }
 
 /// Find a Node anywhere in the tree whose `spec().id == target`.
-/// Returns a borrowed reference to it if found.
+/// Returns the owning `&Node<R, E>` reference if found — callers
+/// can call any `Update` trait method (including `view()` for
+/// further NodeView dispatch).
 fn find_node_by_id<'a, R: crate::Rt, E: crate::UserEvent>(
-    node: &'a dyn crate::Update<R, E>,
+    node: &'a crate::Node<R, E>,
     target: crate::expr::ExprId,
-) -> Option<&'a dyn crate::Update<R, E>> {
+) -> Option<&'a crate::Node<R, E>> {
     if node.spec().id == target {
         return Some(node);
     }
@@ -329,7 +352,7 @@ fn find_node_by_id<'a, R: crate::Rt, E: crate::UserEvent>(
     match node.view() {
         NodeView::Block(blk) => {
             for child in blk.children.iter() {
-                if let Some(found) = find_node_by_id::<R, E>(&**child, target) {
+                if let Some(found) = find_node_by_id::<R, E>(child, target) {
                     return Some(found);
                 }
             }
@@ -337,13 +360,13 @@ fn find_node_by_id<'a, R: crate::Rt, E: crate::UserEvent>(
         }
         NodeView::Module(m) => {
             for child in m.nodes.iter() {
-                if let Some(found) = find_node_by_id::<R, E>(&**child, target) {
+                if let Some(found) = find_node_by_id::<R, E>(child, target) {
                     return Some(found);
                 }
             }
             None
         }
-        NodeView::Bind(b) => find_node_by_id::<R, E>(&*b.node, target),
+        NodeView::Bind(b) => find_node_by_id::<R, E>(&b.node, target),
         // Other container nodes (callsite args, select arms, etc.)
         // can't host Region candidates today — the walker doesn't
         // descend into them.

@@ -17,10 +17,10 @@ macro_rules! compare_op {
     ($name:ident, $op:tt) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
-            pub(super) spec: Expr,
-            pub(super) typ: Type,
-            pub(super) lhs: Cached<R, E>,
-            pub(super) rhs: Cached<R, E>,
+            pub(crate) spec: Expr,
+            pub typ: Type,
+            pub lhs: Cached<R, E>,
+            pub rhs: Cached<R, E>,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -117,10 +117,10 @@ macro_rules! bool_op {
     ($name:ident, $op:tt) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
-            pub(super) spec: Expr,
-            pub(super) typ: Type,
-            pub(super) lhs: Cached<R, E>,
-            pub(super) rhs: Cached<R, E>,
+            pub(crate) spec: Expr,
+            pub typ: Type,
+            pub lhs: Cached<R, E>,
+            pub rhs: Cached<R, E>,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -209,9 +209,9 @@ bool_op!(Or, ||);
 
 #[derive(Debug)]
 pub struct Not<R: Rt, E: UserEvent> {
-    pub(super) spec: Expr,
-    pub(super) typ: Type,
-    pub(super) n: Node<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Not<R, E> {
@@ -325,10 +325,10 @@ macro_rules! arith_op {
     ($name:ident, $opn:expr, $checked:literal, $op:tt) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
-            pub(super) spec: Expr,
-            pub(super) typ: Type,
-            pub(super) lhs: Cached<R, E>,
-            pub(super) rhs: Cached<R, E>,
+            pub(crate) spec: Expr,
+            pub typ: Type,
+            pub lhs: Cached<R, E>,
+            pub rhs: Cached<R, E>,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {

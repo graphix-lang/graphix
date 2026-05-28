@@ -13,12 +13,13 @@ pub mod effects;
 pub mod env;
 pub mod expr;
 pub mod fusion;
-pub mod kernel_ir;
-pub mod kir_interp;
-pub mod kir_jit;
-pub mod kir_jit_helpers;
-pub mod kir_jit_intern;
+pub mod gir;
+pub mod gir_interp;
+pub mod gir_jit;
+pub mod gir_jit_helpers;
+pub mod gir_jit_intern;
 pub mod node;
+pub mod static_resolve;
 pub mod typ;
 
 use crate::{
@@ -81,10 +82,10 @@ pub enum CFlag {
     /// purely through the Update-trait node-graph interpreter.
     FusionDisabled,
     /// Run the fusion phase but skip JIT-compilation. Kernels are
-    /// still built (KIR emission, splicing) and `FusedKernel`
-    /// dispatches via [`crate::kir_interp`] instead of native
+    /// still built (GIR emission, splicing) and `FusedKernel`
+    /// dispatches via [`crate::gir_interp`] instead of native
     /// code. Used by the test harness's `fused` mode to validate
-    /// KIR translation independently of the JIT backend.
+    /// GIR translation independently of the JIT backend.
     JitDisabled,
 }
 
@@ -361,7 +362,7 @@ pub struct ScopeMapEntry {
 /// Metadata captured for every `let foo = |...| 'builtin_name`
 /// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
 /// binding's [`BindId`] so the fusion pass can lower `Apply` sites
-/// targeting this binding into a [`crate::kernel_ir::FnSource::Builtin`]
+/// targeting this binding into a [`crate::gir::FnSource::Builtin`]
 /// slot without round-tripping through the runtime's `LambdaDef`
 /// value.
 ///
@@ -371,7 +372,7 @@ pub struct ScopeMapEntry {
 ///
 /// `argspec` is the original source-level argument list (including
 /// each labeled arg's default expression, if any), needed to
-/// construct the per-formal-arg [`crate::kernel_ir::BuiltinSlot`]
+/// construct the per-formal-arg [`crate::gir::BuiltinSlot`]
 /// layout at fusion time.
 ///
 /// `typ` is the binding's resolved function type at the binding
@@ -386,7 +387,7 @@ pub struct BuiltinBindInfo {
     pub typ: triomphe::Arc<typ::FnType>,
     /// Lambda definition ID for this binding's value (if it was
     /// compiled as a lambda — every binding registered here was).
-    /// Used by `KirNode::pre_bind_builtin` to look up the lambda's
+    /// Used by `GirNode::pre_bind_builtin` to look up the lambda's
     /// env+scope when compiling a `BuiltinSlot::LabeledDefault`
     /// expression — defaults may reference free variables visible
     /// only in the lambda's original definition scope.
@@ -494,6 +495,28 @@ pub type InitFn<R, E> = sync::Arc<
 /// by a CallSite node. This allows us to change the function called
 /// at runtime without recompiling the arguments.
 pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
+    /// Typed view for analysis-layer code (notably fusion). Default
+    /// returns `BuiltIn` — opaque, fusion treats this call as a
+    /// runtime `DynCall`. `GXLambda` overrides to `Lambda(self)`,
+    /// fusible builtins override to `FusedBuiltin(self)`,
+    /// `BuiltInLambda` delegates to `self.apply.view()`.
+    ///
+    /// The `BuiltIn` default works on `&dyn Apply` (no `Self: Sized`
+    /// bound needed) because the variant carries no reference. This
+    /// means every existing Apply impl inherits sensible "opaque
+    /// builtin" semantics without per-impl edits.
+    fn view(&self) -> ApplyView<'_, R, E> {
+        ApplyView::BuiltIn
+    }
+
+    /// Mutable counterpart to [`Self::view`]. Same dispatch story;
+    /// used by fusion when it needs to splice a sub-kernel into the
+    /// graph reachable through this Apply (e.g. into a `GXLambda`
+    /// body Node).
+    fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
+        ApplyViewMut::BuiltIn
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -516,6 +539,35 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         _phase: TypecheckPhase<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Compile-time hook for HOF builtins. Called by
+    /// [`crate::static_resolve::resolve_static_calls`] after this
+    /// builtin has been constructed by its `BuiltIn::init`, with
+    /// `fn_args` listing the positional indices and `LambdaDef`s of
+    /// any fn-typed args at the call site that the compiler proved
+    /// resolve statically to a single known lambda. The builtin can
+    /// use these to pre-materialize internal `Apply` Nodes (e.g.
+    /// `MapQ` synthesizes its callback `Apply` via `genn::apply`)
+    /// so fusion's walker can later descend into the callback body
+    /// through normal `CallSite`-resolved machinery — no LambdaDef
+    /// poking needed at fusion time.
+    ///
+    /// Default no-op. Builtins that don't take fn-typed args, or
+    /// don't fuse their callbacks, can ignore this entirely.
+    ///
+    /// **Important — analysis only.** Anything constructed here must
+    /// not change the builtin's runtime behavior. For example,
+    /// `MapQ` keeps `update()` as it was (per-array-element fresh
+    /// `Apply` Nodes — preserving per-slot state for async
+    /// callbacks); the pre-materialized Apply is consulted only by
+    /// `emit_gir`, and only when the callback is fully sync.
+    fn static_resolve_fn_args(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         Ok(())
     }
@@ -545,6 +597,71 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
+}
+
+/// Typed view of an [`Apply`] for fusion / analysis layer code,
+/// symmetric to [`NodeView`].
+///
+/// Variants:
+/// - [`Lambda`](ApplyView::Lambda) — a graphix-language lambda with
+///   a walkable [`Node`] body. Fusion's walker descends into the
+///   body via [`crate::node::lambda::GXLambda::body`].
+/// - [`FusedBuiltin`](ApplyView::FusedBuiltin) — a builtin that
+///   knows how to lower itself to GIR via the [`GirEmitter`] trait.
+///   The package owning the builtin implements both `Apply` and
+///   `GirEmitter` on the same type and overrides `view()` to return
+///   this variant.
+/// - [`BuiltIn`](ApplyView::BuiltIn) — opaque builtin. Fusion emits
+///   a runtime `DynCall`; no introspection beyond the trait
+///   methods. The default `view()` returns this — every Apply impl
+///   inherits opaque-builtin semantics unless it overrides.
+pub enum ApplyView<'a, R: Rt, E: UserEvent> {
+    Lambda(&'a crate::node::lambda::GXLambda<R, E>),
+    FusedBuiltin(&'a dyn GirEmitter<R, E>),
+    BuiltIn,
+}
+
+/// Mutable counterpart to [`ApplyView`]. Used by fusion for splicing
+/// sub-kernels into Nodes reachable through an Apply (the body Node
+/// of a [`Lambda`](ApplyViewMut::Lambda)).
+pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
+    Lambda(&'a mut crate::node::lambda::GXLambda<R, E>),
+    FusedBuiltin(&'a mut dyn GirEmitter<R, E>),
+    BuiltIn,
+}
+
+/// Opt-in fusion trait. An Apply implementor that knows how to lower
+/// itself to GIR implements this trait and returns
+/// [`ApplyView::FusedBuiltin(self)`](ApplyView::FusedBuiltin) from
+/// `Apply::view()`.
+///
+/// `emit_gir` returns `None` if the call-site shape doesn't match
+/// what the emitter expects (e.g. a HOF callback isn't an inline
+/// lambda) — fusion falls back to `DynCall` in that case, never an
+/// error.
+pub trait GirEmitter<R: Rt, E: UserEvent>: Send + Sync {
+    fn emit_gir(
+        &self,
+        callsite: &crate::node::callsite::CallSite<R, E>,
+        args: &[(Option<ArcStr>, &Node<R, E>)],
+        arg_refs: &[Node<R, E>],
+        ctx: &mut crate::fusion::lowering::FusionCtx,
+    ) -> Option<crate::gir::GirExpr>;
+}
+
+/// One entry in the `fn_args` slice passed to
+/// [`Apply::static_resolve_fn_args`]. Records that the call site's
+/// positional arg at `arg_idx` is fn-typed AND the compiler proved
+/// it resolves statically to a single known `LambdaDef`.
+///
+/// The `LambdaDef` borrow is tied to the `static_resolve_calls`
+/// pass's lifetime; the builtin should consume what it needs from
+/// `lambda` synchronously (e.g. clone its `Arc<FnType>`,
+/// instantiate an internal Apply via `genn::apply` referencing
+/// `lambda.id`) and not store the reference.
+pub struct StaticFnArg<'a, R: Rt, E: UserEvent> {
+    pub arg_idx: usize,
+    pub lambda: &'a crate::node::lambda::LambdaDef<R, E>,
 }
 
 /// Exhaustive typed view of the compiled node graph.
@@ -1112,8 +1229,8 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     ///
     /// The info captures everything fusion needs to lower an
     /// `Apply` site whose `function` resolves to this binding into
-    /// a `KirOp::DynCall` against a
-    /// [`crate::kernel_ir::FnSource::Builtin`] slot: the canonical
+    /// a `GirOp::DynCall` against a
+    /// [`crate::gir::FnSource::Builtin`] slot: the canonical
     /// builtin `name` (matches `ctx.builtins`), the source-level
     /// `argspec` (with default expressions for labeled args), and
     /// the resolved `FnType`.
@@ -1139,14 +1256,14 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// JIT operations are compile-time only (rare, never on hot
     /// paths), so the lock cost is negligible.
     ///
-    /// Kernels with `KirOp::Call` compile into this module via
-    /// [`crate::kir_jit::compile_kernel_with_callees`]; kernels
+    /// Kernels with `GirOp::Call` compile into this module via
+    /// [`crate::gir_jit::compile_kernel_with_callees`]; kernels
     /// without any calls use the single-kernel path
-    /// [`crate::kir_jit::compile_kernel_with_wrapper`] which creates
+    /// [`crate::gir_jit::compile_kernel_with_wrapper`] which creates
     /// its own private `JitCtx` per call (no interaction with this
     /// field). The async-JIT worker thread (`JIT_WORKER`) likewise
     /// uses the single-kernel path and doesn't touch this field.
-    pub jit: parking_lot::Mutex<kir_jit::Jit>,
+    pub jit: parking_lot::Mutex<gir_jit::Jit>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1182,7 +1299,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
-            jit: parking_lot::Mutex::new(kir_jit::Jit::new()?,),
+            jit: parking_lot::Mutex::new(gir_jit::Jit::new()?,),
         })
     }
 
@@ -1315,6 +1432,17 @@ pub fn compile<R: Rt, E: UserEvent>(
         }
     }
     info!("typecheck time {:?}", st.elapsed());
+    // Static call resolution: pre-bind every CallSite whose function
+    // expression resolves to a single known LambdaDef. Eliminates
+    // the "bind on first use" indirection on every subsequent
+    // update, and exposes the lambda body Node directly for
+    // fusion's walker to descend into.
+    let st = Instant::now();
+    if let Err(e) = crate::static_resolve::resolve_static_calls(ctx, &mut node) {
+        ctx.env = env;
+        return Err(e);
+    }
+    info!("static_resolve time {:?}", st.elapsed());
     // Fusion phase: walk the typed node graph, build kernels, splice
     // in place. Currently a no-op stub — see fusion/mod.rs::fuse and
     // the implementation plan for the iteration sequence.

@@ -1,11 +1,11 @@
 //! Node fusion: identify pure-expression / pure-function subtrees and
-//! lower them into the typed kernel IR ([`crate::kernel_ir`]). The
-//! resulting [`KirExpr`] / [`KirKernel`] is then lowered to Cranelift
-//! IR by the JIT path (see `crate::kir_jit`) for in-process JIT
+//! lower them into the typed kernel IR ([`crate::gir`]). The
+//! resulting [`GirExpr`] / [`GirKernel`] is then lowered to Cranelift
+//! IR by the JIT path (see `crate::gir_jit`) for in-process JIT
 //! compilation.
 //!
-//! This module is the front end (Graphix `Expr` → KIR). The IR types
-//! live in [`crate::kernel_ir`].
+//! This module is the front end (Graphix `Expr` → GIR). The IR types
+//! live in [`crate::gir`].
 //!
 //! Driving examples are mandelbrot's `iterate` (primitive args, a
 //! `select` with arithmetic guards, a self-recursive tail call) and
@@ -13,24 +13,21 @@
 //! direct recursion).
 
 use crate::{
-    effects::EffectKind,
-    env::Env,
     expr::{Expr, ExprKind, ModPath, Pattern, StructurePattern},
-    kernel_ir::{
-        self as kir, ConstVal, KirExpr, KirKernel, KirOp, KirStmt, Let, SelectArm,
+    gir::{
+        self as gir, ConstVal, GirExpr, GirKernel, GirOp, GirStmt, Let, SelectArm,
     },
     typ::Type,
-    ExecCtx, Rt, Scope, UserEvent,
+    Update,
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
-use std::sync::Arc as SArc;
 
-// Re-export the canonical KIR types so existing callers (graphix-shell,
+// Re-export the canonical GIR types so existing callers (graphix-shell,
 // graphix-package-bench, in-tree tests) keep compiling. The IR's
-// definitive home is `crate::kernel_ir`; these aliases exist purely to
+// definitive home is `crate::gir`; these aliases exist purely to
 // keep the public API surface stable across the move.
-pub use crate::kernel_ir::{Input, KirType, KnownConst, KnownFusedFn, PrimType};
+pub use crate::gir::{Input, GirType, KnownConst, KnownFusedFn, PrimType};
 
 /// Lookup table the emitter consults whenever it sees a `Ref` — tells
 /// us the variable's primitive type and the name to use in generated
@@ -43,42 +40,42 @@ pub struct FusionCtx {
     pub inputs: Vec<Input>,
     /// Function-typed parameters of the kernel being built. Mirrors
     /// the kernel's `fn_params` list — `Apply{Ref(name)}` against any
-    /// of these names lowers to [`KirOp::DynCall`] instead of a
+    /// of these names lowers to [`GirOp::DynCall`] instead of a
     /// static call. Keyed by Graphix name; the value is the param's
     /// (zero-based) index in this list, which becomes the
     /// `fn_index` in the emitted DynCall.
-    pub fn_inputs: Vec<crate::kernel_ir::FnParam>,
+    pub fn_inputs: Vec<crate::gir::FnParam>,
     /// Array-typed parameters of the kernel being built. Mirrors the
     /// kernel's `array_params` list — `Ref(name)` resolves against
     /// these for `array::len(name)` and `name[i]` lowering. Sibling
     /// to `inputs` (no shadowing — same name in both is a fusion
     /// abort by `find_array`'s caller).
-    pub array_inputs: Vec<crate::kernel_ir::ArrayInput>,
+    pub array_inputs: Vec<crate::gir::ArrayInput>,
     /// Tuple-typed kernel parameters. Looked up by name when
     /// emitting `t.0` / `t.1` (TupleRef) accesses and recognised at
     /// `(a, b, c)` literal sites that match a known param shape.
-    pub tuple_inputs: Vec<crate::kernel_ir::TupleInput>,
+    pub tuple_inputs: Vec<crate::gir::TupleInput>,
     /// Struct-typed kernel parameters. Same pattern — `s.field`
     /// (StructRef) accesses look up here, with the field name
     /// resolved to a sorted index at lowering time.
-    pub struct_inputs: Vec<crate::kernel_ir::StructInput>,
+    pub struct_inputs: Vec<crate::gir::StructInput>,
     /// Variant-typed kernel parameters. Looked up by name when
     /// emitting tag-match dispatches and payload reads. The cases
     /// list constrains which tags can flow through; the lowering
     /// for a select arm matching `` `Foo(a, b) `` checks both that
     /// the tag matches and that the case shape matches the param's
     /// declared cases.
-    pub variant_inputs: Vec<crate::kernel_ir::VariantInput>,
+    pub variant_inputs: Vec<crate::gir::VariantInput>,
     /// Nullable-typed kernel parameters / lets — graphix's `[T, null]`
-    /// option shape. `KirOp::IsNull` checks against these; reads via
-    /// `KirOp::Local` return `EvalResult::Nullable(Value)` so the
+    /// option shape. `GirOp::IsNull` checks against these; reads via
+    /// `GirOp::Local` return `EvalResult::Nullable(Value)` so the
     /// caller can distinguish `Value::Null` from a wrapped `T`.
-    pub nullable_inputs: Vec<crate::kernel_ir::NullableInput>,
+    pub nullable_inputs: Vec<crate::gir::NullableInput>,
     /// String let-bindings inside the kernel body. Strings only appear
     /// here as locals — never as params (no string args on either
     /// backend) and never as kernel inputs from an outer region (no
     /// `RegionInputKind::String` shape).
-    pub string_inputs: Vec<crate::kernel_ir::StringInput>,
+    pub string_inputs: Vec<crate::gir::StringInput>,
     /// Other kernels already fused in the current pass. Used by
     /// `emit_expr` to lower `Apply { fn: Ref(name) }` to a direct call
     /// when `name` is in this map. Keyed by the Graphix-level name so
@@ -104,8 +101,8 @@ pub struct FusionCtx {
     /// Apply-site lookup table for builtin DynCalls. Populated by
     /// `discover_builtin_calls` before `emit_body` runs; each entry
     /// maps the source `Apply.spec.id` to the marshalling info
-    /// `emit_expr` needs to emit a [`KirOp::DynCall`] against the
-    /// corresponding [`crate::kernel_ir::FnSource::Builtin`] slot
+    /// `emit_expr` needs to emit a [`GirOp::DynCall`] against the
+    /// corresponding [`crate::gir::FnSource::Builtin`] slot
     /// in `fn_inputs`/`fn_params`.
     pub builtin_apply_sites:
         nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
@@ -114,13 +111,13 @@ pub struct FusionCtx {
 /// Per-Apply-site info captured by `discover_builtin_calls` for use
 /// by `emit_known_fused_call`'s builtin DynCall arm.
 ///
-/// `fn_index` is the slot index in `KirKernel.fn_params` for this
-/// call site's [`crate::kernel_ir::FnSource::Builtin`] entry.
+/// `fn_index` is the slot index in `GirKernel.fn_params` for this
+/// call site's [`crate::gir::FnSource::Builtin`] entry.
 ///
 /// `marshal_arg_indices` maps each kernel-level marshalled DynCall
 /// arg position to its index in `Apply.args` (source order). At
 /// emit time, `emit_known_fused_call` walks these in order and
-/// lowers each named `Apply.args[idx].1` into KIR for the DynCall
+/// lowers each named `Apply.args[idx].1` into GIR for the DynCall
 /// `args` vector. Skip-positions (labeled args resolved to defaults)
 /// are not in this list — they have no marshalled value; the
 /// builtin slot's `LabeledDefault` handles them runtime-side.
@@ -133,8 +130,8 @@ pub struct FusionCtx {
 pub struct BuiltinCallSiteInfo {
     pub fn_index: u32,
     pub marshal_arg_indices: Vec<usize>,
-    pub arg_types: Vec<KirType>,
-    pub return_type: KirType,
+    pub arg_types: Vec<GirType>,
+    pub return_type: GirType,
 }
 
 /// Output of `discover_builtin_calls`.
@@ -142,18 +139,18 @@ pub struct BuiltinCallSiteInfo {
 pub struct BuiltinCallDiscovery {
     /// `FnParam` slots to install in the kernel's `fn_inputs` —
     /// one per discovered builtin Apply site, in walk order.
-    pub fn_params: Vec<crate::kernel_ir::FnParam>,
+    pub fn_params: Vec<crate::gir::FnParam>,
     /// `Apply.spec.id → BuiltinCallSiteInfo` lookup so
     /// `emit_known_fused_call` can recognise the call site at emit
-    /// time and lower it to a `KirOp::DynCall`.
+    /// time and lower it to a `GirOp::DynCall`.
     pub apply_sites:
         nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
 }
 
 /// Walk `body` looking for `Apply` sites whose target resolves to a
 /// sync builtin binding registered in `ctx.builtin_bindings`. For
-/// each such site build a [`crate::kernel_ir::FnParam`] with
-/// [`crate::kernel_ir::FnSource::Builtin`], capturing the layout
+/// each such site build a [`crate::gir::FnParam`] with
+/// [`crate::gir::FnSource::Builtin`], capturing the layout
 /// fusion needs to dispatch via the runtime's builtin Apply
 /// machinery.
 ///
@@ -174,6 +171,347 @@ pub fn discover_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
     let mut out = BuiltinCallDiscovery::default();
     walk_for_builtin_calls(body, ctx, scope, &mut out);
     out
+}
+
+/// Node-based variant of [`discover_builtin_calls`] — walks the
+/// compiled Node tree via [`crate::NodeView`] instead of the source
+/// `Expr` tree. This is the variant production-side fusion uses
+/// (`fusion::fuse` in `fusion/mod.rs`).
+///
+/// **Why Node-based**: the Node tree is the *decorated* AST. At a
+/// CallSite the runtime carries the call-site-instantiated
+/// `FnType` (resolved during typecheck — TVars unified with the
+/// call site's concrete arg types) in `CallSite::ftype()`. That's
+/// the correct FnType to consult for builtins like `str::parse`
+/// where the rtype is polymorphic (`'b: Cast`) and only the
+/// call-site instantiation tells us the target type.
+///
+/// The Expr-based [`discover_builtin_calls`] above reads
+/// `a.function.typ.get()` — the function-expression's typed-AST
+/// cell — which carries the lambda's *original* generic FnType.
+/// That's a latent bug; this Node-based variant fixes it by
+/// reading from the CallSite's resolved FnType directly.
+pub fn discover_builtin_calls_node<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    ctx: &crate::ExecCtx<R, E>,
+    scope: &crate::expr::ModPath,
+) -> BuiltinCallDiscovery {
+    let mut out = BuiltinCallDiscovery::default();
+    walk_node_for_builtin_calls(&**node, ctx, scope, &mut out);
+    out
+}
+
+/// Walk a `&dyn Update` subtree to discover builtin Apply sites.
+/// Public so `fusion::fuse` can call it on a borrowed subtree
+/// (returned by `find_node_by_id`) without needing to own a
+/// `Node<R, E>`.
+pub fn walk_node_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
+    node: &dyn crate::Update<R, E>,
+    ctx: &crate::ExecCtx<R, E>,
+    scope: &crate::expr::ModPath,
+    out: &mut BuiltinCallDiscovery,
+) {
+    use crate::NodeView;
+    // First: if this node is a CallSite, attempt to register a
+    // builtin DynCall site against it. The CallSite carries the
+    // resolved FnType (post-typecheck instantiation) which we use
+    // instead of reading the function expression's typed-AST cell.
+    if let NodeView::CallSite(cs) = node.view() {
+        try_register_builtin_call_from_callsite(cs, ctx, scope, out);
+    }
+    // Then: descend. Lambdas inside the body are separate kernels and
+    // are NOT descended into — their bodies belong to their own
+    // discovery pass.
+    match node.view() {
+        // Leaves — nothing to recurse into.
+        NodeView::Constant(_) | NodeView::Nop(_) | NodeView::Ref(_)
+        | NodeView::Use(_) | NodeView::TypeDef(_) => {}
+        NodeView::Lambda(_) => {}
+        // Containers: walk children. Each carries a typed accessor
+        // chain into its Nodes; the source Expr remains addressable
+        // via spec() for any data we don't yet have an accessor for.
+        NodeView::Bind(b) => walk_node_for_builtin_calls(&*b.node, ctx, scope, out),
+        NodeView::Block(blk) => {
+            for c in blk.children.iter() {
+                walk_node_for_builtin_calls(&**c, ctx, scope, out);
+            }
+        }
+        NodeView::Module(m) => {
+            for c in m.nodes.iter() {
+                walk_node_for_builtin_calls(&**c, ctx, scope, out);
+            }
+        }
+        NodeView::CallSite(cs) => {
+            walk_node_for_builtin_calls(&**cs.fnode(), ctx, scope, out);
+            // Iterate args in source order via `spec_args`, look up
+            // each arg's compiled Node via positional / named lookup.
+            for (idx, (label, _expr)) in cs.spec_args().iter().enumerate() {
+                let child = match label {
+                    Some(name) => cs.arg_named(name),
+                    None => cs.arg_positional(idx),
+                };
+                if let Some(c) = child {
+                    walk_node_for_builtin_calls(&**c, ctx, scope, out);
+                }
+            }
+        }
+        // For all other node shapes we don't have typed-accessor
+        // descent yet, fall back to walking the source Expr via
+        // node.spec(). The Expr-level walker handles every shape
+        // uniformly; the CallSite arm above is the only one where
+        // Node-vs-Expr makes a semantic difference. Refs inside the
+        // Expr resolve against `ctx.env` exactly as the Node-based
+        // path would — they're free vars from the kernel's POV.
+        _ => walk_for_builtin_calls(node.spec(), ctx, scope, out),
+    }
+}
+
+/// Node-based variant of [`try_register_builtin_call`]. Reads the
+/// resolved FnType from the CallSite (`callsite.ftype().map(|ft|
+/// ft.resolve_tvars())`) instead of pulling it from the function-
+/// expression's typed-AST cell. This fixes the latent bug where
+/// generic builtins (`str::parse` with polymorphic `'b: Cast`
+/// return type) would see the lambda's unresolved FnType at
+/// runtime, surfacing as "parse requires a concrete type
+/// annotation".
+fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
+    cs: &crate::node::callsite::CallSite<R, E>,
+    ctx: &crate::ExecCtx<R, E>,
+    scope: &crate::expr::ModPath,
+    out: &mut BuiltinCallDiscovery,
+) {
+    // Need the source Apply Expr (for ExprKind::Ref-vs-other check
+    // on the function, and for ExprId to register the site). The
+    // CallSite's spec is always `ExprKind::Apply`.
+    let apply_expr = cs.spec();
+    let a = match &apply_expr.kind {
+        crate::expr::ExprKind::Apply(a) => a,
+        _ => return,
+    };
+    // Same call-flow as the Expr-based path: the function must be a
+    // direct binding Ref.
+    let path = match &a.function.kind {
+        crate::expr::ExprKind::Ref { name } => name,
+        _ => return,
+    };
+    let (_, bind) = match ctx.env.lookup_bind(scope, path) {
+        Some(b) => b,
+        None => return,
+    };
+    let key = (bind.scope.clone(), bind.name.clone());
+    let info = match ctx.builtin_bindings.get(&key) {
+        Some(i) => i.clone(),
+        None => return,
+    };
+    // Async builtins can't be fused — they may produce values on a
+    // later cycle than the trigger.
+    use crate::effects::EffectKind;
+    match ctx.builtin_effects.get(info.name.as_str()) {
+        Some(EffectKind::Sync) => {}
+        _ => return,
+    }
+    // **The payoff**: use the CallSite's resolved FnType (TVars
+    // unified at typecheck time to the call-site's concrete arg
+    // types), rather than reading the function expression's
+    // typed-AST cell.
+    //
+    // After typecheck has run for this CallSite, `cs.ftype()` is
+    // `Some(ft)` carrying the lambda's signature with the call-site's
+    // TVar bindings still live in the TVars' RwLock cells. Calling
+    // `resolve_tvars()` deep-clones with every TVar dereffed to its
+    // bound concrete type — exactly what fusion needs.
+    //
+    // `cs.ftype()` may be `None` if typecheck hasn't run yet, or
+    // didn't reach this site (e.g. a compile error elsewhere). Fall
+    // back to the binding's own FnType in that case — same shape
+    // the Expr-based path uses, just as the last-resort fallback.
+    let fn_type: std::sync::Arc<crate::typ::FnType> = match cs.ftype() {
+        Some(ft) => std::sync::Arc::new(ft.resolve_tvars()),
+        None => {
+            let inner: &crate::typ::FnType = &info.typ;
+            std::sync::Arc::new(inner.clone())
+        }
+    };
+    // From here on the layout-derivation is identical to the
+    // Expr-based path. Re-using the same arg classification +
+    // GirType derivation keeps semantics consistent across the two
+    // walkers during the transition.
+    let apply_id = apply_expr.id;
+    let mut call_positional: Vec<(usize, &Expr)> = Vec::new();
+    let mut call_labeled: ahash::AHashMap<&str, (usize, &Expr)> =
+        ahash::AHashMap::default();
+    for (call_idx, (label, e)) in a.args.iter().enumerate() {
+        match label {
+            Some(name) => {
+                call_labeled.insert(name.as_str(), (call_idx, e));
+            }
+            None => call_positional.push((call_idx, e)),
+        }
+    }
+    let mut layout: Vec<crate::gir::BuiltinSlot> = Vec::new();
+    let mut arg_types: Vec<GirType> = Vec::new();
+    let mut marshal_arg_indices: Vec<usize> = Vec::new();
+    let mut pos_iter = call_positional.iter();
+    for fa in fn_type.args.iter() {
+        use crate::typ::FnArgKind;
+        match &fa.kind {
+            FnArgKind::Positional { .. } => {
+                let (call_idx, arg_expr) = match pos_iter.next() {
+                    Some(p) => p,
+                    None => return,
+                };
+                // resolve_tvars on the FnType has already deref'd
+                // every TVar, so `fa.typ` is the concrete arg
+                // type. Prefer the call-site Expr's typ cell if
+                // present (cheaper than re-dereffing) — both
+                // should agree post-resolve_tvars.
+                let arg_typ = arg_expr.typ.get().cloned().unwrap_or_else(|| {
+                    fa.typ.clone()
+                });
+                let kt = match GirType::from_type(&arg_typ) {
+                    Some(t) => t,
+                    None => return,
+                };
+                let slot_idx = arg_types.len();
+                layout.push(crate::gir::BuiltinSlot::Positional(slot_idx));
+                arg_types.push(kt);
+                marshal_arg_indices.push(*call_idx);
+            }
+            FnArgKind::Labeled { name, has_default } => {
+                if let Some((call_idx, arg_expr)) =
+                    call_labeled.remove(name.as_str())
+                {
+                    let arg_typ = arg_expr.typ.get().cloned().unwrap_or_else(|| {
+                        fa.typ.clone()
+                    });
+                    let kt = match GirType::from_type(&arg_typ) {
+                        Some(t) => t,
+                        None => return,
+                    };
+                    let slot_idx = arg_types.len();
+                    layout.push(
+                        crate::gir::BuiltinSlot::Positional(slot_idx),
+                    );
+                    arg_types.push(kt);
+                    marshal_arg_indices.push(call_idx);
+                } else if *has_default {
+                    let default = info.argspec.iter().find_map(|src| {
+                        let n = src.pattern.single_bind()?;
+                        if n.as_str() != name.as_str() {
+                            return None;
+                        }
+                        if let Some(Some(d)) = &src.labeled {
+                            Some(d.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let default = match default {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    layout.push(
+                        crate::gir::BuiltinSlot::LabeledDefault(default),
+                    );
+                } else {
+                    return;
+                }
+            }
+        }
+    }
+    let remaining: Vec<_> = pos_iter.collect();
+    if !remaining.is_empty() {
+        if fn_type.vargs.is_none() {
+            return;
+        }
+        let from_call_idx = arg_types.len();
+        let count = remaining.len();
+        layout.push(crate::gir::BuiltinSlot::Variadic {
+            from_call_idx,
+            count,
+        });
+        for (call_idx, arg_expr) in remaining {
+            let arg_typ = arg_expr.typ.get().cloned().or_else(|| {
+                fn_type
+                    .vargs
+                    .as_ref()
+                    .and_then(|t| t.with_deref(|t| t.cloned()))
+            });
+            let arg_typ = match arg_typ {
+                Some(t) => t,
+                None => return,
+            };
+            let kt = match GirType::from_type(&arg_typ) {
+                Some(t) => t,
+                None => return,
+            };
+            arg_types.push(kt);
+            marshal_arg_indices.push(*call_idx);
+        }
+    }
+    if !call_labeled.is_empty() {
+        return;
+    }
+    // Return type — resolved on the call-site FnType already, so
+    // we can use it directly. The Apply Expr's typ cell would
+    // agree if populated.
+    let ret_typ = apply_expr.typ.get().cloned().unwrap_or_else(|| {
+        fn_type.rtype.clone()
+    });
+    let return_type = match GirType::from_type(&ret_typ) {
+        Some(t) => t,
+        None => return,
+    };
+    fn is_dyncall_supported(kt: &GirType) -> bool {
+        match kt {
+            GirType::Prim(_)
+            | GirType::Array(_)
+            | GirType::Tuple(_)
+            | GirType::Struct(_)
+            | GirType::Variant(_)
+            | GirType::Nullable(_)
+            | GirType::String => true,
+            GirType::Unit | GirType::Null => false,
+        }
+    }
+    if !arg_types.iter().all(is_dyncall_supported) {
+        return;
+    }
+    let return_ok = match &return_type {
+        GirType::Prim(_)
+        | GirType::Array(_)
+        | GirType::Tuple(_)
+        | GirType::Struct(_)
+        | GirType::Variant(_)
+        | GirType::Nullable(_)
+        | GirType::Unit
+        | GirType::String => true,
+        GirType::Null => false,
+    };
+    if !return_ok {
+        return;
+    }
+    let fn_index = out.fn_params.len() as u32;
+    out.fn_params.push(crate::gir::FnParam {
+        name: info.name.clone(),
+        source: crate::gir::FnSource::Builtin {
+            name: info.name.clone(),
+            typ: fn_type,
+            layout: std::sync::Arc::from(layout),
+            lambda_id: info.lambda_id,
+        },
+        arg_types: arg_types.clone(),
+        return_type: return_type.clone(),
+    });
+    out.apply_sites.insert(
+        apply_id,
+        BuiltinCallSiteInfo {
+            fn_index,
+            marshal_arg_indices,
+            arg_types,
+            return_type,
+        },
+    );
 }
 
 fn walk_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
@@ -356,8 +694,8 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
             None => call_positional.push((call_idx, e)),
         }
     }
-    let mut layout: Vec<crate::kernel_ir::BuiltinSlot> = Vec::new();
-    let mut arg_types: Vec<KirType> = Vec::new();
+    let mut layout: Vec<crate::gir::BuiltinSlot> = Vec::new();
+    let mut arg_types: Vec<GirType> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
     let mut pos_iter = call_positional.iter();
     for fa in fn_type.args.iter() {
@@ -381,12 +719,12 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
                     Some(t) => t,
                     None => return,
                 };
-                let kt = match KirType::from_type(&arg_typ) {
+                let kt = match GirType::from_type(&arg_typ) {
                     Some(t) => t,
                     None => return,
                 };
                 let slot_idx = arg_types.len();
-                layout.push(crate::kernel_ir::BuiltinSlot::Positional(slot_idx));
+                layout.push(crate::gir::BuiltinSlot::Positional(slot_idx));
                 arg_types.push(kt);
                 marshal_arg_indices.push(*call_idx);
             }
@@ -404,13 +742,13 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
                         Some(t) => t,
                         None => return,
                     };
-                    let kt = match KirType::from_type(&arg_typ) {
+                    let kt = match GirType::from_type(&arg_typ) {
                         Some(t) => t,
                         None => return,
                     };
                     let slot_idx = arg_types.len();
                     layout.push(
-                        crate::kernel_ir::BuiltinSlot::Positional(slot_idx),
+                        crate::gir::BuiltinSlot::Positional(slot_idx),
                     );
                     arg_types.push(kt);
                     marshal_arg_indices.push(call_idx);
@@ -433,7 +771,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
                         None => return,
                     };
                     layout.push(
-                        crate::kernel_ir::BuiltinSlot::LabeledDefault(default),
+                        crate::gir::BuiltinSlot::LabeledDefault(default),
                     );
                 } else {
                     // Required labeled arg missing — typecheck
@@ -448,7 +786,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
     // resolved INDIVIDUALLY from its own typed-AST cell, not from
     // the formal `fn_type.vargs` — that formal type can be a union
     // like `[string, Array<string>]` (e.g. `str::concat`), which
-    // `KirType::from_type` rejects. The per-arg cell holds the
+    // `GirType::from_type` rejects. The per-arg cell holds the
     // concrete instantiation post-typecheck, so each push uses the
     // right helper for that specific value's runtime shape.
     let remaining: Vec<_> = pos_iter.collect();
@@ -458,7 +796,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
         }
         let from_call_idx = arg_types.len();
         let count = remaining.len();
-        layout.push(crate::kernel_ir::BuiltinSlot::Variadic {
+        layout.push(crate::gir::BuiltinSlot::Variadic {
             from_call_idx,
             count,
         });
@@ -473,7 +811,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt = match KirType::from_type(&arg_typ) {
+            let kt = match GirType::from_type(&arg_typ) {
                 Some(t) => t,
                 None => return,
             };
@@ -497,7 +835,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
         Some(t) => t,
         None => return,
     };
-    let return_type = match KirType::from_type(&ret_typ) {
+    let return_type = match GirType::from_type(&ret_typ) {
         Some(t) => t,
         None => return,
     };
@@ -505,44 +843,65 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
     // JIT codegen would error mid-compile, corrupting the cranelift
     // `func_ctx`. Filter here so the candidate stays unfused and
     // the interpreter runs it normally.
-    fn is_dyncall_supported(kt: &KirType) -> bool {
+    fn is_dyncall_supported(kt: &GirType) -> bool {
         match kt {
-            KirType::Prim(_)
-            | KirType::Array(_)
-            | KirType::Tuple(_)
-            | KirType::Struct(_)
-            | KirType::Variant(_)
-            | KirType::Nullable(_)
-            | KirType::String => true,
+            GirType::Prim(_)
+            | GirType::Array(_)
+            | GirType::Tuple(_)
+            | GirType::Struct(_)
+            | GirType::Variant(_)
+            | GirType::Nullable(_)
+            | GirType::String => true,
             // Bare Unit args don't appear in practice (Unit is a
             // return-only shape). Bare Null is always widened to
             // Nullable<T> by the IR builder before construction.
-            KirType::Unit | KirType::Null => false,
+            GirType::Unit | GirType::Null => false,
         }
     }
     if !arg_types.iter().all(is_dyncall_supported) {
         return;
     }
     let return_ok = match &return_type {
-        KirType::Prim(_)
-        | KirType::Array(_)
-        | KirType::Tuple(_)
-        | KirType::Struct(_)
-        | KirType::Variant(_)
-        | KirType::Nullable(_)
-        | KirType::Unit
-        | KirType::String => true,
-        KirType::Null => false,
+        GirType::Prim(_)
+        | GirType::Array(_)
+        | GirType::Tuple(_)
+        | GirType::Struct(_)
+        | GirType::Variant(_)
+        | GirType::Nullable(_)
+        | GirType::Unit
+        | GirType::String => true,
+        GirType::Null => false,
     };
     if !return_ok {
         return;
     }
+    // Replace the FnType's rtype with the call site's RESOLVED return
+    // type (the Apply Expr's typ cell). The function-expression's
+    // `typ.get()` we read above carries the LAMBDA's signature with
+    // potentially unbound polymorphic TVars (e.g. `str::parse`'s 'b);
+    // a few sync builtins like `str::parse` read `resolved.rtype` at
+    // init time to decide their target type, so a unbound TVar there
+    // surfaces at runtime as "requires a concrete type annotation".
+    // The Apply Expr's typ has the post-typecheck monomorphization
+    // (e.g. `Result<i64, ParseError>` after `let v: i64 = ...?`), so
+    // we splice it in.
+    let resolved_fn_type = {
+        let mut ft = (*fn_type).clone();
+        // Use a TVar-dereferenced copy of the resolved return type —
+        // some builtins (notably `str::parse`) match on `rtype` shape
+        // at init time (`extract_cast_type`) and don't deref TVars,
+        // so a TVar wrapping the resolved Set bypasses their lookup.
+        let resolved_rtype =
+            ret_typ.with_deref(|t| t.cloned()).unwrap_or(ret_typ);
+        ft.rtype = resolved_rtype;
+        std::sync::Arc::new(ft)
+    };
     let fn_index = out.fn_params.len() as u32;
-    out.fn_params.push(crate::kernel_ir::FnParam {
+    out.fn_params.push(crate::gir::FnParam {
         name: info.name.clone(),
-        source: crate::kernel_ir::FnSource::Builtin {
+        source: crate::gir::FnSource::Builtin {
             name: info.name.clone(),
-            typ: std::sync::Arc::new((*fn_type).clone()),
+            typ: resolved_fn_type,
             layout: std::sync::Arc::from(layout),
             lambda_id: info.lambda_id,
         },
@@ -574,22 +933,22 @@ impl FusionCtx {
     }
 
     /// Look up an array-typed kernel parameter by Graphix name.
-    pub fn find_array(&self, name: &str) -> Option<&crate::kernel_ir::ArrayInput> {
+    pub fn find_array(&self, name: &str) -> Option<&crate::gir::ArrayInput> {
         self.array_inputs.iter().find(|a| &*a.name == name)
     }
 
     /// Look up a tuple-typed kernel parameter by Graphix name.
-    pub fn find_tuple(&self, name: &str) -> Option<&crate::kernel_ir::TupleInput> {
+    pub fn find_tuple(&self, name: &str) -> Option<&crate::gir::TupleInput> {
         self.tuple_inputs.iter().find(|t| &*t.name == name)
     }
 
     /// Look up a struct-typed kernel parameter by Graphix name.
-    pub fn find_struct(&self, name: &str) -> Option<&crate::kernel_ir::StructInput> {
+    pub fn find_struct(&self, name: &str) -> Option<&crate::gir::StructInput> {
         self.struct_inputs.iter().find(|s| &*s.name == name)
     }
 
     /// Look up a variant-typed kernel parameter by Graphix name.
-    pub fn find_variant(&self, name: &str) -> Option<&crate::kernel_ir::VariantInput> {
+    pub fn find_variant(&self, name: &str) -> Option<&crate::gir::VariantInput> {
         self.variant_inputs.iter().find(|v| &*v.name == name)
     }
 
@@ -597,7 +956,7 @@ impl FusionCtx {
     pub fn find_nullable(
         &self,
         name: &str,
-    ) -> Option<&crate::kernel_ir::NullableInput> {
+    ) -> Option<&crate::gir::NullableInput> {
         self.nullable_inputs.iter().find(|n| &*n.name == name)
     }
 
@@ -605,8 +964,56 @@ impl FusionCtx {
     pub fn find_string(
         &self,
         name: &str,
-    ) -> Option<&crate::kernel_ir::StringInput> {
+    ) -> Option<&crate::gir::StringInput> {
         self.string_inputs.iter().find(|s| &*s.name == name)
+    }
+
+    /// Scoped push of a primitive [`Input`] for the duration of `f`.
+    /// The canonical pattern for HOF intercepts whose callback's arg
+    /// becomes a kernel input visible only while emitting the
+    /// callback body — e.g. `array::map(arr, |x| body)` pushes `x`,
+    /// emits `body`, then drops `x` on return.
+    ///
+    /// Equivalent to (and a one-liner shorthand for) the open-coded
+    /// pattern:
+    /// ```ignore
+    /// let mut inner = ctx.clone();
+    /// inner.inputs.push(input);
+    /// let r = f(&inner);
+    /// // `inner` drops, never observed by callers.
+    /// ```
+    pub fn with_input<F, T>(&self, input: Input, f: F) -> T
+    where
+        F: FnOnce(&FusionCtx) -> T,
+    {
+        let mut inner = self.clone();
+        inner.inputs.push(input);
+        f(&inner)
+    }
+
+    /// If `node` is a `Ref` to an array-typed kernel parameter,
+    /// return that parameter's name. Used by HOF intercepts to
+    /// confirm the array argument is something they can lower over
+    /// (i.e. a kernel input, not an arbitrary expression).
+    pub fn resolve_array_input<R: crate::Rt, E: crate::UserEvent>(
+        &self,
+        node: &crate::Node<R, E>,
+    ) -> Option<ArcStr> {
+        if let crate::NodeView::Ref(r) = node.view() {
+            // The Ref's bind_id corresponds to a name in `ctx.env`,
+            // which is what `array_inputs` is keyed by. We don't
+            // have direct env access here, so resolve via the spec's
+            // ExprKind::Ref name path (every Ref Node's spec is an
+            // `ExprKind::Ref { name }`).
+            if let crate::expr::ExprKind::Ref { name } = &node.spec().kind {
+                let ident = ident_of(name)?;
+                let _ = r; // bind_id available if needed later
+                if let Some(ai) = self.find_array(ident) {
+                    return Some(ai.name.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Look up an input by name in any of the input lists (mirrors the
@@ -614,44 +1021,44 @@ impl FusionCtx {
     /// Used by the maximal-fusion lifted-input path: when a lifted
     /// `ExprId` triggers a synthetic Local read, this resolves the
     /// synth name to the registered input slot.
-    pub fn lookup_local(&self, name: &str) -> Option<KirExpr> {
+    pub fn lookup_local(&self, name: &str) -> Option<GirExpr> {
         if let Some(input) = self.find(name) {
-            return Some(kir::local(input.name.clone(), input.prim));
+            return Some(gir::local(input.name.clone(), input.prim));
         }
         if let Some(ai) = self.find_array(name) {
-            return Some(KirExpr {
-                op: KirOp::Local(ai.name.clone()),
-                typ: KirType::Array(Box::new(ai.elem.clone())),
+            return Some(GirExpr {
+                op: GirOp::Local(ai.name.clone()),
+                typ: GirType::Array(Box::new(ai.elem.clone())),
             });
         }
         if let Some(ti) = self.find_tuple(name) {
-            return Some(KirExpr {
-                op: KirOp::Local(ti.name.clone()),
-                typ: KirType::Tuple(ti.elems.clone()),
+            return Some(GirExpr {
+                op: GirOp::Local(ti.name.clone()),
+                typ: GirType::Tuple(ti.elems.clone()),
             });
         }
         if let Some(si) = self.find_struct(name) {
-            return Some(KirExpr {
-                op: KirOp::Local(si.name.clone()),
-                typ: KirType::Struct(si.fields.clone()),
+            return Some(GirExpr {
+                op: GirOp::Local(si.name.clone()),
+                typ: GirType::Struct(si.fields.clone()),
             });
         }
         if let Some(vi) = self.find_variant(name) {
-            return Some(KirExpr {
-                op: KirOp::Local(vi.name.clone()),
-                typ: KirType::Variant(vi.cases.clone()),
+            return Some(GirExpr {
+                op: GirOp::Local(vi.name.clone()),
+                typ: GirType::Variant(vi.cases.clone()),
             });
         }
         if let Some(ni) = self.find_nullable(name) {
-            return Some(KirExpr {
-                op: KirOp::Local(ni.name.clone()),
-                typ: KirType::Nullable(Box::new(ni.elem.clone())),
+            return Some(GirExpr {
+                op: GirOp::Local(ni.name.clone()),
+                typ: GirType::Nullable(Box::new(ni.elem.clone())),
             });
         }
         if let Some(si) = self.find_string(name) {
-            return Some(KirExpr {
-                op: KirOp::Local(si.name.clone()),
-                typ: KirType::String,
+            return Some(GirExpr {
+                op: GirOp::Local(si.name.clone()),
+                typ: GirType::String,
             });
         }
         None
@@ -659,7 +1066,7 @@ impl FusionCtx {
 
     /// Look up a fn-typed kernel parameter by Graphix name and call
     /// arity, returning its zero-based index in `fn_inputs` (the
-    /// `fn_index` for emitted `KirOp::DynCall`) plus the param itself.
+    /// `fn_index` for emitted `GirOp::DynCall`) plus the param itself.
     /// Variadic builtins produce one `FnParam` per *call arity* —
     /// `sum(a, b)` and `sum(a, b, c)` register as two separate slots,
     /// so arity must match too. For non-variadic callees, only one
@@ -668,7 +1075,7 @@ impl FusionCtx {
         &self,
         name: &str,
         arity: usize,
-    ) -> Option<(u32, &crate::kernel_ir::FnParam)> {
+    ) -> Option<(u32, &crate::gir::FnParam)> {
         self.fn_inputs
             .iter()
             .enumerate()
@@ -707,21 +1114,21 @@ fn ident_of(path: &ModPath) -> Option<&str> {
 
 // ─── Expression-position emitters ────────────────────────────────
 
-/// Emit a `select` at expression position as a [`KirOp::IfChain`].
+/// Emit a `select` at expression position as a [`GirOp::IfChain`].
 /// Every arm body must itself emit as a primitive expression, and
 /// every arm body must have the same primitive type (since the chain
 /// evaluates to a single value).
 fn emit_select_as_expr(
     s: &crate::expr::SelectExpr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let scrut = emit_expr(&s.arg, ctx)?;
     let n = s.arms.len();
     if n == 0 {
         return None;
     }
-    let mut arms: Vec<(Option<KirExpr>, KirExpr)> = Vec::with_capacity(n);
-    let mut unified_typ: Option<KirType> = None;
+    let mut arms: Vec<(Option<GirExpr>, GirExpr)> = Vec::with_capacity(n);
+    let mut unified_typ: Option<GirType> = None;
     for (i, (pat, body)) in s.arms.iter().enumerate() {
         let is_last = i == n - 1;
         let mut arm_ctx = ctx.clone();
@@ -733,7 +1140,7 @@ fn emit_select_as_expr(
             None => None,
             Some(g) => {
                 let g = emit_expr(g, &arm_ctx)?;
-                if g.typ != KirType::Prim(PrimType::Bool) {
+                if g.typ != GirType::Prim(PrimType::Bool) {
                     return None;
                 }
                 Some(g)
@@ -763,34 +1170,34 @@ fn emit_select_as_expr(
         }
     }
     let typ = unified_typ?;
-    Some(KirExpr { op: KirOp::IfChain { arms }, typ })
+    Some(GirExpr { op: GirOp::IfChain { arms }, typ })
 }
 
 /// Compute the IfChain merge type when arms produced different
-/// `KirType`s. Currently the only narrowing this understands is the
+/// `GirType`s. Currently the only narrowing this understands is the
 /// `[T, null]` widening — `Prim(T) ∪ Null → Nullable(Prim(T))`,
 /// `Nullable<U> ∪ Null → Nullable<U>`, `Nullable<U> ∪ Prim(T) →
 /// Nullable<U>` when `T == U`. Anything else returns `None` (the
 /// caller bails on fusion).
-fn unify_arm_types(a: KirType, b: KirType) -> Option<KirType> {
+fn unify_arm_types(a: GirType, b: GirType) -> Option<GirType> {
     if a == b {
         return Some(a);
     }
-    let nullable_of = |t: KirType| KirType::Nullable(Box::new(t));
+    let nullable_of = |t: GirType| GirType::Nullable(Box::new(t));
     match (a, b) {
-        (KirType::Null, KirType::Null) => Some(KirType::Null),
-        (KirType::Null, other) | (other, KirType::Null) => match other {
-            KirType::Nullable(_) => Some(other),
-            t @ (KirType::Prim(_)
-            | KirType::Array(_)
-            | KirType::Tuple(_)
-            | KirType::Struct(_)
-            | KirType::Variant(_)) => Some(nullable_of(t)),
+        (GirType::Null, GirType::Null) => Some(GirType::Null),
+        (GirType::Null, other) | (other, GirType::Null) => match other {
+            GirType::Nullable(_) => Some(other),
+            t @ (GirType::Prim(_)
+            | GirType::Array(_)
+            | GirType::Tuple(_)
+            | GirType::Struct(_)
+            | GirType::Variant(_)) => Some(nullable_of(t)),
             _ => None,
         },
-        (KirType::Nullable(inner), other) | (other, KirType::Nullable(inner)) => {
+        (GirType::Nullable(inner), other) | (other, GirType::Nullable(inner)) => {
             if *inner == other {
-                Some(KirType::Nullable(inner))
+                Some(GirType::Nullable(inner))
             } else {
                 None
             }
@@ -801,26 +1208,26 @@ fn unify_arm_types(a: KirType, b: KirType) -> Option<KirType> {
 
 /// Compose a structure-predicate condition (which may be `None` =
 /// "always matches") with an optional guard expression into a single
-/// optional bool [`KirExpr`].
+/// optional bool [`GirExpr`].
 fn combine_cond_and_guard(
-    cond: Option<KirExpr>,
-    guard: Option<KirExpr>,
-) -> Option<KirExpr> {
+    cond: Option<GirExpr>,
+    guard: Option<GirExpr>,
+) -> Option<GirExpr> {
     match (cond, guard) {
         (None, None) => None,
         (Some(c), None) => Some(c),
         (None, Some(g)) => Some(g),
-        (Some(c), Some(g)) => kir::bool_op(c, g, kir::BoolOp::And),
+        (Some(c), Some(g)) => gir::bool_op(c, g, gir::BoolOp::And),
     }
 }
 
 /// Emit an `Apply` call whose target is a Ref to a function already in
-/// `ctx.known_fns`. Lowers to a [`KirOp::Call`].
+/// `ctx.known_fns`. Lowers to a [`GirOp::Call`].
 ///
 /// Builtin DynCall sites take priority — if the Apply's spec.id is
 /// registered in `ctx.builtin_apply_sites` (populated by
 /// `discover_builtin_calls` before kernel-body emission), emit a
-/// `KirOp::DynCall` against the matching `FnSource::Builtin` slot
+/// `GirOp::DynCall` against the matching `FnSource::Builtin` slot
 /// regardless of label shape. This is the primary path for stdlib
 /// function calls inside a fused kernel; the bare-name `ctx.known_fns`
 /// path below handles cross-kernel `Call` references and the
@@ -830,7 +1237,7 @@ fn emit_known_fused_call(
     apply_id: crate::expr::ExprId,
     a: &crate::expr::ApplyExpr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     // Builtin DynCall path.
     if let Some(info) = ctx.builtin_apply_sites.get(&apply_id) {
         let info = info.clone();
@@ -843,8 +1250,8 @@ fn emit_known_fused_call(
             }
             args.push(e);
         }
-        return Some(KirExpr {
-            op: KirOp::DynCall {
+        return Some(GirExpr {
+            op: GirOp::DynCall {
                 fn_index: info.fn_index,
                 args,
                 arg_types: info.arg_types.clone(),
@@ -864,12 +1271,12 @@ fn emit_known_fused_call(
     // proven the argument types match. See M7 design notes.
     let trailing = trailing_segment(&a.function);
     // `array::len(arr)` — when `arr` resolves to an array kernel
-    // param, lower to `KirOp::ArrayLen` (no DynCall, no kernel call).
+    // param, lower to `GirOp::ArrayLen` (no DynCall, no kernel call).
     if trailing == Some("len") && a.args.len() == 1 {
         if let Some(arr_name) = array_param_name(&a.args[0].1, ctx) {
-            return Some(KirExpr {
-                op: KirOp::ArrayLen { name: arr_name },
-                typ: KirType::Prim(PrimType::U64),
+            return Some(GirExpr {
+                op: GirOp::ArrayLen { name: arr_name },
+                typ: GirType::Prim(PrimType::U64),
             });
         }
         // `len` on something else (a string, a map…) — fall through to
@@ -877,9 +1284,9 @@ fn emit_known_fused_call(
         // strand legitimate non-array `len` calls.
     }
     // `array::fold(arr, init, |acc, x| body)` — when `arr` is an
-    // array kernel param, `init` and `body` lower to scalar KIR, and
+    // array kernel param, `init` and `body` lower to scalar GIR, and
     // the callback is an inline lambda with two scalar params, lower
-    // to `KirOp::ArrayFold`. Anything else (callback bound elsewhere,
+    // to `GirOp::ArrayFold`. Anything else (callback bound elsewhere,
     // non-primitive accumulator, …) falls through to the regular
     // call-resolution path.
     if trailing == Some("fold") && a.args.len() == 3 {
@@ -888,8 +1295,8 @@ fn emit_known_fused_call(
         }
     }
     // `array::init(n, |idx: i64| body)` — produces an Array<T> where
-    // T is the body's primitive type. Result KirExpr.typ is
-    // KirType::Array(T). Composes with downstream ArrayMap/ArrayFold
+    // T is the body's primitive type. Result GirExpr.typ is
+    // GirType::Array(T). Composes with downstream ArrayMap/ArrayFold
     // at the source level (separate kernels), but never intra-kernel
     // because ArrayInit is kernel-body-only in v1.
     if trailing == Some("init") && a.args.len() == 2 {
@@ -907,7 +1314,7 @@ fn emit_known_fused_call(
     }
     // `array::filter(arr, |x| pred)` — preserves the input element
     // type; result length is dynamic. Predicate must lower to scalar
-    // bool KIR.
+    // bool GIR.
     if trailing == Some("filter") && a.args.len() == 2 {
         if let Some(produced) = emit_array_filter(&a.args[0].1, &a.args[1].1, ctx) {
             return Some(produced);
@@ -931,8 +1338,8 @@ fn emit_known_fused_call(
             kargs.push(e);
         }
         let return_type = fp.return_type.clone();
-        return Some(KirExpr {
-            op: KirOp::DynCall {
+        return Some(GirExpr {
+            op: GirOp::DynCall {
                 fn_index,
                 args: kargs,
                 arg_types: fp.arg_types.clone(),
@@ -954,17 +1361,17 @@ fn emit_known_fused_call(
         }
         kargs.push(e);
     }
-    Some(KirExpr {
-        op: KirOp::Call { fn_name: ArcStr::from(name), args: kargs },
+    Some(GirExpr {
+        op: GirOp::Call { fn_name: ArcStr::from(name), args: kargs },
         typ: fn_info.return_type,
     })
 }
 
 /// If `expr` is a `Ref` to an array-typed kernel parameter, return
-/// its name (suitable for `KirOp::ArrayLen` / `KirOp::ArrayGet`).
+/// its name (suitable for `GirOp::ArrayLen` / `GirOp::ArrayGet`).
 /// Anything else (computed array values, intra-kernel let-bound
 /// arrays) is rejected — composability with array producers waits
-/// for M7.4's `KirType::Array` plumbing.
+/// for M7.4's `GirType::Array` plumbing.
 fn array_param_name(expr: &Expr, ctx: &FusionCtx) -> Option<ArcStr> {
     if let ExprKind::Ref { name } = &expr.kind {
         let ident = ident_of(name)?;
@@ -976,17 +1383,17 @@ fn array_param_name(expr: &Expr, ctx: &FusionCtx) -> Option<ArcStr> {
 }
 
 /// Lower `array::fold(arr, init, |acc, x| body)` to
-/// [`KirOp::ArrayFold`]. The callback must be an inline lambda with
+/// [`GirOp::ArrayFold`]. The callback must be an inline lambda with
 /// two non-labelled positional params; both must annotate as
 /// primitives matching the array's element type and `init`'s type.
-/// `init` and `body` must each emit as scalar KIR over the surrounding
+/// `init` and `body` must each emit as scalar GIR over the surrounding
 /// kernel's locals plus the two callback params.
 fn emit_array_fold(
     arr_expr: &Expr,
     init_expr: &Expr,
     cb_expr: &Expr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let arr_name = array_param_name(arr_expr, ctx)?;
     // emit_array_fold only handles primitive elements today; composite
     // element fold support is a separate work item. Extract the
@@ -1016,7 +1423,7 @@ fn emit_array_fold(
     // callback's two params as scalar inputs. Emit init in the outer
     // ctx, body in the inner ctx.
     let init = emit_expr(init_expr, ctx)?;
-    if init.typ != KirType::Prim(acc_typ) {
+    if init.typ != GirType::Prim(acc_typ) {
         return None;
     }
     let mut inner = ctx.clone();
@@ -1031,11 +1438,11 @@ fn emit_array_fold(
         bind_id: None,
     });
     let body_kir = emit_expr(body, &inner)?;
-    if body_kir.typ != KirType::Prim(acc_typ) {
+    if body_kir.typ != GirType::Prim(acc_typ) {
         return None;
     }
-    Some(KirExpr {
-        op: KirOp::ArrayFold {
+    Some(GirExpr {
+        op: GirOp::ArrayFold {
             array: arr_name,
             elem_typ: elem,
             init: Box::new(init),
@@ -1043,37 +1450,37 @@ fn emit_array_fold(
             elem_local: elem_name.clone(),
             body: Box::new(body_kir),
         },
-        typ: KirType::Prim(acc_typ),
+        typ: GirType::Prim(acc_typ),
     })
 }
 
 /// Lower a `` `Tag(p0, p1) `` variant literal to
-/// [`KirOp::VariantNew`]. Each payload must emit as scalar KIR; the
+/// [`GirOp::VariantNew`]. Each payload must emit as scalar GIR; the
 /// per-slot primitive types come from those scalar results.
 fn emit_variant_new(
     tag: &ArcStr,
     args: &[Expr],
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
-    let mut payloads: Vec<KirExpr> = Vec::with_capacity(args.len());
-    let mut payload_types: Vec<KirType> = Vec::with_capacity(args.len());
+) -> Option<GirExpr> {
+    let mut payloads: Vec<GirExpr> = Vec::with_capacity(args.len());
+    let mut payload_types: Vec<GirType> = Vec::with_capacity(args.len());
     for a in args {
         let e = emit_expr(a, ctx)?;
-        // Composite-element lowering: any KirType is a valid
+        // Composite-element lowering: any GirType is a valid
         // payload shape (matches TupleNew / StructNew). Unit and
         // bare Null aren't useful payload types — Unit has no Value
         // form, and Null only appears via the inline ConstNull
         // path (always widened to Nullable<T> at the construction
         // site).
-        if matches!(e.typ, KirType::Unit | KirType::Null) {
+        if matches!(e.typ, GirType::Unit | GirType::Null) {
             return None;
         }
         payload_types.push(e.typ.clone());
         payloads.push(e);
     }
-    let typ = KirType::Variant(vec![(tag.clone(), payload_types.clone())]);
-    Some(KirExpr {
-        op: KirOp::VariantNew {
+    let typ = GirType::Variant(vec![(tag.clone(), payload_types.clone())]);
+    Some(GirExpr {
+        op: GirOp::VariantNew {
             tag: tag.clone(),
             payloads,
             payload_types,
@@ -1082,16 +1489,16 @@ fn emit_variant_new(
     })
 }
 
-/// Lower `array::init(n, |idx: i64| body)` to [`KirOp::ArrayInit`].
+/// Lower `array::init(n, |idx: i64| body)` to [`GirOp::ArrayInit`].
 /// The callback must be an inline 1-arg lambda whose param is an
-/// `i64` index; the body emits as scalar KIR with that index visible
-/// as a local. Result type is `KirType::Array(elem)` where `elem` is
+/// `i64` index; the body emits as scalar GIR with that index visible
+/// as a local. Result type is `GirType::Array(elem)` where `elem` is
 /// the body's primitive type.
 fn emit_array_init(
     n_expr: &Expr,
     cb_expr: &Expr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let n = emit_expr(n_expr, ctx)?;
     if !n.typ.as_prim().is_some_and(|p| p.is_integer()) {
         return None;
@@ -1120,28 +1527,28 @@ fn emit_array_init(
     });
     let body_kir = emit_expr(body, &inner)?;
     let elem = body_kir.typ.as_prim()?;
-    Some(KirExpr {
-        op: KirOp::ArrayInit {
+    Some(GirExpr {
+        op: GirOp::ArrayInit {
             n: Box::new(n),
             idx_local: idx_name.clone(),
             elem_typ: elem,
             body: Box::new(body_kir),
         },
-        typ: KirType::Array(Box::new(KirType::Prim(elem))),
+        typ: GirType::Array(Box::new(GirType::Prim(elem))),
     })
 }
 
-/// Lower `array::map(arr, |x: E| body)` to [`KirOp::ArrayMap`].
+/// Lower `array::map(arr, |x: E| body)` to [`GirOp::ArrayMap`].
 /// `arr` must be a Ref to an array kernel param; the callback must be
 /// an inline 1-arg lambda whose param annotates with a primitive type
 /// matching the array's element type. Result type is
-/// `KirType::Array(out_elem)` where `out_elem` is the body's
+/// `GirType::Array(out_elem)` where `out_elem` is the body's
 /// primitive type.
 fn emit_array_map(
     arr_expr: &Expr,
     cb_expr: &Expr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let arr_name = array_param_name(arr_expr, ctx)?;
     // emit_array_map only handles primitive elements today.
     let in_elem = ctx.find_array(&arr_name)?.elem.as_prim()?;
@@ -1152,7 +1559,28 @@ fn emit_array_map(
     if lam.args.len() != 1 || lam.args.iter().any(|a| a.labeled.is_some()) {
         return None;
     }
-    let x_typ = lam.args[0].constraint.as_ref().and_then(PrimType::from_type)?;
+    // The lambda's arg type can come from either a parse-time
+    // `constraint` annotation (e.g. `|x: i64|`) or be inferred by
+    // the typechecker from the surrounding context (e.g. `|x|` in
+    // `array::map(arr, |x| ...)` — the typechecker unifies `x`'s
+    // type with the array's element type). Try the explicit
+    // constraint first; if absent, read the lambda Expr's typ cell
+    // for the inferred FnType and pull args[0]'s type from there.
+    let x_typ = lam
+        .args[0]
+        .constraint
+        .as_ref()
+        .and_then(PrimType::from_type)
+        .or_else(|| {
+            let cb_typ = cb_expr.typ.get()?;
+            cb_typ.with_deref(|resolved| match resolved? {
+                crate::typ::Type::Fn(ft) => ft
+                    .args
+                    .first()
+                    .and_then(|a| PrimType::from_type(&a.typ)),
+                _ => None,
+            })
+        })?;
     if x_typ != in_elem {
         return None;
     }
@@ -1169,28 +1597,28 @@ fn emit_array_map(
     });
     let body_kir = emit_expr(body, &inner)?;
     let out_elem = body_kir.typ.as_prim()?;
-    Some(KirExpr {
-        op: KirOp::ArrayMap {
+    Some(GirExpr {
+        op: GirOp::ArrayMap {
             array: arr_name,
             in_elem,
             elem_local: x_name.clone(),
             out_elem,
             body: Box::new(body_kir),
         },
-        typ: KirType::Array(Box::new(KirType::Prim(out_elem))),
+        typ: GirType::Array(Box::new(GirType::Prim(out_elem))),
     })
 }
 
-/// Lower `array::filter(arr, |x: E| pred)` to [`KirOp::ArrayFilter`].
+/// Lower `array::filter(arr, |x: E| pred)` to [`GirOp::ArrayFilter`].
 /// `arr` must be a Ref to an array kernel param; the callback must be
 /// an inline 1-arg lambda with a primitive param matching the array's
 /// element type whose body returns `bool`. Result type is the same
-/// `KirType::Array(elem)` as the input — filter preserves elements.
+/// `GirType::Array(elem)` as the input — filter preserves elements.
 fn emit_array_filter(
     arr_expr: &Expr,
     cb_expr: &Expr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let arr_name = array_param_name(arr_expr, ctx)?;
     // emit_array_filter only handles primitive elements today.
     let elem = ctx.find_array(&arr_name)?.elem.as_prim()?;
@@ -1217,36 +1645,36 @@ fn emit_array_filter(
         bind_id: None,
     });
     let pred_kir = emit_expr(body, &inner)?;
-    if pred_kir.typ != KirType::Prim(PrimType::Bool) {
+    if pred_kir.typ != GirType::Prim(PrimType::Bool) {
         return None;
     }
-    Some(KirExpr {
-        op: KirOp::ArrayFilter {
+    Some(GirExpr {
+        op: GirOp::ArrayFilter {
             array: arr_name,
             elem,
             elem_local: x_name.clone(),
             predicate: Box::new(pred_kir),
         },
-        typ: KirType::Array(Box::new(KirType::Prim(elem))),
+        typ: GirType::Array(Box::new(GirType::Prim(elem))),
     })
 }
 
-/// Lower `tup.<idx>` (i.e. `ExprKind::TupleRef`) to `KirOp::TupleGet`.
+/// Lower `tup.<idx>` (i.e. `ExprKind::TupleRef`) to `GirOp::TupleGet`.
 /// Source must be a `Ref` to a tuple kernel param; `idx` must be in
 /// range. Result type is the tuple slot's primitive type.
-fn emit_tuple_ref(source: &Expr, idx: usize, ctx: &FusionCtx) -> Option<KirExpr> {
+fn emit_tuple_ref(source: &Expr, idx: usize, ctx: &FusionCtx) -> Option<GirExpr> {
     let name = match &source.kind {
         ExprKind::Ref { name } => ident_of(name)?,
         _ => return None,
     };
     let ti = ctx.find_tuple(name)?;
-    // Element type can be any `KirType` — primitive or composite.
+    // Element type can be any `GirType` — primitive or composite.
     // Composite-element kernels route to the interpreter via the
     // `kernel_contains_composite_element_op` JIT guard; the
     // interpreter handles both shapes natively.
     let elem_typ = ti.elems.get(idx)?.clone();
-    Some(KirExpr {
-        op: KirOp::TupleGet {
+    Some(GirExpr {
+        op: GirOp::TupleGet {
             name: ti.name.clone(),
             idx,
             elem_typ: elem_typ.clone(),
@@ -1255,24 +1683,24 @@ fn emit_tuple_ref(source: &Expr, idx: usize, ctx: &FusionCtx) -> Option<KirExpr>
     })
 }
 
-/// Lower `s.field` (i.e. `ExprKind::StructRef`) to `KirOp::StructGet`.
+/// Lower `s.field` (i.e. `ExprKind::StructRef`) to `GirOp::StructGet`.
 /// Source must be a `Ref` to a struct kernel param; `field` must
 /// resolve to a known field. Result type is that field's primitive type.
 fn emit_struct_ref(
     source: &Expr,
     field: &ArcStr,
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let name = match &source.kind {
         ExprKind::Ref { name } => ident_of(name)?,
         _ => return None,
     };
     let si = ctx.find_struct(name)?;
     let sorted_idx = si.fields.iter().position(|(n, _)| n == field)?;
-    // Element type can be any `KirType` — primitive or composite.
+    // Element type can be any `GirType` — primitive or composite.
     let elem_typ = si.fields[sorted_idx].1.clone();
-    Some(KirExpr {
-        op: KirOp::StructGet {
+    Some(GirExpr {
+        op: GirOp::StructGet {
             name: si.name.clone(),
             field: field.clone(),
             sorted_idx,
@@ -1282,55 +1710,55 @@ fn emit_struct_ref(
     })
 }
 
-/// Lower a `(a, b, c)` tuple literal to `KirOp::TupleNew`. Each
-/// field must emit as scalar KIR. Result type is
-/// `KirType::Tuple(<per-slot prim types>)`.
-fn emit_tuple_new(args: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
-    let mut fields: Vec<KirExpr> = Vec::with_capacity(args.len());
-    let mut elem_types: Vec<KirType> = Vec::with_capacity(args.len());
+/// Lower a `(a, b, c)` tuple literal to `GirOp::TupleNew`. Each
+/// field must emit as scalar GIR. Result type is
+/// `GirType::Tuple(<per-slot prim types>)`.
+fn emit_tuple_new(args: &[Expr], ctx: &FusionCtx) -> Option<GirExpr> {
+    let mut fields: Vec<GirExpr> = Vec::with_capacity(args.len());
+    let mut elem_types: Vec<GirType> = Vec::with_capacity(args.len());
     for a in args {
         let e = emit_expr(a, ctx)?;
-        // Composite-element lowering: any KirType (Prim, Array,
+        // Composite-element lowering: any GirType (Prim, Array,
         // Tuple, Struct, Variant, Nullable, String) is accepted as a
         // tuple field. The interpreter / JIT producer codegen
         // dispatches by field kind when packing each value into the
         // outer ValArray. The leaf type `Unit` isn't a valid field
         // (no useful Value representation) and gets rejected here.
-        if matches!(e.typ, KirType::Unit | KirType::Null) {
+        if matches!(e.typ, GirType::Unit | GirType::Null) {
             return None;
         }
         elem_types.push(e.typ.clone());
         fields.push(e);
     }
-    let typ = KirType::Tuple(elem_types.clone());
-    Some(KirExpr {
-        op: KirOp::TupleNew { fields, elem_types },
+    let typ = GirType::Tuple(elem_types.clone());
+    Some(GirExpr {
+        op: GirOp::TupleNew { fields, elem_types },
         typ,
     })
 }
 
-/// Lower `[a, b, c]` to a TupleNew op tagged as `KirType::Array(elem)`.
+/// Lower `[a, b, c]` to a TupleNew op tagged as `GirType::Array(elem)`.
 /// The runtime shape (a `ValArray<Value>`) is identical to TupleNew;
-/// only the outer KirType differs, so we reuse the TupleNew producer
+/// only the outer GirType differs, so we reuse the TupleNew producer
 /// op instead of carrying a parallel ArrayNew variant through every
-/// IR walker. The element KirType is read from the expression's
+/// IR walker. The element GirType is read from the expression's
 /// typed-AST cell (`Type::Array(inner)`) so empty literals still
 /// have a concrete elem type.
 fn emit_array_new(
     expr: &Expr,
     args: &[Expr],
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     let arr_typ = expr.typ.get()?;
     let elem_typ = arr_typ.with_deref(|resolved| match resolved? {
-        crate::typ::Type::Array(inner) => KirType::from_type(inner),
+        crate::typ::Type::Array(inner) => GirType::from_type(inner),
         _ => None,
     })?;
-    if matches!(elem_typ, KirType::Unit | KirType::Null) {
+    if matches!(elem_typ, GirType::Unit | GirType::Null) {
         return None;
     }
-    let mut fields: Vec<KirExpr> = Vec::with_capacity(args.len());
-    let mut elem_types: Vec<KirType> = Vec::with_capacity(args.len());
+    let mut fields: Vec<GirExpr> = Vec::with_capacity(args.len());
+    let mut elem_types: Vec<GirType> = Vec::with_capacity(args.len());
     for a in args {
         let e = emit_expr(a, ctx)?;
         if e.typ != elem_typ {
@@ -1339,58 +1767,58 @@ fn emit_array_new(
         elem_types.push(elem_typ.clone());
         fields.push(e);
     }
-    Some(KirExpr {
-        op: KirOp::TupleNew { fields, elem_types },
-        typ: KirType::Array(Box::new(elem_typ)),
+    Some(GirExpr {
+        op: GirOp::TupleNew { fields, elem_types },
+        typ: GirType::Array(Box::new(elem_typ)),
     })
 }
 
-/// Lower a `{x: a, y: b}` struct literal to `KirOp::StructNew`.
+/// Lower a `{x: a, y: b}` struct literal to `GirOp::StructNew`.
 /// Sorts the fields alphabetically by name (graphix's canonical
-/// struct layout). Each field value must emit as scalar KIR.
+/// struct layout). Each field value must emit as scalar GIR.
 fn emit_struct_new(
     args: &[(ArcStr, Expr)],
     ctx: &FusionCtx,
-) -> Option<KirExpr> {
+) -> Option<GirExpr> {
     // Sort alphabetically by name to match graphix's canonical
     // ValArray layout. Cloning into a Vec we can sort independently
     // of the source order.
     let mut sorted_pairs: Vec<(ArcStr, &Expr)> =
         args.iter().map(|(n, e)| (n.clone(), e)).collect();
     sorted_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut sorted_fields: Vec<(ArcStr, KirExpr)> =
+    let mut sorted_fields: Vec<(ArcStr, GirExpr)> =
         Vec::with_capacity(sorted_pairs.len());
-    let mut sorted_types: Vec<(ArcStr, KirType)> =
+    let mut sorted_types: Vec<(ArcStr, GirType)> =
         Vec::with_capacity(sorted_pairs.len());
     for (n, e) in sorted_pairs {
-        let kir = emit_expr(e, ctx)?;
-        // Composite-element lowering: any KirType is a valid field
+        let gir = emit_expr(e, ctx)?;
+        // Composite-element lowering: any GirType is a valid field
         // shape (matches TupleNew). Unit / bare Null are rejected
         // — neither has a useful Value runtime representation.
-        if matches!(kir.typ, KirType::Unit | KirType::Null) {
+        if matches!(gir.typ, GirType::Unit | GirType::Null) {
             return None;
         }
-        sorted_types.push((n.clone(), kir.typ.clone()));
-        sorted_fields.push((n, kir));
+        sorted_types.push((n.clone(), gir.typ.clone()));
+        sorted_fields.push((n, gir));
     }
-    let typ = KirType::Struct(sorted_types.clone());
-    Some(KirExpr {
-        op: KirOp::StructNew { sorted_fields, sorted_types },
+    let typ = GirType::Struct(sorted_types.clone());
+    Some(GirExpr {
+        op: GirOp::StructNew { sorted_fields, sorted_types },
         typ,
     })
 }
 
-/// Lower `arr[i]` (i.e. `ExprKind::ArrayRef`) to `KirOp::ArrayGet`.
+/// Lower `arr[i]` (i.e. `ExprKind::ArrayRef`) to `GirOp::ArrayGet`.
 /// `arr` must be a Ref to an array kernel param; `i` must emit as a
 /// scalar integer expression. Result type is the array's element
 /// type.
-fn emit_array_ref(source: &Expr, idx: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
+fn emit_array_ref(source: &Expr, idx: &Expr, ctx: &FusionCtx) -> Option<GirExpr> {
     let arr_name = array_param_name(source, ctx)?;
     // Element type comes from the array param. Bool elements are not
     // valid index targets but are valid result types — no special
     // handling needed beyond the lookup.
     let ai = ctx.find_array(&arr_name)?;
-    // Element type can be any KirType — primitive uses the JIT's
+    // Element type can be any GirType — primitive uses the JIT's
     // fast scalar extraction; composite routes to the interpreter
     // via `kernel_contains_composite_element_op`.
     let elem = ai.elem.clone();
@@ -1398,17 +1826,17 @@ fn emit_array_ref(source: &Expr, idx: &Expr, ctx: &FusionCtx) -> Option<KirExpr>
     if !idx_expr.typ.as_prim().is_some_and(|p| p.is_integer()) {
         return None;
     }
-    Some(KirExpr {
-        op: KirOp::ArrayGet { name: arr_name, idx: Box::new(idx_expr) },
+    Some(GirExpr {
+        op: GirOp::ArrayGet { name: arr_name, idx: Box::new(idx_expr) },
         typ: elem,
     })
 }
 
 /// Emit a Graphix `{ let x = ...; let y = ...; body }` block as a
-/// [`KirOp::Block`]. Each non-last statement must be a `let`-binding
+/// [`GirOp::Block`]. Each non-last statement must be a `let`-binding
 /// whose value emits as a primitive expression; the final statement
 /// provides the block's value.
-fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
+fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<GirExpr> {
     if exprs.is_empty() {
         return None;
     }
@@ -1419,8 +1847,8 @@ fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
         if i == last {
             let body = emit_expr(e, &local_ctx)?;
             let typ = body.typ.clone();
-            return Some(KirExpr {
-                op: KirOp::Block { lets, tail: Box::new(body) },
+            return Some(GirExpr {
+                op: GirOp::Block { lets, tail: Box::new(body) },
                 typ,
             });
         }
@@ -1432,7 +1860,7 @@ fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
                 let name = b.pattern.single_bind()?;
                 let value = emit_expr(&b.value, &local_ctx)?;
                 // Route the let to the right slot list based on the
-                // value's KIR type. Same shape as `emit_bind_stmt`
+                // value's GIR type. Same shape as `emit_bind_stmt`
                 // (body-level let) — composing
                 // `let xs = array::init(...);
                 //  array::fold(xs, ...)` inside an expression-form
@@ -1453,82 +1881,155 @@ fn emit_do_as_expr(exprs: &[Expr], ctx: &FusionCtx) -> Option<KirExpr> {
 }
 
 /// Register a kernel-local binding in `ctx` by routing it into the
-/// right slot list based on its KIR type. Used by every kernel-let
+/// right slot list based on its GIR type. Used by every kernel-let
 /// emission site (`emit_do`'s let arm, `emit_do_as_expr`'s block-let
-/// arm, etc.) so a new `KirType` variant only needs a new arm here.
+/// arm, etc.) so a new `GirType` variant only needs a new arm here.
 ///
-/// Returns `None` for KirType variants we can't represent as a kernel
+/// Returns `None` for GirType variants we can't represent as a kernel
 /// local — currently `Unit` (caller usually has already routed Unit
-/// values to `KirStmt::Discard`) and `String` (no string_inputs slot
+/// values to `GirStmt::Discard`) and `String` (no string_inputs slot
 /// list yet). The caller short-circuits its parent on `None`.
 fn register_kir_binding(
     ctx: &mut FusionCtx,
     name: &ArcStr,
-    value_typ: &KirType,
+    value_typ: &GirType,
 ) -> Option<()> {
     match value_typ {
-        KirType::Prim(prim) => {
+        GirType::Prim(prim) => {
             ctx.inputs.push(Input {
                 name: name.clone(),
                 prim: *prim,
                 bind_id: None,
             });
         }
-        KirType::Array(elem) => {
-            ctx.array_inputs.push(crate::kernel_ir::ArrayInput {
+        GirType::Array(elem) => {
+            ctx.array_inputs.push(crate::gir::ArrayInput {
                 name: name.clone(),
                 elem: (**elem).clone(),
                 bind_id: None,
             });
         }
-        KirType::Tuple(elems) => {
-            ctx.tuple_inputs.push(crate::kernel_ir::TupleInput {
+        GirType::Tuple(elems) => {
+            ctx.tuple_inputs.push(crate::gir::TupleInput {
                 name: name.clone(),
                 elems: elems.clone(),
                 bind_id: None,
             });
         }
-        KirType::Struct(fields) => {
-            ctx.struct_inputs.push(crate::kernel_ir::StructInput {
+        GirType::Struct(fields) => {
+            ctx.struct_inputs.push(crate::gir::StructInput {
                 name: name.clone(),
                 fields: fields.clone(),
                 bind_id: None,
             });
         }
-        KirType::Variant(cases) => {
-            ctx.variant_inputs.push(crate::kernel_ir::VariantInput {
+        GirType::Variant(cases) => {
+            ctx.variant_inputs.push(crate::gir::VariantInput {
                 name: name.clone(),
                 cases: cases.clone(),
                 bind_id: None,
             });
         }
-        KirType::Nullable(elem) => {
-            ctx.nullable_inputs.push(crate::kernel_ir::NullableInput {
+        GirType::Nullable(elem) => {
+            ctx.nullable_inputs.push(crate::gir::NullableInput {
                 name: name.clone(),
                 elem: (**elem).clone(),
                 bind_id: None,
             });
         }
-        KirType::String => {
-            ctx.string_inputs.push(crate::kernel_ir::StringInput {
+        GirType::String => {
+            ctx.string_inputs.push(crate::gir::StringInput {
                 name: name.clone(),
                 bind_id: None,
             });
         }
         // Unit isn't usefully bindable as a kernel local (the caller
-        // has already routed it to `KirStmt::Discard`). Bare `Null`
+        // has already routed it to `GirStmt::Discard`). Bare `Null`
         // doesn't bind either (it would always be widened to
         // `Nullable<T>` first at the construction site).
-        KirType::Unit | KirType::Null => return None,
+        GirType::Unit | GirType::Null => return None,
     }
     Some(())
 }
 
-/// Emit a sub-expression as a [`KirExpr`]. Returns `None` if any sub-
+/// Node-based public entry point. Walks the compiled Node tree
+/// (the decorated AST) via [`crate::NodeView`]. Today this is a
+/// thin wrapper around the Expr-based [`emit_expr`] — Node access
+/// adds value mainly at [`crate::NodeView::CallSite`] for resolved
+/// FnType lookup, which is already handled out-of-band via the
+/// pre-populated `ctx.builtin_apply_sites` map (keyed by the
+/// Apply's `ExprId`). The internal recursion stays Expr-based.
+///
+/// Use this when you have a compiled `Node` in hand — `fusion::fuse`,
+/// `build_region`, and tests that drive through the full pipeline.
+/// Use [`emit_expr`] directly when you only have an Expr (e.g.
+/// inline literals built by hand in tests).
+pub fn emit_expr_node<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    ctx: &FusionCtx,
+) -> Option<GirExpr> {
+    emit_node(node, ctx)
+}
+
+/// Emit a sub-expression as a [`GirExpr`]. Returns `None` if any sub-
 /// tree is something the emitter doesn't handle yet — that short-
 /// circuits the whole parent, so the caller falls back to the
 /// interpreted path (or, in AOT mode, refuses fusion).
-pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
+/// Node-based emit dispatch. Walks the compiled Node tree via
+/// `NodeView` rather than the source Expr's `ExprKind`. This is the
+/// canonical fusion entry point — `emit_expr_node` is a thin wrapper.
+/// `emit_expr` (Expr-based) is the legacy form, scheduled for
+/// deletion once all internal helpers convert.
+pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    ctx: &FusionCtx,
+) -> Option<GirExpr> {
+    // Lifted-input intercept reads the source ExprId, identical to
+    // the Expr-based path.
+    if let Some(name) = ctx.lifted_inputs.get(&node.spec().id) {
+        return ctx.lookup_local(name);
+    }
+    use crate::NodeView;
+    match node.view() {
+        // Apply arm: try ApplyView::FusedBuiltin dispatch FIRST.
+        // FusedBuiltin (e.g. MapQ/FoldQ) returns Some via its
+        // `GirEmitter::emit_gir` when the callback's analysis_pred
+        // is populated. Falls through to the legacy Expr-based
+        // `emit_known_fused_call` for everything else (Init's
+        // `array::init` special case, builtin DynCall sites,
+        // fn-typed kernel-param DynCalls, static fused-fn Call).
+        NodeView::CallSite(cs) => {
+            if let Some(crate::ApplyView::FusedBuiltin(em)) = cs.resolved_apply() {
+                // GirEmitter takes a &mut FusionCtx — but we only
+                // hold &FusionCtx. Clone for the call (FusionCtx
+                // is Clone) so the emitter can scope its own
+                // input pushes without leaking outward.
+                let mut cloned = ctx.clone();
+                if let Some(e) =
+                    em.emit_gir(cs, &[], &[], &mut cloned)
+                {
+                    return Some(e);
+                }
+                // FusedBuiltin's emit_gir returned None (e.g. no
+                // analysis_pred — callback wasn't static).
+                // Fall through to legacy dispatch.
+            }
+            // Fall through to Expr-based legacy dispatch for now.
+            // Will be replaced wholesale once `emit_known_fused_call`
+            // converts to Node-based.
+            if let crate::expr::ExprKind::Apply(a) = &node.spec().kind {
+                return emit_known_fused_call(node.spec().id, a, ctx);
+            }
+            None
+        }
+        // Everything else delegates to the existing Expr-based walker
+        // via the node's spec. This is the temporary bridge — each
+        // helper conversion peels another arm off this delegation.
+        _ => emit_expr(node.spec(), ctx),
+    }
+}
+
+pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<GirExpr> {
     // Maximal-fusion intercept: if this ExprId has been promoted to a
     // kernel input by `discover_region_inputs`, replace the normal
     // lowering with a Local read of the synthetic input name. The
@@ -1540,36 +2041,36 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
     }
     match &expr.kind {
         ExprKind::Constant(v) => {
-            // String literals go through KirOp::ConstStr (ArcStr can't
+            // String literals go through GirOp::ConstStr (ArcStr can't
             // fit in the Copy `ConstVal`). All other primitives go
             // through the scalar `ConstVal` path.
             if let Value::String(s) = v {
-                return Some(KirExpr {
-                    op: KirOp::ConstStr(s.clone()),
-                    typ: KirType::String,
+                return Some(GirExpr {
+                    op: GirOp::ConstStr(s.clone()),
+                    typ: GirType::String,
                 });
             }
             if matches!(v, Value::Null) {
-                return Some(KirExpr {
-                    op: KirOp::ConstNull,
-                    typ: KirType::Null,
+                return Some(GirExpr {
+                    op: GirOp::ConstNull,
+                    typ: GirType::Null,
                 });
             }
             let c = ConstVal::from_value(v)?;
-            Some(kir::const_expr(c))
+            Some(gir::const_expr(c))
         }
         ExprKind::StringInterpolate { args } => {
             // Lower each piece — interpolations may be arbitrary
             // sub-expressions, plain string literals stay ConstStr —
-            // and emit KirOp::Concat which the interpreter renders
+            // and emit GirOp::Concat which the interpreter renders
             // by appending Display of each part.
             let mut parts = Vec::with_capacity(args.len());
             for a in args.iter() {
                 parts.push(emit_expr(a, ctx)?);
             }
-            Some(KirExpr {
-                op: KirOp::Concat(parts),
-                typ: KirType::String,
+            Some(GirExpr {
+                op: GirOp::Concat(parts),
+                typ: GirType::String,
             })
         }
         ExprKind::Ref { name } => {
@@ -1580,7 +2081,7 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
                     return Some(expr);
                 }
                 if let Some(c) = ctx.find_const(ident) {
-                    // Inlining a known-const: clone the stored KIR.
+                    // Inlining a known-const: clone the stored GIR.
                     // The const's expr is closed (no free locals),
                     // so cloning it into this position is always
                     // sound.
@@ -1600,49 +2101,49 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         }
         ExprKind::ExplicitParens(inner) => emit_expr(inner, ctx),
         ExprKind::Add { lhs, rhs } => {
-            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Add)
+            gir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::BinOp::Add)
         }
         ExprKind::Sub { lhs, rhs } => {
-            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Sub)
+            gir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::BinOp::Sub)
         }
         ExprKind::Mul { lhs, rhs } => {
-            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Mul)
+            gir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::BinOp::Mul)
         }
         ExprKind::Div { lhs, rhs } => {
-            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Div)
+            gir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::BinOp::Div)
         }
         ExprKind::Mod { lhs, rhs } => {
-            kir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::BinOp::Mod)
+            gir::arith(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::BinOp::Mod)
         }
         ExprKind::Eq { lhs, rhs } => {
-            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Eq)
+            gir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::CmpOp::Eq)
         }
         ExprKind::Ne { lhs, rhs } => {
-            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Ne)
+            gir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::CmpOp::Ne)
         }
         ExprKind::Lt { lhs, rhs } => {
-            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Lt)
+            gir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::CmpOp::Lt)
         }
         ExprKind::Gt { lhs, rhs } => {
-            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Gt)
+            gir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::CmpOp::Gt)
         }
         ExprKind::Lte { lhs, rhs } => {
-            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Lte)
+            gir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::CmpOp::Lte)
         }
         ExprKind::Gte { lhs, rhs } => {
-            kir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, kir::CmpOp::Gte)
+            gir::cmp(emit_expr(lhs, ctx)?, emit_expr(rhs, ctx)?, gir::CmpOp::Gte)
         }
-        ExprKind::And { lhs, rhs } => kir::bool_op(
+        ExprKind::And { lhs, rhs } => gir::bool_op(
             emit_expr(lhs, ctx)?,
             emit_expr(rhs, ctx)?,
-            kir::BoolOp::And,
+            gir::BoolOp::And,
         ),
-        ExprKind::Or { lhs, rhs } => kir::bool_op(
+        ExprKind::Or { lhs, rhs } => gir::bool_op(
             emit_expr(lhs, ctx)?,
             emit_expr(rhs, ctx)?,
-            kir::BoolOp::Or,
+            gir::BoolOp::Or,
         ),
-        ExprKind::Not { expr } => kir::not(emit_expr(expr, ctx)?),
+        ExprKind::Not { expr } => gir::not(emit_expr(expr, ctx)?),
         // A Select at expression position lowers to an if-chain.
         ExprKind::Select(s) => emit_select_as_expr(s, ctx),
         // A Do block at expression position lowers to a Block.
@@ -1652,11 +2153,11 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         // handled inside `emit_known_fused_call`.
         ExprKind::Apply(a) => emit_known_fused_call(expr.id, a, ctx),
         // `arr[i]` — when `arr` is an array param of the kernel, this
-        // lowers to a `KirOp::ArrayGet`. The element type comes from
+        // lowers to a `GirOp::ArrayGet`. The element type comes from
         // the param's `elem`. Anything else (nested arrays, an
         // expression that produces an array intra-kernel) currently
         // bails out — composability with array-producing ops lands
-        // in M7.4 once `KirExpr.typ` covers `KirType::Array`.
+        // in M7.4 once `GirExpr.typ` covers `GirType::Array`.
         ExprKind::ArrayRef { source, i } => emit_array_ref(source, i, ctx),
         // `tup.0` — tuple field access by literal index. Source must
         // be a Ref to a tuple kernel param.
@@ -1665,18 +2166,18 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         // Ref to a struct kernel param; `field` resolves to a sorted
         // index at lowering time.
         ExprKind::StructRef { source, field } => emit_struct_ref(source, field, ctx),
-        // `(a, b, c)` literal — every field must lower to scalar KIR;
-        // result type is `KirType::Tuple(per-slot prim types)`.
+        // `(a, b, c)` literal — every field must lower to scalar GIR;
+        // result type is `GirType::Tuple(per-slot prim types)`.
         ExprKind::Tuple { args } => emit_tuple_new(args, ctx),
         // `[a, b, c]` literal — uniform-element array. Lowers to
-        // `KirOp::TupleNew` (same runtime shape — `ValArray<Value>`)
-        // but the outer KirType is `Array(elem)`, taken from the
+        // `GirOp::TupleNew` (same runtime shape — `ValArray<Value>`)
+        // but the outer GirType is `Array(elem)`, taken from the
         // expression's typed-AST cell (`Type::Array(inner)`). An
         // empty `[]` still gets its elem type from the typ cell.
         ExprKind::Array { args } => emit_array_new(expr, args, ctx),
         // `{x: a, y: b}` literal — fields are sorted alphabetically,
-        // each field value lowers to scalar KIR; result type is
-        // `KirType::Struct(sorted fields)`.
+        // each field value lowers to scalar GIR; result type is
+        // `GirType::Struct(sorted fields)`.
         ExprKind::Struct(s) => emit_struct_new(&s.args, ctx),
         // `` `Tag(p0, p1) `` or `` `Tag `` — variant constructor.
         // VariantNew handles both: nullary tags render as
@@ -1685,10 +2186,10 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         ExprKind::Variant { tag, args } => {
             emit_variant_new(tag, args, ctx)
         }
-        // `cast<T>(expr)` between primitives → KirOp::Cast.
+        // `cast<T>(expr)` between primitives → GirOp::Cast.
         ExprKind::TypeCast { expr, typ } => {
             let target = PrimType::from_type(typ)?;
-            kir::cast(emit_expr(expr, ctx)?, target)
+            gir::cast(emit_expr(expr, ctx)?, target)
         }
         // `$` (or-never) and `?` (qop) on a post-typecheck expression
         // assert that the inner value succeeded. For a fused kernel
@@ -1696,20 +2197,31 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
         // inner expression. If the runtime would actually error, our
         // fusion candidate-selection rejects the expression upstream —
         // we only emit fused code for operations that can't fail.
-        // `$` (OrNever) and `?` (Qop) strip the error case from a
-        // `Result<T, E>` (lowered to `KirType::Nullable<T>` by our
-        // Set-with-Error recognition). For fusion to honor this we'd
-        // need to emit a runtime null-check + branch — refuse instead
-        // and let the interpreter handle it. The check is conservative
-        // (also refuses `?` on a real `Option<T>` aka `[T, null]`),
-        // but those are rarer and the interpreter handles them
-        // correctly.
+        // `?` (Qop) on a Nullable inner unwraps to T via
+        // `GirOp::QopUnwrap`: the JIT-emitted code branches on the
+        // inner Value's discriminant — if it's `Typ::Error`, set
+        // `DYNCALL_PENDING` and jump to `pending_exit`; otherwise
+        // extract `T` from the Value's payload. `$` (OrNever) shares
+        // the same lowering for now — the only semantic difference
+        // (drop-and-log vs propagate-to-catch) requires runtime
+        // access to the catch BindId, not yet wired through.
+        // Non-Nullable inners pass through unchanged (`?` is a no-op
+        // on a value the typechecker already proved non-Error).
         ExprKind::OrNever(inner) | ExprKind::Qop(inner) => {
             let lowered = emit_expr(inner, ctx)?;
-            if matches!(lowered.typ, KirType::Nullable(_)) {
-                return None;
+            match &lowered.typ {
+                GirType::Nullable(elem) => {
+                    let success_typ = (**elem).clone();
+                    Some(GirExpr {
+                        op: GirOp::QopUnwrap {
+                            inner: Box::new(lowered),
+                            success_typ: success_typ.clone(),
+                        },
+                        typ: success_typ,
+                    })
+                }
+                _ => Some(lowered),
             }
-            Some(lowered)
         }
         // Deliberately not-yet-supported: Bind (at non-statement
         // position), Lambda, checked arithmetic, Sample, and anything
@@ -1722,11 +2234,11 @@ pub fn emit_expr(expr: &Expr, ctx: &FusionCtx) -> Option<KirExpr> {
 // ─── Body-position emitters ──────────────────────────────────────
 
 /// Information about a self-recursive function, used by the body
-/// emitter to detect tail calls and lower them to a [`KirStmt::TailCall`].
+/// emitter to detect tail calls and lower them to a [`GirStmt::TailCall`].
 ///
 /// When `self_info` is `Some`, the kernel emitter wraps the body in a
 /// `loop { ... }` and every tail call updates the loop variables and
-/// continues. When it is `None`, tail positions emit a [`KirStmt::Return`].
+/// continues. When it is `None`, tail positions emit a [`GirStmt::Return`].
 #[derive(Debug, Clone)]
 pub struct SelfInfo {
     /// The graphix name being bound to the lambda (e.g. "iterate").
@@ -1736,7 +2248,7 @@ pub struct SelfInfo {
     /// the sibling lists below.
     pub params: Vec<Input>,
     /// Source-order full argspec for tail-call validation: one
-    /// entry per lambda arg, recording the param's `KirType` so the
+    /// entry per lambda arg, recording the param's `GirType` so the
     /// validator can typecheck the new value.
     pub source_args: Vec<SelfArg>,
 }
@@ -1744,10 +2256,25 @@ pub struct SelfInfo {
 #[derive(Debug, Clone)]
 pub struct SelfArg {
     pub name: ArcStr,
-    pub typ: KirType,
+    pub typ: GirType,
 }
 
-/// Emit a sequence of [`KirStmt`]s evaluating `expr` as a function
+/// Node-based public entry to [`emit_body`]. Walks the compiled
+/// Node tree (the decorated AST) via [`crate::NodeView`]. Today
+/// this is a thin wrapper around the Expr-based [`emit_body`] —
+/// internal recursion stays Expr-based for now since Lambda Nodes
+/// don't expose compiled body Nodes (the body is compiled lazily
+/// per call-site inside InitFn) and HOF inlining still descends
+/// into anonymous lambda Exprs via `node.spec()`.
+pub fn emit_body_node<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    ctx: &FusionCtx,
+    self_info: Option<&SelfInfo>,
+) -> Option<Vec<GirStmt>> {
+    emit_body(node.spec(), ctx, self_info)
+}
+
+/// Emit a sequence of [`GirStmt`]s evaluating `expr` as a function
 /// body. Handles pure expressions (lowered to `Return`), self-tail
 /// calls (lowered to `TailCall`), `select` over primitive scrutinees,
 /// and `let`-style bindings.
@@ -1757,14 +2284,14 @@ pub fn emit_body(
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-) -> Option<Vec<KirStmt>> {
+) -> Option<Vec<GirStmt>> {
     let mut out = Vec::new();
     emit_body_into(&mut out, expr, ctx, self_info)?;
     Some(out)
 }
 
 fn emit_body_into(
-    out: &mut Vec<KirStmt>,
+    out: &mut Vec<GirStmt>,
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
@@ -1780,7 +2307,7 @@ fn emit_body_into(
 /// Emit a Do block as a sequence of body statements: each non-last
 /// expr becomes a `Let` (or skipped NoOp); the last is the tail.
 fn emit_do(
-    out: &mut Vec<KirStmt>,
+    out: &mut Vec<GirStmt>,
     exprs: &[Expr],
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
@@ -1803,7 +2330,7 @@ fn emit_do(
                     // Sync side-effect statement: evaluate it for the
                     // effect, discard the value. Unit-typed results
                     // (sync builtin calls like `println(...)`) lower
-                    // to `KirStmt::Discard` — no Let wrapper, no
+                    // to `GirStmt::Discard` — no Let wrapper, no
                     // local. Other types get a synthetic-name Let
                     // (composite-typed discards auto-drop at block
                     // exit per the §9 composite-local scope work).
@@ -1812,14 +2339,14 @@ fn emit_do(
                     // before — the surrounding kernel build fails
                     // and the program runs unfused.
                     let value = emit_expr(e, &local_ctx)?;
-                    if matches!(value.typ, KirType::Unit) {
-                        out.push(KirStmt::Discard(value));
+                    if matches!(value.typ, GirType::Unit) {
+                        out.push(GirStmt::Discard(value));
                     } else {
                         let discard_name = ArcStr::from(format!(
                             "__discard_{}",
                             out.len()
                         ));
-                        out.push(KirStmt::Let(Let {
+                        out.push(GirStmt::Let(Let {
                             local: discard_name,
                             value,
                         }));
@@ -1831,10 +2358,10 @@ fn emit_do(
     Some(())
 }
 
-/// Emit a `let`-style binding as a [`KirStmt::Let`] and extend the
+/// Emit a `let`-style binding as a [`GirStmt::Let`] and extend the
 /// ctx so later emissions can see the new input.
 fn emit_bind_stmt(
-    out: &mut Vec<KirStmt>,
+    out: &mut Vec<GirStmt>,
     b: &crate::expr::BindExpr,
     ctx: &mut FusionCtx,
 ) -> Option<()> {
@@ -1843,8 +2370,8 @@ fn emit_bind_stmt(
     }
     let name = b.pattern.single_bind()?;
     let value = emit_expr(&b.value, ctx)?;
-    // Route the let to the right slot list based on the value's KIR
-    // type. The emitted `KirStmt::Let` is the same shape regardless
+    // Route the let to the right slot list based on the value's GIR
+    // type. The emitted `GirStmt::Let` is the same shape regardless
     // — the Rust emitter renders `let mut <name> = <expr>;` either
     // way, and `<expr>`'s type drives whether `<name>` ends up as a
     // scalar local or a ValArray local in the generated body.
@@ -1865,24 +2392,24 @@ fn emit_bind_stmt(
     // A Unit-typed value (e.g. `let _ = println(...)` or an
     // implicit discard-let synthesized by `emit_do` for a sync
     // side-effect call) doesn't get bound — it has no consumable
-    // value. Emit a `KirStmt::Discard` and don't push any input
+    // value. Emit a `GirStmt::Discard` and don't push any input
     // slot. Subsequent code can't reference `name` usefully (its
     // type is Unit, no ops accept it), so leaving it un-registered
     // is correct.
-    if matches!(value.typ, KirType::Unit) {
-        out.push(KirStmt::Discard(value));
+    if matches!(value.typ, GirType::Unit) {
+        out.push(GirStmt::Discard(value));
         return Some(());
     }
     register_kir_binding(ctx, name, &value.typ)?;
-    out.push(KirStmt::Let(Let { local: name.clone(), value }));
+    out.push(GirStmt::Let(Let { local: name.clone(), value }));
     Some(())
 }
 
-/// Emit a `select` expression as a [`KirStmt::Select`]. Each arm body
+/// Emit a `select` expression as a [`GirStmt::Select`]. Each arm body
 /// is its own sub-body that either ends in a return or a tail call (or
 /// flows into nested control flow).
 fn emit_select(
-    out: &mut Vec<KirStmt>,
+    out: &mut Vec<GirStmt>,
     s: &crate::expr::SelectExpr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
@@ -1894,7 +2421,7 @@ fn emit_select(
         let arm = emit_arm(&scrut, pat, arm_body, ctx, self_info)?;
         arms.push(arm);
     }
-    out.push(KirStmt::Select { arms });
+    out.push(GirStmt::Select { arms });
     let _ = n;
     Some(())
 }
@@ -1903,7 +2430,7 @@ fn emit_select(
 /// whose `cond` is `None` for unconditional arms (Ignore / bare Bind
 /// patterns with no guard) and `Some(...)` for conditional arms.
 fn emit_arm(
-    scrut: &KirExpr,
+    scrut: &GirExpr,
     pat: &Pattern,
     arm_body: &Expr,
     ctx: &FusionCtx,
@@ -1918,7 +2445,7 @@ fn emit_arm(
         None => None,
         Some(g) => {
             let g = emit_expr(g, &arm_ctx)?;
-            if g.typ != KirType::Prim(PrimType::Bool) {
+            if g.typ != GirType::Prim(PrimType::Bool) {
                 return None;
             }
             Some(g)
@@ -1933,14 +2460,14 @@ fn emit_arm(
 /// Emit the condition expression for an arm's type predicate.
 /// Returns `Ok(None)` when the type predicate is absent (no narrowing)
 /// or trivially matches; `Ok(Some(...))` for a real test; and the outer
-/// `None` when the predicate isn't expressible in KIR (so the arm
+/// `None` when the predicate isn't expressible in GIR (so the arm
 /// can't fuse).
 ///
 /// Recognised narrowings:
 /// - `Type::Primitive(Typ::Null)` over a `Null` / `Nullable<T>`
-///   scrutinee → `KirOp::IsNull(scrut)`.
-/// - Any non-null predicate over a scrutinee whose KirType is
-///   `KirType::Prim` and which carries the same primitive (trivially
+///   scrutinee → `GirOp::IsNull(scrut)`.
+/// - Any non-null predicate over a scrutinee whose GirType is
+///   `GirType::Prim` and which carries the same primitive (trivially
 ///   always-true narrowing) → no condition needed.
 /// - Any non-null predicate over a `Nullable<T>` scrutinee → no
 ///   condition needed (the surrounding select is expected to have
@@ -1950,15 +2477,15 @@ fn emit_arm(
 ///
 /// **Outer-`None` (refuse to fuse) for anything else.** In particular
 /// a multi-branch union like `[i64, string, bool]` with type-tag arms
-/// can't be lowered: KIR has no runtime tag check for primitive
+/// can't be lowered: GIR has no runtime tag check for primitive
 /// shapes, so emitting "always-matches" for an `i64 as n` arm would
 /// silently bind `n` to a string at runtime. The defensive bail-out
 /// pushes such a select to the interpreter (which has the runtime
 /// type dispatch).
 fn emit_type_predicate_cond(
-    scrut: &KirExpr,
+    scrut: &GirExpr,
     pred: &Option<Type>,
-) -> Option<Option<KirExpr>> {
+) -> Option<Option<GirExpr>> {
     let Some(t) = pred.as_ref() else {
         return Some(None);
     };
@@ -1972,9 +2499,9 @@ fn emit_type_predicate_cond(
             // anything else the predicate could never match and we
             // bail (typecheck should have rejected it anyway).
             match &scrut.typ {
-                KirType::Null | KirType::Nullable(_) => Some(Some(KirExpr {
-                    op: KirOp::IsNull(Box::new(scrut.clone())),
-                    typ: KirType::Prim(PrimType::Bool),
+                GirType::Null | GirType::Nullable(_) => Some(Some(GirExpr {
+                    op: GirOp::IsNull(Box::new(scrut.clone())),
+                    typ: GirType::Prim(PrimType::Bool),
                 })),
                 _ => None,
             }
@@ -1991,12 +2518,12 @@ fn emit_type_predicate_cond(
             // to cover the non-null half).
             let pred_typ = p.iter().next();
             match (&scrut.typ, pred_typ) {
-                (KirType::Prim(sp), Some(pt))
+                (GirType::Prim(sp), Some(pt))
                     if PrimType::from_typ(pt) == Some(*sp) =>
                 {
                     Some(None)
                 }
-                (KirType::Nullable(_), _) => Some(None),
+                (GirType::Nullable(_), _) => Some(None),
                 // Any other shape (e.g. a wider union scrutinee or
                 // a mismatched Prim) we can't lower soundly. Refuse
                 // to fuse — the surrounding kernel build bails and
@@ -2005,7 +2532,7 @@ fn emit_type_predicate_cond(
             }
         }
         // Multi-bit predicates (compound `[i64, null]`-shaped) and
-        // composite type predicates aren't expressible in KIR yet;
+        // composite type predicates aren't expressible in GIR yet;
         // refuse to fuse.
         _ => None,
     }
@@ -2018,10 +2545,10 @@ fn emit_type_predicate_cond(
 /// arrays — are not supported yet). Mutates `arm_ctx` to add any
 /// bindings introduced by the pattern.
 fn emit_arm_condition(
-    scrut: &KirExpr,
+    scrut: &GirExpr,
     pat: &StructurePattern,
     arm_ctx: &mut FusionCtx,
-) -> Option<Option<KirExpr>> {
+) -> Option<Option<GirExpr>> {
     match pat {
         StructurePattern::Ignore => Some(None),
         StructurePattern::Bind(name) => {
@@ -2048,7 +2575,7 @@ fn emit_arm_condition(
         }
         StructurePattern::Literal(v) => {
             let c = ConstVal::from_value(v)?;
-            if KirType::Prim(c.typ()) != scrut.typ {
+            if GirType::Prim(c.typ()) != scrut.typ {
                 return None;
             }
             // Small simplification for bool literals: `scrut == true`
@@ -2059,25 +2586,25 @@ fn emit_arm_condition(
                 if b {
                     return Some(Some(scrut.clone()));
                 } else {
-                    return Some(kir::not(scrut.clone()).map(Some)?);
+                    return Some(gir::not(scrut.clone()).map(Some)?);
                 }
             }
-            kir::cmp(scrut.clone(), kir::const_expr(c), kir::CmpOp::Eq).map(Some)
+            gir::cmp(scrut.clone(), gir::const_expr(c), gir::CmpOp::Eq).map(Some)
         }
         // `` `Tag(p0, p1, ...) `` — variant pattern. Requires the
         // scrutinee to be a Ref to a kernel's variant param (so we
         // can name it inside the tag-equality check); inline
         // variant values aren't supported in v0. Lowers to:
-        //   - condition: `KirOp::VariantTagEq { name, expected_tag }`
+        //   - condition: `GirOp::VariantTagEq { name, expected_tag }`
         //   - bindings: each payload sub-pattern that's a simple
         //     `Bind(name)` adds a scalar Input to arm_ctx whose
-        //     value lookup goes through `KirOp::VariantPayload`.
+        //     value lookup goes through `GirOp::VariantPayload`.
         //
         // Nested patterns inside payloads aren't supported in v0;
         // anything other than `Bind` / `Ignore` in a payload bails.
         StructurePattern::Variant { all: _, tag, binds } => {
             let var_name = match &scrut.op {
-                KirOp::Local(n) => n.clone(),
+                GirOp::Local(n) => n.clone(),
                 _ => return None,
             };
             // Clone the case shape so the immutable borrow of
@@ -2094,26 +2621,26 @@ fn emit_arm_condition(
                     return None;
                 }
                 let prims: Option<Vec<PrimType>> =
-                    case.1.iter().map(KirType::as_prim).collect();
+                    case.1.iter().map(GirType::as_prim).collect();
                 (vi.name.clone(), prims?)
             };
             // For v0, payload bindings flow through the
             // `known_consts` channel: each named bind is mapped to a
-            // synthetic KirExpr that reads
-            // `KirOp::VariantPayload(name, idx)`. The arm body's
+            // synthetic GirExpr that reads
+            // `GirOp::VariantPayload(name, idx)`. The arm body's
             // `Ref(bind_name)` lookup resolves to that expression.
             for (i, (payload_pat, payload_typ)) in
                 binds.iter().zip(case_payloads.iter()).enumerate()
             {
                 match payload_pat {
                     StructurePattern::Bind(bind_name) => {
-                        let payload_expr = KirExpr {
-                            op: KirOp::VariantPayload {
+                        let payload_expr = GirExpr {
+                            op: GirOp::VariantPayload {
                                 name: var_name_owned.clone(),
                                 payload_idx: i,
                                 elem_typ: *payload_typ,
                             },
-                            typ: KirType::Prim(*payload_typ),
+                            typ: GirType::Prim(*payload_typ),
                         };
                         arm_ctx.known_consts.insert(
                             bind_name.clone(),
@@ -2124,12 +2651,12 @@ fn emit_arm_condition(
                     _ => return None,
                 }
             }
-            Some(Some(KirExpr {
-                op: KirOp::VariantTagEq {
+            Some(Some(GirExpr {
+                op: GirOp::VariantTagEq {
                     name: var_name_owned,
                     expected_tag: tag.clone(),
                 },
-                typ: KirType::Prim(PrimType::Bool),
+                typ: GirType::Prim(PrimType::Bool),
             }))
         }
         // Non-primitive patterns — not fusable yet.
@@ -2144,7 +2671,7 @@ fn emit_arm_condition(
 /// Emit a "tail" expression — either a pure expression that becomes
 /// a `Return`, or a self-recursive tail call that becomes `TailCall`.
 fn emit_tail(
-    out: &mut Vec<KirStmt>,
+    out: &mut Vec<GirStmt>,
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
@@ -2164,14 +2691,14 @@ fn emit_tail(
         return emit_tail(out, inner, ctx, self_info);
     }
     let v = emit_expr(expr, ctx)?;
-    out.push(KirStmt::Return(v));
+    out.push(GirStmt::Return(v));
     Some(())
 }
 
 /// Try to emit `expr` as a tail call to `self_info.name`. Returns
 /// `None` if it isn't a self-call or any arg can't be fused.
 fn try_emit_tail_call(
-    out: &mut Vec<KirStmt>,
+    out: &mut Vec<GirStmt>,
     expr: &Expr,
     ctx: &FusionCtx,
     self_info: &SelfInfo,
@@ -2194,7 +2721,7 @@ fn try_emit_tail_call(
     if apply.args.iter().any(|(label, _)| label.is_some()) {
         return None;
     }
-    let mut args: Vec<KirExpr> = Vec::with_capacity(apply.args.len());
+    let mut args: Vec<GirExpr> = Vec::with_capacity(apply.args.len());
     for ((_, arg_expr), self_arg) in
         apply.args.iter().zip(&self_info.source_args)
     {
@@ -2204,7 +2731,7 @@ fn try_emit_tail_call(
         }
         args.push(e);
     }
-    out.push(KirStmt::TailCall { args });
+    out.push(GirStmt::TailCall { args });
     Some(())
 }
 
@@ -2221,7 +2748,7 @@ fn infer_body_rtype(
     body: &Expr,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
-) -> Option<KirType> {
+) -> Option<GirType> {
     // Self-recursion fast path: a call to the current fn would loop
     // forever if we tried to emit it. Check this *before* anything
     // else, since the type-cell path below would happily walk into
@@ -2243,41 +2770,22 @@ fn infer_body_rtype(
         }
     }
     // Typed-AST fast path (Phase 0): the typechecker filled
-    // `body.typ` for every real Expr. Translate to KirType
+    // `body.typ` for every real Expr. Translate to GirType
     // directly — no walk needed. Falls through to the emit path
     // only for synthesized Exprs whose `typ` cell is empty (e.g.
     // module-kernel's synth tail tuple) or for expressions whose
-    // graphix type doesn't map cleanly to KirType but whose
-    // sub-tree emission would still produce a valid KirType.
+    // graphix type doesn't map cleanly to GirType but whose
+    // sub-tree emission would still produce a valid GirType.
     if let Some(t) = body.typ.get() {
-        if let Some(kt) = KirType::from_type(t) {
+        if let Some(kt) = GirType::from_type(t) {
             return Some(kt);
         }
     }
     // Fallback: actually emit the expression and take the resulting
-    // KIR's type. This is the only path that handles synthesized
+    // GIR's type. This is the only path that handles synthesized
     // Exprs and certain non-direct compositions correctly.
     emit_expr(body, ctx).map(|e| e.typ)
 }
-
-fn body_has_tail_call(expr: &Expr, name: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Apply(a) => match &a.function.kind {
-            ExprKind::Ref { name: modpath } => ident_of(modpath) == Some(name),
-            _ => false,
-        },
-        ExprKind::Do { exprs } => exprs
-            .last()
-            .map(|e| body_has_tail_call(e, name))
-            .unwrap_or(false),
-        ExprKind::Select(s) => s.arms.iter().any(|(_, arm)| body_has_tail_call(arm, name)),
-        ExprKind::ExplicitParens(inner) => body_has_tail_call(inner, name),
-        _ => false,
-    }
-}
-
-
-
 
 
 
@@ -2286,7 +2794,7 @@ fn body_has_tail_call(expr: &Expr, name: &str) -> bool {
 //
 // `analyze_program` carves each top-level expression into maximal
 // *sync subgraphs* — connected regions of the dataflow graph
-// containing no async edges. Each region becomes one KIR kernel
+// containing no async edges. Each region becomes one GIR kernel
 // (built in M8.4 step d); the runtime splices it in as a single node
 // (M8.4 step e), replacing the chain of individual graph nodes it
 // covers.
@@ -2347,7 +2855,7 @@ pub struct RegionInput {
     /// [`FusionCtx::lifted_inputs`].
     pub name: ArcStr,
     /// Slot kind — drives which [`FusionCtx`] input list the slot
-    /// lands in and the kernel param's [`KirType`].
+    /// lands in and the kernel param's [`GirType`].
     pub kind: RegionInputKind,
     /// How the runtime feeds this slot: either a binding subscription
     /// or a freshly-compiled standalone Node for the lifted Expr.
@@ -2374,18 +2882,18 @@ pub enum RegionInputSource {
 /// scalar primitive, array of primitive, tuple/struct/variant of
 /// primitives. Function-typed inputs are not supported in the M8.4
 /// initial model (a region has no HOF params; HOF callees come in
-/// through the `known` map as `KirOp::Call` targets).
+/// through the `known` map as `GirOp::Call` targets).
 #[derive(Debug, Clone)]
 pub enum RegionInputKind {
     Prim(PrimType),
-    Array(KirType),
-    Tuple(Vec<KirType>),
-    Struct(Vec<(ArcStr, KirType)>),
-    Variant(Vec<(ArcStr, Vec<KirType>)>),
+    Array(GirType),
+    Tuple(Vec<GirType>),
+    Struct(Vec<(ArcStr, GirType)>),
+    Variant(Vec<(ArcStr, Vec<GirType>)>),
     /// `[T, null]` option shape — runtime representation is a `Value`
     /// that is either `Value::Null` or `T`'s form. `inner` is the
     /// non-null element type.
-    Nullable(KirType),
+    Nullable(GirType),
 }
 
 
@@ -2412,13 +2920,13 @@ pub enum RegionInputKind {
 #[derive(Default)]
 struct KernelParams {
     params: Vec<Input>,
-    fn_params: Vec<crate::kernel_ir::FnParam>,
-    array_params: Vec<crate::kernel_ir::ArrayInput>,
-    tuple_params: Vec<crate::kernel_ir::TupleInput>,
-    struct_params: Vec<crate::kernel_ir::StructInput>,
-    variant_params: Vec<crate::kernel_ir::VariantInput>,
-    nullable_params: Vec<crate::kernel_ir::NullableInput>,
-    arg_types: Vec<KirType>,
+    fn_params: Vec<crate::gir::FnParam>,
+    array_params: Vec<crate::gir::ArrayInput>,
+    tuple_params: Vec<crate::gir::TupleInput>,
+    struct_params: Vec<crate::gir::StructInput>,
+    variant_params: Vec<crate::gir::VariantInput>,
+    nullable_params: Vec<crate::gir::NullableInput>,
+    arg_types: Vec<GirType>,
 }
 
 /// Populate `ctx`'s slot lists + `params` + `tail_call_slots` from a
@@ -2435,7 +2943,7 @@ fn populate_kernel_inputs(
     value_inputs: &[RegionInput],
     ctx: &mut FusionCtx,
     p: &mut KernelParams,
-    tail_call_slots: &mut Vec<crate::kernel_ir::TailCallSlot>,
+    tail_call_slots: &mut Vec<crate::gir::TailCallSlot>,
 ) {
     for input in value_inputs {
         // Maximal-fusion: register lifted-input ExprId → synth-name
@@ -2453,80 +2961,80 @@ fn populate_kernel_inputs(
                 };
                 p.params.push(i.clone());
                 ctx.inputs.push(i);
-                p.arg_types.push(KirType::Prim(*prim));
-                tail_call_slots.push(crate::kernel_ir::TailCallSlot {
+                p.arg_types.push(GirType::Prim(*prim));
+                tail_call_slots.push(crate::gir::TailCallSlot {
                     name: input.name.clone(),
-                    kind: crate::kernel_ir::TailCallSlotKind::Scalar(*prim),
+                    kind: crate::gir::TailCallSlotKind::Scalar(*prim),
                 });
             }
             RegionInputKind::Array(elem) => {
-                let ai = crate::kernel_ir::ArrayInput {
+                let ai = crate::gir::ArrayInput {
                     name: input.name.clone(),
                     elem: elem.clone(),
                     bind_id: None,
                 };
                 p.array_params.push(ai.clone());
                 ctx.array_inputs.push(ai);
-                p.arg_types.push(KirType::Array(Box::new(elem.clone())));
-                tail_call_slots.push(crate::kernel_ir::TailCallSlot {
+                p.arg_types.push(GirType::Array(Box::new(elem.clone())));
+                tail_call_slots.push(crate::gir::TailCallSlot {
                     name: input.name.clone(),
-                    kind: crate::kernel_ir::TailCallSlotKind::ValArray,
+                    kind: crate::gir::TailCallSlotKind::ValArray,
                 });
             }
             RegionInputKind::Tuple(elems) => {
-                let ti = crate::kernel_ir::TupleInput {
+                let ti = crate::gir::TupleInput {
                     name: input.name.clone(),
                     elems: elems.clone(),
                     bind_id: None,
                 };
                 p.tuple_params.push(ti.clone());
                 ctx.tuple_inputs.push(ti);
-                p.arg_types.push(KirType::Tuple(elems.clone()));
-                tail_call_slots.push(crate::kernel_ir::TailCallSlot {
+                p.arg_types.push(GirType::Tuple(elems.clone()));
+                tail_call_slots.push(crate::gir::TailCallSlot {
                     name: input.name.clone(),
-                    kind: crate::kernel_ir::TailCallSlotKind::ValArray,
+                    kind: crate::gir::TailCallSlotKind::ValArray,
                 });
             }
             RegionInputKind::Struct(fields) => {
-                let si = crate::kernel_ir::StructInput {
+                let si = crate::gir::StructInput {
                     name: input.name.clone(),
                     fields: fields.clone(),
                     bind_id: None,
                 };
                 p.struct_params.push(si.clone());
                 ctx.struct_inputs.push(si);
-                p.arg_types.push(KirType::Struct(fields.clone()));
-                tail_call_slots.push(crate::kernel_ir::TailCallSlot {
+                p.arg_types.push(GirType::Struct(fields.clone()));
+                tail_call_slots.push(crate::gir::TailCallSlot {
                     name: input.name.clone(),
-                    kind: crate::kernel_ir::TailCallSlotKind::ValArray,
+                    kind: crate::gir::TailCallSlotKind::ValArray,
                 });
             }
             RegionInputKind::Variant(cases) => {
-                let vi = crate::kernel_ir::VariantInput {
+                let vi = crate::gir::VariantInput {
                     name: input.name.clone(),
                     cases: cases.clone(),
                     bind_id: None,
                 };
                 p.variant_params.push(vi.clone());
                 ctx.variant_inputs.push(vi);
-                p.arg_types.push(KirType::Variant(cases.clone()));
-                tail_call_slots.push(crate::kernel_ir::TailCallSlot {
+                p.arg_types.push(GirType::Variant(cases.clone()));
+                tail_call_slots.push(crate::gir::TailCallSlot {
                     name: input.name.clone(),
-                    kind: crate::kernel_ir::TailCallSlotKind::Variant,
+                    kind: crate::gir::TailCallSlotKind::Variant,
                 });
             }
             RegionInputKind::Nullable(elem) => {
-                let ni = crate::kernel_ir::NullableInput {
+                let ni = crate::gir::NullableInput {
                     name: input.name.clone(),
                     elem: elem.clone(),
                     bind_id: None,
                 };
                 p.nullable_params.push(ni.clone());
                 ctx.nullable_inputs.push(ni);
-                p.arg_types.push(KirType::Nullable(Box::new(elem.clone())));
-                tail_call_slots.push(crate::kernel_ir::TailCallSlot {
+                p.arg_types.push(GirType::Nullable(Box::new(elem.clone())));
+                tail_call_slots.push(crate::gir::TailCallSlot {
                     name: input.name.clone(),
-                    kind: crate::kernel_ir::TailCallSlotKind::Nullable,
+                    kind: crate::gir::TailCallSlotKind::Nullable,
                 });
             }
         }
@@ -2558,14 +3066,14 @@ fn build_kernel(
     fn_name: &str,
     body: &Expr,
     value_inputs: &[RegionInput],
-    fn_inputs: &[crate::kernel_ir::FnParam],
-    return_type: Option<KirType>,
+    fn_inputs: &[crate::gir::FnParam],
+    return_type: Option<GirType>,
     has_tail: bool,
     self_info: Option<&SelfInfo>,
     known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
     builtin_apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
-) -> Option<(KirKernel, KnownFusedFn)> {
+) -> Option<(GirKernel, KnownFusedFn)> {
     let mut ctx = FusionCtx {
         inputs: vec![],
         fn_inputs: fn_inputs.to_vec(),
@@ -2582,7 +3090,7 @@ fn build_kernel(
     };
     let mut p = KernelParams::default();
     p.fn_params.extend(fn_inputs.iter().cloned());
-    let mut tail_call_slots: Vec<crate::kernel_ir::TailCallSlot> =
+    let mut tail_call_slots: Vec<crate::gir::TailCallSlot> =
         Vec::with_capacity(value_inputs.len());
     populate_kernel_inputs(value_inputs, &mut ctx, &mut p, &mut tail_call_slots);
     let rtype = match return_type {
@@ -2604,8 +3112,8 @@ fn build_kernel(
 /// Final assembly shared between the lambda and region build paths.
 /// Builds the [`KnownFusedFn`] signature, registers `fn_name` in
 /// `ctx.known_fns` (so self-recursive `Call` sites in the body lower
-/// before `emit_body` runs), emits the body to KIR, and packages
-/// everything into a [`KirKernel`].
+/// before `emit_body` runs), emits the body to GIR, and packages
+/// everything into a [`GirKernel`].
 ///
 /// The caller is responsible for the bits this function can't decide
 /// from a generic kernel build: `params` (the slot bundle),
@@ -2616,13 +3124,13 @@ fn build_kernel(
 fn finish_kernel(
     fn_name: &str,
     body: &Expr,
-    return_type: KirType,
+    return_type: GirType,
     params: KernelParams,
-    tail_call_slots: Vec<crate::kernel_ir::TailCallSlot>,
+    tail_call_slots: Vec<crate::gir::TailCallSlot>,
     has_tail_loop: bool,
     ctx: &mut FusionCtx,
     self_info: Option<&SelfInfo>,
-) -> Option<(KirKernel, KnownFusedFn)> {
+) -> Option<(GirKernel, KnownFusedFn)> {
     let signature = KnownFusedFn {
         body_fn_name: format!("fused_{fn_name}_body"),
         arg_types: params.arg_types,
@@ -2630,7 +3138,7 @@ fn finish_kernel(
     };
     ctx.known_fns.insert(ArcStr::from(fn_name), signature.clone());
     let body_stmts = emit_body(body, ctx, self_info)?;
-    let kernel = KirKernel {
+    let kernel = GirKernel {
         fn_name: ArcStr::from(fn_name),
         params: params.params,
         fn_params: params.fn_params,
@@ -2649,44 +3157,14 @@ fn finish_kernel(
 
 
 
-/// Pull the resolved [`FnType`](crate::typ::FnType) off an expression
-/// whose typed-AST cell carries `Type::Fn(_)`. Used to look up the
-/// call-site FnType for an `Apply` via `a.function.typ` — the typed
-/// AST is the only source of resolved-FnType truth (the legacy
-/// `ctx.fn_types` sidecar was removed in Refactor Phase 5). The
-/// returned `FnType` is what the typechecker stored — TVars unify
-/// in-place through their `Arc<RwLock>`, so callers see the live
-/// resolved view automatically.
-fn resolved_fn_type(expr: &Expr) -> Option<crate::typ::FnType> {
-    let t = expr.typ.get()?;
-    t.with_deref(|resolved| match resolved? {
-        crate::typ::Type::Fn(ft) => Some((**ft).clone()),
-        _ => None,
-    })
-}
-
-/// Convert a [`RegionInputKind`] back to its full [`KirType`] (with
-/// the Array variant boxed). Used when building `SelfArg`s for tail-
-/// call validation — they carry KirType, not the kind enum.
-fn region_input_kind_to_kirtype(kind: &RegionInputKind) -> KirType {
-    match kind {
-        RegionInputKind::Prim(p) => KirType::Prim(*p),
-        RegionInputKind::Array(elem) => KirType::Array(Box::new(elem.clone())),
-        RegionInputKind::Tuple(elems) => KirType::Tuple(elems.clone()),
-        RegionInputKind::Struct(fields) => KirType::Struct(fields.clone()),
-        RegionInputKind::Variant(cases) => KirType::Variant(cases.clone()),
-        RegionInputKind::Nullable(elem) => KirType::Nullable(Box::new(elem.clone())),
-    }
-}
-
-/// Build a [`KirKernel`] from an arbitrary `Expr` (the root of a
+/// Build a [`GirKernel`] from an arbitrary `Expr` (the root of a
 /// maximal sync region identified by [`analyze_program`]) plus a
 /// typed input list. Mirrors [`build_kir_kernel_with_binding_inputs`]
 /// for lambdas; a region has no argspec, no self-recursion, and no
 /// tail loop, so this path is simpler — no `SelfInfo`,
 /// `tail_call_slots` is empty, and `has_tail_loop` is always false.
 ///
-/// `return_type` is the region root's `KirType`. Pass `Some(t)` when
+/// `return_type` is the region root's `GirType`. Pass `Some(t)` when
 /// the caller already knows it (e.g. for an `Apply` region root, from
 /// the call-site's resolved FnType via
 /// `resolved_fn_type(&apply.function).rtype`); pass `None` to have
@@ -2696,12 +3174,12 @@ pub fn build_kir_kernel_from_region(
     fn_name: &str,
     region: &Expr,
     inputs: &[RegionInput],
-    extra_fn_inputs: &[crate::kernel_ir::FnParam],
-    return_type: Option<KirType>,
+    extra_fn_inputs: &[crate::gir::FnParam],
+    return_type: Option<GirType>,
     known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
     builtin_apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
-) -> Option<(KirKernel, KnownFusedFn)> {
+) -> Option<(GirKernel, KnownFusedFn)> {
     // Regions have no self-recursion, no tail loop. Inputs and
     // fn_inputs are already in the unified shape — everything
     // delegates to `build_kernel`.
@@ -2719,85 +3197,11 @@ pub fn build_kir_kernel_from_region(
     )
 }
 
-/// Resolve a graphix [`Type`] to the [`RegionInputKind`] for that
-/// kernel slot — used by [`discover_region_inputs`] when classifying
-/// each free-variable input. Mirrors the lambda path's param-type
-/// classification ([`build_kir_kernel_with_binding_inputs`]) for
-/// prim / array / tuple / struct / variant shapes. Returns `None`
-/// for any shape the kernel build can't represent (e.g. a function
-/// type — fn-typed inputs aren't supported in the M8.4 initial
-/// model).
-fn type_to_region_input_kind(typ: &Type) -> Option<RegionInputKind> {
-    if let Some(prim) = PrimType::from_type(typ) {
-        return Some(RegionInputKind::Prim(prim));
-    }
-    if let Some(elem) = array_elem_prim(typ) {
-        return Some(RegionInputKind::Array(KirType::Prim(elem)));
-    }
-    match KirType::from_type(typ)? {
-        KirType::Array(elem) => Some(RegionInputKind::Array((*elem).clone())),
-        KirType::Tuple(elems) => Some(RegionInputKind::Tuple(elems)),
-        KirType::Struct(fields) => Some(RegionInputKind::Struct(fields)),
-        KirType::Variant(cases) => Some(RegionInputKind::Variant(cases)),
-        KirType::Nullable(elem) => Some(RegionInputKind::Nullable((*elem).clone())),
-        // `KirType::Prim` is handled above via the dedicated extractor.
-        KirType::Prim(_) => None,
-        // `Unit` is a return-only shape — it can't appear as an
-        // input slot.
-        KirType::Unit => None,
-        // Strings can't be region free-var inputs yet — would need
-        // a string_inputs slot list.
-        KirType::String => None,
-        // Bare `Null` is the singleton shape produced only by literal
-        // `null`; it's never a free-variable type. Producers always
-        // widen to `Nullable<T>` before binding.
-        KirType::Null => None,
-    }
-}
 
-
-
-
-/// Try to interpret `typ` as `Array<P>` for some primitive `P`, and
-/// return that element type. Returns `None` for any other shape (not
-/// an array, nested arrays, non-primitive elements). Used to pick out
-/// fusable array params and array-typed call sites.
-fn array_elem_prim(typ: &Type) -> Option<PrimType> {
-    typ.with_deref(|resolved| match resolved? {
-        Type::Array(inner) => PrimType::from_type(inner),
-        _ => None,
-    })
-}
-
-
-
-
-
-
-// ─── Discovery & top-level program rewrite ───────────────────────
-
-
-
-fn prim_type_to_graphix(p: PrimType) -> Type {
-    let typ = match p {
-        PrimType::I8 => netidx_value::Typ::I8,
-        PrimType::I16 => netidx_value::Typ::I16,
-        PrimType::I32 => netidx_value::Typ::I32,
-        PrimType::I64 => netidx_value::Typ::I64,
-        PrimType::U8 => netidx_value::Typ::U8,
-        PrimType::U16 => netidx_value::Typ::U16,
-        PrimType::U32 => netidx_value::Typ::U32,
-        PrimType::U64 => netidx_value::Typ::U64,
-        PrimType::F32 => netidx_value::Typ::F32,
-        PrimType::F64 => netidx_value::Typ::F64,
-        PrimType::Bool => netidx_value::Typ::Bool,
-    };
-    Type::Primitive(typ.into())
-}
 
 /// If `value` is a compile-time-computable primitive expression in
 /// terms of already-known constants, record `(name, KnownConst)` into
-/// `consts`. The KIR stored on the KnownConst is the full emitted
+/// `consts`. The GIR stored on the KnownConst is the full emitted
 /// expression — the JIT folds it as appropriate at lowering.
 ///
 /// Used by `Bind::compile` (the runtime path): the runtime fusion
@@ -2811,7 +3215,7 @@ pub fn record_const_binding(
     // Direct Constant is trivially constant.
     if let ExprKind::Constant(v) = &value.kind {
         if let Some(c) = ConstVal::from_value(v) {
-            consts.insert(name.clone(), KnownConst { expr: kir::const_expr(c) });
+            consts.insert(name.clone(), KnownConst { expr: gir::const_expr(c) });
             return;
         }
     }
@@ -2878,7 +3282,7 @@ mod tests {
         let escaped = bin(sum, f64c(4.0), |l, r| ExprKind::Gt { lhs: l, rhs: r });
 
         let e = emit_expr(&escaped, &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::Bool));
+        assert_eq!(e.typ, GirType::Prim(PrimType::Bool));
     }
 
     #[test]
@@ -2895,7 +3299,7 @@ mod tests {
         assert!(emit_expr(&e, &ctx).is_none());
     }
 
-    fn parse_fuse(source: &str, ctx: &FusionCtx) -> Option<KirExpr> {
+    fn parse_fuse(source: &str, ctx: &FusionCtx) -> Option<GirExpr> {
         let e = parse_one(source).expect("parse");
         emit_expr(&e, ctx)
     }
@@ -2908,14 +3312,14 @@ mod tests {
                 input("c", PrimType::I64),
             ], ..Default::default() };
         let e = parse_fuse("a + b * c", &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::I64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::I64));
     }
 
     #[test]
     fn parser_mandelbrot_escape_test() {
         let ctx = FusionCtx { inputs: vec![input("zr", PrimType::F64), input("zi", PrimType::F64)], ..Default::default() };
         let e = parse_fuse("zr * zr + zi * zi > 4.0", &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::Bool));
+        assert_eq!(e.typ, GirType::Prim(PrimType::Bool));
     }
 
     #[test]
@@ -2924,7 +3328,7 @@ mod tests {
         let e = parse_one("select x > 0.0 { true => x, false => 0.0 - x }")
             .expect("parse");
         let e = emit_expr(&e, &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::F64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::F64));
     }
 
     #[test]
@@ -2935,7 +3339,7 @@ mod tests {
         };
         let e = parse_one("cast<f64>(px)$ * dx").expect("parse");
         let out = emit_expr(&e, &ctx).expect("should fuse");
-        assert_eq!(out.typ, KirType::Prim(PrimType::F64));
+        assert_eq!(out.typ, GirType::Prim(PrimType::F64));
     }
 
     #[test]
@@ -2948,40 +3352,40 @@ mod tests {
         assert!(emit_expr(&e, &ctx).is_none());
     }
 
-    /// `arr[i]` against an array param lowers to `KirOp::ArrayGet`,
+    /// `arr[i]` against an array param lowers to `GirOp::ArrayGet`,
     /// the result type is the element type.
     #[test]
     fn array_ref_lowering() {
-        use crate::kernel_ir::ArrayInput;
+        use crate::gir::ArrayInput;
         let ctx = FusionCtx {
             inputs: vec![input("i", PrimType::I64)],
             array_inputs: vec![ArrayInput {
                 name: ArcStr::from("xs"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             ..Default::default()
         };
         let e = parse_fuse("xs[i]", &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::F64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::F64));
         match &e.op {
-            KirOp::ArrayGet { name, .. } => assert_eq!(name.as_str(), "xs"),
+            GirOp::ArrayGet { name, .. } => assert_eq!(name.as_str(), "xs"),
             other => panic!("expected ArrayGet, got {other:?}"),
         }
     }
 
     /// `array::fold(arr, init, |acc: T, x: E| body)` lowers to
-    /// `KirOp::ArrayFold` when arr is an array param, init emits as
+    /// `GirOp::ArrayFold` when arr is an array param, init emits as
     /// scalar matching the accumulator type, and the callback's two
     /// params have primitive type annotations matching the array's
     /// element type / accumulator type.
     #[test]
     fn array_fold_lowering() {
-        use crate::kernel_ir::ArrayInput;
+        use crate::gir::ArrayInput;
         let ctx = FusionCtx {
             array_inputs: vec![ArrayInput {
                 name: ArcStr::from("xs"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             ..Default::default()
@@ -2991,9 +3395,9 @@ mod tests {
             &ctx,
         )
         .expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::F64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::F64));
         match &e.op {
-            KirOp::ArrayFold { array, acc_local, elem_local, .. } => {
+            GirOp::ArrayFold { array, acc_local, elem_local, .. } => {
                 assert_eq!(array.as_str(), "xs");
                 assert_eq!(acc_local.as_str(), "acc");
                 assert_eq!(elem_local.as_str(), "x");
@@ -3002,8 +3406,8 @@ mod tests {
         }
     }
 
-    /// `array::init(n, |idx: i64| body)` lowers to `KirOp::ArrayInit`
-    /// with `KirType::Array(<body elem>)` result.
+    /// `array::init(n, |idx: i64| body)` lowers to `GirOp::ArrayInit`
+    /// with `GirType::Array(<body elem>)` result.
     #[test]
     fn array_init_lowering() {
         let ctx = FusionCtx::default();
@@ -3012,9 +3416,9 @@ mod tests {
             &ctx,
         )
         .expect("should fuse");
-        assert_eq!(e.typ, KirType::Array(Box::new(KirType::Prim(PrimType::F64))));
+        assert_eq!(e.typ, GirType::Array(Box::new(GirType::Prim(PrimType::F64))));
         match &e.op {
-            KirOp::ArrayInit { idx_local, elem_typ, .. } => {
+            GirOp::ArrayInit { idx_local, elem_typ, .. } => {
                 assert_eq!(idx_local.as_str(), "idx");
                 assert_eq!(*elem_typ, PrimType::F64);
             }
@@ -3023,24 +3427,24 @@ mod tests {
     }
 
     /// `array::map(arr, |x: f64| body)` against an array param lowers
-    /// to `KirOp::ArrayMap` whose result type matches the body's elem
+    /// to `GirOp::ArrayMap` whose result type matches the body's elem
     /// type.
     #[test]
     fn array_map_lowering() {
-        use crate::kernel_ir::ArrayInput;
+        use crate::gir::ArrayInput;
         let ctx = FusionCtx {
             array_inputs: vec![ArrayInput {
                 name: ArcStr::from("xs"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             ..Default::default()
         };
         let e = parse_fuse("array::map(xs, |x: f64| x * 2.0)", &ctx)
             .expect("should fuse");
-        assert_eq!(e.typ, KirType::Array(Box::new(KirType::Prim(PrimType::F64))));
+        assert_eq!(e.typ, GirType::Array(Box::new(GirType::Prim(PrimType::F64))));
         match &e.op {
-            KirOp::ArrayMap { array, in_elem, out_elem, elem_local, .. } => {
+            GirOp::ArrayMap { array, in_elem, out_elem, elem_local, .. } => {
                 assert_eq!(array.as_str(), "xs");
                 assert_eq!(*in_elem, PrimType::F64);
                 assert_eq!(*out_elem, PrimType::F64);
@@ -3050,29 +3454,29 @@ mod tests {
         }
     }
 
-    /// `` `Foo(1, 2.5) `` literal lowers to `KirOp::VariantNew`
+    /// `` `Foo(1, 2.5) `` literal lowers to `GirOp::VariantNew`
     /// with payload types `[I64, F64]`. Result type wraps the case
-    /// in `KirType::Variant(vec![(tag, [I64, F64])])`.
+    /// in `GirType::Variant(vec![(tag, [I64, F64])])`.
     #[test]
     fn variant_new_lowering() {
         let ctx = FusionCtx::default();
         let e = parse_fuse("`Foo(1, 2.5)", &ctx).expect("should fuse");
         match &e.typ {
-            KirType::Variant(cases) => {
+            GirType::Variant(cases) => {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].0.as_str(), "Foo");
-                assert_eq!(cases[0].1, vec![KirType::Prim(PrimType::I64), KirType::Prim(PrimType::F64)]);
+                assert_eq!(cases[0].1, vec![GirType::Prim(PrimType::I64), GirType::Prim(PrimType::F64)]);
             }
             other => panic!("expected Variant type, got {other:?}"),
         }
         match &e.op {
-            KirOp::VariantNew { tag, payload_types, .. } => {
+            GirOp::VariantNew { tag, payload_types, .. } => {
                 assert_eq!(tag.as_str(), "Foo");
                 assert_eq!(
                     *payload_types,
                     vec![
-                        KirType::Prim(PrimType::I64),
-                        KirType::Prim(PrimType::F64),
+                        GirType::Prim(PrimType::I64),
+                        GirType::Prim(PrimType::F64),
                     ]
                 );
             }
@@ -3088,7 +3492,7 @@ mod tests {
         let ctx = FusionCtx::default();
         let e = parse_fuse("`Red", &ctx).expect("should fuse");
         match &e.typ {
-            KirType::Variant(cases) => {
+            GirType::Variant(cases) => {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].0.as_str(), "Red");
                 assert!(cases[0].1.is_empty(), "nullary case: no payloads");
@@ -3096,7 +3500,7 @@ mod tests {
             other => panic!("expected Variant type, got {other:?}"),
         }
         match &e.op {
-            KirOp::VariantNew { tag, payloads, .. } => {
+            GirOp::VariantNew { tag, payloads, .. } => {
                 assert_eq!(tag.as_str(), "Red");
                 assert!(payloads.is_empty(), "nullary VariantNew has no payloads");
             }
@@ -3109,14 +3513,14 @@ mod tests {
     /// `` `Red `` (nullary) and `` `Rgb(r, g, b) `` (with-payload).
     #[test]
     fn mixed_variant_pattern_match() {
-        use crate::kernel_ir::VariantInput;
+        use crate::gir::VariantInput;
         let ctx = FusionCtx {
             variant_inputs: vec![VariantInput {
                 name: ArcStr::from("c"),
                 cases: vec![
                     (ArcStr::from("Red"), vec![]),
                     (ArcStr::from("Green"), vec![]),
-                    (ArcStr::from("Rgb"), vec![KirType::Prim(PrimType::I64), KirType::Prim(PrimType::I64), KirType::Prim(PrimType::I64)]),
+                    (ArcStr::from("Rgb"), vec![GirType::Prim(PrimType::I64), GirType::Prim(PrimType::I64), GirType::Prim(PrimType::I64)]),
                 ],
                 bind_id: None,
             }],
@@ -3127,21 +3531,21 @@ mod tests {
             &ctx,
         )
         .expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::I64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::I64));
     }
 
     /// Pattern match on a variant param: `select v { \`Foo(a, b) => a + b, ... }`.
-    /// Lowers to a `KirOp::VariantTagEq` condition and the payload
+    /// Lowers to a `GirOp::VariantTagEq` condition and the payload
     /// bindings resolve through the synthetic `VariantPayload` ops.
     #[test]
     fn variant_pattern_match_lowering() {
-        use crate::kernel_ir::VariantInput;
+        use crate::gir::VariantInput;
         let ctx = FusionCtx {
             variant_inputs: vec![VariantInput {
                 name: ArcStr::from("v"),
                 cases: vec![
-                    (ArcStr::from("Foo"), vec![KirType::Prim(PrimType::I64), KirType::Prim(PrimType::I64)]),
-                    (ArcStr::from("Bar"), vec![KirType::Prim(PrimType::F64)]),
+                    (ArcStr::from("Foo"), vec![GirType::Prim(PrimType::I64), GirType::Prim(PrimType::I64)]),
+                    (ArcStr::from("Bar"), vec![GirType::Prim(PrimType::F64)]),
                 ],
                 bind_id: None,
             }],
@@ -3152,29 +3556,29 @@ mod tests {
             &ctx,
         )
         .expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::I64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::I64));
     }
 
 
-    /// Tuple-literal `(1, 3.14, true)` lowers to `KirOp::TupleNew`
-    /// with `KirType::Tuple([I64, F64, Bool])` result.
+    /// Tuple-literal `(1, 3.14, true)` lowers to `GirOp::TupleNew`
+    /// with `GirType::Tuple([I64, F64, Bool])` result.
     #[test]
     fn tuple_new_lowering() {
         let ctx = FusionCtx::default();
         let e = parse_fuse("(1, 3.14, true)", &ctx).expect("should fuse");
         assert_eq!(
             e.typ,
-            KirType::Tuple(vec![KirType::Prim(PrimType::I64), KirType::Prim(PrimType::F64), KirType::Prim(PrimType::Bool)])
+            GirType::Tuple(vec![GirType::Prim(PrimType::I64), GirType::Prim(PrimType::F64), GirType::Prim(PrimType::Bool)])
         );
         match &e.op {
-            KirOp::TupleNew { fields, elem_types } => {
+            GirOp::TupleNew { fields, elem_types } => {
                 assert_eq!(fields.len(), 3);
                 assert_eq!(
                     *elem_types,
                     vec![
-                        KirType::Prim(PrimType::I64),
-                        KirType::Prim(PrimType::F64),
-                        KirType::Prim(PrimType::Bool),
+                        GirType::Prim(PrimType::I64),
+                        GirType::Prim(PrimType::F64),
+                        GirType::Prim(PrimType::Bool),
                     ]
                 );
             }
@@ -3182,7 +3586,7 @@ mod tests {
         }
     }
 
-    /// Struct literal `{x: 1.0, y: 2.0}` lowers to `KirOp::StructNew`
+    /// Struct literal `{x: 1.0, y: 2.0}` lowers to `GirOp::StructNew`
     /// with fields canonicalized in alphabetical order.
     #[test]
     fn struct_new_lowering() {
@@ -3190,104 +3594,104 @@ mod tests {
         // Source order y,x but canonical layout is x,y (alphabetical).
         let e = parse_fuse("{y: 2.0, x: 1.0}", &ctx).expect("should fuse");
         match &e.typ {
-            KirType::Struct(fields) => {
+            GirType::Struct(fields) => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].0.as_str(), "x");
-                assert_eq!(fields[0].1, KirType::Prim(PrimType::F64));
+                assert_eq!(fields[0].1, GirType::Prim(PrimType::F64));
                 assert_eq!(fields[1].0.as_str(), "y");
-                assert_eq!(fields[1].1, KirType::Prim(PrimType::F64));
+                assert_eq!(fields[1].1, GirType::Prim(PrimType::F64));
             }
             other => panic!("expected Struct type, got {other:?}"),
         }
         match &e.op {
-            KirOp::StructNew { sorted_fields, sorted_types } => {
+            GirOp::StructNew { sorted_fields, sorted_types } => {
                 // Sorted fields land in alphabetical order regardless
                 // of how the user wrote them.
                 assert_eq!(sorted_fields[0].0.as_str(), "x");
                 assert_eq!(sorted_fields[1].0.as_str(), "y");
-                assert_eq!(sorted_types[0].1, KirType::Prim(PrimType::F64));
-                assert_eq!(sorted_types[1].1, KirType::Prim(PrimType::F64));
+                assert_eq!(sorted_types[0].1, GirType::Prim(PrimType::F64));
+                assert_eq!(sorted_types[1].1, GirType::Prim(PrimType::F64));
             }
             other => panic!("expected StructNew, got {other:?}"),
         }
     }
 
     /// `s.field` against a struct kernel param lowers to
-    /// `KirOp::StructGet`. The field name resolves to its
+    /// `GirOp::StructGet`. The field name resolves to its
     /// alphabetical sort index at compile time.
     #[test]
     fn struct_ref_lowering() {
-        use crate::kernel_ir::StructInput;
+        use crate::gir::StructInput;
         // Struct param with two F64 fields. The fusion ctx stores
         // them already canonically sorted (x before y).
         let ctx = FusionCtx {
             struct_inputs: vec![StructInput {
                 name: ArcStr::from("p"),
                 fields: vec![
-                    (ArcStr::from("x"), KirType::Prim(PrimType::F64)),
-                    (ArcStr::from("y"), KirType::Prim(PrimType::F64)),
+                    (ArcStr::from("x"), GirType::Prim(PrimType::F64)),
+                    (ArcStr::from("y"), GirType::Prim(PrimType::F64)),
                 ],
                 bind_id: None,
             }],
             ..Default::default()
         };
         let e = parse_fuse("p.y", &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::F64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::F64));
         match &e.op {
-            KirOp::StructGet { name, field, sorted_idx, elem_typ } => {
+            GirOp::StructGet { name, field, sorted_idx, elem_typ } => {
                 assert_eq!(name.as_str(), "p");
                 assert_eq!(field.as_str(), "y");
                 // y is at sorted index 1 (after x).
                 assert_eq!(*sorted_idx, 1usize);
-                assert_eq!(*elem_typ, KirType::Prim(PrimType::F64));
+                assert_eq!(*elem_typ, GirType::Prim(PrimType::F64));
             }
             other => panic!("expected StructGet, got {other:?}"),
         }
     }
 
     /// `t.0` against a tuple kernel param lowers to
-    /// `KirOp::TupleGet` with the slot's primitive type.
+    /// `GirOp::TupleGet` with the slot's primitive type.
     #[test]
     fn tuple_ref_lowering() {
-        use crate::kernel_ir::TupleInput;
+        use crate::gir::TupleInput;
         let ctx = FusionCtx {
             tuple_inputs: vec![TupleInput {
                 name: ArcStr::from("p"),
-                elems: vec![KirType::Prim(PrimType::F64), KirType::Prim(PrimType::F64)],
+                elems: vec![GirType::Prim(PrimType::F64), GirType::Prim(PrimType::F64)],
                 bind_id: None,
             }],
             ..Default::default()
         };
         let e = parse_fuse("p.1", &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::F64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::F64));
         match &e.op {
-            KirOp::TupleGet { name, idx, elem_typ } => {
+            GirOp::TupleGet { name, idx, elem_typ } => {
                 assert_eq!(name.as_str(), "p");
                 assert_eq!(*idx, 1usize);
-                assert_eq!(*elem_typ, KirType::Prim(PrimType::F64));
+                assert_eq!(*elem_typ, GirType::Prim(PrimType::F64));
             }
             other => panic!("expected TupleGet, got {other:?}"),
         }
     }
 
     /// `array::filter(arr, |x: f64| x > 0.0)` against an array param
-    /// lowers to `KirOp::ArrayFilter` preserving the element type.
+    /// lowers to `GirOp::ArrayFilter` preserving the element type.
     #[test]
     fn array_filter_lowering() {
-        use crate::kernel_ir::ArrayInput;
+        use crate::gir::ArrayInput;
         let ctx = FusionCtx {
             array_inputs: vec![ArrayInput {
                 name: ArcStr::from("xs"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             ..Default::default()
         };
         let e = parse_fuse("array::filter(xs, |x: f64| x > 0.0)", &ctx)
             .expect("should fuse");
-        assert_eq!(e.typ, KirType::Array(Box::new(KirType::Prim(PrimType::F64))));
+        assert_eq!(e.typ, GirType::Array(Box::new(GirType::Prim(PrimType::F64))));
         match &e.op {
-            KirOp::ArrayFilter { array, elem, elem_local, .. } => {
+            GirOp::ArrayFilter { array, elem, elem_local, .. } => {
                 assert_eq!(array.as_str(), "xs");
                 assert_eq!(*elem, PrimType::F64);
                 assert_eq!(elem_local.as_str(), "x");
@@ -3297,22 +3701,22 @@ mod tests {
     }
 
     /// `array::len(arr)` against an array param lowers to
-    /// `KirOp::ArrayLen` with `u64` result type.
+    /// `GirOp::ArrayLen` with `u64` result type.
     #[test]
     fn array_len_lowering() {
-        use crate::kernel_ir::ArrayInput;
+        use crate::gir::ArrayInput;
         let ctx = FusionCtx {
             array_inputs: vec![ArrayInput {
                 name: ArcStr::from("xs"),
-                elem: KirType::Prim(PrimType::F64),
+                elem: GirType::Prim(PrimType::F64),
                 bind_id: None,
             }],
             ..Default::default()
         };
         let e = parse_fuse("array::len(xs)", &ctx).expect("should fuse");
-        assert_eq!(e.typ, KirType::Prim(PrimType::U64));
+        assert_eq!(e.typ, GirType::Prim(PrimType::U64));
         match &e.op {
-            KirOp::ArrayLen { name } => assert_eq!(name.as_str(), "xs"),
+            GirOp::ArrayLen { name } => assert_eq!(name.as_str(), "xs"),
             other => panic!("expected ArrayLen, got {other:?}"),
         }
     }
@@ -3335,14 +3739,14 @@ mod tests {
             &e,
             &inputs,
             &[],
-            Some(KirType::Prim(PrimType::I64)),
+            Some(GirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
             nohash::IntMap::default(),
         )
         .expect("region builds");
-        assert_eq!(sig.arg_types, vec![KirType::Prim(PrimType::I64)]);
-        assert_eq!(sig.return_type, KirType::Prim(PrimType::I64));
+        assert_eq!(sig.arg_types, vec![GirType::Prim(PrimType::I64)]);
+        assert_eq!(sig.return_type, GirType::Prim(PrimType::I64));
         assert_eq!(kernel.params.len(), 1);
         assert_eq!(kernel.params[0].name.as_str(), "x");
         assert_eq!(kernel.params[0].prim, PrimType::I64);
@@ -3364,7 +3768,7 @@ mod tests {
         let inputs = [RegionInput {
             expr_id: e.id,
             name: ArcStr::from("p"),
-            kind: RegionInputKind::Tuple(vec![KirType::Prim(PrimType::I64), KirType::Prim(PrimType::I64)]),
+            kind: RegionInputKind::Tuple(vec![GirType::Prim(PrimType::I64), GirType::Prim(PrimType::I64)]),
             source: RegionInputSource::Binding,
         }];
         let (kernel, sig) = build_kir_kernel_from_region(
@@ -3372,7 +3776,7 @@ mod tests {
             &e,
             &inputs,
             &[],
-            Some(KirType::Prim(PrimType::I64)),
+            Some(GirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
             nohash::IntMap::default(),
@@ -3380,7 +3784,7 @@ mod tests {
         .expect("region builds");
         assert_eq!(
             sig.arg_types,
-            vec![KirType::Tuple(vec![KirType::Prim(PrimType::I64), KirType::Prim(PrimType::I64)])]
+            vec![GirType::Tuple(vec![GirType::Prim(PrimType::I64), GirType::Prim(PrimType::I64)])]
         );
         assert_eq!(kernel.tuple_params.len(), 1);
         assert_eq!(kernel.tuple_params[0].name.as_str(), "p");
@@ -3396,14 +3800,14 @@ mod tests {
             &e,
             &[],
             &[],
-            Some(KirType::Prim(PrimType::I64)),
+            Some(GirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
             nohash::IntMap::default(),
         )
         .expect("region builds");
         assert!(sig.arg_types.is_empty());
-        assert_eq!(sig.return_type, KirType::Prim(PrimType::I64));
+        assert_eq!(sig.return_type, GirType::Prim(PrimType::I64));
         assert!(kernel.params.is_empty());
     }
 
@@ -3420,7 +3824,7 @@ mod tests {
                 &e,
                 &[],
                 &[],
-                Some(KirType::Prim(PrimType::I64)),
+                Some(GirType::Prim(PrimType::I64)),
                 &Default::default(),
                 &Default::default(),
                 nohash::IntMap::default(),
@@ -3463,7 +3867,7 @@ mod tests {
             &e,
             std::slice::from_ref(&lifted_input),
             &[],
-            Some(KirType::Prim(PrimType::I64)),
+            Some(GirType::Prim(PrimType::I64)),
             &Default::default(),
             &Default::default(),
             nohash::IntMap::default(),
@@ -3477,7 +3881,7 @@ mod tests {
             kernel.params[0].name.as_str(),
             lifted_input.name.as_str()
         );
-        assert_eq!(sig.return_type, KirType::Prim(PrimType::I64));
+        assert_eq!(sig.return_type, GirType::Prim(PrimType::I64));
     }
 }
 

@@ -11,9 +11,9 @@
 //! Each phase is a small module:
 //!
 //! - **Walk** (`fusion_unified::walk`): node graph → `Vec<KernelCandidate>`.
-//! - **Build** (this module, `build_region`): candidate → `KirKernel`.
-//! - **JIT** (`kir_jit::compile_kernel_with_wrapper`): `KirKernel` →
-//!   native code. **Fully reused** — KIR → native is orthogonal to
+//! - **Build** (this module, `build_region`): candidate → `GirKernel`.
+//! - **JIT** (`gir_jit::compile_kernel_with_wrapper`): `GirKernel` →
+//!   native code. **Fully reused** — GIR → native is orthogonal to
 //!   the discovery and splice layers.
 //! - **Splice** (this module, `splice_region` — Phase 3.5): replace
 //!   the node in the runtime's `nodes` map with a kernel-backed node.
@@ -26,20 +26,20 @@
 //! later.
 //!
 //! **Reused machinery** (from legacy fusion):
-//! - `fusion::emit_expr` — Expr → KirExpr translation. This is pure
+//! - `fusion::emit_expr` — Expr → GirExpr translation. This is pure
 //!   syntactic lowering, orthogonal to discovery. Reusing it is the
 //!   right call.
 //! - `fusion::build_kir_kernel_from_region` — wraps emit_expr into
-//!   a KirKernel. Reusing it for now; may swap to a direct
-//!   emit_expr + manual KirKernel assembly if the v2 needs differ.
-//! - `kernel_ir`, `kir_jit`, `kir_interp` — the KIR → native and
-//!   KIR → interp layers. Fully reused.
+//!   a GirKernel. Reusing it for now; may swap to a direct
+//!   emit_expr + manual GirKernel assembly if the v2 needs differ.
+//! - `gir`, `gir_jit`, `gir_interp` — the GIR → native and
+//!   GIR → interp layers. Fully reused.
 
 use crate::{
     expr::Expr,
     fusion::walker::{CandidateKind, KernelCandidate},
-    kernel_ir::{KirKernel, KirType},
-    kir_jit::WrappedKernel,
+    gir::GirKernel,
+    gir_jit::WrappedKernel,
     Event, ExecCtx, Node, Refs, Rt, UserEvent, Update,
 };
 use anyhow::{anyhow, Result};
@@ -50,7 +50,7 @@ use std::sync::Arc as StdArc;
 /// runtime's node graph.
 pub struct BuiltKernel {
     pub fn_name: arcstr::ArcStr,
-    pub kernel: StdArc<KirKernel>,
+    pub kernel: StdArc<GirKernel>,
     pub source_id: crate::expr::ExprId,
     /// Splice target — drives how `splice_one` plugs the kernel
     /// back into the runtime's nodes map.
@@ -74,10 +74,50 @@ pub enum SpliceTarget {
 /// to a separate pass in a later iteration). For zero-input
 /// regions, pass `&[]`.
 ///
-/// Returns `Err` if KIR emission fails (unsupported expression
+/// Returns `Err` if GIR emission fails (unsupported expression
 /// shape) — same fail-soft contract today's `build_region_kernel`
 /// uses, but lifted to Result for cleaner upstream handling.
-pub fn build_region<'a, R: Rt, E: UserEvent>(
+/// Build a Region kernel from an already-resolved body Node ref. The
+/// `Node<R, E>` ref is used to call `body.spec()` for the GIR-build
+/// path (lowering today still walks the Expr tree; the Node ref will
+/// be used directly once the lowering side is fully Node-based).
+///
+/// `source_id` identifies the Region in the runtime's node graph so
+/// the splice phase knows where to install the kernel-backed Node.
+pub fn build_region<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    source_id: crate::expr::ExprId,
+    fn_name: &str,
+    inputs: &[crate::fusion::RegionInput],
+    discovery: crate::fusion::BuiltinCallDiscovery,
+) -> Result<BuiltKernel> {
+    let body_spec = body.spec();
+    let known = std::collections::BTreeMap::new();
+    let consts = std::collections::BTreeMap::new();
+    let (kernel, _signature) = crate::fusion::build_kir_kernel_from_region(
+        fn_name,
+        body_spec,
+        inputs,
+        &discovery.fn_params,
+        None,
+        &known,
+        &consts,
+        discovery.apply_sites,
+    )
+    .ok_or_else(|| anyhow!("GIR emission failed for region {fn_name}"))?;
+    Ok(BuiltKernel {
+        fn_name: arcstr::ArcStr::from(fn_name),
+        kernel: StdArc::new(kernel),
+        source_id,
+        splice: SpliceTarget::NodeReplaceById,
+    })
+}
+
+/// Build a Region kernel from a `KernelCandidate`. Thin wrapper around
+/// [`build_region`] that extracts the body Node ref + source id from
+/// the candidate. Kept around for code paths still operating in terms
+/// of candidates; new sites should prefer `build_region` directly.
+pub fn build_region_from_candidate<'a, R: Rt, E: UserEvent>(
     candidate: &KernelCandidate<'a, R, E>,
     fn_name: &str,
     inputs: &[crate::fusion::RegionInput],
@@ -87,25 +127,7 @@ pub fn build_region<'a, R: Rt, E: UserEvent>(
         CandidateKind::Region { body, .. } => *body,
         _ => return Err(anyhow!("build_region called on non-Region candidate")),
     };
-    let known = std::collections::BTreeMap::new();
-    let consts = std::collections::BTreeMap::new();
-    let (kernel, _signature) = crate::fusion::build_kir_kernel_from_region(
-        fn_name,
-        body,
-        inputs,
-        &discovery.fn_params,
-        None,
-        &known,
-        &consts,
-        discovery.apply_sites,
-    )
-    .ok_or_else(|| anyhow!("KIR emission failed for region {fn_name}"))?;
-    Ok(BuiltKernel {
-        fn_name: arcstr::ArcStr::from(fn_name),
-        kernel: StdArc::new(kernel),
-        source_id: candidate.source_id,
-        splice: SpliceTarget::NodeReplaceById,
-    })
+    build_region(body, candidate.source_id, fn_name, inputs, discovery)
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -124,14 +146,14 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: crate::typ::Type,
     /// One feeder Node per kernel input slot. Driven by
-    /// `KirNode::update` via the `from` slice.
+    /// `GirNode::update` via the `from` slice.
     feeders: Box<[Node<R, E>]>,
     /// The actual kernel executor — handles JIT/interp dispatch,
     /// `DYN_DISPATCH_HANDLE` setup, builtin slot pre-binding,
     /// pending-flag propagation, composite-return marshalling.
-    /// Routing through `KirNode` (instead of re-implementing the
+    /// Routing through `GirNode` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
-    inner: crate::kir_interp::KirNode<R, E>,
+    inner: crate::gir_interp::GirNode<R, E>,
     _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
@@ -148,7 +170,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         typ: crate::typ::Type,
-        kernel: StdArc<KirKernel>,
+        kernel: StdArc<GirKernel>,
         wrapped: Option<StdArc<WrappedKernel>>,
         feeders: Box<[Node<R, E>]>,
         scope: crate::Scope,
@@ -156,12 +178,12 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
         let registry =
-            StdArc::new(crate::kir_interp::KernelRegistry::default());
+            StdArc::new(crate::gir_interp::KernelRegistry::default());
         let inner = match wrapped {
-            Some(w) => crate::kir_interp::KirNode::with_jit(
+            Some(w) => crate::gir_interp::GirNode::with_jit(
                 ctx, kernel, n_args, w, registry, scope, top_id,
             )?,
-            None => crate::kir_interp::KirNode::new(
+            None => crate::gir_interp::GirNode::new(
                 ctx, kernel, n_args, registry, scope, top_id,
             )?,
         };
@@ -181,7 +203,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<Value> {
-        // Delegate to KirNode (Apply) — drives the feeders, sets up
+        // Delegate to GirNode (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
         // decodes the return value.
         use crate::Apply;
@@ -231,7 +253,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
 ///
 /// `wrapped` is the JIT artifact when fusion JIT-compiled the
 /// kernel, or `None` when the `JitDisabled` compile flag was set —
-/// the resulting `FusedKernel` dispatches via `kir_interp` in that
+/// the resulting `FusedKernel` dispatches via `gir_interp` in that
 /// case.
 pub fn splice<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
@@ -260,17 +282,18 @@ pub fn splice<R: Rt, E: UserEvent>(
     }
 }
 
-/// Core build helper: body Expr + free-var inputs → KirKernel.
+/// Core build helper: body Expr + free-var inputs → GirKernel.
 /// Wraps the legacy `build_kir_kernel_from_region` chokepoint with
 /// empty `extras` / `known` / `consts` — those slots are for
 /// HOF args / cross-kernel calls / inlined constants which the v2
 /// prototype doesn't exercise yet.
+#[cfg(test)]
 fn build_region_kernel(
     fn_name: &str,
     body: &Expr,
     inputs: &[crate::fusion::RegionInput],
-) -> Option<(KirKernel, crate::kernel_ir::KnownFusedFn)> {
-    let extras: Vec<crate::kernel_ir::FnParam> = Vec::new();
+) -> Option<(GirKernel, crate::gir::KnownFusedFn)> {
+    let extras: Vec<crate::gir::FnParam> = Vec::new();
     let known = std::collections::BTreeMap::new();
     let consts = std::collections::BTreeMap::new();
     crate::fusion::build_kir_kernel_from_region(
@@ -289,7 +312,7 @@ fn build_region_kernel(
 mod tests {
     use super::*;
     use crate::expr::{ExprKind, ModPath};
-    use crate::kernel_ir::PrimType;
+    use crate::gir::PrimType;
     use crate::typ::Type;
     use netidx_value::{Typ, Value};
     use triomphe::Arc;
@@ -317,12 +340,12 @@ mod tests {
     #[test]
     fn build_region_one_plus_two() {
         // Smoke test: hand-constructed `1 + 2`, no walker needed.
-        // Direct call into the build phase to verify KIR emission
+        // Direct call into the build phase to verify GIR emission
         // works end-to-end on a minimal expr.
         let body = one_plus_two();
         let result = build_region_kernel("region_smoke", &body, &[]);
         let (kernel, sig) =
-            result.expect("KIR emission should succeed for 1 + 2");
+            result.expect("GIR emission should succeed for 1 + 2");
         assert_eq!(&*kernel.fn_name, "region_smoke");
         assert!(kernel.params.is_empty(), "zero scalar params");
         assert!(kernel.array_params.is_empty(), "zero array params");
@@ -333,7 +356,7 @@ mod tests {
         assert!(
             matches!(
                 kernel.return_type,
-                crate::kernel_ir::KirType::Prim(PrimType::I64)
+                crate::gir::GirType::Prim(PrimType::I64)
             ),
             "expected i64 return, got {:?}",
             kernel.return_type
@@ -341,18 +364,18 @@ mod tests {
         // Signature should mirror return type.
         assert!(matches!(
             sig.return_type,
-            crate::kernel_ir::KirType::Prim(PrimType::I64)
+            crate::gir::GirType::Prim(PrimType::I64)
         ));
     }
 
     #[test]
     fn build_region_jit_compiles() {
         // Verify the built kernel can be JIT-compiled via the
-        // existing kir_jit path. End-to-end KIR → native check.
+        // existing gir_jit path. End-to-end GIR → native check.
         let body = one_plus_two();
         let (kernel, _) =
-            build_region_kernel("region_jit", &body, &[]).expect("KIR emit");
-        let wrapped = crate::kir_jit::compile_kernel_with_wrapper(&kernel)
+            build_region_kernel("region_jit", &body, &[]).expect("GIR emit");
+        let wrapped = crate::gir_jit::compile_kernel_with_wrapper(&kernel)
             .expect("JIT compile");
         // Invoke the wrapper directly — it expects (args_ptr,
         // out_ptr). Zero-input kernel takes a dummy args slice and
@@ -398,13 +421,13 @@ mod tests {
 
         let (kernel, _sig) =
             build_region_kernel("region_with_input", &add, &inputs)
-                .expect("KIR emission with one input");
+                .expect("GIR emission with one input");
         assert_eq!(kernel.params.len(), 1, "one scalar param");
         assert_eq!(&*kernel.params[0].name, "x");
         assert_eq!(kernel.params[0].prim, PrimType::I64);
 
         // JIT-compile and invoke with x = 5.
-        let wrapped = crate::kir_jit::compile_kernel_with_wrapper(&kernel)
+        let wrapped = crate::gir_jit::compile_kernel_with_wrapper(&kernel)
             .expect("JIT compile");
         let args: [u64; 1] = [5_i64 as u64];
         let mut out: [u64; 2] = [0; 2];

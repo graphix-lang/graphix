@@ -93,16 +93,117 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) ftype: Option<FnType>,
     pub(super) resolved_ftype: Option<FnType>,
     pub(super) rtype: Type,
-    pub(super) fnode: Node<R, E>,
-    pub(super) args: AHashMap<ArgKey, Arg<R, E>>,
+    pub(crate) fnode: Node<R, E>,
+    pub(crate) args: AHashMap<ArgKey, Arg<R, E>>,
     pub(super) arg_refs: Vec<Node<R, E>>,
-    pub(super) function: Option<(Value, Box<dyn Apply<R, E>>)>,
+    pub(crate) function: Option<(Value, Box<dyn Apply<R, E>>)>,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
+    /// Set by the post-typecheck `resolve_static_calls` pass when the
+    /// function expression can be proven to always resolve to a single
+    /// known `LambdaDef`. When `true`, `update()` skips the lazy
+    /// `(fnode_value, function_value)`-equality + downcast +
+    /// `bind()` arm — `self.function` is already bound and won't
+    /// change. `fnode.update(ctx, event)` is still called every
+    /// cycle (so the function expression's side effects fire) but
+    /// its returned `Value` is discarded.
+    pub(crate) statically_resolved: bool,
+    /// True on the first runtime update of a statically-resolved
+    /// CallSite. Mirrors the priming step the dynamic `bind=true` arm
+    /// runs once when the function first binds: emulates `event.init =
+    /// true` and primes `event.variables` from `ctx.cached` for every
+    /// external Ref the function's body reads. Cleared after the first
+    /// update.
+    pub(super) first_static_update: bool,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
+    /// The resolved function type at this call site. Populated by
+    /// `typecheck_inner` during the typechecker's call-site unification
+    /// pass — after typecheck, every reachable CallSite has this set
+    /// to the lambda's FnType with the call-site's TVars unified in.
+    ///
+    /// `None` only if the typechecker hasn't run yet, or this call
+    /// site reached an error before unification.
+    pub fn ftype(&self) -> Option<&FnType> {
+        self.ftype.as_ref()
+    }
+
+    /// The resolved-and-deref'd function type at this call site. Same
+    /// as `ftype()` but with all bound TVars dereferenced to their
+    /// concrete forms — produced by `FnType::resolve_tvars`. Cached
+    /// inside `Self::bind` after the lambda binds the value, so a
+    /// post-typecheck consumer can ask for it cheaply.
+    pub fn resolved_ftype(&self) -> Option<&FnType> {
+        self.resolved_ftype.as_ref()
+    }
+
+    /// Source-order argument list. Pair with `args()` to recover the
+    /// runtime sub-Node per arg.
+    pub fn spec_args(&self) -> &TArc<[(Option<ArcStr>, Expr)]> {
+        match &self.spec.kind {
+            crate::expr::ExprKind::Apply(a) => &a.args,
+            _ => unreachable!("CallSite spec must be ExprKind::Apply"),
+        }
+    }
+
+    /// Look up a positional argument's compiled sub-Node.
+    pub fn arg_positional(&self, idx: usize) -> Option<&Node<R, E>> {
+        self.args.get(&ArgKey::Positional(idx)).and_then(|a| a.node.as_ref())
+    }
+
+    /// Look up a labeled argument's compiled sub-Node.
+    pub fn arg_named(&self, name: &ArcStr) -> Option<&Node<R, E>> {
+        self.args.get(&ArgKey::Named(name.clone())).and_then(|a| a.node.as_ref())
+    }
+
+    /// The function expression's compiled Node.
+    pub fn fnode(&self) -> &Node<R, E> {
+        &self.fnode
+    }
+
+    /// View the [`Apply`] this CallSite is currently bound to. Returns
+    /// `None` if the CallSite hasn't bound yet (the typical
+    /// just-compiled state — runtime `bind()` fires lazily on the
+    /// first cycle the `fnode` produces a LambdaDef Value).
+    /// `Some(view)` after either the runtime dynamic bind or the
+    /// post-typecheck `static_resolve` pass has populated
+    /// `self.function`.
+    ///
+    /// Used by fusion's walker to descend through a resolved call
+    /// site into a user lambda's body or into a fusible builtin's
+    /// own [`crate::GirEmitter::emit_gir`] hook. See
+    /// [`crate::ApplyView`] for the variants.
+    pub fn resolved_apply(&self) -> Option<crate::ApplyView<'_, R, E>> {
+        self.function.as_ref().map(|(_, a)| a.view())
+    }
+
+    /// Mutable counterpart to [`Self::resolved_apply`]. Fusion uses
+    /// this when it needs to splice an inner sub-kernel into a Node
+    /// reachable through the resolved Apply — e.g. a
+    /// [`crate::ApplyViewMut::Lambda`]'s body Node.
+    pub fn resolved_apply_mut(&mut self) -> Option<crate::ApplyViewMut<'_, R, E>> {
+        self.function.as_mut().map(|(_, a)| a.view_mut())
+    }
+
+    /// Signature-order `Ref` Nodes — one per formal argument in the
+    /// function's [`FnType`], with labeled defaults already resolved.
+    /// `None` until the CallSite has bound (matches
+    /// [`Self::resolved_apply`]).
+    ///
+    /// Together with [`Self::arg_positional`] / [`Self::arg_named`]
+    /// (which expose the original source-order call-site Nodes),
+    /// this gives [`crate::GirEmitter::emit_gir`] both views of the
+    /// arg list.
+    pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
+        if self.function.is_some() {
+            Some(&self.arg_refs)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -127,6 +228,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             flags,
             top_id,
             scope: scope.clone(),
+            statically_resolved: false,
+            first_static_update: false,
         };
         Ok(Box::new(site))
     }
@@ -135,17 +238,27 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Box::new(Ref { spec, typ, id, top_id: self.top_id })
     }
 
-    fn bind(
+    /// Shared "compile arg_refs + call InitFn + typecheck" pipeline
+    /// used by both runtime [`Self::bind`] and the compile-time
+    /// [`Self::resolve_static`] pass. The two callers differ only in
+    /// what they need to do to a live update cycle's `Event` — when
+    /// running at compile time there is no `Event`, when running
+    /// from inside an `update()` cycle we must prime the freshly-
+    /// compiled defaults' external refs into `event.variables`.
+    /// `prime_default_refs` is the per-default-Node hook that handles
+    /// that event-priming; it's a no-op closure for the static path.
+    fn setup_bind<F>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        scope: Scope,
+        scope: &Scope,
         flags: BitFlags<CFlag>,
         fv: Value,
         f: &LambdaDef<R, E>,
-        event: &mut Event<E>,
-        set: &mut Vec<BindId>,
-    ) -> Result<()> {
-        // Resolve TVars now — after all type checking has completed
+        mut prime_default_refs: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&mut ExecCtx<R, E>, &Refs),
+    {
         if self.resolved_ftype.is_none() {
             if let Some(ftype) = &self.ftype {
                 self.resolved_ftype = Some(ftype.resolve_tvars());
@@ -154,39 +267,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let mut flags = flags;
         // we already warned about this
         flags.remove(CFlag::WarnUnhandled);
-        macro_rules! compile_default {
-            ($i:expr, $f:expr) => {{
-                match &$f.argspec[$i].labeled {
-                    None | Some(None) => bail!("expected default value"),
-                    Some(Some(expr)) => ctx.with_restored($f.env.clone(), |ctx| {
-                        let scope = Scope {
-                            dynamic: scope.dynamic.clone(),
-                            lexical: $f.scope.lexical.clone(),
-                        };
-                        let n = compile(ctx, flags, expr.clone(), &scope, self.top_id)?;
-                        let mut refs = Refs::default();
-                        n.refs(&mut refs);
-                        refs.with_external_refs(|id| {
-                            if let Some(v) = ctx.cached.get(&id) {
-                                if let Entry::Vacant(e) = event.variables.entry(id) {
-                                    e.insert(v.clone());
-                                    set.push(id);
-                                }
-                            }
-                        });
-                        Ok::<_, anyhow::Error>(n)
-                    })?,
-                }
-            }};
-        }
-        // Clean up previous binding
+        // Clean up previous binding (no-op on a fresh CallSite).
         if let Some((_, mut old_f)) = self.function.take() {
             old_f.delete(ctx);
         }
         for mut n in self.arg_refs.drain(..) {
             n.delete(ctx);
         }
-        // Remove and delete default args from previous bind
+        // Remove and delete default args from a previous bind — or
+        // the `Nop` placeholders the typechecker inserts for missing
+        // labeled-default args. Either way, the real default Node is
+        // re-created in the arg_refs loop below.
         self.args.retain(|_, arg| {
             if arg.is_default {
                 if let Some(mut n) = arg.node.take() {
@@ -197,7 +288,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 true
             }
         });
-        // Build arg_refs in function-signature order
+        // Build arg_refs in function-signature order.
         let mut pos_idx = 0;
         for (i, farg) in f.typ.args.iter().enumerate() {
             if let FnArgKind::Labeled { name, has_default: default } = &farg.kind {
@@ -217,7 +308,31 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     None if *default => {
                         let id = BindId::new();
-                        let default_node = compile_default!(i, f);
+                        let default_node =
+                            match &f.argspec[i].labeled {
+                                None | Some(None) => {
+                                    bail!("expected default value")
+                                }
+                                Some(Some(expr)) => {
+                                    ctx.with_restored(f.env.clone(), |ctx| {
+                                        let local_scope = Scope {
+                                            dynamic: scope.dynamic.clone(),
+                                            lexical: f.scope.lexical.clone(),
+                                        };
+                                        let n = compile(
+                                            ctx,
+                                            flags,
+                                            expr.clone(),
+                                            &local_scope,
+                                            self.top_id,
+                                        )?;
+                                        let mut refs = Refs::default();
+                                        n.refs(&mut refs);
+                                        prime_default_refs(ctx, &refs);
+                                        Ok::<_, anyhow::Error>(n)
+                                    })?
+                                }
+                            };
                         let typ = default_node.typ().clone();
                         let spec = TArc::new(default_node.spec().clone());
                         self.args.insert(
@@ -229,7 +344,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     None => bail!("BUG: in bind missing required argument {name}"),
                 }
             } else {
-                // Positional argument - find the pos_idx'th positional arg
+                // Positional argument — find the pos_idx'th positional arg.
                 let key = loop {
                     let candidate = ArgKey::Positional(pos_idx);
                     pos_idx += 1;
@@ -254,7 +369,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.arg_refs.push(self.make_ref(arg.id, typ, spec));
             }
         }
-        // Handle vargs - remaining positional args
+        // Handle vargs — remaining positional args.
         if f.typ.vargs.is_some() {
             loop {
                 let key = ArgKey::Positional(pos_idx);
@@ -277,6 +392,43 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
+        let mut rf = (f.init)(
+            scope,
+            ctx,
+            &mut self.arg_refs,
+            self.resolved_ftype.as_ref(),
+            self.top_id,
+        )?;
+        let _ = rf.typecheck(ctx, &mut self.arg_refs, TypecheckPhase::Lambda);
+        self.function = Some((fv, rf));
+        Ok(())
+    }
+
+    fn bind(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: Scope,
+        flags: BitFlags<CFlag>,
+        fv: Value,
+        f: &LambdaDef<R, E>,
+        event: &mut Event<E>,
+        set: &mut Vec<BindId>,
+    ) -> Result<()> {
+        // Build arg_refs + InitFn + typecheck. The closure primes
+        // each freshly-compiled default's external refs into
+        // `event.variables` from `ctx.cached`, so the bound function
+        // sees outer-binding values on its first update inside this
+        // same cycle.
+        self.setup_bind(ctx, &scope, flags, fv, f, |ctx, refs| {
+            refs.with_external_refs(|id| {
+                if let Some(v) = ctx.cached.get(&id) {
+                    if let Entry::Vacant(e) = event.variables.entry(id) {
+                        e.insert(v.clone());
+                        set.push(id);
+                    }
+                }
+            });
+        })?;
         // Ensure all arg values are available for the init cycle.
         // Defaults need to be updated for the first time (with init=true
         // since Constant only fires on init); existing args may not have
@@ -300,15 +452,35 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         event.init = prev_init;
-        let mut rf = (f.init)(
-            &scope,
-            ctx,
-            &mut self.arg_refs,
-            self.resolved_ftype.as_ref(),
-            self.top_id,
-        )?;
-        let _ = rf.typecheck(ctx, &mut self.arg_refs, TypecheckPhase::Lambda);
-        self.function = Some((fv, rf));
+        Ok(())
+    }
+
+    /// Pre-bind this CallSite to a statically known `LambdaDef` at
+    /// compile time, replacing the lazy "bind on first call" path
+    /// `bind()` runs from inside `update()`. The post-typecheck
+    /// `resolve_static_calls` pass calls this once for every CallSite
+    /// whose function expression can be proven to resolve to exactly
+    /// one Lambda (i.e. a `Ref` to a non-`<-`-target binding whose
+    /// value is a Lambda, or a direct lambda literal `(|x|…)(42)`).
+    ///
+    /// Same arg-build + InitFn + typecheck work as [`Self::bind`],
+    /// minus the event-cycle side effects. The runtime's first
+    /// update through this CallSite handles arg init-priming via the
+    /// `first_static_update` flag set here.
+    pub fn resolve_static(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        def: &LambdaDef<R, E>,
+        fv: Value,
+    ) -> Result<()> {
+        if self.statically_resolved {
+            // Idempotent.
+            return Ok(());
+        }
+        let scope = self.scope.clone();
+        self.setup_bind(ctx, &scope, self.flags, fv, def, |_, _| {})?;
+        self.statically_resolved = true;
+        self.first_static_update = true;
         Ok(())
     }
 }
@@ -326,7 +498,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // Statically resolved fast path. The post-typecheck
+        // `resolve_static_calls` pass already invoked `(def.init)(...)`
+        // and stored the Apply on `self.function`. We still run
+        // `fnode.update` for its side effects (Ref unref-counts,
+        // downstream `ctx.cached` writes by other nodes that share
+        // the binding's update path) but ignore the value. On the
+        // very first cycle we emulate the priming the dynamic
+        // `bind=true` arm runs once when a fresh bind happens.
+        // `fnode.update` runs every cycle regardless of whether the
+        // function value can ever change — the function expression
+        // can have side effects. We only skip the value-equality
+        // check + lazy `bind()` arm when we already pre-bound the
+        // call site at compile time. Re-using `bound=true` on the
+        // first statically-resolved cycle drives the existing
+        // priming arm below.
         let bound = match (&self.function, self.fnode.update(ctx, event)) {
+            _ if self.statically_resolved => {
+                let first = self.first_static_update;
+                self.first_static_update = false;
+                first
+            }
             (_, None) => false,
             (Some((fv, _)), Some(v)) if fv == &v => false,
             (_, Some(v)) => match v.downcast_ref::<LambdaDef<R, E>>() {

@@ -20,10 +20,10 @@ atomic_id!(SelectId);
 #[derive(Debug)]
 pub struct Select<R: Rt, E: UserEvent> {
     pub(super) selected: Option<usize>,
-    pub(super) arg: Cached<R, E>,
-    pub(super) arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
-    pub(super) typ: Type,
-    pub(super) spec: Expr,
+    pub arg: Cached<R, E>,
+    pub arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
+    pub typ: Type,
+    pub(crate) spec: Expr,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {

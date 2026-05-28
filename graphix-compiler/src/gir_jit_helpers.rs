@@ -26,8 +26,8 @@
 //!   helper's named primitive type.
 //!
 //! Fusion-built kernels statically guarantee all three (the
-//! typechecker pinned the param's `KirType::Array<T>` /
-//! `KirType::Tuple([..., T, ...])` shape, and the runtime hands
+//! typechecker pinned the param's `GirType::Array<T>` /
+//! `GirType::Tuple([..., T, ...])` shape, and the runtime hands
 //! us a `Value::Array(ValArray)` that matches).
 
 use netidx_value::{ValArray, Value};
@@ -40,7 +40,7 @@ use poolshark::local::LPooled;
 ///
 /// Top check: the outer `Value` is exactly two machine words,
 /// 8-byte aligned. This is the assumption the helpers' two-`I64`
-/// CLIF signature and `KirNode::update`'s slot-pair pack/unpack
+/// CLIF signature and `GirNode::update`'s slot-pair pack/unpack
 /// depend on.
 ///
 /// Per-payload checks: each non-primitive variant payload must fit
@@ -258,13 +258,13 @@ pub unsafe extern "C" fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
 /// JIT-emitted code calls this:
 ///   * after every `graphix_dyncall` to branch into `pre_pending_<n>`
 ///     (cleanup + jump to `pending_exit`),
-///   * at every `KirStmt::Return` to drop the about-to-return result
+///   * at every `GirStmt::Return` to drop the about-to-return result
 ///     and jump to `pending_exit` instead of returning a leaked
 ///     allocation (when an earlier scalar DynCall pended silently
 ///     and the kernel's return path produced an owned heap value).
 ///
-/// The flag stays set so that `KirNode::update`'s wrapper-level
-/// check sees it and returns `None`. `KirNode::update` resets the
+/// The flag stays set so that `GirNode::update`'s wrapper-level
+/// check sees it and returns `None`. `GirNode::update` resets the
 /// flag to `false` at the top of every kernel invocation, so a
 /// stale `true` from a previous run never leaks across.
 ///
@@ -272,6 +272,15 @@ pub unsafe extern "C" fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_dyncall_pending_take() -> u8 {
     DYNCALL_PENDING.with(|c| if c.get() { 1 } else { 0 })
+}
+
+/// Set `DYNCALL_PENDING` to true. Called by the JIT-emitted code
+/// at `GirOp::QopUnwrap`'s error branch — same pending signal as
+/// the dispatcher uses, just driven by a kernel-internal check
+/// instead of a `dispatch` return.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_dyncall_set_pending() {
+    DYNCALL_PENDING.with(|c| c.set(true))
 }
 
 /// Push a `Value::String(s)` slot. The string is identified by an
@@ -290,7 +299,7 @@ pub unsafe extern "C" fn graphix_value_buf_push_arcstr(
 }
 
 /// Push an owned `ArcStr` onto the dyncall arg buffer, wrapping it in
-/// `Value::String`. Used for `KirType::String` DynCall args — the
+/// `Value::String`. Used for `GirType::String` DynCall args — the
 /// caller's SSA holds an owned ArcStr (bit-equivalent to its raw
 /// thin pointer) and transfers ownership into the buf.
 #[unsafe(no_mangle)]
@@ -393,19 +402,19 @@ pub extern "C" fn graphix_value_clone(v: Value) -> Value {
 //
 // `ArcStr` is `repr(transparent)` over a thin pointer, so it travels
 // across the JIT/Rust boundary as a single 8-byte value. Codegen
-// treats `KirType::String` SSA values as `i64` CLIF values holding
+// treats `GirType::String` SSA values as `i64` CLIF values holding
 // the ArcStr's raw pointer. Lifetime tracking matches the variant /
 // nullable scheme — every owned ArcStr SSA either feeds a consumer
 // helper that takes ownership (e.g. `graphix_string_buf_push_arcstr`
 // drops on push) or is returned across the kernel boundary (the
-// wrapper hands it to `KirNode::update` which wraps it into a
+// wrapper hands it to `GirNode::update` which wraps it into a
 // `Value::String`). On the pending path the in-flight string buf
 // (still owned by the kernel) drops via `graphix_string_buf_drop`.
 
 /// Clone an interned static `ArcStr` — refcount bump on the slot at
 /// `p`, returning a fresh owned ArcStr. Caller has ownership; drops
 /// when no longer needed via `graphix_arcstr_drop`. Used by
-/// `KirOp::ConstStr` lowering.
+/// `GirOp::ConstStr` lowering.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_arcstr_clone_from_static(
     p: *const arcstr::ArcStr,
@@ -424,7 +433,7 @@ pub extern "C" fn graphix_arcstr_drop(s: arcstr::ArcStr) {
 /// fresh clone. The caller's bits stay valid (we `mem::forget` so
 /// the input's ref isn't decremented). Net effect: caller now has
 /// two valid refs (original + returned clone). Used by
-/// `KirOp::Local` reads of String slots and by anywhere else we
+/// `GirOp::Local` reads of String slots and by anywhere else we
 /// need to take an additional ref to an in-register ArcStr.
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
@@ -434,14 +443,14 @@ pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
 }
 
 /// Build a `Value::String` from an owned ArcStr — boundary
-/// marshaling for kernel-return-type `KirType::String`. Consumes the
+/// marshaling for kernel-return-type `GirType::String`. Consumes the
 /// ArcStr (transfers ownership into the Value).
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> Value {
     Value::String(s)
 }
 
-/// Start a fresh string-buffer for `KirOp::Concat`. Returns a heap-
+/// Start a fresh string-buffer for `GirOp::Concat`. Returns a heap-
 /// owned `*mut String`; caller eventually pairs with
 /// `graphix_string_buf_finalize` (success) or `graphix_string_buf_drop`
 /// (pending path).
@@ -510,7 +519,7 @@ pub unsafe extern "C" fn graphix_string_buf_push_bool(buf: *mut String, v: u8) {
 /// Test whether a `Value` is `Value::Null`. Borrowed read — caller
 /// retains ownership.
 ///
-/// Today `KirOp::IsNull` lowering inlines this test as `icmp_imm
+/// Today `GirOp::IsNull` lowering inlines this test as `icmp_imm
 /// (disc, NULL_DISC)` rather than calling the helper; the helper
 /// remains registered so out-of-tree code and direct interp tests
 /// keep working.
@@ -602,9 +611,9 @@ pub extern "C" fn graphix_variant_payload_bool(v: Value, payload_idx: usize) -> 
 //
 // JIT'd kernels invoke fn-typed params (HOF args) via the
 // `graphix_dyncall` helper. The dispatch is type-erased through a
-// `DynDispatchHandle` set on a thread-local by `KirNode::update`:
+// `DynDispatchHandle` set on a thread-local by `GirNode::update`:
 //
-//   1. Before calling the wrapper, KirNode::update builds a
+//   1. Before calling the wrapper, GirNode::update builds a
 //      `DynDispatchHandle` whose `dispatch` is a monomorphized
 //      `dispatch_typed::<R, E>` function pointer and whose `state`
 //      points to a per-call struct holding the dyn_slots, ctx,
@@ -618,9 +627,9 @@ pub extern "C" fn graphix_variant_payload_bool(v: Value, payload_idx: usize) -> 
 //   4. If the inner Apply returns `None` (callee not ready this
 //      cycle), `dispatch` returns 0 and sets `DYNCALL_PENDING`.
 //      Otherwise it returns the scalar result's raw u64 bits.
-//   5. After the wrapper returns, KirNode::update checks
+//   5. After the wrapper returns, GirNode::update checks
 //      `DYNCALL_PENDING` (and resets it). If set, the kernel
-//      result is discarded and KirNode::update returns `None` so
+//      result is discarded and GirNode::update returns `None` so
 //      the runtime re-fires next cycle.
 //
 // Restrictions: this v1 only supports DynCalls where both args
@@ -649,7 +658,7 @@ pub struct DynCallRet {
 }
 
 /// Type-erased per-call dispatch handle, lifetime-tied to one
-/// `KirNode::update` invocation. Built on the stack there and
+/// `GirNode::update` invocation. Built on the stack there and
 /// pointed at via the thread-local.
 #[repr(C)]
 pub struct DynDispatchHandle {
@@ -672,12 +681,12 @@ pub struct DynDispatchHandle {
 thread_local! {
     /// Pointer to the active `DynDispatchHandle` for the JIT'd
     /// kernel currently on the call stack. Set/restored by
-    /// `KirNode::update`. Null when no JIT'd kernel is in flight.
+    /// `GirNode::update`. Null when no JIT'd kernel is in flight.
     pub static DYN_DISPATCH_HANDLE: Cell<*const DynDispatchHandle> =
         const { Cell::new(std::ptr::null()) };
 
     /// Sticky flag set by `dispatch_typed` when an inner Apply
-    /// returns `None`. Read and reset by `KirNode::update` after
+    /// returns `None`. Read and reset by `GirNode::update` after
     /// the wrapper returns; if true, the kernel's result is
     /// discarded and `update` itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
@@ -749,7 +758,7 @@ pub unsafe extern "C" fn graphix_dyncall(
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
     if handle.is_null() {
         panic!(
-            "graphix_dyncall: no DynDispatchHandle set — KirNode::update \
+            "graphix_dyncall: no DynDispatchHandle set — GirNode::update \
              must populate the thread-local before invoking JIT'd code \
              that calls HOFs"
         );
@@ -761,7 +770,7 @@ pub unsafe extern "C" fn graphix_dyncall(
 }
 
 /// Read element `idx` of `arr` as an `i64`. JIT-side counterpart of
-/// `KirOp::ArrayGet` / `KirOp::TupleGet` for scalar i64 elements.
+/// `GirOp::ArrayGet` / `GirOp::TupleGet` for scalar i64 elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_valarray_get_i64(p: *const ValArray, idx: usize) -> i64 {
     unsafe { arr(p).get_unchecked::<i64>(idx) }
@@ -824,7 +833,7 @@ pub unsafe extern "C" fn graphix_valarray_len(p: *const ValArray) -> usize {
 
 /// Two-level struct field read: `arr[sorted_idx]` is itself a
 /// `Value::Array([name, value])` kv-pair; we read slot 1 (the value)
-/// as the named primitive. Mirrors the interp's `KirOp::StructGet`.
+/// as the named primitive. Mirrors the interp's `GirOp::StructGet`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_struct_get_i64(
     p: *const ValArray,
@@ -1000,6 +1009,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_variant_payload_u64", graphix_variant_payload_u64 as *const u8),
         ("graphix_dyncall", graphix_dyncall as *const u8),
         ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
+        ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
         (
             "graphix_value_buf_push_array_borrowed",
             graphix_value_buf_push_array_borrowed as *const u8,
@@ -1066,11 +1076,11 @@ mod tests {
     /// clear. The clearing variant (former behavior) caused a
     /// latent UB on composite-DynCall pending paths — the JIT pre_
     /// pending block consumed the flag from inside the kernel,
-    /// confusing `KirNode::update`'s wrapper-level pending check
+    /// confusing `GirNode::update`'s wrapper-level pending check
     /// into decoding the kernel's null sentinel as a real Value
     /// (`Box::from_raw(0)` or `transmute([0, 0]) -> Value`).
     /// Multiple calls in succession must all observe the same
-    /// state; the flag stays set until `KirNode::update` resets
+    /// state; the flag stays set until `GirNode::update` resets
     /// it at the top of the NEXT kernel invocation.
     #[test]
     fn pending_take_is_peek_not_clear() {

@@ -16,10 +16,10 @@ defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 
 #[derive(Debug)]
 pub struct Map<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    keys: Box<[Cached<R, E>]>,
-    vals: Box<[Cached<R, E>]>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub keys: Box<[Cached<R, E>]>,
+    pub vals: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
@@ -117,11 +117,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
 #[derive(Debug)]
 pub struct MapRef<R: Rt, E: UserEvent> {
-    source: Cached<R, E>,
-    key: Cached<R, E>,
-    spec: Expr,
-    typ: Type,
-    vtyp: Type,
+    pub source: Cached<R, E>,
+    pub key: Cached<R, E>,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub vtyp: Type,
 }
 
 impl<R: Rt, E: UserEvent> MapRef<R, E> {

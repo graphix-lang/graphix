@@ -179,7 +179,7 @@ const STR_JOIN: &str = r#"
   str::join(#sep:"/", "/foo", "bar", ["baz", "zam"])
 "#;
 
-run_no_jit!(str_join, STR_JOIN, |v: Result<&Value>| {
+run!(str_join, STR_JOIN, |v: Result<&Value>| {
     match v {
         Ok(Value::String(s)) => s == "/foo/bar/baz/zam",
         _ => false,
@@ -190,7 +190,7 @@ const STR_CONCAT: &str = r#"
   str::concat("foo", "bar", ["baz", "zam"])
 "#;
 
-run_no_jit!(str_concat, STR_CONCAT, |v: Result<&Value>| {
+run!(str_concat, STR_CONCAT, |v: Result<&Value>| {
     match v {
         Ok(Value::String(s)) => s == "foobarbazzam",
         _ => false,

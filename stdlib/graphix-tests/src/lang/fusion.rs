@@ -44,13 +44,58 @@ async fn load_and_await(code: &str) -> Result<Value> {
 
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
+async fn load_qop_unwraps_result() -> Result<()> {
+    // `str::parse("42")?` — Qop on a `Result<i64, ParseError>` return.
+    // The Result lowers to `Nullable<i64>` and Qop is lowered to
+    // `GirOp::QopUnwrap` which extracts the success i64. JIT must
+    // fire because there's no Block-with-let wrapper here.
+    let (tx, mut rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    let res = ctx
+        .rt
+        .load(Source::Internal(ArcStr::from(
+            "re::is_match(#pat:r'a', \"abc\")?\n",
+        )))
+        .await?;
+    let eid = res.exprs[0].id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    let value = loop {
+        tokio::select! {
+            _ = &mut timeout => bail!("timeout"),
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    let mut found = None;
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e {
+                            if id == eid {
+                                found = Some(v);
+                            }
+                        }
+                    }
+                    if let Some(v) = found { break v; }
+                }
+            }
+        }
+    };
+    assert_eq!(value, Value::Bool(true));
+    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    assert!(inv > 0, "JIT_INVOCATIONS=0 — Qop kernel didn't run via JIT");
+    ctx.shutdown().await;
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
 async fn load_variadic_and_jits() -> Result<()> {
     // `and(true, true, false)` — variadic builtin (`@args: bool`)
     // with uniform bool arg type. Exercises the
     // `BuiltinSlot::Variadic` slot path through DynCall.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::kir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from("and(true, true, false)")))
@@ -78,7 +123,7 @@ async fn load_variadic_and_jits() -> Result<()> {
         }
     };
     assert_eq!(value, Value::Bool(false));
-    let inv = graphix_compiler::kir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — variadic and didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -89,11 +134,11 @@ async fn load_variadic_and_jits() -> Result<()> {
 async fn load_array_literal_jits() -> Result<()> {
     // `[1, 2, 3]` as a program body — exercises `ExprKind::Array`
     // lowering via the new `emit_array_new` path, which reuses
-    // `KirOp::TupleNew` and tags the outer KirType as `Array(I64)`.
+    // `GirOp::TupleNew` and tags the outer GirType as `Array(I64)`.
     // Counter > 0 proves the JIT'd kernel ran.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::kir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from("[1, 2, 3]")))
@@ -128,7 +173,7 @@ async fn load_array_literal_jits() -> Result<()> {
     assert_eq!(arr[0], Value::I64(1));
     assert_eq!(arr[1], Value::I64(2));
     assert_eq!(arr[2], Value::I64(3));
-    let inv = graphix_compiler::kir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — array literal kernel didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -149,7 +194,7 @@ async fn load_single_arith() -> Result<()> {
 /// program that calls `core::bit_and` — a sync builtin with two
 /// `i64` args and an `i64` return. Discovery should register the
 /// call site as a `FnSource::Builtin` slot; the JIT-compiled
-/// kernel issues a `KirOp::DynCall` that dispatches into the
+/// kernel issues a `GirOp::DynCall` that dispatches into the
 /// builtin's `Apply::update` through `dispatch_typed`. The
 /// counter assertion proves the JIT'd wrapper ran (so the
 /// builtin's DynCall actually executed natively).
@@ -160,7 +205,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
     let ctx = init(tx).await?;
     // Reset AFTER init so we count only fixture JIT, not stdlib
     // root-module compilation.
-    graphix_compiler::kir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from(
@@ -190,7 +235,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
         }
     };
     assert_eq!(value, Value::I64(0x0F));
-    let inv = graphix_compiler::kir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — bit_and call didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -205,11 +250,11 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn jit_counter_bumps_on_load() -> Result<()> {
-    graphix_compiler::kir_jit_helpers::reset_jit_invocations();
-    assert_eq!(graphix_compiler::kir_jit_helpers::jit_invocations(), 0);
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    assert_eq!(graphix_compiler::gir_jit_helpers::jit_invocations(), 0);
     let v = load_and_await("3 * 4 + 5").await?;
     assert_eq!(v, Value::I64(17));
-    let inv = graphix_compiler::kir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
     assert!(
         inv > 0,
         "JIT_INVOCATIONS=0 after a kernel-spliced load — the JIT \
