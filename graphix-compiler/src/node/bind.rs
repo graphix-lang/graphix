@@ -246,7 +246,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
 #[derive(Debug)]
 pub struct Ref {
-    pub(super) spec: Arc<Expr>,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub id: BindId,
     pub(super) top_id: ExprId,
