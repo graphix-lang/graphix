@@ -862,6 +862,12 @@ struct Init<R: Rt, E: UserEvent> {
     top_id: ExprId,
     mftyp: TArc<FnType>,
     slots: Vec<Slot<R, E>>,
+    /// Analysis-only Slot pre-materialized by
+    /// `Apply::static_resolve_fn_args` when the callback is
+    /// statically resolvable. See `MapQ::analysis_pred` for the
+    /// full design rationale. `None` for dynamic callbacks
+    /// (fusion falls back to DynCall in that case).
+    analysis_pred: Option<Slot<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
@@ -891,6 +897,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
                         t => bail!("expected a function not {t}"),
                     },
                     slots: vec![],
+                    analysis_pred: None,
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -899,6 +906,58 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
+    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
+        graphix_compiler::ApplyView::FusedBuiltin(self)
+    }
+
+    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
+        graphix_compiler::ApplyViewMut::FusedBuiltin(self)
+    }
+
+    fn static_resolve_fn_args(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
+    ) -> Result<()> {
+        // Init takes the callback at positional arg index 1
+        // (index 0 is the size).
+        let Some(cb) = fn_args.iter().find(|a| a.arg_idx == 1) else {
+            return Ok(());
+        };
+        let i_typ = Type::Primitive(Typ::I64.into());
+        let (id, idx_node) = genn::bind(
+            ctx,
+            &self.scope.lexical,
+            "i",
+            i_typ,
+            self.top_id,
+        );
+        let fnode = genn::reference(
+            ctx,
+            self.fid,
+            Type::Fn(self.mftyp.clone()),
+            self.top_id,
+        );
+        let mut pred = genn::apply(
+            fnode,
+            self.scope.clone(),
+            vec![idx_node],
+            &self.mftyp,
+            self.top_id,
+        );
+        let fv = match ctx.lambda_defs.get(&cb.lambda.id).cloned() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let any: &mut dyn std::any::Any = &mut *pred;
+        let Some(cs) = any.downcast_mut::<graphix_compiler::node::callsite::CallSite<R, E>>() else {
+            return Ok(());
+        };
+        cs.resolve_static(ctx, cb.lambda, fv)?;
+        self.analysis_pred = Some(Slot { id, pred, cur: None });
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1012,12 +1071,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         for s in &self.slots {
             s.pred.refs(refs)
         }
+        if let Some(s) = &self.analysis_pred {
+            s.pred.refs(refs);
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.cached.remove(&self.fid);
         for sl in &mut self.slots {
             sl.delete(ctx)
+        }
+        if let Some(mut s) = self.analysis_pred.take() {
+            s.delete(ctx);
         }
     }
 
@@ -1026,6 +1091,59 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             sl.cur = None;
             sl.pred.sleep(ctx);
         }
+        // analysis_pred is analysis-only — no runtime sleep needed.
+    }
+}
+
+/// Fusion-time codegen for `array::init`. Lowers to `GirOp::ArrayInit`
+/// when the callback was statically resolvable (`analysis_pred` is
+/// populated); falls back to DynCall otherwise.
+impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
+    fn emit_gir(
+        &self,
+        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
+        _args: &[(Option<arcstr::ArcStr>, &Node<R, E>)],
+        _arg_refs: &[Node<R, E>],
+        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        let slot = self.analysis_pred.as_ref()?;
+        // Positional arg 0 is the array size (`n`).
+        let n_node = callsite.arg_positional(0)?;
+        let n_kir = emit_expr_node(n_node, ctx)?;
+        if !n_kir.typ.as_prim().is_some_and(|p| p.is_integer()) {
+            return None;
+        }
+        // Body Node via the inner CallSite's resolved Apply.
+        let pred_view = slot.pred.view();
+        let inner_cs = match pred_view {
+            graphix_compiler::NodeView::CallSite(cs) => cs,
+            _ => return None,
+        };
+        let g = match inner_cs.resolved_apply()? {
+            graphix_compiler::ApplyView::Lambda(g) => g,
+            _ => return None,
+        };
+        let body = g.body();
+        // Index param's name — from the lambda's FnType.args[0].kind.
+        let idx_name = match &g.typ().args.first()?.kind {
+            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
+            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
+            _ => return None,
+        };
+        let body_kir = ctx.with_input(
+            Input { name: idx_name.clone(), prim: PrimType::I64, bind_id: None },
+            |inner| emit_expr_node(body, inner),
+        )?;
+        let elem = body_kir.typ.as_prim()?;
+        Some(GirExpr {
+            op: GirOp::ArrayInit {
+                n: Box::new(n_kir),
+                idx_local: idx_name,
+                elem_typ: elem,
+                body: Box::new(body_kir),
+            },
+            typ: GirType::Array(Box::new(GirType::Prim(elem))),
+        })
     }
 }
 

@@ -1138,7 +1138,7 @@ fn emit_select_as_expr<R: crate::Rt, E: crate::UserEvent>(
     }
     let mut arms: Vec<(Option<GirExpr>, GirExpr)> = Vec::with_capacity(n);
     let mut unified_typ: Option<GirType> = None;
-    for (i, ((pat, _), (_pat_node, body_cached))) in
+    for (i, ((pat, _), (pat_node, body_cached))) in
         spec_select.arms.iter().zip(sel.arms.iter()).enumerate()
     {
         let is_last = i == n - 1;
@@ -1147,13 +1147,17 @@ fn emit_select_as_expr<R: crate::Rt, E: crate::UserEvent>(
         let struct_cond =
             emit_arm_condition(&scrut, &pat.structure_predicate, &mut arm_ctx)?;
         let cond = combine_cond_and_guard(type_cond, struct_cond);
-        let guard_kir = match &pat.guard {
+        // Pattern guard: the PatternNode carries the compiled
+        // guard Cached; emit it through emit_node like any other
+        // sub-expression.
+        let guard_kir = match &pat_node.guard {
             None => None,
-            Some(_g) => {
-                // Pattern guards (`if expr`) live on the source
-                // Pattern as raw Expr. No compiled Node form is
-                // wired through yet — bail until that's threaded.
-                return None;
+            Some(g) => {
+                let g = emit_node(&g.node, &arm_ctx)?;
+                if g.typ != GirType::Prim(PrimType::Bool) {
+                    return None;
+                }
+                Some(g)
             }
         };
         let combined = combine_cond_and_guard(cond, guard_kir);
@@ -1243,12 +1247,33 @@ fn emit_known_fused_call<R: crate::Rt, E: crate::UserEvent>(
         ExprKind::Apply(a) => a,
         _ => return None,
     };
-    // Builtin DynCall path.
+    // Builtin DynCall path. `marshal_arg_indices[i]` is a position
+    // in the source-order arg list `spec_apply.args` — which spans
+    // both labeled and positional args. The Node-side lookup has to
+    // mirror that: labeled args go through `arg_named`, positional
+    // args through `arg_positional` indexed by running positional
+    // count (not source position).
     if let Some(info) = ctx.builtin_apply_sites.get(&apply_id) {
         let info = info.clone();
+        // Build a source-order Vec of (label, Node) so call_idx
+        // indexes uniformly across labeled + positional args.
+        let mut source_nodes: Vec<&crate::Node<R, E>> =
+            Vec::with_capacity(spec_apply.args.len());
+        let mut pos_idx: usize = 0;
+        for (label, _) in spec_apply.args.iter() {
+            let n = match label {
+                Some(name) => cs.arg_named(name)?,
+                None => {
+                    let n = cs.arg_positional(pos_idx)?;
+                    pos_idx += 1;
+                    n
+                }
+            };
+            source_nodes.push(n);
+        }
         let mut args = Vec::with_capacity(info.marshal_arg_indices.len());
         for (slot_idx, &call_idx) in info.marshal_arg_indices.iter().enumerate() {
-            let arg_node = cs.arg_positional(call_idx)?;
+            let arg_node = source_nodes.get(call_idx).copied()?;
             let e = emit_node(arg_node, ctx)?;
             if e.typ != info.arg_types[slot_idx] {
                 return None;
@@ -2039,8 +2064,8 @@ fn emit_select<R: crate::Rt, E: crate::UserEvent>(
         return None;
     }
     let mut arms: Vec<SelectArm> = Vec::with_capacity(sel.arms.len());
-    for ((pat, _), (_, body_cached)) in spec_select.arms.iter().zip(sel.arms.iter()) {
-        let arm = emit_arm(&scrut, pat, &body_cached.node, ctx, self_info)?;
+    for ((pat, _), (pat_node, body_cached)) in spec_select.arms.iter().zip(sel.arms.iter()) {
+        let arm = emit_arm(&scrut, pat, pat_node, &body_cached.node, ctx, self_info)?;
         arms.push(arm);
     }
     out.push(GirStmt::Select { arms });
@@ -2053,6 +2078,7 @@ fn emit_select<R: crate::Rt, E: crate::UserEvent>(
 fn emit_arm<R: crate::Rt, E: crate::UserEvent>(
     scrut: &GirExpr,
     pat: &Pattern,
+    pat_node: &crate::node::pattern::PatternNode<R, E>,
     arm_body: &crate::Node<R, E>,
     ctx: &FusionCtx,
     self_info: Option<&SelfInfo>,
@@ -2062,16 +2088,14 @@ fn emit_arm<R: crate::Rt, E: crate::UserEvent>(
     let struct_cond =
         emit_arm_condition(scrut, &pat.structure_predicate, &mut arm_ctx)?;
     let cond = combine_cond_and_guard(type_cond, struct_cond);
-    let guard = match &pat.guard {
+    let guard = match &pat_node.guard {
         None => None,
         Some(g) => {
-            // Guard is a source-level Expr (no compiled Node form
-            // — it's part of the source pattern). Compile-time
-            // pattern guards need their own emission path; for now
-            // we bail on guarded arms during the Node transition.
-            // TODO: feed the compiled guard Node through arm structure.
-            let _ = g;
-            return None;
+            let g = emit_node(&g.node, &arm_ctx)?;
+            if g.typ != GirType::Prim(PrimType::Bool) {
+                return None;
+            }
+            Some(g)
         }
     };
     let combined = combine_cond_and_guard(cond, guard);
@@ -2812,38 +2836,5 @@ pub fn build_kir_kernel_from_region<R: crate::Rt, E: crate::UserEvent>(
 
 
 
-/// If `value` is a compile-time-computable primitive expression in
-/// terms of already-known constants, record `(name, KnownConst)` into
-/// `consts`. The GIR stored on the KnownConst is the full emitted
-/// expression — the JIT folds it as appropriate at lowering.
-///
-/// Used by `Bind::compile` (the runtime path): the runtime fusion
-/// attempts in `Lambda::compile` need const visibility for the
-/// kernels they build.
-pub fn record_const_binding(
-    name: &ArcStr,
-    value: &Expr,
-    consts: &mut std::collections::BTreeMap<ArcStr, KnownConst>,
-) {
-    // Direct Constant is trivially constant.
-    if let ExprKind::Constant(v) = &value.kind {
-        if let Some(c) = ConstVal::from_value(v) {
-            consts.insert(name.clone(), KnownConst { expr: gir::const_expr(c) });
-            return;
-        }
-    }
-    // Expression-valued bindings: try to emit them with only the
-    // known-const registry visible (empty inputs). If emit_expr
-    // succeeds, every Ref inside resolved to a constant — we can
-    // freeze the whole expression.
-    // Expression-valued const folding via emit-probe is on hold
-    // during the Expr → Node migration. The Constant fast path
-    // above still folds direct literals (which covers most
-    // declarations); compound const expressions just don't get
-    // pre-resolved by fusion, which costs a tiny bit of inlining
-    // opportunity but not correctness.
-    let _ = value;
-    let _ = consts;
-}
 
 
