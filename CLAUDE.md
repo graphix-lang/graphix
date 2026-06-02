@@ -2374,17 +2374,24 @@ end-to-end `call_tuple_arg` / `call_struct_arg` fixtures now JIT the
 composite call through the real fusion pipeline (no regression).
 129/129 graphix-compiler + 1779/1779 graphix-tests green.
 
-**Off-topic bug surfaced (NOT fixed — flagged for the user):** the
-JIT `GirOp::IsNull` arm (`gir_jit.rs` ~2908) calls
-`compile_scalar(b, inner, …)` on its operand, but a `Nullable`
-operand now lowers to a two-register `(disc, payload)` pair (since the
-by-value `Value` migration), so `.single()` rejects it — AND the arm
-passes one arg to `graphix_value_is_null(v: Value)` which takes two.
-The arm was never updated for the by-value ABI (the notes say it
-should inline an `icmp disc, NULL_DISC`). It's masked in the
-differential suite by graceful interp fallback (a JIT-compile Err →
-`fuse()` runs the kernel on interp → same value); a force-compile test
-(`.expect`) is the first to surface it. Means null-narrowing `select`
-arms (`select nullable { null as _ => …, T as v => … }`) silently
-don't JIT. The #131 owned-value-arg test was rewritten to use an
-identity callee instead of `is_null` to avoid it.
+**Off-topic bug surfaced + fixed (#133).** The JIT `GirOp::IsNull`
+arm (`gir_jit.rs` ~2908) called `compile_scalar(b, inner, …)` on its
+operand, but a `Nullable` operand now lowers to a two-register
+`(disc, payload)` pair (since the by-value `Value` migration), so
+`.single()` rejected it — AND the arm passed one arg to
+`graphix_value_is_null(v: Value)` which takes two. The arm was never
+updated for the by-value ABI. It was masked in the differential suite
+by graceful interp fallback (a JIT-compile Err → `fuse()` runs the
+kernel on interp → same value); the #131 force-compile (`.expect`)
+test was the first to surface it. Impact: null-narrowing `select` arms
+(`select nullable { null as _ => …, T as v => … }`) silently didn't
+JIT. **Fix:** compile the operand via `compile_expr(…).value()` to get
+`(disc, payload)`, then inline `icmp_imm Equal disc value_disc::NULL`
+(an `I8` 0/1 bool, same shape `GirOp::Cmp` produces) — no helper call
+(`graphix_value_is_null` stays for the interpreter / direct tests).
+Regression test `gir_jit::tests::jit_is_null_on_nullable_param` (a
+`Nullable`-param kernel whose body is `is_null(m)`, force-compiled via
+`compile_kernel_with_wrapper`). The differential `cross_mode_null_handling`
+fixtures now exercise the IsNull JIT path in mode C/D instead of
+falling back. 130/130 compiler + 1778/1779 graphix-tests green (the
+1 is the pre-existing fs-parallelism flake, passes single-threaded).

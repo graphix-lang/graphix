@@ -2906,17 +2906,15 @@ fn compile_scalar_impl(
             Ok(b.inst_results(call)[0])
         }
         GirOp::IsNull(inner) => {
-            // Operand must be Null or Nullable typed — the caller
-            // (fusion's `emit_arm` / `emit_type_predicate_cond`)
-            // builds it that way. Both shapes pass us a `*const Value`
-            // we can read with the borrowed helper.
-            let v = compile_scalar(b, inner, env, ctx)?;
-            let helper = ctx
-                .helper_refs
-                .get("graphix_value_is_null")
-                .ok_or_else(|| anyhow!("missing graphix_value_is_null"))?;
-            let call = b.ins().call(helper, &[v]);
-            Ok(b.inst_results(call)[0])
+            // Operand is Null- or Nullable-typed (built by fusion's
+            // `emit_arm` / `emit_type_predicate_cond`), so it lowers to
+            // a two-register `(disc, payload)` Value. `null` iff
+            // `disc == value_disc::NULL` — inline the disc compare; no
+            // helper call (`graphix_value_is_null` is kept only for the
+            // interpreter / direct tests). The `icmp_imm` result is an
+            // `I8` 0/1 bool, the same shape `GirOp::Cmp` produces.
+            let (disc, _payload) = compile_expr(b, inner, env, ctx)?.value()?;
+            Ok(b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL))
         }
         GirOp::QopUnwrap { inner, success_typ } => {
             // Compile inner — must be Nullable, so the result is a
@@ -6065,6 +6063,57 @@ mod tests {
         };
         assert_eq!(decode(0), netidx_value::Value::Null);
         assert_eq!(decode(7), netidx_value::Value::I64(7));
+    }
+
+    /// Regression for #133: `GirOp::IsNull` on a `Nullable` operand
+    /// must JIT-compile. The arm used to `compile_scalar` its operand
+    /// (which lowers to a two-register Value pair under the by-value
+    /// ABI) and pass one arg to a two-arg helper — both wrong; it now
+    /// inlines `icmp disc, NULL_DISC`. `h(m: [i64, null]) -> bool =
+    /// is_null(m)`.
+    #[test]
+    fn jit_is_null_on_nullable_param() {
+        use crate::gir::NullableInput;
+        use crate::gir_interp::RegValue;
+        let nullable_i64 =
+            || GirType::Nullable(Box::new(GirType::Prim(PrimType::I64)));
+        let kernel = GirKernel {
+            fn_name: ArcStr::from("h"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![NullableInput {
+                name: ArcStr::from("m"),
+                elem: GirType::Prim(PrimType::I64),
+                bind_id: None,
+            }],
+            tail_call_slots: vec![],
+            return_type: GirType::Prim(PrimType::Bool),
+            has_tail_loop: false,
+            body: vec![GirStmt::Return(GirExpr {
+                op: GirOp::IsNull(Box::new(GirExpr {
+                    op: GirOp::Local(ArcStr::from("m")),
+                    typ: nullable_i64(),
+                })),
+                typ: GirType::Prim(PrimType::Bool),
+            })],
+        };
+        let wrapped = compile_kernel_with_wrapper(&kernel)
+            .expect("compile_kernel_with_wrapper");
+        let f = unsafe { wrapped.fn_ptr() };
+        // Nullable param `m` arrives as its two `repr(u64)` Value words
+        // (disc, payload) — the same packing `GirNode::update` does.
+        let run = |v: netidx_value::Value| -> RegValue {
+            let words: [u64; 2] = unsafe { std::mem::transmute(v) };
+            let mut out = 0u64;
+            unsafe { f(words.as_ptr(), &mut out) };
+            unpack_u64_to_reg(out, PrimType::Bool)
+        };
+        assert_eq!(run(netidx_value::Value::Null), RegValue::Bool(true));
+        assert_eq!(run(netidx_value::Value::I64(7)), RegValue::Bool(false));
     }
 
     /// Non-tail self-recursion via `GirOp::Call` (e.g. naive fib's
