@@ -3,7 +3,7 @@
 use crate::init;
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run;
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use tokio::sync::mpsc;
@@ -77,10 +77,10 @@ const CORE_USE: &str = r#"
 }
 "#;
 
-run_no_jit!(core_use, CORE_USE, |v: Result<&Value>| match v {
+run!(core_use, CORE_USE, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(84)] => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NAME_MODPATH: &str = r#"
 {
@@ -89,10 +89,10 @@ const NAME_MODPATH: &str = r#"
 }
 "#;
 
-run_no_jit!(name_modpath, NAME_MODPATH, |v: Result<&Value>| match v {
+run!(name_modpath, NAME_MODPATH, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "foo, bar, baz",
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STATIC_SCOPE: &str = r#"
 {
@@ -102,10 +102,10 @@ const STATIC_SCOPE: &str = r#"
 }
 "#;
 
-run_no_jit!(static_scope, STATIC_SCOPE, |v: Result<&Value>| match v {
+run!(static_scope, STATIC_SCOPE, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const UNDEFINED: &str = r#"
 {
@@ -116,10 +116,10 @@ const UNDEFINED: &str = r#"
 }
 "#;
 
-run_no_jit!(undefined, UNDEFINED, |v: Result<&Value>| match v {
+run!(undefined, UNDEFINED, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ANY0: &str = r#"
 {
@@ -130,10 +130,10 @@ const ANY0: &str = r#"
 }
 "#;
 
-run_no_jit!(any0, ANY0, |v: Result<&Value>| match v {
+run!(any0, ANY0, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ANY1: &str = r#"
 {
@@ -144,7 +144,8 @@ const ANY1: &str = r#"
 }
 "#;
 
-run_no_jit!(any1, ANY1, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: array construction and builtin selection (any) should fuse
+run!(any1, ANY1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s0), Value::String(s1)] => {
             &**s0 == "1 + 1" && s0 == s1
@@ -152,7 +153,7 @@ run_no_jit!(any1, ANY1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const OR_NEVER: &str = r#"
 {
@@ -161,7 +162,7 @@ const OR_NEVER: &str = r#"
 }
 "#;
 
-run_no_jit!(or_never, OR_NEVER, |v: Result<&Value>| match v {
+run!(or_never, OR_NEVER, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 fn cert_dir() -> String {
@@ -7,7 +7,7 @@ fn cert_dir() -> String {
 }
 
 // TLS round-trip: connect + accept, then write/read through upgraded streams
-run_no_jit!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
+run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;
     let ca = sys::fs::read_all_bin("{cd}/ca.pem")$;
@@ -21,4 +21,4 @@ run_no_jit!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
     buffer::to_string(sys::io::read(server ~ client, u64:1024)?)?
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello tls")
-});
+}; graphix_package_core::testing::FuseExpect::None);

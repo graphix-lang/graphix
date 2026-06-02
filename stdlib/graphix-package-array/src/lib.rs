@@ -43,6 +43,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
 
     fn emit_gir(
         ctx: &mut FusionCtx,
+        ec: &mut ExecCtx<R, E>,
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
@@ -56,7 +57,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // this slot.
         let body_kir = ctx.with_input(
             Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
-            |inner| emit_expr_node(body, inner),
+            |inner| emit_expr_node(body, inner, ec),
         )?;
         let out_elem = body_kir.typ.as_prim()?;
         Some(GirExpr {
@@ -93,6 +94,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
 
     fn emit_gir(
         ctx: &mut FusionCtx,
+        ec: &mut ExecCtx<R, E>,
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
@@ -101,7 +103,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         let array_name = ctx.resolve_array_input(array_arg)?;
         let pred_kir = ctx.with_input(
             Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
-            |inner| emit_expr_node(body, inner),
+            |inner| emit_expr_node(body, inner, ec),
         )?;
         // Predicate must return bool.
         if pred_kir.typ != GirType::Prim(PrimType::Bool) {
@@ -217,6 +219,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
 
     fn emit_gir(
         ctx: &mut FusionCtx,
+        ec: &mut ExecCtx<R, E>,
         array_arg: &Node<R, E>,
         init_arg: &Node<R, E>,
         body: &Node<R, E>,
@@ -226,7 +229,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     ) -> Option<GirExpr> {
         let array_name = ctx.resolve_array_input(array_arg)?;
         // Lower init in the outer ctx — no new locals needed.
-        let init_kir = emit_expr_node(init_arg, ctx)?;
+        let init_kir = emit_expr_node(init_arg, ctx, ec)?;
         let acc_typ = init_kir.typ.as_prim()?;
         // Lower the body inside an extended ctx with both callback
         // params pushed as kernel inputs.
@@ -235,7 +238,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             |inner| {
                 inner.with_input(
                     Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
-                    |inner2| emit_expr_node(body, inner2),
+                    |inner2| emit_expr_node(body, inner2, ec),
                 )
             },
         )?;
@@ -1105,11 +1108,12 @@ impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
         _args: &[(Option<arcstr::ArcStr>, &Node<R, E>)],
         _arg_refs: &[Node<R, E>],
         ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        ec: &mut ExecCtx<R, E>,
     ) -> Option<graphix_compiler::gir::GirExpr> {
         let slot = self.analysis_pred.as_ref()?;
         // Positional arg 0 is the array size (`n`).
         let n_node = callsite.arg_positional(0)?;
-        let n_kir = emit_expr_node(n_node, ctx)?;
+        let n_kir = emit_expr_node(n_node, ctx, ec)?;
         if !n_kir.typ.as_prim().is_some_and(|p| p.is_integer()) {
             return None;
         }
@@ -1132,7 +1136,7 @@ impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
         };
         let body_kir = ctx.with_input(
             Input { name: idx_name.clone(), prim: PrimType::I64, bind_id: None },
-            |inner| emit_expr_node(body, inner),
+            |inner| emit_expr_node(body, inner, ec),
         )?;
         let elem = body_kir.typ.as_prim()?;
         Some(GirExpr {

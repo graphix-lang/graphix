@@ -1,7 +1,7 @@
 // Tests for type system features: type checking, annotations, type variables
 
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const SIMPLE_TYPECHECK: &str = r#"
@@ -10,10 +10,10 @@ const SIMPLE_TYPECHECK: &str = r#"
 }
 "#;
 
-run_no_jit!(simple_typecheck, SIMPLE_TYPECHECK, |v: Result<&Value>| match v {
+run!(simple_typecheck, SIMPLE_TYPECHECK, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const FUNCTION_TYPES: &str = r#"
 {
@@ -22,10 +22,10 @@ const FUNCTION_TYPES: &str = r#"
 }
 "#;
 
-run_no_jit!(function_types, FUNCTION_TYPES, |v: Result<&Value>| match v {
+run!(function_types, FUNCTION_TYPES, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const PARTIAL_FUNCTION_TYPES: &str = r#"
 {
@@ -34,10 +34,10 @@ const PARTIAL_FUNCTION_TYPES: &str = r#"
 }
 "#;
 
-run_no_jit!(partial_function_types, PARTIAL_FUNCTION_TYPES, |v: Result<&Value>| match v {
+run!(partial_function_types, PARTIAL_FUNCTION_TYPES, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const FUNCTION_RTYPE: &str = r#"
 {
@@ -46,10 +46,10 @@ const FUNCTION_RTYPE: &str = r#"
 }
 "#;
 
-run_no_jit!(function_rtype, FUNCTION_RTYPE, |v: Result<&Value>| match v {
+run!(function_rtype, FUNCTION_RTYPE, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const INFERRED_RTYPE: &str = r#"
 {
@@ -60,10 +60,10 @@ const INFERRED_RTYPE: &str = r#"
 }
 "#;
 
-run_no_jit!(inferred_rtype, INFERRED_RTYPE, |v: Result<&Value>| match v {
+run!(inferred_rtype, INFERRED_RTYPE, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDA_CONSTRAINT: &str = r#"
 {
@@ -72,10 +72,10 @@ const LAMBDA_CONSTRAINT: &str = r#"
 }
 "#;
 
-run_no_jit!(lambda_constraint, LAMBDA_CONSTRAINT, |v: Result<&Value>| match v {
+run!(lambda_constraint, LAMBDA_CONSTRAINT, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const EXPLICIT_TYPE_VARS0: &str = r#"
 {
@@ -84,10 +84,10 @@ const EXPLICIT_TYPE_VARS0: &str = r#"
 }
 "#;
 
-run_no_jit!(explicit_type_vars0, EXPLICIT_TYPE_VARS0, |v: Result<&Value>| match v {
+run!(explicit_type_vars0, EXPLICIT_TYPE_VARS0, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const EXPLICIT_TYPE_VARS1: &str = r#"
 {
@@ -96,10 +96,10 @@ const EXPLICIT_TYPE_VARS1: &str = r#"
 }
 "#;
 
-run_no_jit!(explicit_type_vars1, EXPLICIT_TYPE_VARS1, |v: Result<&Value>| match v {
+run!(explicit_type_vars1, EXPLICIT_TYPE_VARS1, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const EXPLICIT_TYPE_VARS2: &str = r#"
 {
@@ -110,10 +110,10 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 }
 "#;
 
-run_no_jit!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
+run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const EXPLICIT_TYPE_VARS3: &str = r#"
 {
@@ -124,10 +124,11 @@ const EXPLICIT_TYPE_VARS3: &str = r#"
 }
 "#;
 
-run_no_jit!(explicit_type_vars3, EXPLICIT_TYPE_VARS3, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: type variable instantiation in fusion
+run!(explicit_type_vars3, EXPLICIT_TYPE_VARS3, |v: Result<&Value>| match v {
     Ok(Value::U32(2) | Value::U64(2)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const TYPED_ARRAYS0: &str = r#"
 {
@@ -136,7 +137,7 @@ const TYPED_ARRAYS0: &str = r#"
 }
 "#;
 
-run_no_jit!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
+run!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &**a {
         [Value::Array(a0), Value::Array(a1)] => match (&**a0, &**a1) {
             (
@@ -148,7 +149,7 @@ run_no_jit!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TYPED_ARRAYS1: &str = r#"
 {
@@ -157,10 +158,10 @@ const TYPED_ARRAYS1: &str = r#"
 }
 "#;
 
-run_no_jit!(typed_arrays1, TYPED_ARRAYS1, |v: Result<&Value>| match v {
+run!(typed_arrays1, TYPED_ARRAYS1, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RECTYPES0: &str = r#"
 {
@@ -173,7 +174,8 @@ const RECTYPES0: &str = r#"
 }
 "#;
 
-run_no_jit!(rectypes0, RECTYPES0, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: nested variant payload composite
+run!(rectypes0, RECTYPES0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s), Value::I64(42), Value::Array(a)] if &**s == "Cons" =>
             match &a[..] {
@@ -185,7 +187,7 @@ run_no_jit!(rectypes0, RECTYPES0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RECTYPES1: &str = r#"
 {
@@ -198,7 +200,8 @@ const RECTYPES1: &str = r#"
 }
 "#;
 
-run_no_jit!(rectypes1, RECTYPES1, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: nested variant payload composite
+run!(rectypes1, RECTYPES1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s), Value::I64(42), Value::Array(a)] if &**s == "Cons" =>
             match &a[..] {
@@ -210,7 +213,7 @@ run_no_jit!(rectypes1, RECTYPES1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RECTYPES2: &str = r#"
 {
@@ -223,10 +226,10 @@ const RECTYPES2: &str = r#"
 }
 "#;
 
-run_no_jit!(rectypes2, RECTYPES2, |v: Result<&Value>| match v {
+run!(rectypes2, RECTYPES2, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const TYPEDEF_TVAR_OK: &str = r#"
 {
@@ -235,7 +238,7 @@ const TYPEDEF_TVAR_OK: &str = r#"
 }
 "#;
 
-run_no_jit!(typedef_tvar_ok, TYPEDEF_TVAR_OK, |v: Result<&Value>| match v {
+run!(typedef_tvar_ok, TYPEDEF_TVAR_OK, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

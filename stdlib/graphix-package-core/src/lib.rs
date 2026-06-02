@@ -596,6 +596,7 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// names.
     fn emit_gir(
         _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        _ec: &mut ExecCtx<R, E>,
         _array_arg: &Node<R, E>,
         _body: &Node<R, E>,
         _elem_name: &ArcStr,
@@ -906,6 +907,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> graphix_compiler::GirEmitter<R, E>
         _args: &[(Option<ArcStr>, &Node<R, E>)],
         _arg_refs: &[Node<R, E>],
         ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        ec: &mut ExecCtx<R, E>,
     ) -> Option<graphix_compiler::gir::GirExpr> {
         // No analysis_pred → callback wasn't statically resolvable
         // → fall back to DynCall (`None` here = fusion bails).
@@ -940,7 +942,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> graphix_compiler::GirEmitter<R, E>
         let ai = ctx.find_array(&array_name)?;
         let in_elem = ai.elem.as_prim()?;
         // Delegate to the per-MapFn codegen.
-        T::emit_gir(ctx, array_arg, body, &elem_name, in_elem)
+        T::emit_gir(ctx, ec, array_arg, body, &elem_name, in_elem)
     }
 }
 
@@ -959,6 +961,7 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     /// site's initial-accumulator value Node (positional arg 1).
     fn emit_gir(
         _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        _ec: &mut ExecCtx<R, E>,
         _array_arg: &Node<R, E>,
         _init_arg: &Node<R, E>,
         _body: &Node<R, E>,
@@ -1302,6 +1305,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> graphix_compiler::GirEmitter<R, E>
         _args: &[(Option<ArcStr>, &Node<R, E>)],
         _arg_refs: &[Node<R, E>],
         ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        ec: &mut ExecCtx<R, E>,
     ) -> Option<graphix_compiler::gir::GirExpr> {
         let pred = self.analysis_pred.as_ref()?;
         let array_arg = callsite.arg_positional(0)?;
@@ -1330,7 +1334,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> graphix_compiler::GirEmitter<R, E>
         let array_name = ctx.resolve_array_input(array_arg)?;
         let ai = ctx.find_array(&array_name)?;
         let in_elem = ai.elem.as_prim()?;
-        T::emit_gir(ctx, array_arg, init_arg, body, &acc_name, &elem_name, in_elem)
+        T::emit_gir(ctx, ec, array_arg, init_arg, body, &acc_name, &elem_name, in_elem)
     }
 }
 

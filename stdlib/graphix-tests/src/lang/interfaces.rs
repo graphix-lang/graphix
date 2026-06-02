@@ -5,7 +5,7 @@
 // Abstract types are opaque - the caller cannot see the concrete type.
 
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 // =============================================================================
@@ -13,7 +13,7 @@ use netidx::publisher::Value;
 // =============================================================================
 
 // Basic abstract type: interface declares abstract type, implementation provides concrete
-run_no_jit!(
+run!(
     abstract_type_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -30,10 +30,10 @@ run_no_jit!(
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type implemented as a struct
-run_no_jit!(
+run!(
     abstract_type_struct_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
     "/test.gx" => r#"
@@ -50,10 +50,10 @@ run_no_jit!(
         let make = |x: string| -> Handle { value: x };
         let get_name = |h: Handle| h.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Interface without abstract types (regression test - should still work)
-run_no_jit!(
+run!(
     interface_no_abstract_types,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(30))),
     "/test.gx" => r#"
@@ -66,14 +66,14 @@ run_no_jit!(
     "/test/inner.gx" => r#"
         let add = |a: i64, b: i64| -> i64 a + b
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Multiple Abstract Types
 // =============================================================================
 
 // Multiple abstract types in same interface
-run_no_jit!(
+run!(
     abstract_type_multiple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
     "/test.gx" => r#"
@@ -95,10 +95,10 @@ run_no_jit!(
         let make_b = |y: i64| -> B { y };
         let combine = |a: A, b: B| -> i64 a.x + b.y
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Two modules using same abstract type name with different definitions
-run_no_jit!(
+run!(
     abstract_type_different_modules,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(142))),
     "/test.gx" => r#"
@@ -126,10 +126,10 @@ run_no_jit!(
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type used in exported type definition
-run_no_jit!(
+run!(
     abstract_type_in_typedef,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(77))),
     "/test.gx" => r#"
@@ -148,14 +148,14 @@ run_no_jit!(
         let make_pair = |a: i64, b: string| -> Pair { first: a, second: b };
         let get_first = |p: Pair| -> i64 p.first
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Compound Types
 // =============================================================================
 
 // Abstract type in variant (exported type references abstract type)
-run_no_jit!(
+run!(
     abstract_type_in_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -177,10 +177,10 @@ run_no_jit!(
             `None => default
         }
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type in tuple
-run_no_jit!(
+run!(
     abstract_type_in_tuple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
     "/test.gx" => r#"
@@ -198,10 +198,10 @@ run_no_jit!(
         let make_pair = |a: i64, b: i64| -> Pair (a, b);
         let sum_pair = |p: Pair| -> i64 p.0 + p.1
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type in array
-run_no_jit!(
+run!(
     abstract_type_in_array,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
     "/test.gx" => r#"
@@ -218,14 +218,14 @@ run_no_jit!(
         let make_array = |arr: Array<i64>| -> Array<Elem> arr;
         let sum_array = |arr: Array<Elem>| -> i64 array::fold(arr, 0, |acc, x| acc + x)
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Type used in Recursive Type
 // =============================================================================
 
 // Abstract type used in recursive type
-run_no_jit!(
+run!(
     abstract_type_recursive,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
     "/test.gx" => r#"
@@ -248,14 +248,14 @@ run_no_jit!(
             `Nil => 0
         }
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types with ByRef
 // =============================================================================
 
 // Abstract type with byref parameter - collects values to verify update
-run_no_jit!(
+run!(
     abstract_type_byref,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -281,14 +281,14 @@ run_no_jit!(
         let get = |c: Counter| -> i64 c;
         let increment = |c: &Counter| -> null { *c <- once(*c) + 1; null }
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Nested Modules with Abstract Types
 // =============================================================================
 
 // Nested module with abstract type
-run_no_jit!(
+run!(
     abstract_type_nested_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(99))),
     "/test.gx" => r#"
@@ -311,14 +311,14 @@ run_no_jit!(
         let make = |x: i64| -> T { v: x };
         let get = |t: T| -> i64 t.v
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Dynamic Modules with Abstract Types
 // =============================================================================
 
 // Dynamic module with abstract type in signature
-run_no_jit!(
+run!(
     abstract_type_dynamic_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
     "/test.gx" => r#"
@@ -341,14 +341,14 @@ run_no_jit!(
             null as _ => dyn::double(dyn::make(42))
         }
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Error Cases
 // =============================================================================
 
 // Error: missing concrete definition for abstract type
-run_no_jit!(
+run!(
     abstract_type_missing_definition,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -362,10 +362,10 @@ run_no_jit!(
     "/test/inner.gx" => r#"
         let x = 42
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Abstract type in implementation is allowed (type stays opaque)
-run_no_jit!(
+run!(
     abstract_type_still_abstract,
     |v: Result<&Value>| v.map(|v| v == &Value::I64(0)).unwrap_or(false),
     "/test.gx" => r#"
@@ -380,10 +380,10 @@ run_no_jit!(
         type T;
         let x = 42
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Error: signature type mismatch (function returns wrong type)
-run_no_jit!(
+run!(
     abstract_type_sig_mismatch,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -398,10 +398,10 @@ run_no_jit!(
         type T = string;
         let make = |x: i64| -> i64 x
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: abstract type parameter constraint mismatch
-run_no_jit!(
+run!(
     abstract_type_constraint_mismatch,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -416,12 +416,12 @@ run_no_jit!(
         type T<'a> = { val: 'a };
         let make = |x: 'a| -> T<'a> { val: x }
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Abstract type constraint is automatically enforced on functions
 // The constraint on type Box<'a: Number> should propagate to wrap/unwrap
 // without needing to repeat the constraint in the val declarations
-run_no_jit!(
+run!(
     abstract_type_constraint_auto_enforced,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -439,11 +439,11 @@ run_no_jit!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: abstract type constraint violation - string doesn't satisfy Number
 // The constraint from type Box<'a: Number> should reject non-Number types
-run_no_jit!(
+run!(
     abstract_type_constraint_auto_enforced_error,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -461,10 +461,10 @@ run_no_jit!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: extra type parameter in implementation
-run_no_jit!(
+run!(
     abstract_type_extra_param,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -479,11 +479,11 @@ run_no_jit!(
         type T<'a, 'b> = ('a, 'b);
         let x = 42
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: function argument type doesn't match abstract type
 // Signature says get takes T, but implementation's concrete type doesn't match
-run_no_jit!(
+run!(
     abstract_type_wrong_arg,
     |v: Result<&Value>| v.is_err(),
     "/test.gx" => r#"
@@ -498,14 +498,14 @@ run_no_jit!(
         type T = string;
         let get = |t: i64| -> i64 t
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // =============================================================================
 // Parameterized Abstract Types
 // =============================================================================
 
 // Basic parameterized abstract type
-run_no_jit!(
+run!(
     abstract_type_parameterized_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -523,10 +523,10 @@ run_no_jit!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type instantiated with different concrete types
-run_no_jit!(
+run!(
     abstract_type_parameterized_multi_instantiation,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
     "/test.gx" => r#"
@@ -545,12 +545,12 @@ run_no_jit!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with constraint - use concrete type in interface
 // Note: Constrained type parameters in val declarations use a different syntax.
 // This test uses a concrete instantiation to sidestep that complexity.
-run_no_jit!(
+run!(
     abstract_type_parameterized_constrained,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
     "/test.gx" => r#"
@@ -568,10 +568,10 @@ run_no_jit!(
         let wrap = |x: i64| -> IntWrapper x;
         let double = |w: IntWrapper| -> i64 w + w
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type in nested position (Array of Box)
-run_no_jit!(
+run!(
     abstract_type_parameterized_nested,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
     "/test.gx" => r#"
@@ -590,10 +590,10 @@ run_no_jit!(
         let sum_boxes = |boxes: IntBoxArray| -> i64
             array::fold(boxes, 0, |acc, b| acc + b.value)
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with two type parameters
-run_no_jit!(
+run!(
     abstract_type_parameterized_two_params,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
     "/test.gx" => r#"
@@ -613,14 +613,14 @@ run_no_jit!(
         let get_first = |p: Pair<'a, 'b>| -> 'a p.first;
         let get_second = |p: Pair<'a, 'b>| -> 'b p.second
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Map
 // =============================================================================
 
 // Abstract type as Map key
-run_no_jit!(
+run!(
     abstract_type_map_key,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "found"),
     "/test.gx" => r#"
@@ -642,10 +642,10 @@ run_no_jit!(
         let make_map = || -> KeyMap {42 => "found", 99 => "other"};
         let lookup = |m: KeyMap, k: Key| m{k}?
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Abstract type as Map value
-run_no_jit!(
+run!(
     abstract_type_map_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -667,10 +667,10 @@ run_no_jit!(
         let get = |m: ValMap, k: string| -> Val m{k}?;
         let unwrap = |v: Val| -> i64 v.inner
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract types as both Map key and value
-run_no_jit!(
+run!(
     abstract_type_map_key_and_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(100))),
     "/test.gx" => r#"
@@ -697,14 +697,14 @@ run_no_jit!(
         let lookup = |m: KVMap, k: K| -> V m{k}?;
         let get_val = |v: V| -> i64 v
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Throws Clause
 // =============================================================================
 
 // Abstract type as error payload in throws clause
-run_no_jit!(
+run!(
     abstract_type_in_throws,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -725,11 +725,11 @@ run_no_jit!(
         type ErrPayload = { code: i64, msg: string };
         let risky = |x: i64| -> i64 x
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type used with a function that has throws clause
 // This tests that functions returning abstract types can be declared with throws
-run_no_jit!(
+run!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
@@ -755,7 +755,7 @@ run_no_jit!(
             a[0]?
         }
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Cross-Module Abstract Type Usage
@@ -766,7 +766,7 @@ run_no_jit!(
 // resolution. The following tests demonstrate simpler patterns that work.
 
 // Two modules with separate abstract types, combined at the caller level
-run_no_jit!(
+run!(
     abstract_type_two_modules_combined,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
     "/test.gx" => r#"
@@ -794,4 +794,4 @@ run_no_jit!(
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);

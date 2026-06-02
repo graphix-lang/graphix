@@ -55,6 +55,15 @@ pub struct BuiltKernel {
     /// Splice target — drives how `splice_one` plugs the kernel
     /// back into the runtime's nodes map.
     pub splice: SpliceTarget,
+    /// Transitively-reachable sub-kernels referenced from this
+    /// kernel's body via [`crate::gir::GirOp::Call`]. The splicer
+    /// populates the runtime
+    /// [`crate::gir_interp::KernelRegistry`] from this map so Call
+    /// ops dispatch correctly.
+    pub called_kernels: std::collections::BTreeMap<
+        arcstr::ArcStr,
+        crate::fusion::lowering::CachedKernel,
+    >,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,10 +99,11 @@ pub fn build_region<R: Rt, E: UserEvent>(
     fn_name: &str,
     inputs: &[crate::fusion::RegionInput],
     discovery: crate::fusion::BuiltinCallDiscovery,
+    ec: &mut ExecCtx<R, E>,
 ) -> Result<BuiltKernel> {
     let known = std::collections::BTreeMap::new();
     let consts = std::collections::BTreeMap::new();
-    let (kernel, _signature) = crate::fusion::build_kir_kernel_from_region(
+    let (kernel, _signature, called_kernels) = crate::fusion::build_kir_kernel_from_region(
         fn_name,
         body,
         inputs,
@@ -102,6 +112,7 @@ pub fn build_region<R: Rt, E: UserEvent>(
         &known,
         &consts,
         discovery.apply_sites,
+        ec,
     )
     .ok_or_else(|| anyhow!("GIR emission failed for region {fn_name}"))?;
     Ok(BuiltKernel {
@@ -109,6 +120,7 @@ pub fn build_region<R: Rt, E: UserEvent>(
         kernel: StdArc::new(kernel),
         source_id,
         splice: SpliceTarget::NodeReplaceById,
+        called_kernels,
     })
 }
 
@@ -121,12 +133,13 @@ pub fn build_region_from_candidate<'a, R: Rt, E: UserEvent>(
     fn_name: &str,
     inputs: &[crate::fusion::RegionInput],
     discovery: crate::fusion::BuiltinCallDiscovery,
+    ec: &mut ExecCtx<R, E>,
 ) -> Result<BuiltKernel> {
     let body = match &candidate.kind {
         CandidateKind::Region { body, .. } => *body,
         _ => return Err(anyhow!("build_region called on non-Region candidate")),
     };
-    build_region(body, candidate.source_id, fn_name, inputs, discovery)
+    build_region(body, candidate.source_id, fn_name, inputs, discovery, ec)
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -174,10 +187,17 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         feeders: Box<[Node<R, E>]>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
+        called_kernels: std::collections::BTreeMap<
+            arcstr::ArcStr,
+            crate::fusion::lowering::CachedKernel,
+        >,
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
-        let registry =
-            StdArc::new(crate::gir_interp::KernelRegistry::default());
+        let mut registry = crate::gir_interp::KernelRegistry::default();
+        for (name, c) in called_kernels {
+            registry.kernels.insert(name, c.kernel);
+        }
+        let registry = StdArc::new(registry);
         let inner = match wrapped {
             Some(w) => crate::gir_interp::GirNode::with_jit(
                 ctx, kernel, n_args, w, registry, scope, top_id,
@@ -274,6 +294,7 @@ pub fn splice<R: Rt, E: UserEvent>(
             feeders,
             scope,
             top_id,
+            built.called_kernels.clone(),
         ),
         SpliceTarget::InitFnCache => Err(anyhow!(
             "splice: InitFnCache target not yet supported (LambdaBind path)"

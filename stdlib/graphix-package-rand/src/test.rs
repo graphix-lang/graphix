@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const RAND_FLOAT_DEFAULT: &str = r#"
@@ -63,7 +63,7 @@ const SHUFFLE_ARRAY: &str = r#"
 
 // Array-literal arg isn't lowered by emit_expr yet — kernel build
 // bails, no JIT. Migrate back to `run!` once `[a, b, c]` is wired.
-run_no_jit!(shuffle_array, SHUFFLE_ARRAY, |v: Result<&Value>| {
+run!(shuffle_array, SHUFFLE_ARRAY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
             a.len() == 3
@@ -73,15 +73,15 @@ run_no_jit!(shuffle_array, SHUFFLE_ARRAY, |v: Result<&Value>| {
         }
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SHUFFLE_EMPTY: &str = r#"
   rand::shuffle([])
 "#;
 
-run_no_jit!(shuffle_empty, SHUFFLE_EMPTY, |v: Result<&Value>| {
+run!(shuffle_empty, SHUFFLE_EMPTY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);

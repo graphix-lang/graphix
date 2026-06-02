@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 // Every fixture binds with port `:0` so the OS assigns a fresh
@@ -19,9 +19,9 @@ const TCP_CONNECT_ACCEPT: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
+run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Connect to unbound port fails. We can't easily pick a guaranteed-
 // unbound ephemeral port, so use port 1 (universally reserved
@@ -31,9 +31,9 @@ const TCP_CONNECT_FAIL: &str = r#"
   is_err(sys::tcp::connect("127.0.0.1:1"))
 "#;
 
-run_no_jit!(tcp_connect_fail, TCP_CONNECT_FAIL, |v: Result<&Value>| {
+run!(tcp_connect_fail, TCP_CONNECT_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Listen on already-bound port fails. Bind once with port 0 to
 // claim a fresh ephemeral, then try to listen on the same actual
@@ -46,9 +46,9 @@ const TCP_LISTEN_FAIL: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
+run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Write on client, read on server
 const TCP_WRITE_READ: &str = r#"
@@ -62,9 +62,9 @@ const TCP_WRITE_READ: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
+run!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // write_exact on client, read on server
 const TCP_WRITE_EXACT: &str = r#"
@@ -78,9 +78,9 @@ const TCP_WRITE_EXACT: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
+run!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "world")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Write known data, read_exact on server
 const TCP_READ_EXACT: &str = r#"
@@ -94,9 +94,9 @@ const TCP_READ_EXACT: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
+run!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "exact")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Shutdown returns null (wait for accept before shutting down)
 const TCP_SHUTDOWN: &str = r#"
@@ -109,9 +109,9 @@ const TCP_SHUTDOWN: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
+run!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // peer_addr on client returns server address. Compare the
 // returned address against the listener's bound address inside
@@ -126,9 +126,9 @@ const TCP_PEER_ADDR: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
+run!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // local_addr on server matches listener address.
 const TCP_LOCAL_ADDR: &str = r#"
@@ -141,9 +141,9 @@ const TCP_LOCAL_ADDR: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
+run!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // write returns number of bytes written
 const TCP_WRITE_RETURNS_LEN: &str = r#"
@@ -156,6 +156,6 @@ const TCP_WRITE_RETURNS_LEN: &str = r#"
 }
 "#;
 
-run_no_jit!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
+run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

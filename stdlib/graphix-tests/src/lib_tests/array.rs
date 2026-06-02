@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const ARRAY_MAP0: &str = r#"
@@ -10,7 +10,7 @@ const ARRAY_MAP0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
+run!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::Bool(false), Value::Bool(false), Value::Bool(false), Value::Bool(true)] => {
@@ -20,7 +20,7 @@ run_no_jit!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_MAP1: &str = r#"
 {
@@ -30,7 +30,7 @@ const ARRAY_MAP1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
+run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[[i64; 2]; 2]>() {
             Ok([[2, 3], [3, 4]]) => true,
@@ -38,18 +38,18 @@ run_no_jit!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
         },
         Err(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_MAP2: &str = r#"
   array::map([1, 2], |x| str::len(x))
 "#;
 
-run_no_jit!(array_map2, ARRAY_MAP2, |v: Result<&Value>| {
+run!(array_map2, ARRAY_MAP2, |v: Result<&Value>| {
     match v {
         Err(_) => true,
         Ok(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FILTER: &str = r#"
 {
@@ -58,7 +58,7 @@ const ARRAY_FILTER: &str = r#"
 }
 "#;
 
-run_no_jit!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
+run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(4), Value::I64(5), Value::I64(6), Value::I64(7), Value::I64(8)] => {
@@ -68,7 +68,7 @@ run_no_jit!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FLAT_MAP: &str = r#"
 {
@@ -77,7 +77,7 @@ const ARRAY_FLAT_MAP: &str = r#"
 }
 "#;
 
-run_no_jit!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
+run!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(2), Value::I64(3)] => true,
@@ -85,7 +85,7 @@ run_no_jit!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FILTER_MAP: &str = r#"
 {
@@ -97,7 +97,7 @@ const ARRAY_FILTER_MAP: &str = r#"
 }
 "#;
 
-run_no_jit!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
+run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(7), Value::I64(8), Value::I64(9)] => true,
@@ -105,7 +105,7 @@ run_no_jit!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FIND: &str = r#"
 {
@@ -115,7 +115,7 @@ const ARRAY_FIND: &str = r#"
 }
 "#;
 
-run_no_jit!(array_find, ARRAY_FIND, |v: Result<&Value>| {
+run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s), Value::I64(2)] => &**s == "bar",
@@ -123,7 +123,7 @@ run_no_jit!(array_find, ARRAY_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FIND_MAP: &str = r#"
 {
@@ -136,23 +136,23 @@ const ARRAY_FIND_MAP: &str = r#"
 }
 "#;
 
-run_no_jit!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
+run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(2)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_ITER: &str = r#"
    filter(array::iter([1, 2, 3, 4]), |x| x == 4)
 "#;
 
-run_no_jit!(array_iter, ARRAY_ITER, |v: Result<&Value>| {
+run!(array_iter, ARRAY_ITER, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(4)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_ITERQ: &str = r#"
 {
@@ -165,12 +165,12 @@ const ARRAY_ITERQ: &str = r#"
 }
 "#;
 
-run_no_jit!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
+run!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FOLD0: &str = r#"
 {
@@ -179,12 +179,12 @@ const ARRAY_FOLD0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
+run!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(55)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FOLD1: &str = r#"
 {
@@ -193,12 +193,12 @@ const ARRAY_FOLD1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_fold1, ARRAY_FOLD1, |v: Result<&Value>| {
+run!(array_fold1, ARRAY_FOLD1, |v: Result<&Value>| {
     match v {
         Err(_) => true,
         Ok(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_CONCAT: &str = r#"
   array::concat([1, 2, 3], [4, 5], [6])
@@ -220,56 +220,56 @@ const ARRAY_PUSH: &str = r#"
   array::push([(1, 2), (3, 4)], (5, 6))
 "#;
 
-run_no_jit!(array_push, ARRAY_PUSH, |v: Result<&Value>| {
+run!(array_push, ARRAY_PUSH, |v: Result<&Value>| {
     match v.and_then(|v| v.clone().cast_to::<[(u64, u64); 3]>()) {
         Ok([(1, 2), (3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_PUSH_FRONT: &str = r#"
   array::push_front([(1, 2), (3, 4)], (5, 6))
 "#;
 
-run_no_jit!(array_push_front, ARRAY_PUSH_FRONT, |v: Result<&Value>| {
+run!(array_push_front, ARRAY_PUSH_FRONT, |v: Result<&Value>| {
     match v.and_then(|v| v.clone().cast_to::<[(u64, u64); 3]>()) {
         Ok([(5, 6), (1, 2), (3, 4)]) => true,
         Ok(_) | Err(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_WINDOW0: &str = r#"
   array::window(#n:1, [(1, 2), (3, 4)], (5, 6))
 "#;
 
-run_no_jit!(array_window0, ARRAY_WINDOW0, |v: Result<&Value>| {
+run!(array_window0, ARRAY_WINDOW0, |v: Result<&Value>| {
     match v.and_then(|v| v.clone().cast_to::<[(u64, u64); 1]>()) {
         Ok([(5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_WINDOW1: &str = r#"
   array::window(#n:2, [(1, 2), (3, 4)], (5, 6))
 "#;
 
-run_no_jit!(array_window1, ARRAY_WINDOW1, |v: Result<&Value>| {
+run!(array_window1, ARRAY_WINDOW1, |v: Result<&Value>| {
     match v.and_then(|v| v.clone().cast_to::<[(u64, u64); 2]>()) {
         Ok([(3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_WINDOW2: &str = r#"
   array::window(#n:3, [(1, 2), (3, 4)], (5, 6))
 "#;
 
-run_no_jit!(array_window2, ARRAY_WINDOW2, |v: Result<&Value>| {
+run!(array_window2, ARRAY_WINDOW2, |v: Result<&Value>| {
     match v.and_then(|v| v.clone().cast_to::<[(u64, u64); 3]>()) {
         Ok([(1, 2), (3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_LEN: &str = r#"
 {
@@ -278,18 +278,18 @@ const ARRAY_LEN: &str = r#"
 }
 "#;
 
-run_no_jit!(array_len, ARRAY_LEN, |v: Result<&Value>| {
+run!(array_len, ARRAY_LEN, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])
 "#;
 
-run_no_jit!(array_flatten, ARRAY_FLATTEN, |v: Result<&Value>| {
+run!(array_flatten, ARRAY_FLATTEN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5), Value::I64(6)] => {
@@ -299,7 +299,7 @@ run_no_jit!(array_flatten, ARRAY_FLATTEN, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_GROUP0: &str = r#"
 {
@@ -308,7 +308,7 @@ const ARRAY_GROUP0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
+run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -316,7 +316,7 @@ run_no_jit!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_GROUP1: &str = r#"
 {
@@ -325,12 +325,12 @@ const ARRAY_GROUP1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_group1, ARRAY_GROUP1, |v: Result<&Value>| {
+run!(array_group1, ARRAY_GROUP1, |v: Result<&Value>| {
     match v {
         Ok(_) => false,
         Err(_) => true,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_GROUP2: &str = r#"
 {
@@ -339,18 +339,18 @@ const ARRAY_GROUP2: &str = r#"
 }
 "#;
 
-run_no_jit!(array_group2, ARRAY_GROUP2, |v: Result<&Value>| {
+run!(array_group2, ARRAY_GROUP2, |v: Result<&Value>| {
     match v {
         Ok(_) => false,
         Err(_) => true,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)
 "#;
 
-run_no_jit!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
+run!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
             Ok([0, 2, 4, 6, 8]) => true,
@@ -358,18 +358,18 @@ run_no_jit!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INIT1: &str = r#"
   array::init(0, |i| i)
 "#;
 
-run_no_jit!(array_init1, ARRAY_INIT1, |v: Result<&Value>| {
+run!(array_init1, ARRAY_INIT1, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INIT2: &str = r#"
 {
@@ -378,18 +378,18 @@ const ARRAY_INIT2: &str = r#"
 }
 "#;
 
-run_no_jit!(array_init2, ARRAY_INIT2, |v: Result<&Value>| {
+run!(array_init2, ARRAY_INIT2, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INIT3: &str = r#"
   array::init(4, |i| (i, i * i))
 "#;
 
-run_no_jit!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
+run!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 4]>() {
             Ok([(0, 0), (1, 1), (2, 4), (3, 9)]) => true,
@@ -397,18 +397,18 @@ run_no_jit!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INIT4: &str = r#"
   array::init(3, |i| str::len(i))
 "#;
 
-run_no_jit!(array_init4, ARRAY_INIT4, |v: Result<&Value>| {
+run!(array_init4, ARRAY_INIT4, |v: Result<&Value>| {
     match v {
         Err(_) => true,
         Ok(_) => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_SORT0: &str = r#"
 {
@@ -417,7 +417,7 @@ const ARRAY_SORT0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
+run!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
             Ok([1, 2, 3, 4, 5]) => true,
@@ -425,7 +425,7 @@ run_no_jit!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_SORT1: &str = r#"
 {
@@ -434,7 +434,7 @@ const ARRAY_SORT1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_sort1, ARRAY_SORT1, |v: Result<&Value>| {
+run!(array_sort1, ARRAY_SORT1, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
             Ok([5, 4, 3, 2, 1]) => true,
@@ -442,7 +442,7 @@ run_no_jit!(array_sort1, ARRAY_SORT1, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_SORT2: &str = r#"
 {
@@ -451,7 +451,7 @@ const ARRAY_SORT2: &str = r#"
 }
 "#;
 
-run_no_jit!(array_sort2, ARRAY_SORT2, |v: Result<&Value>| {
+run!(array_sort2, ARRAY_SORT2, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[ArcStr; 9]>() {
             Ok([a0, a1, a2, a3, a4, a5, a6, a7, a8]) => {
@@ -469,7 +469,7 @@ run_no_jit!(array_sort2, ARRAY_SORT2, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_SORT3: &str = r#"
 {
@@ -478,7 +478,7 @@ const ARRAY_SORT3: &str = r#"
 }
 "#;
 
-run_no_jit!(array_sort3, ARRAY_SORT3, |v: Result<&Value>| {
+run!(array_sort3, ARRAY_SORT3, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[ArcStr; 9]>() {
             Ok([a0, a1, a2, a3, a4, a5, a6, a7, a8]) => {
@@ -496,7 +496,7 @@ run_no_jit!(array_sort3, ARRAY_SORT3, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_DEDUP0: &str = r#"
 {
@@ -505,7 +505,7 @@ const ARRAY_DEDUP0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_dedup0, ARRAY_DEDUP0, |v: Result<&Value>| {
+run!(array_dedup0, ARRAY_DEDUP0, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
             Ok([1, 2, 3, 4, 5]) => true,
@@ -513,7 +513,7 @@ run_no_jit!(array_dedup0, ARRAY_DEDUP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_DEDUP1: &str = r#"
 {
@@ -522,12 +522,12 @@ const ARRAY_DEDUP1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_dedup1, ARRAY_DEDUP1, |v: Result<&Value>| {
+run!(array_dedup1, ARRAY_DEDUP1, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_DEDUP2: &str = r#"
 {
@@ -536,7 +536,7 @@ const ARRAY_DEDUP2: &str = r#"
 }
 "#;
 
-run_no_jit!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
+run!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[ArcStr; 4]>() {
             Ok([s0, s1, s2, s3]) => {
@@ -546,7 +546,7 @@ run_no_jit!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_ENUMERATE: &str = r#"
 {
@@ -555,7 +555,7 @@ const ARRAY_ENUMERATE: &str = r#"
 }
 "#;
 
-run_no_jit!(array_enumerate, ARRAY_ENUMERATE, |v: Result<&Value>| {
+run!(array_enumerate, ARRAY_ENUMERATE, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 3]>() {
             Ok([(0, 1), (1, 2), (2, 3)]) => true,
@@ -563,7 +563,7 @@ run_no_jit!(array_enumerate, ARRAY_ENUMERATE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_ZIP: &str = r#"
 {
@@ -573,7 +573,7 @@ const ARRAY_ZIP: &str = r#"
 }
 "#;
 
-run_no_jit!(array_zip, ARRAY_ZIP, |v: Result<&Value>| {
+run!(array_zip, ARRAY_ZIP, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 3]>() {
             Ok([(1, 1), (2, 2), (5, 3)]) => true,
@@ -581,7 +581,7 @@ run_no_jit!(array_zip, ARRAY_ZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_UNZIP: &str = r#"
 {
@@ -590,7 +590,7 @@ const ARRAY_UNZIP: &str = r#"
 }
 "#;
 
-run_no_jit!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
+run!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<([i64; 3], [i64; 3])>() {
             Ok(([1, 2, 5], [1, 2, 3])) => true,
@@ -598,4 +598,4 @@ run_no_jit!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

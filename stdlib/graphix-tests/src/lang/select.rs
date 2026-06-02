@@ -1,7 +1,7 @@
 // Tests for select/match expressions
 
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const SELECT0: &str = r#"
@@ -17,10 +17,11 @@ const SELECT0: &str = r#"
 }
 "#;
 
-run_no_jit!(select0, SELECT0, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: string interpolation in select expression
+run!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LOOPING_SELECT: &str = r#"
 {
@@ -34,10 +35,10 @@ const LOOPING_SELECT: &str = r#"
 }
 "#;
 
-run_no_jit!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
+run!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const SELECTSTRUCT: &str = r#"
 {
@@ -50,10 +51,11 @@ const SELECTSTRUCT: &str = r#"
 }
 "#;
 
-run_no_jit!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MATCH_EXHAUST0: &str = r#"
 select 42 {
@@ -63,10 +65,11 @@ select 42 {
 }
 "#;
 
-run_no_jit!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: unspecified
+run!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MATCH_EXHAUST1: &str = r#"
 select 42 {
@@ -76,10 +79,11 @@ select 42 {
 }
 "#;
 
-run_no_jit!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: select pattern analysis
+run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const NESTEDMATCH0: &str = r#"
 {
@@ -90,10 +94,11 @@ const NESTEDMATCH0: &str = r#"
 }
 "#;
 
-run_no_jit!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const NESTEDMATCH1: &str = r#"
 {
@@ -105,10 +110,11 @@ const NESTEDMATCH1: &str = r#"
 }
 "#;
 
-run_no_jit!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const NESTEDMATCH2: &str = r#"
 {
@@ -119,13 +125,14 @@ const NESTEDMATCH2: &str = r#"
 }
 "#;
 
-run_no_jit!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: unspecified
+run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
     Err(e) => {
         dbg!(e);
         true
     }
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const NESTEDMATCH3: &str = r#"
 {
@@ -137,7 +144,8 @@ const NESTEDMATCH3: &str = r#"
 }
 "#;
 
-run_no_jit!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);

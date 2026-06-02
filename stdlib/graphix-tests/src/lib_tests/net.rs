@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const NET_PUB_SUB: &str = r#"
@@ -10,12 +10,12 @@ const NET_PUB_SUB: &str = r#"
 }
 "#;
 
-run_no_jit!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
+run!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_WRITE0: &str = r#"
 {
@@ -28,7 +28,7 @@ const NET_WRITE0: &str = r#"
 }
 "#;
 
-run_no_jit!(net_write0, NET_WRITE0, |v: Result<&Value>| {
+run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(42), Value::I64(43)] => true,
@@ -36,7 +36,7 @@ run_no_jit!(net_write0, NET_WRITE0, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_WRITE1: &str = r#"
 {
@@ -49,7 +49,7 @@ const NET_WRITE1: &str = r#"
 }
 "#;
 
-run_no_jit!(net_write1, NET_WRITE1, |v: Result<&Value>| {
+run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
     // with type-aware casting, the i64 write gets cast to string
     // and then cast<i64> in the callback converts it back successfully
     match v {
@@ -59,7 +59,7 @@ run_no_jit!(net_write1, NET_WRITE1, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_LIST: &str = r#"
 {
@@ -69,7 +69,7 @@ const NET_LIST: &str = r#"
 }
 "#;
 
-run_no_jit!(net_list, NET_LIST, |v: Result<&Value>| {
+run!(net_list, NET_LIST, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => {
@@ -81,7 +81,7 @@ run_no_jit!(net_list, NET_LIST, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_LIST_TABLE: &str = r#"
 {
@@ -95,12 +95,12 @@ const NET_LIST_TABLE: &str = r#"
 }
 "#;
 
-run_no_jit!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
+run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_RPC0: &str = r#"
 {
@@ -126,9 +126,9 @@ const NET_RPC0: &str = r#"
 }
 "#;
 
-run_no_jit!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
+run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

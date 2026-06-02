@@ -106,6 +106,21 @@ impl Ord for FnArgKind {
     }
 }
 
+impl std::hash::Hash for FnArgKind {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Mirror PartialEq: Positional ignores the documentation name;
+        // Labeled hashes name + has_default.
+        match self {
+            FnArgKind::Positional { .. } => 0u8.hash(state),
+            FnArgKind::Labeled { name, has_default } => {
+                1u8.hash(state);
+                name.hash(state);
+                has_default.hash(state);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FnArgType {
     pub kind: FnArgKind,
@@ -151,6 +166,13 @@ impl PartialOrd for FnArgType {
 impl Ord for FnArgType {
     fn cmp(&self, other: &Self) -> Ordering {
         self.kind.cmp(&other.kind).then_with(|| self.typ.cmp(&other.typ))
+    }
+}
+
+impl std::hash::Hash for FnArgType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.typ.hash(state);
     }
 }
 
@@ -238,6 +260,32 @@ impl PartialOrd for FnType {
 impl Ord for FnType {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other).unwrap()
+    }
+}
+
+impl std::hash::Hash for FnType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Mirror PartialEq: include args, vargs, rtype, constraints
+        // (locked), throws. Skip lambda_ids (provenance) and
+        // explicit_throws (the pretty-printer doesn't preserve it
+        // through round-trip when `throws == Bottom`, so equality
+        // would break parser round-trip tests; for fusion's
+        // monomorphization cache, explicit_throws is folded into
+        // the key separately).
+        let Self {
+            args,
+            vargs,
+            rtype,
+            constraints,
+            throws,
+            explicit_throws: _,
+            lambda_ids: _,
+        } = self;
+        args.hash(state);
+        vargs.hash(state);
+        rtype.hash(state);
+        constraints.read().hash(state);
+        throws.hash(state);
     }
 }
 

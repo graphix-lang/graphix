@@ -2026,3 +2026,164 @@ architecture lands.
 **Verified**: 1767/1767 graphix-tests + 156/156 graphix-compiler
 unit tests pass after the landing. Includes all the failing-then-
 fixed labeled-default tests above.
+
+### On-demand lambda kernel cache + closure conversion (Phases A–D, May 2026)
+
+Lambdas now fuse end-to-end through a per-`ExecCtx` kernel cache and
+cross-kernel `GirOp::Call`. Four coupled phases:
+
+**Phase A — thread `&mut ExecCtx` through the fusion emit path.**
+`emit_node` and every emit helper (`emit_known_fused_call`,
+`emit_select_as_expr`, `emit_do_as_expr`, `emit_body`/`emit_tail`/
+`emit_select`/`emit_arm`, `build_kernel`/`finish_kernel`/
+`build_kir_kernel_from_region`, `build_region`) gained an `ec: &mut
+ExecCtx<R, E>` parameter alongside `&mut FusionCtx`. The
+`GirEmitter::emit_gir` trait method and the `MapFn`/`FoldFn::emit_gir`
+hooks (graphix-package-core, graphix-package-array) gained it too.
+`FusionCtx::with_input` became `&mut self` (push/emit/pop) so the
+HOF intercepts thread the same ctx rather than cloning. Pure
+plumbing — no behavior change; 1767/1767 stayed green.
+
+**Phase B — `(LambdaId, Arc<FnType>)` kernel cache.** `ExecCtx`
+gained `fusion_kernels: Mutex<BTreeMap<(LambdaId, Arc<FnType>),
+CachedKernel>>`. `GXLambda` gained an `id: LambdaId` field (+
+`id()` accessor). New `ensure_lambda_kernel(g, source_name, ctx,
+ec)`: at a `NodeView::CallSite` whose `resolved_apply()` is
+`ApplyView::Lambda(g)`, compute the cache key (`g.id()`,
+`g.typ().resolve_tvars()`), look up / build the kernel, register it
+in `ctx.known_fns` + `ctx.called_kernels`. `CachedKernel { fn_name,
+kernel, signature, captures }`. To make `FnType` a hashable key:
+manual `Hash` on `Type`/`TVar`/`TypeRef`/`FnType`/`FnArgType`/
+`FnArgKind` (lock-the-RwLock pattern, like `TVar`'s existing
+`PartialEq`). `FnType`'s `Hash`/`PartialEq`/`Ord` deliberately
+EXCLUDE `lambda_ids` (provenance) AND `explicit_throws` — the
+pretty-printer doesn't preserve `explicit_throws` through round-trip
+when `throws == Bottom`, so including it breaks the parser
+round-trip proptests (`expr_round_trip*`). The splice's
+`FusedKernel::new` populates the interp `KernelRegistry` from
+`called_kernels` (keyed by source name = `GirOp::Call.fn_name`).
+
+**Phase C — closure conversion (captures as extra kernel args).**
+`ensure_lambda_kernel` collects the lambda's formal-arg BindIds
+(from `g.args()`), walks `g.body().refs()`, and treats every
+external Ref NOT in the formal-arg set as a capture. Critically the
+formal-arg ids must be excluded explicitly — `g.body().refs()`
+reports the body's refs but the *lambda arg patterns* bind their
+ids in the lambda Node, outside the body, so a body `Ref(x)` to a
+formal `x` would otherwise be mis-collected as a capture (the bug
+that made the first cut produce `captures=2` for `|x| x + y`).
+Captures are sorted by `bind_id.inner()` (deterministic kernel
+signature → stable cache entry) and appended to the kernel inputs
+AFTER the formal args; each becomes a `CaptureSlot { bind_id, name,
+typ }`. `emit_lambda_call` forwards each capture's CURRENT value
+(live semantics, matching the GXLambda interpreter) via the new
+`FusionCtx::lookup_local_by_bind_id` — BindId-keyed, NOT name-keyed,
+so an outer capture isn't shadowed by a same-named parent local
+(`let y=7; let f=|x| x+y; { let y=100; f(5) }` → 12, not 105). The
+`NodeView::Ref` arm now prefers `lookup_local_by_bind_id(r.id)` with
+name-keyed fallback. The cascade is automatic: `CallSite::refs`
+recurses into a statically-resolved lambda's body via
+`GXLambda::refs`, so a lambda's captures transitively surface as
+external Refs of the enclosing region — `collect_region_inputs`
+(was `collect_scalar_inputs`, now generalized via
+`GirType::from_type` + `gir_type_to_region_input_kind`) registers
+them as parent inputs with their BindId, and `lookup_local_by_bind_id`
+finds them. `RegionInput` / the input slot structs carry an
+`Option<BindId>` populated by `populate_kernel_inputs`. Fn-typed
+externals are skipped (statically-resolved callees lower via their
+own CallSite → `GirOp::Call`; the body emit bails if a fn is needed
+as a value).
+
+**Phase D — JIT cross-kernel calls.** `fuse()` builds a `callees`
+map from `built.called_kernels` and passes it to
+`compile_kernel_with_callees` (was `&Default::default()` — empty,
+which made any `GirOp::Call`-containing kernel fail to JIT and fall
+back to interp). Now scalar closures JIT end-to-end.
+
+**SCALAR-ONLY GUARD (important correctness boundary).** The
+cross-kernel `GirOp::Call` path only handles scalar args + scalar
+return today, on BOTH backends:
+- JIT (`gir_jit.rs` `GirOp::Call` ~3104): `compile_scalar` per arg,
+  passed in POSITIONAL order; but the callee's CLIF signature
+  (`ensure_declared`) groups params by KIND (scalars, then composite
+  pointers, then value-shape pairs). For a `(composite, scalar)`
+  arg order these diverge and a scalar gets routed into a pointer
+  slot → confirmed misaligned-pointer crash (`g((10,20), 5)` deref'd
+  `5` as a `*ValArray`).
+- Interp (`gir_interp.rs` `GirOp::Call` ~970): `.into_scalar()`s
+  every arg.
+So `ensure_lambda_kernel` bails (→ correct interp fallback, no
+fusion) if any formal arg, capture, or return type is non-`Prim`.
+Composite/value-shape captures (e.g. a tuple capture) therefore
+fall back to the interpreter — correct value, no JIT. Lifting this
+guard (kind-grouped reordering + 2-register value args + arg
+ownership on the JIT side, typed-slice arg routing on the interp
+side) is tracked as a follow-up; it is COUPLED to making
+lambda-binds-inside-fused-bodies fuse (nested-closure support),
+which makes function-name shadowing reachable and forces a switch
+from source-name kernel keying to unique per-`LambdaId` names (see
+the SAFETY INVARIANT comment at `ensure_lambda_kernel`'s
+early-return).
+
+**Verification**: 1773/1773 graphix-tests + 125/125 graphix-compiler
+unit tests. Closure smoke tests in `lang/fusion.rs`:
+`closure_primitive_capture` (prim capture, asserts JIT fired),
+`closure_capture_respects_shadow` (BindId-keyed correctness),
+`closure_fn_external_static` (lambda calling another lambda),
+`closure_nested_capture` + `closure_tuple_capture_falls_back`
+(interp fallback, correct value), and
+`call_arg_order_composite_then_scalar` (crash-regression guard for
+the composite-arg ordering). The crash was caught by running the
+code, NOT by the adversarial multi-agent review (whose ordering
+dimension missed it) — empirical execution remains essential.
+
+### Bidirectional fusion-expectation harness + fusion-state metric (May 2026)
+
+`run_no_jit!` is gone. Every test fixture now runs through `run!`
+with an explicit, **bidirectionally-checked** fusion expectation —
+the test fails if observed fusion differs from the assertion (fuses
+when it shouldn't, or fails to fuse/JIT when it should). This turns
+the suite into a live, drift-detecting map of the fusion frontier.
+Full design + the current metric live in `design/fusion_state.md`.
+
+- **`FuseExpect::{Jit, Interp, None}`** + `check_fuse_expectation`
+  in `graphix-package-core/src/testing.rs`. `run!(name, code, pred)`
+  defaults to `Jit`; explicit form is a trailing `; FuseExpect::X`
+  (the `;` separator made the 466-site `run_no_jit!`→`run!`
+  migration a uniform "insert before the closing paren").
+- **`FUSION_INVOCATIONS` counter** (`gir_jit_helpers.rs`, sibling to
+  `JIT_INVOCATIONS`), bumped at `GirNode::update`'s commit point —
+  counts every fused-kernel execution (JIT or interp). Together with
+  `JIT_INVOCATIONS` it distinguishes Jit (`JIT>0`) / Interp
+  (`FUSION>0 && JIT==0`, checked in fused mode since a jit-mode
+  JIT-compile failure makes `fuse()` skip the splice) / None
+  (`FUSION==0`).
+- **Discovery mode**: `GRAPHIX_FUSION_DISCOVERY=1` makes the jit arm
+  measure + print `FUSEMAPF`/`FUSEMAPJ` per fixture instead of
+  asserting — harvests the whole-corpus map in one run.
+
+**Real bug surfaced + fixed**: forcing the jit arm on previously-
+`run_no_jit!` fixtures hit `assertion failed: func_ctx.is_empty()`
+panics in cranelift (`array_sort`, `hbs`). Root cause: a kernel that
+errored mid-compile left the shared `FunctionBuilderContext`
+(`jit.builder_ctx`) dirty (it's only reset by `FunctionBuilder::
+finalize`, skipped on the `?` error path), poisoning the *next*
+kernel's `FunctionBuilder::new`. Fix: defensively reset
+`jit.builder_ctx = FunctionBuilderContext::new()` (and
+`clear_context` the `func_ctx`) at the start of `define_typed_kernel`
+/ `define_kernel_body` / `define_wrapper`. This unblocked JIT for
+`array_sort`/`hbs`/`array_indexing`/the `str_split` family — they
+JIT now. (Same class as the documented F64-bitcast poison.)
+
+**Metric** (graphix-tests, 543 `run!` fixtures): **385 Jit (71%),
+1 Interp, 157 None**. Of the None, **63 are aspiration gaps** (sync
+computation that should JIT but hits a cliff) — each annotated in
+its test file with `// ASPIRE: Jit (currently None) — blocked on:
+<cliff>`; the other 94 are genuinely-None (async/IO/error/typecheck).
+Biggest gap clusters: composite cross-kernel calls (#131, ~12), map
+literals/ops (10), datetime/duration arithmetic (8), nested variant
+payloads (6), labeled-arg lambdas (5), assorted sync builtins
+(sum/product/all/divide/filter_err). Closing a cluster = lower the
+cliff, then the bidirectional check forces upgrading the annotation
+to `Jit` (and deleting the ASPIRE comment). Distance to end-state:
+386 of ~449 should-fuse fixtures fuse today (86%).

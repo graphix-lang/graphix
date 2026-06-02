@@ -1,7 +1,7 @@
 // Tests for by-reference operations
 
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const BYREF_DEREF: &str = r#"
@@ -12,10 +12,10 @@ const BYREF_DEREF: &str = r#"
 }
 "#;
 
-run_no_jit!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
+run!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const BYREF_TUPLE: &str = r#"
 {
@@ -25,10 +25,10 @@ const BYREF_TUPLE: &str = r#"
 }
 "#;
 
-run_no_jit!(byref_tuple, BYREF_TUPLE, |v: Result<&Value>| match v {
+run!(byref_tuple, BYREF_TUPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const BYREF_PATTERN: &str = r#"
 {
@@ -39,10 +39,10 @@ const BYREF_PATTERN: &str = r#"
 }
 "#;
 
-run_no_jit!(byref_pattern, BYREF_PATTERN, |v: Result<&Value>| match v {
+run!(byref_pattern, BYREF_PATTERN, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CONNECT_DEREF0: &str = r#"
 {
@@ -53,13 +53,13 @@ const CONNECT_DEREF0: &str = r#"
 }
 "#;
 
-run_no_jit!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
+run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(41), Value::I64(42)] => true,
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CONNECT_DEREF1: &str = r#"
 {
@@ -70,10 +70,10 @@ const CONNECT_DEREF1: &str = r#"
 }
 "#;
 
-run_no_jit!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
+run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(41), Value::I64(42)] => true,
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

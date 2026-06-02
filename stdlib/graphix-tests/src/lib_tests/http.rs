@@ -1,12 +1,12 @@
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 fn cert_dir() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
 }
 
-run_no_jit!(http_round_trip, r#"{
+run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",
         headers: [],
@@ -23,9 +23,9 @@ run_no_jit!(http_round_trip, r#"{
     resp.body
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
-run_no_jit!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
+run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;
     let handler = |req: http::Request| {{
@@ -47,4 +47,4 @@ run_no_jit!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     resp.body
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-});
+}; graphix_package_core::testing::FuseExpect::None);

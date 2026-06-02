@@ -11,6 +11,87 @@ pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
 }
 
+/// The fusion outcome a [`run!`] fixture asserts for its program.
+/// Checked bidirectionally in the `fused` and `jit` modes: a fixture
+/// that fuses when it shouldn't (or fails to fuse / JIT when it
+/// should) fails the test, so the suite is a live, drift-detecting
+/// map of the fusion frontier.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FuseExpect {
+    /// The program builds a fused kernel AND the JIT compiles + runs
+    /// it natively. `JIT_INVOCATIONS > 0` in `jit` mode.
+    Jit,
+    /// The program builds a fused kernel, but it runs on the
+    /// interpreter — the JIT can't lower this shape yet (e.g.
+    /// composite cross-kernel call args). `FUSION > 0 && JIT == 0`.
+    Interp,
+    /// The program produces no fused kernel at all — async/IO edges,
+    /// error-expecting fixtures, or pure language-feature tests with
+    /// no sync subgraph to fuse. `FUSION == 0`.
+    None,
+}
+
+/// Assert the observed fusion counters match `expect`. Called after a
+/// fixture runs, in the `fused` (jit_active=false) and `jit`
+/// (jit_active=true) modes. Reads the per-thread `FUSION_INVOCATIONS`
+/// / `JIT_INVOCATIONS` counters (reset after runtime init, so they
+/// reflect only the fixture's own program).
+#[cfg(debug_assertions)]
+pub fn check_fuse_expectation(expect: FuseExpect, jit_active: bool) {
+    use graphix_compiler::gir_jit_helpers::{
+        fusion_invocations, jit_invocations,
+    };
+    let fusion = fusion_invocations();
+    let jit = jit_invocations();
+    match expect {
+        FuseExpect::Jit => {
+            assert!(
+                fusion > 0,
+                "fuse: Jit — expected a fused kernel to run but \
+                 FUSION_INVOCATIONS=0 (no kernel built/ran). Downgrade \
+                 to `fuse: None`, or fix the cliff.",
+            );
+            if jit_active {
+                assert!(
+                    jit > 0,
+                    "fuse: Jit — kernel ran but JIT_INVOCATIONS=0; it \
+                     fell back to the interpreter. Downgrade to \
+                     `fuse: Interp`, or fix the JIT cliff.",
+                );
+            }
+        }
+        FuseExpect::Interp => {
+            // In jit mode a JIT-compile failure makes `fuse()` skip the
+            // splice entirely (FUSION==0), so the only reliable signal
+            // here is "it didn't JIT". The presence of fusion is
+            // asserted in fused mode (JitDisabled), where the kernel
+            // splices and runs on the interpreter.
+            if jit_active {
+                assert!(
+                    jit == 0,
+                    "fuse: Interp — but JIT_INVOCATIONS>0, this now JITs. \
+                     Upgrade the annotation to `fuse: Jit`.",
+                );
+            } else {
+                assert!(
+                    fusion > 0,
+                    "fuse: Interp — expected a fused kernel to run on the \
+                     interpreter (fused mode) but FUSION_INVOCATIONS=0. \
+                     Downgrade to `fuse: None`.",
+                );
+            }
+        }
+        FuseExpect::None => {
+            assert!(
+                fusion == 0,
+                "fuse: None — expected NO fusion but FUSION_INVOCATIONS>0; \
+                 this program now fuses. Upgrade the annotation to \
+                 `fuse: Interp` (or `fuse: Jit` if it JITs).",
+            );
+        }
+    }
+}
+
 impl TestCtx {
     pub async fn shutdown(self) {
         drop(self.rt);
@@ -222,22 +303,37 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// interp + fused.
 #[macro_export]
 macro_rules! run {
+    // Default form: assert the program fuses AND JITs (`FuseExpect::Jit`).
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl $name, $pred, 30, true, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl $name, $pred, $timeout, true, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
-        $crate::run!(@impl $name, $pred, 30, true, $($path => $code),+);
+        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, $($path => $code),+);
     };
-    (@impl $name:ident, $pred:expr, $timeout:expr, $with_jit:expr, $($path:literal => $code:expr),+) => {
+    // Explicit fusion-expectation form: trailing `; FuseExpect::X`.
+    // The `;` separator makes the expectation insertable at the very
+    // end of any invocation regardless of its argument shape, which
+    // is what the run_no_jit!→run! migration relied on.
+    ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
+        $crate::run!(@impl $name, $pred, 30, $fexpect, "/test.gx" => format!("let result = {}", $code));
+    };
+    ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr; $fexpect:expr) => {
+        $crate::run!(@impl $name, $pred, $timeout, $fexpect, "/test.gx" => format!("let result = {}", $code));
+    };
+    ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr) => {
+        $crate::run!(@impl $name, $pred, 30, $fexpect, $($path => $code),+);
+    };
+    (@impl $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $($path:literal => $code:expr),+) => {
         mod $name {
             use super::*;
 
             async fn run_with_flags(
                 flags: ::graphix_compiler::BitFlags<::graphix_compiler::CFlag>,
-                reset_jit_counter_after_init: bool,
+                reset_counters_after_init: bool,
+                fusion_check: ::std::option::Option<bool>,
             ) -> ::anyhow::Result<()> {
                 let pred = $pred;
                 let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
@@ -249,14 +345,16 @@ macro_rules! run {
                     tx, &crate::TEST_REGISTER, vec![resolver], flags,
                     |_ctx| {},
                 ).await?;
-                // Reset the JIT invocation counter AFTER runtime
-                // init — init compiles the stdlib root module and
-                // may JIT-fuse things there. We only want to count
-                // JIT activity caused by the fixture's own compile
-                // below.
-                if reset_jit_counter_after_init {
+                // Reset the JIT + fusion invocation counters AFTER
+                // runtime init — init compiles the stdlib root module
+                // and may fuse/JIT things there. We only want to count
+                // activity caused by the fixture's own compile below.
+                if reset_counters_after_init {
                     #[cfg(debug_assertions)]
-                    ::graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+                    {
+                        ::graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+                        ::graphix_compiler::gir_jit_helpers::reset_fusion_invocations();
+                    }
                 }
                 let bs = &ctx.rt;
                 match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
@@ -275,6 +373,7 @@ macro_rules! run {
                                 batch = rx.recv() => match batch {
                                     None => ::anyhow::bail!("runtime died"),
                                     Some(mut batch) => {
+                                        let mut done = false;
                                         for e in batch.drain(..) {
                                             match e {
                                                 ::graphix_rt::GXEvent::Env(_) => (),
@@ -282,16 +381,24 @@ macro_rules! run {
                                                     eprintln!("{v}");
                                                     assert_eq!(id, eid);
                                                     assert!(pred(Ok(&v)));
-                                                    ctx.shutdown().await;
-                                                    return Ok(());
+                                                    done = true;
                                                 }
                                             }
                                         }
+                                        if done { break; }
                                     }
                                 }
                             }
                         }
                     }
+                }
+                // Bidirectional fusion-expectation check (debug only).
+                // `fusion_check` is `Some(jit_active)` in the modes
+                // that should check, `None` otherwise (interp mode,
+                // or `run_no_jit!`'s unchecked fixtures).
+                #[cfg(debug_assertions)]
+                if let ::std::option::Option::Some(jit_active) = fusion_check {
+                    $crate::testing::check_fuse_expectation($fexpect, jit_active);
                 }
                 ctx.shutdown().await;
                 Ok(())
@@ -299,61 +406,77 @@ macro_rules! run {
 
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {
+                // Ground truth: fusion fully disabled, no check.
                 run_with_flags(
                     ::graphix_compiler::CFlag::FusionDisabled.into(),
                     false,
+                    ::std::option::Option::None,
                 ).await
             }
 
             #[::tokio::test(flavor = "current_thread")]
             async fn fused() -> ::anyhow::Result<()> {
+                // Fusion on, JIT off: kernels dispatch via gir_interp.
+                // Checks fusion PRESENCE (Jit/Interp → FUSION>0,
+                // None → FUSION==0) but not the JIT distinction.
                 run_with_flags(
                     ::graphix_compiler::CFlag::JitDisabled.into(),
-                    false,
+                    true,
+                    ::std::option::Option::Some(false),
                 ).await
             }
 
             #[::tokio::test(flavor = "current_thread")]
             #[cfg(debug_assertions)]
             async fn jit() -> ::anyhow::Result<()> {
-                if !$with_jit {
-                    // `run_no_jit!` expanded — fixture opted out of
-                    // the JIT mode. The `cfg(debug_assertions)`
-                    // gate would have already skipped the test in
-                    // release builds; here we have to keep the
-                    // function present (the macro emits one body
-                    // for both arms) but no-op it.
+                // Discovery mode: when GRAPHIX_FUSION_DISCOVERY is set,
+                // run every fixture (checked or not) through the full
+                // fusion+JIT path WITHOUT asserting, then print the
+                // observed level (`FUSEMAP <path> <level>`). Harvests
+                // the whole-corpus fusion-state map in one run.
+                if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
+                    // Two crash-safe measurements:
+                    //  - fused mode (JitDisabled): does it fuse at all?
+                    //    (FUSION>0). Never invokes cranelift, so it
+                    //    can't hit a JIT-compile panic.
+                    //  - jit mode (full): does it JIT? (JIT>0). May
+                    //    panic for kernels the JIT mis-compiles; run it
+                    //    second so the fused-mode signal is already
+                    //    printed.
+                    run_with_flags(
+                        ::graphix_compiler::CFlag::JitDisabled.into(),
+                        true,
+                        ::std::option::Option::None,
+                    ).await?;
+                    let fused_fusion =
+                        ::graphix_compiler::gir_jit_helpers::fusion_invocations();
+                    eprintln!(
+                        "FUSEMAPF\t{}\t{}",
+                        module_path!(),
+                        if fused_fusion > 0 { "Fuses" } else { "None" },
+                    );
+                    run_with_flags(
+                        ::graphix_compiler::BitFlags::empty(),
+                        true,
+                        ::std::option::Option::None,
+                    ).await?;
+                    let jit =
+                        ::graphix_compiler::gir_jit_helpers::jit_invocations();
+                    eprintln!(
+                        "FUSEMAPJ\t{}\t{}",
+                        module_path!(),
+                        if jit > 0 { "Jit" } else { "NoJit" },
+                    );
                     return Ok(());
                 }
-                run_with_flags(::graphix_compiler::BitFlags::empty(), true).await?;
-                let inv = ::graphix_compiler::gir_jit_helpers::jit_invocations();
-                if inv == 0 {
-                    ::anyhow::bail!(
-                        "JIT_INVOCATIONS=0 — the JIT compiled but never \
-                         ran for this fixture. Either fix the underlying \
-                         cliff or migrate the test to `run_no_jit!`.",
-                    );
-                }
-                Ok(())
+                // Full fusion + JIT; checks the precise expectation.
+                run_with_flags(
+                    ::graphix_compiler::BitFlags::empty(),
+                    true,
+                    ::std::option::Option::Some(true),
+                ).await
             }
         }
-    };
-}
-
-/// Like [`run!`] but skips the `jit` mode. For fixtures that
-/// legitimately can't JIT today — async builtins, network IO, fs
-/// watchers, or any program whose kernel build doesn't yet
-/// succeed but should still round-trip through interp + fused.
-#[macro_export]
-macro_rules! run_no_jit {
-    ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl $name, $pred, 30, false, "/test.gx" => format!("let result = {}", $code));
-    };
-    ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl $name, $pred, $timeout, false, "/test.gx" => format!("let result = {}", $code));
-    };
-    ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
-        $crate::run!(@impl $name, $pred, 30, false, $($path => $code),+);
     };
 }
 

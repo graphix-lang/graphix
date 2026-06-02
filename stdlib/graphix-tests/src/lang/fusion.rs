@@ -369,6 +369,139 @@ async fn load_uses_external_scalar() -> Result<()> {
     }
 }
 
+// ─── Closure conversion (Phase C) ────────────────────────────────
+//
+// A capturing lambda's body references an outer binding. Closure
+// conversion lifts each capture to an extra positional kernel arg;
+// the caller forwards the capture's current value. These tests drive
+// the full load() pipeline and assert the produced Value. Where the
+// closure should fuse, a JIT_INVOCATIONS assertion proves the
+// kernel actually ran natively (not an interpreter fall-back).
+
+/// Load `code`, return both the produced Value and the
+/// JIT-invocation delta across the load (reset before, read after).
+#[cfg(debug_assertions)]
+async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
+    let eid = res
+        .exprs
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no top-level expr"))?
+        .id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    let value = loop {
+        tokio::select! {
+            _ = &mut timeout => bail!("timeout waiting for result"),
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    let mut found = None;
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e {
+                            if id == eid { found = Some(v); }
+                        }
+                    }
+                    if let Some(v) = found { break v; }
+                }
+            }
+        }
+    };
+    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    ctx.shutdown().await;
+    Ok((value, inv))
+}
+
+/// C1 — single primitive capture. `let y = 7; let f = |x| x + y;
+/// f(3)` → 10. The lambda `f` captures `y`; closure conversion
+/// lifts `y` to `f`'s kernel as a second positional arg, and the
+/// parent forwards its current value (7) at the call site.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
+async fn closure_primitive_capture() -> Result<()> {
+    let (v, inv) = load_value_and_jit("let y = 7; let f = |x| x + y; f(3)").await?;
+    assert_eq!(v, Value::I64(10));
+    assert!(inv > 0, "JIT_INVOCATIONS=0 — capturing closure didn't fuse");
+    Ok(())
+}
+
+/// C2 — composite capture (tuple). `let t = (1, 2); let g = |x|
+/// t.0 + t.1 + x; g(10)` → 13. The capture `t` is a tuple, so the
+/// fused-call scalar-only guard declines to build a `GirOp::Call`
+/// kernel (composite cross-kernel call args aren't supported yet —
+/// see the guard in `ensure_lambda_kernel`). The call therefore
+/// falls back to the interpreter, which still produces the correct
+/// value. When composite cross-kernel calls land, add a JIT
+/// assertion here.
+#[tokio::test(flavor = "current_thread")]
+async fn closure_tuple_capture_falls_back() -> Result<()> {
+    let v =
+        load_and_await("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)")
+            .await?;
+    assert_eq!(v, Value::I64(13));
+    Ok(())
+}
+
+/// C3 — nested closures. `let z = 100; let outer = |x| { let inner =
+/// |y| y + z; inner(x) }; outer(5)` → 105. Both `outer` and `inner`
+/// capture `z`; the cascade is automatic via the recursive `Refs`
+/// walk.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
+async fn closure_nested_capture() -> Result<()> {
+    let (v, _inv) = load_value_and_jit(
+        "let z = 100; let outer = |x| { let inner = |y| y + z; inner(x) }; outer(5)",
+    )
+    .await?;
+    assert_eq!(v, Value::I64(105));
+    Ok(())
+}
+
+/// C7 — capture vs same-named parent shadow. `let y = 7; let f = |x|
+/// x + y; { let y = 100; f(5) }` → 12 (f captures the OUTER y=7, not
+/// the inner y=100). This is the BindId-keyed-lookup correctness
+/// test: a name-keyed capture lookup would forward 100 and yield 105.
+#[tokio::test(flavor = "current_thread")]
+async fn closure_capture_respects_shadow() -> Result<()> {
+    let v = load_and_await("let y = 7; let f = |x| x + y; { let y = 100; f(5) }").await?;
+    assert_eq!(v, Value::I64(12));
+    Ok(())
+}
+
+/// C8 — fn-typed external (statically resolved). `let f = |x| x + 1;
+/// let g = |y| f(y) * 2; g(5)` → 12. `g` references `f` (a function),
+/// which is NOT a value capture — the body's CallSite resolves to
+/// `f`'s kernel and emits a `GirOp::Call`. Verifies fn externals
+/// don't break closure conversion.
+#[tokio::test(flavor = "current_thread")]
+async fn closure_fn_external_static() -> Result<()> {
+    let v = load_and_await("let f = |x| x + 1; let g = |y| f(y) * 2; g(5)").await?;
+    assert_eq!(v, Value::I64(12));
+    Ok(())
+}
+
+/// Cross-kernel-call arg ordering regression guard: a lambda whose
+/// formal args are `(composite, scalar)`. The callee's JIT signature
+/// groups params by kind (scalars first, then composite pointers),
+/// but `GirOp::Call` passes args positionally — for a composite-then-
+/// scalar signature those diverge, and without a guard the scalar
+/// `5` is routed into the tuple-pointer slot and dereferenced (a
+/// misaligned-pointer crash). The scalar-only guard in
+/// `ensure_lambda_kernel` declines to fuse this lambda; it runs on
+/// the interpreter instead. `g((10,20), 5)` = 35, no crash.
+#[tokio::test(flavor = "current_thread")]
+async fn call_arg_order_composite_then_scalar() -> Result<()> {
+    let v = load_and_await(
+        "let g = |p: (i64, i64), n: i64| p.0 + p.1 + n; let pair = (10, 20); g(pair, 5)",
+    )
+    .await?;
+    assert_eq!(v, Value::I64(35));
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn load_just_bind_no_output() -> Result<()> {
     // A file whose last statement is a Bind. The synth-Do wraps

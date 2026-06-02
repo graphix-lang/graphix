@@ -231,6 +231,10 @@ fn define_typed_kernel(
         .module
         .declare_function(&symbol, Linkage::Local, &sig)
         .context("declare_function (typed)")?;
+    // Defensive clear — see `define_kernel_body`. Prevents a prior
+    // failed compile's leftover `func_ctx` from poisoning this build.
+    jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig.clone();
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
@@ -263,6 +267,7 @@ fn define_typed_kernel(
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (typed)")?;
     jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
     Ok((func_id, sig, strings))
 }
 
@@ -570,6 +575,14 @@ fn define_kernel_body(
                 kernel.fn_name
             )
         })?;
+    // Defensive: a *prior* kernel compile that returned `Err` before
+    // its end-of-function `clear_context` leaves `func_ctx` dirty,
+    // which makes the next `FunctionBuilder::new` panic
+    // (`assertion failed: func_ctx.is_empty()`). Clear here so one
+    // failed compile can't poison every subsequent kernel in the
+    // same per-context module.
+    jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig;
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
@@ -621,6 +634,7 @@ fn define_kernel_body(
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
     Ok(strings)
 }
 
@@ -645,6 +659,10 @@ fn define_wrapper(
         .module
         .declare_function(&symbol, Linkage::Local, &sig)
         .context("declare_function (wrapper)")?;
+    // Defensive clear — see `define_kernel_body`. A prior failed
+    // compile must not poison the wrapper build.
+    jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig.clone();
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, wrapper_id.as_u32());
@@ -753,6 +771,7 @@ fn define_wrapper(
         .define_function(wrapper_id, &mut jit.func_ctx)
         .context("define_function (wrapper)")?;
     jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
     Ok(wrapper_id)
 }
 

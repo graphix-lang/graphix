@@ -646,6 +646,7 @@ pub trait GirEmitter<R: Rt, E: UserEvent>: Send + Sync {
         args: &[(Option<ArcStr>, &Node<R, E>)],
         arg_refs: &[Node<R, E>],
         ctx: &mut crate::fusion::lowering::FusionCtx,
+        ec: &mut ExecCtx<R, E>,
     ) -> Option<crate::gir::GirExpr>;
 }
 
@@ -1264,6 +1265,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// field). The async-JIT worker thread (`JIT_WORKER`) likewise
     /// uses the single-kernel path and doesn't touch this field.
     pub jit: parking_lot::Mutex<gir_jit::Jit>,
+    /// On-demand monomorphized lambda-kernel cache, keyed by
+    /// `(LambdaId, Arc<FnType>)`. Populated by fusion's emit_node
+    /// when it encounters an `ApplyView::Lambda` call site: build the
+    /// kernel once, reuse it for every subsequent call to the same
+    /// (lambda definition, monomorphization). Cross-kernel
+    /// `GirOp::Call` sites resolve against this map at splice time
+    /// (interp) and JIT-compile time (Phase D).
+    pub fusion_kernels:
+        parking_lot::Mutex<std::collections::BTreeMap<
+            (LambdaId, std::sync::Arc<typ::FnType>),
+            fusion::lowering::CachedKernel,
+        >>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1300,6 +1313,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             jit: parking_lot::Mutex::new(gir_jit::Jit::new()?,),
+            fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
         })
     }
 

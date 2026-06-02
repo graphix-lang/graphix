@@ -2638,6 +2638,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         if !any_updated {
             return None;
         }
+        // Test instrumentation: a fused kernel has committed to
+        // running this cycle (JIT or interp). Bump the fused-kernel
+        // execution counter so the test harness can distinguish
+        // "fused but ran on interp" from "no fusion". The JIT path
+        // additionally bumps `JIT_INVOCATIONS` inside its wrapper.
+        #[cfg(debug_assertions)]
+        crate::gir_jit_helpers::record_fusion_invocation();
         // Prime per-cycle `event.variables` from `ctx.cached` for
         // every external Ref appearing inside a `BuiltinSlot::
         // LabeledDefault`'s compiled Node. Mirrors `CallSite::bind`'s

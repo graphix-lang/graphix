@@ -1,7 +1,7 @@
 // Tests for try/catch and error handling
 
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 // unchecked arithmetic: 2 + 2 works normally
@@ -9,20 +9,20 @@ const UNCHECKED0: &str = r#"
 2 + 2
 "#;
 
-run_no_jit!(unchecked0, UNCHECKED0, |v: Result<&Value>| match v {
+run!(unchecked0, UNCHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // checked arithmetic: 2 +? 2 returns a union value (still i64 when no error)
 const CHECKED0: &str = r#"
 2 +? 2
 "#;
 
-run_no_jit!(checked0, CHECKED0, |v: Result<&Value>| match v {
+run!(checked0, CHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // checked div by zero returns an error value that can be caught
 const CHECKED_DIV0: &str = r#"
@@ -36,10 +36,10 @@ const CHECKED_DIV0: &str = r#"
 }
 "#;
 
-run_no_jit!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
+run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // try/catch with array index errors still works
 const CATCH1: &str = r#"
@@ -51,10 +51,10 @@ catch(e) => select (e.0).error {
 }
 "#;
 
-run_no_jit!(catch1, CATCH1, |v: Result<&Value>| match v {
+run!(catch1, CATCH1, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // nested try/catch with checked arith and array index errors
 const CATCH4: &str = r#"
@@ -75,12 +75,12 @@ const CATCH4: &str = r#"
 }
 "#;
 
-run_no_jit!(catch4, CATCH4, |v: Result<&Value>| match v
+run!(catch4, CATCH4, |v: Result<&Value>| match v
     .and_then(|v| v.clone().cast_to::<[Value; 2]>())
 {
     Ok([Value::Error(_), Value::Error(_)]) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // checked arithmetic with $ (swallow error)
 const CHECKED_DOLLAR: &str = r#"
@@ -90,7 +90,7 @@ const CHECKED_DOLLAR: &str = r#"
 }
 "#;
 
-run_no_jit!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
+run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

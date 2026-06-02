@@ -703,6 +703,41 @@ thread_local! {
     /// the helper registration are gated the same way.
     #[cfg(debug_assertions)]
     pub static JIT_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
+
+    /// Per-thread *fused-kernel* execution counter, debug-build only.
+    /// Bumped by [`record_fusion_invocation`] at the commit point of
+    /// every fused-kernel execution — `GirNode::update` once it has
+    /// decided to run — regardless of whether the kernel runs via the
+    /// JIT or the interpreter. Together with [`JIT_INVOCATIONS`] this
+    /// lets the test harness distinguish three observable fusion
+    /// outcomes for a fixture: `FUSION > 0 && JIT > 0` (fused + JIT),
+    /// `FUSION > 0 && JIT == 0` (fused but ran on interp — the JIT
+    /// can't lower this shape yet), and `FUSION == 0` (no fusion at
+    /// all). A JIT'd kernel bumps both (its `GirNode::update` runs,
+    /// then its JIT wrapper runs); an interp-fused kernel bumps only
+    /// this one.
+    #[cfg(debug_assertions)]
+    pub static FUSION_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Bump the per-thread fused-kernel execution counter. Called from
+/// `GirNode::update` once a fused kernel commits to running (after
+/// the "did any input update" gate). `cfg(debug_assertions)`-gated.
+#[cfg(debug_assertions)]
+pub fn record_fusion_invocation() {
+    FUSION_INVOCATIONS.with(|c| c.set(c.get().wrapping_add(1)));
+}
+
+/// Read the current thread's fused-kernel execution count.
+#[cfg(debug_assertions)]
+pub fn fusion_invocations() -> u64 {
+    FUSION_INVOCATIONS.with(|c| c.get())
+}
+
+/// Reset the current thread's fused-kernel execution count to zero.
+#[cfg(debug_assertions)]
+pub fn reset_fusion_invocations() {
+    FUSION_INVOCATIONS.with(|c| c.set(0));
 }
 
 /// JIT-emitted code calls this at the start of every wrapper

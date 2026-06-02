@@ -154,6 +154,15 @@ impl Ord for TVar {
     }
 }
 
+impl std::hash::Hash for TVar {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Mirror PartialEq: hash the inner Type. Same lock-pattern.
+        let t = self.read();
+        let inner = t.typ.read();
+        (*inner).hash(state);
+    }
+}
+
 impl TVar {
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         match Type::TVar(self.clone()).scope_refs(scope) {

@@ -103,12 +103,21 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 /// being built.
 #[derive(Debug)]
 pub struct GXLambda<R: Rt, E: UserEvent> {
+    id: LambdaId,
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
+    /// The lambda definition's stable id. All `GXLambda` instances
+    /// produced from the same `LambdaDef::init` carry the same id;
+    /// fusion uses this as part of the `(LambdaId, FnType)` cache
+    /// key for on-demand kernel monomorphization.
+    pub fn id(&self) -> LambdaId {
+        self.id
+    }
+
     /// The compiled body Node — the lambda's expression tree.
     /// Fusion walks this via [`crate::Update::view`] /
     /// [`crate::NodeView`].
@@ -211,6 +220,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     pub(super) fn new(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
+        id: LambdaId,
         typ: Arc<FnType>,
         argspec: Arc<[Arg]>,
         args: &[Node<R, E>],
@@ -240,7 +250,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             argpats.push(pattern);
         }
         let body = compile(ctx, flags, body, &scope, tid)?;
-        Ok(Self { args: Box::from(argpats), typ, body })
+        Ok(Self { id, args: Box::from(argpats), typ, body })
     }
 }
 
@@ -499,6 +509,7 @@ impl Lambda {
                     GXLambda::new(
                         ctx,
                         flags,
+                        id,
                         _typ.clone(),
                         _argspec.clone(),
                         args,

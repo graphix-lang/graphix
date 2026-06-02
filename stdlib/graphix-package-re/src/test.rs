@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const RE_IS_MATCH: &str = r#"
@@ -33,7 +33,7 @@ const RE_CAPTURES: &str = r#"
   re::captures(#pat:r'(fo)ob', r'foobarfoobazfoo')
 "#;
 
-run_no_jit!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
+run!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::Array(a0), Value::Array(a1)] => match (&a0[..], &a1[..]) {
@@ -47,7 +47,7 @@ run_no_jit!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RE_SPLIT: &str = r#"
   re::split(#pat:r',\\s*', r'foo, bar, baz')

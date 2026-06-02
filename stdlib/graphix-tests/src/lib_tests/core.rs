@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const IS_ERR: &str = r#"
@@ -13,10 +13,10 @@ const IS_ERR: &str = r#"
 }
 "#;
 
-run_no_jit!(is_err, IS_ERR, |v: Result<&Value>| match v {
+run!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER_ERR: &str = r#"
 {
@@ -25,19 +25,21 @@ const FILTER_ERR: &str = r#"
 }
 "#;
 
-run_no_jit!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: filter_err builtin not yet fused
+run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ERROR: &str = r#"
   error("foo")
 "#;
 
-run_no_jit!(error, ERROR, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: error type constructor not yet lowered to GirType
+run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ONCE: &str = r#"
 {
@@ -46,10 +48,10 @@ const ONCE: &str = r#"
 }
 "#;
 
-run_no_jit!(once, ONCE, |v: Result<&Value>| match v {
+run!(once, ONCE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP: &str = r#"
 {
@@ -58,7 +60,7 @@ const SKIP: &str = r#"
 }
 "#;
 
-run_no_jit!(skip, SKIP, |v: Result<&Value>| {
+run!(skip, SKIP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(4), Value::I64(5), Value::I64(6)] => true,
@@ -66,7 +68,7 @@ run_no_jit!(skip, SKIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP_ZERO: &str = r#"
 {
@@ -75,7 +77,7 @@ const SKIP_ZERO: &str = r#"
 }
 "#;
 
-run_no_jit!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
+run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -83,7 +85,7 @@ run_no_jit!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP_ALL: &str = r#"
 {
@@ -92,10 +94,10 @@ const SKIP_ALL: &str = r#"
 }
 "#;
 
-run_no_jit!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
+run!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TAKE: &str = r#"
 {
@@ -104,7 +106,7 @@ const TAKE: &str = r#"
 }
 "#;
 
-run_no_jit!(take, TAKE, |v: Result<&Value>| {
+run!(take, TAKE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -112,7 +114,7 @@ run_no_jit!(take, TAKE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TAKE_ZERO: &str = r#"
 {
@@ -121,10 +123,10 @@ const TAKE_ZERO: &str = r#"
 }
 "#;
 
-run_no_jit!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
+run!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TAKE_MORE: &str = r#"
 {
@@ -133,7 +135,7 @@ const TAKE_MORE: &str = r#"
 }
 "#;
 
-run_no_jit!(take_more, TAKE_MORE, |v: Result<&Value>| {
+run!(take_more, TAKE_MORE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -141,7 +143,7 @@ run_no_jit!(take_more, TAKE_MORE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ALL: &str = r#"
 {
@@ -152,10 +154,11 @@ const ALL: &str = r#"
 }
 "#;
 
-run_no_jit!(all, ALL, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: all() builtin not yet fused
+run!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const SUM: &str = r#"
 {
@@ -164,10 +167,11 @@ const SUM: &str = r#"
 }
 "#;
 
-run_no_jit!(sum, SUM, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: sum() builtin not yet fused
+run!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const PRODUCT: &str = r#"
 {
@@ -176,10 +180,11 @@ const PRODUCT: &str = r#"
 }
 "#;
 
-run_no_jit!(product, PRODUCT, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: product() builtin not yet fused
+run!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const DIVIDE: &str = r#"
 {
@@ -188,28 +193,29 @@ const DIVIDE: &str = r#"
 }
 "#;
 
-run_no_jit!(divide, DIVIDE, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: divide() builtin not yet fused
+run!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
 "#;
 
-run_no_jit!(min, MIN, |v: Result<&Value>| match v {
+run!(min, MIN, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
 "#;
 
-run_no_jit!(max, MAX, |v: Result<&Value>| match v {
+run!(max, MAX, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const AND: &str = r#"
 {
@@ -220,19 +226,19 @@ const AND: &str = r#"
 }
 "#;
 
-run_no_jit!(and, AND, |v: Result<&Value>| match v {
+run!(and, AND, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const OR: &str = r#"
   or(false, false, true)
 "#;
 
-run_no_jit!(or, OR, |v: Result<&Value>| match v {
+run!(or, OR, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const INDEX: &str = r#"
 {
@@ -241,10 +247,10 @@ const INDEX: &str = r#"
 }
 "#;
 
-run_no_jit!(index, INDEX, |v: Result<&Value>| match v {
+run!(index, INDEX, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SLICE: &str = r#"
 {
@@ -253,7 +259,8 @@ const SLICE: &str = r#"
 }
 "#;
 
-run_no_jit!(slice, SLICE, |v: Result<&Value>| {
+// ASPIRE: Jit (currently None) — blocked on: sum() builtin not yet fused
+run!(slice, SLICE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(7), Value::I64(15), Value::I64(3)] => true,
@@ -261,7 +268,7 @@ run_no_jit!(slice, SLICE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const FILTER0: &str = r#"
 {
@@ -270,12 +277,12 @@ const FILTER0: &str = r#"
 }
 "#;
 
-run_no_jit!(filter0, FILTER0, |v: Result<&Value>| {
+run!(filter0, FILTER0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER1: &str = r#"
 {
@@ -284,12 +291,12 @@ const FILTER1: &str = r#"
 }
 "#;
 
-run_no_jit!(filter1, FILTER1, |v: Result<&Value>| {
+run!(filter1, FILTER1, |v: Result<&Value>| {
     match v {
         Ok(_) => false,
         Err(_) => true,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const QUEUE: &str = r#"
 {
@@ -304,7 +311,7 @@ const QUEUE: &str = r#"
 }
 "#;
 
-run_no_jit!(queue, QUEUE, |v: Result<&Value>| {
+run!(queue, QUEUE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5), Value::I64(6), Value::I64(7), Value::I64(8)] => {
@@ -314,7 +321,7 @@ run_no_jit!(queue, QUEUE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const QUEUEFN_IMMEDIATE: &str = r#"
 {
@@ -323,12 +330,12 @@ const QUEUEFN_IMMEDIATE: &str = r#"
 }
 "#;
 
-run_no_jit!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
+run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(70)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const QUEUEFN_QUEUE_POP: &str = r#"
 {
@@ -340,7 +347,7 @@ const QUEUEFN_QUEUE_POP: &str = r#"
 }
 "#;
 
-run_no_jit!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
+run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(10), Value::I64(20), Value::I64(30), Value::I64(40)] => true,
@@ -348,7 +355,7 @@ run_no_jit!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const QUEUEFN_MULTI_ARG: &str = r#"
 {
@@ -362,7 +369,7 @@ const QUEUEFN_MULTI_ARG: &str = r#"
 }
 "#;
 
-run_no_jit!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
+run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(201), Value::I64(403), Value::I64(605)] => true,
@@ -370,7 +377,7 @@ run_no_jit!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 {
@@ -383,7 +390,7 @@ const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 }
 "#;
 
-run_no_jit!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
+run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(100), Value::I64(200), Value::I64(300)] => true,
@@ -391,7 +398,7 @@ run_no_jit!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify #count writes when the queue grows. The wrapper writes count
 // every time it pushes (pops happen via the queuefn node when triggered).
@@ -408,7 +415,7 @@ const QUEUEFN_COUNT_REF: &str = r#"
 }
 "#;
 
-run_no_jit!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
+run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(0), Value::I64(1), Value::I64(2)] => true,
@@ -416,7 +423,7 @@ run_no_jit!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify the wrapped fn is called when the wrapper output is fed back to
 // the trigger. Each pop allows the next to fire, so all queued
@@ -431,7 +438,7 @@ const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
 }
 "#;
 
-run_no_jit!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
+run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(11), Value::I64(21), Value::I64(31), Value::I64(41), Value::I64(51)] => {
@@ -441,7 +448,7 @@ run_no_jit!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| 
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Trigger arriving before any wrapper invocations should bank pop_count, so
 // later calls dispatch immediately rather than queueing.
@@ -456,7 +463,7 @@ const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 }
 "#;
 
-run_no_jit!(
+run!(
     queuefn_trigger_before_fn,
     QUEUEFN_TRIGGER_BEFORE_FN,
     |v: Result<&Value>| {
@@ -468,7 +475,7 @@ run_no_jit!(
             _ => false,
         }
     }
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify a wrapped fn with a trigger-style arg (`tick ~ x + 1000`) is not
 // fooled by queueing: each tick/x pair emits exactly once, no spurious
@@ -488,7 +495,7 @@ const QUEUEFN_TRIGGER_ARG: &str = r#"
 }
 "#;
 
-run_no_jit!(
+run!(
     queuefn_trigger_arg,
     QUEUEFN_TRIGGER_ARG,
     |v: Result<&Value>| {
@@ -500,7 +507,7 @@ run_no_jit!(
             _ => false,
         }
     }
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // The point of queuefn is to protect an async-side-effecting fn from being
 // re-entered before its current invocation has produced a result. This test
@@ -530,7 +537,7 @@ const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 }
 "#;
 
-run_no_jit!(
+run!(
     queuefn_net_subscribe,
     QUEUEFN_NET_SUBSCRIBE,
     |v: Result<&Value>| {
@@ -542,7 +549,7 @@ run_no_jit!(
             _ => false,
         }
     }
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify the per-cycle delta semantics. Wrapped fn only emits when its tick
 // arg fires (`tick ~ x + 1000`). Two ticks pair with two of three x values;
@@ -569,7 +576,7 @@ const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 }
 "#;
 
-run_no_jit!(
+run!(
     queuefn_delta_per_cycle,
     QUEUEFN_DELTA_PER_CYCLE,
     |v: Result<&Value>| {
@@ -578,7 +585,7 @@ run_no_jit!(
             _ => false,
         }
     }
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 const COUNT: &str = r#"
 {
@@ -587,7 +594,7 @@ const COUNT: &str = r#"
 }
 "#;
 
-run_no_jit!(count, COUNT, |v: Result<&Value>| {
+run!(count, COUNT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4)] => true,
@@ -595,7 +602,7 @@ run_no_jit!(count, COUNT, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SAMPLE: &str = r#"
 {
@@ -605,7 +612,7 @@ const SAMPLE: &str = r#"
 }
 "#;
 
-run_no_jit!(sample, SAMPLE, |v: Result<&Value>| {
+run!(sample, SAMPLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1), Value::String(s2), Value::String(s3)] => {
@@ -615,7 +622,7 @@ run_no_jit!(sample, SAMPLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const UNIQ: &str = r#"
 {
@@ -624,18 +631,18 @@ const UNIQ: &str = r#"
 }
 "#;
 
-run_no_jit!(uniq, UNIQ, |v: Result<&Value>| {
+run!(uniq, UNIQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(1)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SEQ: &str = r#"
   array::group(seq(0, 4), |n, _| n == 4)
 "#;
 
-run_no_jit!(seq, SEQ, |v: Result<&Value>| {
+run!(seq, SEQ, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(0), Value::I64(1), Value::I64(2), Value::I64(3)] => true,
@@ -643,7 +650,7 @@ run_no_jit!(seq, SEQ, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const THROTTLE: &str = r#"
 {
@@ -653,7 +660,7 @@ const THROTTLE: &str = r#"
 }
 "#;
 
-run_no_jit!(throttle, THROTTLE, |v: Result<&Value>| {
+run!(throttle, THROTTLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(1), Value::I64(10)] => true,
@@ -661,7 +668,7 @@ run_no_jit!(throttle, THROTTLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NEVER: &str = r#"
 {
@@ -670,12 +677,12 @@ const NEVER: &str = r#"
 }
 "#;
 
-run_no_jit!(never, NEVER, |v: Result<&Value>| {
+run!(never, NEVER, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(0)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MEAN: &str = r#"
 {
@@ -684,40 +691,40 @@ const MEAN: &str = r#"
 }
 "#;
 
-run_no_jit!(mean, MEAN, |v: Result<&Value>| {
+run!(mean, MEAN, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(1.5)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const RAND: &str = r#"
   rand::rand(#clock:null)
 "#;
 
-run_no_jit!(rand, RAND, |v: Result<&Value>| {
+run!(rand, RAND, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(v)) if *v >= 0. && *v < 1.0 => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const RAND_PICK: &str = r#"
   rand::pick(["Chicken is coming", "Grape", "Pilot!"])
 "#;
 
-run_no_jit!(rand_pick, RAND_PICK, |v: Result<&Value>| {
+run!(rand_pick, RAND_PICK, |v: Result<&Value>| {
     match v {
         Ok(Value::String(v)) => v == "Chicken is coming" || v == "Grape" || v == "Pilot!",
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const RAND_SHUFFLE: &str = r#"
   rand::shuffle(["Chicken is coming", "Grape", "Pilot!"])
 "#;
 
-run_no_jit!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
+run!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) if a.len() == 3 => {
             a.contains(&Value::from("Chicken is coming"))
@@ -726,7 +733,7 @@ run_no_jit!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
         }
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_BASIC: &str = r#"
 {
@@ -736,10 +743,10 @@ const HOLD_BASIC: &str = r#"
 }
 "#;
 
-run_no_jit!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
+run!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_MULTIPLE: &str = r#"
 {
@@ -751,10 +758,10 @@ const HOLD_MULTIPLE: &str = r#"
 }
 "#;
 
-run_no_jit!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
+run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_NO_TRIGGER: &str = r#"
 {
@@ -764,10 +771,10 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
-run_no_jit!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
+run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
@@ -778,14 +785,14 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
-run_no_jit!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
+run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NOW: &str = r#"sys::time::now(null)"#;
 
-run_no_jit!(now, NOW, |v: Result<&Value>| match v {
+run!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);

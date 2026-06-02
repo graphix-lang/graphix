@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const ARRAY_INDEXING0: &str = r#"
@@ -12,10 +12,10 @@ const ARRAY_INDEXING0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
+run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INDEXING1: &str = r#"
 {
@@ -24,11 +24,11 @@ const ARRAY_INDEXING1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing1, ARRAY_INDEXING1, |v: Result<&Value>| match v {
+run!(array_indexing1, ARRAY_INDEXING1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(1), Value::I64(2)] =>
         true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INDEXING2: &str = r#"
 {
@@ -37,10 +37,10 @@ const ARRAY_INDEXING2: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing2, ARRAY_INDEXING2, |v: Result<&Value>| match v {
+run!(array_indexing2, ARRAY_INDEXING2, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(1)] => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INDEXING3: &str = r#"
 {
@@ -49,10 +49,10 @@ const ARRAY_INDEXING3: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing3, ARRAY_INDEXING3, |v: Result<&Value>| match v {
+run!(array_indexing3, ARRAY_INDEXING3, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(5), Value::I64(6)] => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INDEXING4: &str = r#"
 {
@@ -61,7 +61,7 @@ const ARRAY_INDEXING4: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
+run!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
     Ok(Value::Array(a))
         if &a[..]
             == [
@@ -75,7 +75,7 @@ run_no_jit!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
             ] =>
         true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_INDEXING5: &str = r#"
 {
@@ -87,10 +87,11 @@ const ARRAY_INDEXING5: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing5, ARRAY_INDEXING5, |v: Result<&Value>| match v {
+// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args (#131)
+run!(array_indexing5, ARRAY_INDEXING5, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INDEXING6: &str = r#"
 {
@@ -102,7 +103,7 @@ const ARRAY_INDEXING6: &str = r#"
 }
 "#;
 
-run_no_jit!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
+run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
     Ok(Value::Array(a))
         if &a[..]
             == [
@@ -116,25 +117,25 @@ run_no_jit!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
             ] =>
         true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_SLICE_NON_ARRAY: &str = r#"
   ("foo")[..]
 "#;
 
-run_no_jit!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, |v: Result<&Value>| match v {
+run!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INDEX_NON_ARRAY: &str = r#"
   ("foo")[0]
 "#;
 
-run_no_jit!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, |v: Result<&Value>| match v {
+run!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_MATCH0: &str = r#"
 {
@@ -146,10 +147,10 @@ const ARRAY_MATCH0: &str = r#"
 }
 "#;
 
-run_no_jit!(array_match0, ARRAY_MATCH0, |v: Result<&Value>| match v {
+run!(array_match0, ARRAY_MATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_MATCH1: &str = r#"
 {
@@ -165,7 +166,7 @@ const ARRAY_MATCH1: &str = r#"
 }
 "#;
 
-run_no_jit!(array_match1, ARRAY_MATCH1, |v: Result<&Value>| match v {
+run!(array_match1, ARRAY_MATCH1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => {
         a.len() == 4 && {
             a.iter().enumerate().all(|(i, a)| match a {
@@ -185,7 +186,7 @@ run_no_jit!(array_match1, ARRAY_MATCH1, |v: Result<&Value>| match v {
         }
     }
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_MATCH2: &str = r#"
 {
@@ -199,10 +200,10 @@ const ARRAY_MATCH2: &str = r#"
 }
 "#;
 
-run_no_jit!(array_match2, ARRAY_MATCH2, |v: Result<&Value>| match v {
+run!(array_match2, ARRAY_MATCH2, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[ArcStr; 2]>() {
         Ok([s0, s1]) if &*s0 == "Empty" && &*s1 == "Nonempty" => true,
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

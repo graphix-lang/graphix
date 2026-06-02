@@ -123,7 +123,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
                 // just got this ID from the same walker), skip the
                 // candidate.
                 let subtree = find_node_by_id::<R, E>(node, source_id)?;
-                let inputs = collect_scalar_inputs::<R, E>(&**subtree, ctx);
+                let inputs = collect_region_inputs::<R, E>(&**subtree, ctx);
                 Some(RegionPlan { source_id, body, inputs })
             })
             .collect()
@@ -141,8 +141,9 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
                                           // only reads `name` for
                                           // Binding-source inputs
                 name: fv.name.clone(),
-                kind: crate::fusion::RegionInputKind::Prim(fv.prim),
+                kind: fv.kind.clone(),
                 source: crate::fusion::RegionInputSource::Binding,
+                bind_id: Some(fv.bind_id),
             })
             .collect();
         // Walk the body for sync-builtin Apply sites so the kernel
@@ -195,6 +196,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
             &fn_name,
             &region_inputs,
             discovery,
+            ctx,
         ) {
             Ok(b) => b,
             Err(_) => continue,
@@ -218,6 +220,24 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
         // JIT-compile unless `JitDisabled` is set. The interp
         // fallback path inside `FusedKernel::update` handles the
         // None case via `gir_interp`.
+        //
+        // Phase D — cross-kernel calls: pass every sub-kernel the
+        // parent's body references via `GirOp::Call` (closure
+        // conversion's lambda kernels, transitively collected in
+        // `built.called_kernels`) as JIT callees. Without these, a
+        // parent kernel containing a `Call` fails to JIT-compile and
+        // silently falls back to the interpreter — so capturing
+        // closures would never actually fuse natively. The keys here
+        // (source binding names) match the `GirOp::Call.fn_name`
+        // sites the emitter produced.
+        let callees: std::collections::BTreeMap<
+            arcstr::ArcStr,
+            std::sync::Arc<crate::gir::GirKernel>,
+        > = built
+            .called_kernels
+            .iter()
+            .map(|(name, c)| (name.clone(), c.kernel.clone()))
+            .collect();
         let wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>> =
             if jit_disabled {
                 None
@@ -225,7 +245,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
                 match crate::gir_jit::compile_kernel_with_callees(
                     &mut ctx.jit.lock(),
                     &built.kernel,
-                    &Default::default(),
+                    &callees,
                 ) {
                     Ok(w) => Some(std::sync::Arc::new(w)),
                     Err(_) => continue,
@@ -259,6 +279,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
             feeders,
             crate::Scope::root(),
             entry.source_id,
+            built.called_kernels.clone(),
         ) {
             Ok(n) => n,
             Err(_) => continue,
@@ -293,7 +314,11 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
 struct FreeVarInput {
     bind_id: crate::BindId,
     name: arcstr::ArcStr,
-    prim: crate::gir::PrimType,
+    /// Kernel-input classification, computed once from the binding's
+    /// GIR type. Drives the `RegionInput.kind` at build time.
+    kind: crate::fusion::lowering::RegionInputKind,
+    /// Full graphix type — used to construct the runtime feeder Node
+    /// (`genn::reference`), which needs the complete `Type`.
     typ: crate::typ::Type,
 }
 
@@ -307,11 +332,21 @@ struct RegionPlan {
 
 /// Walk the candidate subtree, collect every external Ref's
 /// BindId (referenced but NOT bound inside the body), and resolve
-/// each to its name + primitive type via `ctx.env.by_id`. Slots
-/// whose type isn't a primitive (composite, function, etc.) are
-/// skipped for this iteration — the builder will fail those Refs
-/// when it tries to emit them and the candidate stays unfused.
-fn collect_scalar_inputs<R: crate::Rt, E: crate::UserEvent>(
+/// each to its name + GIR-input classification via `ctx.env.by_id`.
+///
+/// Because `CallSite::refs` recurses into a statically-resolved
+/// lambda's body (via `GXLambda::refs`), a lambda's captures
+/// transitively surface here as external Refs of the enclosing
+/// region — so this pre-pass registers them as parent kernel inputs,
+/// and `emit_lambda_call`'s capture forwarding finds them via
+/// `lookup_local_by_bind_id`. This is the mechanism that makes
+/// closure conversion's capture cascade automatic.
+///
+/// Slots whose type has no kernel-input representation (function
+/// types, bare `String`/`Null`/`Unit`) are skipped — the builder
+/// fails those Refs when emitting them and the candidate stays
+/// unfused (correct fall-back to the interpreter).
+fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
     subtree: &dyn crate::Update<R, E>,
     ctx: &crate::ExecCtx<R, E>,
 ) -> Vec<FreeVarInput> {
@@ -324,13 +359,18 @@ fn collect_scalar_inputs<R: crate::Rt, E: crate::UserEvent>(
             return;
         }
         let Some(b) = ctx.env.by_id.get(&id) else { return };
-        let Some(prim) = crate::gir::PrimType::from_type(&b.typ) else {
+        let Some(gt) = crate::gir::GirType::from_type(&b.typ) else {
+            return;
+        };
+        let Some(kind) =
+            crate::fusion::lowering::gir_type_to_region_input_kind(gt)
+        else {
             return;
         };
         out.push(FreeVarInput {
             bind_id: id,
             name: arcstr::ArcStr::from(b.name.as_str()),
-            prim,
+            kind,
             typ: b.typ.clone(),
         });
     });

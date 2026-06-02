@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::{run, run_no_jit};
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const STR_STARTS_WITH: &str = r#"
@@ -226,7 +226,7 @@ const STR_SPLIT: &str = r#"
 }
 "#;
 
-run_no_jit!(str_split, STR_SPLIT, |v: Result<&Value>| {
+run!(str_split, STR_SPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1), Value::String(s2)] => {
@@ -236,7 +236,7 @@ run_no_jit!(str_split, STR_SPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_RSPLIT: &str = r#"
 {
@@ -245,7 +245,7 @@ const STR_RSPLIT: &str = r#"
 }
 "#;
 
-run_no_jit!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
+run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1), Value::String(s2)] => {
@@ -255,7 +255,7 @@ run_no_jit!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLITN: &str = r#"
 {
@@ -264,7 +264,7 @@ const STR_SPLITN: &str = r#"
 }
 "#;
 
-run_no_jit!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
+run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => s0 == "foo" && s1 == "bar, baz",
@@ -272,7 +272,7 @@ run_no_jit!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_RSPLITN: &str = r#"
 {
@@ -281,7 +281,7 @@ const STR_RSPLITN: &str = r#"
 }
 "#;
 
-run_no_jit!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
+run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => s0 == "baz" && s1 == "foo, bar",
@@ -289,7 +289,7 @@ run_no_jit!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLIT_ESCAPED: &str = r#"
 {
@@ -298,7 +298,7 @@ const STR_SPLIT_ESCAPED: &str = r#"
 }
 "#;
 
-run_no_jit!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
+run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => s0 == "foo\\, bar" && s1 == "baz",
@@ -306,7 +306,7 @@ run_no_jit!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLITN_ESCAPED: &str = r#"
 {
@@ -315,7 +315,7 @@ const STR_SPLITN_ESCAPED: &str = r#"
 }
 "#;
 
-run_no_jit!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
+run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::String(s0), Value::String(s1)] => {
@@ -325,7 +325,7 @@ run_no_jit!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLIT_ONCE: &str = r#"
   str::split_once(#pat:", ", "foo, bar, baz")

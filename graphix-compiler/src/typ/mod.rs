@@ -146,6 +146,16 @@ impl PartialOrd for TypeRef {
     }
 }
 
+impl std::hash::Hash for TypeRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Mirror PartialEq — skip pos/ori (they're source-position
+        // metadata, not part of type identity).
+        self.scope.hash(state);
+        self.name.hash(state);
+        self.params.hash(state);
+    }
+}
+
 impl Ord for TypeRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.scope
@@ -155,7 +165,7 @@ impl Ord for TypeRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     Bottom,
     Any,

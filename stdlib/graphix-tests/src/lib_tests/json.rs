@@ -1,28 +1,28 @@
 use anyhow::Result;
-use graphix_package_core::run_no_jit;
+use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-run_no_jit!(json_i64, r#"{let v: i64 = json::read(json::write_str(42)$)?; v}"#, |v: Result<&Value>| {
+run!(json_i64, r#"{let v: i64 = json::read(json::write_str(42)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_f64, r#"{let v: f64 = json::read(json::write_str(3.14)$)?; v}"#, |v: Result<&Value>| {
+run!(json_f64, r#"{let v: f64 = json::read(json::write_str(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v: Result<&Value>| {
+run!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_null, r#"{let v: null = json::read(json::write_str(null)$)?; v}"#, |v: Result<&Value>| {
+run!(json_null, r#"{let v: null = json::read(json::write_str(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
-run_no_jit!(json_string, r#"{let v: string = json::read(json::write_str("hello")$)?; v}"#, |v: Result<&Value>| {
+run!(json_string, r#"{let v: string = json::read(json::write_str("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
-run_no_jit!(json_array, r#"{
+run!(json_array, r#"{
     let arr: Array<i64> = json::read(json::write_str([1, 2, 3])$)?;
     arr
 }"#, |v: Result<&Value>| {
@@ -34,9 +34,9 @@ run_no_jit!(json_array, r#"{
     } else {
         false
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_struct, r#"{
+run!(json_struct, r#"{
     type S = {x: i64, y: string};
     let obj: S = json::read(json::write_str({x: 42, y: "hi"})$)?;
     obj
@@ -47,41 +47,41 @@ run_no_jit!(json_struct, r#"{
     } else {
         false
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_read_bytes, r#"{
+run!(json_read_bytes, r#"{
     let b = json::write_bytes(42)$;
     let v: i64 = json::read(b)?;
     v
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_pretty, r#"{
+run!(json_pretty, r#"{
     let compact = json::write_str({a: 1, b: 2})$;
     let pretty = json::write_str(#pretty: true, {a: 1, b: 2})$;
     str::len(pretty) > str::len(compact)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_invalid, r#"{
+run!(json_invalid, r#"{
     let r: Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> = json::read("not json{{{");
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
-run_no_jit!(json_nested, r#"{
+run!(json_nested, r#"{
     type Nested = {items: Array<i64>, meta: {count: i64}};
     let obj: Nested = json::read(json::write_str({items: [1, 2], meta: {count: 2}})$)?;
     obj
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(_)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // write json to a tcp stream, read it back from the other end
-run_no_jit!(json_stream_tcp, r#"{
+run!(json_stream_tcp, r#"{
     type Msg = {age: i64, name: string};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
     let addr = sys::tcp::listener_addr(listener)?;
@@ -93,10 +93,10 @@ run_no_jit!(json_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // write json to a tcp stream, read back and cast to nested struct
-run_no_jit!(json_stream_nested, r#"{
+run!(json_stream_nested, r#"{
     type Inner = {label: string, value: i64};
     type Outer = {items: Array<Inner>, count: i64};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
@@ -111,10 +111,10 @@ run_no_jit!(json_stream_nested, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // struct round-trip: write as json string, read back with typed read
-run_no_jit!(json_struct_cast, r#"{
+run!(json_struct_cast, r#"{
     type Point = {x: i64, y: i64};
     let p: Point = {x: 10, y: 20};
     let s = json::write_str(p)$;
@@ -122,10 +122,10 @@ run_no_jit!(json_struct_cast, r#"{
     p2.x + p2.y
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // nested struct round-trip through json string
-run_no_jit!(json_nested_struct_cast, r#"{
+run!(json_nested_struct_cast, r#"{
     type Inner = {label: string, value: i64};
     type Outer = {items: Array<Inner>, count: i64};
     let data: Outer = {items: [{label: "a", value: 1}, {label: "b", value: 2}], count: 2};
@@ -135,9 +135,9 @@ run_no_jit!(json_nested_struct_cast, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // json::read without a concrete return type should be a compile-time error
-run_no_jit!(json_no_concrete_type, r#"json::read("42")"#, |v: Result<&Value>| {
+run!(json_no_concrete_type, r#"json::read("42")"#, |v: Result<&Value>| {
     v.is_err()
-});
+}; graphix_package_core::testing::FuseExpect::None);
