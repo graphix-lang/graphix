@@ -249,7 +249,6 @@ impl EvalResult {
         }
     }
 
-    #[allow(dead_code)]
     fn into_valarray(self) -> ValArray {
         match self {
             EvalResult::ValArray(a) => a,
@@ -259,12 +258,21 @@ impl EvalResult {
         }
     }
 
-    #[allow(dead_code)]
     fn into_variant(self) -> Value {
         match self {
             EvalResult::Variant(v) => v,
             other => panic!(
                 "EvalResult: expected variant Value, got {other:?} — GIR is malformed"
+            ),
+        }
+    }
+
+    fn into_nullable(self) -> Value {
+        match self {
+            EvalResult::Nullable(v) => v,
+            EvalResult::Null => Value::Null,
+            other => panic!(
+                "EvalResult: expected nullable Value, got {other:?} — GIR is malformed"
             ),
         }
     }
@@ -968,25 +976,55 @@ fn eval_expr(
             EvalResult::Scalar(eval_cast(v, *target))
         }
         GirOp::Call { fn_name, args } => {
-            // Look up the callee in the registry, evaluate args (in
-            // the caller's env), then recursively eval the callee
-            // with its own fresh env. Args are scalar today
-            // (callsite::fuse only passes scalar-typed args through
-            // the Call op); composite-arg cross-kernel calls would
-            // need this list of smallvecs extended.
+            // Cross-kernel call: look up the callee, evaluate each arg
+            // in the caller's env, then route it into the callee's
+            // per-kind slot by its `GirType`. Args appear in inputs
+            // order (formals then captures); bucketing by kind
+            // preserves the within-kind order, which matches the
+            // callee's per-kind param vectors (both built by walking
+            // the same input list), so `eval_kernel_full`'s zip lines
+            // up. String / Unit / Null args can't reach here — the
+            // guard in `ensure_lambda_kernel` rejects those shapes.
             let callee = registry.kernels.get(fn_name).unwrap_or_else(|| {
                 panic!(
                     "GirOp::Call to `{fn_name}` not in kernel registry \
                      — Lambda::compile should have populated this"
                 )
             });
-            let mut call_args: smallvec::SmallVec<[RegValue; 8]> =
-                smallvec::SmallVec::with_capacity(args.len());
+            let mut scalars: smallvec::SmallVec<[RegValue; 8]> =
+                smallvec::SmallVec::new();
+            let mut arrays: smallvec::SmallVec<[ValArray; 4]> =
+                smallvec::SmallVec::new();
+            let mut tuples: smallvec::SmallVec<[ValArray; 4]> =
+                smallvec::SmallVec::new();
+            let mut structs: smallvec::SmallVec<[ValArray; 4]> =
+                smallvec::SmallVec::new();
+            let mut variants: smallvec::SmallVec<[Value; 4]> =
+                smallvec::SmallVec::new();
+            let mut nullables: smallvec::SmallVec<[Value; 4]> =
+                smallvec::SmallVec::new();
             for a in args {
-                call_args
-                    .push(eval_expr(env, a, registry, dispatch)?.into_scalar());
+                let r = eval_expr(env, a, registry, dispatch)?;
+                match &a.typ {
+                    GirType::Prim(_) => scalars.push(r.into_scalar()),
+                    GirType::Array(_) => arrays.push(r.into_valarray()),
+                    GirType::Tuple(_) => tuples.push(r.into_valarray()),
+                    GirType::Struct(_) => structs.push(r.into_valarray()),
+                    GirType::Variant(_) => variants.push(r.into_variant()),
+                    GirType::Nullable(_) => {
+                        nullables.push(r.into_nullable())
+                    }
+                    GirType::String | GirType::Unit | GirType::Null => panic!(
+                        "GirOp::Call arg to `{fn_name}` has unmarshallable \
+                         type {:?} — ensure_lambda_kernel should reject it",
+                        a.typ
+                    ),
+                }
             }
-            eval_kernel_with_dispatch(callee, &call_args, registry, dispatch)?
+            eval_kernel_full(
+                callee, &scalars, &arrays, &tuples, &structs, &variants,
+                &nullables, registry, dispatch,
+            )?
         }
         GirOp::DynCall {
             fn_index,
@@ -2808,11 +2846,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                 // args as `*const ValArray` cast to u64. Call through
                 // the wrapper, unpack the result.
                 //
-                // Slot order matches the typed kernel signature in
-                // `gir_jit::define_typed_kernel`: scalar params
-                // first, then array_params, then tuple_params, then
-                // struct_params. Variants would come after structs
-                // but aren't supported in this slice (we bail above).
+                // Slot order is the canonical kind-grouped ABI layout
+                // (`GirKernel::abi_params`): scalar params first, then
+                // array/tuple/struct pointers, then variant/nullable
+                // (disc, payload) pairs — exactly what the JIT wrapper
+                // unpacks.
                 //
                 // The ValArray references stay borrowed by `array_args`
                 // / `tuple_args` / `struct_args` (`SmallVec<ValArray>`)
@@ -2820,14 +2858,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                 // helpers dereference these pointers, so the originals
                 // must outlive the call. They do: the smallvecs live
                 // for the rest of `update`.
-                let n_slots = reg_args.len()
-                    + array_args.len()
-                    + tuple_args.len()
-                    + struct_args.len()
-                    + 2 * variant_args.len()
-                    + 2 * nullable_args.len();
                 let mut slots: smallvec::SmallVec<[u64; 16]> =
-                    smallvec::SmallVec::with_capacity(n_slots);
+                    smallvec::SmallVec::with_capacity(
+                        self.kernel.abi_param_wire_slots(),
+                    );
                 for r in &reg_args {
                     slots.push(crate::gir_jit::pack_reg_to_u64(r));
                 }
@@ -2861,6 +2895,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                         slots.push(*p.add(1));
                     }
                 }
+                // Drift guard: the packed slot count must equal the
+                // kernel's declared ABI footprint. A mismatch means the
+                // per-kind arg vectors disagree with `abi_params` —
+                // catch it here rather than as a silent misread in the
+                // JIT wrapper.
+                debug_assert_eq!(
+                    slots.len(),
+                    self.kernel.abi_param_wire_slots(),
+                    "packed slot count must match the kernel ABI layout"
+                );
                 let mut out: [u64; 2] = [0, 0];
                 let f = unsafe { wrapped.fn_ptr() };
                 // Set up the DynCall dispatcher handle so the JIT'd
@@ -3386,6 +3430,90 @@ mod tests {
         };
         let r = eval_kernel(&kernel, &[RegValue::I64(1_000_000)]);
         assert_eq!(r, RegValue::I64(0));
+    }
+
+    // #131: a `GirOp::Call` whose arg is value-shape (a `[i64, null]`
+    // nullable) must route through the Call arm's `into_nullable`
+    // bucket into the callee's `nullable_args` slot — not the scalar
+    // path. The end-to-end tuple/struct fixtures cover composite
+    // (ValArray) args; this covers the value-shape (Variant/Nullable)
+    // arg routing directly, frontend-independent.
+    #[test]
+    fn call_nullable_arg_routes() {
+        use crate::gir::NullableInput;
+        let nullable_i64 =
+            || GirType::Nullable(Box::new(GirType::Prim(PrimType::I64)));
+        let nullable_param = |name: &str| NullableInput {
+            name: ArcStr::from(name),
+            elem: GirType::Prim(PrimType::I64),
+            bind_id: None,
+        };
+        let nullable_local = |name: &str| GirExpr {
+            op: GirOp::Local(ArcStr::from(name)),
+            typ: nullable_i64(),
+        };
+        // h(m: [i64, null]) -> bool = is_null(m)
+        let h = GirKernel {
+            fn_name: ArcStr::from("h"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![nullable_param("m")],
+            tail_call_slots: vec![],
+            return_type: GirType::Prim(PrimType::Bool),
+            has_tail_loop: false,
+            body: vec![GirStmt::Return(GirExpr {
+                op: GirOp::IsNull(Box::new(nullable_local("m"))),
+                typ: GirType::Prim(PrimType::Bool),
+            })],
+        };
+        // g(x: [i64, null]) -> bool = h(x) — a single `GirOp::Call`
+        // forwarding the nullable arg.
+        let g = GirKernel {
+            fn_name: ArcStr::from("g"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![nullable_param("x")],
+            tail_call_slots: vec![],
+            return_type: GirType::Prim(PrimType::Bool),
+            has_tail_loop: false,
+            body: vec![GirStmt::Return(GirExpr {
+                op: GirOp::Call {
+                    fn_name: ArcStr::from("h"),
+                    args: vec![nullable_local("x")],
+                },
+                typ: GirType::Prim(PrimType::Bool),
+            })],
+        };
+        let mut registry = KernelRegistry::default();
+        registry
+            .kernels
+            .insert(ArcStr::from("h"), std::sync::Arc::new(h));
+        let run = |x: Value| {
+            let mut dispatch = no_dyn_dispatch;
+            eval_kernel_full(
+                &g,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[x],
+                &registry,
+                &mut dispatch,
+            )
+            .unwrap()
+            .into_scalar()
+        };
+        assert_eq!(run(Value::Null), RegValue::Bool(true));
+        assert_eq!(run(Value::I64(7)), RegValue::Bool(false));
     }
 
     #[test]

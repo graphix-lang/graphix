@@ -242,3 +242,54 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// ─── Composite / value-shape cross-kernel calls (#131) ───────────
+//
+// A top-level `let f = <lambda>` bails the enclosing Do (a lambda
+// binding can't be a kernel value), so a top-level `f(args)` never
+// becomes a `GirOp::Call` — `f` just runs as its own kernel with
+// composite *params*. To exercise a real cross-kernel `GirOp::Call`
+// with a non-scalar arg/return, the call must sit inside ANOTHER
+// lambda's body: `g`'s kernel then contains `GirOp::Call(h, …)`.
+//
+// The interpreter routes each Call arg into the callee's per-kind
+// slot (`eval_kernel_full`). The callee `h` is itself eagerly fused
+// and JITs, so the observed state is `Jit` even though `g`'s kernel
+// currently falls back to interp for the composite Call (the JIT
+// `GirOp::Call` arm is the #131-JIT follow-up — it would let `g`'s
+// kernel JIT the call too, which the FUSION/JIT counters can't
+// distinguish from the callee JIT-ing).
+
+const CALL_TUPLE_ARG: &str = r#"
+{
+  let h = |p: (i64, i64), n: i64| p.0 + p.1 + n;
+  let g = |a: i64, b: i64, c: i64| h((a, b), c);
+  g(10, 20, 5)
+}
+"#;
+
+run!(call_tuple_arg, CALL_TUPLE_ARG, |v: Result<&Value>| match v {
+    Ok(Value::I64(35)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const CALL_STRUCT_ARG: &str = r#"
+{
+  let h = |s: {a: i64, b: i64}| s.a + s.b;
+  let g = |x: i64, y: i64| h({a: x, b: y});
+  g(3, 4)
+}
+"#;
+
+run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
+    Ok(Value::I64(7)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// NB: a value-shape (variant / nullable) *return* across a cross-
+// kernel call is exercised directly in `gir_interp`'s unit tests
+// (`call_*_arg_routes` / `call_value_return_routes`) — the obvious
+// end-to-end shapes (`let h = |x| select x { 0 => null, n => n }`)
+// are blocked UPSTREAM by an unrelated cliff: a nullable-returning
+// `select` lambda doesn't build a kernel at all, so the call never
+// forms. That's a fusion-frontend gap, not a Call-routing one.

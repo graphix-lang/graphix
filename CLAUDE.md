@@ -2187,3 +2187,204 @@ payloads (6), labeled-arg lambdas (5), assorted sync builtins
 cliff, then the bidirectional check forces upgrading the annotation
 to `Jit` (and deleting the ASPIRE comment). Distance to end-state:
 386 of ~449 should-fuse fixtures fuse today (86%).
+
+### Kernel ABI layout extracted to one derived source (May 2026)
+
+Prereq refactor for #131 (composite cross-kernel calls). The
+"kind-grouped" kernel calling convention — scalar params first, then
+composite pointers (array/tuple/struct, one `I64` each holding a
+`*ValArray`), then two-word `Value` params (variant/nullable, each
+`(disc, payload)`) — used to be **hand-replicated at five sites** with
+no shared definition: the two JIT signature builders
+(`define_typed_kernel`, `ensure_declared` — byte-identical
+copy-paste), the wrapper unpacker (`define_wrapper`), the entry binder
+(`compile_into_function`, four parallel loops + a manual `next`
+counter), and the runtime arg packer (`GirNode::update` in
+`gir_interp`). The return-shape match was duplicated in the two sig
+builders too. A drift at any one silently reinterpreted bits (a scalar
+as a `*ValArray` → crash) rather than failing a type check — the same
+class as the #131 cross-kernel-arg crash.
+
+**Discussion that drove it** (worth keeping): the question wasn't
+"kind-grouped vs positional." C/SysV-AMD64 *also* kind-groups via
+register classes (INTEGER vs SSE banks, source order within each);
+ARM AAPCS64 likewise. What makes C ABIs robust is that the layout is
+**derived from the signature by one algorithm** that caller and callee
+both run — not hand-replicated per site. The JVM does the same (i2c/c2i
+adapter stubs generated from the signature; our `define_wrapper` is
+exactly that adapter). So the fix is "derive it once," and the
+grouping choice becomes a cheap, localized, reversible decision. We
+kept **kind-grouped** (matches the kernel's existing entry ABI; keeps
+the per-kind clone-on-entry / drop-on-exit codegen a clean per-list
+walk). Foreign callers, if ever wanted, get a separate generated
+C-ABI wrapper — they don't constrain this internal convention, so no
+need to optimize for them now. Our per-arg wire reps are already
+C-clean anyway (`Value` is `repr(u64)` 16 bytes = two SysV eightbytes;
+`ValArray`/`ArcStr` are thin pointers).
+
+**The single source** lives in `gir.rs`:
+- `GirKernel::abi_params() -> impl Iterator<Item = AbiParamDesc>` —
+  yields params in canonical kind-grouped order, each tagged with its
+  `AbiParamKind` (Scalar/Array/Tuple/Struct/Variant/Nullable) and its
+  starting `wire_slot` (running `u64`-slot offset). A `scan` over the
+  chained per-kind param vecs computes the offsets; `wire_words()`
+  (Variant/Nullable = 2, else 1) is the single home of the slot-count
+  rule.
+- `GirKernel::abi_param_wire_slots() -> usize` — total wire footprint;
+  the single home for the `n_pointer_slots + n_value_slots` arithmetic.
+- `GirKernel::abi_return() -> Option<AbiReturn>` — return wire shape
+  (`One { prim }` / `Two`); `None` = the invalid bare-`Null` return
+  (callers attach their own error context).
+
+**Consumers** (all now derive, none hand-walk): `gir_jit.rs`'s
+`push_abi_params` / `push_abi_returns` (shared by both signature
+builders — the duplicate block is gone), the `define_wrapper` unpack
+loop (offsets from `wire_slot`), and `compile_into_function`'s entry
+binder (one `match d.kind` loop replacing four loops + the `next`
+counter). `gir_interp.rs`'s packer uses `abi_param_wire_slots()` for
+its slot-buffer capacity and a `debug_assert_eq!` drift guard after
+packing. The packer's per-vector push order (scalars, then
+array/tuple/struct, then variant/nullable pairs) still encodes the
+canonical order structurally — low drift risk, and the assert catches
+a miscount.
+
+Net ~+92 lines (gir.rs +143 for the single source; the five sites net
+−51 from collapsing the duplication). Adding a new `AbiParamKind`
+variant now forces a compile error at every consuming `match`
+(exhaustiveness) instead of silently drifting one site. Behavior-
+preserving: 1773/1773 graphix-tests + 125/125 graphix-compiler unit
+tests green. #131 will now *consume* `abi_params` for the cross-kernel
+call (emit args in `wire_slot` order) instead of adding a sixth
+mirror.
+
+### #131 composite/value-shape cross-kernel calls — interp side (May 2026)
+
+A fused lambda invoked from inside another fused kernel lowers to
+`GirOp::Call`. Until now `ensure_lambda_kernel` bailed (no kernel
+built → interp fallback via `GXLambda`) whenever any formal arg,
+capture, or return was non-scalar — the `all_scalar` guard. This
+lands the **interpreter** half of lifting that guard; the JIT half
+(the calling kernel JIT-ing a composite call) is the tracked
+`#131-JIT` follow-up.
+
+- **Guard relaxed to a return-only gate** (`lowering.rs`
+  `ensure_lambda_kernel`). Args/captures are already restricted to
+  the six value-bearing `GirType`s by `gir_type_to_region_input_kind`
+  (String/Unit/Null bail there), so the only remaining shape to gate
+  is the *return*: String / Unit / bare-Null returns aren't marshalled
+  across the `GirOp::Call` boundary yet, so those still decline.
+- **Interp `GirOp::Call` arm** (`gir_interp.rs`) now buckets each arg
+  by its `GirType` into the six `eval_kernel_full` slices (scalar /
+  array / tuple / struct / variant / nullable) instead of
+  `.into_scalar()`-ing everything. Args appear in inputs order
+  (formals then captures); bucketing preserves within-kind order,
+  which matches the callee's per-kind param vectors (both built by
+  walking the same input list), so the zip lines up — no reorder
+  needed. New `EvalResult::into_nullable`; the dead-code allows on
+  `into_valarray`/`into_variant` dropped (now used).
+- **JIT `GirOp::Call` arm** (`gir_jit.rs`) returns `Err` for any
+  non-scalar arg or return, so `fuse()` skips JIT and runs the parent
+  kernel on the interpreter (which now routes the call). The `jit`
+  test arm uses `BitFlags::empty()` (graceful fallback), not
+  `Forced`, so this Err doesn't panic.
+
+**Key findings (the catalog was optimistic):**
+- **A top-level `let f = <lambda>; f(x)` does NOT produce a
+  `GirOp::Call`.** The lambda binding bails the enclosing Do, so `f`
+  runs as its own eagerly-fused kernel with composite *params*
+  (pre-existing machinery). To get a real cross-kernel `GirOp::Call`
+  with a composite arg, the call must sit inside ANOTHER lambda's
+  body (`let h = …; let g = |a,b,c| h((a,b), c); g(…)` → `g`'s kernel
+  contains `GirOp::Call(h, …)`).
+- **The FUSION/JIT counters can't isolate a cross-kernel call's fusion
+  state.** The callee `h` is itself eagerly fused and JITs, so a
+  composite-call fixture reads `Jit` even though `g`'s kernel falls
+  back to interp for the call. There is no observable `Interp`
+  intermediate for these — so "interp-first" doesn't show up in the
+  metric; it's about correctness + fused-mode behavior.
+- **The #131-catalog fixtures were mis-attributed.** `tuples1` /
+  `tuples2` / `bindstruct` are let/select *destructuring*, not
+  cross-kernel calls; `lambdamatch2` uses a struct *destructure
+  pattern* arg (`ensure_lambda_kernel` only accepts named/labeled
+  args — bails on patterns); the `list_*` fixtures hit a separate
+  upstream cliff (a nullable-returning `select` lambda doesn't build
+  a kernel at all). Lifting the guard didn't flip any of them; they
+  need different work.
+
+**Tests:** `lang::tuples_structs::{call_tuple_arg, call_struct_arg}`
+(end-to-end, observed `Jit` — composite tuple/struct args route
+through a real `GirOp::Call`); `gir_interp::tests::call_nullable_arg_routes`
+(direct — a `Nullable` arg routed through the Call arm's
+`into_nullable` bucket into `nullable_args`, frontend-independent —
+the one new path the e2e fixtures don't cover, since value-shape
+*returns* are unchanged passthrough through `eval_kernel_full`).
+1779/1779 graphix-tests + 126/126 graphix-compiler green.
+
+**Remaining (tracked):**
+- Destructure-pattern lambda args (`|{a, b}|`, `|(x, y)|`) — separate
+  from arg *kind*; `ensure_lambda_kernel` needs to accept arg patterns.
+- Nullable/variant-returning `select` lambdas not building a kernel —
+  an upstream fusion-frontend gap that blocks the value-shape-return
+  end-to-end path.
+
+### #131 composite/value-shape cross-kernel calls — JIT side (May 2026)
+
+The JIT half: a *calling* kernel now JIT-compiles a `GirOp::Call`
+whose args/return are composite or value-shape (previously the JIT
+Call arm returned Err → the calling kernel fell back to interp).
+Consumes #132's `abi_params` for the ordering, so the historical
+"scalar routed into a tuple-pointer slot → misaligned-deref crash" is
+structurally impossible rather than guard-avoided.
+
+- **`compile_call_clif_args`** (new shared helper, `gir_jit.rs`):
+  assembles the CLIF call-arg list in the callee's kind-grouped ABI
+  order — all scalars, then composite pointers (array, then tuple,
+  then struct), then value-shape (variant, then nullable — two words
+  each). Args arrive in inputs order (formals then captures); emitting
+  kind by kind preserves within-kind order, which matches the callee's
+  per-kind param vectors (built by walking the same input list), so it
+  lines up slot-for-slot with the signature `push_abi_params` emits.
+  Returns the owned composite/value args to drop after the call.
+- **Ownership**: the callee clones every composite/value param on
+  entry (`compile_into_function`: `graphix_valarray_clone` makes a
+  fresh `Box<ValArray>`; `graphix_value_clone` bumps + `mem::forget`s).
+  So args are passed AS-IS (borrowed). An `Owned`-source arg (a
+  `TupleNew`/`StructNew`/`VariantNew`/`IfChain`/`Block`/`DynCall`/`Call`
+  producer) leaves the caller holding the original after the callee
+  took its clone → dropped after the call via `emit_call_arg_drops`
+  (`graphix_valarray_drop` / `graphix_value_drop`). `Borrowed` (Local
+  reads) aren't dropped — the env owns them. `classify_composite_source`
+  gained a `GirOp::Call => Owned` arm (a composite/value Call *return*
+  is an owned pointer/Value, same as DynCall).
+- **Two Call arms**: `compile_scalar_impl`'s handles scalar /
+  composite-pointer returns (1 CLIF result); `compile_value_expr`
+  gained a `GirOp::Call` arm for value-shape (Variant/Nullable)
+  returns (2 results → `(disc, payload)`). `compile_expr`'s type
+  dispatch routes each Call to the right arm. Both share
+  `compile_call_clif_args` + `emit_call_arg_drops`.
+
+**Direct JIT tests** (`gir_jit::tests`, via `compile_kernel_with_callees`
+— the metric can't observe whether the *calling* kernel JITs, so these
+force-compile + run it): `cross_kernel_call_tuple_arg` (composite arg,
+kind-grouped reorder, owned `TupleNew` drop with real ValArray
+refcounting — the crash-class regression guard), `cross_kernel_call_nullable_return`
+(value-shape return decode), `cross_kernel_call_owned_nullable_arg`
+(value-shape `Owned` arg + post-call `graphix_value_drop`). The
+end-to-end `call_tuple_arg` / `call_struct_arg` fixtures now JIT the
+composite call through the real fusion pipeline (no regression).
+129/129 graphix-compiler + 1779/1779 graphix-tests green.
+
+**Off-topic bug surfaced (NOT fixed — flagged for the user):** the
+JIT `GirOp::IsNull` arm (`gir_jit.rs` ~2908) calls
+`compile_scalar(b, inner, …)` on its operand, but a `Nullable`
+operand now lowers to a two-register `(disc, payload)` pair (since the
+by-value `Value` migration), so `.single()` rejects it — AND the arm
+passes one arg to `graphix_value_is_null(v: Value)` which takes two.
+The arm was never updated for the by-value ABI (the notes say it
+should inline an `icmp disc, NULL_DISC`). It's masked in the
+differential suite by graceful interp fallback (a JIT-compile Err →
+`fuse()` runs the kernel on interp → same value); a force-compile test
+(`.expect`) is the first to surface it. Means null-narrowing `select`
+arms (`select nullable { null as _ => …, T as v => … }`) silently
+don't JIT. The #131 owned-value-arg test was rewritten to use an
+identity callee instead of `is_null` to avoid it.

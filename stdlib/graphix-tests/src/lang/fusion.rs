@@ -430,12 +430,12 @@ async fn closure_primitive_capture() -> Result<()> {
 
 /// C2 — composite capture (tuple). `let t = (1, 2); let g = |x|
 /// t.0 + t.1 + x; g(10)` → 13. The capture `t` is a tuple, so the
-/// fused-call scalar-only guard declines to build a `GirOp::Call`
-/// kernel (composite cross-kernel call args aren't supported yet —
-/// see the guard in `ensure_lambda_kernel`). The call therefore
-/// falls back to the interpreter, which still produces the correct
-/// value. When composite cross-kernel calls land, add a JIT
-/// assertion here.
+/// call passes a composite arg across the kernel boundary. The
+/// interpreter routes it into the callee's tuple slot
+/// (`eval_kernel_full`); the JIT's `GirOp::Call` arm doesn't lower
+/// composite args yet, so in jit mode `fuse()` falls back to the
+/// interpreter. Either way the value is correct. When #131-JIT lands,
+/// upgrade this to `load_value_and_jit` + assert `JIT_INVOCATIONS > 0`.
 #[tokio::test(flavor = "current_thread")]
 async fn closure_tuple_capture_falls_back() -> Result<()> {
     let v =
@@ -484,14 +484,16 @@ async fn closure_fn_external_static() -> Result<()> {
 }
 
 /// Cross-kernel-call arg ordering regression guard: a lambda whose
-/// formal args are `(composite, scalar)`. The callee's JIT signature
-/// groups params by kind (scalars first, then composite pointers),
-/// but `GirOp::Call` passes args positionally — for a composite-then-
-/// scalar signature those diverge, and without a guard the scalar
-/// `5` is routed into the tuple-pointer slot and dereferenced (a
-/// misaligned-pointer crash). The scalar-only guard in
-/// `ensure_lambda_kernel` declines to fuse this lambda; it runs on
-/// the interpreter instead. `g((10,20), 5)` = 35, no crash.
+/// formal args are `(composite, scalar)`. The callee's ABI groups
+/// params by kind (scalars first, then composite pointers — see
+/// `GirKernel::abi_params`), so a naive positional arg pass would
+/// route the scalar `5` into the tuple-pointer slot and dereference
+/// it (a misaligned-pointer crash). The interpreter buckets each arg
+/// by `GirType` into the right slot, so `g((10,20), 5)` = 35 with no
+/// crash. (The JIT `GirOp::Call` arm returns Err for the composite
+/// arg and falls back to interp until #131-JIT; that's where this
+/// guard matters most — the JIT must assemble args in kind-grouped
+/// order.)
 #[tokio::test(flavor = "current_thread")]
 async fn call_arg_order_composite_then_scalar() -> Result<()> {
     let v = load_and_await(

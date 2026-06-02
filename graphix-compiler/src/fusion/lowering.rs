@@ -1993,27 +1993,23 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
     let return_typ = GirType::from_type(&typ.rtype)?;
-    // Scalar-only cross-kernel calls. A fused lambda is invoked via
-    // `GirOp::Call` — a direct typed CLIF call (JIT) / flat scalar
-    // arg list (interp). Both paths today only handle scalar args
-    // and a scalar return:
-    //  - The JIT callee signature groups params by kind (scalars,
-    //    then composite pointers, then value-shape pairs), but the
-    //    `GirOp::Call` codegen passes args in positional order — for
-    //    a non-scalar arg that ordering diverges and a scalar gets
-    //    reinterpreted as a pointer (misaligned-deref crash).
-    //  - The interp `GirOp::Call` path `.into_scalar()`s every arg.
-    // So if any formal arg, capture, or the return is non-scalar,
-    // refuse to build the fused kernel — the call falls back to the
-    // (correct) interpreter. Composite / value-shape cross-kernel
-    // calls (correct kind-grouped reordering + ownership + 2-register
-    // value args on the JIT side, typed arg routing on the interp
-    // side) are a tracked follow-up.
-    let all_scalar = inputs
-        .iter()
-        .all(|inp| matches!(inp.kind, RegionInputKind::Prim(_)))
-        && matches!(return_typ, GirType::Prim(_));
-    if !all_scalar {
+    // Cross-kernel calls support scalar + composite (array/tuple/
+    // struct) + value-shape (variant/nullable) args, captures, and
+    // returns. Args and captures are already restricted to those
+    // kinds by `gir_type_to_region_input_kind` above (String / Unit /
+    // bare-Null bail there). The return is the one remaining shape to
+    // gate: String / Unit / Null returns aren't marshalled through the
+    // `GirOp::Call` boundary, so refuse those — the call stays on the
+    // interpreter (via `GXLambda`).
+    //
+    // Backend split: the interpreter's `GirOp::Call` arm routes each
+    // arg into the callee's per-kind slot (`eval_kernel_full`), so it
+    // handles composites / value-shapes today. The JIT's `GirOp::Call`
+    // arm still lowers only scalar args + scalar return and returns
+    // Err otherwise, so `fuse()` runs the parent kernel on the
+    // interpreter for a non-scalar call. Lowering composites / value-
+    // shapes natively in the JIT is the #131-JIT follow-up.
+    if matches!(return_typ, GirType::String | GirType::Unit | GirType::Null) {
         return None;
     }
     let kernel_name = source_name.clone();

@@ -1096,6 +1096,149 @@ pub struct GirKernel {
     pub body: Vec<GirStmt>,
 }
 
+// ─── Kernel ABI layout — single source of truth ──────────────────
+//
+// The kernel calling convention is "kind-grouped": parameters are
+// laid out at the JIT/runtime boundary as all `Scalar` params first
+// (each one machine word at the prim's CLIF type), then all
+// pointer-shaped composite params (array/tuple/struct, each one
+// machine word holding a `*ValArray`), then all two-word `Value`
+// params (variant/nullable, each two words: disc + payload). Returns
+// follow an analogous rule.
+//
+// Every ABI site — the two JIT signature builders, the uniform
+// wrapper's slot unpacker, the kernel entry-block binder, and the
+// runtime arg packer — derives its ordering and wire footprint from
+// `GirKernel::abi_params` / `abi_return` / `abi_param_wire_slots`
+// rather than hand-walking the per-kind `*_params` lists. Keeping the
+// order in one place is what makes a mistake a compile error (a new
+// `AbiParamKind` variant forces every match) instead of a silent
+// bit-reinterpretation at one drifted site. Kind-grouped (rather than
+// source-positional) is retained deliberately: it matches the
+// kernel's existing entry ABI and keeps the per-kind clone-on-entry /
+// drop-on-exit codegen a clean per-list walk. Foreign callers, if
+// ever wanted, get a separate generated C-ABI wrapper — they don't
+// constrain this internal convention.
+
+/// The kind of a single kernel parameter, in enough detail to drive
+/// both the wire encoding (how many machine words, what CLIF type)
+/// and the env-slot binding (which `bind_*` the entry code calls).
+#[derive(Debug, Clone, Copy)]
+pub enum AbiParamKind {
+    /// One machine word at the prim's CLIF type. Binds via `env.bind`.
+    Scalar(PrimType),
+    /// One machine word holding a `*ValArray`; binds via
+    /// `env.bind_composite`. Array/Tuple/Struct share this wire shape
+    /// but stay distinct so the runtime packer can pull each from the
+    /// right `*_args` vector.
+    Array,
+    Tuple,
+    Struct,
+    /// Two machine words (disc, payload) of a `repr(u64)` `Value`.
+    /// Binds via `env.bind_variant`.
+    Variant,
+    /// Two machine words (disc, payload). Binds via `env.bind_nullable`
+    /// — same wire shape as `Variant`, different env slot list.
+    Nullable,
+}
+
+impl AbiParamKind {
+    /// Number of machine-word (`u64`) slots this param occupies on the
+    /// wire. The single home of the "Variant/Nullable are two words,
+    /// everything else is one" rule.
+    pub fn wire_words(self) -> usize {
+        match self {
+            AbiParamKind::Variant | AbiParamKind::Nullable => 2,
+            _ => 1,
+        }
+    }
+}
+
+/// One kernel parameter at the ABI boundary, in kind-grouped order.
+/// `wire_slot` is the starting `u64` slot index in the flat boundary
+/// layout; the param spans `kind.wire_words()` consecutive slots.
+#[derive(Debug, Clone, Copy)]
+pub struct AbiParamDesc<'a> {
+    pub name: &'a ArcStr,
+    pub kind: AbiParamKind,
+    pub wire_slot: usize,
+}
+
+/// The wire shape of a kernel's return value.
+#[derive(Debug, Clone, Copy)]
+pub enum AbiReturn {
+    /// One return value. `prim` is set for scalar returns (so the
+    /// signature picks the narrow CLIF type) and `None` for
+    /// pointer/string/unit returns (one machine word).
+    One { prim: Option<PrimType> },
+    /// Two return values (disc, payload) — variant/nullable `Value`.
+    Two,
+}
+
+impl GirKernel {
+    /// Iterate the kernel's parameters in canonical kind-grouped ABI
+    /// order, each tagged with its wire-slot offset. This is THE
+    /// definition of the parameter calling convention — every ABI site
+    /// consumes it rather than re-deriving the order.
+    pub fn abi_params(&self) -> impl Iterator<Item = AbiParamDesc<'_>> {
+        let scalars =
+            self.params.iter().map(|p| (&p.name, AbiParamKind::Scalar(p.prim)));
+        let arrays =
+            self.array_params.iter().map(|p| (&p.name, AbiParamKind::Array));
+        let tuples =
+            self.tuple_params.iter().map(|p| (&p.name, AbiParamKind::Tuple));
+        let structs =
+            self.struct_params.iter().map(|p| (&p.name, AbiParamKind::Struct));
+        let variants = self
+            .variant_params
+            .iter()
+            .map(|p| (&p.name, AbiParamKind::Variant));
+        let nullables = self
+            .nullable_params
+            .iter()
+            .map(|p| (&p.name, AbiParamKind::Nullable));
+        scalars
+            .chain(arrays)
+            .chain(tuples)
+            .chain(structs)
+            .chain(variants)
+            .chain(nullables)
+            .scan(0usize, |off, (name, kind)| {
+                let wire_slot = *off;
+                *off += kind.wire_words();
+                Some(AbiParamDesc { name, kind, wire_slot })
+            })
+    }
+
+    /// Total number of `u64` wire slots the parameter list occupies.
+    /// The single home for the `n_pointer_slots + n_value_slots`
+    /// arithmetic that used to be copy-pasted at every ABI site.
+    pub fn abi_param_wire_slots(&self) -> usize {
+        self.params.len()
+            + self.array_params.len()
+            + self.tuple_params.len()
+            + self.struct_params.len()
+            + 2 * (self.variant_params.len() + self.nullable_params.len())
+    }
+
+    /// The wire shape of this kernel's return value, or `None` for the
+    /// invalid bare-`Null` return (fusion must widen to `Nullable<T>`
+    /// before producing). Callers translate `None` into their own
+    /// error with context.
+    pub fn abi_return(&self) -> Option<AbiReturn> {
+        match &self.return_type {
+            GirType::Prim(p) => Some(AbiReturn::One { prim: Some(*p) }),
+            GirType::Array(_)
+            | GirType::Tuple(_)
+            | GirType::Struct(_)
+            | GirType::Unit
+            | GirType::String => Some(AbiReturn::One { prim: None }),
+            GirType::Variant(_) | GirType::Nullable(_) => Some(AbiReturn::Two),
+            GirType::Null => None,
+        }
+    }
+}
+
 /// A function-typed kernel "parameter" — really a slot in the
 /// kernel's fn-args table. Each slot resolves to a `LambdaDef` at
 /// DynCall time; how that resolution happens depends on the
