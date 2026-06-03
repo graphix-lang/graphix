@@ -108,6 +108,7 @@ run!(
 // CallSite must propagate through MapQ to json::read. Currently this fails:
 // MapQ::typecheck ignores the phase and returns Done, so the deferred check
 // cascade never reaches json::read, leaving its cast_typ unset.
+// ASPIRE: Jit (currently None) — blocked on: array::map → Array<Result<i64, multi-variant error>> element not lowerable (Set-with-Error)
 run!(
     hof_map_json_read,
     r#"{

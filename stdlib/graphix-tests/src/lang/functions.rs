@@ -51,7 +51,6 @@ const REQUIRED_ARGS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: labeled-arg lambda call
 run!(required_args, REQUIRED_ARGS, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,

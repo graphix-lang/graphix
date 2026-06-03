@@ -87,7 +87,6 @@ const ARRAY_INDEXING5: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args (#131)
 run!(array_indexing5, ARRAY_INDEXING5, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,

@@ -65,7 +65,6 @@ select 42 {
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: unspecified
 run!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| match v {
     Err(_) => true,
     _ => false,
@@ -125,7 +124,6 @@ const NESTEDMATCH2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: unspecified
 run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
     Err(e) => {
         dbg!(e);

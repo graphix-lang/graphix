@@ -33,6 +33,7 @@ run!(
 ; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type implemented as a struct
+// ASPIRE: Jit (currently None) — blocked on: cross-module struct-arg / string-return fn (i64 twin abstract_type_basic fuses)
 run!(
     abstract_type_struct_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
@@ -421,6 +422,7 @@ run!(
 // Abstract type constraint is automatically enforced on functions
 // The constraint on type Box<'a: Number> should propagate to wrap/unwrap
 // without needing to repeat the constraint in the val declarations
+// ASPIRE: Jit (currently None) — blocked on: constrained abstract-type fn (unconstrained twin abstract_type_parameterized_basic fuses)
 run!(
     abstract_type_constraint_auto_enforced,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -620,6 +622,7 @@ run!(
 // =============================================================================
 
 // Abstract type as Map key
+// ASPIRE: Jit (currently None) — blocked on: cross-module Map lookup + string return (Map twin abstract_type_map_value fuses)
 run!(
     abstract_type_map_key,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "found"),

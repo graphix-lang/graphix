@@ -79,6 +79,7 @@ const WRITE_BIN_THEN_READ_BIN: &str = r#"{
   sys::fs::read_all_bin(write_result ~ path)
 }"#;
 
+// ASPIRE: Jit (currently None) — blocked on: bytes has no GirType (string twin test_write_then_read fuses)
 run!(test_write_bin_then_read_bin, WRITE_BIN_THEN_READ_BIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")
 }; graphix_package_core::testing::FuseExpect::None);

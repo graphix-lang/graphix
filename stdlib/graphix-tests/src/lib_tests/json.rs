@@ -14,10 +14,12 @@ run!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v:
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// ASPIRE: Jit (currently None) — blocked on: Null kernel-return rejected by fuse() splice filter
 run!(json_null, r#"{let v: null = json::read(json::write_str(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; graphix_package_core::testing::FuseExpect::None);
 
+// ASPIRE: Jit (currently None) — blocked on: json::read string return not fused (i64/array/struct siblings do)
 run!(json_string, r#"{let v: string = json::read(json::write_str("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);

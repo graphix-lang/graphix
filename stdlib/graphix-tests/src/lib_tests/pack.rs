@@ -14,10 +14,12 @@ run!(pack_bool, r#"{let v: bool = pack::read(pack::write_bytes(true)$)?; v}"#, |
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// ASPIRE: Jit (currently None) — blocked on: Null kernel-return rejected by fuse() splice filter
 run!(pack_null, r#"{let v: null = pack::read(pack::write_bytes(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; graphix_package_core::testing::FuseExpect::None);
 
+// ASPIRE: Jit (currently None) — blocked on: pack::read string return not fused (i64/array/struct siblings do)
 run!(pack_string, r#"{let v: string = pack::read(pack::write_bytes("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -44,6 +46,7 @@ run!(pack_struct, r#"{
     matches!(v, Ok(Value::Array(arr)) if arr.len() == 2)
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// ASPIRE: Jit (currently None) — blocked on: bytes has no GirType (no PrimType::Bytes)
 run!(pack_bytes, r#"{
     let b = buffer::from_string("abc");
     let encoded = pack::write_bytes(b)$;
