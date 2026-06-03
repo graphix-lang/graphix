@@ -2395,3 +2395,70 @@ Regression test `gir_jit::tests::jit_is_null_on_nullable_param` (a
 fixtures now exercise the IsNull JIT path in mode C/D instead of
 falling back. 130/130 compiler + 1778/1779 graphix-tests green (the
 1 is the pre-existing fs-parallelism flake, passes single-threaded).
+
+### #134 option-typed block values silently de-fused (May 2026)
+
+The archetypal predictable-performance cliff, caught by the
+bidirectional harness: pulling a `select` (or any option-producing
+expression) into a named helper *inside a block* silently dropped the
+whole block off the fusion path, with no signal. E.g.
+`let result = { let f = |x: i64| select x { 0 => null, n => n }; f(5) }`
+did not fuse, while the bare `{ let f = …; f(5) }` and a direct
+`let result = select 5 { … }` both did.
+
+**Root cause.** Graphix's option type `[T, null]` has TWO
+representations in the typechecker: `Type::Set([Prim(T), Null])` AND
+the collapsed `Type::Primitive(T | Null)` bitflag — the typechecker
+collapses the union into a single multi-bit primitive when `T` is a
+primitive (a `select x { 0 => null, n => n }` infers `i64 | null`; a
+block whose tail has that type surfaces the collapsed form).
+`GirType::from_type` (gir.rs) handled the `Set` form (→ `Nullable`)
+but its `Primitive` arm rejected any multi-bit flag — the comment even
+admitted "multi-flag primitives with Null + other variants fall
+through to `PrimType::from_type`, which rejects them." So the collapsed
+option type returned `None`.
+
+That `None` made `infer_body_rtype`'s typed-AST fast path miss and
+fall back to `emit_node(body)`. For a *direct* `select` value the
+fallback succeeds (`emit_select_as_expr` unifies the arms to
+`Nullable`); but for a *block* value the fallback walks the block
+(`emit_do_as_expr`) which can't emit a `let f = <lambda>` and bails →
+`infer_body_rtype` returns `None` → `build_region` errors → no fusion.
+The `Nullable` return type was the trigger; the lambda-in-block was
+incidental (a scalar block in the same shape hits the single-bit fast
+path and fuses fine — `emit_body` handles the lambda bind without
+issue).
+
+**Fix** (gir.rs, ~20 lines): a `from_type` arm for
+`Type::Primitive(p)` where `p == T | Null` (exactly two bits, one
+`Null`) → `GirType::Nullable(inner)`, where `inner` is `Prim(T)` or
+`String` (mirroring the `[T, null]` `Set` arm's recursion so both
+representations agree). No other site changed.
+
+**Diagnosis lesson** (reinforces [[feedback-run-the-code]]): the
+fusion machinery had refactored well past CLAUDE.md (no
+`analyze_program` / `eager_fuse_lambdas` / `fusion_lambdas`; it's
+`fuse()` → walker candidates → `build_region`, lambdas via `ctx.ln`).
+A general-purpose subagent's static trace was confidently WRONG TWICE
+(it blamed `emit_bind_stmt` bailing on the lambda bind — contradicted
+by instrumentation showing `BINDSTMT bail` never fired and a scalar
+block fusing). Only empirical bisection (`GRAPHIX_KDBG` eprintln
+instrumentation in `finish_kernel` / `infer_body_rtype` / the CallSite
+arm, run on the actual binary) found the real `from_type=None for
+typ=Primitive(I64 | Null)` smoking gun. Reason about refactored code
+from execution, not from the docs or from a plausible-sounding trace.
+
+**Unblocked** (the bidirectional check flagged them automatically):
+`lang::tuples_structs::call_nullable_return` (i64-option,
+`let f = |x| select x { 0 => null, n => n }; f(5)`) and
+`lib_tests::dirs::{home_dir, config_dir, data_dir}` (string-option —
+`sys::dirs::*` return `[string, null]`) — all `None` → `Jit`. This is
+also what finally makes #131's value-shape-return Call path reachable
+end-to-end (previously only direct unit tests). 130/130 compiler +
+1782/1782 graphix-tests green.
+
+Not covered: variant-returning `select` lambdas (`select x { … => `A,
+… => `B(n) }`) weren't separately verified — they produce a
+`Type::Variant` / `Type::Set`-of-variants shape, a different path that
+may already work via the existing `Variant`/`Set` arms or may be a
+separate cliff.

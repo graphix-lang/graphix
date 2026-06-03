@@ -6,31 +6,28 @@ const HOME_DIR: &str = r#"
     sys::dirs::home_dir()
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: sys::dirs::home_dir builtin not fused yet
 run!(home_dir, HOME_DIR, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => !s.is_empty(),
     Ok(Value::Null) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CONFIG_DIR: &str = r#"
     sys::dirs::config_dir()
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: sys::dirs::config_dir builtin not fused yet
 run!(config_dir, CONFIG_DIR, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => !s.is_empty(),
     Ok(Value::Null) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATA_DIR: &str = r#"
     sys::dirs::data_dir()
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: sys::dirs::data_dir builtin not fused yet
 run!(data_dir, DATA_DIR, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => !s.is_empty(),
     Ok(Value::Null) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -286,10 +286,24 @@ run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// NB: a value-shape (variant / nullable) *return* across a cross-
-// kernel call is exercised directly in `gir_interp`'s unit tests
-// (`call_*_arg_routes` / `call_value_return_routes`) — the obvious
-// end-to-end shapes (`let h = |x| select x { 0 => null, n => n }`)
-// are blocked UPSTREAM by an unrelated cliff: a nullable-returning
-// `select` lambda doesn't build a kernel at all, so the call never
-// forms. That's a fusion-frontend gap, not a Call-routing one.
+// A value-shape (nullable) RETURN from a lambda, end-to-end: `f`
+// returns `[i64, null]` via a `select` with a `null` arm, and is
+// called inside the result block. The block's tail type is the
+// collapsed `i64 | null` primitive form; `GirType::from_type` now
+// recognises it (gir.rs), so `infer_body_rtype`'s fast path keeps
+// the region from de-fusing. Exercises #131's value-shape Call
+// return through the full fusion pipeline.
+const CALL_NULLABLE_RETURN: &str = r#"
+{
+  let f = |x: i64| select x {
+    0 => null,
+    n => n
+  };
+  f(5)
+}
+"#;
+
+run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
+    Ok(Value::I64(5)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -347,13 +347,39 @@ impl GirType {
                 Some(GirType::String)
             }
             // Null primitive lowers to `GirType::Null` — the
-            // single-value null shape. (Multi-flag primitives with
-            // Null + other variants fall through to `PrimType::from_type`,
-            // which rejects them.)
+            // single-value null shape.
             Type::Primitive(p)
                 if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
             {
                 Some(GirType::Null)
+            }
+            // `T | null` collapsed-primitive option shape: a multi-flag
+            // primitive carrying `Null` plus exactly one other primitive
+            // bit. The typechecker represents `[T, null]` this way
+            // (rather than as a `Type::Set`) when `T` is itself a
+            // primitive bitflag — e.g. `select x { 0 => null, n => n }`
+            // infers `i64 | null`, and a block whose tail has that type
+            // surfaces the collapsed form. Same `GirType::Nullable`
+            // shape as the `[T, null]` `Set` arm below. Without this,
+            // such a value misses the typed-AST fast path in
+            // `infer_body_rtype` and falls back to walking the body,
+            // which silently de-fuses any block that produces an option
+            // value (a predictable-performance cliff).
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::Null) && p.iter().count() == 2 =>
+            {
+                let other =
+                    p.iter().find(|f| *f != netidx_value::Typ::Null)?;
+                // The non-null bit becomes the Nullable's inner GirType
+                // — a scalar prim, or `String` (which lives outside
+                // `PrimType`). Mirrors the `[T, null]` `Set` arm's
+                // recursion so both representations agree.
+                let inner = if other == netidx_value::Typ::String {
+                    GirType::String
+                } else {
+                    GirType::Prim(PrimType::from_typ(other)?)
+                };
+                Some(GirType::Nullable(Box::new(inner)))
             }
             Type::Array(inner) => {
                 GirType::from_type(inner).map(|t| GirType::Array(Box::new(t)))
