@@ -7,6 +7,9 @@ fn cert_dir() -> String {
 }
 
 // TLS round-trip: connect + accept, then write/read through upgraded streams
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;

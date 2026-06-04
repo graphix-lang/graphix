@@ -303,37 +303,57 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// interp + fused.
 #[macro_export]
 macro_rules! run {
+    // ── NodeShape-bearing forms (trailing `; shape: <NodeShape>`) ──
+    // Pin the compiled GIR shape in addition to the value + fusion
+    // expectation. The spec is checked in `fused` mode (graph shape is
+    // backend-independent). Must precede the plain `; $fexpect` arms so
+    // the longer token sequence matches first.
+    ($name:ident, $code:expr, $pred:expr; $fexpect:expr; shape: $shape:expr) => {
+        $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+    };
+    ($name:ident, $code:expr, $pred:expr; shape: $shape:expr) => {
+        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+    };
     // Default form: assert the program fuses AND JITs (`FuseExpect::Jit`).
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
-        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, $($path => $code),+);
+        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
     };
     // Explicit fusion-expectation form: trailing `; FuseExpect::X`.
     // The `;` separator makes the expectation insertable at the very
     // end of any invocation regardless of its argument shape, which
     // is what the run_no_jit!→run! migration relied on.
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $fexpect, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr; $fexpect:expr) => {
-        $crate::run!(@impl $name, $pred, $timeout, $fexpect, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $fexpect, $($path => $code),+);
+        $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
-    (@impl $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $($path:literal => $code:expr),+) => {
+    (@impl $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
         mod $name {
             use super::*;
+
+            /// The optional `NodeShape` spec to check against the
+            /// compiled graph (`None` for fixtures that don't pin it).
+            #[allow(dead_code)]
+            fn shape_spec(
+            ) -> ::std::option::Option<::graphix_compiler::node_shape::NodeShape> {
+                $shape
+            }
 
             async fn run_with_flags(
                 flags: ::graphix_compiler::BitFlags<::graphix_compiler::CFlag>,
                 reset_counters_after_init: bool,
                 fusion_check: ::std::option::Option<bool>,
+                check_shape: bool,
             ) -> ::anyhow::Result<()> {
                 let pred = $pred;
                 let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
@@ -354,6 +374,7 @@ macro_rules! run {
                     {
                         ::graphix_compiler::gir_jit_helpers::reset_jit_invocations();
                         ::graphix_compiler::gir_jit_helpers::reset_fusion_invocations();
+                        ::graphix_compiler::gir_jit_helpers::reset_fuse_bails();
                     }
                 }
                 let bs = &ctx.rt;
@@ -361,6 +382,15 @@ macro_rules! run {
                     Err(e) => assert!(pred(dbg!(Err(e)))),
                     Ok(e) => {
                         let eid = e.exprs[0].id;
+                        // Assert the compiled graph's shape (only in
+                        // modes where fusion ran, against the live
+                        // post-fusion graph). A mismatch fails here
+                        // with the offending path + reason.
+                        if check_shape {
+                            if let ::std::option::Option::Some(spec) = shape_spec() {
+                                bs.match_shape(eid, spec).await?;
+                            }
+                        }
                         let timeout = ::tokio::time::sleep(
                             ::std::time::Duration::from_secs($timeout),
                         );
@@ -411,6 +441,7 @@ macro_rules! run {
                     ::graphix_compiler::CFlag::FusionDisabled.into(),
                     false,
                     ::std::option::Option::None,
+                    false,
                 ).await
             }
 
@@ -423,6 +454,7 @@ macro_rules! run {
                     ::graphix_compiler::CFlag::JitDisabled.into(),
                     true,
                     ::std::option::Option::Some(false),
+                    true,
                 ).await
             }
 
@@ -447,6 +479,7 @@ macro_rules! run {
                         ::graphix_compiler::CFlag::JitDisabled.into(),
                         true,
                         ::std::option::Option::None,
+                        false,
                     ).await?;
                     let fused_fusion =
                         ::graphix_compiler::gir_jit_helpers::fusion_invocations();
@@ -455,10 +488,26 @@ macro_rules! run {
                         module_path!(),
                         if fused_fusion > 0 { "Fuses" } else { "None" },
                     );
+                    #[cfg(debug_assertions)]
+                    {
+                        let bails =
+                            ::graphix_compiler::gir_jit_helpers::take_fuse_bails();
+                        let joined = bails
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        eprintln!(
+                            "FUSEBAIL\t{}\t{}",
+                            module_path!(),
+                            joined,
+                        );
+                    }
                     run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
                         true,
                         ::std::option::Option::None,
+                        false,
                     ).await?;
                     let jit =
                         ::graphix_compiler::gir_jit_helpers::jit_invocations();
@@ -470,10 +519,13 @@ macro_rules! run {
                     return Ok(());
                 }
                 // Full fusion + JIT; checks the precise expectation.
+                // Shape is asserted in `fused` mode (backend-
+                // independent), so skip it here to avoid redundancy.
                 run_with_flags(
                     ::graphix_compiler::BitFlags::empty(),
                     true,
                     ::std::option::Option::Some(true),
+                    false,
                 ).await
             }
         }

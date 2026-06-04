@@ -214,6 +214,18 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             _phantom: std::marker::PhantomData,
         }))
     }
+
+    /// The compiled kernel IR this region fused into. Used by graph
+    /// introspection (`crate::node_shape`) to assert what fused.
+    pub fn kernel(&self) -> &StdArc<GirKernel> {
+        self.inner.kernel()
+    }
+
+    /// The per-input feeder nodes — the kernel's children in the
+    /// graph. Each drives one kernel input slot.
+    pub fn feeders(&self) -> &[Node<R, E>] {
+        &self.feeders
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {

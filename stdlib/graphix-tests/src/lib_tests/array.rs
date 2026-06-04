@@ -10,6 +10,9 @@ const ARRAY_MAP0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -20,7 +23,7 @@ run!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_MAP1: &str = r#"
 {
@@ -30,6 +33,9 @@ const ARRAY_MAP1: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[[i64; 2]; 2]>() {
@@ -38,7 +44,7 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
         },
         Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_MAP2: &str = r#"
   array::map([1, 2], |x| str::len(x))
@@ -58,6 +64,9 @@ const ARRAY_FILTER: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -68,7 +77,7 @@ run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FLAT_MAP: &str = r#"
 {
@@ -77,6 +86,9 @@ const ARRAY_FLAT_MAP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -85,7 +97,7 @@ run!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FILTER_MAP: &str = r#"
 {
@@ -97,6 +109,9 @@ const ARRAY_FILTER_MAP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -105,7 +120,7 @@ run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FIND: &str = r#"
 {
@@ -115,6 +130,9 @@ const ARRAY_FIND: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -123,7 +141,7 @@ run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FIND_MAP: &str = r#"
 {
@@ -136,23 +154,29 @@ const ARRAY_FIND_MAP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(2)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_ITER: &str = r#"
    filter(array::iter([1, 2, 3, 4]), |x| x == 4)
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_iter, ARRAY_ITER, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(4)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_ITERQ: &str = r#"
 {
@@ -165,12 +189,15 @@ const ARRAY_ITERQ: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FOLD0: &str = r#"
 {
@@ -179,12 +206,15 @@ const ARRAY_FOLD0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(55)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FOLD1: &str = r#"
 {
@@ -278,12 +308,15 @@ const ARRAY_LEN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_len, ARRAY_LEN, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])
@@ -308,6 +341,9 @@ const ARRAY_GROUP0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -316,7 +352,7 @@ run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_GROUP1: &str = r#"
 {
@@ -350,6 +386,9 @@ const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
@@ -358,18 +397,21 @@ run!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INIT1: &str = r#"
   array::init(0, |i| i)
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init1, ARRAY_INIT1, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INIT2: &str = r#"
 {
@@ -378,17 +420,23 @@ const ARRAY_INIT2: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init2, ARRAY_INIT2, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INIT3: &str = r#"
   array::init(4, |i| (i, i * i))
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 4]>() {
@@ -397,7 +445,7 @@ run!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INIT4: &str = r#"
   array::init(3, |i| str::len(i))

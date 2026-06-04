@@ -4,6 +4,7 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::publisher::Value;
 
+
 const LAMBDA: &str = r#"
 {
   let y = 10;
@@ -12,10 +13,13 @@ const LAMBDA: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(lambda, LAMBDA, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const FIRST_CLASS_LAMBDAS: &str = r#"
 {
@@ -38,7 +42,11 @@ const LABELED_ARGS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: labeled-arg lambda call
+// Not fused, by design: `#foo: Number, #bar: Number` → `foo + bar`
+// returns the loose `Number` set (foo/bar may be different number
+// types — genuinely dynamic), same root cause as `sum`. Labeled-arg
+// lambda fusion itself WORKS — verified: the identical lambda with
+// concrete `i64` params fuses + JITs.
 run!(labeled_args, LABELED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -63,7 +71,9 @@ const MIXED_ARGS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: labeled-arg lambda call
+// Not fused, by design: loose `Number` return (same as labeled_args /
+// sum). Labeled+positional mixed-arg lambda fusion works with concrete
+// types; the blocker here is the dynamic `Number` result.
 run!(mixed_args, MIXED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -77,7 +87,9 @@ const ARG_SUBTYPING: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: labeled-arg lambda call
+// ASPIRE: Jit (currently None) — blocked on: fn-typed lambda arg (HOF /
+// dynamic dispatch — `g` takes `f: fn(...)` as a value). NOT labeled
+// args (those fuse) and not loose Number — this is the HOF gap.
 run!(arg_subtyping, ARG_SUBTYPING, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,
@@ -91,7 +103,9 @@ const ARG_NAME_SHORT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: labeled-arg lambda call
+// Not fused, by design: loose `Number` return (same as labeled_args /
+// sum). The `#foo` arg-name shorthand and labeled-arg machinery fuse
+// with concrete types; the blocker is the dynamic `Number` result.
 run!(arg_name_short, ARG_NAME_SHORT, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,
@@ -107,10 +121,13 @@ const LATE_BINDING0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(late_binding0, LATE_BINDING0, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LATE_BINDING1: &str = r#"
 {
@@ -127,13 +144,16 @@ const LATE_BINDING1: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(late_binding1, LATE_BINDING1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2)] => true,
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LATE_BINDING2: &str = r#"
 {
@@ -143,10 +163,13 @@ const LATE_BINDING2: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(late_binding2, LATE_BINDING2, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LATE_BINDING3: &str = r#"
 {
@@ -157,10 +180,13 @@ const LATE_BINDING3: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(late_binding3, LATE_BINDING3, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LATE_BINDING4: &str = r#"
 {
@@ -174,13 +200,16 @@ const LATE_BINDING4: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(late_binding4, LATE_BINDING4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[i64; 3]>() {
         Ok([0, 0, 55]) => true,
         Ok(_) | Err(_) => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RECURSIVE_LAMBDA0: &str = r#"
 {
@@ -207,10 +236,13 @@ const KIR_FUSED_ARITH: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
     Ok(Value::I64(25)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Fusion smoke test: tail-recursive countdown with full annotations
 // and the binding-name hint. Self-call in tail position lowers to
@@ -226,11 +258,14 @@ const KIR_FUSED_TAIL_LOOP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Fusion smoke test: a mandelbrot-shape kernel. Same iterate as the
 // unit tests, exercised through the runtime's Apply path.
@@ -246,11 +281,14 @@ const KIR_FUSED_MANDELBROT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
     // c=1+0i: trace 0 → 1 → 2 → 5 → escape; |5|² = 25 > 4 at i=7.
     Ok(Value::I64(7)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Deferred fusion: an unannotated callback `|x| x * 2` passed to a
 // HOF. Eager fusion fails (no type on `x`); the deferred path
@@ -266,11 +304,14 @@ const KIR_FUSED_DEFERRED_MAP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
     // sum_{i=0}^{99} 2i = 2 * 99*100/2 = 9900
     Ok(Value::I64(9900)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Lazy fusion correctness: a recursive lambda with NO annotations
 // should still produce correct output. The typechecker infers types
@@ -290,11 +331,14 @@ const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Three-level recursive fusion with NO annotations. Tests that
 // lazy fusion threads through arbitrarily nested call chains using
@@ -338,10 +382,13 @@ const KIR_DYNCALL_HOF: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Static-but-non-fusable callee. `helper` is a let-bound stable
 // lambda whose body uses a non-primitive intermediate (Array<i64>),
@@ -360,14 +407,16 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     gir_dyncall_static_nonfusable,
     KIR_DYNCALL_STATIC_NONFUSABLE,
     |v: Result<&Value>| match v {
         Ok(Value::I64(51)) => true,
         _ => false,
-    }
-);
+    }; graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH0: &str = r#"
 {
@@ -378,10 +427,13 @@ const LAMBDAMATCH0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(lambdamatch0, LAMBDAMATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH1: &str = r#"
 {
@@ -430,10 +482,13 @@ const LAMBDAMATCH4: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH5: &str = r#"
 {
@@ -459,10 +514,13 @@ const NESTED_OPTIONAL0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Regression test: callsite args must be updated every cycle, not just
 // when the function is bound. array::iter produces 10, 20, 30 across
@@ -487,10 +545,13 @@ const ARG_UPDATE_BEFORE_BIND: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
     Ok(Value::I64(31)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Verify that arg changes propagate through the ArgRef proxy after the
 // function is already bound (steady-state !bound path).
@@ -506,13 +567,16 @@ const ARG_UPDATE_AFTER_BIND: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(arg_update_after_bind, ARG_UPDATE_AFTER_BIND, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[i64; 4]>() {
         Ok([0, 10, 20, 30]) => true,
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Variadic args: extra positional args beyond the fixed signature
 const VARGS0: &str = r#"

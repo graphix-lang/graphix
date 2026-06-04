@@ -46,9 +46,12 @@ const STDOUT_WRITE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdout_write, STDOUT_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // stderr: write and flush succeed
 const STDERR_WRITE: &str = r#"
@@ -60,9 +63,12 @@ const STDERR_WRITE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stderr_write, STDERR_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // stdin: can be created (we can't feed data in a test, but verify it's a valid stream)
 const STDIN_CREATE: &str = r#"
@@ -72,9 +78,12 @@ const STDIN_CREATE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // writing to stdin returns an error
 const STDIN_WRITE_ERR: &str = r#"

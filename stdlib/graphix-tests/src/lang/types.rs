@@ -110,10 +110,13 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const EXPLICIT_TYPE_VARS3: &str = r#"
 {
@@ -137,6 +140,9 @@ const TYPED_ARRAYS0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &**a {
         [Value::Array(a0), Value::Array(a1)] => match (&**a0, &**a1) {
@@ -149,7 +155,7 @@ run!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const TYPED_ARRAYS1: &str = r#"
 {
@@ -174,7 +180,6 @@ const RECTYPES0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: nested variant payload composite
 run!(rectypes0, RECTYPES0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s), Value::I64(42), Value::Array(a)] if &**s == "Cons" =>
@@ -187,7 +192,7 @@ run!(rectypes0, RECTYPES0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const RECTYPES1: &str = r#"
 {
@@ -200,7 +205,6 @@ const RECTYPES1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: nested variant payload composite
 run!(rectypes1, RECTYPES1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s), Value::I64(42), Value::Array(a)] if &**s == "Cons" =>
@@ -213,7 +217,7 @@ run!(rectypes1, RECTYPES1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const RECTYPES2: &str = r#"
 {
@@ -241,4 +245,4 @@ const TYPEDEF_TVAR_OK: &str = r#"
 run!(typedef_tvar_ok, TYPEDEF_TVAR_OK, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+});

@@ -264,6 +264,23 @@ pub struct Module<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Module<R, E> {
+    /// The module's body node. Used by graph introspection
+    /// (`crate::node_shape`) to walk into a module.
+    pub(crate) fn source(&self) -> &Node<R, E> {
+        &self.source
+    }
+
+    /// The interface re-export proxy map: `impl_id -> sig_id`. For a
+    /// signed module each public `val name` re-exports the impl
+    /// binding `name` — at runtime the module forwards the impl
+    /// binding's value to the signature binding (callers reference
+    /// the signature binding's `BindId`). Static call resolution uses
+    /// this to follow a caller's interface-binding `Ref` back to the
+    /// impl lambda.
+    pub(crate) fn proxy(&self) -> &IntMap<BindId, BindId> {
+        &self.proxy
+    }
+
     pub(super) fn compile_dynamic(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,

@@ -226,6 +226,9 @@ const STR_SPLIT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(str_split, STR_SPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -236,7 +239,7 @@ run!(str_split, STR_SPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_RSPLIT: &str = r#"
 {
@@ -245,6 +248,9 @@ const STR_RSPLIT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -255,7 +261,7 @@ run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_SPLITN: &str = r#"
 {
@@ -264,6 +270,9 @@ const STR_SPLITN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -272,7 +281,7 @@ run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_RSPLITN: &str = r#"
 {
@@ -281,6 +290,9 @@ const STR_RSPLITN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -289,7 +301,7 @@ run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_SPLIT_ESCAPED: &str = r#"
 {
@@ -298,6 +310,9 @@ const STR_SPLIT_ESCAPED: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -306,7 +321,7 @@ run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_SPLITN_ESCAPED: &str = r#"
 {
@@ -315,6 +330,9 @@ const STR_SPLITN_ESCAPED: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -325,7 +343,7 @@ run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_SPLIT_ONCE: &str = r#"
   str::split_once(#pat:", ", "foo, bar, baz")

@@ -10,9 +10,12 @@ const WRITE_THEN_READ: &str = r#"{
   sys::fs::read_all(write_result ~ path)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Test content")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test that watches a directory, writes to a file, and receives modify events.
 // On macOS, FSEvents reports file writes as Create rather than Modify, so
@@ -67,9 +70,12 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   content_ok && modify_ok
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_then_watch_modify, WRITE_THEN_WATCH_MODIFY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test that writes binary data and then reads it back using Graphix
 const WRITE_BIN_THEN_READ_BIN: &str = r#"{
@@ -79,7 +85,9 @@ const WRITE_BIN_THEN_READ_BIN: &str = r#"{
   sys::fs::read_all_bin(write_result ~ path)
 }"#;
 
-// ASPIRE: Jit (currently None) — blocked on: bytes has no GirType (string twin test_write_then_read fuses)
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_bin_then_read_bin, WRITE_BIN_THEN_READ_BIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")
 }; graphix_package_core::testing::FuseExpect::None);

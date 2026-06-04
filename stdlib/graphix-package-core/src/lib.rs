@@ -285,6 +285,28 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
+    /// Opt-in fusion. When `true`, `CachedArgs<Self>` reports itself as
+    /// a `FusedBuiltin` (via `Apply::view`) and routes the call site's
+    /// GIR emission through [`Self::emit_gir`]. Default `false` — the
+    /// builtin fuses (if at all) via the generic `DynCall` path, like
+    /// any opaque builtin.
+    const FUSABLE: bool = false;
+
+    /// Lower a call site of this builtin to GIR. Only consulted when
+    /// `FUSABLE`. Returns `None` to fall back to `DynCall` (e.g. an arg
+    /// shape this emitter can't lower). Same contract as
+    /// [`graphix_compiler::GirEmitter::emit_gir`].
+    fn emit_gir(
+        &self,
+        _callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
+        _args: &[(Option<ArcStr>, &Node<R, E>)],
+        _arg_refs: &[Node<R, E>],
+        _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        _ec: &mut ExecCtx<R, E>,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        None
+    }
+
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -347,6 +369,37 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.cached.clear()
+    }
+
+    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
+        if T::FUSABLE {
+            graphix_compiler::ApplyView::FusedBuiltin(self)
+        } else {
+            graphix_compiler::ApplyView::BuiltIn
+        }
+    }
+
+    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
+        if T::FUSABLE {
+            graphix_compiler::ApplyViewMut::FusedBuiltin(self)
+        } else {
+            graphix_compiler::ApplyViewMut::BuiltIn
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> graphix_compiler::GirEmitter<R, E>
+    for CachedArgs<T>
+{
+    fn emit_gir(
+        &self,
+        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
+        args: &[(Option<ArcStr>, &Node<R, E>)],
+        arg_refs: &[Node<R, E>],
+        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        ec: &mut ExecCtx<R, E>,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        self.t.emit_gir(callsite, args, arg_refs, ctx, ec)
     }
 }
 

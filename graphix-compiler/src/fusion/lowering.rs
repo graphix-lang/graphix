@@ -76,6 +76,12 @@ pub struct FusionCtx {
     /// backend) and never as kernel inputs from an outer region (no
     /// `RegionInputKind::String` shape).
     pub string_inputs: Vec<crate::gir::StringInput>,
+    /// `datetime` / `duration` let-bindings inside the kernel body —
+    /// Value-shape locals carrying their full type. Reads via
+    /// `GirOp::Local` return `EvalResult::DateTime`/`Duration`. Like
+    /// `string_inputs`, these appear only as locals today (no datetime
+    /// kernel params / region inputs yet).
+    pub value_inputs: Vec<crate::gir::ValueInput>,
     /// Other kernels already fused in the current pass. Used by
     /// `emit_expr` to lower `Apply { fn: Ref(name) }` to a direct call
     /// when `name` is in this map. Keyed by the Graphix-level name so
@@ -520,6 +526,9 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
             | GirType::Struct(_)
             | GirType::Variant(_)
             | GirType::Nullable(_)
+            | GirType::DateTime
+            | GirType::Duration
+            | GirType::Bytes
             | GirType::String => true,
             GirType::Unit | GirType::Null => false,
         }
@@ -534,6 +543,9 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
         | GirType::Struct(_)
         | GirType::Variant(_)
         | GirType::Nullable(_)
+        | GirType::DateTime
+        | GirType::Duration
+        | GirType::Bytes
         | GirType::Unit
         | GirType::String => true,
         GirType::Null => false,
@@ -901,6 +913,9 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
             | GirType::Struct(_)
             | GirType::Variant(_)
             | GirType::Nullable(_)
+            | GirType::DateTime
+            | GirType::Duration
+            | GirType::Bytes
             | GirType::String => true,
             // Bare Unit args don't appear in practice (Unit is a
             // return-only shape). Bare Null is always widened to
@@ -918,6 +933,9 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
         | GirType::Struct(_)
         | GirType::Variant(_)
         | GirType::Nullable(_)
+        | GirType::DateTime
+        | GirType::Duration
+        | GirType::Bytes
         | GirType::Unit
         | GirType::String => true,
         GirType::Null => false,
@@ -1018,6 +1036,14 @@ impl FusionCtx {
         self.string_inputs.iter().find(|s| &*s.name == name)
     }
 
+    /// Look up a datetime/duration (Value-shape) let-binding by name.
+    pub fn find_value(
+        &self,
+        name: &str,
+    ) -> Option<&crate::gir::ValueInput> {
+        self.value_inputs.iter().find(|v| &*v.name == name)
+    }
+
     /// Scoped push of a primitive [`Input`] for the duration of `f`.
     /// The canonical pattern for HOF intercepts whose callback's arg
     /// becomes a kernel input visible only while emitting the
@@ -1112,6 +1138,12 @@ impl FusionCtx {
                 typ: GirType::String,
             });
         }
+        if let Some(vi) = self.find_value(name) {
+            return Some(GirExpr {
+                op: GirOp::Local(vi.name.clone()),
+                typ: vi.typ.clone(),
+            });
+        }
         None
     }
 
@@ -1166,6 +1198,12 @@ impl FusionCtx {
                 typ: GirType::String,
             });
         }
+        if let Some(vi) = self.value_inputs.iter().find(|v| v.bind_id == want) {
+            return Some(GirExpr {
+                op: GirOp::Local(vi.name.clone()),
+                typ: vi.typ.clone(),
+            });
+        }
         None
     }
 
@@ -1188,20 +1226,6 @@ impl FusionCtx {
                 fp.name.as_str() == name && fp.arg_types.len() == arity
             })
             .map(|(i, fp)| (i as u32, fp))
-    }
-}
-
-/// Return the last path segment of an `Apply { function: Ref(path) }`,
-/// or `None` if the function isn't a `Ref`. Unlike [`ident_of`], this
-/// accepts multi-segment paths (`array::len`, `str::contains`, …) and
-/// returns just the last segment. Used to pattern-match stdlib
-/// builtin call sites after module resolution has run.
-fn trailing_segment(function: &Expr) -> Option<&str> {
-    match &function.kind {
-        ExprKind::Ref { name } => {
-            netidx::path::Path::basename(name.0.as_ref())
-        }
-        _ => None,
     }
 }
 
@@ -1400,23 +1424,20 @@ fn emit_known_fused_call<R: crate::Rt, E: crate::UserEvent>(
     if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
         return None;
     }
-    // Stdlib `array::len(arr)` special case stays — small, no
-    // builtin runtime needed since it's pure GIR. Other arr::* are
-    // gone (handled by FusedBuiltin path).
-    let trailing = trailing_segment(&spec_apply.function);
-    if trailing == Some("len") && spec_apply.args.len() == 1 {
-        let arr_node = cs.arg_positional(0)?;
-        if let Some(arr_name) = ctx.resolve_array_input(arr_node) {
-            return Some(GirExpr {
-                op: GirOp::ArrayLen { name: arr_name },
-                typ: GirType::Prim(PrimType::U64),
-            });
-        }
-    }
     // Dispatch via fnode's name. Node-based: read the Ref Node's
     // spec for the source name.
     let name = match &cs.fnode().spec().kind {
-        ExprKind::Ref { name } => ident_of(name)?,
+        ExprKind::Ref { name } => match ident_of(name) {
+            Some(n) => n,
+            None => {
+                #[cfg(debug_assertions)]
+                crate::gir_jit_helpers::record_fuse_bail(ArcStr::from(
+                    compact_str::format_compact!("callqual:{}", name.0)
+                        .as_str(),
+                ));
+                return None;
+            }
+        },
         _ => return None,
     };
     // Prefer a DynCall against a fn-typed kernel parameter (HOF arg).
@@ -1445,7 +1466,16 @@ fn emit_known_fused_call<R: crate::Rt, E: crate::UserEvent>(
         });
     }
     // Static call to a previously-fused function.
-    let fn_info = ctx.find_fn(name)?.clone();
+    let fn_info = match ctx.find_fn(name) {
+        Some(f) => f.clone(),
+        None => {
+            #[cfg(debug_assertions)]
+            crate::gir_jit_helpers::record_fuse_bail(ArcStr::from(
+                compact_str::format_compact!("call:{name}").as_str(),
+            ));
+            return None;
+        }
+    };
     if spec_apply.args.len() != fn_info.arg_types.len() {
         return None;
     }
@@ -1721,8 +1751,22 @@ fn emit_do_as_expr<R: crate::Rt, E: crate::UserEvent>(
                 register_kir_binding(&mut local_ctx, name, &value.typ)?;
                 lets.push(Let { local: name.clone(), value });
             }
-            NodeView::Nop(_) => {}
-            _ => return None,
+            // `type X = ...` and `use foo` are compile-time-only
+            // declarations with no runtime value — skip them like a
+            // Nop so a block that mixes them with real computation
+            // still fuses.
+            NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
+            v => {
+                #[cfg(debug_assertions)]
+                crate::gir_jit_helpers::record_fuse_bail(ArcStr::from(
+                    compact_str::format_compact!(
+                        "dostmt:{}",
+                        node_view_name(&v)
+                    )
+                    .as_str(),
+                ));
+                return None;
+            }
         }
     }
     None
@@ -1788,6 +1832,13 @@ fn register_kir_binding(
         GirType::String => {
             ctx.string_inputs.push(crate::gir::StringInput {
                 name: name.clone(),
+                bind_id: None,
+            });
+        }
+        GirType::DateTime | GirType::Duration | GirType::Bytes => {
+            ctx.value_inputs.push(crate::gir::ValueInput {
+                name: name.clone(),
+                typ: value_typ.clone(),
                 bind_id: None,
             });
         }
@@ -2074,6 +2125,87 @@ pub fn emit_expr_node<R: crate::Rt, E: crate::UserEvent>(
 /// During the migration from `emit_expr` (Expr-based), child accesses
 /// that don't yet have a Node-native helper fall back to walking via
 /// `node.spec()` — temporary, removed as each helper is converted.
+/// Lower an arithmetic op (`+`/`-`/`*`/`/`/`%`). When either operand is
+/// a Value-shape datetime/duration, emit [`GirOp::ValueArith`] (computed
+/// via netidx `Value` arithmetic on both backends); otherwise the scalar
+/// [`gir::arith`] path (register `Bin`). The result type follows the
+/// typechecker's rules: `datetime ± duration → datetime`,
+/// `duration {±,*,/} number → duration`, `number * duration → duration`.
+fn emit_arith(lhs: GirExpr, rhs: GirExpr, op: gir::BinOp) -> Option<GirExpr> {
+    let lhs_vs = matches!(lhs.typ, GirType::DateTime | GirType::Duration);
+    let rhs_vs = matches!(rhs.typ, GirType::DateTime | GirType::Duration);
+    if !lhs_vs && !rhs_vs {
+        return gir::arith(lhs, rhs, op);
+    }
+    // datetime appears only in `datetime ± duration` (→ datetime);
+    // everything else with a duration operand yields a duration.
+    let typ = if matches!(lhs.typ, GirType::DateTime)
+        || matches!(rhs.typ, GirType::DateTime)
+    {
+        GirType::DateTime
+    } else {
+        GirType::Duration
+    };
+    Some(GirExpr {
+        op: GirOp::ValueArith {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        typ,
+    })
+}
+
+/// Short variant tag for a `NodeView`, used by the debug fusion-bail
+/// instrumentation to record *which* construct aborted fusion. Only
+/// the variants that can reach `emit_node`'s catch-all need a real
+/// name; everything else is `other`.
+#[cfg(debug_assertions)]
+fn node_view_name<R: crate::Rt, E: crate::UserEvent>(
+    v: &crate::NodeView<R, E>,
+) -> &'static str {
+    use crate::NodeView;
+    match v {
+        NodeView::Lambda(_) => "Lambda",
+        NodeView::Bind(_) => "Bind",
+        NodeView::Module(_) => "Module",
+        NodeView::TryCatch(_) => "TryCatch",
+        NodeView::Connect(_) => "Connect",
+        NodeView::ConnectDeref(_) => "ConnectDeref",
+        NodeView::Any(_) => "Any",
+        NodeView::Sample(_) => "Sample",
+        NodeView::StructWith(_) => "StructWith",
+        NodeView::Map(_) => "Map",
+        NodeView::ArraySlice(_) => "ArraySlice",
+        NodeView::MapRef(_) => "MapRef",
+        NodeView::ByRef(_) => "ByRef",
+        NodeView::Deref(_) => "Deref",
+        NodeView::CheckedAdd(_) => "CheckedAdd",
+        NodeView::CheckedSub(_) => "CheckedSub",
+        NodeView::CheckedMul(_) => "CheckedMul",
+        NodeView::CheckedDiv(_) => "CheckedDiv",
+        NodeView::CheckedMod(_) => "CheckedMod",
+        NodeView::Use(_) => "Use",
+        NodeView::TypeDef(_) => "TypeDef",
+        NodeView::Nop(_) => "Nop",
+        NodeView::FusedKernel(_) => "FusedKernel",
+        _ => "other",
+    }
+}
+
+/// Debug instrumentation: record a fusion-bail `reason` if `r` is
+/// `None`, then pass `r` through unchanged. Lets `emit_node`'s
+/// explicit (non-catch-all) arms report *which* sub-emitter bailed.
+#[inline]
+fn rec_bail(reason: &'static str, r: Option<GirExpr>) -> Option<GirExpr> {
+    #[cfg(debug_assertions)]
+    if r.is_none() {
+        crate::gir_jit_helpers::record_fuse_bail(ArcStr::from(reason));
+    }
+    let _ = reason;
+    r
+}
+
 pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
     node: &crate::Node<R, E>,
     ctx: &mut FusionCtx,
@@ -2089,19 +2221,19 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
         // Arithmetic: lhs / rhs are `Cached<R, E>` — Node access via
         // `.node`.
         NodeView::Add(a) => {
-            gir::arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Add)
+            emit_arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Add)
         }
         NodeView::Sub(a) => {
-            gir::arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Sub)
+            emit_arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Sub)
         }
         NodeView::Mul(a) => {
-            gir::arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Mul)
+            emit_arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Mul)
         }
         NodeView::Div(a) => {
-            gir::arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Div)
+            emit_arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Div)
         }
         NodeView::Mod(a) => {
-            gir::arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Mod)
+            emit_arith(emit_node(&a.lhs.node, ctx, ec)?, emit_node(&a.rhs.node, ctx, ec)?, gir::BinOp::Mod)
         }
         // Comparison
         NodeView::Eq(o) => {
@@ -2164,23 +2296,34 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
             // fall through to the runtime dispatch path.
             if let Some(crate::ApplyView::Lambda(g)) = cs.resolved_apply() {
                 if let ExprKind::Ref { name } = &cs.fnode().spec().kind {
-                    if let Some(ident) = ident_of(name) {
-                        let source_name = ArcStr::from(ident);
-                        if ensure_lambda_kernel(g, &source_name, ctx, ec)
-                            .is_some()
+                    // Source name for the kernel registry / `GirOp::Call`
+                    // key. A bare identifier (`f`) is used verbatim so an
+                    // unqualified self-recursive call inside the body
+                    // resolves to the same key. A module-qualified call
+                    // (`list::is_empty`, `inner::make`) — which `ident_of`
+                    // rejects — uses the full path; it's stable per callee
+                    // and won't collide with bare-ident locals.
+                    let source_name = match ident_of(name) {
+                        Some(ident) => ArcStr::from(ident),
+                        None => {
+                            let s: &str = name.0.as_ref();
+                            ArcStr::from(s)
+                        }
+                    };
+                    if ensure_lambda_kernel(g, &source_name, ctx, ec)
+                        .is_some()
+                    {
+                        if let Some(cached) =
+                            ctx.called_kernels.get(&source_name).cloned()
                         {
-                            if let Some(cached) =
-                                ctx.called_kernels.get(&source_name).cloned()
-                            {
-                                if let Some(e) = emit_lambda_call(
-                                    cs,
-                                    &cached,
-                                    &source_name,
-                                    ctx,
-                                    ec,
-                                ) {
-                                    return Some(e);
-                                }
+                            if let Some(e) = emit_lambda_call(
+                                cs,
+                                &cached,
+                                &source_name,
+                                ctx,
+                                ec,
+                            ) {
+                                return Some(e);
                             }
                         }
                     }
@@ -2204,6 +2347,26 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
                 return Some(GirExpr {
                     op: GirOp::ConstNull,
                     typ: GirType::Null,
+                });
+            }
+            // datetime/duration literals — Value-shape constants.
+            if matches!(&c.value, Value::DateTime(_)) {
+                return Some(GirExpr {
+                    op: GirOp::ConstValue(c.value.clone()),
+                    typ: GirType::DateTime,
+                });
+            }
+            if matches!(&c.value, Value::Duration(_)) {
+                return Some(GirExpr {
+                    op: GirOp::ConstValue(c.value.clone()),
+                    typ: GirType::Duration,
+                });
+            }
+            // bytes literal (`bytes:...`) — Value-shape constant.
+            if matches!(&c.value, Value::Bytes(_)) {
+                return Some(GirExpr {
+                    op: GirOp::ConstValue(c.value.clone()),
+                    typ: GirType::Bytes,
                 });
             }
             let c = ConstVal::from_value(&c.value)?;
@@ -2245,18 +2408,30 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
                 typ: GirType::String,
             })
         }
-        NodeView::Select(s) => emit_select_as_expr(s, ctx, ec),
+        NodeView::Select(s) => rec_bail("emit:Select", emit_select_as_expr(s, ctx, ec)),
         NodeView::Block(b) => emit_do_as_expr(&b.children, ctx, ec),
-        NodeView::ArrayRef(ar) => emit_array_ref(&ar.source.node, &ar.i.node, ctx, ec),
-        NodeView::TupleRef(tr) => emit_tuple_ref(&tr.source, tr.field, ctx, ec),
-        NodeView::StructRef(sr) => emit_struct_ref(&sr.source, &sr.field_name, ctx, ec),
-        NodeView::Tuple(t) => emit_tuple_new(&t.n, ctx, ec),
-        NodeView::Array(a) => emit_array_new(node, &a.n, ctx, ec),
-        NodeView::Struct(s) => emit_struct_new(&s.names, &s.n, ctx, ec),
-        NodeView::Variant(v) => emit_variant_new(&v.tag, &v.n, ctx, ec),
+        NodeView::ArrayRef(ar) => rec_bail("emit:ArrayRef", emit_array_ref(&ar.source.node, &ar.i.node, ctx, ec)),
+        NodeView::TupleRef(tr) => rec_bail("emit:TupleRef", emit_tuple_ref(&tr.source, tr.field, ctx, ec)),
+        NodeView::StructRef(sr) => rec_bail("emit:StructRef", emit_struct_ref(&sr.source, &sr.field_name, ctx, ec)),
+        NodeView::Tuple(t) => rec_bail("emit:Tuple", emit_tuple_new(&t.n, ctx, ec)),
+        NodeView::Array(a) => rec_bail("emit:Array", emit_array_new(node, &a.n, ctx, ec)),
+        NodeView::Struct(s) => rec_bail("emit:Struct", emit_struct_new(&s.names, &s.n, ctx, ec)),
+        NodeView::Variant(v) => rec_bail("emit:Variant", emit_variant_new(&v.tag, &v.n, ctx, ec)),
         // Lambda, Bind (at non-statement position), checked
         // arithmetic, Sample, anything reactive — abort fusion.
-        _ => None,
+        v => {
+            #[cfg(debug_assertions)]
+            crate::gir_jit_helpers::record_fuse_bail(
+                ArcStr::from(
+                    compact_str::format_compact!(
+                        "node:{}",
+                        node_view_name(&v)
+                    )
+                    .as_str(),
+                ),
+            );
+            None
+        }
     }
 }
 
@@ -2378,7 +2553,11 @@ fn emit_do<R: crate::Rt, E: crate::UserEvent>(
         } else {
             match child.view() {
                 NodeView::Bind(b) => emit_bind_stmt(out, b, &mut local_ctx, ec)?,
-                NodeView::Nop(_) => {}
+                // `type X = ...` / `use foo` — compile-time-only, no
+                // runtime value; skip like a Nop.
+                NodeView::Nop(_)
+                | NodeView::TypeDef(_)
+                | NodeView::Use(_) => {}
                 _ => {
                     let value = emit_node(child, &mut local_ctx, ec)?;
                     if matches!(value.typ, GirType::Unit) {
@@ -2949,6 +3128,13 @@ pub enum RegionInputKind {
     /// that is either `Value::Null` or `T`'s form. `inner` is the
     /// non-null element type.
     Nullable(GirType),
+    /// String — runtime representation is an owned `ArcStr` (one
+    /// machine word). Bound into the kernel's `string_params`.
+    String,
+    /// Bare value-shape (`DateTime`/`Duration`/`Bytes`) — two-word
+    /// `Value` wire shape, carries the full `GirType` so a `Local`
+    /// read re-wraps to the right type. Bound into `value_params`.
+    Value(GirType),
 }
 
 /// Classify a value [`GirType`] into the matching [`RegionInputKind`]
@@ -2956,13 +3142,13 @@ pub enum RegionInputKind {
 /// types that have no kernel-input representation:
 /// - `Unit` (no value), bare `Null` (always widened to `Nullable<T>`
 ///   at the construction site).
-/// - `String` — strings work as kernel *locals* but a String kernel
-///   *parameter* needs ABI plumbing (`ArgKind::String` /
-///   `TailCallSlotKind::String` + arg marshalling) that doesn't
-///   exist yet. Closure conversion bails on String captures; tracked
-///   as a follow-up.
 /// - function types (handled via the `fn_inputs` channel or the
 ///   statically-resolved-call path, not as a value slot).
+///
+/// `String` and the bare value-shape types (`DateTime`/`Duration`/
+/// `Bytes`) ARE representable: a String input rides the `string_params`
+/// 1-word ABI slot, a value-shape input rides the `value_params`
+/// 2-word slot — both with full backend (interp + JIT) marshalling.
 pub(crate) fn gir_type_to_region_input_kind(t: GirType) -> Option<RegionInputKind> {
     match t {
         GirType::Prim(p) => Some(RegionInputKind::Prim(p)),
@@ -2971,7 +3157,11 @@ pub(crate) fn gir_type_to_region_input_kind(t: GirType) -> Option<RegionInputKin
         GirType::Struct(fs) => Some(RegionInputKind::Struct(fs)),
         GirType::Variant(cs) => Some(RegionInputKind::Variant(cs)),
         GirType::Nullable(e) => Some(RegionInputKind::Nullable(*e)),
-        GirType::Unit | GirType::Null | GirType::String => None,
+        GirType::String => Some(RegionInputKind::String),
+        t @ (GirType::DateTime | GirType::Duration | GirType::Bytes) => {
+            Some(RegionInputKind::Value(t))
+        }
+        GirType::Unit | GirType::Null => None,
     }
 }
 
@@ -3005,6 +3195,8 @@ struct KernelParams {
     struct_params: Vec<crate::gir::StructInput>,
     variant_params: Vec<crate::gir::VariantInput>,
     nullable_params: Vec<crate::gir::NullableInput>,
+    string_params: Vec<crate::gir::StringInput>,
+    value_params: Vec<crate::gir::ValueInput>,
     arg_types: Vec<GirType>,
 }
 
@@ -3116,6 +3308,33 @@ fn populate_kernel_inputs(
                     kind: crate::gir::TailCallSlotKind::Nullable,
                 });
             }
+            RegionInputKind::String => {
+                let si = crate::gir::StringInput {
+                    name: input.name.clone(),
+                    bind_id: input.bind_id,
+                };
+                p.string_params.push(si.clone());
+                ctx.string_inputs.push(si);
+                p.arg_types.push(GirType::String);
+                tail_call_slots.push(crate::gir::TailCallSlot {
+                    name: input.name.clone(),
+                    kind: crate::gir::TailCallSlotKind::String,
+                });
+            }
+            RegionInputKind::Value(typ) => {
+                let vi = crate::gir::ValueInput {
+                    name: input.name.clone(),
+                    typ: typ.clone(),
+                    bind_id: input.bind_id,
+                };
+                p.value_params.push(vi.clone());
+                ctx.value_inputs.push(vi);
+                p.arg_types.push(typ.clone());
+                tail_call_slots.push(crate::gir::TailCallSlot {
+                    name: input.name.clone(),
+                    kind: crate::gir::TailCallSlotKind::Value,
+                });
+            }
         }
     }
 }
@@ -3167,6 +3386,7 @@ fn build_kernel<R: crate::Rt, E: crate::UserEvent>(
         variant_inputs: vec![],
         nullable_inputs: vec![],
         string_inputs: vec![],
+        value_inputs: vec![],
         known_fns: known.clone(),
         known_consts: consts.clone(),
         called_kernels: std::collections::BTreeMap::new(),
@@ -3238,6 +3458,8 @@ fn finish_kernel<R: crate::Rt, E: crate::UserEvent>(
         struct_params: params.struct_params,
         variant_params: params.variant_params,
         nullable_params: params.nullable_params,
+        string_params: params.string_params,
+        value_params: params.value_params,
         tail_call_slots,
         return_type,
         has_tail_loop,

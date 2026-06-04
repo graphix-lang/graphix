@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
+use graphix_compiler::node_shape::{GirMatcher, GirOpTag, NodeShape};
 use graphix_package_core::run;
 use netidx::publisher::Value;
 
@@ -18,7 +19,8 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::Jit;
+   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::TupleNew)));
 
 const TUPLES1: &str = r#"
 {
@@ -60,7 +62,8 @@ const TUPLEACCESSOR: &str = r#"
 run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::Jit;
+   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::TupleGet)));
 
 const STRUCTS0: &str = r#"
 {
@@ -91,7 +94,8 @@ run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::Jit;
+   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::StructNew)));
 
 const BINDSTRUCT: &str = r#"
 {
@@ -114,6 +118,10 @@ const STRUCTACCESSOR: &str = r#"
 }
 "#;
 
+// Interp: body fuses but doesn't JIT — a composite-element
+// accessor (`struct field s.bar : string`) routes to the interpreter (see
+// kernel_contains_composite_element_op). Exposed when #139's
+// identity suppression removed the masking `result` wrapper.
 run!(structaccessor, STRUCTACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => s == "bar",
     _ => false,
@@ -154,13 +162,16 @@ const STRUCTWITH2: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(structwith2, STRUCTWITH2, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STRUCTWITH3: &str = r#"
 {
@@ -169,13 +180,16 @@ const STRUCTWITH3: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(structwith3, STRUCTWITH3, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STRUCTWITH4: &str = r#"
 {
@@ -203,6 +217,9 @@ const STRUCTWITH4: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 4]>() {
         Ok(
@@ -219,7 +236,7 @@ run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STRUCTWITH5: &str = r#"
 {
@@ -235,13 +252,16 @@ const STRUCTWITH5: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 1]>() {
         Ok([[(f00, 0), (f01, -1)]]) if f00 == "x" && f01 == "y" => true,
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ─── Composite / value-shape cross-kernel calls (#131) ───────────
 //
@@ -268,10 +288,13 @@ const CALL_TUPLE_ARG: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(call_tuple_arg, CALL_TUPLE_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(35)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const CALL_STRUCT_ARG: &str = r#"
 {
@@ -281,10 +304,13 @@ const CALL_STRUCT_ARG: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(7)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // A value-shape (nullable) RETURN from a lambda, end-to-end: `f`
 // returns `[i64, null]` via a `select` with a `null` arm, and is
@@ -303,7 +329,10 @@ const CALL_NULLABLE_RETURN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

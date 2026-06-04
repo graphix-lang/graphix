@@ -213,9 +213,26 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
             | crate::gir::GirType::Struct(_)
             | crate::gir::GirType::Variant(_)
             | crate::gir::GirType::Nullable(_)
+            | crate::gir::GirType::DateTime
+            | crate::gir::GirType::Duration
+            | crate::gir::GirType::Bytes
             | crate::gir::GirType::String => {}
             crate::gir::GirType::Unit
             | crate::gir::GirType::Null => continue,
+        }
+        // Skip identity kernels — a region whose body is just
+        // `Return(Local(x))` forwards one input unchanged and does no
+        // work. Fusing it wraps a zero-compute kernel in dispatch
+        // overhead; the runtime `Ref` feeder already produces that
+        // value. NOTE: the `run!` test harness wraps every fixture as
+        // `let result = {code}`, which yields exactly such a
+        // `Return(Local("result"))` region. Suppressing it means a
+        // fixture only registers as "fused" when its *body* genuinely
+        // fuses into its own kernel — so the FuseExpect metric measures
+        // real body fusion, not the hollow wrapper (see CLAUDE.md
+        // "#139 identity-kernel" note).
+        if built.kernel.is_identity_passthrough() {
+            continue;
         }
         // JIT-compile unless `JitDisabled` is set. The interp
         // fallback path inside `FusedKernel::update` handles the

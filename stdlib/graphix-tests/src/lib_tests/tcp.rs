@@ -19,9 +19,12 @@ const TCP_CONNECT_ACCEPT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Connect to unbound port fails. We can't easily pick a guaranteed-
 // unbound ephemeral port, so use port 1 (universally reserved
@@ -31,9 +34,12 @@ const TCP_CONNECT_FAIL: &str = r#"
   is_err(sys::tcp::connect("127.0.0.1:1"))
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_connect_fail, TCP_CONNECT_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Listen on already-bound port fails. Bind once with port 0 to
 // claim a fresh ephemeral, then try to listen on the same actual
@@ -46,9 +52,12 @@ const TCP_LISTEN_FAIL: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Write on client, read on server
 const TCP_WRITE_READ: &str = r#"
@@ -62,6 +71,9 @@ const TCP_WRITE_READ: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -78,6 +90,9 @@ const TCP_WRITE_EXACT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "world")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -94,6 +109,9 @@ const TCP_READ_EXACT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "exact")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -126,9 +144,12 @@ const TCP_PEER_ADDR: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // local_addr on server matches listener address.
 const TCP_LOCAL_ADDR: &str = r#"
@@ -141,9 +162,12 @@ const TCP_LOCAL_ADDR: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // write returns number of bytes written
 const TCP_WRITE_RETURNS_LEN: &str = r#"
@@ -156,6 +180,9 @@ const TCP_WRITE_RETURNS_LEN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

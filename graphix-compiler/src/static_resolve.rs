@@ -102,6 +102,19 @@ fn collect_lambda_binds<R: Rt, E: UserEvent>(
             for child in m.nodes.iter() {
                 collect_lambda_binds::<R, E>(child, out);
             }
+            // Interface re-exports: a signed module proxies each impl
+            // binding's value to its public `val` signature binding.
+            // Callers reference the *signature* binding's BindId, so
+            // map it to the same LambdaDef the impl binding has. The
+            // impl Bind→Lambda entries were just collected above (the
+            // impl bindings are this module's children), so the
+            // `out.get(impl_id)` lookup sees them. `proxy()` maps
+            // impl_id → sig_id.
+            for (impl_id, sig_id) in m.proxy() {
+                if let Some(fv) = out.get(impl_id).cloned() {
+                    out.insert(*sig_id, fv);
+                }
+            }
         }
         NodeView::Block(blk) => {
             for child in blk.children.iter() {

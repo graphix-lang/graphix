@@ -221,9 +221,49 @@ pub enum GirType {
     /// `Tuple<[Nullable<T>, _]>`, etc.) is expressible — the runtime
     /// just sees a slot whose value may be Null.
     Nullable(Box<GirType>),
+    /// `datetime` — graphix's `Type::Primitive(Typ::DateTime)`.
+    /// Runtime representation is `Value::DateTime(Arc<DateTime<Utc>>)`
+    /// — a thin `Arc` pointer, so it flows through the JIT as a
+    /// two-register `Value` (disc + payload), exactly like
+    /// [`Variant`](GirType::Variant) / [`Nullable`](GirType::Nullable).
+    /// Arithmetic (`datetime ± duration`) lowers to [`GirOp::ValueArith`]
+    /// which reuses netidx's `impl {Add,Sub} for Value`.
+    DateTime,
+    /// `duration` — graphix's `Type::Primitive(Typ::Duration)`.
+    /// Runtime representation is `Value::Duration(Arc<Duration>)`;
+    /// Value-shape like [`DateTime`](GirType::DateTime). Arithmetic
+    /// (`duration ± duration`, `duration {*,/} <number>`,
+    /// `<number> * duration`) lowers to [`GirOp::ValueArith`].
+    Duration,
+    /// `bytes` — graphix's `Type::Primitive(Typ::Bytes)`. Runtime
+    /// representation is `Value::Bytes(PBytes)` (a refcounted thin
+    /// pointer). Treated as a **Value-shape** type (two-register
+    /// `Value`, like [`DateTime`](GirType::DateTime)) rather than a
+    /// single-register leaf like [`String`](GirType::String): a `bytes`
+    /// literal lowers to [`GirOp::ConstValue`] and rides the same
+    /// `graphix_value_clone`/`drop` + `value_inputs` machinery, so no
+    /// bytes-specific JIT helpers / slot lists are needed. (The
+    /// redundant disc word vs. String's single-register form is a
+    /// negligible cost for a much smaller, DRY implementation.)
+    Bytes,
 }
 
 impl GirType {
+    /// True for the "Value-shape" types — those whose JIT/runtime
+    /// representation is a two-register `Value` (disc + payload), not
+    /// a bare scalar / pointer / arcstr. These share the variant ABI:
+    /// passed/returned as two `I64`s, cloned via `graphix_value_clone`,
+    /// dropped via `graphix_value_drop`.
+    pub fn is_value_shape(&self) -> bool {
+        matches!(
+            self,
+            GirType::Variant(_)
+                | GirType::Nullable(_)
+                | GirType::DateTime
+                | GirType::Duration
+                | GirType::Bytes
+        )
+    }
     /// Convenience for `GirType::Prim(_)` — when callers know they have
     /// a scalar.
     pub fn prim(p: PrimType) -> Self {
@@ -352,6 +392,27 @@ impl GirType {
                 if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
             {
                 Some(GirType::Null)
+            }
+            // `datetime` / `duration` — Value-shape types (runtime
+            // `Value::DateTime`/`Value::Duration`, both `Arc`-payload).
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::DateTime)
+                    && p.iter().count() == 1 =>
+            {
+                Some(GirType::DateTime)
+            }
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::Duration)
+                    && p.iter().count() == 1 =>
+            {
+                Some(GirType::Duration)
+            }
+            // `bytes` — Value-shape (runtime `Value::Bytes(PBytes)`).
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::Bytes)
+                    && p.iter().count() == 1 =>
+            {
+                Some(GirType::Bytes)
             }
             // `T | null` collapsed-primitive option shape: a multi-flag
             // primitive carrying `Null` plus exactly one other primitive
@@ -635,6 +696,19 @@ pub struct StringInput {
     pub bind_id: Option<BindId>,
 }
 
+/// A Value-shape kernel let-binding whose type is `DateTime` or
+/// `Duration`. Unlike `NullableInput` (which stores only the inner
+/// `T` of `[T, null]`), this carries the full `GirType` so a `Ref`
+/// read resolves to the correct `DateTime`/`Duration` type. Runtime
+/// representation rides the interpreter's `nullables` Value slot
+/// (a name→Value map); the JIT uses the `nullables` `ValueVar` slot.
+#[derive(Debug, Clone)]
+pub struct ValueInput {
+    pub name: ArcStr,
+    pub typ: GirType,
+    pub bind_id: Option<BindId>,
+}
+
 /// Per-source-arg metadata used by the tail-call renderer to assign
 /// each new value to the right destination. Populated by
 /// `build_kir_kernel` in lambda argspec order — so
@@ -663,6 +737,15 @@ pub enum TailCallSlotKind {
     /// `rebind_nullable`. Same wire format as `Variant` but routed
     /// to `env.nullables` rather than `env.variants`.
     Nullable,
+    /// String — runtime representation is an owned `ArcStr` (one
+    /// machine word). Body signature receives the ArcStr; tail-call
+    /// rebinding clones (refcount-bump) into the shadowed local.
+    String,
+    /// Bare value-shape (`DateTime`/`Duration`/`Bytes`) — runtime
+    /// representation is `Value` (two words). Routed to
+    /// `env.nullables` like `Nullable`, but re-wrapped to the slot's
+    /// declared type on read.
+    Value,
 }
 
 /// Signature of a function the emitter has already seen fuse
@@ -713,6 +796,27 @@ pub struct GirExpr {
 pub enum GirOp {
     /// A primitive constant.
     Const(ConstVal),
+    /// A Value-shape constant — a `datetime`/`duration` literal whose
+    /// runtime form is `Value::DateTime`/`Value::Duration` (an `Arc`
+    /// payload that doesn't fit a `ConstVal` register). Result type is
+    /// [`GirType::DateTime`] / [`GirType::Duration`]. The interpreter
+    /// clones the `Value`; the JIT interns it in a per-kernel value-
+    /// constants table (like `ConstStr`'s string table) and emits the
+    /// `(disc, payload)` words, cloning the `Arc` on use.
+    ConstValue(Value),
+    /// Arithmetic on Value-shape operands — `datetime ± duration`,
+    /// `duration ± duration`, `duration {*,/} <number>`,
+    /// `<number> * duration`. Either operand may be scalar (promoted
+    /// to its `Value` form) or already Value-shape; the result is
+    /// always Value-shape ([`GirType::DateTime`]/[`GirType::Duration`]).
+    /// Both backends compute via netidx's `impl {Add,Sub,Mul,Div} for
+    /// Value`, so the result is byte-identical to the non-fused arith
+    /// node. Distinct from [`GirOp::Bin`] (scalar, register math).
+    ValueArith {
+        op: BinOp,
+        lhs: Box<GirExpr>,
+        rhs: Box<GirExpr>,
+    },
     /// A string-typed constant. Used by `emit_expr`'s
     /// `ExprKind::Constant(Value::String)` arm and by `Concat`'s
     /// literal segments. Result type is [`GirType::String`].
@@ -1107,6 +1211,16 @@ pub struct GirKernel {
     /// `variant_params` even though both use `Value` at runtime —
     /// the consumer ops and the env slot list differ.
     pub nullable_params: Vec<NullableInput>,
+    /// String-typed parameters. Runtime representation is a single
+    /// machine word holding an `ArcStr` thin pointer; the kernel
+    /// clones (refcount-bump) on entry and reads via `env.strings`.
+    pub string_params: Vec<StringInput>,
+    /// Bare value-shape parameters — `DateTime` / `Duration` /
+    /// `Bytes`. Two-word `Value` wire shape like variant/nullable,
+    /// but carries the full `GirType` (no inner `elem` indirection)
+    /// so a `Local` read re-wraps to the right type. Rides the same
+    /// `env.nullables` Value slot as those types' locals.
+    pub value_params: Vec<ValueInput>,
     /// Per-source-position metadata so the tail-call renderer can
     /// assign each new arg value to the right destination
     /// regardless of which slot list (scalar / array / tuple /
@@ -1166,15 +1280,25 @@ pub enum AbiParamKind {
     /// Two machine words (disc, payload). Binds via `env.bind_nullable`
     /// — same wire shape as `Variant`, different env slot list.
     Nullable,
+    /// One machine word holding an `ArcStr` thin pointer. Binds via
+    /// `env.bind_string` (after a refcount-bump clone on entry).
+    String,
+    /// Two machine words (disc, payload) of a bare value-shape
+    /// `Value` — `DateTime` / `Duration` / `Bytes`. Same wire shape
+    /// as `Nullable`/`Variant`; binds into the `env.nullables` Value
+    /// slot (re-wrapped to the right type at `Local`-read time).
+    Value,
 }
 
 impl AbiParamKind {
     /// Number of machine-word (`u64`) slots this param occupies on the
-    /// wire. The single home of the "Variant/Nullable are two words,
-    /// everything else is one" rule.
+    /// wire. The single home of the "Variant/Nullable/Value are two
+    /// words, everything else is one" rule.
     pub fn wire_words(self) -> usize {
         match self {
-            AbiParamKind::Variant | AbiParamKind::Nullable => 2,
+            AbiParamKind::Variant
+            | AbiParamKind::Nullable
+            | AbiParamKind::Value => 2,
             _ => 1,
         }
     }
@@ -1223,12 +1347,18 @@ impl GirKernel {
             .nullable_params
             .iter()
             .map(|p| (&p.name, AbiParamKind::Nullable));
+        let strings =
+            self.string_params.iter().map(|p| (&p.name, AbiParamKind::String));
+        let values =
+            self.value_params.iter().map(|p| (&p.name, AbiParamKind::Value));
         scalars
             .chain(arrays)
             .chain(tuples)
             .chain(structs)
+            .chain(strings)
             .chain(variants)
             .chain(nullables)
+            .chain(values)
             .scan(0usize, |off, (name, kind)| {
                 let wire_slot = *off;
                 *off += kind.wire_words();
@@ -1244,7 +1374,26 @@ impl GirKernel {
             + self.array_params.len()
             + self.tuple_params.len()
             + self.struct_params.len()
-            + 2 * (self.variant_params.len() + self.nullable_params.len())
+            + self.string_params.len()
+            + 2 * (self.variant_params.len()
+                + self.nullable_params.len()
+                + self.value_params.len())
+    }
+
+    /// True if this kernel does no computation: its body is a single
+    /// `Return` of a bare `Local` read. Such a kernel just forwards one
+    /// of its inputs (a region binding / lifted async value) unchanged,
+    /// so fusing it wraps a zero-compute kernel in dispatch overhead —
+    /// the runtime `Ref` feeder already produces that value. `fuse()`
+    /// skips the splice for these (the original nodes stay live and
+    /// carry the value). A body with any actual op — even one extra
+    /// `Let` before the `Return` — is not trivial and fuses normally.
+    pub fn is_identity_passthrough(&self) -> bool {
+        self.body.len() == 1
+            && matches!(
+                &self.body[0],
+                GirStmt::Return(GirExpr { op: GirOp::Local(_), .. })
+            )
     }
 
     /// The wire shape of this kernel's return value, or `None` for the
@@ -1259,7 +1408,11 @@ impl GirKernel {
             | GirType::Struct(_)
             | GirType::Unit
             | GirType::String => Some(AbiReturn::One { prim: None }),
-            GirType::Variant(_) | GirType::Nullable(_) => Some(AbiReturn::Two),
+            GirType::Variant(_)
+            | GirType::Nullable(_)
+            | GirType::DateTime
+            | GirType::Duration
+            | GirType::Bytes => Some(AbiReturn::Two),
             GirType::Null => None,
         }
     }
@@ -1473,12 +1626,16 @@ fn expr_has_call(e: &GirExpr) -> bool {
         GirOp::Call { .. } | GirOp::DynCall { .. } => true,
         GirOp::Const(_)
         | GirOp::ConstStr(_)
+        | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. } => false,
         GirOp::Concat(parts) => parts.iter().any(expr_has_call),
         GirOp::IsNull(inner) => expr_has_call(inner),
         GirOp::QopUnwrap { inner, .. } => expr_has_call(inner),
+        GirOp::ValueArith { lhs, rhs, .. } => {
+            expr_has_call(lhs) || expr_has_call(rhs)
+        }
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
         | GirOp::BoolBin { lhs, rhs, .. } => {
@@ -1552,14 +1709,16 @@ fn expr_has_null(e: &GirExpr) -> bool {
         GirOp::ConstNull | GirOp::IsNull(_) => true,
         // QopUnwrap operates on a Nullable inner — counts as touching null.
         GirOp::QopUnwrap { .. } => true,
-        GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::Local(_)
+        GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::ConstValue(_)
+        | GirOp::Local(_)
         | GirOp::ArrayLen { .. } | GirOp::TupleGet { .. }
         | GirOp::StructGet { .. } | GirOp::VariantTagEq { .. }
         | GirOp::VariantPayload { .. } => false,
         GirOp::Concat(parts) => parts.iter().any(expr_has_null),
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
-        | GirOp::BoolBin { lhs, rhs, .. } => {
+        | GirOp::BoolBin { lhs, rhs, .. }
+        | GirOp::ValueArith { lhs, rhs, .. } => {
             expr_has_null(lhs) || expr_has_null(rhs)
         }
         GirOp::Not(inner) | GirOp::Cast { inner, .. } => expr_has_null(inner),
@@ -1618,7 +1777,8 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
             !matches!(e.typ, GirType::Prim(_))
                 || expr_has_composite_element_op(idx)
         }
-        GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::ConstNull
+        GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::ConstValue(_)
+        | GirOp::ConstNull
         | GirOp::Local(_) | GirOp::ArrayLen { .. }
         | GirOp::VariantTagEq { .. } | GirOp::VariantPayload { .. } => false,
         GirOp::Concat(parts) => parts.iter().any(expr_has_composite_element_op),
@@ -1626,7 +1786,8 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
         GirOp::QopUnwrap { inner, .. } => expr_has_composite_element_op(inner),
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
-        | GirOp::BoolBin { lhs, rhs, .. } => {
+        | GirOp::BoolBin { lhs, rhs, .. }
+        | GirOp::ValueArith { lhs, rhs, .. } => {
             expr_has_composite_element_op(lhs)
                 || expr_has_composite_element_op(rhs)
         }
@@ -1726,12 +1887,14 @@ fn walk_call_sites_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
         }
         GirOp::Const(_)
         | GirOp::ConstStr(_)
+        | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. } => {}
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
-        | GirOp::BoolBin { lhs, rhs, .. } => {
+        | GirOp::BoolBin { lhs, rhs, .. }
+        | GirOp::ValueArith { lhs, rhs, .. } => {
             walk_call_sites_expr(lhs, out);
             walk_call_sites_expr(rhs, out);
         }

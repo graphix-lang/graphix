@@ -91,10 +91,13 @@ const MAP_REF0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAP_REF1: &str = r#"
 {
@@ -103,10 +106,13 @@ const MAP_REF1: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_ref1, MAP_REF1, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "two" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAP_REF2: &str = r#"
 {
@@ -115,10 +121,13 @@ const MAP_REF2: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_ref2, MAP_REF2, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "yes" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAP_REF_MISSING: &str = r#"
 {
@@ -127,6 +136,9 @@ const MAP_REF_MISSING: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
     Ok(Value::Error(e)) => {
         if let Ok((tag, msg)) = e.as_ref().clone().cast_to::<(ArcStr, ArcStr)>() {
@@ -136,7 +148,7 @@ run!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
         }
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAP_REF_WRONG_TYPE: &str = r#"
 {
@@ -177,6 +189,9 @@ const MAP_COMPLEX_KEYS: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<(Value, Value)>() {
         Ok((Value::String(s1), Value::String(s2)))
@@ -185,7 +200,7 @@ run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAP_WITH_ARRAYS: &str = r#"
 {

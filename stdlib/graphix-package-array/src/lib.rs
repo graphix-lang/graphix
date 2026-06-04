@@ -424,12 +424,32 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "array_len";
     const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
+    const FUSABLE: bool = true;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
             Some(Value::Array(a)) => Some(Value::I64(a.len() as i64)),
             Some(_) | None => None,
         }
+    }
+
+    // `array::len(arr)` lowers to the pure-GIR `GirOp::ArrayLen` (a
+    // length read off the array kernel input) — no DynCall needed. Only
+    // fuses when the array arg resolves to a kernel input; otherwise
+    // `None` falls back to DynCall.
+    fn emit_gir(
+        &self,
+        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
+        _args: &[(Option<ArcStr>, &Node<R, E>)],
+        _arg_refs: &[Node<R, E>],
+        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
+        _ec: &mut ExecCtx<R, E>,
+    ) -> Option<graphix_compiler::gir::GirExpr> {
+        let arr_name = ctx.resolve_array_input(callsite.arg_positional(0)?)?;
+        Some(GirExpr {
+            op: GirOp::ArrayLen { name: arr_name },
+            typ: GirType::Prim(PrimType::U64),
+        })
     }
 }
 

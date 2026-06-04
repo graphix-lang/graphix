@@ -398,6 +398,42 @@ pub extern "C" fn graphix_value_clone(v: Value) -> Value {
     dup
 }
 
+/// Clone a `Value` from a stable `*const Value` static — a kernel's
+/// value-constants table slot (datetime/duration `ConstValue`). Bumps
+/// any inner `Arc`. Returns the clone by value (two registers).
+///
+/// # Safety
+/// `ptr` must point to a live `Value` that outlives the JIT'd code.
+/// The per-kernel `KernelValues` table owns it (like `KernelStrings`
+/// for `ArcStr`), kept alive on the `CachedKernel`.
+pub unsafe extern "C" fn graphix_value_clone_from_static(
+    ptr: *const Value,
+) -> Value {
+    unsafe { (*ptr).clone() }
+}
+
+// ─── Value arithmetic (datetime/duration `ValueArith`) ────────────
+//
+// Compute through netidx's `impl {Add,Sub,Mul,Div,Rem} for Value` —
+// byte-identical to the non-fused arith node (`lhs $op rhs`). Each
+// helper CONSUMES both args (netidx's operators take `self`/`rhs` by
+// value); codegen passes OWNED Values (`ensure_owned_value` clones a
+// Borrowed Local read, scalar operands are freshly promoted, producer
+// ops like `ConstValue` are already owned), so there's no leak or
+// double-free.
+macro_rules! value_arith_helper {
+    ($name:ident, $op:tt) => {
+        pub extern "C" fn $name(l: Value, r: Value) -> Value {
+            l $op r
+        }
+    };
+}
+value_arith_helper!(graphix_value_add, +);
+value_arith_helper!(graphix_value_sub, -);
+value_arith_helper!(graphix_value_mul, *);
+value_arith_helper!(graphix_value_div, /);
+value_arith_helper!(graphix_value_rem, %);
+
 // ─── String / ArcStr helpers ──────────────────────────────────────
 //
 // `ArcStr` is `repr(transparent)` over a thin pointer, so it travels
@@ -766,6 +802,44 @@ pub fn reset_jit_invocations() {
     JIT_INVOCATIONS.with(|c| c.set(0));
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Per-thread fusion-bail reason log (debug-build only,
+    /// instrumentation for the gap-map harvest). Each `record_fuse_bail`
+    /// call pushes a short tag (e.g. `node:Sample`, `dostmt:Connect`,
+    /// `call:json::read`) at a site where fusion lowering gives up.
+    /// Harvested per-fixture by the `run!` discovery branch to map every
+    /// `None` fixture to its actual blocker. Capped to avoid unbounded
+    /// growth on a deeply-recursive failing compile.
+    static FUSE_BAILS: std::cell::RefCell<Vec<arcstr::ArcStr>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a fusion-bail reason (debug instrumentation). No-op in
+/// release (the call sites are `cfg(debug_assertions)`-gated).
+#[cfg(debug_assertions)]
+pub fn record_fuse_bail(reason: arcstr::ArcStr) {
+    FUSE_BAILS.with(|b| {
+        let mut v = b.borrow_mut();
+        if v.len() < 128 {
+            v.push(reason);
+        }
+    });
+}
+
+/// Drain and return the current thread's recorded fusion-bail tags.
+#[cfg(debug_assertions)]
+pub fn take_fuse_bails() -> Vec<arcstr::ArcStr> {
+    FUSE_BAILS.with(|b| std::mem::take(&mut *b.borrow_mut()))
+}
+
+/// Clear the current thread's fusion-bail log (called after runtime
+/// init in the test harness, so only the fixture's own bails count).
+#[cfg(debug_assertions)]
+pub fn reset_fuse_bails() {
+    FUSE_BAILS.with(|b| b.borrow_mut().clear());
+}
+
 /// The single registered DynCall entry point. Indirects through
 /// the thread-local handle to the monomorphized dispatcher and
 /// returns a two-word [`DynCallRet`].
@@ -1012,6 +1086,15 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ),
         ("graphix_value_drop", graphix_value_drop as *const u8),
         ("graphix_value_clone", graphix_value_clone as *const u8),
+        (
+            "graphix_value_clone_from_static",
+            graphix_value_clone_from_static as *const u8,
+        ),
+        ("graphix_value_add", graphix_value_add as *const u8),
+        ("graphix_value_sub", graphix_value_sub as *const u8),
+        ("graphix_value_mul", graphix_value_mul as *const u8),
+        ("graphix_value_div", graphix_value_div as *const u8),
+        ("graphix_value_rem", graphix_value_rem as *const u8),
         ("graphix_variant_tag_eq", graphix_variant_tag_eq as *const u8),
         ("graphix_variant_payload_i64", graphix_variant_payload_i64 as *const u8),
         ("graphix_variant_payload_f64", graphix_variant_payload_f64 as *const u8),

@@ -7,9 +7,12 @@ const BYTES_ROUND_TRIP: &str = r#"
   buffer::to_string(buffer::from_string("hello"))
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_round_trip, BYTES_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // to_string_lossy with valid UTF-8
 const BYTES_TO_STRING_LOSSY: &str = r#"
@@ -17,6 +20,9 @@ const BYTES_TO_STRING_LOSSY: &str = r#"
 "#;
 
 // ASPIRE: Jit (currently None) — blocked on: buffer codec lossy conversion not lowered
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_to_string_lossy, BYTES_TO_STRING_LOSSY, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -27,9 +33,12 @@ const BYTES_TO_STRING_INVALID: &str = r#"{
   is_err(buffer::to_string(b))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_to_string_invalid, BYTES_TO_STRING_INVALID, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // to_string_lossy with invalid UTF-8 replaces with replacement char
 const BYTES_TO_STRING_LOSSY_INVALID: &str = r#"{
@@ -37,11 +46,14 @@ const BYTES_TO_STRING_LOSSY_INVALID: &str = r#"{
   str::len(buffer::to_string_lossy(b)) > 0
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_to_string_lossy_invalid, BYTES_TO_STRING_LOSSY_INVALID, |v: Result<
     &Value,
 >| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // concat
 const BYTES_CONCAT: &str = r#"{
@@ -50,9 +62,12 @@ const BYTES_CONCAT: &str = r#"{
   buffer::to_string(buffer::concat(a, b))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_concat, BYTES_CONCAT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello world")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // to_array + from_array round-trip
 const BYTES_ARRAY_ROUND_TRIP: &str = r#"{
@@ -61,16 +76,22 @@ const BYTES_ARRAY_ROUND_TRIP: &str = r#"{
   buffer::to_string(buffer::from_array(arr))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_array_round_trip, BYTES_ARRAY_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // len
 const BYTES_LEN: &str = r#"
   buffer::len(buffer::from_string("hello"))
 "#;
 
-run!(bytes_len, BYTES_LEN, |v: Result<&Value>| { matches!(v, Ok(Value::U64(5))) }; graphix_package_core::testing::FuseExpect::Jit);
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
+run!(bytes_len, BYTES_LEN, |v: Result<&Value>| { matches!(v, Ok(Value::U64(5))) }; graphix_package_core::testing::FuseExpect::None);
 
 // bytes indexing
 const BYTES_INDEX: &str = r#"{
@@ -78,10 +99,13 @@ const BYTES_INDEX: &str = r#"{
   b[0]
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_index, BYTES_INDEX, |v: Result<&Value>| {
     // 'h' is ASCII 104
     matches!(v, Ok(Value::U8(104)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // bytes negative indexing
 const BYTES_NEG_INDEX: &str = r#"{
@@ -89,10 +113,13 @@ const BYTES_NEG_INDEX: &str = r#"{
   b[-1]
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_neg_index, BYTES_NEG_INDEX, |v: Result<&Value>| {
     // 'o' is ASCII 111
     matches!(v, Ok(Value::U8(111)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // bytes slicing
 const BYTES_SLICE: &str = r#"{
@@ -100,9 +127,12 @@ const BYTES_SLICE: &str = r#"{
   buffer::to_string(b[1..4]?)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_slice, BYTES_SLICE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "ell")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // bytes slice from start
 const BYTES_SLICE_FROM: &str = r#"{
@@ -110,9 +140,12 @@ const BYTES_SLICE_FROM: &str = r#"{
   buffer::to_string(b[2..]?)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_slice_from, BYTES_SLICE_FROM, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "llo")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // bytes slice to end
 const BYTES_SLICE_TO: &str = r#"{
@@ -120,9 +153,12 @@ const BYTES_SLICE_TO: &str = r#"{
   buffer::to_string(b[..3]?)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(bytes_slice_to, BYTES_SLICE_TO, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hel")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── encode tests ──────────────────────────────────────────────────
 
@@ -136,13 +172,16 @@ const ENCODE_FIXED_SIZES: &str = r#"{
   (buffer::len(b1), buffer::len(b2), buffer::len(b4), buffer::len(b8), buffer::len(bf))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(encode_fixed_sizes, ENCODE_FIXED_SIZES, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(
         &a[..],
         [Value::U64(2), Value::U64(4), Value::U64(8), Value::U64(16), Value::U64(12)]
     ),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // encode bytes and pad
 const ENCODE_BYTES_PAD: &str = r#"{
@@ -150,9 +189,12 @@ const ENCODE_BYTES_PAD: &str = r#"{
   buffer::len(b)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(encode_bytes_pad, ENCODE_BYTES_PAD, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // pad writes zero bytes
 const ENCODE_PAD_ZEROS: &str = r#"{
@@ -160,11 +202,14 @@ const ENCODE_PAD_ZEROS: &str = r#"{
   buffer::to_array(b)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(encode_pad_zeros, ENCODE_PAD_ZEROS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) =>
         matches!(&a[..], [Value::U8(0), Value::U8(0), Value::U8(0), Value::U8(0)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // mixed endianness: encode u32 LE and BE and check byte order
 const ENCODE_ENDIANNESS: &str = r#"{
@@ -173,6 +218,9 @@ const ENCODE_ENDIANNESS: &str = r#"{
   (le, be)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if a.len() == 2 => {
         let le = match &a[0] {
@@ -188,7 +236,7 @@ run!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
             && matches!(&be[..], [Value::U8(0), Value::U8(0), Value::U8(0), Value::U8(1)])
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── decode tests ──────────────────────────────────────────────────
 
@@ -200,9 +248,12 @@ const DECODE_I64_ROUND_TRIP: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_i64_round_trip, DECODE_I64_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // encode + decode round-trip for u32
 const DECODE_U32_ROUND_TRIP: &str = r#"{
@@ -212,9 +263,12 @@ const DECODE_U32_ROUND_TRIP: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_u32_round_trip, DECODE_U32_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U32(12345)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // length-prefixed protocol: U64 length then UTF8
 const DECODE_LENGTH_PREFIXED: &str = r#"{
@@ -231,6 +285,9 @@ const DECODE_LENGTH_PREFIXED: &str = r#"{
 }"#;
 
 // ASPIRE: Jit (currently None) — blocked on: buffer::decode with mutable ref arguments
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_length_prefixed, DECODE_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello world")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -249,6 +306,9 @@ const DECODE_BYTES_ROUND_TRIP: &str = r#"{
 }"#;
 
 // ASPIRE: Jit (currently None) — blocked on: buffer::decode with mutable ref arguments
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_bytes_round_trip, DECODE_BYTES_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "abc")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -260,9 +320,12 @@ const DECODE_INSUFFICIENT: &str = r#"{
   is_err(buffer::decode(short, [`I64(&x)]))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_insufficient, DECODE_INSUFFICIENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // decode error: invalid UTF-8
 const DECODE_INVALID_UTF8: &str = r#"{
@@ -273,9 +336,12 @@ const DECODE_INVALID_UTF8: &str = r#"{
   is_err(buffer::decode(bad, [`U64(&slen), `UTF8(&slen, &s)]))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_invalid_utf8, DECODE_INVALID_UTF8, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // skip: verify skip advances cursor
 const DECODE_SKIP: &str = r#"{
@@ -286,9 +352,12 @@ const DECODE_SKIP: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_skip, DECODE_SKIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // decode returns remaining bytes
 const DECODE_REMAINING: &str = r#"{
@@ -298,9 +367,12 @@ const DECODE_REMAINING: &str = r#"{
   buffer::len(rest)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_remaining, DECODE_REMAINING, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── varint / zigzag tests ─────────────────────────────────────────
 
@@ -312,9 +384,12 @@ const VARINT_ROUND_TRIP: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_round_trip, VARINT_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(300)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // varint small value is 1 byte
 const VARINT_SMALL: &str = r#"{
@@ -322,9 +397,12 @@ const VARINT_SMALL: &str = r#"{
   buffer::len(b)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_small, VARINT_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // varint large value uses more bytes
 const VARINT_LARGE: &str = r#"{
@@ -332,9 +410,12 @@ const VARINT_LARGE: &str = r#"{
   buffer::len(b)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_large, VARINT_LARGE, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // zigzag round-trip with negative value
 const ZIGZAG_NEGATIVE: &str = r#"{
@@ -344,9 +425,12 @@ const ZIGZAG_NEGATIVE: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_negative, ZIGZAG_NEGATIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // zigzag round-trip with positive value
 const ZIGZAG_POSITIVE: &str = r#"{
@@ -356,9 +440,12 @@ const ZIGZAG_POSITIVE: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_positive, ZIGZAG_POSITIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // zigzag of -1 encodes to 1 byte (zigzag maps -1 → 1)
 const ZIGZAG_SMALL: &str = r#"{
@@ -366,9 +453,12 @@ const ZIGZAG_SMALL: &str = r#"{
   buffer::len(b)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_small, ZIGZAG_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // varint-prefixed length then bytes decode
 const VARINT_LENGTH_PREFIXED: &str = r#"{
@@ -381,6 +471,9 @@ const VARINT_LENGTH_PREFIXED: &str = r#"{
 }"#;
 
 // ASPIRE: Jit (currently None) — blocked on: buffer::decode with mutable ref arguments
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
@@ -391,9 +484,12 @@ const DECODE_REF_TO_LITERAL: &str = r#"{
   is_err(buffer::decode(encoded, [`U8(&u8:0)]))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // discard a decoded field by writing to an unused let binding
 const DECODE_SKIP_UNRESOLVED: &str = r#"{
@@ -404,6 +500,9 @@ const DECODE_SKIP_UNRESOLVED: &str = r#"{
   x
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

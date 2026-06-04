@@ -601,8 +601,10 @@ watch_test! {
 }
 
 // Test create with params
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     test_watch_create_with_params,
     r#"{ use sys::fs::watch; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }; graphix_package_core::testing::FuseExpect::None);

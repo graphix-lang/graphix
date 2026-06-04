@@ -18,6 +18,9 @@ const SELECT0: &str = r#"
 "#;
 
 // ASPIRE: Jit (currently None) — blocked on: string interpolation in select expression
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,

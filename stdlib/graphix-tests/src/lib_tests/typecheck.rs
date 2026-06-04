@@ -20,11 +20,17 @@ run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| 
 run!(str_parse_no_type, r#"str::parse("42")"#, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
 
 // json::read with concrete type → compiles and runs
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // json::read with struct type → compiles and casts
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     json_typed_struct,
     r#"{
@@ -32,14 +38,16 @@ run!(
     let v: P = json::read(json::write_str({x: 1, y: "a"})$)?;
     v.x
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }; graphix_package_core::testing::FuseExpect::None);
 
 // ============================================================================
 // Late binding: deserializers passed through higher-order functions
 // ============================================================================
 
 // Late binding: deserializer stored in variable, called with concrete type
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     late_bind_var,
     r#"{
@@ -47,10 +55,12 @@ run!(
     let v: i64 = decoder("42")?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // Late binding: function wraps a deserializer with explicit return type
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     late_bind_wrap,
     r#"{
@@ -58,10 +68,12 @@ run!(
     let v: i64 = decode(json::write_str(99)$)?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(99))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(99))) }; graphix_package_core::testing::FuseExpect::None);
 
 // Late binding: multiple calls to same typed wrapper with json
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     late_bind_multi_json,
     r#"{
@@ -70,11 +82,13 @@ run!(
     let b: i64 = apply(json::read, json::write_str(42)$)?;
     a + b
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::None);
 
 // Late binding: json + pack through same typed call site using bytes input
 // (both accept bytes; error types unify to the superset)
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     late_bind_mixed_deser,
     r#"{
@@ -83,10 +97,12 @@ run!(
     let b: i64 = apply(pack::read, pack::write_bytes(42)$)?;
     a + b
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::None);
 
 // Late binding with struct types through typed wrapper
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     late_bind_struct,
     r#"{
@@ -95,8 +111,7 @@ run!(
     let p: Point = decode(json::write_str({x: 10, y: 20})$)?;
     p.x + p.y
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(30))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(30))) }; graphix_package_core::testing::FuseExpect::None);
 
 // ============================================================================
 // Higher-order function type propagation
@@ -135,6 +150,9 @@ run!(
 ; graphix_package_core::testing::FuseExpect::None);
 
 // array::fold — FoldQ: json::read in fold closure, type must propagate
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     hof_fold_json_read,
     r#"{
@@ -145,13 +163,15 @@ run!(
         ];
         array::fold(data, 0, |acc, s| acc + json::read(s)$)
     }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // array::init — Init: json::read in unannotated init closure,
 // type must propagate through Init's resolved mftyp
 // let results: Array<Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>> =
 //        array::init(1, |i| json::read(s));
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     hof_init_json_read,
     r#"{
@@ -160,11 +180,13 @@ run!(
         array::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     results[0]
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // list::init — ListInit: json::read in unannotated init closure,
 // type must propagate through ListInit's resolved mftyp
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     hof_list_init_json_read,
     r#"{
@@ -174,8 +196,7 @@ run!(
         list::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     list::head(results)
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }; graphix_package_core::testing::FuseExpect::None);
 
 // nested array::map — json::read passed directly to inner map.
 // The inner callsite typechecks before the outer deferred check runs,
@@ -197,6 +218,9 @@ run!(
 
 // core::filter — Filter: json::read piped through filter,
 // type must propagate through Filter's resolved predicate type
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     hof_filter_json_read,
     r#"{
@@ -204,14 +228,16 @@ run!(
     let v: i64 = filter(json::read(s)$, |x| x > 0);
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // ============================================================================
 // Subscribe type-aware casting
 // ============================================================================
 
 // subscribe with typed result
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     subscribe_typed_i64,
     r#"{
@@ -219,10 +245,12 @@ run!(
     let v: i64 = sys::net::subscribe("/local/typed_sub")?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // subscribe with Primitive (backwards compatible, no cast)
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     subscribe_primitive,
     r#"{
@@ -230,8 +258,7 @@ run!(
     let v: Primitive = sys::net::subscribe("/local/prim_sub")?;
     cast<i64>(v)?
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // subscribe without type annotation → compile error
 run!(
@@ -248,6 +275,9 @@ run!(
 // ============================================================================
 
 // call with typed result
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     call_typed,
     r#"{
@@ -260,14 +290,16 @@ run!(
     let v: i64 = sys::net::call("/local/typed_call_rpc", {x: 21})?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // ============================================================================
 // Publish on_write type-aware casting
 // ============================================================================
 
 // on_write callback with typed arg
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     publish_typed_onwrite,
     r#"{
@@ -284,14 +316,16 @@ run!(
         } else {
             false
         }
-    }
-; graphix_package_core::testing::FuseExpect::Jit);
+    }; graphix_package_core::testing::FuseExpect::None);
 
 // ============================================================================
 // RPC with typed spec and callback
 // ============================================================================
 
 // rpc with typed struct callback arg
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     rpc_typed_struct,
     r#"{
@@ -304,5 +338,4 @@ run!(
     let v: string = sys::net::call("/local/typed_rpc", {name: "graphix", count: 1})?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hello graphix") }
-; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hello graphix") }; graphix_package_core::testing::FuseExpect::None);

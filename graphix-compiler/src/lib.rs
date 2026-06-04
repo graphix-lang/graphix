@@ -19,6 +19,7 @@ pub mod gir_jit;
 pub mod gir_jit_helpers;
 pub mod gir_jit_intern;
 pub mod node;
+pub mod node_shape;
 pub mod static_resolve;
 pub mod typ;
 

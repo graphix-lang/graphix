@@ -325,6 +325,94 @@ async fn compile_then_compile_external_scalar() -> Result<()> {
     }
 }
 
+/// End-to-end string region-input param: an external (cross-compile)
+/// string binding `s` flows into a fused kernel as a real
+/// `string_params` slot, consumed by `str::len`. Proves the discovery
+/// → `populate_kernel_inputs` → runtime arg-packing chain for a String
+/// kernel parameter (not const-inlined, since the binding lives in a
+/// separate compilation unit). The direct ABI round-trip lives in
+/// `gir_{interp,jit}::tests::*string_and_value_kernel_params`; this
+/// closes the discovery + native-dispatch half.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
+async fn external_string_region_param() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    let _first = ctx.rt.compile(ArcStr::from("let s = \"hello\";")).await?;
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    let res = ctx.rt.compile(ArcStr::from("str::len(s)")).await?;
+    let eid = res.exprs[0].id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => bail!("timeout"),
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => for e in batch.drain(..) {
+                    if let GXEvent::Updated(id, v) = e {
+                        if id == eid {
+                            assert_eq!(v, Value::I64(5));
+                            assert!(
+                                graphix_compiler::gir_jit_helpers::jit_invocations() > 0,
+                                "string region-param kernel should JIT-dispatch"
+                            );
+                            ctx.shutdown().await;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// End-to-end value-shape region-input param: an external `datetime`
+/// binding flows into a fused kernel as a `value_params` slot and is
+/// consumed by `GirOp::ValueArith` (`d + duration:1.s`). The result is
+/// a `datetime`, decoded back through the two-register value boundary.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
+async fn external_datetime_region_param() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    let _first = ctx
+        .rt
+        .compile(ArcStr::from("let d = datetime:\"2024-01-01T00:00:00Z\";"))
+        .await?;
+    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    let res = ctx.rt.compile(ArcStr::from("d + duration:1.s")).await?;
+    let eid = res.exprs[0].id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => bail!("timeout"),
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => for e in batch.drain(..) {
+                    if let GXEvent::Updated(id, v) = e {
+                        if id == eid {
+                            let expected: chrono::DateTime<chrono::Utc> =
+                                "2024-01-01T00:00:01Z".parse().unwrap();
+                            assert!(
+                                matches!(&v, Value::DateTime(dt) if **dt == expected),
+                                "expected 2024-01-01T00:00:01Z, got {v:?}"
+                            );
+                            assert!(
+                                graphix_compiler::gir_jit_helpers::jit_invocations() > 0,
+                                "datetime region-param kernel should JIT-dispatch"
+                            );
+                            ctx.shutdown().await;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn load_uses_external_scalar() -> Result<()> {
     // First inline-compile a binding so it lives at root scope:
@@ -501,6 +589,52 @@ async fn call_arg_order_composite_then_scalar() -> Result<()> {
     )
     .await?;
     assert_eq!(v, Value::I64(35));
+    Ok(())
+}
+
+// #124: the third test axis — assert on the *compiled artifact*, not
+// just the value (run!) or whether fusion fired (FuseExpect). A
+// `NodeShape` declares what the graph should look like; the runtime
+// checks it against the live post-fusion graph and returns a verdict.
+// `foo * 6` (foo external) is the canonical region fusion case — `foo`
+// lifts to a kernel input and the Mul splices a FusedKernel (see
+// `load_uses_external_scalar`).
+#[tokio::test(flavor = "current_thread")]
+async fn node_shape_external_scalar() -> Result<()> {
+    use graphix_compiler::gir::{GirType, PrimType};
+    use graphix_compiler::node_shape::{GirMatcher, GirOpTag, NodeShape};
+
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    let _first = ctx.rt.compile(ArcStr::from("let foo = 7;")).await?;
+    let res = ctx.rt.compile(ArcStr::from("foo * 6")).await?;
+    let eid = res.exprs[0].id;
+
+    // The whole expression fuses into one kernel: scalar input `foo`,
+    // returns i64, body multiplies (a `Bin` op).
+    let spec = NodeShape::fused(
+        GirMatcher::new()
+            .returns(GirType::Prim(PrimType::I64))
+            .params(&["foo"])
+            .contains(GirOpTag::Bin),
+    );
+    ctx.rt.match_shape(eid, spec).await?;
+
+    // The matcher must have teeth: a wrong criterion (the body has no
+    // ArrayLen op) must produce a mismatch, not silently pass.
+    let bad = NodeShape::fused(GirMatcher::new().contains(GirOpTag::ArrayLen));
+    let err = ctx.rt.match_shape(eid, bad).await;
+    assert!(err.is_err(), "matcher should reject a wrong spec, but passed");
+
+    // And asserting it's a plain (non-fused) node must also fail —
+    // the root really is a Fused kernel.
+    let bad2 = NodeShape::node("Block");
+    assert!(
+        ctx.rt.match_shape(eid, bad2).await.is_err(),
+        "root is Fused, a Block spec should not match"
+    );
+
+    ctx.shutdown().await;
     Ok(())
 }
 

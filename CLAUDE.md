@@ -2396,6 +2396,130 @@ fixtures now exercise the IsNull JIT path in mode C/D instead of
 falling back. 130/130 compiler + 1778/1779 graphix-tests green (the
 1 is the pre-existing fs-parallelism flake, passes single-threaded).
 
+### #139 String / value-shape kernel params (region inputs) (Jun 2026)
+
+The meaty cliff the user pushed on: a sync computation that *consumes*
+a `String` / `DateTime` / `Duration` / `Bytes` value from an external
+or async source couldn't fuse, because those four were the only value-
+bearing `GirType`s that `gir_type_to_region_input_kind` rejected (→
+`None`) — they worked as kernel *locals* but not as kernel *params*.
+So `let t = now(); t + duration:1.s` (a timer-sourced datetime + a
+ValueArith) and `let s = subscribe(...); str::to_upper(s)` (a string
+fed to a sync builtin) fell off the fusion path. Struct/variant/
+nullable/array/tuple/prim params already worked — the cliff was
+specifically these four leaf value-shapes.
+
+**The empirical correction that scoped it.** The original problem
+statement ("a Value-shaped param blocks fusion") was imprecise. A
+direct cross-compile probe (compile `let p = {x,y}`, then `p.x+p.y`;
+repeat for variant / string / datetime) proved struct + variant region
+inputs *already fuse*; only String/Bytes/DateTime/Duration were
+blocked. The json/pack identity fixtures (`{let v: T = read(...); v}`)
+were red herrings — they're hollow identity kernels, so they made the
+whole feature *look* hollow; the real payoff is the meaty-calc case.
+Lesson reinforced: reason from a probe, not from a plausible read
+([[feedback-run-the-code]]).
+
+**ABI.** A String param rides one machine word (its `ArcStr` thin
+pointer, `repr(transparent)`); a bare value-shape (DateTime/Duration/
+Bytes) param rides two words (`Value`'s `(disc, payload)`, same shape
+as Variant/Nullable). New, all driven off the single ABI source
+(`GirKernel::abi_params` / `abi_param_wire_slots`):
+- `GirKernel.string_params: Vec<StringInput>` (1-word) +
+  `value_params: Vec<ValueInput>` (2-word).
+- `AbiParamKind::String` (1 word) / `Value` (2 words); `wire_words()`
+  + `abi_params()` canonical order = scalars, arrays, tuples, structs,
+  **strings**, variants, nullables, **values**.
+- `RegionInputKind::String` / `Value(GirType)`;
+  `gir_type_to_region_input_kind` now returns `Some` for all four (was
+  `None`). `populate_kernel_inputs` routes them to the new slots +
+  `ctx.{string,value}_inputs` (so `Local` reads resolve) +
+  `TailCallSlotKind::String` / `Value`.
+- `ArgKind::String(u32)` / `Value(u32)` + `build_arg_layout` counters;
+  `eval_kernel_full` gained `string_args: &[ArcStr]` /
+  `value_args: &[Value]` (pushed into `env.strings` / `env.nullables`
+  at entry — value-shape rides the nullables slot, re-wrapped to the
+  declared type on `Local` read). 6 callers updated.
+- Interp `GirNode::update` builds `string_args` / `value_args`
+  smallvecs; the JIT path packs strings (1 word, borrowed ArcStr ptr)
+  after structs and values (2 words) after nullables.
+- JIT: `push_abi_params` / `define_wrapper` unpack / `compile_into_
+  function` entry binder all gained String (`bind_string` after a
+  `graphix_arcstr_clone`) and Value (`bind_nullable` after
+  `graphix_value_clone`) arms. Tail-call rebind for String/Value
+  returns `Err` (graceful interp fallback — recursive lambdas with
+  these param shapes are rare). `compile_call_clif_args` (cross-kernel
+  `GirOp::Call`) bails *exhaustively* on String/value-shape/Unit/Null
+  args — fixes a latent silent-drop where a DateTime arg matched no
+  emit filter. The interp cross-kernel Call arm gained `strings` /
+  `values` buckets so a callee with those params dispatches correctly.
+
+**Tests.** Direct ABI round-trip: `gir_interp::tests::
+string_and_value_kernel_params` + `gir_jit::tests::
+jit_string_and_value_kernel_params` (string identity + datetime
+`ValueArith`, both backends). End-to-end (real region param, not
+const-inlined, via cross-compile): `lang::fusion::external_string_
+region_param` (`str::len(s)` over an external string → I64(5), JIT
+confirmed) + `external_datetime_region_param` (`d + duration:1.s` →
+datetime, JIT confirmed). The bidirectional harness flagged 24
+fixtures (string/datetime/bytes results) that flip None→Jit; all
+upgraded (json_string/pack_string/pack_bytes ASPIRE comments
+rewritten — their cliff is closed).
+
+**The identity-kernel suppression — kept, and it exposed an inflated
+metric.** `GirKernel::is_identity_passthrough` (body is exactly a single
+`Return(Local(x))`) + a skip in `fuse()` stops forming hollow kernels
+that do no work — the runtime `Ref` feeder already produces the value.
+Turning it on broke **316 fixtures**, and that is the *valuable* result,
+not a reason to revert (the user's call): the `run!` harness wraps every
+fixture as `let result = {code}`, which yields a separate
+`Return(Local("result"))` identity region. For any fixture whose *body*
+region doesn't lower on its own (array-slice blocks, struct/IO results,
+async reads, …), that hollow `result` wrapper was the *only* kernel
+carrying the fusion signal — so the bidirectional `FuseExpect` metric
+had been counting the wrapper, not real body fusion. Suppressing it
+re-derives the truth.
+
+Re-annotation (honest state, all deterministic — verified across 3
+parallel full-suite runs, so this is NOT flakiness):
+- **310 fixtures → `None` + an `ASPIRE: Jit` comment.** Their bodies
+  genuinely don't fuse (real cliffs: array slice = "GIR emission
+  failed", async IO, error-operator chains, etc.). Mechanically applied
+  by a string-aware `run!`-block rewriter (`/tmp/reannotate.py`-style:
+  paren-match the macro call, drop any trailing `; FuseExpect::X` +
+  `; shape:` clause, append `; …::FuseExpect::None`, prepend the
+  comment).
+- **6 fixtures → `FuseExpect::Interp`** (`array_indexing0`,
+  `structaccessor`, `array_sort1/3`, `hbs_invalid_template`,
+  `hbs_strict_missing`). These deterministically fuse on the
+  interpreter (`::fused` green) but their *body* fails to JIT-compile,
+  so in jit mode `fuse()` skips the splice (FUSION==0, JIT==0) — exactly
+  what `FuseExpect::Interp`'s arms assert. The single-threaded
+  `GRAPHIX_FUSION_DISCOVERY` map confirmed all six are Fuses+NoJit.
+
+**The JIT cliff the six exposed — fixed (variant-DynCall arg).** The
+root cause for `array_sort`/`hbs` was a Value-shape DynCall arg, e.g.
+`array::sort(#dir: \`Descending, a)`. `compile_scalar_impl`'s DynCall
+arm compiled *every* arg via `compile_scalar` / `CompiledExpr::single()`,
+which bails on a `(disc, payload)` pair ("expected single CLIF value,
+got Value-shaped pair") and would have passed one word to the 2-word
+`push_value` helper anyway. The `compile_value_expr` arm had a parallel
+latent bug — its per-arg `match` only special-cased `Variant|Nullable`,
+so `DateTime|Duration|Bytes` args fell to the `compile_scalar` default
+too. **Fix:** both DynCall arms now route arg marshalling through one
+shared `marshal_dyncall_args` (the CLAUDE comment literally said "factor
+when the third Value-shape consumer lands"). It dispatches on
+`GirType::is_value_shape()` — value-shape args compile via
+`compile_value_expr` and push their two `(disc, payload)` words;
+scalar/composite/string args push one. `array_sort1/3` and the two
+`hbs_*` fixtures upgraded Interp→`Jit` (their `::jit` arms now assert
+JIT>0 — the regression coverage). `array_indexing0` and `structaccessor`
+stay `Interp` for a *different*, pre-existing cliff: a composite-element
+accessor (`a[0]`, `s.bar : string`) routes to the interpreter via
+`kernel_contains_composite_element_op` — a separate follow-up.
+
+132 compiler + 1788 graphix-tests, green and parallel-deterministic (3×).
+
 ### #134 option-typed block values silently de-fused (May 2026)
 
 The archetypal predictable-performance cliff, caught by the
@@ -2462,3 +2586,299 @@ Not covered: variant-returning `select` lambdas (`select x { … => `A,
 `Type::Variant` / `Type::Set`-of-variants shape, a different path that
 may already work via the existing `Variant`/`Set` arms or may be a
 separate cliff.
+
+### NodeShape — graph-shape assertion harness (the third test axis) (Jun 2026)
+
+`run!` checks a fixture's *value*; `FuseExpect` checks *whether*
+fusion fired. Neither sees *what fused into what*. `NodeShape`
+(`graphix-compiler/src/node_shape.rs`) closes that gap — it's a
+**declarative spec** of a compiled (sub)graph that the runtime checks
+against the *live* post-fusion graph and returns a verdict. Replaces
+the deleted `lowering.rs` `emit_expr`-based unit tests (#124), whose
+hand-faked `FusionCtx` couldn't drift-detect the way walking the real
+graph does.
+
+**Design (user's, refined):** `NodeShape` is the *spec*, not an
+extracted result. The rt owns the matching — a test declares the spec
+and gets pass/fail back; the walk-and-compare runs once, in-task,
+against the real nodes (so only owned data crosses the channel; no
+`TestRt` needed).
+
+- `enum NodeShape { Any | Node{kind: Option, children: Vec} |
+  Fused(GirMatcher) | Contains(Box) }`. `Contains` matches if any
+  node in the subtree matches the inner spec — lets a test assert
+  "this program contains a kernel shaped like X" without spelling out
+  the wrapper path (module Do / binds). Builder helpers:
+  `NodeShape::{node,any_node,fused,contains,contains_fused}` +
+  `.child(...)`.
+- `GirMatcher` — *partial* criteria, every field a wildcard until set
+  (matcher, not transcript): `.returns(GirType)`, `.params(&[...])`,
+  `.contains(GirOpTag)`. `GirOpTag` mirrors all 29 `GirOp` variants
+  (exhaustive `gir_op_tag`, so a new op forces an update).
+- `match_node(&Node, &NodeShape) -> Result<(), String>` — path-tracked
+  mismatch reason on failure. One generic `visit_ops` GIR visitor (did
+  NOT add a 5th copy of the recursion next to the 4 `expr_has_*`).
+- `node_children` enumerates **every** `NodeView` variant's children
+  (binop family via a macro; deterministic CallSite arg order;
+  `FusedKernel` → its feeders so `Contains` descends through a kernel;
+  true leaves → empty). `describe_node(&Node) -> String` renders the
+  actual graph as an authoring aid (run once, read the shape, write
+  the spec).
+
+**Runtime hooks** (`graphix-rt`): `ToGX::MatchShape`/`DescribeShape` +
+`GXHandle::match_shape(eid, spec) -> Result<()>` /
+`describe_shape(eid) -> String`. Accessors `GirNode::kernel()`,
+`FusedKernel::kernel()`/`feeders()`, `Module::source()`.
+
+**`run!` integration:** optional trailing `; shape: <NodeShape>`,
+checked in **fused** mode only (graph shape is backend-independent;
+`interp` has no kernel, `jit` is redundant). Threaded as a 4th
+`check_shape` arg + a `shape_spec()` fn per expanded module.
+
+Ported assertions (one-liners now): `node_shape_external_scalar`
+(`foo*6` → Bin, + positive/negative teeth), `tuples0` (TupleNew),
+`structs0` (StructNew), `tupleaccessor` (TupleGet), `array_indexing0`
+(ArrayGet). Remaining old assertions are incremental `; shape:`
+additions.
+
+**Bug caught by the negative test** ([[feedback-run-the-code]] again):
+`find_match` (the `Contains` walker) calls `node_children` on *any*
+node incl. `FusedKernel`, which was grouped into the binop
+`unreachable!` arm → panic on a mismatch path. The deliberately-wrong
+spec surfaced it immediately; the positive-only run would have masked
+it. Fixed: `FusedKernel` arm returns its feeders. 130/130 compiler +
+1783/1783 graphix-tests green.
+
+### datetime/duration as a Value-shape GirType (Jun 2026)
+
+`datetime`/`duration` arithmetic (`datetime ± duration`, `duration ±
+duration`, `duration {*,/} number`, `number * duration`) now fuses +
+JITs. Runtime reps are `Value::DateTime(Arc<DateTime<Utc>>)` /
+`Value::Duration(Arc<Duration>)` — thin `Arc` payloads, so they're
+**Value-shape** (two-register `(disc, payload)`), reusing the
+Variant/Nullable ABI throughout. Arithmetic computes via netidx's
+`impl {Add,Sub,Mul,Div,Rem} for Value` on BOTH backends, so the fused
+result is byte-identical to the non-fused arith node (`lhs $op rhs`).
+
+**Type + IR:** `GirType::{DateTime,Duration}` + `GirType::from_type`
+(single-bit `Typ::DateTime`/`Typ::Duration` primitives) +
+`is_value_shape()` helper (Variant|Nullable|DateTime|Duration). New
+ops `GirOp::ConstValue(Value)` (datetime/duration literals — a
+`ConstVal` is `Copy`, an `Arc` payload isn't) and `GirOp::ValueArith
+{op, lhs, rhs}` (either operand scalar-or-Value, result always
+Value-shape). `EvalResult::{DateTime,Duration}(Value)` carriers;
+`wrap_value_shape(v, &typ)` picks the carrier.
+
+**emit side** (`lowering.rs`): `NodeView::Constant` lowers
+`Value::DateTime`/`Duration` → `ConstValue`; the 5 arith arms route
+through a new `emit_arith` wrapper that emits `ValueArith` when either
+operand is datetime/duration (result type per the typechecker's
+rules), else the scalar `gir::arith`.
+
+**Locals:** datetime/duration let-bindings ride the existing
+`nullables` Value slot on both backends (a name→Value map); the
+`Local` read dispatches by the ref's GirType to re-wrap. A new
+`ctx.value_inputs: Vec<ValueInput>` (carries the full GirType, unlike
+`NullableInput`'s inner-only `elem`) makes Ref resolution produce the
+correct `DateTime`/`Duration` type. **Params/region-inputs deferred** —
+`gir_type_to_region_input_kind` returns `None` (like String); the
+fixtures only use datetime/duration as intermediates + returns.
+
+**JIT codegen** (`gir_jit.rs`): `KernelValues` per-kernel constants
+table (mirrors `KernelStrings` — `Box<[Value]>` with stable
+`*const Value` addresses, kept alive on `CompiledKernel`/
+`WrappedKernel`/`CachedKernel` via `_values`). New helpers
+(`gir_jit_helpers.rs`): `graphix_value_clone_from_static(*const Value)
+-> Value` (ConstValue: bake ptr, clone = Arc bump) and
+`graphix_value_{add,sub,mul,div,rem}(Value, Value) -> Value` (the
+arith — consume both args, matching netidx's by-value operators).
+`compile_owned_value_operand` produces each ValueArith operand as an
+OWNED `(disc, payload)`: a Value-shape operand clones a Borrowed Local
+via `ensure_owned_value`; a scalar promotes to a fresh `Value::<prim>`
+(`prim_to_value_disc` + `scalar_to_payload_i64`, no Arc → trivially
+owned). ~40 `Variant|Nullable` match arms across gir_jit/gir_interp/
+lowering/gir.rs/mod.rs/node_shape extended to include DateTime/Duration
+(the 14th-commandment compiler enumerated every one).
+
+**Two-milestone landing.** Interp first (`None → Interp`, kernel forms
++ runs via `gir_interp`), validated + regression-tested; then JIT
+(`Interp → Jit`). The interp checkpoint relied on a key finding: the
+"`JitMode::Forced` panics on JIT-compile failure" behavior in older
+CLAUDE.md notes is **stale** — current `fuse()` gracefully `continue`s
+on a JIT `Err` (skips the splice in jit mode → `FUSION==0`), and
+`check_fuse_expectation(Interp)` passes cleanly. So datetime kernels
+that couldn't yet JIT just fell back to interp without panicking.
+
+**Bug caught by running the JIT path** ([[feedback-run-the-code]]):
+the `GirStmt::Return` value-shape arm grouped `Variant|Nullable` but
+missed DateTime/Duration → they fell to the scalar arm →
+`compile_scalar` on a `(disc,payload)` pair → JIT-compile Err (silently
+swallowed by `fuse()`'s `Err(_) => continue`, surfacing only as
+`FUSION==0`). Found by temporarily logging the swallowed error.
+
+**Fixtures:** the 7 `datetime_arith0{0..6}` arith fixtures went
+`None → Jit`; the 11 invalid-op fixtures (`duration*duration`,
+`datetime-int`, …) stay `None` (typecheck errors, never compile); one
+checked-overflow (`*?`) was already `Jit` via the checked-op path. All
+modes agree on the produced `Value::DateTime`/`Duration`.
+130/130 compiler + 1783/1783 graphix-tests green.
+
+### bytes as a Value-shape GirType (Jun 2026)
+
+`bytes` (runtime `Value::Bytes(PBytes)`, a refcounted thin pointer) is
+now a `GirType` — and the key decision was to make it **Value-shape**
+(two-register `Value`, like the datetime/duration work) rather than a
+single-register leaf like `GirType::String`. That reuses the *entire*
+Value-shape pipeline with almost no new code: a `bytes` literal lowers
+to `GirOp::ConstValue(Value::Bytes(..))` (baked via the existing
+`KernelValues` table + `graphix_value_clone_from_static`); bytes locals
+ride the `value_inputs` slot + `nullables` env slot; the two-register
+ABI, `graphix_value_clone`/`drop`, `ensure_owned_value`, Return/Let/
+DynCall arg+return arms all already handle it. **No bytes-specific JIT
+helpers, slot lists, or codegen** — vs. String's single-register leaf
+machinery, this was far smaller and DRY. (The redundant disc word vs.
+String's single register is negligible.)
+
+Mechanical surface: `GirType::Bytes` + `from_type` (`Typ::Bytes`
+single-bit) + `is_value_shape()`; `EvalResult::Bytes(Value)` +
+`wrap_value_shape` arm; `gir_type_to_graphix_type` → `Typ::Bytes`;
+`emit_node`'s `Constant` arm lowers `Value::Bytes` → `ConstValue`. The
+~40 `Variant|Nullable|DateTime|Duration` Value-shape match arms gained
+`| GirType::Bytes` (added by two `perl` passes — line-start `| GirType::
+Duration =>` groups and single-line `DateTime | Duration =>` groups —
+the compiler's exhaustiveness then confirmed the rest). Bytes correctly
+does NOT join the arith arms (`emit_arith`, ValueArith) — no bytes
+arithmetic.
+
+Fixtures: `test_write_bin_then_read_bin` (fs binary round-trip, the
+ASPIRE'd "string twin fuses" gap) went `None → Jit`; new
+`bytes_const_local` (`{ let x = bytes:..; x }`) covers the bytes-literal
++ local + return path, `Jit`. `pack_bytes` stays `None` — `bytes` is no
+longer the blocker (annotation corrected); it's the `buffer::to_string`
+→ `Result<string,_>` + `$`/`?` error-operator chain. 130/130 compiler +
+1786/1786 graphix-tests green.
+
+### Gap-map accuracy pass — the loose-`Number` correct-None theme (Jun 2026)
+
+Autonomous gap-clearing session. Net code change: ~zero (no new fusion);
+net value: the ASPIRE gap map is now **honest**, several "gaps"
+reclassified as correct-by-design, and two root causes pinned via the
+`describe_shape` introspection tool (#124) — which earned its keep here.
+
+**The loose-`Number` theme (correct-None, not gaps).** A recurring
+mis-categorization: fixtures whose result type is the loose `Number`
+*set* (not a `'a: Number` type variable) can't fuse because the kernel
+return is an unbound `Number` TVar that `GirType::from_type` won't
+lower — and that's *correct*, because `Number` means "each value may be
+a different number type" (genuinely dynamic). This covers
+`sum`/`product`/`divide`/`all` (re-annotated earlier) AND, newly,
+**3 of the 4 "labeled-arg lambda" fixtures** (`labeled_args`,
+`mixed_args`, `arg_name_short` — all `|#foo: Number, #bar: Number|
+foo + bar`). Proof the labeled-arg machinery itself is fine: the
+identical lambda with concrete `i64` params fuses + JITs. So
+"labeled-arg lambda call" was a red herring; the blocker is the dynamic
+`Number` result. `arg_subtyping` (the 4th) is actually HOF (fn-typed
+arg), re-annotated as such. All re-annotated `// Not fused, by design`
+(plain `None`, no `ASPIRE`) — see [[feedback-predictable-fusion]]'s
+complement: don't contort to fuse explicitly-dynamic types.
+
+**json/pack string-return root cause (#136, via describe_shape).** NOT
+a json-specific string-return issue. `{let v: T = json::read(...)?; v}`:
+the trailing `v` (a Ref to the result) forms a trivial identity kernel
+`params=["v"], ops={Local}` for the i64/array/struct siblings, but
+`gir_type_to_region_input_kind` returns `None` for
+String/Bytes/DateTime/Duration — they can't be **region inputs / kernel
+params** (only locals). So the identity kernel won't form for a String
+result. (The json::read DynCall itself doesn't fuse in *either* case —
+`NEEDS_CALLSITE` builtins aren't discovered as DynCalls; the i64 "Jit"
+is just that hollow identity kernel.) `json_null`/`pack_null` are the
+degenerate `null` sub-case (bare Null is by-design widened to Nullable;
+a null→null identity is information-free → borderline correct-None).
+
+**Deferred: String/value-shape kernel params (#139).** The real fix for
+json_string/pack_string is a String (1-register) + value-shape
+(2-register) kernel-param ABI — also closes the deferred datetime/bytes
+param cases and enables the genuinely-valuable "fuse sync computation
+over an async-sourced string/bytes/datetime" pattern. Sized: ~13 logic
+changes + ~38 mechanical `string_params: vec![]` construction sites +
+runtime arg-packing (segfault surface). DEFERRED for greenlight because
+the *tested* payoff (json/pack-string) is a hollow identity kernel; the
+real value isn't fixture-covered. A large ABI change for a marginal
+tested win is the wrong autonomous trade.
+
+### Fusion gap-map correction + cross-module call resolution (Jun 2026)
+
+A FUSEBAIL-instrumented harvest corrected the fusion metric and landed
+the foundational cross-module-call fixes. **The headline: the corpus
+was at 119 Jit, not the 385 the doc claimed** — #139's identity
+suppression had already dropped real body-fusion to ~115, but the doc
+was never updated. `design/fusion_state.md` now reflects reality
+(119 Jit / 2 Interp / 426 None across 547 fixtures) with an accurate
+blocker taxonomy.
+
+**FUSEBAIL instrumentation** (kept — it's the harvest tool the doc
+references). Debug-only thread-local in `gir_jit_helpers`
+(`record_fuse_bail`/`take_fuse_bails`/`reset_fuse_bails`), recorded at
+every fusion give-up site: `node:<Variant>` (emit_node catch-all),
+`dostmt:<Variant>` (block statement), `emit:<Helper>` (producer/
+accessor sub-emitter), `call:<name>`/`callqual:<path>` (un-lowerable
+call). The `run!` discovery branch prints `FUSEBAIL <path> <tags>` so a
+single `GRAPHIX_FUSION_DISCOVERY=1` run maps every None fixture to its
+*reason*. This is what turned "269 fixtures are mysteriously EMPTY"
+into the actionable taxonomy. `node_view_name` + `rec_bail` in
+`fusion/lowering.rs` are its helpers.
+
+**The big finding — qualified user-fn calls never resolved.**
+`ident_of` returns `None` for any module-qualified path
+(`list::is_empty`, `inner::make`), and BOTH the lambda-resolution path
+(emit_node CallSite arm) and `emit_known_fused_call`'s `ident_of(name)?`
+silently bailed on it. So calls to *graphix-implemented* stdlib
+functions (`list::*`, graphix `array::*` HOFs, `buffer::*`, interface-
+module functions — ~132 fixtures) never fused. Two fixes made them
+*resolve*:
+
+1. **Interface-proxy resolution** (`static_resolve.rs` +
+   `node/module.rs`). A signed module re-exports each impl binding's
+   value to its public `val` signature binding under a *different*
+   BindId (the runtime forwards impl→sig via the Module's `proxy` map,
+   `module.rs` update()). The caller references the *signature* BindId,
+   which `collect_lambda_binds` never had in its `bind_to_lambda` map —
+   so `resolved_apply()` was `None` for every cross-module-through-
+   interface call. Added `Module::proxy()` (`pub(crate)`) and taught
+   `collect_lambda_binds`'s Module arm to forward `out[sig_id] =
+   out[impl_id]` for each `(impl_id, sig_id)` proxy entry. Now
+   `inner::add(10, 20)` resolves to the impl `LambdaDef`.
+
+2. **Qualified source-name** (`fusion/lowering.rs` emit_node CallSite
+   Lambda arm). The kernel registry / `GirOp::Call` key now falls back
+   to the full path (`name.0`) when `ident_of` rejects a qualified
+   name; bare idents stay verbatim (so unqualified self-recursive calls
+   still key consistently).
+
+**Type-rep is the *next* blocker** (resolution alone gave +1). After a
+qualified call resolves, `ensure_lambda_kernel` still bails on
+`GirType::from_type`: `/list` needs recursive variant types
+(`List<'a> = [\`Cons('a, List<'a>), \`Nil]` — infinite type),
+`/array` needs composite-element HOFs, `/buffer` needs bytes+mutable-
+refs, `/inner` needs abstract-type rep (`from_type(T)` can't know an
+opaque type's concrete runtime shape without the impl's private
+typedef). Each is a separate type-system feature.
+
+**TypeDef/Use skip in blocks** (`fusion/lowering.rs`). `type X = ...`
+and `use foo` statements inside a block are compile-time-only — they
+now skip like a `Nop` in `emit_do` / `emit_do_as_expr` instead of
+bailing the whole block. Flipped `rectypes0`, `rectypes1`,
+`typedef_tvar_ok` (+ `interface_no_abstract_types` from the proxy fix)
+None → Jit.
+
+**Tried + reverted: lambda-bind-in-body skip.** Skipping a `let f =
+|x| ...` bind so block-local lambda calls resolve via the CallSite
+Lambda arm crashed 3 fixtures (`GirOp::Call to f not in kernel
+registry`) — the call emitted a `GirOp::Call` via `known_fns` without a
+matching `called_kernels`/registry entry. node:Lambda (32 fixtures)
+needs the deeper "lambda-binds-in-bodies" work (unique per-LambdaId
+kernel naming + registry coordination, the SAFETY INVARIANT in
+`ensure_lambda_kernel`) — deferred.
+
+Net: 115 → 119 Jit, suite green (132 compiler + 1788 graphix-tests),
+parallel-deterministic.

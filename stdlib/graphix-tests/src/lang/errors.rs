@@ -19,10 +19,13 @@ const CHECKED0: &str = r#"
 2 +? 2
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(checked0, CHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // checked div by zero returns an error value that can be caught
 const CHECKED_DIV0: &str = r#"
@@ -36,6 +39,9 @@ const CHECKED_DIV0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
@@ -51,10 +57,13 @@ catch(e) => select (e.0).error {
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(catch1, CATCH1, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // nested try/catch with checked arith and array index errors
 const CATCH4: &str = r#"
@@ -90,7 +99,10 @@ const CHECKED_DOLLAR: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

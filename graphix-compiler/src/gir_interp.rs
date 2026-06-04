@@ -225,6 +225,20 @@ pub enum EvalResult {
     /// out of `env.nullables`. `GirOp::IsNull` matches this variant
     /// whenever its inner `Value` is `Value::Null`.
     Nullable(Value),
+    /// `GirType::DateTime` result — inner `Value` is a
+    /// `Value::DateTime(Arc<DateTime<Utc>>)`. Produced by
+    /// `GirOp::ConstValue` (datetime literals) and `GirOp::ValueArith`
+    /// (datetime arithmetic). Value-shape like `Variant`/`Nullable`;
+    /// flows through `into_value` opaquely.
+    DateTime(Value),
+    /// `GirType::Duration` result — inner `Value` is a
+    /// `Value::Duration(Arc<Duration>)`. Sibling to `DateTime`.
+    Duration(Value),
+    /// `GirType::Bytes` result — inner `Value` is a
+    /// `Value::Bytes(PBytes)`. Value-shape like `DateTime`/`Duration`;
+    /// produced by `GirOp::ConstValue` (bytes literals) and bytes-
+    /// returning DynCalls.
+    Bytes(Value),
 }
 
 impl EvalResult {
@@ -237,6 +251,9 @@ impl EvalResult {
             EvalResult::String(s) => Value::String(s),
             EvalResult::Null => Value::Null,
             EvalResult::Nullable(v) => v,
+            EvalResult::DateTime(v)
+            | EvalResult::Duration(v)
+            | EvalResult::Bytes(v) => v,
         }
     }
 
@@ -436,6 +453,13 @@ impl InterpEnv {
             EvalResult::ValArray(a) => self.push_array(name, a),
             EvalResult::Variant(v) => self.push_variant(name, v),
             EvalResult::Nullable(v) => self.push_nullable(name, v),
+            // datetime/duration are Value-shape; they share the
+            // `nullables` slot (a name→Value map). The Local read
+            // dispatches by the ref's GirType to re-wrap as
+            // DateTime/Duration, so the slot's narrower name is fine.
+            EvalResult::DateTime(v)
+            | EvalResult::Duration(v)
+            | EvalResult::Bytes(v) => self.push_nullable(name, v),
             EvalResult::String(s) => self.push_string(name, s),
             // The singleton `null` value (GirType::Null) has no
             // useful storage form on its own — every site that would
@@ -545,7 +569,8 @@ pub fn eval_kernel_with_dispatch_and_arrays(
     dispatch: DynDispatch<'_>,
 ) -> Option<EvalResult> {
     eval_kernel_full(
-        kernel, args, array_args, &[], &[], &[], &[], registry, dispatch,
+        kernel, args, array_args, &[], &[], &[], &[], &[], &[], registry,
+        dispatch,
     )
 }
 
@@ -562,6 +587,8 @@ pub fn eval_kernel_full(
     struct_args: &[ValArray],
     variant_args: &[Value],
     nullable_args: &[Value],
+    string_args: &[arcstr::ArcStr],
+    value_args: &[Value],
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
 ) -> Option<EvalResult> {
@@ -595,6 +622,16 @@ pub fn eval_kernel_full(
         kernel.nullable_params.len(),
         "eval_kernel: nullable arity mismatch"
     );
+    debug_assert_eq!(
+        string_args.len(),
+        kernel.string_params.len(),
+        "eval_kernel: string arity mismatch"
+    );
+    debug_assert_eq!(
+        value_args.len(),
+        kernel.value_params.len(),
+        "eval_kernel: value arity mismatch"
+    );
     let mut env = InterpEnv::new(kernel.params.len());
     for (p, v) in kernel.params.iter().zip(args) {
         debug_assert_eq!(
@@ -618,6 +655,15 @@ pub fn eval_kernel_full(
         env.push_variant(p.name.clone(), v.clone());
     }
     for (p, v) in kernel.nullable_params.iter().zip(nullable_args) {
+        env.push_nullable(p.name.clone(), v.clone());
+    }
+    for (p, s) in kernel.string_params.iter().zip(string_args) {
+        env.push_string(p.name.clone(), s.clone());
+    }
+    // Bare value-shape params (DateTime/Duration/Bytes) ride the
+    // same `nullables` Value slot as their locals; a `Local` read
+    // re-wraps to the declared type via `wrap_value_shape`.
+    for (p, v) in kernel.value_params.iter().zip(value_args) {
         env.push_nullable(p.name.clone(), v.clone());
     }
     // Hand the tail-call slot map to the env so GirStmt::TailCall
@@ -714,7 +760,10 @@ fn eval_body(
                             EvalResult::Variant(val) => {
                                 env.rebind_variant(&slot.name, val);
                             }
-                            EvalResult::Nullable(val) => {
+                            EvalResult::Nullable(val)
+                            | EvalResult::DateTime(val)
+                            | EvalResult::Duration(val)
+                            | EvalResult::Bytes(val) => {
                                 env.rebind_nullable(&slot.name, val);
                             }
                             EvalResult::String(_) => panic!(
@@ -765,6 +814,18 @@ fn eval_body(
     );
 }
 
+/// Wrap a Value-shape runtime `Value` (the datetime/duration result of
+/// `ConstValue` / `ValueArith`) into the matching `EvalResult` for its
+/// declared GirType. `into_value` returns the inner `Value` regardless
+/// of the carrier, so an arith-error `Value::Error` still flows through.
+fn wrap_value_shape(v: Value, typ: &GirType) -> EvalResult {
+    match typ {
+        GirType::Duration => EvalResult::Duration(v),
+        GirType::Bytes => EvalResult::Bytes(v),
+        _ => EvalResult::DateTime(v),
+    }
+}
+
 fn eval_expr(
     env: &mut InterpEnv,
     e: &GirExpr,
@@ -774,6 +835,23 @@ fn eval_expr(
     Some(match &e.op {
         GirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
         GirOp::ConstStr(s) => EvalResult::String(s.clone()),
+        GirOp::ConstValue(v) => wrap_value_shape(v.clone(), &e.typ),
+        GirOp::ValueArith { op, lhs, rhs } => {
+            // Both operands as netidx `Value`s (scalars promote via
+            // `into_value`), then compute through netidx's `Value`
+            // arithmetic — byte-identical to the non-fused arith node,
+            // which does the same `lhs $op rhs`.
+            let l = eval_expr(env, lhs, registry, dispatch)?.into_value();
+            let r = eval_expr(env, rhs, registry, dispatch)?.into_value();
+            let result = match op {
+                BinOp::Add => l + r,
+                BinOp::Sub => l - r,
+                BinOp::Mul => l * r,
+                BinOp::Div => l / r,
+                BinOp::Mod => l % r,
+            };
+            wrap_value_shape(result, &e.typ)
+        }
         GirOp::ConstNull => EvalResult::Null,
         GirOp::IsNull(inner) => {
             // True if the operand evaluates to a null shape — either the
@@ -849,6 +927,9 @@ fn eval_expr(
                 },
                 GirType::Variant(_) => EvalResult::Variant(inner_value),
                 GirType::Nullable(_) => EvalResult::Nullable(inner_value),
+                GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                    wrap_value_shape(inner_value, success_typ)
+                }
                 GirType::Unit | GirType::Null => panic!(
                     "QopUnwrap: success_typ {success_typ:?} unsupported"
                 ),
@@ -909,6 +990,17 @@ fn eval_expr(
                     })
                     .clone(),
             ),
+            // datetime/duration locals share the `nullables` slot (a
+            // name→Value map); re-wrap by the ref's type.
+            GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                let v = env
+                    .lookup_nullable(name)
+                    .unwrap_or_else(|| {
+                        panic!("undefined value-shape local `{name}` — GIR is malformed")
+                    })
+                    .clone();
+                wrap_value_shape(v, &e.typ)
+            }
             // Unit-typed locals don't exist — `emit_bind_stmt` routes
             // them through `GirStmt::Discard` without registering a
             // local. A `Local` ref of Unit type is a malformed kernel.
@@ -1003,6 +1095,10 @@ fn eval_expr(
                 smallvec::SmallVec::new();
             let mut nullables: smallvec::SmallVec<[Value; 4]> =
                 smallvec::SmallVec::new();
+            let mut strings: smallvec::SmallVec<[arcstr::ArcStr; 4]> =
+                smallvec::SmallVec::new();
+            let mut values: smallvec::SmallVec<[Value; 4]> =
+                smallvec::SmallVec::new();
             for a in args {
                 let r = eval_expr(env, a, registry, dispatch)?;
                 match &a.typ {
@@ -1014,7 +1110,19 @@ fn eval_expr(
                     GirType::Nullable(_) => {
                         nullables.push(r.into_nullable())
                     }
-                    GirType::String | GirType::Unit | GirType::Null => panic!(
+                    GirType::String => match r {
+                        EvalResult::String(s) => strings.push(s),
+                        _ => panic!(
+                            "GirOp::Call string arg to `{fn_name}` didn't \
+                             evaluate to a String"
+                        ),
+                    },
+                    // datetime/duration/bytes are bare value-shape; the
+                    // callee holds them in `value_params`.
+                    GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                        values.push(r.into_value())
+                    }
+                    GirType::Unit | GirType::Null => panic!(
                         "GirOp::Call arg to `{fn_name}` has unmarshallable \
                          type {:?} — ensure_lambda_kernel should reject it",
                         a.typ
@@ -1023,7 +1131,7 @@ fn eval_expr(
             }
             eval_kernel_full(
                 callee, &scalars, &arrays, &tuples, &structs, &variants,
-                &nullables, registry, dispatch,
+                &nullables, &strings, &values, registry, dispatch,
             )?
         }
         GirOp::DynCall {
@@ -1117,6 +1225,12 @@ fn eval_expr(
                 // `T`'s runtime form. Wrap as `Nullable` for downstream
                 // consumers (`IsNull`, kernel return marshalling).
                 GirType::Nullable(_) => EvalResult::Nullable(result),
+                // datetime/duration-returning DynCall: the runtime
+                // Value is a `Value::DateTime`/`Value::Duration`; wrap
+                // it by the declared type.
+                GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                    wrap_value_shape(result, return_type)
+                }
                 // Bare `GirType::Null` return: the function's only
                 // possible runtime value is `Value::Null`. Surface
                 // as the singleton `EvalResult::Null` for parity with
@@ -1479,6 +1593,11 @@ fn extract_composite_or_scalar(
         // EvalResult through `into_value` which produces either
         // Value::Null or the wrapped T — both round-trip cleanly.
         GirType::Nullable(_) => EvalResult::Nullable(arr[idx].clone()),
+        // datetime/duration slot: the inner Value is a
+        // Value::DateTime/Duration; wrap by the slot type.
+        GirType::DateTime | GirType::Duration | GirType::Bytes => {
+            wrap_value_shape(arr[idx].clone(), slot_typ)
+        }
         GirType::Unit => panic!(
             "Unit slot at {idx} — Unit isn't usefully extractable, \
              GIR is malformed"
@@ -2086,6 +2205,25 @@ pub(crate) fn gir_type_to_graphix_type(
                 .collect();
             Type::Set(cases_ty)
         }
+        // datetime/duration map back to their primitives.
+        GirType::DateTime => {
+            let mut flags =
+                enumflags2::BitFlags::<netidx_value::Typ>::empty();
+            flags.insert(netidx_value::Typ::DateTime);
+            Type::Primitive(flags)
+        }
+        GirType::Duration => {
+            let mut flags =
+                enumflags2::BitFlags::<netidx_value::Typ>::empty();
+            flags.insert(netidx_value::Typ::Duration);
+            Type::Primitive(flags)
+        }
+        GirType::Bytes => {
+            let mut flags =
+                enumflags2::BitFlags::<netidx_value::Typ>::empty();
+            flags.insert(netidx_value::Typ::Bytes);
+            Type::Primitive(flags)
+        }
         // Unit is the discard-return shape; source-level `_` → Bottom.
         GirType::Unit => Type::Bottom,
         // String maps back to `Type::Primitive(Typ::String)`.
@@ -2333,6 +2471,8 @@ enum ArgKind {
     Struct(u32),
     Variant(u32),
     Nullable(u32),
+    String(u32),
+    Value(u32),
 }
 
 /// Total number of input slots the runtime passes into a GirNode for
@@ -2370,6 +2510,8 @@ fn build_arg_layout(kernel: &GirKernel) -> Vec<ArgKind> {
     let mut struct_idx: u32 = 0;
     let mut variant_idx: u32 = 0;
     let mut nullable_idx: u32 = 0;
+    let mut string_idx: u32 = 0;
+    let mut value_idx: u32 = 0;
     // Count of HOF-arg fn_params (Binding-source ones don't take a
     // positional input). Combined with `tail_call_slots.len()` to
     // size the layout.
@@ -2430,6 +2572,14 @@ fn build_arg_layout(kernel: &GirKernel) -> Vec<ArgKind> {
                 out.push(ArgKind::Nullable(nullable_idx));
                 nullable_idx += 1;
             }
+            TailCallSlotKind::String => {
+                out.push(ArgKind::String(string_idx));
+                string_idx += 1;
+            }
+            TailCallSlotKind::Value => {
+                out.push(ArgKind::Value(value_idx));
+                value_idx += 1;
+            }
         }
     }
     out
@@ -2447,6 +2597,13 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for GirNode<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> GirNode<R, E> {
+    /// The compiled kernel IR this node executes. Used by graph
+    /// introspection (`crate::node_shape`) to assert on what a region
+    /// actually fused into.
+    pub fn kernel(&self) -> &Arc<GirKernel> {
+        &self.kernel
+    }
+
     /// Single construction chokepoint. Builds the GirNode and runs
     /// both pre-init helpers (`pre_init_binding_slots` for binding-
     /// source fn_params, `pre_init_builtin_slots` for builtin-source
@@ -2719,6 +2876,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
             smallvec::SmallVec::with_capacity(self.kernel.variant_params.len());
         let mut nullable_args: smallvec::SmallVec<[Value; 4]> =
             smallvec::SmallVec::with_capacity(self.kernel.nullable_params.len());
+        let mut string_args: smallvec::SmallVec<[arcstr::ArcStr; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.string_params.len());
+        let mut value_args: smallvec::SmallVec<[Value; 4]> =
+            smallvec::SmallVec::with_capacity(self.kernel.value_params.len());
         let mut fn_arg_values: smallvec::SmallVec<[Value; 4]> =
             smallvec::SmallVec::with_capacity(self.kernel.fn_params.len());
         for _ in 0..self.kernel.fn_params.len() {
@@ -2783,6 +2944,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                     debug_assert_eq!(idx as usize, nullable_args.len());
                     nullable_args.push(v.clone());
                 }
+                ArgKind::String(idx) => {
+                    let s = match v {
+                        Value::String(s) => s.clone(),
+                        _ => panic!(
+                            "GirNode: arg {i} expected Value::String for \
+                             string param, got {v:?}"
+                        ),
+                    };
+                    debug_assert_eq!(idx as usize, string_args.len());
+                    string_args.push(s);
+                }
+                ArgKind::Value(idx) => {
+                    // Bare value-shape (DateTime/Duration/Bytes) args
+                    // arrive as their `Value` form directly.
+                    debug_assert_eq!(idx as usize, value_args.len());
+                    value_args.push(v.clone());
+                }
             }
         }
         // Resolve Binding-source fn slots by reading the BindId out
@@ -2836,6 +3014,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                     &struct_args,
                     &variant_args,
                     &nullable_args,
+                    &string_args,
+                    &value_args,
                     &self.registry,
                     &mut dispatch,
                 )?;
@@ -2874,6 +3054,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                 for a in &struct_args {
                     slots.push(a as *const ValArray as u64);
                 }
+                // String boundary: pack the borrowed `ArcStr` as its
+                // thin pointer (one word). `ArcStr` is
+                // `repr(transparent)` over `NonNull<ThinInner>`, so the
+                // pointer word IS the value. The kernel refcount-bumps
+                // on entry via `graphix_arcstr_clone`; we keep the
+                // `string_args` smallvec alive for the call's duration.
+                for s in &string_args {
+                    let p = s as *const arcstr::ArcStr as *const u64;
+                    unsafe {
+                        slots.push(*p);
+                    }
+                }
                 // Variant / Nullable boundary: pack the borrowed
                 // `Value` as its two `repr(u64)` words (disc, payload).
                 // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
@@ -2889,6 +3081,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                     }
                 }
                 for v in &nullable_args {
+                    let p = v as *const Value as *const u64;
+                    unsafe {
+                        slots.push(*p);
+                        slots.push(*p.add(1));
+                    }
+                }
+                // Bare value-shape (DateTime/Duration/Bytes) boundary:
+                // two-word `Value` pack, same as variant/nullable. The
+                // kernel clones on entry; we keep `value_args` alive.
+                for v in &value_args {
                     let p = v as *const Value as *const u64;
                     unsafe {
                         slots.push(*p);
@@ -3012,6 +3214,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                             unsafe { std::mem::transmute(out) };
                         EvalResult::Nullable(owned)
                     }
+                    // datetime/duration return: same two-word Value
+                    // decode as Variant/Nullable.
+                    GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                        let owned: Value =
+                            unsafe { std::mem::transmute(out) };
+                        wrap_value_shape(owned, &self.kernel.return_type)
+                    }
                     GirType::Null => unreachable!(
                         "JIT decode for GirType::Null/Nullable kernel \
                          return — JIT should have bailed out before \
@@ -3108,6 +3317,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3151,6 +3362,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3188,6 +3401,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -3214,6 +3429,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3336,6 +3553,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -3423,6 +3642,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -3462,6 +3683,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![nullable_param("m")],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -3481,6 +3704,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![nullable_param("x")],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -3506,6 +3731,8 @@ mod tests {
                 &[],
                 &[],
                 &[x],
+                &[],
+                &[],
                 &registry,
                 &mut dispatch,
             )
@@ -3548,6 +3775,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3600,6 +3829,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3692,6 +3923,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3753,6 +3986,8 @@ mod tests {
                 elem: GirType::Prim(PrimType::I64),
                 bind_id: None,
             }],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![crate::gir::TailCallSlot {
                 name: ArcStr::from("x"),
                 kind: crate::gir::TailCallSlotKind::Nullable,
@@ -3773,6 +4008,8 @@ mod tests {
             &[],
             &[],
             &[Value::I64(42)],
+            &[],
+            &[],
             &registry,
             &mut dispatch,
         )
@@ -3788,12 +4025,133 @@ mod tests {
             &[],
             &[],
             &[Value::Null],
+            &[],
+            &[],
             &registry,
             &mut dispatch,
         )
         .unwrap()
         .into_scalar();
         assert_eq!(r, RegValue::I64(-1));
+    }
+
+    #[test]
+    fn string_and_value_kernel_params() {
+        // String + bare value-shape (DateTime/Duration) kernel params,
+        // interp side. Exercises the new `string_params` / `value_params`
+        // slots: each arg is pushed into the env at kernel entry
+        // (`env.strings` / `env.nullables`), read back via `GirOp::Local`
+        // (re-wrapped to the slot's declared type), and marshalled out
+        // through the boundary.
+        let registry = KernelRegistry::default();
+        let mut dispatch = no_dyn_dispatch;
+        let mk = |string_params: Vec<crate::gir::StringInput>,
+                  value_params: Vec<crate::gir::ValueInput>,
+                  tail_call_slots: Vec<crate::gir::TailCallSlot>,
+                  return_type: GirType,
+                  body: Vec<GirStmt>| GirKernel {
+            fn_name: ArcStr::from("k"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            string_params,
+            value_params,
+            tail_call_slots,
+            return_type,
+            has_tail_loop: false,
+            body,
+        };
+        // (1) |s: string| -> string s — round-trips a string param.
+        let str_kernel = mk(
+            vec![crate::gir::StringInput {
+                name: ArcStr::from("s"),
+                bind_id: None,
+            }],
+            vec![],
+            vec![crate::gir::TailCallSlot {
+                name: ArcStr::from("s"),
+                kind: crate::gir::TailCallSlotKind::String,
+            }],
+            GirType::String,
+            vec![GirStmt::Return(GirExpr {
+                op: GirOp::Local(ArcStr::from("s")),
+                typ: GirType::String,
+            })],
+        );
+        let r = eval_kernel_full(
+            &str_kernel,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[ArcStr::from("hello")],
+            &[],
+            &registry,
+            &mut dispatch,
+        )
+        .unwrap()
+        .into_value();
+        assert_eq!(r, Value::String(ArcStr::from("hello")));
+
+        // (2) |d: datetime| -> datetime d + duration:1s — a value-shape
+        // param flowing through `GirOp::ValueArith`.
+        let one_sec = Value::Duration(triomphe::Arc::new(
+            std::time::Duration::from_secs(1),
+        ));
+        let dt_kernel = mk(
+            vec![],
+            vec![crate::gir::ValueInput {
+                name: ArcStr::from("d"),
+                typ: GirType::DateTime,
+                bind_id: None,
+            }],
+            vec![crate::gir::TailCallSlot {
+                name: ArcStr::from("d"),
+                kind: crate::gir::TailCallSlotKind::Value,
+            }],
+            GirType::DateTime,
+            vec![GirStmt::Return(GirExpr {
+                op: GirOp::ValueArith {
+                    op: BinOp::Add,
+                    lhs: Box::new(GirExpr {
+                        op: GirOp::Local(ArcStr::from("d")),
+                        typ: GirType::DateTime,
+                    }),
+                    rhs: Box::new(GirExpr {
+                        op: GirOp::ConstValue(one_sec.clone()),
+                        typ: GirType::Duration,
+                    }),
+                },
+                typ: GirType::DateTime,
+            })],
+        );
+        let base = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0)
+            .unwrap();
+        let arg = Value::DateTime(triomphe::Arc::new(base));
+        let r = eval_kernel_full(
+            &dt_kernel,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[arg],
+            &registry,
+            &mut dispatch,
+        )
+        .unwrap()
+        .into_value();
+        let expected =
+            Value::DateTime(triomphe::Arc::new(base + chrono::Duration::seconds(1)));
+        assert_eq!(r, expected);
     }
 
     #[test]
@@ -3827,6 +4185,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3856,6 +4216,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -3913,6 +4275,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -3971,6 +4335,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -4024,6 +4390,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::U64),
             has_tail_loop: false,

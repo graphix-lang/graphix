@@ -11,9 +11,12 @@ const TEMPDIR_BASIC: &str = r#"{
   sys::fs::is_dir(tempdir::path(temp))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_basic, TEMPDIR_BASIC, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(_)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test tempdir creation with explicit parent directory
 // Verify both parent and child are directories using fs::is_dir
@@ -24,9 +27,12 @@ const TEMPDIR_WITH_IN: &str = r#"{
   sys::fs::is_dir(tempdir::path(child))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_with_in, TEMPDIR_WITH_IN, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(_)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test tempdir with prefix
 // Verify it's a directory using fs::is_dir and check the prefix format
@@ -36,6 +42,9 @@ const TEMPDIR_WITH_PREFIX: &str = r#"{
   is_dir(tempdir::path(temp))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_with_prefix, TEMPDIR_WITH_PREFIX, |v: Result<&Value>| {
     match v {
         Ok(Value::String(path)) => {
@@ -49,7 +58,7 @@ run!(test_tempdir_with_prefix, TEMPDIR_WITH_PREFIX, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test tempdir with suffix
 // Verify it's a directory using fs::is_dir and check the suffix format
@@ -59,6 +68,9 @@ const TEMPDIR_WITH_SUFFIX: &str = r#"{
   is_dir(tempdir::path(temp))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_with_suffix, TEMPDIR_WITH_SUFFIX, |v: Result<&Value>| {
     match v {
         Ok(Value::String(path)) => {
@@ -72,7 +84,7 @@ run!(test_tempdir_with_suffix, TEMPDIR_WITH_SUFFIX, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test tempdir with both parent dir and prefix
 // Verify it's a directory using fs::is_dir and check the prefix format
@@ -83,6 +95,9 @@ const TEMPDIR_WITH_IN_AND_PREFIX: &str = r#"{
   is_dir(tempdir::path(child))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Value>| {
     match v {
         Ok(Value::String(path)) => {
@@ -96,7 +111,7 @@ run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Va
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test tempdir with both parent dir and suffix
 // Verify it's a directory using fs::is_dir and check the suffix format
@@ -107,6 +122,9 @@ const TEMPDIR_WITH_IN_AND_SUFFIX: &str = r#"{
   is_dir(tempdir::path(child))
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_with_in_and_suffix, TEMPDIR_WITH_IN_AND_SUFFIX, |v: Result<&Value>| {
     match v {
         Ok(Value::String(path)) => {
@@ -120,7 +138,7 @@ run!(test_tempdir_with_in_and_suffix, TEMPDIR_WITH_IN_AND_SUFFIX, |v: Result<&Va
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Test tempdir error handling with invalid parent directory
 const TEMPDIR_INVALID_PARENT: &str =
@@ -143,6 +161,9 @@ const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
   read_all(verified_file)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_write_read_cycle, TEMPDIR_WRITE_READ_CYCLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Hello from tempdir!")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

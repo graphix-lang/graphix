@@ -474,6 +474,22 @@ enum ToGX<X: GXExt> {
     DeleteCallable {
         id: CallableId,
     },
+    /// Introspection: check the compiled root node for `id` against a
+    /// `NodeShape` spec. `None` if no node is registered for `id`;
+    /// `Some(Ok)` on match; `Some(Err(reason))` on mismatch. Used by
+    /// graph-shape tests.
+    MatchShape {
+        id: ExprId,
+        spec: graphix_compiler::node_shape::NodeShape,
+        res: oneshot::Sender<Option<std::result::Result<(), String>>>,
+    },
+    /// Introspection: render the compiled root node for `id` as an
+    /// indented text tree (authoring aid for writing a `NodeShape`).
+    /// `None` if no node is registered for `id`.
+    DescribeShape {
+        id: ExprId,
+        res: oneshot::Sender<Option<String>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -631,6 +647,33 @@ impl<X: GXExt> GXHandle<X> {
     /// by dropping the returned `CompRes`.
     pub async fn load(&self, path: Source) -> Result<CompRes<X>> {
         Ok(self.exec(|tx| ToGX::Load { path, res: tx, rt: self.clone() }).await??)
+    }
+
+    /// Assert the compiled graph's shape: check the root node
+    /// registered for `id` (e.g. a `CompExp`'s expr id) against a
+    /// [`NodeShape`](graphix_compiler::node_shape::NodeShape) spec.
+    /// The walk-and-compare runs in-task against the live post-fusion
+    /// graph. `Ok(())` on match; an error (with the mismatch reason or
+    /// "no node registered") otherwise.
+    pub async fn match_shape(
+        &self,
+        id: ExprId,
+        spec: graphix_compiler::node_shape::NodeShape,
+    ) -> Result<()> {
+        match self.exec(|res| ToGX::MatchShape { id, spec, res }).await? {
+            None => bail!("no node registered for {id:?}"),
+            Some(Ok(())) => Ok(()),
+            Some(Err(reason)) => bail!("graph shape mismatch: {reason}"),
+        }
+    }
+
+    /// Render the compiled graph for `id` as an indented text tree —
+    /// an authoring aid for writing a `NodeShape` spec. Errors if no
+    /// node is registered for `id`.
+    pub async fn describe_shape(&self, id: ExprId) -> Result<String> {
+        self.exec(|res| ToGX::DescribeShape { id, res })
+            .await?
+            .ok_or_else(|| anyhow!("no node registered for {id:?}"))
     }
 
     /// Compile a callable interface to a lambda id

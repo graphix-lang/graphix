@@ -357,6 +357,20 @@ impl<X: GXExt> GX<X> {
                         error!("calling callable {id:?} failed with {e:?}")
                     }
                 }
+                ToGX::MatchShape { id, spec, res } => {
+                    let outcome = self
+                        .nodes
+                        .get(&id)
+                        .map(|n| graphix_compiler::node_shape::match_node(n, &spec));
+                    let _ = res.send(outcome);
+                }
+                ToGX::DescribeShape { id, res } => {
+                    let desc = self
+                        .nodes
+                        .get(&id)
+                        .map(graphix_compiler::node_shape::describe_node);
+                    let _ = res.send(desc);
+                }
             }
         }
     }

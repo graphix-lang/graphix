@@ -57,6 +57,7 @@ use crate::gir::{
 };
 use anyhow::{anyhow, Context as AnyContext, Result};
 use arcstr::ArcStr;
+use netidx_value::Value;
 use cranelift_codegen::{
     ir::{
         condcodes::{FloatCC, IntCC},
@@ -147,6 +148,10 @@ pub struct CompiledKernel {
     /// compiled function; drops alongside the JIT module when this
     /// struct drops.
     _strings: KernelStrings,
+    /// Per-kernel datetime/duration `Value` slots referenced by the
+    /// JIT'd code via stable `*const Value` pointers. Same lifetime
+    /// discipline as `_strings`.
+    _values: KernelValues,
 }
 
 unsafe impl Send for CompiledKernel {}
@@ -163,12 +168,18 @@ pub fn compile_kernel(jit: &mut JitCtx, kernel: &GirKernel) -> Result<CompiledKe
     // somewhere for the JIT'd code to reach them — for now just
     // leak them by storing in the returned CompiledKernel, same
     // policy as the wrapped path.
-    let (func_id, sig, strings) = define_typed_kernel(jit, kernel)?;
+    let (func_id, sig, strings, values) = define_typed_kernel(jit, kernel)?;
     jit.module
         .finalize_definitions()
         .context("finalize_definitions")?;
     let fn_ptr = jit.module.get_finalized_function(func_id);
-    Ok(CompiledKernel { func_id, fn_ptr, signature: sig, _strings: strings })
+    Ok(CompiledKernel {
+        func_id,
+        fn_ptr,
+        signature: sig,
+        _strings: strings,
+        _values: values,
+    })
 }
 
 /// Define the typed kernel function in the JIT module without
@@ -188,10 +199,15 @@ fn push_abi_params(sig: &mut Signature, kernel: &GirKernel) {
             AbiParamKind::Scalar(p) => {
                 sig.params.push(AbiParam::new(prim_to_clif(p)))
             }
-            AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
+            AbiParamKind::Array
+            | AbiParamKind::Tuple
+            | AbiParamKind::Struct
+            | AbiParamKind::String => {
                 sig.params.push(AbiParam::new(types::I64))
             }
-            AbiParamKind::Variant | AbiParamKind::Nullable => {
+            AbiParamKind::Variant
+            | AbiParamKind::Nullable
+            | AbiParamKind::Value => {
                 sig.params.push(AbiParam::new(types::I64)); // disc
                 sig.params.push(AbiParam::new(types::I64)); // payload
             }
@@ -227,7 +243,7 @@ fn push_abi_returns(sig: &mut Signature, kernel: &GirKernel) -> Result<()> {
 fn define_typed_kernel(
     jit: &mut JitCtx,
     kernel: &GirKernel,
-) -> Result<(FuncId, Signature, KernelStrings)> {
+) -> Result<(FuncId, Signature, KernelStrings, KernelValues)> {
     // Fn-typed params (HOFs) dispatch through `graphix_dyncall` at
     // runtime via the dispatcher handle set in `GirNode::update`.
     // Both scalar- and composite-return DynCalls are supported:
@@ -258,6 +274,7 @@ fn define_typed_kernel(
     // `KernelStrings` owns one canonical clone of each string; the
     // boxed slice has stable addresses for codegen to use.
     let strings = KernelStrings::build(kernel);
+    let values = KernelValues::build(kernel);
     {
         let helper_refs = declare_helpers(
             &mut jit.module,
@@ -272,6 +289,7 @@ fn define_typed_kernel(
             &BTreeMap::new(),
             &helper_refs,
             &strings,
+            &values,
         )?;
         builder.finalize();
     }
@@ -281,7 +299,7 @@ fn define_typed_kernel(
         .context("define_function (typed)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok((func_id, sig, strings))
+    Ok((func_id, sig, strings, values))
 }
 
 /// A compiled kernel exposed through a uniform calling convention,
@@ -319,6 +337,10 @@ pub struct WrappedKernel {
     /// table's `Arc<str>` refcounts — letting the GC pass reclaim
     /// entries whose last consumer is gone.
     _strings: KernelStrings,
+    /// Per-kernel datetime/duration `Value` constants the JIT'd code
+    /// references via stable `*const Value` pointers. Same lifetime
+    /// discipline as `_strings`.
+    _values: KernelValues,
 }
 
 unsafe impl Send for WrappedKernel {}
@@ -346,7 +368,7 @@ impl WrappedKernel {
 /// [`compile_kernel_with_callees`] for those.
 pub fn compile_kernel_with_wrapper(kernel: &GirKernel) -> Result<WrappedKernel> {
     let mut ctx = JitCtx::new()?;
-    let (typed_id, _, strings) = define_typed_kernel(&mut ctx, kernel)?;
+    let (typed_id, _, strings, values) = define_typed_kernel(&mut ctx, kernel)?;
     let wrapper_id = define_wrapper(&mut ctx, kernel, typed_id)?;
     ctx.module
         .finalize_definitions()
@@ -356,6 +378,7 @@ pub fn compile_kernel_with_wrapper(kernel: &GirKernel) -> Result<WrappedKernel> 
         wrapper_fn_ptr,
         _ctx: Some(ctx),
         _strings: strings,
+        _values: values,
     })
 }
 
@@ -416,6 +439,9 @@ struct CachedKernel {
     /// the `Box` pointer moves, not the heap allocation the baked-in
     /// pointers reference.
     _strings: KernelStrings,
+    /// Per-kernel datetime/duration `Value` constants table — same
+    /// role and lifetime as `_strings`, baked `*const Value` pointers.
+    _values: KernelValues,
 }
 
 unsafe impl Send for Jit {}
@@ -479,10 +505,11 @@ pub fn compile_kernel_with_callees(
     // cache entry so it lives as long as the per-context module's
     // code.
     for k in &to_define {
-        let strings = define_kernel_body(&mut jit.ctx, k, &funcids)?;
+        let (strings, values) = define_kernel_body(&mut jit.ctx, k, &funcids)?;
         let key = std::sync::Arc::as_ptr(k) as usize;
         if let Some(cached) = jit.by_kernel.get_mut(&key) {
             cached._strings = strings;
+            cached._values = values;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
@@ -504,6 +531,7 @@ pub fn compile_kernel_with_callees(
         wrapper_fn_ptr,
         _ctx: None,
         _strings: KernelStrings::empty(),
+        _values: KernelValues::empty(),
     })
 }
 
@@ -537,6 +565,7 @@ fn ensure_declared(
             _kernel: k.clone(),
             // Filled in during phase 2 by `define_kernel_body`.
             _strings: KernelStrings::empty(),
+            _values: KernelValues::empty(),
         },
     );
     to_define.push(k.clone());
@@ -551,7 +580,7 @@ fn define_kernel_body(
     jit: &mut JitCtx,
     kernel: &GirKernel,
     funcids: &BTreeMap<ArcStr, (FuncId, Signature)>,
-) -> Result<KernelStrings> {
+) -> Result<(KernelStrings, KernelValues)> {
     let (func_id, sig) =
         funcids.get(&kernel.fn_name).cloned().ok_or_else(|| {
             anyhow!(
@@ -571,7 +600,7 @@ fn define_kernel_body(
     jit.func_ctx.func.signature = sig;
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
-    let strings = {
+    let (strings, values) = {
         // Declare each Call site's callee as a FuncRef in this
         // function. Done before constructing the FunctionBuilder
         // because both `declare_func_in_func` and `FunctionBuilder::new`
@@ -594,6 +623,7 @@ fn define_kernel_body(
             callee_refs.insert(name, fref);
         }
         let strings = KernelStrings::build(kernel);
+        let values = KernelValues::build(kernel);
         let helper_refs = declare_helpers(
             &mut jit.module,
             &mut jit.func_ctx.func,
@@ -607,20 +637,22 @@ fn define_kernel_body(
             &callee_refs,
             &helper_refs,
             &strings,
+            &values,
         )?;
         builder.finalize();
-        // Hand `strings` back to the caller, which stores it in the
-        // shared module's per-kernel cache entry — the JIT'd code
-        // baked in `*const ArcStr` pointers into this table and the
-        // shared module's code outlives this function.
-        strings
+        // Hand `strings`/`values` back to the caller, which stores
+        // them in the shared module's per-kernel cache entry — the
+        // JIT'd code baked in `*const ArcStr` / `*const Value`
+        // pointers into these tables and the shared module's code
+        // outlives this function.
+        (strings, values)
     };
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok(strings)
+    Ok((strings, values))
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a
@@ -709,7 +741,8 @@ fn define_wrapper(
                 }
                 AbiParamKind::Array
                 | AbiParamKind::Tuple
-                | AbiParamKind::Struct => {
+                | AbiParamKind::Struct
+                | AbiParamKind::String => {
                     let v = b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
@@ -718,7 +751,9 @@ fn define_wrapper(
                     );
                     typed_args.push(v);
                 }
-                AbiParamKind::Variant | AbiParamKind::Nullable => {
+                AbiParamKind::Variant
+                | AbiParamKind::Nullable
+                | AbiParamKind::Value => {
                     let disc = b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
@@ -926,6 +961,7 @@ fn compile_into_function(
     callee_refs: &BTreeMap<ArcStr, FuncRef>,
     helper_refs: &HelperRefs,
     strings: &KernelStrings,
+    values: &KernelValues,
 ) -> Result<()> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -975,7 +1011,23 @@ fn compile_into_function(
                 b.def_var(var, owned);
                 env.bind_composite(d.name.clone(), var);
             }
-            AbiParamKind::Variant | AbiParamKind::Nullable => {
+            AbiParamKind::String => {
+                // String param: borrowed ArcStr thin pointer at one
+                // slot; clone (refcount-bump) into an owned local so
+                // scope-exit drop discipline is uniform with locals.
+                let borrowed = initial_vals[d.wire_slot];
+                let clone = helper_refs
+                    .get("graphix_arcstr_clone")
+                    .expect("graphix_arcstr_clone helper must be registered");
+                let call = b.ins().call(clone, &[borrowed]);
+                let owned = b.inst_results(call)[0];
+                let var = b.declare_var(types::I64);
+                b.def_var(var, owned);
+                env.bind_string(d.name.clone(), var);
+            }
+            AbiParamKind::Variant
+            | AbiParamKind::Nullable
+            | AbiParamKind::Value => {
                 let borrowed_disc = initial_vals[d.wire_slot];
                 let borrowed_payload = initial_vals[d.wire_slot + 1];
                 let call = b.ins().call(
@@ -993,7 +1045,10 @@ fn compile_into_function(
                 let vv = ValueVar { disc: disc_var, payload: payload_var };
                 match d.kind {
                     AbiParamKind::Variant => env.bind_variant(d.name.clone(), vv),
-                    AbiParamKind::Nullable => {
+                    // Nullable and bare value-shape (DateTime/Duration/
+                    // Bytes) both ride the `nullables` ValueVar slot;
+                    // a `Local` read re-wraps to the declared type.
+                    AbiParamKind::Nullable | AbiParamKind::Value => {
                         env.bind_nullable(d.name.clone(), vv)
                     }
                     _ => unreachable!(),
@@ -1032,6 +1087,7 @@ fn compile_into_function(
         helper_refs,
         tail_call_slots,
         strings,
+        values,
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
     };
@@ -1074,7 +1130,11 @@ fn compile_into_function(
             // pending sentinel is `(0, 0)` — the caller's pending
             // check fires from `DYNCALL_PENDING` before decoding,
             // so the bits are never observed.
-            GirType::Variant(_) | GirType::Nullable(_) => {
+            GirType::Variant(_)
+            | GirType::Nullable(_)
+            | GirType::DateTime
+            | GirType::Duration
+            | GirType::Bytes => {
                 let s0 = b.ins().iconst(types::I64, 0);
                 let s1 = b.ins().iconst(types::I64, 0);
                 b.ins().return_(&[s0, s1]);
@@ -1174,6 +1234,131 @@ impl KernelStrings {
     }
 }
 
+/// Per-kernel datetime/duration constants table — stable-address
+/// `Value` slots whose `*const Value` the codegen bakes for
+/// [`GirOp::ConstValue`]. Mirrors [`KernelStrings`]: the `Box<[Value]>`
+/// never moves its heap allocation, so the baked pointers stay valid
+/// as long as the table (held on the kernel) lives.
+pub struct KernelValues {
+    slots: Box<[Value]>,
+}
+
+impl KernelValues {
+    pub fn empty() -> Self {
+        Self { slots: Box::new([]) }
+    }
+
+    /// Pre-walk `kernel`, collect each distinct `ConstValue` literal.
+    pub fn build(kernel: &GirKernel) -> Self {
+        let mut slots: Vec<Value> = Vec::new();
+        for stmt in &kernel.body {
+            collect_values_stmt(stmt, &mut slots);
+        }
+        Self { slots: slots.into_boxed_slice() }
+    }
+
+    /// Stable `*const Value` for `v`. Panics on a pre-walk miss (a
+    /// `ConstValue`-using op the walk didn't cover).
+    pub fn get(&self, v: &Value) -> *const Value {
+        self.slots
+            .iter()
+            .find(|s| *s == v)
+            .map(|s| s as *const Value)
+            .unwrap_or_else(|| {
+                panic!("KernelValues: lookup miss for a ConstValue literal")
+            })
+    }
+}
+
+fn collect_values_stmt(s: &GirStmt, out: &mut Vec<Value>) {
+    match s {
+        GirStmt::Let(l) => collect_values_expr(&l.value, out),
+        GirStmt::Return(e) | GirStmt::Discard(e) => collect_values_expr(e, out),
+        GirStmt::TailCall { args } => {
+            args.iter().for_each(|a| collect_values_expr(a, out))
+        }
+        GirStmt::Select { arms } => {
+            for arm in arms {
+                if let Some(c) = &arm.cond {
+                    collect_values_expr(c, out);
+                }
+                arm.body.iter().for_each(|s| collect_values_stmt(s, out));
+            }
+        }
+    }
+}
+
+fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
+    if let GirOp::ConstValue(v) = &e.op {
+        if !out.iter().any(|s| s == v) {
+            out.push(v.clone());
+        }
+    }
+    match &e.op {
+        GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::Bin { lhs, rhs, .. }
+        | GirOp::Cmp { lhs, rhs, .. }
+        | GirOp::BoolBin { lhs, rhs, .. } => {
+            collect_values_expr(lhs, out);
+            collect_values_expr(rhs, out);
+        }
+        GirOp::IsNull(i)
+        | GirOp::Not(i)
+        | GirOp::Cast { inner: i, .. }
+        | GirOp::QopUnwrap { inner: i, .. } => collect_values_expr(i, out),
+        GirOp::Concat(parts) => {
+            parts.iter().for_each(|p| collect_values_expr(p, out))
+        }
+        GirOp::Block { lets, tail } => {
+            lets.iter().for_each(|l| collect_values_expr(&l.value, out));
+            collect_values_expr(tail, out);
+        }
+        GirOp::IfChain { arms } => {
+            for (c, v) in arms {
+                if let Some(c) = c {
+                    collect_values_expr(c, out);
+                }
+                collect_values_expr(v, out);
+            }
+        }
+        GirOp::Call { args, .. } | GirOp::DynCall { args, .. } => {
+            args.iter().for_each(|a| collect_values_expr(a, out))
+        }
+        GirOp::ArrayGet { idx, .. } => collect_values_expr(idx, out),
+        GirOp::ArrayFold { init, body, .. } => {
+            collect_values_expr(init, out);
+            collect_values_expr(body, out);
+        }
+        GirOp::ArrayInit { n, body, .. } => {
+            collect_values_expr(n, out);
+            collect_values_expr(body, out);
+        }
+        GirOp::ArrayMap { body, .. } => collect_values_expr(body, out),
+        GirOp::ArrayFilter { predicate, .. } => {
+            collect_values_expr(predicate, out)
+        }
+        GirOp::TupleNew { fields, .. } => {
+            fields.iter().for_each(|f| collect_values_expr(f, out))
+        }
+        GirOp::StructNew { sorted_fields, .. } => {
+            sorted_fields.iter().for_each(|(_, f)| collect_values_expr(f, out))
+        }
+        GirOp::VariantNew { payloads, .. } => {
+            payloads.iter().for_each(|p| collect_values_expr(p, out))
+        }
+        GirOp::Const(_)
+        | GirOp::ConstStr(_)
+        | GirOp::ConstValue(_)
+        | GirOp::ConstNull
+        | GirOp::Local(_)
+        | GirOp::ArrayLen { .. }
+        | GirOp::TupleGet { .. }
+        | GirOp::StructGet { .. }
+        | GirOp::VariantTagEq { .. }
+        | GirOp::VariantPayload { .. } => {}
+    }
+}
+
 fn collect_strings_stmt(s: &GirStmt, out: &mut std::collections::BTreeSet<ArcStr>) {
     match s {
         GirStmt::Let(l) => collect_strings_expr(&l.value, out),
@@ -1199,9 +1384,14 @@ fn collect_strings_stmt(s: &GirStmt, out: &mut std::collections::BTreeSet<ArcStr
 
 fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr>) {
     match &e.op {
-        GirOp::Const(_) | GirOp::ConstNull | GirOp::Local(_) => {}
+        GirOp::Const(_) | GirOp::ConstValue(_) | GirOp::ConstNull
+        | GirOp::Local(_) => {}
         GirOp::IsNull(inner) => collect_strings_expr(inner, out),
         GirOp::QopUnwrap { inner, .. } => collect_strings_expr(inner, out),
+        GirOp::ValueArith { lhs, rhs, .. } => {
+            collect_strings_expr(lhs, out);
+            collect_strings_expr(rhs, out);
+        }
         GirOp::ConstStr(s) => {
             // String-containing kernels are routed to interp via
             // `kernel_contains_string`; this branch shouldn't run.
@@ -1318,6 +1508,12 @@ struct LowerCtx<'a> {
     /// on the resulting `WrappedKernel` so the pointers remain
     /// valid for as long as the compiled code does.
     strings: &'a KernelStrings,
+    /// Per-kernel datetime/duration constants table. `GirOp::ConstValue`
+    /// codegen looks up the literal here to get a stable `*const Value`
+    /// to emit as an iconst, then clones it (`graphix_value_clone_from_static`).
+    /// Lives on the resulting kernel so the pointers stay valid as long
+    /// as the compiled code does (same discipline as `strings`).
+    values: &'a KernelValues,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A composite-
@@ -1518,8 +1714,25 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
         "graphix_value_new_from_array"
-        | "graphix_value_new_string_from_arcstr" => {
-            sig.params.push(AbiParam::new(types::I64)); // *mut ValArray or *const ArcStr
+        | "graphix_value_new_string_from_arcstr"
+        // Clone a `*const Value` static (datetime/duration ConstValue):
+        // one pointer arg, a Value (two words) returned.
+        | "graphix_value_clone_from_static" => {
+            sig.params.push(AbiParam::new(types::I64)); // *mut ValArray / *const ArcStr / *const Value
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
+        }
+        // Value arithmetic (datetime/duration `ValueArith`): two Value
+        // args (four words) in, one Value (two words) out.
+        "graphix_value_add"
+        | "graphix_value_sub"
+        | "graphix_value_mul"
+        | "graphix_value_div"
+        | "graphix_value_rem" => {
+            sig.params.push(AbiParam::new(types::I64)); // l.disc
+            sig.params.push(AbiParam::new(types::I64)); // l.payload
+            sig.params.push(AbiParam::new(types::I64)); // r.disc
+            sig.params.push(AbiParam::new(types::I64)); // r.payload
             sig.returns.push(AbiParam::new(types::I64)); // ret.disc
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
@@ -1992,7 +2205,11 @@ fn compile_body(
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    GirType::Variant(_) | GirType::Nullable(_) => {
+                    GirType::Variant(_)
+                    | GirType::Nullable(_)
+                    | GirType::DateTime
+                    | GirType::Duration
+                    | GirType::Bytes => {
                         // Value-shape local: stored as a `(disc,
                         // payload)` pair (`ValueVar`). The source
                         // expression compiles to a `CompiledExpr::Value`;
@@ -2002,6 +2219,9 @@ fn compile_body(
                         // this local exclusively owns its ref. Dropped
                         // at function exit (and on pending paths by
                         // the per-DynCall `pre_pending` block).
+                        // datetime/duration share the `nullables`
+                        // ValueVar slot (same `(disc, payload)` wire
+                        // shape).
                         let cv = compile_expr(b, &l.value, env, ctx)?;
                         let (owned_disc, owned_payload) =
                             ensure_owned_value(b, ctx, &l.value, cv)?;
@@ -2089,7 +2309,11 @@ fn compile_body(
                 // Scalar / Unit returns: no allocation, no leak —
                 // skip the pending check.
                 match &e.typ {
-                    GirType::Variant(_) | GirType::Nullable(_) => {
+                    GirType::Variant(_)
+                    | GirType::Nullable(_)
+                    | GirType::DateTime
+                    | GirType::Duration
+                    | GirType::Bytes => {
                         let cv = compile_expr(b, e, env, ctx)?;
                         let (disc, payload) =
                             ensure_owned_value(b, ctx, e, cv)?;
@@ -2250,6 +2474,17 @@ fn compile_body(
                                 "JIT: nullable tail-call rebind — kernel \
                                  should have been routed to interp via \
                                  kernel_contains_null"
+                            ));
+                        }
+                        TailCallSlotKind::String | TailCallSlotKind::Value => {
+                            // A recursive lambda whose tail-call rebinds
+                            // a String / value-shape param. The JIT
+                            // doesn't lower the owned-ArcStr / two-word
+                            // Value rebind yet; bail so the kernel falls
+                            // back to the interpreter (which handles it).
+                            return Err(anyhow!(
+                                "JIT: string/value tail-call rebind not \
+                                 yet supported — falling back to interp"
                             ));
                         }
                     }
@@ -2436,9 +2671,7 @@ fn compile_expr(
     // Sites that need the full enum reach this branch via
     // `compile_expr` directly; sites that only handle scalars use
     // `compile_scalar` which asserts Single and bails on Value-shape.
-    if matches!(e.typ, GirType::Variant(_) | GirType::Nullable(_))
-        || matches!(e.op, GirOp::ConstNull)
-    {
+    if e.typ.is_value_shape() || matches!(e.op, GirOp::ConstNull) {
         return compile_value_expr(b, e, env, ctx);
     }
     let v = compile_scalar_impl(b, e, env, ctx)?;
@@ -2456,6 +2689,95 @@ fn compile_scalar(
     ctx: &LowerCtx,
 ) -> Result<ClifValue> {
     compile_expr(b, e, env, ctx)?.single()
+}
+
+/// Marshal a `GirOp::DynCall`'s args into a fresh `LPooled<Vec<Value>>`
+/// buf and push the buf onto `ctx.dyncall_buf_stack` for the in-flight
+/// window (so a nested composite-return DynCall that pends can drop
+/// this outer buf from its `pre_pending` block). Returns the buf
+/// pointer; the caller issues the `graphix_dyncall` and pops the stack.
+///
+/// Shared by BOTH DynCall codegen arms — the scalar/composite-return
+/// arm in [`compile_scalar_impl`] and the Value-shape-return arm in
+/// [`compile_value_expr`]. The per-arg-shape dispatch lives here once:
+/// a Value-shape arg (variant / nullable / datetime / duration / bytes)
+/// compiles via [`compile_value_expr`] and pushes its two `(disc,
+/// payload)` words; every other shape compiles via [`compile_scalar`]
+/// and pushes one word. Routing a Value-shape arg through
+/// `compile_scalar` is the bug this consolidation fixes — `.single()`
+/// bails on a `(disc, payload)` pair, and the 2-word push helpers
+/// expect two args, not one.
+fn marshal_dyncall_args(
+    b: &mut FunctionBuilder,
+    args: &[GirExpr],
+    arg_types: &[GirType],
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<ClifValue> {
+    let buf_new = ctx
+        .helper_refs
+        .get("graphix_value_buf_new")
+        .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+    let cap = b.ins().iconst(types::I64, args.len() as i64);
+    let call = b.ins().call(buf_new, &[cap]);
+    let buf = b.inst_results(call)[0];
+    let buf_var = b.declare_var(types::I64);
+    b.def_var(buf_var, buf);
+    ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+    for (a, t) in args.iter().zip(arg_types.iter()) {
+        // For composite/value args the push helper depends on where the
+        // SSA value came from. A `Borrowed` source (a Local read — the
+        // caller still owns it) refcount-bumps; an `Owned` source (a
+        // producer op, or a composite/Value-return DynCall result not
+        // bound to a local) transfers ownership into the buf. Using the
+        // borrowed helper on an Owned source leaks the original; the
+        // move helper on a Borrowed source double-frees it.
+        let helper_name: &str = match t {
+            GirType::Prim(p) => value_buf_push_helper(*p)?,
+            GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+                match classify_composite_source(a) {
+                    CompositeSource::Owned => "graphix_value_buf_push_array",
+                    CompositeSource::Borrowed => {
+                        "graphix_value_buf_push_array_borrowed"
+                    }
+                }
+            }
+            // Variant / Nullable / datetime / duration / bytes all ride
+            // the two-word `(disc, payload)` Value wire shape.
+            GirType::Variant(_)
+            | GirType::Nullable(_)
+            | GirType::DateTime
+            | GirType::Duration
+            | GirType::Bytes => match classify_composite_source(a) {
+                CompositeSource::Owned => "graphix_value_buf_push_value",
+                CompositeSource::Borrowed => {
+                    "graphix_value_buf_push_value_borrowed"
+                }
+            },
+            GirType::String => "graphix_value_buf_push_string",
+            GirType::Unit => {
+                return Err(anyhow!("GIR malformed: DynCall arg has Unit type"));
+            }
+            GirType::Null => {
+                return Err(anyhow!(
+                    "DynCall arg with bare Null type — should have widened \
+                     to Nullable<T> at construction"
+                ));
+            }
+        };
+        let push = ctx
+            .helper_refs
+            .get(helper_name)
+            .ok_or_else(|| anyhow!("missing push helper `{helper_name}`"))?;
+        if t.is_value_shape() {
+            let (disc, payload) = compile_value_expr(b, a, env, ctx)?.value()?;
+            b.ins().call(push, &[buf, disc, payload]);
+        } else {
+            let v = compile_scalar(b, a, env, ctx)?;
+            b.ins().call(push, &[buf, v]);
+        }
+    }
+    Ok(buf)
 }
 
 /// Compile a Value-shape (Variant or Nullable) `GirExpr` to the
@@ -2477,19 +2799,57 @@ fn compile_value_expr(
             let payload = b.ins().iconst(types::I64, 0);
             Ok(CompiledExpr::Value { disc, payload })
         }
+        // datetime/duration literal: bake a stable `*const Value` from
+        // the kernel's value-constants table and clone it (bumps the
+        // inner Arc) → an owned `(disc, payload)` Value.
+        GirOp::ConstValue(v) => {
+            let ptr = ctx.values.get(v) as i64;
+            let ptr_val = b.ins().iconst(types::I64, ptr);
+            let clone = ctx
+                .helper_refs
+                .get("graphix_value_clone_from_static")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_value_clone_from_static")
+                })?;
+            let call = b.ins().call(clone, &[ptr_val]);
+            let r = b.inst_results(call);
+            Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+        }
+        // datetime/duration arithmetic: both operands as OWNED Values
+        // (the helper consumes them, matching netidx's by-value
+        // operators), then call the matching `graphix_value_<op>`.
+        GirOp::ValueArith { op, lhs, rhs } => {
+            let (ld, lp) = compile_owned_value_operand(b, lhs, env, ctx)?;
+            let (rd, rp) = compile_owned_value_operand(b, rhs, env, ctx)?;
+            let helper = match op {
+                crate::gir::BinOp::Add => "graphix_value_add",
+                crate::gir::BinOp::Sub => "graphix_value_sub",
+                crate::gir::BinOp::Mul => "graphix_value_mul",
+                crate::gir::BinOp::Div => "graphix_value_div",
+                crate::gir::BinOp::Mod => "graphix_value_rem",
+            };
+            let fref = ctx
+                .helper_refs
+                .get(helper)
+                .ok_or_else(|| anyhow!("missing {helper}"))?;
+            let call = b.ins().call(fref, &[ld, lp, rd, rp]);
+            let r = b.inst_results(call);
+            Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+        }
         GirOp::Local(name) => {
-            // Variant and Nullable share storage shape; the type
-            // tells us which table to read from. Reads are borrowed
-            // — the env still owns the ref; consumers either drop
-            // their own clone (via `ensure_owned_value`) or call
-            // borrow-mode helpers that `mem::forget` the input.
-            let vv = if matches!(e.typ, GirType::Nullable(_)) {
-                env.lookup_nullable(name).ok_or_else(|| {
-                    anyhow!("GIR malformed: undefined nullable local `{name}`")
-                })?
-            } else {
+            // Variant and Nullable (+ datetime/duration, which ride
+            // the nullable slot) share storage shape; the type tells
+            // us which table to read from. Reads are borrowed — the
+            // env still owns the ref; consumers either drop their own
+            // clone (via `ensure_owned_value`) or call borrow-mode
+            // helpers that `mem::forget` the input.
+            let vv = if matches!(e.typ, GirType::Variant(_)) {
                 env.lookup_variant(name).ok_or_else(|| {
                     anyhow!("GIR malformed: undefined variant local `{name}`")
+                })?
+            } else {
+                env.lookup_nullable(name).ok_or_else(|| {
+                    anyhow!("GIR malformed: undefined value-shape local `{name}`")
                 })?
             };
             Ok(CompiledExpr::Value {
@@ -2577,89 +2937,17 @@ fn compile_value_expr(
             }
         }
         GirOp::DynCall { fn_index, args, arg_types, return_type } => {
-            // Mirrors the scalar-return DynCall path: marshal args
-            // into the LPooled<Vec<Value>> buf, call graphix_dyncall,
-            // pop the buf, check pending, branch to pending_exit or
-            // continue with the two return registers as
-            // CompiledExpr::Value. Sharing the scalar code would
-            // require splitting out the marshalling — duplicate for
-            // now, factor when the third Value-shape consumer lands.
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            // Value-shape-return DynCall. Marshalling (incl. the
+            // per-shape arg dispatch — Value-shape args push their two
+            // `(disc, payload)` words, scalars/composites push one) is
+            // shared with the scalar-return arm via
+            // `marshal_dyncall_args`; here we only differ in the return
+            // decode (ret_kind=2, two register-words).
             let dyncall = ctx
                 .helper_refs
                 .get("graphix_dyncall")
                 .ok_or_else(|| anyhow!("missing graphix_dyncall"))?;
-            let cap = b.ins().iconst(types::I64, args.len() as i64);
-            let call = b.ins().call(buf_new, &[cap]);
-            let buf = b.inst_results(call)[0];
-            let buf_var = b.declare_var(types::I64);
-            b.def_var(buf_var, buf);
-            ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
-            for (a, t) in args.iter().zip(arg_types.iter()) {
-                // Value-shape args push two i64s (disc, payload) via
-                // _push_value (consumed) or _push_value_borrowed
-                // (refcount-bumped + forgotten). Other shapes use the
-                // existing scalar/composite push helpers.
-                let helper_name: &str = match t {
-                    GirType::Prim(p) => value_buf_push_helper(*p)?,
-                    GirType::Array(_)
-                    | GirType::Tuple(_)
-                    | GirType::Struct(_) => {
-                        match classify_composite_source(a) {
-                            CompositeSource::Owned => {
-                                "graphix_value_buf_push_array"
-                            }
-                            CompositeSource::Borrowed => {
-                                "graphix_value_buf_push_array_borrowed"
-                            }
-                        }
-                    }
-                    GirType::Variant(_) | GirType::Nullable(_) => {
-                        match classify_composite_source(a) {
-                            CompositeSource::Owned => {
-                                "graphix_value_buf_push_value"
-                            }
-                            CompositeSource::Borrowed => {
-                                "graphix_value_buf_push_value_borrowed"
-                            }
-                        }
-                    }
-                    // String arg: SSA value is the ArcStr's raw thin-
-                    // pointer bits (always Owned per `ensure_owned_composite`
-                    // / leaf-type treatment). The push helper takes the
-                    // ArcStr by value (consumes), wraps in
-                    // `Value::String`, pushes into the buf.
-                    GirType::String => "graphix_value_buf_push_string",
-                    GirType::Unit => {
-                        return Err(anyhow!(
-                            "GIR malformed: DynCall arg has Unit type"
-                        ));
-                    }
-                    GirType::Null => {
-                        return Err(anyhow!(
-                            "DynCall arg with bare Null type"
-                        ));
-                    }
-                };
-                let push =
-                    ctx.helper_refs.get(helper_name).ok_or_else(|| {
-                        anyhow!("missing push helper `{helper_name}`")
-                    })?;
-                match t {
-                    GirType::Variant(_) | GirType::Nullable(_) => {
-                        let cv = compile_expr(b, a, env, ctx)?;
-                        let (disc, payload) = cv.value()?;
-                        b.ins().call(push, &[buf, disc, payload]);
-                    }
-                    _ => {
-                        let v = compile_scalar(b, a, env, ctx)?;
-                        b.ins().call(push, &[buf, v]);
-                    }
-                }
-            }
+            let buf = marshal_dyncall_args(b, args, arg_types, env, ctx)?;
             // ret_kind=2 (Value-shape) — dispatcher boxes the
             // dispatcher's returned Value into a `Box<Value>` and
             // splits it into two register-words.
@@ -2744,7 +3032,11 @@ fn compile_value_expr(
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    GirType::Variant(_) | GirType::Nullable(_) => {
+                    GirType::Variant(_)
+                    | GirType::Nullable(_)
+                    | GirType::DateTime
+                    | GirType::Duration
+                    | GirType::Bytes => {
                         let cv = compile_expr(b, &l.value, env, ctx)?;
                         let (owned_disc, owned_payload) =
                             ensure_owned_value(b, ctx, &l.value, cv)?;
@@ -2757,6 +3049,7 @@ fn compile_value_expr(
                         if matches!(l.value.typ, GirType::Variant(_)) {
                             env.bind_variant(l.local.clone(), vv);
                         } else {
+                            // datetime/duration share the nullables slot.
                             env.bind_nullable(l.local.clone(), vv);
                         }
                     }
@@ -2875,6 +3168,13 @@ fn compile_scalar_impl(
 ) -> Result<ClifValue> {
     match &e.op {
         GirOp::Const(c) => Ok(compile_const(b, *c)),
+        // Value-shape ops belong in `compile_value_expr`; reaching the
+        // scalar path means routing drifted (or the kernel can't JIT,
+        // which `compile_value_expr` reports as Err → interp fallback).
+        GirOp::ConstValue(_) | GirOp::ValueArith { .. } => Err(anyhow!(
+            "compile_scalar_impl reached for Value-shape datetime/duration \
+             op — should route to compile_value_expr (interp fallback)"
+        )),
         GirOp::ConstStr(s) => {
             // Fetch the interned static `*const ArcStr` from this
             // kernel's `KernelStrings` table (built at compile time
@@ -2988,10 +3288,14 @@ fn compile_scalar_impl(
                 | GirType::Struct(_) => Ok(payload),
                 // Value-shape success types belong in
                 // `compile_value_expr`; routing got here in error.
-                GirType::Variant(_) | GirType::Nullable(_) => Err(anyhow!(
-                    "QopUnwrap with Variant/Nullable success_typ \
-                     reached compile_scalar_impl — compile_expr \
-                     should route to compile_value_expr"
+                GirType::Variant(_)
+                | GirType::Nullable(_)
+                | GirType::DateTime
+                | GirType::Duration
+                | GirType::Bytes => Err(anyhow!(
+                    "QopUnwrap with Value-shape success_typ reached \
+                     compile_scalar_impl — compile_expr should route \
+                     to compile_value_expr"
                 )),
                 GirType::Unit | GirType::Null => Err(anyhow!(
                     "QopUnwrap with unsupported success_typ {:?}",
@@ -3028,7 +3332,11 @@ fn compile_scalar_impl(
                 // before calling `compile_scalar_impl`, so this arm
                 // is unreachable in well-formed routing — but we
                 // surface the error in case routing drifts.
-                GirType::Variant(_) | GirType::Nullable(_) => Err(anyhow!(
+                GirType::Variant(_)
+                | GirType::Nullable(_)
+                | GirType::DateTime
+                | GirType::Duration
+                | GirType::Bytes => Err(anyhow!(
                     "compile_scalar_impl reached for Value-shape Local \
                      `{name}` — `compile_expr` should have routed to \
                      `compile_value_expr`"
@@ -3163,7 +3471,11 @@ fn compile_scalar_impl(
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    GirType::Variant(_) | GirType::Nullable(_) => {
+                    GirType::Variant(_)
+                    | GirType::Nullable(_)
+                    | GirType::DateTime
+                    | GirType::Duration
+                    | GirType::Bytes => {
                         // Value-shape block local — same `ValueVar`
                         // pair + `ensure_owned_value` discipline as
                         // GirStmt::Let. Block-scope drop happens at
@@ -3262,91 +3574,18 @@ fn compile_scalar_impl(
             compile_ifchain(b, arms, &e.typ, env, ctx)?.single()
         }
         GirOp::DynCall { fn_index, args, arg_types, return_type } => {
-            // Marshal args into an `LPooled<Vec<Value>>` via the buf
-            // helpers (scalar push_<T>, or borrow-mode push for
-            // composite/variant args — the caller still owns its
-            // local so we refcount-bump), then call `graphix_dyncall`
-            // which indirects through the thread-local
-            // DynDispatchHandle.
-            //
-            // The args buf is pushed onto `dyncall_buf_stack` for the
-            // window it's in flight: if an arg expr is itself a
-            // composite-return DynCall that pends, its `pre_pending`
-            // block must drop THIS buf (an outer in-flight buf).
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            // Marshal args into an `LPooled<Vec<Value>>` (per-shape
+            // dispatch lives in `marshal_dyncall_args`), then call
+            // `graphix_dyncall` which indirects through the thread-local
+            // DynDispatchHandle. The buf is pushed onto
+            // `dyncall_buf_stack` for the in-flight window (a nested
+            // composite-return DynCall that pends drops it from its
+            // `pre_pending` block).
             let dyncall = ctx
                 .helper_refs
                 .get("graphix_dyncall")
                 .ok_or_else(|| anyhow!("missing graphix_dyncall"))?;
-            let cap = b.ins().iconst(types::I64, args.len() as i64);
-            let call = b.ins().call(buf_new, &[cap]);
-            let buf = b.inst_results(call)[0];
-            // Hold the buf in a Variable so a nested DynCall's
-            // pre_pending block can `use_var` it across blocks.
-            let buf_var = b.declare_var(types::I64);
-            b.def_var(buf_var, buf);
-            ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
-            for (a, t) in args.iter().zip(arg_types.iter()) {
-                let v = compile_scalar(b, a, env, ctx)?;
-                // For composite args the push helper depends on where
-                // the pointer came from. A `Borrowed` source (a Local
-                // read — the caller still owns it) refcount-bumps; an
-                // `Owned` source (an inline producer op, or a
-                // composite-return DynCall result that isn't bound to
-                // a local) transfers ownership into the buf. Using
-                // the borrowed helper on an Owned source would leak
-                // the original; using the move helper on a Borrowed
-                // source would double-free it.
-                let helper_name: &str = match t {
-                    GirType::Prim(p) => value_buf_push_helper(*p)?,
-                    GirType::Array(_)
-                    | GirType::Tuple(_)
-                    | GirType::Struct(_) => {
-                        match classify_composite_source(a) {
-                            CompositeSource::Owned => {
-                                "graphix_value_buf_push_array"
-                            }
-                            CompositeSource::Borrowed => {
-                                "graphix_value_buf_push_array_borrowed"
-                            }
-                        }
-                    }
-                    // Variant and Nullable share the `*const Value`
-                    // wire shape; the buf push helpers operate on the
-                    // pointer, not the inner enum tag, so the same
-                    // helpers serve both.
-                    GirType::Variant(_) | GirType::Nullable(_) => {
-                        match classify_composite_source(a) {
-                            CompositeSource::Owned => {
-                                "graphix_value_buf_push_value"
-                            }
-                            CompositeSource::Borrowed => {
-                                "graphix_value_buf_push_value_borrowed"
-                            }
-                        }
-                    }
-                    GirType::String => "graphix_value_buf_push_string",
-                    GirType::Unit => {
-                        return Err(anyhow!(
-                            "GIR malformed: DynCall arg has Unit type"
-                        ));
-                    }
-                    GirType::Null => {
-                        return Err(anyhow!(
-                            "DynCall arg with bare Null type — should \
-                             have widened to Nullable<T> at construction"
-                        ));
-                    }
-                };
-                let push =
-                    ctx.helper_refs.get(helper_name).ok_or_else(|| {
-                        anyhow!("missing push helper `{helper_name}`")
-                    })?;
-                b.ins().call(push, &[buf, v]);
-            }
+            let buf = marshal_dyncall_args(b, args, arg_types, env, ctx)?;
             let ret_kind: i64 = match return_type {
                 GirType::Prim(_) => 0,
                 GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => 1,
@@ -3354,7 +3593,11 @@ fn compile_scalar_impl(
                 // `*mut Value` (dispatch_typed wraps the dispatcher's
                 // returned `Value` in `Box::into_raw` regardless of the
                 // outer enum tag), so they share the ret_kind=2 path.
-                GirType::Variant(_) | GirType::Nullable(_) => 2,
+                GirType::Variant(_)
+                | GirType::Nullable(_)
+                | GirType::DateTime
+                | GirType::Duration
+                | GirType::Bytes => 2,
                 // Unit return: dispatcher returns 0 (the slot is
                 // discarded by the caller). ret_kind=3 tells
                 // dispatch_typed not to box anything.
@@ -3426,8 +3669,12 @@ fn compile_scalar_impl(
                 // and belong in `compile_value_expr`; compile_expr
                 // dispatches before reaching this scalar arm. Surface
                 // an error in case routing drifts.
-                GirType::Variant(_) | GirType::Nullable(_) => Err(anyhow!(
-                    "DynCall with Variant/Nullable return reached \
+                GirType::Variant(_)
+                | GirType::Nullable(_)
+                | GirType::DateTime
+                | GirType::Duration
+                | GirType::Bytes => Err(anyhow!(
+                    "DynCall with Value-shape return reached \
                      `compile_scalar_impl` — `compile_expr` should \
                      have routed to `compile_value_expr`"
                 )),
@@ -4113,15 +4360,32 @@ fn compile_call_clif_args(
     ctx: &LowerCtx,
 ) -> Result<(Vec<ClifValue>, Vec<CallArgDrop>)> {
     for a in args {
-        if matches!(
-            a.typ,
-            GirType::String | GirType::Unit | GirType::Null
-        ) {
-            return Err(anyhow!(
-                "JIT GirOp::Call `{fn_name}` arg has unmarshallable type \
-                 {:?} (String/Unit/Null aren't kernel param shapes)",
-                a.typ
-            ));
+        // String and bare value-shape (DateTime/Duration/Bytes) args
+        // are valid kernel params (the callee declares string_params /
+        // value_params), but the *calling* kernel's JIT arg emit for
+        // them isn't wired yet — bail so the caller falls back to the
+        // interpreter (which routes these correctly). Unit/Null have
+        // no kernel-param shape at all. Listing every remaining
+        // GirType keeps a future variant from silently dropping an arg.
+        match &a.typ {
+            GirType::Prim(_)
+            | GirType::Array(_)
+            | GirType::Tuple(_)
+            | GirType::Struct(_)
+            | GirType::Variant(_)
+            | GirType::Nullable(_) => {}
+            GirType::String
+            | GirType::DateTime
+            | GirType::Duration
+            | GirType::Bytes
+            | GirType::Unit
+            | GirType::Null => {
+                return Err(anyhow!(
+                    "JIT GirOp::Call `{fn_name}` arg type {:?} not yet \
+                     lowered on the calling side — falling back to interp",
+                    a.typ
+                ));
+            }
         }
     }
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(args.len());
@@ -4231,7 +4495,11 @@ fn ensure_owned_composite(
         // `ensure_owned_value` instead — they're two CLIF values, not
         // one, so they can't flow through this single-ClifValue path.
         // Reaching here means the consumer mis-routed.
-        GirType::Variant(_) | GirType::Nullable(_) => Err(anyhow!(
+        GirType::Variant(_)
+        | GirType::Nullable(_)
+        | GirType::DateTime
+        | GirType::Duration
+        | GirType::Bytes => Err(anyhow!(
             "ensure_owned_composite reached for Value-shape type \
              `{:?}` — caller should use `ensure_owned_value` instead",
             e.typ
@@ -4274,6 +4542,36 @@ fn ensure_owned_value(
     let call = b.ins().call(helper, &[disc, payload]);
     let results = b.inst_results(call);
     Ok((results[0], results[1]))
+}
+
+/// Compile a `ValueArith` operand as an OWNED `(disc, payload)` Value
+/// — the arith helper consumes both operands. A Value-shape operand
+/// (datetime/duration) clones a Borrowed Local read via
+/// `ensure_owned_value`; a scalar operand is promoted to a fresh
+/// `Value::<prim>` (no `Arc`, so trivially owned).
+fn compile_owned_value_operand(
+    b: &mut FunctionBuilder,
+    e: &GirExpr,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<(ClifValue, ClifValue)> {
+    use cranelift_codegen::ir::types;
+    match &e.typ {
+        GirType::DateTime | GirType::Duration | GirType::Bytes => {
+            let cv = compile_expr(b, e, env, ctx)?;
+            ensure_owned_value(b, ctx, e, cv)
+        }
+        GirType::Prim(p) => {
+            let s = compile_scalar(b, e, env, ctx)?;
+            let disc = b.ins().iconst(types::I64, prim_to_value_disc(*p));
+            let payload = scalar_to_payload_i64(b, *p, s);
+            Ok((disc, payload))
+        }
+        other => Err(anyhow!(
+            "ValueArith operand has unexpected type {other:?} — \
+             expected datetime/duration or a scalar prim"
+        )),
+    }
 }
 
 /// Emit a `graphix_valarray_drop` call for every owned composite
@@ -4503,7 +4801,11 @@ fn compile_and_push_field(
                 }
             }
         }
-        GirType::Variant(_) | GirType::Nullable(_) => {
+        GirType::Variant(_)
+        | GirType::Nullable(_)
+        | GirType::DateTime
+        | GirType::Duration
+        | GirType::Bytes => {
             match classify_composite_source(field) {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => {
@@ -5078,6 +5380,10 @@ fn clif_of(t: &GirType) -> ClifType {
         | GirType::Tuple(_)
         | GirType::Struct(_)
         | GirType::Variant(_) => types::I64,
+        // datetime/duration are Value-shape (two registers at the
+        // boundary); the single-type defensive ABI is a pointer slot,
+        // same as Nullable below.
+        GirType::DateTime | GirType::Duration | GirType::Bytes => types::I64,
         // Unit at the ABI is just a zero pointer slot — see
         // `define_typed_kernel`'s return_clif handling.
         GirType::Unit => types::I64,
@@ -5171,6 +5477,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -5217,6 +5525,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -5255,6 +5565,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -5280,6 +5592,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::F64),
             has_tail_loop: false,
@@ -5400,6 +5714,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -5454,6 +5770,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: true,
@@ -5506,6 +5824,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -5626,6 +5946,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![crate::gir::TailCallSlot {
                 name: ArcStr::from("n"),
                 kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
@@ -5713,6 +6035,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -5742,6 +6066,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -5773,6 +6099,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -5832,6 +6160,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: i64t(),
             has_tail_loop: false,
@@ -5865,6 +6195,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: i64t(),
             has_tail_loop: false,
@@ -5926,6 +6258,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: nullable_i64(),
             has_tail_loop: false,
@@ -5948,6 +6282,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: nullable_i64(),
             has_tail_loop: false,
@@ -6001,6 +6337,8 @@ mod tests {
                 elem: GirType::Prim(PrimType::I64),
                 bind_id: None,
             }],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: nullable_i64(),
             has_tail_loop: false,
@@ -6038,6 +6376,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: nullable_i64(),
             has_tail_loop: false,
@@ -6090,6 +6430,8 @@ mod tests {
                 elem: GirType::Prim(PrimType::I64),
                 bind_id: None,
             }],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::Bool),
             has_tail_loop: false,
@@ -6114,6 +6456,112 @@ mod tests {
         };
         assert_eq!(run(netidx_value::Value::Null), RegValue::Bool(true));
         assert_eq!(run(netidx_value::Value::I64(7)), RegValue::Bool(false));
+    }
+
+    /// String + bare value-shape (DateTime) kernel params, JIT side.
+    /// Mirrors the interp `string_and_value_kernel_params` test through
+    /// the cranelift wrapper: a String param rides one machine word (its
+    /// ArcStr thin pointer), a DateTime param rides two (disc, payload),
+    /// both cloned on entry and dropped on exit. Confirms the new
+    /// `AbiParamKind::String` / `AbiParamKind::Value` arms in the
+    /// signature builder, wrapper unpacker, and entry binder agree
+    /// with the runtime packing.
+    #[test]
+    fn jit_string_and_value_kernel_params() {
+        use netidx_value::Value;
+        // (1) |s: string| -> string s
+        let str_kernel = GirKernel {
+            fn_name: ArcStr::from("sk"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            string_params: vec![crate::gir::StringInput {
+                name: ArcStr::from("s"),
+                bind_id: None,
+            }],
+            value_params: vec![],
+            tail_call_slots: vec![],
+            return_type: GirType::String,
+            has_tail_loop: false,
+            body: vec![GirStmt::Return(GirExpr {
+                op: GirOp::Local(ArcStr::from("s")),
+                typ: GirType::String,
+            })],
+        };
+        let wrapped = compile_kernel_with_wrapper(&str_kernel)
+            .expect("compile str kernel");
+        let f = unsafe { wrapped.fn_ptr() };
+        let s = arcstr::ArcStr::from("hello");
+        // One word: the ArcStr's thin pointer (borrowed; kernel clones).
+        let word = unsafe { *(&s as *const arcstr::ArcStr as *const u64) };
+        let args = [word];
+        let mut out = 0u64;
+        unsafe { f(args.as_ptr(), &mut out) };
+        // Return: an owned ArcStr (transferred). Reclaim and check.
+        let got: arcstr::ArcStr =
+            unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(out) };
+        assert_eq!(&*got, "hello");
+        drop(s);
+
+        // (2) |d: datetime| -> datetime d + duration:1s
+        let one_sec = Value::Duration(triomphe::Arc::new(
+            std::time::Duration::from_secs(1),
+        ));
+        let dt_kernel = GirKernel {
+            fn_name: ArcStr::from("dk"),
+            params: vec![],
+            fn_params: vec![],
+            array_params: vec![],
+            tuple_params: vec![],
+            struct_params: vec![],
+            variant_params: vec![],
+            nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![crate::gir::ValueInput {
+                name: ArcStr::from("d"),
+                typ: GirType::DateTime,
+                bind_id: None,
+            }],
+            tail_call_slots: vec![],
+            return_type: GirType::DateTime,
+            has_tail_loop: false,
+            body: vec![GirStmt::Return(GirExpr {
+                op: GirOp::ValueArith {
+                    op: BinOp::Add,
+                    lhs: Box::new(GirExpr {
+                        op: GirOp::Local(ArcStr::from("d")),
+                        typ: GirType::DateTime,
+                    }),
+                    rhs: Box::new(GirExpr {
+                        op: GirOp::ConstValue(one_sec.clone()),
+                        typ: GirType::Duration,
+                    }),
+                },
+                typ: GirType::DateTime,
+            })],
+        };
+        let wrapped = compile_kernel_with_wrapper(&dt_kernel)
+            .expect("compile dt kernel");
+        let f = unsafe { wrapped.fn_ptr() };
+        let base =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0)
+                .unwrap();
+        let arg = Value::DateTime(triomphe::Arc::new(base));
+        // Two words (disc, payload), borrowed; kernel clones on entry.
+        let words: [u64; 2] =
+            unsafe { *(&arg as *const Value as *const [u64; 2]) };
+        let mut out2: [u64; 2] = [0, 0];
+        unsafe { f(words.as_ptr(), out2.as_mut_ptr()) };
+        let got: Value = unsafe { std::mem::transmute::<[u64; 2], Value>(out2) };
+        let expected = Value::DateTime(triomphe::Arc::new(
+            base + chrono::Duration::seconds(1),
+        ));
+        assert_eq!(got, expected);
+        drop(arg);
     }
 
     /// Non-tail self-recursion via `GirOp::Call` (e.g. naive fib's
@@ -6166,6 +6614,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -6213,6 +6663,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -6235,6 +6687,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -6263,6 +6717,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -6312,6 +6768,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
             return_type: GirType::Prim(PrimType::I64),
             has_tail_loop: false,
@@ -6347,6 +6805,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![],
                 return_type: GirType::Prim(PrimType::I64),
                 has_tail_loop: false,
@@ -6434,6 +6894,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![crate::gir::TailCallSlot {
                 name: ArcStr::from("x"),
                 kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
@@ -6521,6 +6983,8 @@ mod tests {
             struct_params: vec![],
             variant_params: vec![],
             nullable_params: vec![],
+            string_params: vec![],
+            value_params: vec![],
             tail_call_slots: vec![crate::gir::TailCallSlot {
                 name: ArcStr::from("x"),
                 kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
