@@ -310,6 +310,21 @@ run!(array_find_composite, ARRAY_FIND_COMPOSITE, |v: Result<&Value>| {
     }
 });
 
+// No element matches — every composite element is fetched + dropped on the
+// advance edge, then `not_found` returns `null`. Exercises the
+// `GirOp::ArrayFind` conditional-drop path with zero wraps (the most likely
+// place a leak or double-free in the owned-element drop would surface).
+const ARRAY_FIND_COMPOSITE_NONE: &str = r#"
+{
+  let a = [(1, 10), (2, 20), (3, 30)];
+  array::find(a, |(k, _)| k == 99)
+}
+"#;
+
+run!(array_find_composite_none, ARRAY_FIND_COMPOSITE_NONE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+});
+
 const ARRAY_FIND_MAP: &str = r#"
 {
   type T = (string, i64);

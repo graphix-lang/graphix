@@ -45,11 +45,11 @@ The `run!` discovery branch harvests these per fixture. This is the
 tool that turns "this fixture is None" into "this fixture is None
 *because* X", which is what makes the gap map actionable.
 
-## Current metric (graphix-tests, 555 `run!` fixtures)
+## Current metric (graphix-tests, 556 `run!` fixtures)
 
 | state | count | share | meaning |
 |---|---:|---:|---|
-| **Jit** | 199 | 36% | fuses + JIT-compiles + runs native |
+| **Jit** | 200 | 36% | fuses + JIT-compiles + runs native |
 | **Interp** | 1 | 0% | fuses, runs on interp (JIT can't lower yet) |
 | **None** | 368 | 66% | no fused kernel |
 
@@ -496,3 +496,9 @@ slices, StructWith).
   consume, but into a Nullable merge). **All 5 linear/conditional array HOFs
   now JIT composite elements + destructure, and `find` JITs composite output —
   the array-HOF composite story is complete.**
+- **2026-06-05** (coverage): `array_find_composite_none` (+1 Jit; 199 → 200).
+  No-match composite `array::find` — every element fetched + dropped on the
+  advance edge, then `not_found` → `null`. Regression-guards the
+  `GirOp::ArrayFind` conditional-drop path with zero wraps (the most likely
+  place a leak/double-free in the owned-element drop would surface); all three
+  modes agree on `null`.
