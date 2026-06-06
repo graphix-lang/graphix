@@ -1134,7 +1134,7 @@ fn compile_into_function(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes => {
+            | GirType::Bytes | GirType::Map => {
                 let s0 = b.ins().iconst(types::I64, 0);
                 let s1 = b.ins().iconst(types::I64, 0);
                 b.ins().return_(&[s0, s1]);
@@ -1296,6 +1296,7 @@ fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
     }
     match &e.op {
         GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. }
         | GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
         | GirOp::BoolBin { lhs, rhs, .. } => {
@@ -1325,6 +1326,23 @@ fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
             args.iter().for_each(|a| collect_values_expr(a, out))
         }
         GirOp::ArrayGet { idx, .. } => collect_values_expr(idx, out),
+        GirOp::BytesIndex { bytes, idx } => {
+            collect_values_expr(bytes, out);
+            collect_values_expr(idx, out);
+        }
+        GirOp::MapRef { map, key } => {
+            collect_values_expr(map, out);
+            collect_values_expr(key, out);
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            collect_values_expr(source, out);
+            if let Some(e) = start {
+                collect_values_expr(e, out);
+            }
+            if let Some(e) = end {
+                collect_values_expr(e, out);
+            }
+        }
         GirOp::ArrayFold { init, body, .. } => {
             collect_values_expr(init, out);
             collect_values_expr(body, out);
@@ -1334,7 +1352,13 @@ fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
             collect_values_expr(body, out);
         }
         GirOp::ArrayMap { body, .. } => collect_values_expr(body, out),
+        GirOp::ArrayFilterMap { body, .. } => collect_values_expr(body, out),
+        GirOp::ArrayFindMap { body, .. } => collect_values_expr(body, out),
+        GirOp::ArrayFlatMap { body, .. } => collect_values_expr(body, out),
         GirOp::ArrayFilter { predicate, .. } => {
+            collect_values_expr(predicate, out)
+        }
+        GirOp::ArrayFind { predicate, .. } => {
             collect_values_expr(predicate, out)
         }
         GirOp::TupleNew { fields, .. } => {
@@ -1388,7 +1412,8 @@ fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
         | GirOp::Local(_) => {}
         GirOp::IsNull(inner) => collect_strings_expr(inner, out),
         GirOp::QopUnwrap { inner, .. } => collect_strings_expr(inner, out),
-        GirOp::ValueArith { lhs, rhs, .. } => {
+        GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. } => {
             collect_strings_expr(lhs, out);
             collect_strings_expr(rhs, out);
         }
@@ -1431,6 +1456,23 @@ fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
                 collect_strings_expr(body, out);
             }
         }
+        GirOp::BytesIndex { bytes, idx } => {
+            collect_strings_expr(bytes, out);
+            collect_strings_expr(idx, out);
+        }
+        GirOp::MapRef { map, key } => {
+            collect_strings_expr(map, out);
+            collect_strings_expr(key, out);
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            collect_strings_expr(source, out);
+            if let Some(e) = start {
+                collect_strings_expr(e, out);
+            }
+            if let Some(e) = end {
+                collect_strings_expr(e, out);
+            }
+        }
         GirOp::ArrayLen { .. }
         | GirOp::ArrayGet { .. }
         | GirOp::TupleGet { .. }
@@ -1450,7 +1492,13 @@ fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
             collect_strings_expr(body, out);
         }
         GirOp::ArrayMap { body, .. } => collect_strings_expr(body, out),
+        GirOp::ArrayFilterMap { body, .. } => collect_strings_expr(body, out),
+        GirOp::ArrayFindMap { body, .. } => collect_strings_expr(body, out),
+        GirOp::ArrayFlatMap { body, .. } => collect_strings_expr(body, out),
         GirOp::ArrayFilter { predicate, .. } => {
+            collect_strings_expr(predicate, out)
+        }
+        GirOp::ArrayFind { predicate, .. } => {
             collect_strings_expr(predicate, out)
         }
         GirOp::TupleNew { fields, .. } => {
@@ -1626,6 +1674,29 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
+        // Non-primitive element reads: (ptr, idx) -> single i64 word
+        // (a `*mut ValArray` for composite elems, or an `ArcStr` thin
+        // pointer for string elems).
+        "graphix_valarray_get_array"
+        | "graphix_valarray_get_arcstr"
+        | "graphix_struct_get_array"
+        | "graphix_struct_get_arcstr" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // Value-shape element reads: (ptr, idx) -> Value (two words).
+        // `graphix_valarray_index` is the bounds-checked `array[i]`
+        // (signed idx, elem-or-error); the `_get_value` pair are the
+        // unchecked struct-field / tuple-element value-shape reads.
+        "graphix_valarray_index"
+        | "graphix_valarray_get_value"
+        | "graphix_struct_get_value" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
+        }
         "graphix_valarray_len" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
@@ -1671,6 +1742,9 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         //   _push_arcstr  : (buf, ptr: *const ArcStr) — pointer arg
         //   _push_value   : (buf, v: Value)            — Value by value
         "graphix_value_buf_push_array"
+        // (buf, inner: *mut ValArray) — flattens inner's elements into
+        // buf and drops inner; same two-pointer shape as push_array.
+        | "graphix_value_buf_extend_from_array"
         | "graphix_value_buf_push_arcstr"
         // ArcStr is `repr(transparent)` over a thin pointer — passes
         // as a single I64 register, same shape as the others above.
@@ -1728,11 +1802,43 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         | "graphix_value_sub"
         | "graphix_value_mul"
         | "graphix_value_div"
-        | "graphix_value_rem" => {
+        | "graphix_value_rem"
+        // Map access (`MapRef`): map Value + key Value (four words) in,
+        // a Value (Nullable<V>, two words) out — same shape.
+        | "graphix_map_ref" => {
             sig.params.push(AbiParam::new(types::I64)); // l.disc
             sig.params.push(AbiParam::new(types::I64)); // l.payload
             sig.params.push(AbiParam::new(types::I64)); // r.disc
             sig.params.push(AbiParam::new(types::I64)); // r.payload
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
+        }
+        // Value equality (`ValueEq`): two Value args (four words) in,
+        // a bool (I8) out.
+        "graphix_value_eq" => {
+            sig.params.push(AbiParam::new(types::I64)); // l.disc
+            sig.params.push(AbiParam::new(types::I64)); // l.payload
+            sig.params.push(AbiParam::new(types::I64)); // r.disc
+            sig.params.push(AbiParam::new(types::I64)); // r.payload
+            sig.returns.push(AbiParam::new(types::I8)); // bool
+        }
+        // `bytes[i]` (`BytesIndex`): a Value (two words) + i64 index in,
+        // a Value (Nullable<u8>, two words) out.
+        "graphix_bytes_index" => {
+            sig.params.push(AbiParam::new(types::I64)); // bytes.disc
+            sig.params.push(AbiParam::new(types::I64)); // bytes.payload
+            sig.params.push(AbiParam::new(types::I64)); // index
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
+        }
+        // `a[i..j]` (`ArraySlice`): source Value (two words) + i64 start
+        // + i64 end + i64 flags in, a Value (Nullable<source>) out.
+        "graphix_array_slice" => {
+            sig.params.push(AbiParam::new(types::I64)); // src.disc
+            sig.params.push(AbiParam::new(types::I64)); // src.payload
+            sig.params.push(AbiParam::new(types::I64)); // start
+            sig.params.push(AbiParam::new(types::I64)); // end
+            sig.params.push(AbiParam::new(types::I64)); // flags
             sig.returns.push(AbiParam::new(types::I64)); // ret.disc
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
@@ -2209,7 +2315,7 @@ fn compile_body(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes => {
+                    | GirType::Bytes | GirType::Map => {
                         // Value-shape local: stored as a `(disc,
                         // payload)` pair (`ValueVar`). The source
                         // expression compiles to a `CompiledExpr::Value`;
@@ -2313,7 +2419,7 @@ fn compile_body(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes => {
+                    | GirType::Bytes | GirType::Map => {
                         let cv = compile_expr(b, e, env, ctx)?;
                         let (disc, payload) =
                             ensure_owned_value(b, ctx, e, cv)?;
@@ -2748,7 +2854,7 @@ fn marshal_dyncall_args(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes => match classify_composite_source(a) {
+            | GirType::Bytes | GirType::Map => match classify_composite_source(a) {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => {
                     "graphix_value_buf_push_value_borrowed"
@@ -2952,10 +3058,10 @@ fn compile_value_expr(
             // dispatcher's returned Value into a `Box<Value>` and
             // splits it into two register-words.
             let ret_kind: i64 = 2;
-            debug_assert!(matches!(
-                return_type,
-                GirType::Variant(_) | GirType::Nullable(_)
-            ));
+            // ret_kind=2 boxes any `Value` into two words, so every
+            // value-shape return (Variant/Nullable/DateTime/Duration/
+            // Bytes/Map) routes here, not just Variant/Nullable.
+            debug_assert!(return_type.is_value_shape());
             let fn_idx_val =
                 b.ins().iconst(types::I32, *fn_index as i64);
             let ret_kind_val = b.ins().iconst(types::I8, ret_kind);
@@ -3036,7 +3142,7 @@ fn compile_value_expr(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes => {
+                    | GirType::Bytes | GirType::Map => {
                         let cv = compile_expr(b, &l.value, env, ctx)?;
                         let (owned_disc, owned_payload) =
                             ensure_owned_value(b, ctx, &l.value, cv)?;
@@ -3058,12 +3164,20 @@ fn compile_value_expr(
                             "GIR malformed: Block let with Unit value"
                         ));
                     }
+                    // String locals: the value SSA is an owned ArcStr
+                    // (ConstStr / Concat / a clone from a Local-read or
+                    // composite-element `TupleGet`). Bind into the
+                    // `strings` slot; the block scope-exit drops it.
+                    // Mirrors `GirStmt::Let`'s String arm — the
+                    // String-locals work missed this Block arm, which
+                    // kept any kernel with a string `let` (e.g. a
+                    // `|(k, v)|` destructure over `Array<(string, _)>`)
+                    // off the JIT.
                     GirType::String => {
-                        return Err(anyhow!(
-                            "Block let with String value reached JIT \
-                             — String locals aren't supported on either \
-                             backend; GIR-build should reject"
-                        ));
+                        let v = compile_scalar(b, &l.value, env, ctx)?;
+                        let var = b.declare_var(types::I64);
+                        b.def_var(var, v);
+                        env.bind_string(l.local.clone(), var);
                     }
                     GirType::Null => {
                         return Err(anyhow!(
@@ -3142,6 +3256,411 @@ fn compile_value_expr(
             emit_call_arg_drops(b, ctx, &drops)?;
             Ok(CompiledExpr::Value { disc, payload })
         }
+        // `array[i]` — result type is always `Nullable<elem>` (=
+        // `[elem, Error<…>]`). `graphix_valarray_index` does the bounds
+        // check + negative-from-end handling and returns the element
+        // (or the `ArrayIndexError` Value) as a two-word `Value`,
+        // routing through the same shared `array_index` the node-walk
+        // and interp use — so all three backends agree bit-for-bit.
+        GirOp::ArrayGet { name, idx } => {
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined composite param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let idx_val = compile_scalar(b, idx, env, ctx)?;
+            let idx_i64 = widen_to_i64(b, idx_val, prim_of(&idx.typ));
+            let helper = ctx
+                .helper_refs
+                .get("graphix_valarray_index")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_index"))?;
+            let call = b.ins().call(helper, &[arr_ptr, idx_i64]);
+            let r = b.inst_results(call);
+            Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+        }
+        // Value-shape element reads for `t.0` / `s.field` whose element
+        // type is a Variant / Nullable / DateTime / Duration / Bytes.
+        // The `_get_value` helper returns an owned `Value` (two words);
+        // `compile_element_read` packages it as a `CompiledExpr::Value`.
+        // (Scalar / string / composite-pointer element types route to
+        // `compile_scalar_impl` instead.) Tuple/struct indices are
+        // statically valid, so there's no bounds check.
+        GirOp::TupleGet { name, idx, elem_typ } => {
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined tuple param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let idx_const = b.ins().iconst(types::I64, *idx as i64);
+            compile_element_read(b, arr_ptr, idx_const, elem_typ, false, ctx)
+        }
+        GirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
+            let arr_var = env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined struct param `{name}`")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let idx_const = b.ins().iconst(types::I64, *sorted_idx as i64);
+            compile_element_read(b, arr_ptr, idx_const, elem_typ, true, ctx)
+        }
+        GirOp::BytesIndex { bytes, idx } => {
+            // `bytes[i]` → Nullable<u8>. Compile the bytes operand to an
+            // owned `(disc, payload)` (the helper consumes it) + the i64
+            // index, then `graphix_bytes_index` does the bounds-checked
+            // read, returning the result Value's two words.
+            let (bd, bp) = compile_owned_value_operand(b, bytes, env, ctx)?;
+            let i = compile_scalar(b, idx, env, ctx)?;
+            let helper = ctx
+                .helper_refs
+                .get("graphix_bytes_index")
+                .ok_or_else(|| anyhow!("missing graphix_bytes_index"))?;
+            let call = b.ins().call(helper, &[bd, bp, i]);
+            let rd = b.inst_results(call)[0];
+            let rp = b.inst_results(call)[1];
+            Ok(CompiledExpr::Value { disc: rd, payload: rp })
+        }
+        GirOp::MapRef { map, key } => {
+            // `m{key}` → Nullable<V>. Both operands compile to owned
+            // `(disc, payload)` Values (the helper consumes them);
+            // `graphix_map_ref` does the lookup, returning the result
+            // Value's two words.
+            let (md, mp) = compile_owned_value_operand(b, map, env, ctx)?;
+            let (kd, kp) = compile_owned_value_operand(b, key, env, ctx)?;
+            let helper = ctx
+                .helper_refs
+                .get("graphix_map_ref")
+                .ok_or_else(|| anyhow!("missing graphix_map_ref"))?;
+            let call = b.ins().call(helper, &[md, mp, kd, kp]);
+            let rd = b.inst_results(call)[0];
+            let rp = b.inst_results(call)[1];
+            Ok(CompiledExpr::Value { disc: rd, payload: rp })
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            // `a[i..j]` → Nullable<source>. Source compiles to an owned
+            // `(disc, payload)` Value (the helper consumes it); present
+            // bounds compile to i64 scalars, absent bounds pass 0 with a
+            // cleared flag bit.
+            let (sd, sp) = compile_owned_value_operand(b, source, env, ctx)?;
+            let mut flags = 0i64;
+            let start_v = match start {
+                Some(e) => {
+                    flags |= 1;
+                    compile_scalar(b, e, env, ctx)?
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let end_v = match end {
+                Some(e) => {
+                    flags |= 2;
+                    compile_scalar(b, e, env, ctx)?
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let flags_v = b.ins().iconst(types::I64, flags);
+            let helper = ctx
+                .helper_refs
+                .get("graphix_array_slice")
+                .ok_or_else(|| anyhow!("missing graphix_array_slice"))?;
+            let call = b.ins().call(helper, &[sd, sp, start_v, end_v, flags_v]);
+            let rd = b.inst_results(call)[0];
+            let rp = b.inst_results(call)[1];
+            Ok(CompiledExpr::Value { disc: rd, payload: rp })
+        }
+        GirOp::QopUnwrap { inner, success_typ } => {
+            // Value-shape `?` (success type Variant/Nullable/DateTime/
+            // Duration/Bytes/Map). The inner `Nullable<T>` compiles to an
+            // owned `(disc, payload)` Value; on `Error` disc, drop it,
+            // signal pending, and jump to `pending_exit`; otherwise the
+            // non-error Value IS the result T (its own `(disc, payload)`,
+            // passed through to the consumer which takes ownership). The
+            // scalar/string/composite success cases live in the
+            // `compile_scalar_impl` arm.
+            debug_assert!(
+                success_typ.is_value_shape(),
+                "QopUnwrap in compile_value_expr with non-value-shape \
+                 success_typ {success_typ:?}"
+            );
+            let (disc, payload) = compile_expr(b, inner, env, ctx)?.value()?;
+            let is_err = b.ins().icmp_imm(
+                cranelift_codegen::ir::condcodes::IntCC::Equal,
+                disc,
+                0x2000_0000_i64, // Typ::Error discriminant
+            );
+            let pending_set = ctx
+                .helper_refs
+                .get("graphix_dyncall_set_pending")
+                .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+            let value_drop = ctx
+                .helper_refs
+                .get("graphix_value_drop")
+                .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+            let pre_pending = b.create_block();
+            let continue_block = b.create_block();
+            let pending_exit = {
+                let mut slot = ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
+
+            b.switch_to_block(pre_pending);
+            b.seal_block(pre_pending);
+            // Drop the owned error Value before aborting (the success
+            // path moves it to the consumer; the error path must not
+            // leak it).
+            b.ins().call(value_drop, &[disc, payload]);
+            b.ins().call(pending_set, &[]);
+            emit_pending_cleanup(b, env, ctx)?;
+            b.ins().jump(pending_exit, &[]);
+
+            b.switch_to_block(continue_block);
+            b.seal_block(continue_block);
+            Ok(CompiledExpr::Value { disc, payload })
+        }
+        GirOp::ArrayFind { array, elem, elem_local, predicate } => {
+            // First element matching `predicate`, as a Nullable<elem>
+            // (`null` if none). Early-exit loop whose two exit edges
+            // (found / not-found) feed a two-word `(disc, payload)`
+            // merge block — same Value-shape phi shape `compile_ifchain`
+            // uses.
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let found = b.create_block();
+            let advance = b.create_block();
+            let not_found = b.create_block();
+            let exit = b.create_block();
+            b.append_block_param(exit, types::I64); // disc
+            b.append_block_param(exit, types::I64); // payload
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], not_found, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let mark = env.mark();
+            // Element binding: scalar (locals) or composite (owned
+            // `*ValArray`). `elem_prim` is `Some` for the scalar case; the
+            // matched result is the element itself — for composite, the
+            // owned element is consumed (wrapped into a Value) on the found
+            // edge and dropped on the advance edge (matched-once / not-this-
+            // iteration), like `ArrayFilter`'s conditional consume.
+            let (elem_var, elem_prim) = match elem.as_prim() {
+                Some(prim) => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get(valarray_get_helper(prim)?)
+                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_val = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(prim_to_clif(prim));
+                    b.def_var(elem_var, elem_val);
+                    env.bind(elem_local.clone(), elem_var, prim);
+                    (elem_var, Some(prim))
+                }
+                None => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get("graphix_valarray_get_array")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_valarray_get_array")
+                        })?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_ptr = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(types::I64);
+                    b.def_var(elem_var, elem_ptr);
+                    env.bind_composite(elem_local.clone(), elem_var);
+                    (elem_var, None)
+                }
+            };
+            let keep = compile_scalar(b, predicate, env, ctx)?;
+            env.truncate(mark);
+            b.ins().brif(keep, found, &[], advance, &[]);
+            b.switch_to_block(found);
+            b.seal_block(found);
+            let (disc, payload) = match elem_prim {
+                Some(prim) => {
+                    let elem_again = b.use_var(elem_var);
+                    let disc =
+                        b.ins().iconst(types::I64, prim_to_value_disc(prim));
+                    let payload = scalar_to_payload_i64(b, prim, elem_again);
+                    (disc, payload)
+                }
+                None => {
+                    // Wrap the owned `*ValArray` element into a value-shape
+                    // `(ARRAY_DISC, payload)` Value (consumes it).
+                    let wrap = ctx
+                        .helper_refs
+                        .get("graphix_value_new_from_array")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_value_new_from_array")
+                        })?;
+                    let elem_now = b.use_var(elem_var);
+                    let call = b.ins().call(wrap, &[elem_now]);
+                    let r = b.inst_results(call);
+                    (r[0], r[1])
+                }
+            };
+            b.ins()
+                .jump(exit, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
+            b.switch_to_block(advance);
+            if elem_prim.is_none() {
+                // Not matched this iteration — drop the owned element.
+                let drop_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let elem_now = b.use_var(elem_var);
+                b.ins().call(drop_helper, &[elem_now]);
+            }
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(advance);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(not_found);
+            b.seal_block(not_found);
+            let null_disc = b.ins().iconst(types::I64, value_disc::NULL);
+            let null_payload = b.ins().iconst(types::I64, 0);
+            b.ins().jump(
+                exit,
+                &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)],
+            );
+            b.switch_to_block(exit);
+            b.seal_block(exit);
+            let disc = b.block_params(exit)[0];
+            let payload = b.block_params(exit)[1];
+            Ok(CompiledExpr::Value { disc, payload })
+        }
+        GirOp::ArrayFindMap { array, in_elem, elem_local, body } => {
+            // Early-exit on the first non-null body result; the op's
+            // value is that `Nullable<out>` (or null). Same merge shape
+            // as ArrayFind, but the body produces the (disc, payload)
+            // directly (not a predicate), and a composite element is the
+            // owned `*ValArray` bound/dropped per iteration (the result
+            // is the body value, so the element is dropped every pass).
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let found = b.create_block();
+            let advance = b.create_block();
+            let not_found = b.create_block();
+            let exit = b.create_block();
+            b.append_block_param(exit, types::I64); // disc
+            b.append_block_param(exit, types::I64); // payload
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], not_found, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let mark = env.mark();
+            let composite_elem = match in_elem.as_prim() {
+                Some(prim) => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get(valarray_get_helper(prim)?)
+                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_val = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(prim_to_clif(prim));
+                    b.def_var(elem_var, elem_val);
+                    env.bind(elem_local.clone(), elem_var, prim);
+                    None
+                }
+                None => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get("graphix_valarray_get_array")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_valarray_get_array")
+                        })?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_ptr = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(types::I64);
+                    b.def_var(elem_var, elem_ptr);
+                    env.bind_composite(elem_local.clone(), elem_var);
+                    Some(elem_var)
+                }
+            };
+            // Body produces `Nullable<out>` as `(disc, payload)`.
+            let (bdisc, bpayload) = compile_value_expr(b, body, env, ctx)?.value()?;
+            if let Some(elem_var) = composite_elem {
+                let drop_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let elem_now = b.use_var(elem_var);
+                b.ins().call(drop_helper, &[elem_now]);
+            }
+            env.truncate(mark);
+            let is_null = b.ins().icmp_imm(
+                cranelift_codegen::ir::condcodes::IntCC::Equal,
+                bdisc,
+                value_disc::NULL,
+            );
+            // not-null → found; null → advance. `bdisc`/`bpayload`
+            // dominate `found` (computed before the branch).
+            b.ins().brif(is_null, advance, &[], found, &[]);
+            b.switch_to_block(found);
+            b.seal_block(found);
+            b.ins().jump(
+                exit,
+                &[BlockArg::Value(bdisc), BlockArg::Value(bpayload)],
+            );
+            b.switch_to_block(advance);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(advance);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(not_found);
+            b.seal_block(not_found);
+            let null_disc = b.ins().iconst(types::I64, value_disc::NULL);
+            let null_payload = b.ins().iconst(types::I64, 0);
+            b.ins().jump(
+                exit,
+                &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)],
+            );
+            b.switch_to_block(exit);
+            b.seal_block(exit);
+            let disc = b.block_params(exit)[0];
+            let payload = b.block_params(exit)[1];
+            Ok(CompiledExpr::Value { disc, payload })
+        }
         other => Err(anyhow!(
             "compile_value_expr called on op `{other:?}` with typ \
              `{:?}` — this op shouldn't produce a Value shape",
@@ -3174,6 +3693,24 @@ fn compile_scalar_impl(
         GirOp::ConstValue(_) | GirOp::ValueArith { .. } => Err(anyhow!(
             "compile_scalar_impl reached for Value-shape datetime/duration \
              op — should route to compile_value_expr (interp fallback)"
+        )),
+        // ArrayFind produces a Nullable (Value-shape) result, so
+        // `compile_expr` routes it to `compile_value_expr`; reaching the
+        // scalar path means routing drifted.
+        GirOp::ArrayFind { .. } => Err(anyhow!(
+            "ArrayFind is Value-shape — should route to compile_value_expr"
+        )),
+        GirOp::BytesIndex { .. } => Err(anyhow!(
+            "BytesIndex is Value-shape (Nullable<u8>) — should route to \
+             compile_value_expr"
+        )),
+        GirOp::MapRef { .. } => Err(anyhow!(
+            "MapRef is Value-shape (Nullable<V>) — should route to \
+             compile_value_expr"
+        )),
+        GirOp::ArraySlice { .. } => Err(anyhow!(
+            "ArraySlice is Value-shape (Nullable<source>) — should route \
+             to compile_value_expr"
         )),
         GirOp::ConstStr(s) => {
             // Fetch the interned static `*const ArcStr` from this
@@ -3292,7 +3829,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes => Err(anyhow!(
+                | GirType::Bytes | GirType::Map => Err(anyhow!(
                     "QopUnwrap with Value-shape success_typ reached \
                      compile_scalar_impl — compile_expr should route \
                      to compile_value_expr"
@@ -3336,7 +3873,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes => Err(anyhow!(
+                | GirType::Bytes | GirType::Map => Err(anyhow!(
                     "compile_scalar_impl reached for Value-shape Local \
                      `{name}` — `compile_expr` should have routed to \
                      `compile_value_expr`"
@@ -3385,6 +3922,25 @@ fn compile_scalar_impl(
             let l = compile_scalar(b, lhs, env, ctx)?;
             let r = compile_scalar(b, rhs, env, ctx)?;
             Ok(compile_cmp(b, *op, prim_of(&lhs.typ), l, r))
+        }
+        GirOp::ValueEq { ne, lhs, rhs } => {
+            // Value-shape `==`/`!=`: compile both operands to OWNED
+            // `(disc, payload)` pairs (the helper consumes them) and
+            // compare via netidx `Value` PartialEq.
+            let (ld, lp) = compile_owned_value_operand(b, lhs, env, ctx)?;
+            let (rd, rp) = compile_owned_value_operand(b, rhs, env, ctx)?;
+            let helper = ctx
+                .helper_refs
+                .get("graphix_value_eq")
+                .ok_or_else(|| anyhow!("missing graphix_value_eq"))?;
+            let call = b.ins().call(helper, &[ld, lp, rd, rp]);
+            let eq = b.inst_results(call)[0]; // I8 bool
+            Ok(if *ne {
+                let one = b.ins().iconst(types::I8, 1);
+                b.ins().bxor(eq, one)
+            } else {
+                eq
+            })
         }
         GirOp::BoolBin { op, lhs, rhs } => {
             // We use eager (non-short-circuit) evaluation here for
@@ -3475,7 +4031,7 @@ fn compile_scalar_impl(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes => {
+                    | GirType::Bytes | GirType::Map => {
                         // Value-shape block local — same `ValueVar`
                         // pair + `ensure_owned_value` discipline as
                         // GirStmt::Let. Block-scope drop happens at
@@ -3597,7 +4153,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes => 2,
+                | GirType::Bytes | GirType::Map => 2,
                 // Unit return: dispatcher returns 0 (the slot is
                 // discarded by the caller). ret_kind=3 tells
                 // dispatch_typed not to box anything.
@@ -3673,7 +4229,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes => Err(anyhow!(
+                | GirType::Bytes | GirType::Map => Err(anyhow!(
                     "DynCall with Value-shape return reached \
                      `compile_scalar_impl` — `compile_expr` should \
                      have routed to `compile_value_expr`"
@@ -3741,79 +4297,33 @@ fn compile_scalar_impl(
             // Prim(U64), so width matches.
             Ok(b.inst_results(call)[0])
         }
-        GirOp::ArrayGet { name, idx } => {
-            // Composite-result ArrayGet routes to interp via the
-            // `kernel_contains_composite_element_op` guard.
-            let elem_p = e.typ.as_prim().ok_or_else(|| {
-                anyhow!(
-                    "ArrayGet with composite element type reached JIT; \
-                     should have routed to interp via \
-                     kernel_contains_composite_element_op"
-                )
-            })?;
-            let helper_name = valarray_get_helper(elem_p)?;
-            let helper =
-                ctx.helper_refs.get(helper_name).ok_or_else(|| {
-                    anyhow!("missing JIT helper `{helper_name}`")
-                })?;
-            let arr_var = env.lookup_composite(name).ok_or_else(|| {
-                anyhow!("GIR malformed: undefined composite param `{name}`")
-            })?;
-            let arr_ptr = b.use_var(arr_var);
-            let idx_val = compile_scalar(b, idx, env, ctx)?;
-            // Helper expects usize — widen to i64 if the index
-            // expression was narrower.
-            let idx_i64 = widen_to_i64(b, idx_val, prim_of(&idx.typ));
-            let call = b.ins().call(helper, &[arr_ptr, idx_i64]);
-            Ok(b.inst_results(call)[0])
+        GirOp::ArrayGet { .. } => {
+            // `array[i]`'s result type is always `Nullable<elem>` (it
+            // can produce an `ArrayIndexError`), so `compile_expr`
+            // routes it to `compile_value_expr`. Reaching the scalar
+            // path means the op was mis-typed.
+            Err(anyhow!(
+                "GIR malformed: ArrayGet reached compile_scalar_impl — \
+                 its result type must be Nullable<elem>"
+            ))
         }
         GirOp::TupleGet { name, idx, elem_typ } => {
-            // Composite slots can't be JIT'd via the primitive
-            // scalar helper — bail. Such kernels are guarded out
-            // by `kernel_contains_composite_element_op` and routed
-            // to the interpreter.
-            let prim = elem_typ.as_prim().ok_or_else(|| {
-                anyhow!(
-                    "TupleGet with composite slot type reached JIT; \
-                     should have routed to interp via \
-                     kernel_contains_composite_element_op"
-                )
-            })?;
-            let helper_name = valarray_get_helper(prim)?;
-            let helper =
-                ctx.helper_refs.get(helper_name).ok_or_else(|| {
-                    anyhow!("missing JIT helper `{helper_name}`")
-                })?;
             let arr_var = env.lookup_composite(name).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined tuple param `{name}`")
             })?;
             let arr_ptr = b.use_var(arr_var);
             let idx_const = b.ins().iconst(types::I64, *idx as i64);
-            let call = b.ins().call(helper, &[arr_ptr, idx_const]);
-            Ok(b.inst_results(call)[0])
+            compile_element_read(b, arr_ptr, idx_const, elem_typ, false, ctx)?
+                .single()
         }
         GirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
-            // Composite-field StructGet routes to interp via the
-            // `kernel_contains_composite_element_op` guard.
-            let prim = elem_typ.as_prim().ok_or_else(|| {
-                anyhow!(
-                    "StructGet with composite field type reached JIT; \
-                     should have routed to interp via \
-                     kernel_contains_composite_element_op"
-                )
-            })?;
-            let helper_name = struct_get_helper(prim)?;
-            let helper =
-                ctx.helper_refs.get(helper_name).ok_or_else(|| {
-                    anyhow!("missing JIT helper `{helper_name}`")
-                })?;
             let arr_var = env.lookup_composite(name).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined struct param `{name}`")
             })?;
             let arr_ptr = b.use_var(arr_var);
             let idx_const = b.ins().iconst(types::I64, *sorted_idx as i64);
-            let call = b.ins().call(helper, &[arr_ptr, idx_const]);
-            Ok(b.inst_results(call)[0])
+            compile_element_read(b, arr_ptr, idx_const, elem_typ, true, ctx)?
+                .single()
         }
         GirOp::TupleNew { fields, elem_types } => {
             // Build a `Vec<Value>` field-by-field via the producer
@@ -3906,13 +4416,12 @@ fn compile_scalar_impl(
                  `compile_expr` should have routed to `compile_value_expr`"
             ))
         }
-        GirOp::ArrayInit { n, idx_local, elem_typ, body } => {
+        GirOp::ArrayInit { n, idx_local, body } => {
             // n_val = eval n.    Scalar I64-ish; widen if narrower.
             // buf = buf_new(n_val)
             // loop i in 0..n_val:
             //     bind idx_local to i in env
-            //     elem = eval body
-            //     call push_<T>(buf, elem)
+            //     compile_and_push_field(buf, body)  // any elem shape
             // arr = finalize(buf)
             //
             // Block structure: caller's current block jumps to
@@ -3927,12 +4436,6 @@ fn compile_scalar_impl(
                 .helper_refs
                 .get("graphix_valarray_finalize")
                 .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
-            let push = ctx
-                .helper_refs
-                .get(value_buf_push_helper(*elem_typ)?)
-                .ok_or_else(|| {
-                    anyhow!("missing push helper for {elem_typ:?}")
-                })?;
             let n_raw = compile_scalar(b, n, env, ctx)?;
             let n_val = widen_to_i64(b, n_raw, prim_of(&n.typ));
             let call = b.ins().call(buf_new, &[n_val]);
@@ -3956,9 +4459,11 @@ fn compile_scalar_impl(
             b.switch_to_block(loop_body);
             let mark = env.mark();
             env.bind(idx_local.clone(), i_var, PrimType::I64);
-            let elem = compile_scalar(b, body, env, ctx)?;
+            // Compile the body and push it with the shape-appropriate
+            // helper (prim → push_<T>, composite → push_array, value-
+            // shape → push_value, string → push_arcstr).
+            compile_and_push_field(b, env, ctx, buf, body)?;
             env.truncate(mark);
-            b.ins().call(push, &[buf, elem]);
             let i_now = b.use_var(i_var);
             let one = b.ins().iconst(types::I64, 1);
             let i_next = b.ins().iadd(i_now, one);
@@ -3972,7 +4477,7 @@ fn compile_scalar_impl(
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
         }
-        GirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
+        GirOp::ArrayMap { array, in_elem, elem_local, body } => {
             // Iterate over an existing composite param/local.
             //   arr_ptr = lookup_composite(array)
             //   len = call valarray_len(arr_ptr)
@@ -3980,9 +4485,9 @@ fn compile_scalar_impl(
             //   loop i in 0..len:
             //     elem = call valarray_get_<in_elem>(arr_ptr, i)
             //     bind elem_local = elem
-            //     out_val = eval body
-            //     call push_<out_elem>(buf, out_val)
+            //     compile_and_push_field(buf, body)  // any out shape
             //   finalize(buf)
+            //
             let buf_new = ctx
                 .helper_refs
                 .get("graphix_value_buf_new")
@@ -3995,16 +4500,6 @@ fn compile_scalar_impl(
                 .helper_refs
                 .get("graphix_valarray_len")
                 .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
-            let get_helper = ctx
-                .helper_refs
-                .get(valarray_get_helper(*in_elem)?)
-                .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-            let push = ctx
-                .helper_refs
-                .get(value_buf_push_helper(*out_elem)?)
-                .ok_or_else(|| {
-                    anyhow!("missing push helper for {out_elem:?}")
-                })?;
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
@@ -4026,15 +4521,48 @@ fn compile_scalar_impl(
             b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
             b.switch_to_block(loop_body);
             let i_now = b.use_var(i_var);
-            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-            let elem = b.inst_results(call)[0];
-            let elem_var = b.declare_var(prim_to_clif(*in_elem));
-            b.def_var(elem_var, elem);
             let mark = env.mark();
-            env.bind(elem_local.clone(), elem_var, *in_elem);
-            let out_val = compile_scalar(b, body, env, ctx)?;
+            match in_elem.as_prim() {
+                // Scalar element: get the scalar, bind into the `locals`
+                // slot.
+                Some(prim) => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get(valarray_get_helper(prim)?)
+                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(prim_to_clif(prim));
+                    b.def_var(elem_var, elem);
+                    env.bind(elem_local.clone(), elem_var, prim);
+                    compile_and_push_field(b, env, ctx, buf, body)?;
+                }
+                // Composite element (`Array<(k,v)>` etc.): the element is
+                // an owned `*mut ValArray`; bind it into the composite
+                // slot, run the body (its `TupleGet`s clone the fields
+                // they read), then drop the per-iteration element.
+                None => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get("graphix_valarray_get_array")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_valarray_get_array")
+                        })?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_ptr = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(types::I64);
+                    b.def_var(elem_var, elem_ptr);
+                    env.bind_composite(elem_local.clone(), elem_var);
+                    compile_and_push_field(b, env, ctx, buf, body)?;
+                    let drop_helper = ctx
+                        .helper_refs
+                        .get("graphix_valarray_drop")
+                        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                    let elem_now = b.use_var(elem_var);
+                    b.ins().call(drop_helper, &[elem_now]);
+                }
+            }
             env.truncate(mark);
-            b.ins().call(push, &[buf, out_val]);
             let one = b.ins().iconst(types::I64, 1);
             let i_next = b.ins().iadd(i_now, one);
             b.def_var(i_var, i_next);
@@ -4049,11 +4577,131 @@ fn compile_scalar_impl(
         GirOp::ArrayFilter { array, elem, elem_local, predicate } => {
             // Same shape as ArrayMap but with a conditional push.
             //   loop i in 0..len:
-            //     elem = get(arr, i)
-            //     bind elem_local
+            //     elem = get(arr, i); bind elem_local
             //     keep = eval predicate (Bool, CLIF I8)
-            //     if keep: push elem; else continue
+            //     if keep: push elem; else (composite) drop elem
             //     i += 1
+            // A composite element is an owned `*mut ValArray`: on keep it
+            // moves into the output (`push_array`), on not-keep it must be
+            // dropped — hence the extra `drop_block` for the composite case.
+            let composite = elem.as_prim().is_none();
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let get_helper = match elem.as_prim() {
+                Some(prim) => ctx
+                    .helper_refs
+                    .get(valarray_get_helper(prim)?)
+                    .ok_or_else(|| anyhow!("missing valarray_get helper"))?,
+                None => ctx
+                    .helper_refs
+                    .get("graphix_valarray_get_array")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_get_array"))?,
+            };
+            let push = match elem.as_prim() {
+                Some(prim) => ctx
+                    .helper_refs
+                    .get(value_buf_push_helper(prim)?)
+                    .ok_or_else(|| anyhow!("missing push helper for {prim:?}"))?,
+                None => ctx
+                    .helper_refs
+                    .get("graphix_value_buf_push_array")
+                    .ok_or_else(|| anyhow!("missing graphix_value_buf_push_array"))?,
+            };
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let call = b.ins().call(buf_new, &[len]);
+            let buf = b.inst_results(call)[0];
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let push_block = b.create_block();
+            let advance = b.create_block();
+            let loop_exit = b.create_block();
+            // not-kept owned composite element → drop before advancing
+            let drop_block = if composite {
+                Some(b.create_block())
+            } else {
+                None
+            };
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+            let elem_val = b.inst_results(call)[0];
+            let mark = env.mark();
+            let elem_var = if composite {
+                let v = b.declare_var(types::I64);
+                b.def_var(v, elem_val);
+                env.bind_composite(elem_local.clone(), v);
+                v
+            } else {
+                let prim = elem.as_prim().unwrap();
+                let v = b.declare_var(prim_to_clif(prim));
+                b.def_var(v, elem_val);
+                env.bind(elem_local.clone(), v, prim);
+                v
+            };
+            let keep = compile_scalar(b, predicate, env, ctx)?;
+            env.truncate(mark);
+            let not_kept = drop_block.unwrap_or(advance);
+            b.ins().brif(keep, push_block, &[], not_kept, &[]);
+            b.switch_to_block(push_block);
+            let elem_again = b.use_var(elem_var);
+            b.ins().call(push, &[buf, elem_again]);
+            b.ins().jump(advance, &[]);
+            b.seal_block(push_block);
+            if let Some(drop_block) = drop_block {
+                b.switch_to_block(drop_block);
+                let drop_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let elem_now = b.use_var(elem_var);
+                b.ins().call(drop_helper, &[elem_now]);
+                b.ins().jump(advance, &[]);
+                b.seal_block(drop_block);
+            }
+            b.switch_to_block(advance);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
+            b.seal_block(advance);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(loop_exit);
+            b.seal_block(loop_exit);
+            let call = b.ins().call(finalize, &[buf]);
+            Ok(b.inst_results(call)[0])
+        }
+        GirOp::ArrayFilterMap { array, in_elem, elem_local, out_elem, body } => {
+            // Like ArrayFilter, but the body yields a `Nullable<out_elem>`
+            // per element (Value-shape `(disc, payload)`); collect the
+            // non-null payloads.
+            //   loop i in 0..len:
+            //     elem = get(arr, i); bind elem_local
+            //     (disc, payload) = compile body
+            //     if disc == NULL: skip; else push cast(payload, out_elem)
             let buf_new = ctx
                 .helper_refs
                 .get("graphix_value_buf_new")
@@ -4068,14 +4716,12 @@ fn compile_scalar_impl(
                 .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
             let get_helper = ctx
                 .helper_refs
-                .get(valarray_get_helper(*elem)?)
+                .get(valarray_get_helper(*in_elem)?)
                 .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
             let push = ctx
                 .helper_refs
-                .get(value_buf_push_helper(*elem)?)
-                .ok_or_else(|| {
-                    anyhow!("missing push helper for {elem:?}")
-                })?;
+                .get(value_buf_push_helper(*out_elem)?)
+                .ok_or_else(|| anyhow!("missing push helper for {out_elem:?}"))?;
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
@@ -4101,16 +4747,27 @@ fn compile_scalar_impl(
             let i_now = b.use_var(i_var);
             let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
             let elem_val = b.inst_results(call)[0];
-            let elem_var = b.declare_var(prim_to_clif(*elem));
+            let elem_var = b.declare_var(prim_to_clif(*in_elem));
             b.def_var(elem_var, elem_val);
             let mark = env.mark();
-            env.bind(elem_local.clone(), elem_var, *elem);
-            let keep = compile_scalar(b, predicate, env, ctx)?;
+            env.bind(elem_local.clone(), elem_var, *in_elem);
+            let cv = compile_expr(b, body, env, ctx)?;
             env.truncate(mark);
-            b.ins().brif(keep, push_block, &[], advance, &[]);
+            let (disc, payload) = match cv {
+                CompiledExpr::Value { disc, payload } => (disc, payload),
+                CompiledExpr::Single(_) => {
+                    return Err(anyhow!(
+                        "ArrayFilterMap body not Value-shape — expected \
+                         a Nullable result"
+                    ))
+                }
+            };
+            let is_null =
+                b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
+            b.ins().brif(is_null, advance, &[], push_block, &[]);
             b.switch_to_block(push_block);
-            let elem_again = b.use_var(elem_var);
-            b.ins().call(push, &[buf, elem_again]);
+            let scalar = cast_u64_to_prim(b, payload, *out_elem);
+            b.ins().call(push, &[buf, scalar]);
             b.ins().jump(advance, &[]);
             b.seal_block(push_block);
             b.switch_to_block(advance);
@@ -4119,6 +4776,106 @@ fn compile_scalar_impl(
             b.def_var(i_var, i_next);
             b.ins().jump(loop_header, &[]);
             b.seal_block(advance);
+            b.seal_block(loop_body);
+            b.seal_block(loop_header);
+            b.switch_to_block(loop_exit);
+            b.seal_block(loop_exit);
+            let call = b.ins().call(finalize, &[buf]);
+            Ok(b.inst_results(call)[0])
+        }
+        GirOp::ArrayFlatMap { array, in_elem, elem_local, out_elem: _, body } => {
+            // Like ArrayMap, but each body result is an owned
+            // `Array<out_elem>` (composite pointer) concatenated into the
+            // output buf via `graphix_value_buf_extend_from_array` (which
+            // flattens + drops it). Linear — no per-element branch.
+            let buf_new = ctx
+                .helper_refs
+                .get("graphix_value_buf_new")
+                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
+            let finalize = ctx
+                .helper_refs
+                .get("graphix_valarray_finalize")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            let len_helper = ctx
+                .helper_refs
+                .get("graphix_valarray_len")
+                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            let extend = ctx
+                .helper_refs
+                .get("graphix_value_buf_extend_from_array")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_value_buf_extend_from_array")
+                })?;
+            let arr_var = env.lookup_composite(array).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined array `{array}` in JIT")
+            })?;
+            let arr_ptr = b.use_var(arr_var);
+            let call = b.ins().call(len_helper, &[arr_ptr]);
+            let len = b.inst_results(call)[0];
+            let call = b.ins().call(buf_new, &[len]);
+            let buf = b.inst_results(call)[0];
+            let i_var = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(i_var, zero);
+            let loop_header = b.create_block();
+            let loop_body = b.create_block();
+            let loop_exit = b.create_block();
+            b.ins().jump(loop_header, &[]);
+            b.switch_to_block(loop_header);
+            let i_cur = b.use_var(i_var);
+            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
+            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
+            b.switch_to_block(loop_body);
+            let i_now = b.use_var(i_var);
+            let mark = env.mark();
+            // Element binding: scalar (locals) or composite (owned
+            // `*ValArray` in the composite slot, dropped after the body).
+            let composite_elem = match in_elem.as_prim() {
+                Some(prim) => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get(valarray_get_helper(prim)?)
+                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_val = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(prim_to_clif(prim));
+                    b.def_var(elem_var, elem_val);
+                    env.bind(elem_local.clone(), elem_var, prim);
+                    None
+                }
+                None => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get("graphix_valarray_get_array")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_valarray_get_array")
+                        })?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_ptr = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(types::I64);
+                    b.def_var(elem_var, elem_ptr);
+                    env.bind_composite(elem_local.clone(), elem_var);
+                    Some(elem_var)
+                }
+            };
+            let body_ptr = compile_scalar(b, body, env, ctx)?;
+            // Body must be an owned array for `extend` to consume; a
+            // Borrowed source (Local read) is refcount-cloned first.
+            let body_ptr = ensure_owned_composite(b, ctx, body, body_ptr)?;
+            if let Some(elem_var) = composite_elem {
+                let drop_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let elem_now = b.use_var(elem_var);
+                b.ins().call(drop_helper, &[elem_now]);
+            }
+            env.truncate(mark);
+            b.ins().call(extend, &[buf, body_ptr]);
+            let one = b.ins().iconst(types::I64, 1);
+            let i_next = b.ins().iadd(i_now, one);
+            b.def_var(i_var, i_next);
+            b.ins().jump(loop_header, &[]);
             b.seal_block(loop_body);
             b.seal_block(loop_header);
             b.switch_to_block(loop_exit);
@@ -4139,10 +4896,6 @@ fn compile_scalar_impl(
                 .helper_refs
                 .get("graphix_valarray_len")
                 .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
-            let get_helper = ctx
-                .helper_refs
-                .get(valarray_get_helper(*elem_typ)?)
-                .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined fold array `{array}` in JIT")
             })?;
@@ -4165,17 +4918,51 @@ fn compile_scalar_impl(
             b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
             b.switch_to_block(loop_body);
             let i_now = b.use_var(i_var);
-            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-            let elem_val = b.inst_results(call)[0];
-            let elem_var = b.declare_var(prim_to_clif(*elem_typ));
-            b.def_var(elem_var, elem_val);
             // Bind acc and elem locals so the body's GirOp::Local
             // resolutions work. The order matches the interp:
             // acc first then elem (GIR construction pins this).
             let mark = env.mark();
             env.bind(acc_local.clone(), acc_var, acc_prim);
-            env.bind(elem_local.clone(), elem_var, *elem_typ);
+            // Element binding: scalar (locals) or composite (an owned
+            // `*mut ValArray` in the composite slot, dropped after the
+            // body) — the same split as `ArrayMap`.
+            let elem_composite_var = match elem_typ.as_prim() {
+                Some(prim) => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get(valarray_get_helper(prim)?)
+                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_val = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(prim_to_clif(prim));
+                    b.def_var(elem_var, elem_val);
+                    env.bind(elem_local.clone(), elem_var, prim);
+                    None
+                }
+                None => {
+                    let get_helper = ctx
+                        .helper_refs
+                        .get("graphix_valarray_get_array")
+                        .ok_or_else(|| {
+                            anyhow!("missing graphix_valarray_get_array")
+                        })?;
+                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
+                    let elem_ptr = b.inst_results(call)[0];
+                    let elem_var = b.declare_var(types::I64);
+                    b.def_var(elem_var, elem_ptr);
+                    env.bind_composite(elem_local.clone(), elem_var);
+                    Some(elem_var)
+                }
+            };
             let new_acc = compile_scalar(b, body, env, ctx)?;
+            if let Some(elem_var) = elem_composite_var {
+                let drop_helper = ctx
+                    .helper_refs
+                    .get("graphix_valarray_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+                let elem_now = b.use_var(elem_var);
+                b.ins().call(drop_helper, &[elem_now]);
+            }
             env.truncate(mark);
             b.def_var(acc_var, new_acc);
             let one = b.ins().iconst(types::I64, 1);
@@ -4223,6 +5010,12 @@ fn compile_scalar_impl(
             let call = b.ins().call(helper, &[disc, payload, idx_const]);
             Ok(b.inst_results(call)[0])
         }
+        // `ArrayFindMap` is value-shape (Nullable<out>) and composite-
+        // input-capable; not yet JIT-lowered (the interp handles it via
+        // `fuse()` fallback).
+        GirOp::ArrayFindMap { .. } => Err(anyhow!(
+            "ArrayFindMap not yet JIT-lowered"
+        )),
     }
 }
 
@@ -4300,6 +5093,12 @@ fn classify_composite_source(e: &GirExpr) -> CompositeSource {
         | GirOp::ArrayInit { .. }
         | GirOp::ArrayMap { .. }
         | GirOp::ArrayFilter { .. }
+        | GirOp::ArrayFind { .. }
+        | GirOp::ArrayFilterMap { .. }
+        | GirOp::ArrayFlatMap { .. }
+        | GirOp::BytesIndex { .. }
+        | GirOp::MapRef { .. }
+        | GirOp::ArraySlice { .. }
         | GirOp::VariantNew { .. } => CompositeSource::Owned,
         // A composite-return DynCall hands back an owned `*mut
         // ValArray` / `*mut Value` (`Box::into_raw` of a fresh box in
@@ -4320,6 +5119,13 @@ fn classify_composite_source(e: &GirExpr) -> CompositeSource {
         GirOp::Block { .. } | GirOp::IfChain { .. } => {
             CompositeSource::Owned
         }
+        // Composite / value-shape element reads (`a[i]`, `t.0`,
+        // `s.field`) clone the slot into a fresh box / refcount-bumped
+        // Value (`graphix_*_get_array` / `_get_value`), so the result
+        // is owned. Treating it as Borrowed would clone-then-leak it.
+        GirOp::ArrayGet { .. }
+        | GirOp::TupleGet { .. }
+        | GirOp::StructGet { .. } => CompositeSource::Owned,
         // Anything else (Local reads, etc.) we conservatively treat as
         // borrowed. False positives just cost one extra refcount bump
         // — never an unsoundness.
@@ -4377,7 +5183,7 @@ fn compile_call_clif_args(
             GirType::String
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes
+            | GirType::Bytes | GirType::Map
             | GirType::Unit
             | GirType::Null => {
                 return Err(anyhow!(
@@ -4499,7 +5305,7 @@ fn ensure_owned_composite(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes => Err(anyhow!(
+        | GirType::Bytes | GirType::Map => Err(anyhow!(
             "ensure_owned_composite reached for Value-shape type \
              `{:?}` — caller should use `ensure_owned_value` instead",
             e.typ
@@ -4544,11 +5350,13 @@ fn ensure_owned_value(
     Ok((results[0], results[1]))
 }
 
-/// Compile a `ValueArith` operand as an OWNED `(disc, payload)` Value
-/// — the arith helper consumes both operands. A Value-shape operand
-/// (datetime/duration) clones a Borrowed Local read via
-/// `ensure_owned_value`; a scalar operand is promoted to a fresh
-/// `Value::<prim>` (no `Arc`, so trivially owned).
+/// Compile a `ValueArith` / `ValueEq` operand as an OWNED `(disc,
+/// payload)` Value — the helper consumes both operands. A value-shape
+/// operand clones a Borrowed Local read via `ensure_owned_value`; a
+/// scalar is promoted to a fresh `Value::<prim>`; a String/composite
+/// (only reachable from `ValueEq`) is wrapped into a `Value::String` /
+/// `Value::Array` via the boxing helpers, refcount-cloning a Borrowed
+/// source first so the helper's consume doesn't free the caller's local.
 fn compile_owned_value_operand(
     b: &mut FunctionBuilder,
     e: &GirExpr,
@@ -4557,7 +5365,12 @@ fn compile_owned_value_operand(
 ) -> Result<(ClifValue, ClifValue)> {
     use cranelift_codegen::ir::types;
     match &e.typ {
-        GirType::DateTime | GirType::Duration | GirType::Bytes => {
+        GirType::Variant(_)
+        | GirType::Nullable(_)
+        | GirType::DateTime
+        | GirType::Duration
+        | GirType::Bytes
+        | GirType::Map => {
             let cv = compile_expr(b, e, env, ctx)?;
             ensure_owned_value(b, ctx, e, cv)
         }
@@ -4567,9 +5380,36 @@ fn compile_owned_value_operand(
             let payload = scalar_to_payload_i64(b, *p, s);
             Ok((disc, payload))
         }
+        GirType::String => {
+            // ConstStr/Concat/Local-read all produce an owned ArcStr;
+            // `graphix_value_new_string` consumes it into a Value.
+            let s = compile_scalar(b, e, env, ctx)?;
+            let helper = ctx
+                .helper_refs
+                .get("graphix_value_new_string")
+                .ok_or_else(|| anyhow!("missing graphix_value_new_string"))?;
+            let call = b.ins().call(helper, &[s]);
+            let d = b.inst_results(call)[0];
+            let p = b.inst_results(call)[1];
+            Ok((d, p))
+        }
+        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+            let cv = compile_expr(b, e, env, ctx)?;
+            let ptr = cv.single()?;
+            let ptr = ensure_owned_composite(b, ctx, e, ptr)?;
+            let helper = ctx
+                .helper_refs
+                .get("graphix_value_new_from_array")
+                .ok_or_else(|| {
+                    anyhow!("missing graphix_value_new_from_array")
+                })?;
+            let call = b.ins().call(helper, &[ptr]);
+            let d = b.inst_results(call)[0];
+            let p = b.inst_results(call)[1];
+            Ok((d, p))
+        }
         other => Err(anyhow!(
-            "ValueArith operand has unexpected type {other:?} — \
-             expected datetime/duration or a scalar prim"
+            "value operand has unexpected type {other:?}"
         )),
     }
 }
@@ -4805,7 +5645,7 @@ fn compile_and_push_field(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes => {
+        | GirType::Bytes | GirType::Map => {
             match classify_composite_source(field) {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => {
@@ -4894,6 +5734,85 @@ fn struct_get_helper(p: PrimType) -> Result<&'static str> {
         PrimType::F64 => "graphix_struct_get_f64",
         PrimType::Bool => "graphix_struct_get_bool",
     })
+}
+
+/// Map an element [`GirType`] to its element-read helper symbol —
+/// primitive (`get_<prim>`), String (`get_arcstr`), composite
+/// (`get_array`, a `*mut ValArray`), or value-shape (`get_value`, a
+/// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
+/// level kv-pair read) family over the flat `valarray_get_*` family.
+fn element_read_helper(
+    elem: &GirType,
+    struct_access: bool,
+) -> Result<&'static str> {
+    Ok(match elem {
+        GirType::Prim(p) => {
+            if struct_access {
+                struct_get_helper(*p)?
+            } else {
+                valarray_get_helper(*p)?
+            }
+        }
+        GirType::String => {
+            if struct_access {
+                "graphix_struct_get_arcstr"
+            } else {
+                "graphix_valarray_get_arcstr"
+            }
+        }
+        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+            if struct_access {
+                "graphix_struct_get_array"
+            } else {
+                "graphix_valarray_get_array"
+            }
+        }
+        GirType::Variant(_)
+        | GirType::Nullable(_)
+        | GirType::DateTime
+        | GirType::Duration
+        | GirType::Bytes | GirType::Map => {
+            if struct_access {
+                "graphix_struct_get_value"
+            } else {
+                "graphix_valarray_get_value"
+            }
+        }
+        GirType::Unit | GirType::Null => {
+            return Err(anyhow!(
+                "element read of Unit/Null-typed slot — GIR is malformed"
+            ));
+        }
+    })
+}
+
+/// Emit an element read: `arr_ptr[idx]` (or struct field) of the given
+/// element `GirType`, dispatching to the right `..._get_*` helper. The
+/// result is OWNED (fresh box / refcount-bumped clone). Returns
+/// `CompiledExpr::Value` for a value-shape element (two-register
+/// Value) and `CompiledExpr::Single` for scalar / string / composite-
+/// pointer elements — so the same routine serves both the scalar arm
+/// (`.single()`) and the value-shape arm of `compile_expr`.
+fn compile_element_read(
+    b: &mut FunctionBuilder,
+    arr_ptr: ClifValue,
+    idx_val: ClifValue,
+    elem: &GirType,
+    struct_access: bool,
+    ctx: &LowerCtx,
+) -> Result<CompiledExpr> {
+    let helper_name = element_read_helper(elem, struct_access)?;
+    let helper = ctx
+        .helper_refs
+        .get(helper_name)
+        .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
+    let call = b.ins().call(helper, &[arr_ptr, idx_val]);
+    let r = b.inst_results(call);
+    if elem.is_value_shape() {
+        Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    } else {
+        Ok(CompiledExpr::Single(r[0]))
+    }
 }
 
 /// Widen a CLIF value to i64. Helpers expect a usize index; if the
@@ -5383,7 +6302,7 @@ fn clif_of(t: &GirType) -> ClifType {
         // datetime/duration are Value-shape (two registers at the
         // boundary); the single-type defensive ABI is a pointer slot,
         // same as Nullable below.
-        GirType::DateTime | GirType::Duration | GirType::Bytes => types::I64,
+        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => types::I64,
         // Unit at the ABI is just a zero pointer slot — see
         // `define_typed_kernel`'s return_clif handling.
         GirType::Unit => types::I64,

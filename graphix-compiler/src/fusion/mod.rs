@@ -216,6 +216,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
             | crate::gir::GirType::DateTime
             | crate::gir::GirType::Duration
             | crate::gir::GirType::Bytes
+            | crate::gir::GirType::Map
             | crate::gir::GirType::String => {}
             crate::gir::GirType::Unit
             | crate::gir::GirType::Null => continue,

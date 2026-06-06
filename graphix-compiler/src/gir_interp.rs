@@ -159,6 +159,24 @@ impl RegValue {
         }
     }
 
+    /// Signed index value — for `array[i]`, where negative `i` counts
+    /// from the end. Mirrors `as_usize` but keeps the sign.
+    fn as_i64(self) -> i64 {
+        match self {
+            RegValue::I8(x) => x as i64,
+            RegValue::I16(x) => x as i64,
+            RegValue::I32(x) => x as i64,
+            RegValue::I64(x) => x,
+            RegValue::U8(x) => x as i64,
+            RegValue::U16(x) => x as i64,
+            RegValue::U32(x) => x as i64,
+            RegValue::U64(x) => x as i64,
+            RegValue::F32(_) | RegValue::F64(_) | RegValue::Bool(_) => {
+                panic!("as_i64: non-integer index — GIR is malformed")
+            }
+        }
+    }
+
     /// Read element `i` of `arr` as a `RegValue` of variant `expected`.
     /// Wraps `ValArray::get_unchecked` — same safety contract: caller
     /// guarantees `i < arr.len()` and that every element of `arr`
@@ -239,6 +257,10 @@ pub enum EvalResult {
     /// produced by `GirOp::ConstValue` (bytes literals) and bytes-
     /// returning DynCalls.
     Bytes(Value),
+    /// `GirType::Map` result — inner `Value` is a `Value::Map(CMap)`.
+    /// Value-shape like `Bytes`; produced by a constant map literal
+    /// (`GirOp::ConstValue`) and map-returning DynCalls.
+    Map(Value),
 }
 
 impl EvalResult {
@@ -253,7 +275,7 @@ impl EvalResult {
             EvalResult::Nullable(v) => v,
             EvalResult::DateTime(v)
             | EvalResult::Duration(v)
-            | EvalResult::Bytes(v) => v,
+            | EvalResult::Bytes(v) | EvalResult::Map(v) => v,
         }
     }
 
@@ -459,7 +481,7 @@ impl InterpEnv {
             // DateTime/Duration, so the slot's narrower name is fine.
             EvalResult::DateTime(v)
             | EvalResult::Duration(v)
-            | EvalResult::Bytes(v) => self.push_nullable(name, v),
+            | EvalResult::Bytes(v) | EvalResult::Map(v) => self.push_nullable(name, v),
             EvalResult::String(s) => self.push_string(name, s),
             // The singleton `null` value (GirType::Null) has no
             // useful storage form on its own — every site that would
@@ -763,7 +785,7 @@ fn eval_body(
                             EvalResult::Nullable(val)
                             | EvalResult::DateTime(val)
                             | EvalResult::Duration(val)
-                            | EvalResult::Bytes(val) => {
+                            | EvalResult::Bytes(val) | EvalResult::Map(val) => {
                                 env.rebind_nullable(&slot.name, val);
                             }
                             EvalResult::String(_) => panic!(
@@ -822,6 +844,7 @@ fn wrap_value_shape(v: Value, typ: &GirType) -> EvalResult {
     match typ {
         GirType::Duration => EvalResult::Duration(v),
         GirType::Bytes => EvalResult::Bytes(v),
+        GirType::Map => EvalResult::Map(v),
         _ => EvalResult::DateTime(v),
     }
 }
@@ -851,6 +874,14 @@ fn eval_expr(
                 BinOp::Mod => l % r,
             };
             wrap_value_shape(result, &e.typ)
+        }
+        GirOp::ValueEq { ne, lhs, rhs } => {
+            // Compare both operands as netidx `Value`s via PartialEq —
+            // byte-identical to the non-fused `==`/`!=` node.
+            let l = eval_expr(env, lhs, registry, dispatch)?.into_value();
+            let r = eval_expr(env, rhs, registry, dispatch)?.into_value();
+            let eq = l == r;
+            EvalResult::Scalar(RegValue::Bool(if *ne { !eq } else { eq }))
         }
         GirOp::ConstNull => EvalResult::Null,
         GirOp::IsNull(inner) => {
@@ -927,7 +958,7 @@ fn eval_expr(
                 },
                 GirType::Variant(_) => EvalResult::Variant(inner_value),
                 GirType::Nullable(_) => EvalResult::Nullable(inner_value),
-                GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
                     wrap_value_shape(inner_value, success_typ)
                 }
                 GirType::Unit | GirType::Null => panic!(
@@ -992,7 +1023,7 @@ fn eval_expr(
             ),
             // datetime/duration locals share the `nullables` slot (a
             // name→Value map); re-wrap by the ref's type.
-            GirType::DateTime | GirType::Duration | GirType::Bytes => {
+            GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
                 let v = env
                     .lookup_nullable(name)
                     .unwrap_or_else(|| {
@@ -1119,7 +1150,7 @@ fn eval_expr(
                     },
                     // datetime/duration/bytes are bare value-shape; the
                     // callee holds them in `value_params`.
-                    GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                    GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
                         values.push(r.into_value())
                     }
                     GirType::Unit | GirType::Null => panic!(
@@ -1164,6 +1195,19 @@ fn eval_expr(
                     (GirType::String, EvalResult::String(s)) => {
                         Value::String(s)
                     }
+                    // Value-shape args (datetime / duration / bytes /
+                    // map): every carrier just wraps the inner `Value`,
+                    // so unwrap whichever value-shape carrier arrived.
+                    (
+                        GirType::DateTime
+                        | GirType::Duration
+                        | GirType::Bytes
+                        | GirType::Map,
+                        EvalResult::DateTime(v)
+                        | EvalResult::Duration(v)
+                        | EvalResult::Bytes(v)
+                        | EvalResult::Map(v),
+                    ) => v,
                     // Nullable arg: an `EvalResult::Nullable(value)`
                     // unwraps directly; a bare `Null` widens to
                     // `Value::Null`; a `Scalar` carrying the non-null
@@ -1228,7 +1272,7 @@ fn eval_expr(
                 // datetime/duration-returning DynCall: the runtime
                 // Value is a `Value::DateTime`/`Value::Duration`; wrap
                 // it by the declared type.
-                GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
                     wrap_value_shape(result, return_type)
                 }
                 // Bare `GirType::Null` return: the function's only
@@ -1295,21 +1339,62 @@ fn eval_expr(
             EvalResult::Scalar(RegValue::U64(arr.len() as u64))
         }
         GirOp::ArrayGet { name, idx } => {
+            // `array[i]` — bounds-checked, negative-from-end. Routes
+            // through the shared `array_index` so the interp, node-walk
+            // and JIT agree bit-for-bit, including the out-of-bounds
+            // `ArrayIndexError`. The op's result type is
+            // `Nullable<elem>` (= `[elem, Error<…>]`), so the bare
+            // element-or-error Value is wrapped as `Nullable`.
+            //
             // Clone the ValArray (refcount bump only) so the immutable
             // env borrow is released before we recurse into eval_expr
-            // for `idx`. Result type follows `e.typ` — primitive uses
-            // the fast scalar extraction; composite gets the slot's
-            // Value wrapped via `extract_composite_or_scalar`.
+            // for `idx`.
             let arr = env
                 .lookup_array(name)
                 .unwrap_or_else(|| {
                     panic!("undefined array `{name}` — GIR is malformed")
                 })
                 .clone();
-            let idx_val =
-                eval_expr(env, idx, registry, dispatch)?.into_scalar();
-            let i = idx_val.as_usize();
-            extract_composite_or_scalar(&arr, i, &e.typ)
+            let i =
+                eval_expr(env, idx, registry, dispatch)?.into_scalar().as_i64();
+            EvalResult::Nullable(crate::node::array::array_index(&arr, i))
+        }
+        GirOp::BytesIndex { bytes, idx } => {
+            // `bytes[i]` — shared bounds-checked `bytes_index`; result
+            // `Nullable<u8>` (`[u8, Error<…>]`).
+            let b = eval_expr(env, bytes, registry, dispatch)?.into_value();
+            let i =
+                eval_expr(env, idx, registry, dispatch)?.into_scalar().as_i64();
+            let r = match b {
+                Value::Bytes(pb) => crate::node::array::bytes_index(&pb, i),
+                _ => Value::error("ArrayIndexError: expected bytes"),
+            };
+            EvalResult::Nullable(r)
+        }
+        GirOp::MapRef { map, key } => {
+            // `m{key}` — shared `map_get`; result `Nullable<V>`
+            // (`[V, Error]`: the value or `map key not found`).
+            let m = eval_expr(env, map, registry, dispatch)?.into_value();
+            let k = eval_expr(env, key, registry, dispatch)?.into_value();
+            EvalResult::Nullable(crate::node::map::map_get(&m, &k))
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            // `a[i..j]` — shared `array_slice_i64`; result
+            // `Nullable<source>` (the slice or an out-of-bounds error).
+            let src = eval_expr(env, source, registry, dispatch)?.into_value();
+            let s = match start {
+                Some(e) => {
+                    Some(eval_expr(env, e, registry, dispatch)?.into_scalar().as_i64())
+                }
+                None => None,
+            };
+            let en = match end {
+                Some(e) => {
+                    Some(eval_expr(env, e, registry, dispatch)?.into_scalar().as_i64())
+                }
+                None => None,
+            };
+            EvalResult::Nullable(crate::node::array::array_slice_i64(&src, s, en))
         }
         GirOp::TupleGet { name, idx, elem_typ } => {
             // Tuple values are flat ValArrays. Branch on the slot's
@@ -1342,11 +1427,11 @@ fn eval_expr(
             };
             extract_composite_or_scalar(&kv_pair, 1, elem_typ)
         }
-        GirOp::ArrayInit { n, idx_local, elem_typ, body } => {
+        GirOp::ArrayInit { n, idx_local, body } => {
             // Evaluate `n` once, allocate a single output buffer,
             // then loop the body with `idx_local` bound to 0..n,
-            // pushing each scalar result. Mirrors the AOT lowering
-            // (`from_iter_exact` over a range map).
+            // pushing each result. `into_value` handles any element
+            // shape (prim or composite tuple/struct/variant/…).
             let n_val =
                 eval_expr(env, n, registry, dispatch)?.into_scalar().as_usize();
             let mark = env.mark();
@@ -1357,14 +1442,170 @@ fn eval_expr(
             out.reserve(n_val);
             for i in 0..n_val {
                 env.locals[idx_slot].1 = RegValue::I64(i as i64);
-                let r = eval_expr(env, body, registry, dispatch)?.into_scalar();
-                debug_assert_eq!(r.typ(), *elem_typ, "ArrayInit elem type mismatch");
-                out.push(r.to_value());
+                let r = eval_expr(env, body, registry, dispatch)?.into_value();
+                out.push(r);
             }
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        GirOp::ArrayMap { array, in_elem, elem_local, out_elem, body } => {
+        GirOp::ArrayMap { array, in_elem, elem_local, body } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — GIR is malformed")
+                })
+                .clone();
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            out.reserve(arr.len());
+            match in_elem.as_prim() {
+                // Scalar element: bind into a `locals` slot, set per-iter
+                // via the unsafe fast scalar extraction.
+                Some(prim) => {
+                    let mark = env.mark();
+                    env.push(elem_local.clone(), zero_reg(prim));
+                    let elem_slot = env.locals.len() - 1;
+                    for i in 0..arr.len() {
+                        env.locals[elem_slot].1 =
+                            unsafe { RegValue::from_array_elem(&arr, i, prim) };
+                        // `into_value` handles any output element shape.
+                        let r =
+                            eval_expr(env, body, registry, dispatch)?.into_value();
+                        out.push(r);
+                    }
+                    env.truncate(mark);
+                }
+                // Composite element (`Array<(k,v)>` etc.): bind the element
+                // `Value::Array` into the `arrays` slot; the body's
+                // `TupleGet`/`StructGet` (destructure leaves) read it.
+                None => {
+                    let array_mark = env.arrays.len();
+                    env.push_array(elem_local.clone(), ValArray::from([]));
+                    let elem_slot = env.arrays.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = match &arr[i] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!(
+                                "composite ArrayMap element not an array: {v:?}"
+                            ),
+                        };
+                        env.arrays[elem_slot].1 = elem_val;
+                        let r =
+                            eval_expr(env, body, registry, dispatch)?.into_value();
+                        out.push(r);
+                    }
+                    env.arrays.truncate(array_mark);
+                }
+            }
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        GirOp::ArrayFilter { array, elem, elem_local, predicate } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — GIR is malformed")
+                })
+                .clone();
+            let mark = env.mark();
+            let mut out: poolshark::local::LPooled<Vec<Value>> =
+                poolshark::local::LPooled::take();
+            match elem.as_prim() {
+                Some(prim) => {
+                    env.push(elem_local.clone(), zero_reg(prim));
+                    let elem_slot = env.locals.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = unsafe {
+                            RegValue::from_array_elem(&arr, i, prim)
+                        };
+                        env.locals[elem_slot].1 = elem_val;
+                        let keep = eval_expr(env, predicate, registry, dispatch)?
+                            .into_scalar()
+                            .as_bool();
+                        if keep {
+                            out.push(elem_val.to_value());
+                        }
+                    }
+                }
+                None => {
+                    let array_mark = env.arrays.len();
+                    env.push_array(elem_local.clone(), ValArray::from([]));
+                    let elem_slot = env.arrays.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = match &arr[i] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!(
+                                "composite ArrayFilter element not an array: {v:?}"
+                            ),
+                        };
+                        env.arrays[elem_slot].1 = elem_val;
+                        let keep = eval_expr(env, predicate, registry, dispatch)?
+                            .into_scalar()
+                            .as_bool();
+                        if keep {
+                            // push the original composite element
+                            out.push(arr[i].clone());
+                        }
+                    }
+                    env.arrays.truncate(array_mark);
+                }
+            }
+            env.truncate(mark);
+            EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        GirOp::ArrayFind { array, elem, elem_local, predicate } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — GIR is malformed")
+                })
+                .clone();
+            let mark = env.mark();
+            let mut found = Value::Null;
+            match elem.as_prim() {
+                Some(prim) => {
+                    env.push(elem_local.clone(), zero_reg(prim));
+                    let elem_slot = env.locals.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = unsafe {
+                            RegValue::from_array_elem(&arr, i, prim)
+                        };
+                        env.locals[elem_slot].1 = elem_val;
+                        let hit = eval_expr(env, predicate, registry, dispatch)?
+                            .into_scalar()
+                            .as_bool();
+                        if hit {
+                            found = elem_val.to_value();
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    let array_mark = env.arrays.len();
+                    env.push_array(elem_local.clone(), ValArray::from([]));
+                    let elem_slot = env.arrays.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = match &arr[i] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!(
+                                "composite ArrayFind element not an array: {v:?}"
+                            ),
+                        };
+                        env.arrays[elem_slot].1 = elem_val;
+                        let hit = eval_expr(env, predicate, registry, dispatch)?
+                            .into_scalar()
+                            .as_bool();
+                        if hit {
+                            found = arr[i].clone();
+                            break;
+                        }
+                    }
+                    env.arrays.truncate(array_mark);
+                }
+            }
+            env.truncate(mark);
+            EvalResult::Nullable(found)
+        }
+        GirOp::ArrayFilterMap { array, in_elem, elem_local, out_elem: _, body } => {
             let arr = env
                 .lookup_array(array)
                 .unwrap_or_else(|| {
@@ -1376,18 +1617,21 @@ fn eval_expr(
             let elem_slot = env.locals.len() - 1;
             let mut out: poolshark::local::LPooled<Vec<Value>> =
                 poolshark::local::LPooled::take();
-            out.reserve(arr.len());
             for i in 0..arr.len() {
                 env.locals[elem_slot].1 =
                     unsafe { RegValue::from_array_elem(&arr, i, *in_elem) };
-                let r = eval_expr(env, body, registry, dispatch)?.into_scalar();
-                debug_assert_eq!(r.typ(), *out_elem, "ArrayMap elem type mismatch");
-                out.push(r.to_value());
+                // Body produces `Nullable<out_elem>`; keep non-null.
+                let v = eval_expr(env, body, registry, dispatch)?.into_value();
+                if !matches!(v, Value::Null) {
+                    out.push(v);
+                }
             }
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
-        GirOp::ArrayFilter { array, elem, elem_local, predicate } => {
+        GirOp::ArrayFindMap { array, in_elem, elem_local, body } => {
+            // Like ArrayFilterMap, but return the first non-null body
+            // result (early-exit) as `Nullable<out>`.
             let arr = env
                 .lookup_array(array)
                 .unwrap_or_else(|| {
@@ -1395,19 +1639,91 @@ fn eval_expr(
                 })
                 .clone();
             let mark = env.mark();
-            env.push(elem_local.clone(), zero_reg(*elem));
-            let elem_slot = env.locals.len() - 1;
+            let mut result = Value::Null;
+            match in_elem.as_prim() {
+                Some(prim) => {
+                    env.push(elem_local.clone(), zero_reg(prim));
+                    let elem_slot = env.locals.len() - 1;
+                    for i in 0..arr.len() {
+                        env.locals[elem_slot].1 = unsafe {
+                            RegValue::from_array_elem(&arr, i, prim)
+                        };
+                        let v = eval_expr(env, body, registry, dispatch)?.into_value();
+                        if !matches!(v, Value::Null) {
+                            result = v;
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    let array_mark = env.arrays.len();
+                    env.push_array(elem_local.clone(), ValArray::from([]));
+                    let elem_slot = env.arrays.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = match &arr[i] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!(
+                                "composite ArrayFindMap element not an array: {v:?}"
+                            ),
+                        };
+                        env.arrays[elem_slot].1 = elem_val;
+                        let v = eval_expr(env, body, registry, dispatch)?.into_value();
+                        if !matches!(v, Value::Null) {
+                            result = v;
+                            break;
+                        }
+                    }
+                    env.arrays.truncate(array_mark);
+                }
+            }
+            env.truncate(mark);
+            EvalResult::Nullable(result)
+        }
+        GirOp::ArrayFlatMap { array, in_elem, elem_local, out_elem: _, body } => {
+            let arr = env
+                .lookup_array(array)
+                .unwrap_or_else(|| {
+                    panic!("undefined array `{array}` — GIR is malformed")
+                })
+                .clone();
+            let mark = env.mark();
             let mut out: poolshark::local::LPooled<Vec<Value>> =
                 poolshark::local::LPooled::take();
-            for i in 0..arr.len() {
-                let elem_val =
-                    unsafe { RegValue::from_array_elem(&arr, i, *elem) };
-                env.locals[elem_slot].1 = elem_val;
-                let keep = eval_expr(env, predicate, registry, dispatch)?
-                    .into_scalar()
-                    .as_bool();
-                if keep {
-                    out.push(elem_val.to_value());
+            // Body produces `Array<out_elem>`; concatenate each.
+            macro_rules! collect_body {
+                () => {
+                    match eval_expr(env, body, registry, dispatch)?.into_value() {
+                        Value::Array(a) => out.extend(a.iter().cloned()),
+                        v => out.push(v),
+                    }
+                };
+            }
+            match in_elem.as_prim() {
+                Some(prim) => {
+                    env.push(elem_local.clone(), zero_reg(prim));
+                    let elem_slot = env.locals.len() - 1;
+                    for i in 0..arr.len() {
+                        env.locals[elem_slot].1 = unsafe {
+                            RegValue::from_array_elem(&arr, i, prim)
+                        };
+                        collect_body!();
+                    }
+                }
+                None => {
+                    let array_mark = env.arrays.len();
+                    env.push_array(elem_local.clone(), ValArray::from([]));
+                    let elem_slot = env.arrays.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = match &arr[i] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!(
+                                "composite ArrayFlatMap element not an array: {v:?}"
+                            ),
+                        };
+                        env.arrays[elem_slot].1 = elem_val;
+                        collect_body!();
+                    }
+                    env.arrays.truncate(array_mark);
                 }
             }
             env.truncate(mark);
@@ -1513,17 +1829,43 @@ fn eval_expr(
                 eval_expr(env, init, registry, dispatch)?.into_scalar();
             let mark = env.mark();
             env.push(acc_local.clone(), acc);
-            env.push(elem_local.clone(), zero_reg(*elem_typ));
-            let acc_idx = env.locals.len() - 2;
-            let elem_idx = env.locals.len() - 1;
-            for i in 0..arr.len() {
-                let elem_val =
-                    unsafe { RegValue::from_array_elem(&arr, i, *elem_typ) };
-                env.locals[elem_idx].1 = elem_val;
-                let new_acc = eval_expr(env, body, registry, dispatch)?
-                    .into_scalar();
-                env.locals[acc_idx].1 = new_acc;
-                acc = new_acc;
+            let acc_idx = env.locals.len() - 1;
+            match elem_typ.as_prim() {
+                // Scalar element: in the `locals` slot.
+                Some(prim) => {
+                    env.push(elem_local.clone(), zero_reg(prim));
+                    let elem_idx = env.locals.len() - 1;
+                    for i in 0..arr.len() {
+                        env.locals[elem_idx].1 = unsafe {
+                            RegValue::from_array_elem(&arr, i, prim)
+                        };
+                        let new_acc =
+                            eval_expr(env, body, registry, dispatch)?.into_scalar();
+                        env.locals[acc_idx].1 = new_acc;
+                        acc = new_acc;
+                    }
+                }
+                // Composite element (`Array<(k,v)>`): in the `arrays`
+                // slot; the body's destructure `TupleGet`s read it.
+                None => {
+                    let array_mark = env.arrays.len();
+                    env.push_array(elem_local.clone(), ValArray::from([]));
+                    let elem_slot = env.arrays.len() - 1;
+                    for i in 0..arr.len() {
+                        let elem_val = match &arr[i] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!(
+                                "composite ArrayFold element not an array: {v:?}"
+                            ),
+                        };
+                        env.arrays[elem_slot].1 = elem_val;
+                        let new_acc =
+                            eval_expr(env, body, registry, dispatch)?.into_scalar();
+                        env.locals[acc_idx].1 = new_acc;
+                        acc = new_acc;
+                    }
+                    env.arrays.truncate(array_mark);
+                }
             }
             env.truncate(mark);
             EvalResult::Scalar(acc)
@@ -1595,7 +1937,7 @@ fn extract_composite_or_scalar(
         GirType::Nullable(_) => EvalResult::Nullable(arr[idx].clone()),
         // datetime/duration slot: the inner Value is a
         // Value::DateTime/Duration; wrap by the slot type.
-        GirType::DateTime | GirType::Duration | GirType::Bytes => {
+        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
             wrap_value_shape(arr[idx].clone(), slot_typ)
         }
         GirType::Unit => panic!(
@@ -2224,6 +2566,12 @@ pub(crate) fn gir_type_to_graphix_type(
             flags.insert(netidx_value::Typ::Bytes);
             Type::Primitive(flags)
         }
+        // `Map<K, V>` — the leaf GirType carries no K/V info (like the
+        // Map node's own compile), so map back to a fresh-tvar Map.
+        GirType::Map => Type::Map {
+            key: triomphe::Arc::new(Type::empty_tvar()),
+            value: triomphe::Arc::new(Type::empty_tvar()),
+        },
         // Unit is the discard-return shape; source-level `_` → Bottom.
         GirType::Unit => Type::Bottom,
         // String maps back to `Type::Primitive(Typ::String)`.
@@ -3216,7 +3564,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                     }
                     // datetime/duration return: same two-word Value
                     // decode as Variant/Nullable.
-                    GirType::DateTime | GirType::Duration | GirType::Bytes => {
+                    GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
                         let owned: Value =
                             unsafe { std::mem::transmute(out) };
                         wrap_value_shape(owned, &self.kernel.return_type)
@@ -4247,53 +4595,68 @@ mod tests {
     }
 
     #[test]
-    fn array_len_and_get() {
-        // Kernel:
-        //   fn sum_two(arr: Array<f64>) -> f64 = arr[0] + arr[1]
-        // Validates ArrayLen plumbing isn't needed here, but ArrayGet
-        // is — and the kernel reads two distinct indices through the
-        // array param.
+    fn array_get_bounds_checked() {
+        // `array[i]` is `[elem, Error<…>]`: the op carries the bounds
+        // check (via the shared `array_index`) and its result type is
+        // `Nullable<elem>`. Exercise in-bounds, positive out-of-bounds,
+        // negative-from-end, and the `i > 0` quirk (offset 0 via a
+        // negative index is an error) — all at the interp level, the
+        // same semantics the node-walk and JIT must match.
         use crate::gir::{ArrayInput, GirExpr, GirOp};
-        let elem_at = |i: i64| GirExpr {
+        let nullable_f64 =
+            GirType::Nullable(Box::new(GirType::Prim(PrimType::F64)));
+        let get = |i: i64| GirExpr {
             op: GirOp::ArrayGet {
                 name: ArcStr::from("arr"),
                 idx: Box::new(const_expr(ConstVal::I64(i))),
             },
-            typ: GirType::Prim(PrimType::F64),
+            typ: nullable_f64.clone(),
         };
-        let body = arith(elem_at(0), elem_at(1), BinOp::Add).unwrap();
-        let kernel = GirKernel {
-            fn_name: ArcStr::from("sum_two"),
-            params: vec![],
-            fn_params: vec![],
-            array_params: vec![ArrayInput {
-                name: ArcStr::from("arr"),
-                elem: GirType::Prim(PrimType::F64),
-                bind_id: None,
-            }],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::F64),
-            has_tail_loop: false,
-            body: vec![GirStmt::Return(body)],
+        let run = |i: i64| -> Option<Value> {
+            let kernel = GirKernel {
+                fn_name: ArcStr::from("get"),
+                params: vec![],
+                fn_params: vec![],
+                array_params: vec![ArrayInput {
+                    name: ArcStr::from("arr"),
+                    elem: GirType::Prim(PrimType::F64),
+                    bind_id: None,
+                }],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: nullable_f64.clone(),
+                has_tail_loop: false,
+                body: vec![GirStmt::Return(get(i))],
+            };
+            let arr = ValArray::from_iter_exact(
+                [Value::F64(1.5), Value::F64(2.25)].into_iter(),
+            );
+            let registry = KernelRegistry::default();
+            eval_kernel_with_dispatch_and_arrays(
+                &kernel,
+                &[],
+                &[arr],
+                &registry,
+                &mut |_, _| None,
+            )
+            .map(EvalResult::into_value)
         };
-        let arr = ValArray::from_iter_exact(
-            [Value::F64(1.5), Value::F64(2.25)].into_iter(),
-        );
-        let registry = KernelRegistry::default();
-        let r = eval_kernel_with_dispatch_and_arrays(
-            &kernel,
-            &[],
-            &[arr],
-            &registry,
-            &mut |_, _| None,
-        );
-        assert_eq!(r.map(EvalResult::into_scalar), Some(RegValue::F64(3.75)));
+        // in-bounds positive
+        assert_eq!(run(0), Some(Value::F64(1.5)));
+        assert_eq!(run(1), Some(Value::F64(2.25)));
+        // positive out-of-bounds → error
+        assert!(matches!(run(2), Some(Value::Error(_))));
+        // negative-from-end: -1 is the last, -len is the first
+        assert_eq!(run(-1), Some(Value::F64(2.25)));
+        assert_eq!(run(-2), Some(Value::F64(1.5)));
+        // negative underflow past the start → error
+        assert!(matches!(run(-3), Some(Value::Error(_))));
+        assert!(matches!(run(-5), Some(Value::Error(_))));
     }
 
     #[test]
@@ -4310,7 +4673,7 @@ mod tests {
         let fold = GirExpr {
             op: GirOp::ArrayFold {
                 array: ArcStr::from("arr"),
-                elem_typ: PrimType::F64,
+                elem_typ: GirType::Prim(PrimType::F64),
                 init: Box::new(const_expr(ConstVal::F64(0.0))),
                 acc_local: ArcStr::from("acc"),
                 elem_local: ArcStr::from("x"),

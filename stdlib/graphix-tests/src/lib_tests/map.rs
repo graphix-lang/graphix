@@ -10,13 +10,10 @@ const MAP_LEN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_len, MAP_LEN, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_GET_PRESENT: &str = r#"
 {
@@ -25,13 +22,10 @@ const MAP_GET_PRESENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_get_present, MAP_GET_PRESENT, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_GET_ABSENT: &str = r#"
 {
@@ -40,13 +34,10 @@ const MAP_GET_ABSENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_get_absent, MAP_GET_ABSENT, |v: Result<&Value>| match v {
     Ok(Value::Null) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_GET_OR_PRESENT: &str = r#"
 {
@@ -55,13 +46,10 @@ const MAP_GET_OR_PRESENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_get_or_present, MAP_GET_OR_PRESENT, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_GET_OR_ABSENT: &str = r#"
 {
@@ -70,13 +58,10 @@ const MAP_GET_OR_ABSENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_get_or_absent, MAP_GET_OR_ABSENT, |v: Result<&Value>| match v {
     Ok(Value::I64(99)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_CHANGE_PRESENT: &str = r#"
 {
@@ -259,13 +244,10 @@ const MAP_INSERT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_insert, MAP_INSERT, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_REMOVE: &str = r#"
 {
@@ -276,10 +258,7 @@ const MAP_REMOVE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_remove, MAP_REMOVE, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});

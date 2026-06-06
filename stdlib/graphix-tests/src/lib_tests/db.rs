@@ -544,13 +544,21 @@ run_with_tempdir!(
     }
 );
 
-// Verify get_type with explicit annotations and missing tree
+// Verify get_type with explicit annotations and missing tree.
+//
+// NB: `t2` is created *after* `t1` (its name arg `t1 ~ "other"` doesn't
+// fire until `t1` is done), so the whole read chain below — which is
+// gated on `t2` via `missing` — runs only once BOTH trees exist.
+// Creating both trees concurrently (`db::tree(db, "other")`) races the
+// `ty1` read of "typed" against `t1`'s creation; under load `ty1` could
+// observe "typed" before `t1` finished and get `null`. Sequence the
+// execution by sampling the argument (CLAUDE.md gotcha), not the call.
 run_with_tempdir!(
     name: db_get_type,
     code: r#"{{
         let db = db::open("{}")$;
         let t1: db::Tree<i64, string> = db::tree(db, "typed")?;
-        let t2: db::Tree<string, bool> = db::tree(db, "other")?;
+        let t2: db::Tree<string, bool> = db::tree(db, t1 ~ "other")?;
         let missing = db::get_type(db, t2 ~ "nonexistent")?;
         let ty1 = db::get_type(db, missing ~ "typed")?;
         let ty2 = db::get_type(db, ty1 ~ "other")?;

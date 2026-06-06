@@ -10,9 +10,6 @@ const ARRAY_MAP0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -23,7 +20,7 @@ run!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_MAP1: &str = r#"
 {
@@ -33,9 +30,12 @@ const ARRAY_MAP1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit (currently None) — the body is a nested `array::map(b,
+// |y| x + y)` that captures the outer element `x`; that nested HOF
+// doesn't lower yet (its captured `x` + inner array input `b` aren't
+// threaded into the inner kernel), so the outer map's body fails to
+// emit. `array_map_tuple` below exercises composite-output map without
+// the nesting.
 run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[[i64; 2]; 2]>() {
@@ -45,6 +45,84 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
         Err(_) => false,
     }
 }; graphix_package_core::testing::FuseExpect::None);
+
+// Composite-output `array::map`: the body produces a tuple per element,
+// so the output is `Array<(i64, i64)>`. Exercises `GirOp::ArrayMap`'s
+// composite-output push (`compile_and_push_field`) without nesting.
+const ARRAY_MAP_TUPLE: &str = r#"
+{
+  let a = [1, 2, 3];
+  array::map(a, |x| (x, x * 2))
+}
+"#;
+
+run!(array_map_tuple, ARRAY_MAP_TUPLE, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[(i64, i64); 3]>() {
+            Ok([(1, 2), (2, 4), (3, 6)]) => true,
+            _ => false,
+        },
+        Err(_) => false,
+    }
+});
+
+// Composite-element *input* with a `|(k, v)|` destructure callback.
+// The element `(i64, i64)` binds into the loop's composite slot (both
+// backends); the callback's tuple pattern lowers to per-leaf `TupleGet`
+// lets. The JIT loop gets each element via `graphix_valarray_get_array`,
+// binds it, runs the body, then drops the owned per-iter element.
+const ARRAY_MAP_DESTRUCTURE: &str = r#"
+{
+  let a = [(1, 2), (3, 4)];
+  array::map(a, |(k, v)| k + v)
+}
+"#;
+
+run!(array_map_destructure, ARRAY_MAP_DESTRUCTURE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => &a[..] == [Value::I64(3), Value::I64(7)],
+        _ => false,
+    }
+});
+
+// `array::fold` with a `|acc, (k, v)|` destructure callback over a
+// composite element — the accumulator stays scalar, the element binds
+// into the composite slot (interp + JIT, same split as map).
+const ARRAY_FOLD_DESTRUCTURE: &str = r#"
+{
+  let a = [(1, 2), (3, 4)];
+  array::fold(a, 0, |acc, (k, v)| acc + k + v)
+}
+"#;
+
+run!(array_fold_destructure, ARRAY_FOLD_DESTRUCTURE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(10)))
+});
+
+// `array::filter` with a `|(k, v)|` destructure over a composite
+// element. Keeps the *original* composite elements where the predicate
+// holds. The JIT loop gets each element (owned `*ValArray`), binds it,
+// evals the predicate, and on keep moves it into the output / on
+// not-keep drops it (the conditional-drop split).
+const ARRAY_FILTER_DESTRUCTURE: &str = r#"
+{
+  let a = [(1, 2), (3, 4), (5, 6)];
+  array::filter(a, |(k, v)| v > 3)
+}
+"#;
+
+run!(array_filter_destructure, ARRAY_FILTER_DESTRUCTURE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::Array(p0), Value::Array(p1)] => {
+                &p0[..] == [Value::I64(3), Value::I64(4)]
+                    && &p1[..] == [Value::I64(5), Value::I64(6)]
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+});
 
 const ARRAY_MAP2: &str = r#"
   array::map([1, 2], |x| str::len(x))
@@ -64,9 +142,6 @@ const ARRAY_FILTER: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -77,7 +152,7 @@ run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_FLAT_MAP: &str = r#"
 {
@@ -86,9 +161,6 @@ const ARRAY_FLAT_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -97,7 +169,29 @@ run!(array_flat_map, ARRAY_FLAT_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
+
+const ARRAY_FLAT_MAP_DESTRUCTURE: &str = r#"
+{
+  let a = [(1, 10), (2, 20)];
+  array::flat_map(a, |(k, v)| [k, v])
+}
+"#;
+
+run!(array_flat_map_destructure, ARRAY_FLAT_MAP_DESTRUCTURE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(
+            &a[..],
+            [
+                Value::I64(1),
+                Value::I64(10),
+                Value::I64(2),
+                Value::I64(20)
+            ]
+        ),
+        _ => false,
+    }
+});
 
 const ARRAY_FILTER_MAP: &str = r#"
 {
@@ -109,9 +203,9 @@ const ARRAY_FILTER_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// The `false => x ~ null` arm uses the sample operator `~`; in a fully-
+// sync fused kernel `a ~ b` lowers to `b` (the trigger always fires), so
+// the body fuses+JITs.
 run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -120,7 +214,31 @@ run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
+
+// Scalar `array::filter_map` whose body is an option-typed `select`
+// with no sample operator — lowers to `GirOp::ArrayFilterMap` and JITs
+// (the Nullable-collecting loop checks each body result's discriminant
+// against `null` and pushes the non-null payload).
+const ARRAY_FILTER_MAP_SCALAR: &str = r#"
+{
+  let a = [1, 2, 3, 4, 5, 6, 7, 8];
+  array::filter_map(a, |x: i64| -> [i64, null] select x > 5 {
+    true => x + 1,
+    false => null
+  })
+}
+"#;
+
+run!(array_filter_map_scalar, ARRAY_FILTER_MAP_SCALAR, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(7), Value::I64(8), Value::I64(9)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
 
 const ARRAY_FIND: &str = r#"
 {
@@ -130,9 +248,11 @@ const ARRAY_FIND: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Composite element `(string, i64)` + `|(k, _)|` destructure + composite
+// *output*: `array::find` returns the matched element, so the result is
+// `Nullable<(string, i64)>`. `GirOp::ArrayFind`'s found edge wraps the
+// owned `*ValArray` element into a value-shape Value (consumes it); the
+// advance edge drops it (conditional consume, like `ArrayFilter`).
 run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -141,7 +261,54 @@ run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
+
+// Scalar-element `array::find` lowers to `GirOp::ArrayFind` (result
+// `Nullable<i64>`) and JITs via an early-exit loop whose found / not-
+// found edges feed a two-word `(disc, payload)` merge.
+const ARRAY_FIND_SCALAR: &str = r#"
+{
+  let a = [1, 2, 3, 4, 5];
+  array::find(a, |x| x > 3)
+}
+"#;
+
+run!(array_find_scalar, ARRAY_FIND_SCALAR, |v: Result<&Value>| {
+    match v {
+        Ok(Value::I64(4)) => true,
+        _ => false,
+    }
+});
+
+// No element matches — `array::find` returns `null`.
+const ARRAY_FIND_SCALAR_NONE: &str = r#"
+{
+  let a = [1, 2, 3];
+  array::find(a, |x| x > 10)
+}
+"#;
+
+run!(array_find_scalar_none, ARRAY_FIND_SCALAR_NONE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+});
+
+// Composite element + composite output, all-prim — exercises the
+// `GirOp::ArrayFind` found-edge `graphix_value_new_from_array` wrap +
+// advance-edge `graphix_valarray_drop` without a string leaf. Result is
+// the matched `(i64, i64)` element as a `Nullable<(i64, i64)>`.
+const ARRAY_FIND_COMPOSITE: &str = r#"
+{
+  let a = [(1, 10), (2, 20), (3, 30)];
+  array::find(a, |(k, _)| k == 2)
+}
+"#;
+
+run!(array_find_composite, ARRAY_FIND_COMPOSITE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(20)]),
+        _ => false,
+    }
+});
 
 const ARRAY_FIND_MAP: &str = r#"
 {
@@ -154,15 +321,34 @@ const ARRAY_FIND_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Composite element `(string, i64)` + `|(k, v)|` destructure + the
+// `false => v ~ null` Sample arm — all fuse + JIT, via
+// `GirOp::ArrayFindMap` (early-exit, first-non-null `Nullable<i64>`).
+// The string leaf (`k`) binds as a string local in the destructure
+// Block — which JITs since the Block-let-String codegen gap was fixed.
 run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(2)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
+
+// All-prim composite element — exercises the `GirOp::ArrayFindMap` JIT
+// path (composite element + destructure + early-exit Nullable merge)
+// without the string field that keeps `array_find_map` on the interp.
+const ARRAY_FIND_MAP_PRIM: &str = r#"
+{
+  let a = [(1, 10), (2, 20), (3, 30)];
+  array::find_map(a, |(k, v)| select k == 2 {
+    true => v,
+    false => null
+  })
+}
+"#;
+
+run!(array_find_map_prim, ARRAY_FIND_MAP_PRIM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(20)))
+});
 
 const ARRAY_ITER: &str = r#"
    filter(array::iter([1, 2, 3, 4]), |x| x == 4)
@@ -206,15 +392,12 @@ const ARRAY_FOLD0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(55)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_FOLD1: &str = r#"
 {
@@ -386,9 +569,6 @@ const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
@@ -397,21 +577,18 @@ run!(array_init0, ARRAY_INIT0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INIT1: &str = r#"
   array::init(0, |i| i)
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init1, ARRAY_INIT1, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INIT2: &str = r#"
 {
@@ -420,23 +597,17 @@ const ARRAY_INIT2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init2, ARRAY_INIT2, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INIT3: &str = r#"
   array::init(4, |i| (i, i * i))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 4]>() {
@@ -445,7 +616,7 @@ run!(array_init3, ARRAY_INIT3, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INIT4: &str = r#"
   array::init(3, |i| str::len(i))

@@ -12,7 +12,6 @@ const MAP0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
 run!(map0, MAP0, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
@@ -26,7 +25,7 @@ run!(map0, MAP0, |v: Result<&Value>| match v {
                 .map(|v| *v == Value::I64(3))
                 .unwrap_or(false),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP1: &str = r#"
 {
@@ -35,7 +34,6 @@ const MAP1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
 run!(map1, MAP1, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
@@ -49,7 +47,7 @@ run!(map1, MAP1, |v: Result<&Value>| match v {
                 .map(|v| *v == Value::String("three".into()))
                 .unwrap_or(false),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP2: &str = r#"
 {
@@ -58,7 +56,6 @@ const MAP2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
 run!(map2, MAP2, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
@@ -69,7 +66,7 @@ run!(map2, MAP2, |v: Result<&Value>| match v {
                 .map(|v| *v == Value::String("no".into()))
                 .unwrap_or(false),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_EMPTY: &str = r#"
 {
@@ -78,11 +75,10 @@ const MAP_EMPTY: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
 run!(map_empty, MAP_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) => m.len() == 0,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_REF0: &str = r#"
 {
@@ -91,13 +87,11 @@ const MAP_REF0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `m{key}` (MapRef) lowers to `GirOp::MapRef` (Nullable<V>).
 run!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_REF1: &str = r#"
 {
@@ -106,13 +100,11 @@ const MAP_REF1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// integer key + string value.
 run!(map_ref1, MAP_REF1, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "two" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_REF2: &str = r#"
 {
@@ -121,13 +113,11 @@ const MAP_REF2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// bool key.
 run!(map_ref2, MAP_REF2, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "yes" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_REF_MISSING: &str = r#"
 {
@@ -136,9 +126,7 @@ const MAP_REF_MISSING: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// missing key → `MapKeyError` (the `[V, Error]` Nullable error arm).
 run!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
     Ok(Value::Error(e)) => {
         if let Ok((tag, msg)) = e.as_ref().clone().cast_to::<(ArcStr, ArcStr)>() {
@@ -148,7 +136,7 @@ run!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
         }
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_REF_WRONG_TYPE: &str = r#"
 {
@@ -169,7 +157,9 @@ const MAP_NESTED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
+// nested map literal: `node_const_value` recurses into the inner Map
+// node so the whole constant folds to one `ConstValue`, then `m{key}`
+// (MapRef) reads it.
 run!(map_nested, MAP_NESTED, |v: Result<&Value>| match v {
     Ok(Value::Map(inner_map)) => {
         inner_map
@@ -178,7 +168,7 @@ run!(map_nested, MAP_NESTED, |v: Result<&Value>| match v {
             .unwrap_or(false)
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const MAP_COMPLEX_KEYS: &str = r#"
 {
@@ -209,7 +199,10 @@ const MAP_WITH_ARRAYS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
+// ASPIRE: Jit (currently None) — the map literal const-folds now, but the
+// value type is a heterogeneous union `[Array<i64>, Array<string>]`, so
+// `from_type` on the `m{key}` (MapRef) result `[V, Error]` returns None
+// (V isn't an option/result/uniform shape). Blocked on union-value lowering.
 run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
     Ok(Value::Array(arr)) => {
         arr.len() == 3

@@ -13,15 +13,48 @@ const ARRAY_INDEXING0: &str = r#"
 }
 "#;
 
-// Interp: body fuses but doesn't JIT — a composite-element
-// accessor (`array index a[0]`) routes to the interpreter (see
-// kernel_contains_composite_element_op). Exposed when #139's
-// identity suppression removed the masking `result` wrapper.
 run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Interp;
-   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::ArrayGet)));
+}; shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::ArrayGet)));
+
+// ── array[i] bounds-check seam (node-walk / gir-interp / JIT) ──
+// `array[i]` is `[elem, Error<…>]`: out-of-bounds (or negative
+// underflow) produces an `ArrayIndexError` rather than the element,
+// via the shared `array_index`. These exercise every branch across all
+// three backends (the `run!` modes) — the coverage whose absence let
+// the JIT model `a[i]` as a bare scalar with no bounds check. The
+// in-bounds cases pin the exact element value (catching an off-by-one
+// in the negative-from-end math); the error cases pin `is_err` (before
+// the fix, the gir-interp would *panic* on these and the JIT read
+// garbage).
+
+// positive index past the end → error
+run!(array_index_oob_pos, r#"{ let a = [10, 20, 30]; a[10] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+
+// negative index: -1 is the last element
+run!(array_index_neg_last, r#"{ let a = [10, 20, 30]; a[-1] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(30))));
+
+// negative index: -2 is the second-to-last
+run!(array_index_neg_mid, r#"{ let a = [10, 20, 30]; a[-2] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(20))));
+
+// a[-len] reaches the first element (offset 0). Pinned so all three
+// backends agree on the boundary between the last reachable negative
+// index and underflow.
+run!(array_index_neg_first, r#"{ let a = [10, 20, 30]; a[-3] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(10))));
+
+// negative underflow past the start → error
+run!(array_index_neg_underflow, r#"{ let a = [10, 20, 30]; a[-10] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+
+// the error can be recovered with `$` (drop-on-error → never) or `?`;
+// here `is_err` over the option observes the error directly.
+run!(array_index_is_err, r#"{ let a = [10, 20, 30]; is_err(a[10]) }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))));
 
 const ARRAY_INDEXING1: &str = r#"
 {
@@ -30,14 +63,12 @@ const ARRAY_INDEXING1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `a[i..j]` (ArraySlice) lowers to `GirOp::ArraySlice` (Nullable<Array>).
 run!(array_indexing1, ARRAY_INDEXING1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(1), Value::I64(2)] =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INDEXING2: &str = r#"
 {
@@ -46,13 +77,11 @@ const ARRAY_INDEXING2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// end-only slice `a[..j]`.
 run!(array_indexing2, ARRAY_INDEXING2, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(1)] => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INDEXING3: &str = r#"
 {
@@ -61,13 +90,11 @@ const ARRAY_INDEXING3: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// start-only slice `a[i..]`.
 run!(array_indexing3, ARRAY_INDEXING3, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(5), Value::I64(6)] => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const ARRAY_INDEXING4: &str = r#"
 {
@@ -76,9 +103,7 @@ const ARRAY_INDEXING4: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// unbounded slice `a[..]` (both bounds absent → full copy).
 run!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
     Ok(Value::Array(a))
         if &a[..]
@@ -93,7 +118,17 @@ run!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
             ] =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
+
+// out-of-bounds slice → error (the `Nullable<Array>` error arm). All
+// three backends route through the shared `array_slice`, so they must
+// agree on the error.
+run!(array_slice_oob, r#"{ let a = [0, 1, 2]; a[1..10] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+
+// the error flows into `is_err`, which also fuses+JITs.
+run!(array_slice_oob_is_err, r#"{ let a = [0, 1, 2]; is_err(a[1..10]) }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))));
 
 const ARRAY_INDEXING5: &str = r#"
 {

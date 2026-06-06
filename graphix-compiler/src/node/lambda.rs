@@ -272,6 +272,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.view_mut()
     }
 
+    fn static_resolve_fn_args(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        fn_args: &[crate::StaticFnArg<'_, R, E>],
+    ) -> Result<()> {
+        self.apply.static_resolve_fn_args(ctx, fn_args)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

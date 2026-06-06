@@ -33,9 +33,26 @@
 //! — a sequence of (cond, value) pairs where the last entry's `cond`
 //! may be `None` for an unconditional `else`.
 
-use crate::{typ::Type, BindId};
+use crate::{
+    typ::{AbstractId, Type},
+    BindId,
+};
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
+use std::sync::LazyLock;
+
+/// Fusion-time registry mapping each abstract type's [`AbstractId`] to its
+/// concrete implementation type. Populated by
+/// `node::module::check_sig` when a signed module's `type X;` is matched
+/// to its impl `type X = …`. [`GirType::from_type`] consults it to lower
+/// an abstract-typed value to its concrete `GirType` — the optimizer peeks
+/// through the abstraction, but only here (the type system keeps it opaque
+/// everywhere else, and `from_type` is only ever called during fusion).
+/// Keyed by the globally-unique `AbstractId`, so it is safe to share
+/// across concurrently-compiling `ExecCtx`s.
+pub static ABSTRACT_REGISTRY: LazyLock<
+    parking_lot::RwLock<nohash::IntMap<AbstractId, Type>>,
+> = LazyLock::new(|| parking_lot::RwLock::new(nohash::IntMap::default()));
 
 // ─── Primitive types ─────────────────────────────────────────────
 
@@ -246,6 +263,16 @@ pub enum GirType {
     /// redundant disc word vs. String's single-register form is a
     /// negligible cost for a much smaller, DRY implementation.)
     Bytes,
+    /// `Map<K, V>` — graphix's `Type::Map`. Runtime representation is
+    /// `Value::Map(CMap)` where `CMap = immutable_chunkmap::Map` is a
+    /// refcounted thin pointer, so — like [`Bytes`](GirType::Bytes) —
+    /// it's a **Value-shape** type (two-register `Value`) reusing the
+    /// `graphix_value_clone`/`drop` + `value_inputs` machinery. A
+    /// constant map literal (`{"a" => 1, ...}` with all-constant
+    /// keys/values) folds to [`GirOp::ConstValue`]; map builtins
+    /// (`map::len`, `map::get`, …) consume/produce it via `DynCall`.
+    /// (Dynamic map literals and `m{key}` access aren't lowered yet.)
+    Map,
 }
 
 impl GirType {
@@ -262,6 +289,7 @@ impl GirType {
                 | GirType::DateTime
                 | GirType::Duration
                 | GirType::Bytes
+                | GirType::Map
         )
     }
     /// Convenience for `GirType::Prim(_)` — when callers know they have
@@ -414,6 +442,8 @@ impl GirType {
             {
                 Some(GirType::Bytes)
             }
+            // `Map<K, V>` — Value-shape (runtime `Value::Map(CMap)`).
+            Type::Map { .. } => Some(GirType::Map),
             // `T | null` collapsed-primitive option shape: a multi-flag
             // primitive carrying `Null` plus exactly one other primitive
             // bit. The typechecker represents `[T, null]` this way
@@ -518,6 +548,17 @@ impl GirType {
                     .map(|(n, t)| GirType::from_type(t).map(|p| (n.clone(), p)))
                     .collect();
                 fs.map(GirType::Struct)
+            }
+            // Abstract (opaque) types lower to their concrete impl
+            // representation, registered by `node::module::check_sig` in
+            // `ABSTRACT_REGISTRY`. The type system keeps them opaque
+            // everywhere else; fusion peeks so abstract-typed values flow
+            // through kernels. Parameterized abstracts (`Box<'a>`) would
+            // need param substitution into the concrete — not handled
+            // yet, so they fall through to `None`.
+            Type::Abstract { id, params } if params.is_empty() => {
+                let concrete = ABSTRACT_REGISTRY.read().get(id).cloned();
+                concrete.and_then(|c| GirType::from_type(&c))
             }
             other => PrimType::from_type(other).map(GirType::Prim),
         })
@@ -817,6 +858,16 @@ pub enum GirOp {
         lhs: Box<GirExpr>,
         rhs: Box<GirExpr>,
     },
+    /// Equality (`==` / `!=`) on two same-typed Value-shape operands
+    /// (Map/Variant/Nullable/Bytes/DateTime/Duration), where neither is
+    /// a primitive (those use the register-`Cmp` path). Both backends
+    /// compare via netidx's `impl PartialEq for Value`. Result `Bool`.
+    ValueEq {
+        /// `true` for `!=`, `false` for `==`.
+        ne: bool,
+        lhs: Box<GirExpr>,
+        rhs: Box<GirExpr>,
+    },
     /// A string-typed constant. Used by `emit_expr`'s
     /// `ExprKind::Constant(Value::String)` arm and by `Concat`'s
     /// literal segments. Result type is [`GirType::String`].
@@ -967,6 +1018,34 @@ pub enum GirOp {
         name: ArcStr,
         idx: Box<GirExpr>,
     },
+    /// `bytes[i]` — index a `bytes` value, bounds-checked + negative-from-
+    /// end (shared `node::array::bytes_index`). Operand is value-shape
+    /// (Bytes); result is `Nullable<u8>` (`[u8, Error<…>]`).
+    BytesIndex {
+        bytes: Box<GirExpr>,
+        idx: Box<GirExpr>,
+    },
+    /// Map access `m{key}`. `map` is a `GirType::Map` value-shape
+    /// operand, `key` any value-bearing operand; the result is
+    /// `Nullable<V>` carrying the looked-up value or a
+    /// `map key not found` error (the same `[V, Error]` shape the
+    /// node-walk `MapRef` produces). Both operands are consumed by
+    /// the lookup.
+    MapRef {
+        map: Box<GirExpr>,
+        key: Box<GirExpr>,
+    },
+    /// Array/bytes slice `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]`.
+    /// `source` is a `GirType::Array`/`Bytes` value-shape operand;
+    /// `start`/`end` are optional scalar (integer) bounds. The result
+    /// is `Nullable<source>` — the sub-array/sub-bytes or an
+    /// out-of-bounds / negative-bound error (the `[T, Error]` shape the
+    /// node-walk `ArraySlice` produces).
+    ArraySlice {
+        source: Box<GirExpr>,
+        start: Option<Box<GirExpr>>,
+        end: Option<Box<GirExpr>>,
+    },
     /// Reduce a flat array to a scalar via a same-cycle fold. Lowers
     /// `array::fold(arr, init, |acc, x| body)` when the callback
     /// fuses to scalar GIR. `array` resolves in `array_params`;
@@ -984,11 +1063,14 @@ pub enum GirOp {
     /// callback-error notes in `design/whole_graph_fusion.md`.
     ArrayFold {
         array: ArcStr,
-        /// Element type of `array` — copied here at construction time
-        /// so the backend doesn't need to walk the body looking for an
-        /// `ArrayGet` against the same name (the body usually reads
-        /// the bound `elem_local`, not the array directly).
-        elem_typ: PrimType,
+        /// Element type of `array` — `Prim` for scalar elements, or a
+        /// composite (`Tuple`/…) for `Array<(k,v)>`. Copied here at
+        /// construction time so the backend doesn't need to walk the
+        /// body looking for an `ArrayGet` against the same name (the
+        /// body usually reads the bound `elem_local`). The loop binds
+        /// `elem_local` as a scalar local for `Prim`, a composite
+        /// otherwise (same split as `ArrayMap`).
+        elem_typ: GirType,
         init: Box<GirExpr>,
         acc_local: ArcStr,
         elem_local: ArcStr,
@@ -1017,7 +1099,8 @@ pub enum GirOp {
     ArrayInit {
         n: Box<GirExpr>,
         idx_local: ArcStr,
-        elem_typ: PrimType,
+        // The output element type is `body.typ` (any GirType — prim or
+        // composite); no separate field needed.
         body: Box<GirExpr>,
     },
     /// Build a flat array by applying a fused body to each element of
@@ -1029,11 +1112,15 @@ pub enum GirOp {
     /// go through the unsafe `ValArray::get_unchecked` fast path.
     ArrayMap {
         array: ArcStr,
-        /// Element type of the *input* `array`.
-        in_elem: PrimType,
+        /// Element type of the *input* `array` — `Prim` for scalar
+        /// elements, or a composite (`Tuple`/`Struct`/…) for
+        /// `Array<(k, v)>`-style elements. The loop binds `elem_local`
+        /// as a scalar local for `Prim` and a composite local
+        /// otherwise.
+        in_elem: GirType,
         elem_local: ArcStr,
-        /// Element type of the *output* — equals `body.typ.as_prim()`.
-        out_elem: PrimType,
+        // Output element type is `body.typ` (any GirType — prim or
+        // composite); no separate field needed.
         body: Box<GirExpr>,
     },
     /// Build a flat array by retaining each element of an input array
@@ -1050,10 +1137,74 @@ pub enum GirOp {
     /// allocation in the hot path.
     ArrayFilter {
         array: ArcStr,
-        elem: PrimType,
+        /// Element type — `Prim` for scalar elements, composite for
+        /// `Array<(k,v)>`. The loop binds `elem_local` scalar/composite
+        /// (same split as `ArrayMap`); on a `keep`, the *original*
+        /// element is pushed to the output.
+        elem: GirType,
         elem_local: ArcStr,
         /// Predicate body — must emit as `GirType::Prim(Bool)`.
         predicate: Box<GirExpr>,
+    },
+    /// Return the first element of `array` for which a fused predicate
+    /// body returns true, as an option (`null` when none match). Lowers
+    /// `array::find(arr, |x| pred)`. Result `GirExpr.typ` is
+    /// `GirType::Nullable(elem)` — the matched element or `null`.
+    ArrayFind {
+        array: ArcStr,
+        /// `Prim` for scalar elements, composite for `Array<(k,v)>`;
+        /// bound the same way as `ArrayMap`. The result is
+        /// `Nullable<elem>` — the matched element (scalar or composite)
+        /// or `null`.
+        elem: GirType,
+        elem_local: ArcStr,
+        /// Predicate body — must emit as `GirType::Prim(Bool)`.
+        predicate: Box<GirExpr>,
+    },
+    /// Build a flat array from the non-`null` results of a fused body
+    /// returning `[out_elem, null]` per element. Lowers
+    /// `array::filter_map(arr, |x| body)`. Result `GirExpr.typ` is
+    /// `GirType::Array(out_elem)`; like `ArrayFilter`, output length is
+    /// dynamic so the lowering collects into a `ValArray`.
+    ArrayFilterMap {
+        array: ArcStr,
+        in_elem: PrimType,
+        elem_local: ArcStr,
+        /// Element type of the *output* — the inner type of the body's
+        /// `Nullable` result.
+        out_elem: PrimType,
+        /// Body — must emit as `GirType::Nullable(out_elem)`.
+        body: Box<GirExpr>,
+    },
+    /// `array::find_map` — like `ArrayFilterMap` (body yields
+    /// `Nullable<out>`) but **early-exits** on the first non-null body
+    /// result and returns it (the whole op's result is that
+    /// `Nullable<out>`, or `null` if no element mapped non-null).
+    /// `in_elem` may be composite (`Array<(k,v)>`), bound the same way
+    /// as `ArrayMap` (scalar local vs `arrays` slot).
+    ArrayFindMap {
+        array: ArcStr,
+        in_elem: GirType,
+        elem_local: ArcStr,
+        /// Body — must emit as `GirType::Nullable(out)`; the op's
+        /// result type is the same `Nullable<out>`.
+        body: Box<GirExpr>,
+    },
+    /// Build a flat array by concatenating the per-element `Array<out_elem>`
+    /// results of a fused body. Lowers `array::flat_map(arr, |x| body)`
+    /// where the body produces an array. Result `GirExpr.typ` is
+    /// `GirType::Array(out_elem)`; output length is dynamic.
+    ArrayFlatMap {
+        array: ArcStr,
+        /// Element type — `Prim` for scalar elements, composite for
+        /// `Array<(k,v)>`; bound the same way as `ArrayMap`.
+        in_elem: GirType,
+        elem_local: ArcStr,
+        /// Element type of the *output* — the element type of the body's
+        /// `Array` result.
+        out_elem: PrimType,
+        /// Body — must emit as `GirType::Array(out_elem)`.
+        body: Box<GirExpr>,
     },
     /// Read tuple slot `idx` of `name` (a tuple kernel parameter).
     /// Result `GirExpr.typ` matches `elem_typ`. For `Prim` slots the
@@ -1412,7 +1563,7 @@ impl GirKernel {
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes => Some(AbiReturn::Two),
+            | GirType::Bytes | GirType::Map => Some(AbiReturn::Two),
             GirType::Null => None,
         }
     }
@@ -1538,13 +1689,32 @@ pub fn arith(lhs: GirExpr, rhs: GirExpr, op: BinOp) -> Option<GirExpr> {
 }
 
 pub fn cmp(lhs: GirExpr, rhs: GirExpr, op: CmpOp) -> Option<GirExpr> {
-    if lhs.typ != rhs.typ || lhs.typ.as_prim().is_none() {
+    if lhs.typ != rhs.typ {
         return None;
     }
-    Some(GirExpr {
-        op: GirOp::Cmp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
-        typ: GirType::Prim(PrimType::Bool),
-    })
+    if lhs.typ.as_prim().is_some() {
+        return Some(GirExpr {
+            op: GirOp::Cmp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
+            typ: GirType::Prim(PrimType::Bool),
+        });
+    }
+    // Non-primitive `==` / `!=` (String, composite Array/Tuple/Struct, or
+    // value-shape Map/Variant/Nullable/Bytes/DateTime/Duration) compares
+    // via `Value`'s PartialEq. Ordering operators on non-prim types
+    // aren't lowered, and Unit/Null have no comparable runtime form.
+    if matches!(op, CmpOp::Eq | CmpOp::Ne)
+        && !matches!(lhs.typ, GirType::Unit | GirType::Null)
+    {
+        return Some(GirExpr {
+            op: GirOp::ValueEq {
+                ne: matches!(op, CmpOp::Ne),
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            typ: GirType::Prim(PrimType::Bool),
+        });
+    }
+    None
 }
 
 pub fn bool_op(lhs: GirExpr, rhs: GirExpr, op: BoolOp) -> Option<GirExpr> {
@@ -1633,7 +1803,8 @@ fn expr_has_call(e: &GirExpr) -> bool {
         GirOp::Concat(parts) => parts.iter().any(expr_has_call),
         GirOp::IsNull(inner) => expr_has_call(inner),
         GirOp::QopUnwrap { inner, .. } => expr_has_call(inner),
-        GirOp::ValueArith { lhs, rhs, .. } => {
+        GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. } => {
             expr_has_call(lhs) || expr_has_call(rhs)
         }
         GirOp::Bin { lhs, rhs, .. }
@@ -1643,12 +1814,27 @@ fn expr_has_call(e: &GirExpr) -> bool {
         }
         GirOp::Not(inner) | GirOp::Cast { inner, .. } => expr_has_call(inner),
         GirOp::ArrayGet { idx, .. } => expr_has_call(idx),
+        GirOp::BytesIndex { bytes, idx } => {
+            expr_has_call(bytes) || expr_has_call(idx)
+        }
+        GirOp::MapRef { map, key } => {
+            expr_has_call(map) || expr_has_call(key)
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            expr_has_call(source)
+                || start.as_ref().is_some_and(|e| expr_has_call(e))
+                || end.as_ref().is_some_and(|e| expr_has_call(e))
+        }
         GirOp::ArrayFold { init, body, .. } => {
             expr_has_call(init) || expr_has_call(body)
         }
         GirOp::ArrayInit { n, body, .. } => expr_has_call(n) || expr_has_call(body),
         GirOp::ArrayMap { body, .. } => expr_has_call(body),
+        GirOp::ArrayFilterMap { body, .. } => expr_has_call(body),
+        GirOp::ArrayFindMap { body, .. } => expr_has_call(body),
+        GirOp::ArrayFlatMap { body, .. } => expr_has_call(body),
         GirOp::ArrayFilter { predicate, .. } => expr_has_call(predicate),
+        GirOp::ArrayFind { predicate, .. } => expr_has_call(predicate),
         GirOp::TupleGet { .. } | GirOp::StructGet { .. } => false,
         GirOp::TupleNew { fields, .. } => fields.iter().any(expr_has_call),
         GirOp::StructNew { sorted_fields, .. } => {
@@ -1718,17 +1904,35 @@ fn expr_has_null(e: &GirExpr) -> bool {
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
         | GirOp::BoolBin { lhs, rhs, .. }
-        | GirOp::ValueArith { lhs, rhs, .. } => {
+        | GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. } => {
             expr_has_null(lhs) || expr_has_null(rhs)
         }
         GirOp::Not(inner) | GirOp::Cast { inner, .. } => expr_has_null(inner),
         GirOp::ArrayGet { idx, .. } => expr_has_null(idx),
+        GirOp::BytesIndex { bytes, idx } => {
+            expr_has_null(bytes) || expr_has_null(idx)
+        }
+        GirOp::MapRef { map, key } => {
+            expr_has_null(map) || expr_has_null(key)
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            expr_has_null(source)
+                || start.as_ref().is_some_and(|e| expr_has_null(e))
+                || end.as_ref().is_some_and(|e| expr_has_null(e))
+        }
         GirOp::ArrayFold { init, body, .. } => {
             expr_has_null(init) || expr_has_null(body)
         }
         GirOp::ArrayInit { n, body, .. } => expr_has_null(n) || expr_has_null(body),
         GirOp::ArrayMap { body, .. } => expr_has_null(body),
+        GirOp::ArrayFilterMap { body, .. } => expr_has_null(body),
+        GirOp::ArrayFindMap { body, .. } => expr_has_null(body),
+        GirOp::ArrayFlatMap { body, .. } => expr_has_null(body),
         GirOp::ArrayFilter { predicate, .. } => expr_has_null(predicate),
+        // ArrayFind *produces* a Nullable result, so it always counts as
+        // null-touching regardless of the predicate.
+        GirOp::ArrayFind { .. } => true,
         GirOp::TupleNew { fields, .. } => fields.iter().any(expr_has_null),
         GirOp::StructNew { sorted_fields, .. } => {
             sorted_fields.iter().any(|(_, e)| expr_has_null(e))
@@ -1777,6 +1981,19 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
             !matches!(e.typ, GirType::Prim(_))
                 || expr_has_composite_element_op(idx)
         }
+        GirOp::BytesIndex { bytes, idx } => {
+            expr_has_composite_element_op(bytes)
+                || expr_has_composite_element_op(idx)
+        }
+        GirOp::MapRef { map, key } => {
+            expr_has_composite_element_op(map)
+                || expr_has_composite_element_op(key)
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            expr_has_composite_element_op(source)
+                || start.as_ref().is_some_and(|e| expr_has_composite_element_op(e))
+                || end.as_ref().is_some_and(|e| expr_has_composite_element_op(e))
+        }
         GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_) | GirOp::ArrayLen { .. }
@@ -1787,7 +2004,8 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
         | GirOp::BoolBin { lhs, rhs, .. }
-        | GirOp::ValueArith { lhs, rhs, .. } => {
+        | GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. } => {
             expr_has_composite_element_op(lhs)
                 || expr_has_composite_element_op(rhs)
         }
@@ -1803,7 +2021,13 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
                 || expr_has_composite_element_op(body)
         }
         GirOp::ArrayMap { body, .. } => expr_has_composite_element_op(body),
+        GirOp::ArrayFilterMap { body, .. } => expr_has_composite_element_op(body),
+        GirOp::ArrayFindMap { body, .. } => expr_has_composite_element_op(body),
+        GirOp::ArrayFlatMap { body, .. } => expr_has_composite_element_op(body),
         GirOp::ArrayFilter { predicate, .. } => {
+            expr_has_composite_element_op(predicate)
+        }
+        GirOp::ArrayFind { predicate, .. } => {
             expr_has_composite_element_op(predicate)
         }
         GirOp::TupleNew { fields, .. } => {
@@ -1894,7 +2118,8 @@ fn walk_call_sites_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
         | GirOp::BoolBin { lhs, rhs, .. }
-        | GirOp::ValueArith { lhs, rhs, .. } => {
+        | GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. } => {
             walk_call_sites_expr(lhs, out);
             walk_call_sites_expr(rhs, out);
         }
@@ -1902,6 +2127,23 @@ fn walk_call_sites_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
         GirOp::IsNull(inner) => walk_call_sites_expr(inner, out),
         GirOp::QopUnwrap { inner, .. } => walk_call_sites_expr(inner, out),
         GirOp::ArrayGet { idx, .. } => walk_call_sites_expr(idx, out),
+        GirOp::BytesIndex { bytes, idx } => {
+            walk_call_sites_expr(bytes, out);
+            walk_call_sites_expr(idx, out);
+        }
+        GirOp::MapRef { map, key } => {
+            walk_call_sites_expr(map, out);
+            walk_call_sites_expr(key, out);
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            walk_call_sites_expr(source, out);
+            if let Some(e) = start {
+                walk_call_sites_expr(e, out);
+            }
+            if let Some(e) = end {
+                walk_call_sites_expr(e, out);
+            }
+        }
         GirOp::ArrayFold { init, body, .. } => {
             walk_call_sites_expr(init, out);
             walk_call_sites_expr(body, out);
@@ -1911,7 +2153,11 @@ fn walk_call_sites_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
             walk_call_sites_expr(body, out);
         }
         GirOp::ArrayMap { body, .. } => walk_call_sites_expr(body, out),
+        GirOp::ArrayFilterMap { body, .. } => walk_call_sites_expr(body, out),
+        GirOp::ArrayFindMap { body, .. } => walk_call_sites_expr(body, out),
+        GirOp::ArrayFlatMap { body, .. } => walk_call_sites_expr(body, out),
         GirOp::ArrayFilter { predicate, .. } => walk_call_sites_expr(predicate, out),
+        GirOp::ArrayFind { predicate, .. } => walk_call_sites_expr(predicate, out),
         GirOp::TupleGet { .. } | GirOp::StructGet { .. } => {}
         GirOp::TupleNew { fields, .. } => {
             for f in fields {

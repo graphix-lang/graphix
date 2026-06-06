@@ -95,7 +95,17 @@ run!(test_truncate, TRUNCATE_TEST, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
 
-// CreateNew on existing file expects error
+// CreateNew on existing file expects error.
+//
+// NB: `open(`CreateNew, written? ~ path)` sequences the CreateNew open's
+// *execution* to happen only after the write completes — by sampling its
+// `path` argument with `~`, not by sampling the whole `open(...)`
+// expression. The naive `written? ~ open(`CreateNew, path)` evaluates the
+// CreateNew open eagerly (as soon as `path` is ready), racing the
+// `Create` open above; under load CreateNew can win that race, create the
+// file itself, and return a handle instead of the expected error. See the
+// CLAUDE.md gotcha: "to sequence execution use ~ on the arguments, not on
+// the whole function".
 const CREATE_NEW_EXISTING: &str = r#"{
   use sys::fs;
 
@@ -103,7 +113,7 @@ const CREATE_NEW_EXISTING: &str = r#"{
   let path = sys::join_path(sys::fs::tempdir::path(temp), "existing.txt");
   let f1 = open(`Create, path)?;
   let written = sys::io::write_exact(f1, buffer::from_string("first"));
-  written? ~ open(`CreateNew, path)
+  open(`CreateNew, written? ~ path)
 }"#;
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a

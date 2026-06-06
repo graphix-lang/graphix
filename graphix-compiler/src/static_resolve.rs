@@ -210,7 +210,16 @@ fn try_resolve_callsite<R: Rt, E: UserEvent>(
                 if ctx.unstable_bindings.contains(&r.id) {
                     return Ok(());
                 }
-                bind_to_lambda.get(&r.id).cloned()
+                // bind_to_lambda is built from the *fixture's* Bind
+                // nodes. Stdlib packages are compiled separately, so a
+                // call to e.g. `array::map` has no fixture-tree Bind —
+                // fall back to the binding's cached value (the
+                // LambdaDef persists in ctx.cached). The step-2
+                // downcast filters out non-lambda cached values.
+                bind_to_lambda
+                    .get(&r.id)
+                    .cloned()
+                    .or_else(|| ctx.cached.get(&r.id).cloned())
             }
             NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
@@ -279,7 +288,11 @@ fn invoke_apply_fn_arg_hook<R: Rt, E: UserEvent>(
             // Only positional fn-typed formals. Labeled fn-typed
             // args (rare, but possible) are skipped for now — the
             // existing HOF builtins all take callbacks positionally.
-            if !matches!(&farg.typ, Type::Fn(_)) {
+            //
+            // The formal may be a TVar bound to a Fn (the common case
+            // at a monomorphized HOF call site), not a bare `Type::Fn`
+            // — deref before checking.
+            if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
             }
             let Some(arg_node) = cs.arg_positional(i) else {

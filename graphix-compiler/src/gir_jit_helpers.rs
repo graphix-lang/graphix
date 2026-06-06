@@ -204,6 +204,22 @@ pub unsafe extern "C" fn graphix_value_buf_push_array(
     }
 }
 
+/// Flatten an owned `*mut ValArray` into `buf`: clone each element into
+/// the buf, then drop the array box. Used by `GirOp::ArrayFlatMap`'s
+/// JIT codegen — the body produces an owned array per element whose
+/// contents are concatenated into the output. (`ValArray` is an
+/// immutable `Arc<[Value]>`, so elements are cloned, not moved.)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_extend_from_array(
+    buf: *mut LPooled<Vec<Value>>,
+    inner: *mut ValArray,
+) {
+    unsafe {
+        let owned = *Box::from_raw(inner);
+        (*buf).extend(owned.iter().cloned());
+    }
+}
+
 /// Borrow-mode array push: refcount-bumps the caller's
 /// `*const ValArray` and pushes `Value::Array(clone)`. Used for
 /// DynCall composite args where the caller still owns its local
@@ -433,6 +449,47 @@ value_arith_helper!(graphix_value_sub, -);
 value_arith_helper!(graphix_value_mul, *);
 value_arith_helper!(graphix_value_div, /);
 value_arith_helper!(graphix_value_rem, %);
+
+/// Value equality (`GirOp::ValueEq`). Compares via netidx's
+/// `impl PartialEq for Value` — byte-identical to the non-fused `==`
+/// node. CONSUMES both args (they're dropped at function end), matching
+/// the owned-operand contract `compile_owned_value_operand` produces.
+pub extern "C" fn graphix_value_eq(l: Value, r: Value) -> u8 {
+    (l == r) as u8
+}
+
+/// `bytes[i]` (`GirOp::BytesIndex`). Extracts the `PBytes` from a
+/// `Value::Bytes`, indexes via the shared `node::array::bytes_index`
+/// (bounds-checked, negative-from-end), and returns `Nullable<u8>`'s
+/// `Value` (the `u8` or the out-of-bounds error). CONSUMES the bytes
+/// Value (passed owned by `compile_owned_value_operand`).
+pub extern "C" fn graphix_bytes_index(v: Value, i: i64) -> Value {
+    match &v {
+        Value::Bytes(b) => crate::node::array::bytes_index(b, i),
+        _ => Value::error("ArrayIndexError: expected bytes"),
+    }
+}
+
+/// Map access `m{key}` (`GirOp::MapRef`). Looks up `key` in the
+/// `Value::Map` via the shared `node::map::map_get`, returning the
+/// value or the `map key not found` error (`Nullable<V>`'s `Value`).
+/// CONSUMES both operands (passed owned by
+/// `compile_owned_value_operand`).
+pub extern "C" fn graphix_map_ref(map: Value, key: Value) -> Value {
+    crate::node::map::map_get(&map, &key)
+}
+
+/// Array/bytes slice `a[i..j]` (`GirOp::ArraySlice`). `flags` bit0 =
+/// `start` present, bit1 = `end` present (absent bounds pass 0). Routes
+/// to the shared `node::array::array_slice_i64`, returning the
+/// sub-array/sub-bytes or an error (`Nullable<source>`'s `Value`).
+/// CONSUMES the source Value (passed owned by
+/// `compile_owned_value_operand`).
+pub extern "C" fn graphix_array_slice(src: Value, start: i64, end: i64, flags: i64) -> Value {
+    let s = if flags & 1 != 0 { Some(start) } else { None };
+    let e = if flags & 2 != 0 { Some(end) } else { None };
+    crate::node::array::array_slice_i64(&src, s, e)
+}
 
 // ─── String / ArcStr helpers ──────────────────────────────────────
 //
@@ -1048,6 +1105,119 @@ struct_get_impl!(graphix_struct_get_u8, u8);
 struct_get_impl!(graphix_struct_get_u16, u16);
 struct_get_impl!(graphix_struct_get_u64, u64);
 
+// ─── Non-primitive element reads ──────────────────────────────────
+//
+// Mirror the interp's `extract_composite_or_scalar` for element types
+// the scalar `get_<prim>` helpers can't handle: composite
+// (Array/Tuple/Struct → a `*mut ValArray`), String (→ an `ArcStr`),
+// and value-shape (Variant/Nullable/DateTime/Duration/Bytes → a
+// two-register `Value`). Each returns an OWNED value — a fresh
+// box / refcount-bumped clone — so the source ValArray keeps its own
+// ref and the kernel's scope-exit drop of the source plus the
+// consumer's drop of the result don't double-free.
+
+/// `arr[idx]` with the full source-level `array[i]` semantics — bounds
+/// check, negative-from-end indexing, and the `ArrayIndexError` value
+/// on out-of-bounds — by delegating to the shared
+/// [`crate::node::array::array_index`]. Used by the JIT's `ArrayGet`
+/// (whose result type is `Nullable<elem>`); returns the element on
+/// success or the error Value otherwise, as a two-register `Value`.
+/// `idx` is a signed `i64` (negatives index from the end).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_index(
+    p: *const ValArray,
+    idx: i64,
+) -> Value {
+    crate::node::array::array_index(unsafe { arr(p) }, idx)
+}
+
+/// `arr[idx]` as an owned `*mut ValArray` (Array/Tuple/Struct elem).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_get_array(
+    p: *const ValArray,
+    idx: usize,
+) -> *mut ValArray {
+    unsafe {
+        match &arr(p)[idx] {
+            Value::Array(a) => Box::into_raw(Box::new(a.clone())),
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
+}
+
+/// `arr[idx]` as an owned `ArcStr` (String elem).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_get_arcstr(
+    p: *const ValArray,
+    idx: usize,
+) -> arcstr::ArcStr {
+    unsafe {
+        match &arr(p)[idx] {
+            Value::String(s) => s.clone(),
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
+}
+
+/// `arr[idx]` as an owned `Value` (value-shape elem). Clones the slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_get_value(
+    p: *const ValArray,
+    idx: usize,
+) -> Value {
+    unsafe { arr(p)[idx].clone() }
+}
+
+/// Struct field read (two-level: `arr[sorted_idx]` is a `[name,
+/// value]` kv-pair; read slot 1) producing an owned `*mut ValArray`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_struct_get_array(
+    p: *const ValArray,
+    sorted_idx: usize,
+) -> *mut ValArray {
+    unsafe {
+        let kv = match &arr(p)[sorted_idx] {
+            Value::Array(a) => a,
+            _ => std::hint::unreachable_unchecked(),
+        };
+        match &kv[1] {
+            Value::Array(a) => Box::into_raw(Box::new(a.clone())),
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_struct_get_arcstr(
+    p: *const ValArray,
+    sorted_idx: usize,
+) -> arcstr::ArcStr {
+    unsafe {
+        let kv = match &arr(p)[sorted_idx] {
+            Value::Array(a) => a,
+            _ => std::hint::unreachable_unchecked(),
+        };
+        match &kv[1] {
+            Value::String(s) => s.clone(),
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_struct_get_value(
+    p: *const ValArray,
+    sorted_idx: usize,
+) -> Value {
+    unsafe {
+        let kv = match &arr(p)[sorted_idx] {
+            Value::Array(a) => a,
+            _ => std::hint::unreachable_unchecked(),
+        };
+        kv[1].clone()
+    }
+}
+
 /// Build the list of (name, fn pointer) pairs to register with the
 /// JIT. Called once at `JitCtx::new`; no caching needed.
 pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
@@ -1065,6 +1235,15 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_struct_get_u32", graphix_struct_get_u32 as *const u8),
         ("graphix_struct_get_f32", graphix_struct_get_f32 as *const u8),
         ("graphix_struct_get_bool", graphix_struct_get_bool as *const u8),
+        // Bounds-checked `array[i]` (returns elem-or-error Value).
+        ("graphix_valarray_index", graphix_valarray_index as *const u8),
+        // Non-primitive element reads (composite / string / value-shape).
+        ("graphix_valarray_get_array", graphix_valarray_get_array as *const u8),
+        ("graphix_valarray_get_arcstr", graphix_valarray_get_arcstr as *const u8),
+        ("graphix_valarray_get_value", graphix_valarray_get_value as *const u8),
+        ("graphix_struct_get_array", graphix_struct_get_array as *const u8),
+        ("graphix_struct_get_arcstr", graphix_struct_get_arcstr as *const u8),
+        ("graphix_struct_get_value", graphix_struct_get_value as *const u8),
         // Producer-op builder.
         ("graphix_value_buf_new", graphix_value_buf_new as *const u8),
         ("graphix_value_buf_push_i64", graphix_value_buf_push_i64 as *const u8),
@@ -1074,6 +1253,10 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_value_buf_push_f32", graphix_value_buf_push_f32 as *const u8),
         ("graphix_value_buf_push_bool", graphix_value_buf_push_bool as *const u8),
         ("graphix_value_buf_push_array", graphix_value_buf_push_array as *const u8),
+        (
+            "graphix_value_buf_extend_from_array",
+            graphix_value_buf_extend_from_array as *const u8,
+        ),
         ("graphix_value_buf_push_arcstr", graphix_value_buf_push_arcstr as *const u8),
         ("graphix_value_buf_push_string", graphix_value_buf_push_string as *const u8),
         ("graphix_valarray_finalize", graphix_valarray_finalize as *const u8),
@@ -1095,6 +1278,10 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_value_mul", graphix_value_mul as *const u8),
         ("graphix_value_div", graphix_value_div as *const u8),
         ("graphix_value_rem", graphix_value_rem as *const u8),
+        ("graphix_value_eq", graphix_value_eq as *const u8),
+        ("graphix_bytes_index", graphix_bytes_index as *const u8),
+        ("graphix_map_ref", graphix_map_ref as *const u8),
+        ("graphix_array_slice", graphix_array_slice as *const u8),
         ("graphix_variant_tag_eq", graphix_variant_tag_eq as *const u8),
         ("graphix_variant_payload_i64", graphix_variant_payload_i64 as *const u8),
         ("graphix_variant_payload_f64", graphix_variant_payload_f64 as *const u8),

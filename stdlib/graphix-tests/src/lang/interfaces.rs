@@ -12,10 +12,10 @@ use netidx::publisher::Value;
 // Basic Abstract Type Tests
 // =============================================================================
 
-// Basic abstract type: interface declares abstract type, implementation provides concrete
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Basic abstract type: interface declares abstract type, implementation provides concrete.
+// Fuses+JITs: fusion resolves the abstract `T` to its concrete `i64`
+// rep (registered by `check_sig`) via `resolve_abstract`, so the
+// cross-module `get(make(42))` lowers to a kernel.
 run!(
     abstract_type_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -32,7 +32,7 @@ run!(
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // Abstract type implemented as a struct
 // ASPIRE: Jit (currently None) — blocked on: cross-module struct-arg / string-return fn (i64 twin abstract_type_basic fuses)
@@ -77,9 +77,6 @@ run!(
 // =============================================================================
 
 // Multiple abstract types in same interface
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_multiple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
@@ -101,12 +98,9 @@ run!(
         let make_a = |x: i64| -> A { x };
         let make_b = |y: i64| -> B { y };
         let combine = |a: A, b: B| -> i64 a.x + b.y
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // Two modules using same abstract type name with different definitions
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_different_modules,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(142))),
@@ -134,12 +128,9 @@ run!(
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // Abstract type used in exported type definition
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_in_typedef,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(77))),
@@ -158,7 +149,7 @@ run!(
         type First = i64;
         let make_pair = |a: i64, b: string| -> Pair { first: a, second: b };
         let get_first = |p: Pair| -> i64 p.first
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Interp);
 
 // =============================================================================
 // Abstract Types in Compound Types
@@ -192,9 +183,6 @@ run!(
     "#; graphix_package_core::testing::FuseExpect::None);
 
 // Abstract type in tuple
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_in_tuple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
@@ -212,12 +200,9 @@ run!(
         type Elem = i64;
         let make_pair = |a: i64, b: i64| -> Pair (a, b);
         let sum_pair = |p: Pair| -> i64 p.0 + p.1
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // Abstract type in array
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_in_array,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -234,7 +219,7 @@ run!(
         type Elem = i64;
         let make_array = |arr: Array<i64>| -> Array<Elem> arr;
         let sum_array = |arr: Array<Elem>| -> i64 array::fold(arr, 0, |acc, x| acc + x)
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // =============================================================================
 // Abstract Type used in Recursive Type
@@ -273,9 +258,6 @@ run!(
 // =============================================================================
 
 // Abstract type with byref parameter - collects values to verify update
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_byref,
     |v: Result<&Value>| match v {
@@ -301,16 +283,13 @@ run!(
         let make = |x: i64| -> Counter x;
         let get = |c: Counter| -> i64 c;
         let increment = |c: &Counter| -> null { *c <- once(*c) + 1; null }
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // =============================================================================
 // Nested Modules with Abstract Types
 // =============================================================================
 
 // Nested module with abstract type
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_nested_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(99))),
@@ -333,7 +312,7 @@ run!(
         type T = { v: i64 };
         let make = |x: i64| -> T { v: x };
         let get = |t: T| -> i64 t.v
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // =============================================================================
 // Dynamic Modules with Abstract Types
@@ -653,10 +632,6 @@ run!(
 // =============================================================================
 
 // Abstract type as Map key
-// ASPIRE: Jit (currently None) — blocked on: cross-module Map lookup + string return (Map twin abstract_type_map_value fuses)
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_map_key,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "found"),
@@ -678,12 +653,9 @@ run!(
         let make_key = |x: i64| -> Key x;
         let make_map = || -> KeyMap {42 => "found", 99 => "other"};
         let lookup = |m: KeyMap, k: Key| m{k}?
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // Abstract type as Map value
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_map_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -705,12 +677,9 @@ run!(
         let make_map = || -> ValMap {"key" => { inner: 42 }};
         let get = |m: ValMap, k: string| -> Val m{k}?;
         let unwrap = |v: Val| -> i64 v.inner
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // Abstract types as both Map key and value
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_map_key_and_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(100))),
@@ -737,7 +706,7 @@ run!(
         let make_map = |k: K, n: i64| -> KVMap {k => n};
         let lookup = |m: KVMap, k: K| -> V m{k}?;
         let get_val = |v: V| -> i64 v
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);
 
 // =============================================================================
 // Abstract Types in Throws Clause
@@ -810,9 +779,6 @@ run!(
 // resolution. The following tests demonstrate simpler patterns that work.
 
 // Two modules with separate abstract types, combined at the caller level
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_two_modules_combined,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
@@ -840,4 +806,4 @@ run!(
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#);

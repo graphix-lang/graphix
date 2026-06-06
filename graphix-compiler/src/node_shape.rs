@@ -161,6 +161,7 @@ pub enum GirOpTag {
     ConstStr,
     ConstValue,
     ValueArith,
+    ValueEq,
     Concat,
     ConstNull,
     IsNull,
@@ -177,10 +178,17 @@ pub enum GirOpTag {
     IfChain,
     ArrayLen,
     ArrayGet,
+    BytesIndex,
+    MapRef,
+    ArraySlice,
     ArrayFold,
     ArrayInit,
     ArrayMap,
     ArrayFilter,
+    ArrayFind,
+    ArrayFilterMap,
+    ArrayFindMap,
+    ArrayFlatMap,
     TupleGet,
     TupleNew,
     StructGet,
@@ -198,6 +206,7 @@ fn gir_op_tag(op: &GirOp) -> GirOpTag {
         GirOp::ConstStr(_) => GirOpTag::ConstStr,
         GirOp::ConstValue(_) => GirOpTag::ConstValue,
         GirOp::ValueArith { .. } => GirOpTag::ValueArith,
+        GirOp::ValueEq { .. } => GirOpTag::ValueEq,
         GirOp::Concat(_) => GirOpTag::Concat,
         GirOp::ConstNull => GirOpTag::ConstNull,
         GirOp::IsNull(_) => GirOpTag::IsNull,
@@ -214,10 +223,17 @@ fn gir_op_tag(op: &GirOp) -> GirOpTag {
         GirOp::IfChain { .. } => GirOpTag::IfChain,
         GirOp::ArrayLen { .. } => GirOpTag::ArrayLen,
         GirOp::ArrayGet { .. } => GirOpTag::ArrayGet,
+        GirOp::BytesIndex { .. } => GirOpTag::BytesIndex,
+        GirOp::MapRef { .. } => GirOpTag::MapRef,
+        GirOp::ArraySlice { .. } => GirOpTag::ArraySlice,
         GirOp::ArrayFold { .. } => GirOpTag::ArrayFold,
         GirOp::ArrayInit { .. } => GirOpTag::ArrayInit,
         GirOp::ArrayMap { .. } => GirOpTag::ArrayMap,
         GirOp::ArrayFilter { .. } => GirOpTag::ArrayFilter,
+        GirOp::ArrayFind { .. } => GirOpTag::ArrayFind,
+        GirOp::ArrayFilterMap { .. } => GirOpTag::ArrayFilterMap,
+        GirOp::ArrayFindMap { .. } => GirOpTag::ArrayFindMap,
+        GirOp::ArrayFlatMap { .. } => GirOpTag::ArrayFlatMap,
         GirOp::TupleGet { .. } => GirOpTag::TupleGet,
         GirOp::TupleNew { .. } => GirOpTag::TupleNew,
         GirOp::StructGet { .. } => GirOpTag::StructGet,
@@ -272,11 +288,29 @@ fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
         GirOp::Bin { lhs, rhs, .. }
         | GirOp::Cmp { lhs, rhs, .. }
         | GirOp::BoolBin { lhs, rhs, .. }
-        | GirOp::ValueArith { lhs, rhs, .. } => {
+        | GirOp::ValueArith { lhs, rhs, .. }
+        | GirOp::ValueEq { lhs, rhs, .. } => {
             visit_ops(lhs, f);
             visit_ops(rhs, f);
         }
         GirOp::ArrayGet { idx, .. } => visit_ops(idx, f),
+        GirOp::BytesIndex { bytes, idx } => {
+            visit_ops(bytes, f);
+            visit_ops(idx, f);
+        }
+        GirOp::MapRef { map, key } => {
+            visit_ops(map, f);
+            visit_ops(key, f);
+        }
+        GirOp::ArraySlice { source, start, end } => {
+            visit_ops(source, f);
+            if let Some(e) = start {
+                visit_ops(e, f);
+            }
+            if let Some(e) = end {
+                visit_ops(e, f);
+            }
+        }
         GirOp::ArrayFold { init, body, .. } => {
             visit_ops(init, f);
             visit_ops(body, f);
@@ -287,6 +321,10 @@ fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
         }
         GirOp::ArrayMap { body, .. } => visit_ops(body, f),
         GirOp::ArrayFilter { predicate, .. } => visit_ops(predicate, f),
+        GirOp::ArrayFind { predicate, .. } => visit_ops(predicate, f),
+        GirOp::ArrayFilterMap { body, .. } => visit_ops(body, f),
+        GirOp::ArrayFindMap { body, .. } => visit_ops(body, f),
+        GirOp::ArrayFlatMap { body, .. } => visit_ops(body, f),
         GirOp::TupleNew { fields, .. } => {
             fields.iter().for_each(|e| visit_ops(e, f))
         }

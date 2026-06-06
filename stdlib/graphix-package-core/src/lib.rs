@@ -639,9 +639,10 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// - `elem_name`: the callback's parameter name (`x` in
     ///   `|x| body`), used as the [`Input`] name when scoping the
     ///   body emit so its body's `Ref` lookups find the kernel slot.
-    /// - `in_elem`: the array's element type as a [`PrimType`].
-    ///   Implementors that can't handle composite elements bail with
-    ///   `None`.
+    /// - `in_elem`: the array's element type as a [`GirType`] (a
+    ///   `Prim` for scalar elements, or a composite for
+    ///   `Array<(k, v)>`-style elements). Implementors that only
+    ///   handle scalar elements call `in_elem.as_prim()?`.
     ///
     /// Implementations live with each `MapFn` impl (i.e. in the
     /// package that defines the runtime semantics), not in
@@ -653,7 +654,10 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
         _array_arg: &Node<R, E>,
         _body: &Node<R, E>,
         _elem_name: &ArcStr,
-        _in_elem: graphix_compiler::gir::PrimType,
+        _in_elem: graphix_compiler::gir::GirType,
+        // Tuple-destructure callback leaves `(BindId, position)` when the
+        // arg is `|(k, v)|`; empty for a single-name `|x|` callback.
+        _elem_binds: &[(graphix_compiler::BindId, usize)],
     ) -> Option<graphix_compiler::gir::GirExpr> {
         None
     }
@@ -921,6 +925,15 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             s.pred.refs(refs)
         }
         if let Some(s) = &self.analysis_pred {
+            // `s.id` (the synthetic per-element binding) and `predid`
+            // (the callback-function handle) are internal to MapQ's
+            // analysis-only prototype. Mask them so fusion's
+            // region-input discovery surfaces only the callback's *real*
+            // captures — not these synthetic bindings, which nothing
+            // feeds at runtime (a leaked kernel input becomes an
+            // orphaned feeder → the kernel never fires → hang).
+            refs.mark_bound(s.id);
+            refs.mark_bound(self.predid);
             s.pred.refs(refs);
         }
     }
@@ -980,22 +993,36 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> graphix_compiler::GirEmitter<R, E>
             _ => return None,
         };
         let body = g.body();
-        // Pull the callback's param name from its `FnType.args[0].kind`
-        // — used as the kernel input slot name so the body's `Ref`s
-        // (which carry the source-level `"x"` in their spec) resolve.
-        let elem_name = match &g.typ().args.first()?.kind {
-            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
-            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
-            _ => return None,
-        };
         // Resolve the array kernel param name and its element type
         // up-front — saves every `MapFn::emit_gir` impl from
         // duplicating these lookups.
         let array_name = ctx.resolve_array_input(array_arg)?;
         let ai = ctx.find_array(&array_name)?;
-        let in_elem = ai.elem.as_prim()?;
+        let in_elem = ai.elem.clone();
+        // A `|(k, v)|` tuple-destructure arg has no single name —
+        // synthesize an element name and hand the per-leaf
+        // `(BindId, position)` list to the impl. A single-name `|x|`
+        // arg pulls its name from the callback `FnType.args[0].kind`
+        // (the body's `Ref`s carry that source name) and passes no
+        // leaves.
+        let (elem_name, elem_binds) = match g.args().first().and_then(|p| p.tuple_leaves())
+        {
+            Some(binds) => (arcstr::literal!("__elem"), binds),
+            None => {
+                let n = match &g.typ().args.first()?.kind {
+                    graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => {
+                        n.clone()
+                    }
+                    graphix_compiler::typ::FnArgKind::Labeled { name, .. } => {
+                        name.clone()
+                    }
+                    _ => return None,
+                };
+                (n, Vec::new())
+            }
+        };
         // Delegate to the per-MapFn codegen.
-        T::emit_gir(ctx, ec, array_arg, body, &elem_name, in_elem)
+        T::emit_gir(ctx, ec, array_arg, body, &elem_name, in_elem, &elem_binds)
     }
 }
 
@@ -1020,7 +1047,10 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
         _body: &Node<R, E>,
         _acc_name: &ArcStr,
         _elem_name: &ArcStr,
-        _in_elem: graphix_compiler::gir::PrimType,
+        _in_elem: graphix_compiler::gir::GirType,
+        // Tuple-destructure leaves for an `|acc, (k, v)|` callback;
+        // empty for `|acc, x|`.
+        _elem_binds: &[(graphix_compiler::BindId, usize)],
     ) -> Option<graphix_compiler::gir::GirExpr> {
         None
     }
@@ -1316,6 +1346,15 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             n.refs(refs)
         }
         if let Some(p) = &self.analysis_pred {
+            // Mask the analysis-only synthetic bindings (the per-element
+            // `acc`/`x` accumulator+element and the callback-function
+            // handle `fid`) so fusion's region-input discovery sees only
+            // the callback's real captures — not these internal
+            // bindings (which nothing feeds at runtime → orphaned kernel
+            // feeder → hang). See `MapQ::refs`.
+            refs.mark_bound(p.acc_id);
+            refs.mark_bound(p.elem_id);
+            refs.mark_bound(self.fid);
             p.pred.refs(refs);
         }
     }
@@ -1379,15 +1418,30 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> graphix_compiler::GirEmitter<R, E>
             graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
-        let elem_name = match &params.next()?.kind {
-            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
-            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
-            _ => return None,
-        };
+        // The element (2nd) param may be a `|acc, (k, v)|` destructure.
+        let (elem_name, elem_binds) =
+            match g.args().get(1).and_then(|p| p.tuple_leaves()) {
+                Some(binds) => (arcstr::literal!("__elem"), binds),
+                None => {
+                    let n = match &params.next()?.kind {
+                        graphix_compiler::typ::FnArgKind::Positional {
+                            name: Some(n),
+                        } => n.clone(),
+                        graphix_compiler::typ::FnArgKind::Labeled { name, .. } => {
+                            name.clone()
+                        }
+                        _ => return None,
+                    };
+                    (n, Vec::new())
+                }
+            };
         let array_name = ctx.resolve_array_input(array_arg)?;
         let ai = ctx.find_array(&array_name)?;
-        let in_elem = ai.elem.as_prim()?;
-        T::emit_gir(ctx, ec, array_arg, init_arg, body, &acc_name, &elem_name, in_elem)
+        let in_elem = ai.elem.clone();
+        T::emit_gir(
+            ctx, ec, array_arg, init_arg, body, &acc_name, &elem_name, in_elem,
+            &elem_binds,
+        )
     }
 }
 

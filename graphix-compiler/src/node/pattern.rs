@@ -332,6 +332,31 @@ impl StructPatternNode {
         Ok(t)
     }
 
+    /// For a tuple destructure pattern `(a, b, …)` with only simple
+    /// `Bind`/`Ignore` leaves and no whole-binding, return each `Bind`
+    /// leaf's `(BindId, tuple position)` (skipping `Ignore`). `None` for
+    /// any other pattern shape. Used by HOF fusion to lower a `|(k, v)|`
+    /// callback's arg destructure to per-leaf `TupleGet` bindings —
+    /// `node::pattern` is `pub(crate)`, so callers outside the compiler
+    /// (e.g. `MapQ::emit_gir`) reach the leaves through this accessor
+    /// rather than matching the enum.
+    pub fn tuple_leaves(&self) -> Option<Vec<(BindId, usize)>> {
+        match self {
+            Self::Slice { tuple: true, all: None, binds } => {
+                let mut out = Vec::with_capacity(binds.len());
+                for (i, b) in binds.iter().enumerate() {
+                    match b {
+                        Self::Bind(id) => out.push((*id, i)),
+                        Self::Ignore => {}
+                        _ => return None,
+                    }
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
     pub fn ids<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
         match &self {
             Self::Ignore | Self::Literal(_) => (),

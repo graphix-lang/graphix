@@ -528,7 +528,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes
+            | GirType::Bytes | GirType::Map
             | GirType::String => true,
             GirType::Unit | GirType::Null => false,
         }
@@ -545,7 +545,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes
+        | GirType::Bytes | GirType::Map
         | GirType::Unit
         | GirType::String => true,
         GirType::Null => false,
@@ -915,7 +915,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes
+            | GirType::Bytes | GirType::Map
             | GirType::String => true,
             // Bare Unit args don't appear in practice (Unit is a
             // return-only shape). Bare Null is always widened to
@@ -935,7 +935,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes
+        | GirType::Bytes | GirType::Map
         | GirType::Unit
         | GirType::String => true,
         GirType::Null => false,
@@ -1066,6 +1066,37 @@ impl FusionCtx {
         let r = f(self);
         self.inputs.pop();
         r
+    }
+
+    /// Snapshot the lengths of every value-input list, so a temporary
+    /// batch of registrations (e.g. HOF destructure leaves) can be
+    /// rolled back with [`Self::input_restore`] after emitting the body
+    /// that referenced them — the scoped-input analogue of
+    /// [`Self::with_input`] for multiple, differently-shaped slots.
+    pub(crate) fn input_snapshot(&self) -> [usize; 9] {
+        [
+            self.inputs.len(),
+            self.fn_inputs.len(),
+            self.array_inputs.len(),
+            self.tuple_inputs.len(),
+            self.struct_inputs.len(),
+            self.variant_inputs.len(),
+            self.nullable_inputs.len(),
+            self.string_inputs.len(),
+            self.value_inputs.len(),
+        ]
+    }
+
+    pub(crate) fn input_restore(&mut self, s: [usize; 9]) {
+        self.inputs.truncate(s[0]);
+        self.fn_inputs.truncate(s[1]);
+        self.array_inputs.truncate(s[2]);
+        self.tuple_inputs.truncate(s[3]);
+        self.struct_inputs.truncate(s[4]);
+        self.variant_inputs.truncate(s[5]);
+        self.nullable_inputs.truncate(s[6]);
+        self.string_inputs.truncate(s[7]);
+        self.value_inputs.truncate(s[8]);
     }
 
     /// If `node` is a `Ref` to an array-typed kernel parameter,
@@ -1649,6 +1680,77 @@ fn emit_array_new<R: crate::Rt, E: crate::UserEvent>(
     })
 }
 
+/// The constant `Value` of a node, seeing through `ExplicitParens`.
+/// `None` for anything that isn't a compile-time-known literal.
+fn node_const_value<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+) -> Option<Value> {
+    use crate::NodeView;
+    match node.view() {
+        NodeView::Constant(c) => Some(c.value.clone()),
+        NodeView::ExplicitParens(ep) => node_const_value(&ep.n),
+        // Composite literals fold when every element folds — the
+        // runtime shape of an array/tuple is a flat `ValArray`, a map
+        // is a `Value::Map`. Lets a constant nested composite (a map of
+        // arrays, an array of maps, …) lower to one `ConstValue`
+        // instead of bailing the whole literal.
+        NodeView::Array(a) => const_valarray(&a.n),
+        NodeView::Tuple(t) => const_valarray(&t.n),
+        NodeView::Map(m) => const_map(&m.keys, &m.vals),
+        _ => None,
+    }
+}
+
+/// Fold a slice of `Cached` element nodes into a constant
+/// `Value::Array` (the flat `ValArray` runtime shape shared by array
+/// and tuple literals), or `None` if any element isn't constant.
+fn const_valarray<R: crate::Rt, E: crate::UserEvent>(
+    elems: &[crate::node::Cached<R, E>],
+) -> Option<Value> {
+    let mut vals: poolshark::local::LPooled<Vec<Value>> =
+        poolshark::local::LPooled::take();
+    for c in elems.iter() {
+        vals.push(node_const_value(&c.node)?);
+    }
+    Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
+}
+
+/// Fold parallel key/value `Cached` node slices into a constant
+/// `Value::Map`, or `None` if any entry isn't constant. Shared by
+/// `node_const_value`'s `Map` arm and `emit_map_new`.
+fn const_map<R: crate::Rt, E: crate::UserEvent>(
+    keys: &[crate::node::Cached<R, E>],
+    vals: &[crate::node::Cached<R, E>],
+) -> Option<Value> {
+    if keys.len() != vals.len() {
+        return None;
+    }
+    let mut map = netidx_value::Map::new();
+    for (k, v) in keys.iter().zip(vals.iter()) {
+        map.insert_cow(node_const_value(&k.node)?, node_const_value(&v.node)?);
+    }
+    Some(Value::Map(map))
+}
+
+/// Lower a `{k0 => v0, k1 => v1, ...}` map literal to a constant
+/// `Value::Map` ([`GirOp::ConstValue`], type [`GirType::Map`]) — but
+/// only when every key and value is a compile-time constant. Builds
+/// the `CMap` at compile time, exactly as the [`crate::node::map::Map`]
+/// node does at runtime (`insert_cow` in entry order). A dynamic entry
+/// (computed key/value) returns `None`; the runtime map producer isn't
+/// lowered yet.
+fn emit_map_new<R: crate::Rt, E: crate::UserEvent>(
+    keys: &[crate::node::Cached<R, E>],
+    vals: &[crate::node::Cached<R, E>],
+    _ctx: &mut FusionCtx,
+    _ec: &mut crate::ExecCtx<R, E>,
+) -> Option<GirExpr> {
+    Some(GirExpr {
+        op: GirOp::ConstValue(const_map(keys, vals)?),
+        typ: GirType::Map,
+    })
+}
+
 /// Lower a `{x: a, y: b}` struct literal to `GirOp::StructNew`.
 /// Sorts the fields alphabetically by name (graphix's canonical
 /// struct layout). Each field value must emit as scalar GIR.
@@ -1688,26 +1790,173 @@ fn emit_struct_new<R: crate::Rt, E: crate::UserEvent>(
     })
 }
 
+/// Lower `{s with f: x, ...}` ([`crate::node::data::StructWith`]). The
+/// struct type (and its sorted field set) is known at compile time, so
+/// this expands to a [`GirOp::StructNew`] whose fields are either the
+/// per-field replacement value or a [`GirOp::StructGet`] copying the
+/// unchanged field from the source — reusing already-lowered ops, no
+/// dedicated StructWith op. `source` must be a `Ref` to a struct kernel
+/// input (same constraint as `emit_struct_ref`).
+fn emit_struct_with<R: crate::Rt, E: crate::UserEvent>(
+    source: &crate::Node<R, E>,
+    replace: &[crate::node::data::Replace<R, E>],
+    ctx: &mut FusionCtx,
+    ec: &mut crate::ExecCtx<R, E>,
+) -> Option<GirExpr> {
+    let name = match &source.spec().kind {
+        ExprKind::Ref { name } => ident_of(name)?,
+        _ => return None,
+    };
+    let si = ctx.find_struct(name)?;
+    let si_name = si.name.clone();
+    let si_fields = si.fields.clone();
+    let mut sorted_fields: Vec<(ArcStr, GirExpr)> =
+        Vec::with_capacity(si_fields.len());
+    let mut sorted_types: Vec<(ArcStr, GirType)> =
+        Vec::with_capacity(si_fields.len());
+    for (sorted_idx, (fname, ftyp)) in si_fields.iter().enumerate() {
+        let rep = replace.iter().find(|r| match &r.name {
+            Value::String(n) => n == fname,
+            _ => false,
+        });
+        let field_expr = match rep {
+            Some(r) => emit_node(&r.n.node, ctx, ec)?,
+            None => GirExpr {
+                op: GirOp::StructGet {
+                    name: si_name.clone(),
+                    field: fname.clone(),
+                    sorted_idx,
+                    elem_typ: ftyp.clone(),
+                },
+                typ: ftyp.clone(),
+            },
+        };
+        sorted_types.push((fname.clone(), field_expr.typ.clone()));
+        sorted_fields.push((fname.clone(), field_expr));
+    }
+    let typ = GirType::Struct(sorted_types.clone());
+    Some(GirExpr {
+        op: GirOp::StructNew { sorted_fields, sorted_types },
+        typ,
+    })
+}
+
 /// Lower `arr[i]` (i.e. `ExprKind::ArrayRef`) to `GirOp::ArrayGet`.
 /// `arr` must be a Ref to an array kernel param; `i` must emit as a
-/// scalar integer expression. Result type is the array's element
-/// type.
+/// scalar integer expression.
+///
+/// Result type is `Nullable<elem>` — `array[i]` is `[elem, Error<…>]`
+/// at the language level: an out-of-bounds (or negative-underflow)
+/// index produces an `ArrayIndexError` rather than the element. The
+/// `GirOp::ArrayGet` op carries the bounds check (the interp and JIT
+/// both route through the shared [`crate::node::array::array_index`]),
+/// so the fused result matches the node-walk bit-for-bit.
 fn emit_array_ref<R: crate::Rt, E: crate::UserEvent>(
     source: &crate::Node<R, E>,
     idx: &crate::Node<R, E>,
     ctx: &mut FusionCtx,
     ec: &mut crate::ExecCtx<R, E>,
 ) -> Option<GirExpr> {
-    let arr_name = ctx.resolve_array_input(source)?;
-    let ai = ctx.find_array(&arr_name)?;
-    let elem = ai.elem.clone();
-    let idx_expr = emit_node(idx, ctx, ec)?;
-    if !idx_expr.typ.as_prim().is_some_and(|p| p.is_integer()) {
+    // Array path: the source resolves to an array kernel input read by
+    // name.
+    if let Some(arr_name) = ctx.resolve_array_input(source) {
+        let ai = ctx.find_array(&arr_name)?;
+        let elem = ai.elem.clone();
+        let idx_expr = emit_node(idx, ctx, ec)?;
+        if !idx_expr.typ.as_prim().is_some_and(|p| p.is_integer()) {
+            return None;
+        }
+        return Some(GirExpr {
+            op: GirOp::ArrayGet { name: arr_name, idx: Box::new(idx_expr) },
+            typ: GirType::Nullable(Box::new(elem)),
+        });
+    }
+    // Bytes path: `bytes[i]` — the source is a value-shape `bytes`.
+    let src = emit_node(source, ctx, ec)?;
+    if matches!(src.typ, GirType::Bytes) {
+        let idx_expr = emit_node(idx, ctx, ec)?;
+        if !idx_expr.typ.as_prim().is_some_and(|p| p.is_integer()) {
+            return None;
+        }
+        return Some(GirExpr {
+            op: GirOp::BytesIndex {
+                bytes: Box::new(src),
+                idx: Box::new(idx_expr),
+            },
+            typ: GirType::Nullable(Box::new(GirType::Prim(PrimType::U8))),
+        });
+    }
+    None
+}
+
+/// Emit `m{key}` ([`crate::node::map::MapRef`]) as a [`GirOp::MapRef`].
+/// `node` is the parent MapRef node — its `typ()` is `[V, Error]`,
+/// lowered via `from_type` to the op's `Nullable<V>` result. The `map`
+/// operand must be `GirType::Map`; the `key` is any value-bearing
+/// operand.
+fn emit_map_ref<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    source: &crate::Node<R, E>,
+    key: &crate::Node<R, E>,
+    ctx: &mut FusionCtx,
+    ec: &mut crate::ExecCtx<R, E>,
+) -> Option<GirExpr> {
+    let map_expr = emit_node(source, ctx, ec)?;
+    if !matches!(map_expr.typ, GirType::Map) {
         return None;
     }
+    let key_expr = emit_node(key, ctx, ec)?;
+    if matches!(key_expr.typ, GirType::Unit | GirType::Null) {
+        return None;
+    }
+    let typ = GirType::from_type(node.typ())?;
     Some(GirExpr {
-        op: GirOp::ArrayGet { name: arr_name, idx: Box::new(idx_expr) },
-        typ: elem,
+        op: GirOp::MapRef {
+            map: Box::new(map_expr),
+            key: Box::new(key_expr),
+        },
+        typ,
+    })
+}
+
+/// Emit `a[i..j]` ([`crate::node::array::ArraySlice`]) as a
+/// [`GirOp::ArraySlice`]. `source` must be a `GirType::Array`/`Bytes`
+/// operand; the optional `start`/`end` bounds must emit as integer
+/// scalars. Result type is `Nullable<source>` (the slice or an error),
+/// from the node's `[source, Error]` via `from_type`.
+fn emit_array_slice<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    source: &crate::Node<R, E>,
+    start: Option<&crate::Node<R, E>>,
+    end: Option<&crate::Node<R, E>>,
+    ctx: &mut FusionCtx,
+    ec: &mut crate::ExecCtx<R, E>,
+) -> Option<GirExpr> {
+    let src = emit_node(source, ctx, ec)?;
+    if !matches!(src.typ, GirType::Array(_) | GirType::Bytes) {
+        return None;
+    }
+    let emit_bound = |n: Option<&crate::Node<R, E>>,
+                          ctx: &mut FusionCtx,
+                          ec: &mut crate::ExecCtx<R, E>|
+     -> Option<Option<Box<GirExpr>>> {
+        match n {
+            None => Some(None),
+            Some(n) => {
+                let e = emit_node(n, ctx, ec)?;
+                if !e.typ.as_prim().is_some_and(|p| p.is_integer()) {
+                    return None;
+                }
+                Some(Some(Box::new(e)))
+            }
+        }
+    };
+    let start_e = emit_bound(start, ctx, ec)?;
+    let end_e = emit_bound(end, ctx, ec)?;
+    let typ = GirType::from_type(node.typ())?;
+    Some(GirExpr {
+        op: GirOp::ArraySlice { source: Box::new(src), start: start_e, end: end_e },
+        typ,
     })
 }
 
@@ -1786,60 +2035,72 @@ fn register_kir_binding(
     name: &ArcStr,
     value_typ: &GirType,
 ) -> Option<()> {
+    register_kir_binding_bid(ctx, name, value_typ, None)
+}
+
+/// `register_kir_binding` with an explicit `BindId` tagged onto the
+/// slot, so a later `Ref` resolves it via `lookup_local_by_bind_id`
+/// even when the source name is synthetic (HOF destructure leaves).
+pub(crate) fn register_kir_binding_bid(
+    ctx: &mut FusionCtx,
+    name: &ArcStr,
+    value_typ: &GirType,
+    bind_id: Option<crate::BindId>,
+) -> Option<()> {
     match value_typ {
         GirType::Prim(prim) => {
             ctx.inputs.push(Input {
                 name: name.clone(),
                 prim: *prim,
-                bind_id: None,
+                bind_id,
             });
         }
         GirType::Array(elem) => {
             ctx.array_inputs.push(crate::gir::ArrayInput {
                 name: name.clone(),
                 elem: (**elem).clone(),
-                bind_id: None,
+                bind_id,
             });
         }
         GirType::Tuple(elems) => {
             ctx.tuple_inputs.push(crate::gir::TupleInput {
                 name: name.clone(),
                 elems: elems.clone(),
-                bind_id: None,
+                bind_id,
             });
         }
         GirType::Struct(fields) => {
             ctx.struct_inputs.push(crate::gir::StructInput {
                 name: name.clone(),
                 fields: fields.clone(),
-                bind_id: None,
+                bind_id,
             });
         }
         GirType::Variant(cases) => {
             ctx.variant_inputs.push(crate::gir::VariantInput {
                 name: name.clone(),
                 cases: cases.clone(),
-                bind_id: None,
+                bind_id,
             });
         }
         GirType::Nullable(elem) => {
             ctx.nullable_inputs.push(crate::gir::NullableInput {
                 name: name.clone(),
                 elem: (**elem).clone(),
-                bind_id: None,
+                bind_id,
             });
         }
         GirType::String => {
             ctx.string_inputs.push(crate::gir::StringInput {
                 name: name.clone(),
-                bind_id: None,
+                bind_id,
             });
         }
-        GirType::DateTime | GirType::Duration | GirType::Bytes => {
+        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
             ctx.value_inputs.push(crate::gir::ValueInput {
                 name: name.clone(),
                 typ: value_typ.clone(),
-                bind_id: None,
+                bind_id,
             });
         }
         // Unit isn't usefully bindable as a kernel local (the caller
@@ -1849,6 +2110,58 @@ fn register_kir_binding(
         GirType::Unit | GirType::Null => return None,
     }
     Some(())
+}
+
+/// Emit a HOF callback body whose arg is a tuple destructure `|(k, v)|`
+/// over a composite `in_elem`. The loop binds the element into a
+/// composite slot named `elem_local`; this wraps the body in a `Block`
+/// whose leading lets bind each destructure leaf via `TupleGet` on
+/// `elem_local`, each tagged with the leaf's `BindId` so the body's
+/// `Ref`s resolve via `lookup_local_by_bind_id`. `leaves` is `(BindId,
+/// tuple position)` per leaf (the synthetic leaf names are
+/// `BindId`-keyed, so they never collide). The leaf registrations are
+/// scoped to the body emit (snapshot/restore), like `with_input`.
+pub fn emit_hof_body_destructured<R: crate::Rt, E: crate::UserEvent>(
+    ctx: &mut FusionCtx,
+    ec: &mut crate::ExecCtx<R, E>,
+    body: &crate::Node<R, E>,
+    elem_local: &ArcStr,
+    in_elem: &GirType,
+    leaves: &[(crate::BindId, usize)],
+) -> Option<GirExpr> {
+    let tuple_types = match in_elem {
+        GirType::Tuple(ts) => ts.clone(),
+        _ => return None,
+    };
+    let snap = ctx.input_snapshot();
+    let mut lets: Vec<Let> = Vec::with_capacity(leaves.len());
+    for (id, pos) in leaves {
+        let leaf_typ = tuple_types.get(*pos)?.clone();
+        let leaf_name: ArcStr =
+            compact_str::format_compact!("__leaf_{}", id.inner())
+                .as_str()
+                .into();
+        register_kir_binding_bid(ctx, &leaf_name, &leaf_typ, Some(*id))?;
+        lets.push(Let {
+            local: leaf_name,
+            value: GirExpr {
+                op: GirOp::TupleGet {
+                    name: elem_local.clone(),
+                    idx: *pos,
+                    elem_typ: leaf_typ.clone(),
+                },
+                typ: leaf_typ,
+            },
+        });
+    }
+    let body_kir = emit_node(body, ctx, ec);
+    ctx.input_restore(snap);
+    let body_kir = body_kir?;
+    let typ = body_kir.typ.clone();
+    Some(GirExpr {
+        op: GirOp::Block { lets, tail: Box::new(body_kir) },
+        typ,
+    })
 }
 
 /// Lower a call to a fused user lambda kernel: emit the formal args
@@ -1909,6 +2222,44 @@ fn emit_lambda_call<R: crate::Rt, E: crate::UserEvent>(
 ///
 /// Looks up (or builds + caches) a fused kernel for the
 /// `(LambdaId, resolved FnType)` monomorphization, then registers
+/// Resolve named (`Type::Ref`) and abstract (`Type::Abstract`) types
+/// to their concrete representation, recursing through composites, so
+/// `GirType::from_type` can determine an abstract-typed value's runtime
+/// shape. This is fusion-internal only — the abstraction stays opaque
+/// to the type system; the optimizer peeks at the registered concrete
+/// rep purely to size kernel slots.
+///
+/// A depth cap (and the unchanged-on-failure fallback) makes recursive
+/// types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate by
+/// returning the type as-is — `from_type` then yields `None` and the
+/// kernel simply doesn't fuse, which is correct.
+fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) -> Type {
+    use triomphe::Arc;
+    if depth > 16 {
+        return typ.clone();
+    }
+    let r = |t: &Type| resolve_abstract(t, env, depth + 1);
+    match typ {
+        Type::Ref(_) => match typ.lookup_ref(env) {
+            Ok(resolved) if !matches!(&resolved, Type::Ref(_)) => r(&resolved),
+            _ => typ.clone(),
+        },
+        Type::Abstract { id, params } if params.is_empty() => {
+            match gir::ABSTRACT_REGISTRY.read().get(id).cloned() {
+                Some(concrete) => r(&concrete),
+                None => typ.clone(),
+            }
+        }
+        Type::Tuple(ts) => Type::Tuple(Arc::from_iter(ts.iter().map(|t| r(t)))),
+        Type::Array(t) => Type::Array(Arc::new(r(t))),
+        Type::Set(ts) => Type::Set(Arc::from_iter(ts.iter().map(|t| r(t)))),
+        Type::Struct(fs) => {
+            Type::Struct(Arc::from_iter(fs.iter().map(|(n, t)| (n.clone(), r(t)))))
+        }
+        other => other.clone(),
+    }
+}
+
 /// the kernel in `ctx.known_fns` under the call site's source
 /// binding name and stashes the [`CachedKernel`] (including its
 /// capture list) in `ctx.called_kernels` so `emit_lambda_call` can
@@ -1966,7 +2317,8 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             crate::typ::FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
-        let kt = GirType::from_type(&fa.typ)?;
+        let arg_typ = resolve_abstract(&fa.typ, &ec.env, 0);
+        let kt = GirType::from_type(&arg_typ)?;
         let kind = gir_type_to_region_input_kind(kt)?;
         inputs.push(RegionInput {
             expr_id: crate::expr::ExprId::new(),
@@ -2025,7 +2377,7 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             // the whole build returns None below.
             continue;
         }
-        let kt = match GirType::from_type(&cap_typ) {
+        let kt = match GirType::from_type(&resolve_abstract(&cap_typ, &ec.env, 0)) {
             Some(t) => t,
             None => return None,
         };
@@ -2043,7 +2395,7 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         });
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
-    let return_typ = GirType::from_type(&typ.rtype)?;
+    let return_typ = GirType::from_type(&resolve_abstract(&typ.rtype, &ec.env, 0))?;
     // Cross-kernel calls support scalar + composite (array/tuple/
     // struct) + value-shape (variant/nullable) args, captures, and
     // returns. Args and captures are already restricted to those
@@ -2416,7 +2768,41 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
         NodeView::Tuple(t) => rec_bail("emit:Tuple", emit_tuple_new(&t.n, ctx, ec)),
         NodeView::Array(a) => rec_bail("emit:Array", emit_array_new(node, &a.n, ctx, ec)),
         NodeView::Struct(s) => rec_bail("emit:Struct", emit_struct_new(&s.names, &s.n, ctx, ec)),
+        NodeView::StructWith(sw) => rec_bail("emit:StructWith", emit_struct_with(&sw.source, &sw.replace, ctx, ec)),
         NodeView::Variant(v) => rec_bail("emit:Variant", emit_variant_new(&v.tag, &v.n, ctx, ec)),
+        NodeView::Map(m) => rec_bail("emit:Map", emit_map_new(&m.keys, &m.vals, ctx, ec)),
+        NodeView::MapRef(m) => rec_bail("emit:MapRef", emit_map_ref(node, &m.source.node, &m.key.node, ctx, ec)),
+        NodeView::ArraySlice(a) => rec_bail("emit:ArraySlice", emit_array_slice(node, &a.source.node, a.start.as_ref().map(|c| &c.node), a.end.as_ref().map(|c| &c.node), ctx, ec)),
+        // `a ~ b` (Sample) lowers to `b` — but only when sound. A fused
+        // kernel recomputes its whole output whenever *any* input fires,
+        // whereas `~` emits `b` *only* when the trigger `a` fires. So
+        // `a ~ b` ≡ `b` is sound iff `b` can't update without `a`: every
+        // external ref of the value is also an external ref of the
+        // trigger (then a recompute caused by a value-dep change implies
+        // a trigger-dep change too). The common case — `x ~ null` /
+        // `x ~ const` inside a HOF body — qualifies (the value has no
+        // external refs). The trigger's refs surface as region inputs
+        // via `Sample::refs`, so the kernel still re-fires on `a`. When
+        // the subset doesn't hold, bail (the Sample doesn't fuse).
+        NodeView::Sample(s) => {
+            let mut tr = crate::Refs::default();
+            s.trigger.refs(&mut tr);
+            let mut trig: Vec<crate::BindId> = Vec::new();
+            tr.with_external_refs(|id| trig.push(id));
+            let mut ar = crate::Refs::default();
+            s.arg.node.refs(&mut ar);
+            let mut sound = true;
+            ar.with_external_refs(|id| {
+                if !trig.contains(&id) {
+                    sound = false;
+                }
+            });
+            if sound {
+                rec_bail("emit:Sample", emit_node(&s.arg.node, ctx, ec))
+            } else {
+                rec_bail("emit:Sample", None)
+            }
+        }
         // Lambda, Bind (at non-statement position), checked
         // arithmetic, Sample, anything reactive — abort fusion.
         v => {
@@ -3158,7 +3544,7 @@ pub(crate) fn gir_type_to_region_input_kind(t: GirType) -> Option<RegionInputKin
         GirType::Variant(cs) => Some(RegionInputKind::Variant(cs)),
         GirType::Nullable(e) => Some(RegionInputKind::Nullable(*e)),
         GirType::String => Some(RegionInputKind::String),
-        t @ (GirType::DateTime | GirType::Duration | GirType::Bytes) => {
+        t @ (GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map) => {
             Some(RegionInputKind::Value(t))
         }
         GirType::Unit | GirType::Null => None,

@@ -118,14 +118,10 @@ const STRUCTACCESSOR: &str = r#"
 }
 "#;
 
-// Interp: body fuses but doesn't JIT — a composite-element
-// accessor (`struct field s.bar : string`) routes to the interpreter (see
-// kernel_contains_composite_element_op). Exposed when #139's
-// identity suppression removed the masking `result` wrapper.
 run!(structaccessor, STRUCTACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => s == "bar",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Interp);
+});
 
 const STRUCTWITH0: &str = r#"
 {
@@ -148,7 +144,10 @@ const STRUCTWITH1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: struct-with spread operator in fusion
+// ASPIRE: Jit (currently None) — `emit_struct_with` handles the spread,
+// but this struct has a `string` field (`foo`) that's copied via
+// StructGet; the struct-with-string-field in a block doesn't fuse yet
+// (composite-with-string cliff, same as `structaccessor`).
 run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
     Ok(Value::F64(85.0)) => true,
     _ => false,
@@ -162,16 +161,15 @@ const STRUCTWITH2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `{ selected with y }` (field shorthand) — `emit_struct_with` expands
+// to a StructNew copying unchanged fields via StructGet.
 run!(structwith2, STRUCTWITH2, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const STRUCTWITH3: &str = r#"
 {
@@ -180,16 +178,16 @@ const STRUCTWITH3: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `{ selected with y: selected.y + 1 }` — the replacement reads the
+// source struct (StructGet), the unchanged `x` is also copied via
+// StructGet.
 run!(structwith3, STRUCTWITH3, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const STRUCTWITH4: &str = r#"
 {
@@ -336,3 +334,43 @@ run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
+
+// ── Value-shape `==` / `!=` (GirOp::ValueEq) ──────────────────────
+
+// String equality — exercises the String operand of `ValueEq`
+// (wrapped into `Value::String` for the comparison).
+const VALUE_EQ_STRING: &str = r#"
+{
+  let s = "hello";
+  s == "hello"
+}
+"#;
+
+run!(value_eq_string, VALUE_EQ_STRING, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});
+
+const VALUE_EQ_STRING_NE: &str = r#"
+{
+  let s = "hello";
+  s != "world"
+}
+"#;
+
+run!(value_eq_string_ne, VALUE_EQ_STRING_NE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});
+
+// Composite (tuple) equality — exercises the composite operand of
+// `ValueEq` (wrapped into `Value::Array`); lhs is a Borrowed local
+// read (clone), rhs an owned `TupleNew`.
+const VALUE_EQ_TUPLE: &str = r#"
+{
+  let t = (1, 2);
+  t == (1, 2)
+}
+"#;
+
+run!(value_eq_tuple, VALUE_EQ_TUPLE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});

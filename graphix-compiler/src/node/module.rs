@@ -200,6 +200,14 @@ fn check_sig<R: Rt, E: UserEvent>(
                         }
                     }
                     abstract_types.insert(*id, td.typ.clone());
+                    // Persist the abstract→concrete mapping so fusion's
+                    // `GirType::from_type` can lower abstract-typed values
+                    // to their concrete representation (the abstraction
+                    // stays opaque to the type system; only the optimizer
+                    // peeks). Keyed by globally-unique `AbstractId`.
+                    crate::gir::ABSTRACT_REGISTRY
+                        .write()
+                        .insert(*id, td.typ.scope_refs(&scope.lexical));
                 }
                 _ => {
                     if sig_td.name != td.name

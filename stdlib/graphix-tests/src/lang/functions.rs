@@ -304,14 +304,11 @@ const KIR_FUSED_DEFERRED_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(gir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
     // sum_{i=0}^{99} 2i = 2 * 99*100/2 = 9900
     Ok(Value::I64(9900)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 // Lazy fusion correctness: a recursive lambda with NO annotations
 // should still produce correct output. The typechecker infers types

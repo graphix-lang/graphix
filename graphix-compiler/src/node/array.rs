@@ -44,6 +44,106 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 }
 
+/// The runtime semantics of `array[i]` — the single source of truth
+/// shared by the node-walk ([`ArrayRef::update`]), the GIR interpreter
+/// ([`crate::gir_interp`]), and the JIT (via
+/// `graphix_valarray_index`). On success returns the bare element; on
+/// an out-of-bounds index returns the `ArrayIndexError` value (the
+/// access type is `[elem, Error<…>]`, so callers wrap the result in
+/// `Nullable<elem>`).
+///
+/// Negative indices count from the end: `a[-1]` is the last element and
+/// `a[-len]` is the first (element 0). The shared single source of
+/// truth, so node-walk / gir-interp / JIT agree bit-for-bit.
+pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
+    if i >= 0 {
+        let i = i as usize;
+        if i < elts.len() {
+            elts[i].clone()
+        } else {
+            err!(ERR_TAG, "array index out of bounds")
+        }
+    } else {
+        let i = elts.len() as i64 + i;
+        if i >= 0 {
+            elts[i as usize].clone()
+        } else {
+            err!(ERR_TAG, "array index out of bounds")
+        }
+    }
+}
+
+/// Shared `bytes[i]` indexing — the same bounds-check / negative-from-end
+/// rule as [`array_index`], returning `Value::U8` or the out-of-bounds
+/// error (the access type is `[u8, Error<…>]` → `Nullable<u8>`). Single
+/// source of truth for node-walk / gir-interp / JIT.
+pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
+    let idx = if i >= 0 { i } else { b.len() as i64 + i };
+    if idx >= 0 && (idx as usize) < b.len() {
+        Value::U8(b[idx as usize])
+    } else {
+        err!(ERR_TAG, "index out of bounds")
+    }
+}
+
+/// Shared `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` slicing for arrays
+/// and bytes, given pre-parsed `usize` bounds. Returns the sub-array /
+/// sub-bytes or an error (`[T, Error<…>]` → `Nullable<T>`). Single source
+/// of truth for node-walk / gir-interp / JIT.
+pub(crate) fn array_slice(
+    src: &Value,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Value {
+    match src {
+        Value::Array(elts) => match (start, end) {
+            (None, None) => Value::Array(elts.clone()),
+            (Some(i), Some(j)) => match elts.subslice(i..j) {
+                Ok(a) => Value::Array(a),
+                Err(e) => errf!(ERR_TAG, "{e:?}"),
+            },
+            (Some(i), None) => match elts.subslice(i..) {
+                Ok(a) => Value::Array(a),
+                Err(e) => errf!(ERR_TAG, "{e:?}"),
+            },
+            (None, Some(j)) => match elts.subslice(..j) {
+                Ok(a) => Value::Array(a),
+                Err(e) => errf!(ERR_TAG, "{e:?}"),
+            },
+        },
+        Value::Bytes(b) => match (start, end) {
+            (None, None) => Value::Bytes(b.clone()),
+            (Some(i), Some(j)) if i <= j && j <= b.len() => {
+                Value::Bytes(PBytes::new(b.slice(i..j)))
+            }
+            (Some(i), None) if i <= b.len() => Value::Bytes(PBytes::new(b.slice(i..))),
+            (None, Some(j)) if j <= b.len() => Value::Bytes(PBytes::new(b.slice(..j))),
+            _ => err!(ERR_TAG, "slice out of bounds"),
+        },
+        _ => err!(ERR_TAG, "expected array"),
+    }
+}
+
+/// `array_slice` with `i64` bounds (the fused-kernel representation):
+/// a negative bound is the "expected a non negative number" error the
+/// node-walk produces when its `cast_to::<usize>()` fails. Shared by the
+/// gir-interp and JIT slice paths.
+pub(crate) fn array_slice_i64(
+    src: &Value,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Value {
+    let to_bound = |b: Option<i64>| match b {
+        None => Ok(None),
+        Some(i) if i >= 0 => Ok(Some(i as usize)),
+        Some(_) => Err(()),
+    };
+    match (to_bound(start), to_bound(end)) {
+        (Ok(s), Ok(e)) => array_slice(src, s, e),
+        _ => err!(ERR_TAG, "expected a non negative number"),
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         let up = self.source.update(ctx, event);
@@ -60,39 +160,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
             None => return None,
         };
         match &self.source.cached {
-            Some(Value::Array(elts)) if i >= 0 => {
-                let i = i as usize;
-                if i < elts.len() {
-                    Some(elts[i].clone())
-                } else {
-                    Some(err!(ERR_TAG, "array index out of bounds"))
-                }
-            }
-            Some(Value::Array(elts)) => {
-                let len = elts.len();
-                let i = len as i64 + i;
-                if i > 0 {
-                    Some(elts[i as usize].clone())
-                } else {
-                    Some(err!(ERR_TAG, "array index out of bounds"))
-                }
-            }
-            Some(Value::Bytes(b)) if i >= 0 => {
-                let i = i as usize;
-                if i < b.len() {
-                    Some(Value::U8(b[i]))
-                } else {
-                    Some(err!(ERR_TAG, "index out of bounds"))
-                }
-            }
-            Some(Value::Bytes(b)) => {
-                let i = b.len() as i64 + i;
-                if i >= 0 {
-                    Some(Value::U8(b[i as usize]))
-                } else {
-                    Some(err!(ERR_TAG, "index out of bounds"))
-                }
-            }
+            Some(Value::Array(elts)) => Some(array_index(elts, i)),
+            Some(Value::Bytes(b)) => Some(bytes_index(b, i)),
             None => None,
             _ => Some(err!(ERR_TAG, "expected an array")),
         }
@@ -209,35 +278,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
             (Some(c0), Some(c1)) => (bound!(c0), bound!(c1)),
         };
         match &self.source.cached {
-            Some(Value::Array(elts)) => match (start, end) {
-                (None, None) => Some(Value::Array(elts.clone())),
-                (Some(i), Some(j)) => match elts.subslice(i..j) {
-                    Ok(a) => Some(Value::Array(a)),
-                    Err(e) => Some(errf!(ERR_TAG, "{e:?}")),
-                },
-                (Some(i), None) => match elts.subslice(i..) {
-                    Ok(a) => Some(Value::Array(a)),
-                    Err(e) => Some(errf!(ERR_TAG, "{e:?}")),
-                },
-                (None, Some(i)) => match elts.subslice(..i) {
-                    Ok(a) => Some(Value::Array(a)),
-                    Err(e) => Some(errf!(ERR_TAG, "{e:?}")),
-                },
-            },
-            Some(Value::Bytes(b)) => match (start, end) {
-                (None, None) => Some(Value::Bytes(b.clone())),
-                (Some(i), Some(j)) if i <= j && j <= b.len() => {
-                    Some(Value::Bytes(PBytes::new(b.slice(i..j))))
-                }
-                (Some(i), None) if i <= b.len() => {
-                    Some(Value::Bytes(PBytes::new(b.slice(i..))))
-                }
-                (None, Some(j)) if j <= b.len() => {
-                    Some(Value::Bytes(PBytes::new(b.slice(..j))))
-                }
-                _ => Some(err!(ERR_TAG, "slice out of bounds")),
-            },
-            Some(_) => Some(err!(ERR_TAG, "expected array")),
+            Some(src) => Some(array_slice(src, start, end)),
             None => None,
         }
     }

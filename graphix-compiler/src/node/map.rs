@@ -124,6 +124,20 @@ pub struct MapRef<R: Rt, E: UserEvent> {
     pub vtyp: Type,
 }
 
+/// Look up `key` in a `Value::Map`, returning the value or the
+/// `map key not found` error. Shared by the node-walk `MapRef`, the
+/// fusion interpreter, and the JIT (`graphix_map_ref`) so all three
+/// agree bit-for-bit. `src` must be a `Value::Map`.
+pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
+    match src {
+        Value::Map(map) => match map.get(key) {
+            Some(value) => value.clone(),
+            None => errf!(ERR_TAG, "map key {key} not found"),
+        },
+        _ => err!(ERR_TAG, "COMPILER BUG! expected a map"),
+    }
+}
+
 impl<R: Rt, E: UserEvent> MapRef<R, E> {
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
@@ -157,11 +171,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
             None => return None,
         };
         match &self.source.cached {
-            Some(Value::Map(map)) => match map.get(key) {
-                Some(value) => Some(value.clone()),
-                None => Some(errf!(ERR_TAG, "map key {key} not found")),
-            },
-            Some(_) => Some(err!(ERR_TAG, "COMPILER BUG! expected a map")),
+            Some(src) => Some(map_get(src, key)),
             None => None,
         }
     }

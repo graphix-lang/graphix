@@ -465,6 +465,16 @@ impl Refs {
             }
         }
     }
+
+    /// Mark `id` as bound within the walked subtree so it is never
+    /// surfaced as an external ref. A node implementing [`Update::refs`]
+    /// uses this for synthetic internal bindings it owns — e.g. a HOF
+    /// builtin's analysis-only per-element slot — which must not leak
+    /// into fusion's region-input discovery (a leaked input becomes an
+    /// orphaned kernel feeder that nothing ever feeds).
+    pub fn mark_bound(&mut self, id: BindId) {
+        self.bound.insert(id);
+    }
 }
 
 pub type Node<R, E> = Box<dyn Update<R, E>>;

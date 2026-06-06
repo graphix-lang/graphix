@@ -2882,3 +2882,805 @@ kernel naming + registry coordination, the SAFETY INVARIANT in
 
 Net: 115 → 119 Jit, suite green (132 compiler + 1788 graphix-tests),
 parallel-deterministic.
+
+### Composite / string / value-shape element reads in the JIT (Jun 2026)
+
+`a[i]` / `t.0` / `s.field` whose element type is non-primitive used to
+bail the JIT (`ArrayGet`/`TupleGet`/`StructGet` did `elem.as_prim()?`
+→ Err → interp fallback). The interp already handled them via
+`extract_composite_or_scalar`; this teaches cranelift the same.
+
+Six helpers (`gir_jit_helpers.rs`), mirroring the interp:
+`graphix_{valarray,struct}_get_{array,arcstr,value}`. Each returns an
+OWNED value — `*mut ValArray` (composite elem, fresh box), `ArcStr`
+(string elem, refcount bump), or two-word `Value` (Variant / Nullable /
+DateTime / Duration / Bytes elem, clone) — so the source ValArray keeps
+its ref and the kernel's scope-exit drop + the consumer's drop don't
+double-free. `struct_get_*` does the two-level kv-pair read.
+
+`element_read_helper(elem, struct_access)` + `compile_element_read`
+(`gir_jit.rs`) centralize the dispatch: a value-shape elem returns
+`CompiledExpr::Value` (two-register), everything else `Single`. The
+three accessor arms in `compile_scalar_impl` now call it + `.single()`;
+`compile_value_expr` gained parallel arms for the value-shape-elem case
+(routed there by `compile_expr`'s `is_value_shape()` dispatch).
+`classify_composite_source` classifies the three accessor ops as
+`Owned` (their results are fresh clones).
+
+`structaccessor` (`{let x = {foo: "bar", ...}; x.foo}` — string field)
+flipped Interp → Jit. `kernel_contains_composite_element_op` (the
+never-called gate the old bail comments referenced) is now moot; left
+in place.
+
+119 → 120 Jit, Interp 2 → 1 (`structaccessor`). Suite green.
+
+### `array[i]` bounds-check seam — one shared `array_index` (Jun 2026)
+
+A correctness bug the composite-element work surfaced: `array[i]` is
+`[elem, Error<…>]` (out-of-bounds → `ArrayIndexError`), but
+`emit_array_ref` typed the `ArrayGet` op as the **bare element**, and
+the gir-interp/JIT did **unchecked** indexing — the interp would *panic*
+on OOB and the JIT read garbage, both diverging from the node-walk. It
+escaped because **no fixture exercised OOB/negative indexing in a
+fusable context** (`array_indexing0` only tested `a[0]`, in-bounds, and
+was `Interp` so the JIT path wasn't even compared).
+
+Fix — extract the runtime semantics into one shared
+`crate::node::array::array_index(elts, i) -> Value` (bounds check,
+negative-from-end, the OOB error) and route **all three backends**
+through it:
+- node-walk `ArrayRef::update`'s array branch calls it (the two
+  positive/negative branches collapse to one call).
+- `GirOp::ArrayGet` is now typed `Nullable<elem>` (`emit_array_ref`);
+  gir-interp's arm calls `array_index` → `EvalResult::Nullable`; the JIT
+  routes via `compile_value_expr` calling the new `graphix_valarray_index`
+  helper (→ two-word elem-or-error `Value`). ArrayGet is removed from
+  `compile_scalar_impl` (always value-shape now). `RegValue::as_i64`
+  added (signed index for negatives).
+
+The negative branch tests `i >= 0` after `len + i`, so `a[-len]`
+reaches the first element (offset 0) and `a[-(len+1)]` underflows to an
+error — a single point where all three backends agree. (The original
+node-walk had a latent `i > 0` here that made element 0 unreachable via
+a negative index; consolidating to one source made fixing it a one-line
+change.)
+
+**The missing tests, added** (`lang/arrays.rs`, all via `run!` so all 3
+modes must agree): `array_index_oob_pos` (`a[10]` → error),
+`array_index_neg_last` (`a[-1]` → last), `array_index_neg_mid`,
+`array_index_neg_first` (`a[-len]` → first element),
+`array_index_neg_underflow` (`a[-(len+1)]` → error), `array_index_is_err`
+(the error flows into `is_err`, which also fuses+JITs). The interp unit
+test `array_len_and_get` → `array_get_bounds_checked` (in-bounds / OOB /
+negative-from-end / underflow at the interp level). `array_indexing0`
+flipped Interp → Jit.
+
+`array_indexing0` flipped Interp → Jit; 6 new bounds-check fixtures all
+fuse+JIT. Jit 120 → 127, Interp 1 → 0, corpus 547 → 553. Suite green
+(132 compiler + 1806 graphix-tests). (One earlier observed `db_get_type`
+failure was a pre-existing sqlite/tempdir parallelism flake — passes
+isolated and on re-run.)
+
+### GirType::Map (Value-shape) — constant map literals + map builtins (Jun 2026)
+
+`Value::Map(CMap)` is a thin-pointer Value variant (disc `0x0800_0000`),
+so `GirType::Map` is a **Value-shape** leaf — the same pattern as
+`bytes`: it reuses the two-register `Value` ABI, `graphix_value_clone`/
+`drop`, the `value_inputs`/`nullables` slots, `ConstValue` +
+`KernelValues`, and DynCall arg/return marshalling, with **no
+map-specific JIT helpers**. The 14th-commandment exhaustiveness check
+drove it: adding the variant produced ~24 compile errors, each a
+value-shape match site that gained `| GirType::Map` (a `perl` pass over
+the `| GirType::Bytes` arms), plus `EvalResult::Map(Value)`, the
+`from_type(Type::Map)` arm, `wrap_value_shape`, and
+`gir_type_to_graphix_type`.
+
+**Producer — constant fold.** `emit_node`'s new `NodeView::Map` arm
+(`emit_map_new`) builds the `CMap` at compile time (mirroring the Map
+node's `insert_cow`) **when every key and value is a compile-time
+constant** (`node_const_value` sees through `ExplicitParens`), emitting
+`GirOp::ConstValue(Value::Map(...))`. A dynamic entry bails (the runtime
+map producer isn't lowered).
+
+**Off-topic latent bug fixed.** The gir-interp `GirOp::DynCall` arg-
+marshalling had **no value-shape arm at all** — a datetime / duration /
+bytes / map DynCall arg would hit the catch-all `panic!("DynCall arg
+shape mismatch")`. It had simply never been exercised (those types
+were only ever intermediates/returns, never DynCall args) until
+`map::len(m)`. Added one arm covering all four value-shape carriers.
+
+Flipped **9 fixtures None → Jit**: `map0/1/2/map_empty` (constant
+literals) and `map_len`, `map_get_present/absent`,
+`map_get_or_present/absent` (literal + `map::*` builtin DynCalls). Jit
+127 → 136.
+
+**Deferred (still None):** `m{key}` access (`MapRef` op),
+map-mutation builtins (`map::insert`/`remove`/`map_change_*`), map HOFs
+(`map::map`/`filter`/`fold`/`iter`), and non-constant/composite map
+literals (`map_nested`, `map_with_arrays`, `map_complex_keys`).
+
+Suite green (132 compiler + 1806 graphix-tests).
+
+### Scalar-callback `/array` HOF fusion — the analysis_pred refs leak (Jun 2026)
+
+`array::map`/`filter`/`fold`/`init` with a scalar-element callback
+(`array::map(a, |x| x>3)`) now fuse + JIT end-to-end (task #144). The
+fusion *design* the user articulated — a post-typecheck pass
+materializes each HOF builtin's callback into an analysis-only prototype
+(`Apply::static_resolve_fn_args` → `MapQ::analysis_pred`), `emit_gir`
+lowers it to a self-contained loop op (`GirOp::ArrayMap`/`ArrayFold`/
+`ArrayFilter`/`ArrayInit` with the callback body inlined), and the
+runtime `update()` is left untouched so async per-slot semantics survive
+— was already **fully built**. Two things stopped it firing for
+`array::map`, found by instrumenting the actual run (the prior session's
+"static-dispatch hang" diagnosis was a wrong reconstruction):
+
+1. **Three plumbing gaps** kept `static_resolve_fn_args` from ever
+   reaching `MapQ`, so `analysis_pred` stayed `None` and `emit_gir`
+   bailed at its first line:
+   - *Resolution* (`static_resolve.rs` `try_resolve_callsite`): the
+     stdlib is compiled separately, so `array::map`'s `let map = |a,f|
+     'array_map` Bind isn't in the fixture tree → absent from
+     `bind_to_lambda`. Added a `ctx.cached.get(&r.id)` fallback (the
+     LambdaDef value persists there); the step-2 downcast filters
+     non-lambda cached values.
+   - *Fn-arg detection* (`invoke_apply_fn_arg_hook`): at a monomorphized
+     call site the callback formal is a **TVar bound to `Fn`**, not a
+     bare `Type::Fn`, so `matches!(&farg.typ, Type::Fn(_))` missed it.
+     Now `farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))`.
+   - *Hook delegation* (`node/lambda.rs`): `BuiltInLambda` (wraps every
+     builtin Apply) forwarded `view`/`update`/`refs`/… but **not**
+     `static_resolve_fn_args` → it hit the no-op trait default instead
+     of `MapQ`'s. Added the one delegating method.
+
+2. **The actual hang — a `refs()` leak (the real bug).** With #1 fixed,
+   `array::map` fused but hung at runtime. Cause: `MapQ`/`FoldQ`/
+   `Init::refs` walk `analysis_pred` (needed, so a callback's *real*
+   captures surface as kernel inputs), but `analysis_pred` is a
+   synthetic node holding `genn::bind`-minted internal bindings — a
+   per-element `x`/`acc`/`i` and the callback-function handle
+   (`predid`/`fid`) — that are *referenced* but have no binding-site
+   node in that subtree. So `refs()` put them in `refed` but never
+   `bound`, and `collect_region_inputs` (= `refed − bound`) registered
+   e.g. `("x", BindId)` as a region input. Fusion then built a feeder
+   `reference(synthetic_id)` that nothing ever produces → the kernel
+   blocked forever. Fix: new `pub Refs::mark_bound(id)` (the `bound`
+   field is crate-private); each builtin's `refs()` marks its synthetic
+   ids bound before walking `analysis_pred`. A `refs()` that surfaces a
+   binding the node *owns* as a free variable is wrong independent of
+   fusion — this is a real correctness fix, not a fusion band-aid.
+
+**Method note** ([[feedback-run-the-code]], reinforced hard): the
+multi-agent architectural map + the prior session's notes both asserted
+the blocker was a runtime hang from `resolve_static` setting
+`cs.statically_resolved = true` (the static-dispatch path "not driving
+MapQ's per-slot synthesis"). Instrumenting the actual `fuse()` run
+(`HOFDBG` eprintlns on region inputs + the splice) showed the kernel
+*did* splice and the only problem was one spurious `("x", BindId)`
+input. A speculative "reset `statically_resolved` for FusedBuiltin HOFs"
+fix was added, then **removed and the suite stayed green** (incl. the
+async `array::map(a, |v| net::publish(...))` `queue` round-trip) —
+proving static dispatch of a HOF builtin is fine (they're never Connect
+targets, already excluded by `unstable_bindings`). Reconstruction was
+wrong twice; one instrumented run settled it.
+
+Flipped **7 fixtures None → Jit**: `array_map0`, `array_filter`,
+`array_fold0`, `array_init0/1/2`, `gir_fused_deferred_map` (the last
+fuses `init`+`fold` in one program). 136 → 143 Jit.
+
+**Still None in `/array`:** the non-`emit_gir` HOFs (`find`/`find_map`/
+`filter_map`/`flat_map`/`group` — no per-builtin codegen override yet)
+and nested/composite-element maps (`array::map(a, |x| array::map(...))`,
+`array_map1`, `array_init3/4`).
+
+Suite green (132 compiler + 1806 graphix-tests).
+
+### `array::find` + `array::filter_map` scalar lowering — interp + JIT (Jun 2026)
+
+Two more `/array` HOFs get an `emit_gir` override (continuing the
+refs-leak unlock above): `GirOp::ArrayFind` (predicate `bool` →
+`Nullable<elem>`, early-exit on first match) and `GirOp::ArrayFilterMap`
+(body `Nullable<out>` → collect the non-null results into `Array<out>`).
+`FindImpl::emit_gir` mirrors `FilterImpl` (predicate must be `Bool`);
+`FilterMapImpl::emit_gir` mirrors `MapImpl` but pulls `out_elem` from the
+body's `GirType::Nullable(inner)` (the #134 option-typed-`select`
+lowering produces that shape). Interp arms in `gir_interp.rs`;
+~12 shared-walker arms each (`expr_has_*`, `collect_*_expr`,
+`classify_composite_source`, `node_shape`'s `GirOpTag`/`visit_ops`) —
+the 14th-commandment exhaustiveness check enumerated every site.
+
+Landed interp-first, then JIT (the datetime/bytes two-step). JIT codegen:
+- `ArrayFilterMap` (Array result → `compile_scalar_impl`): an
+  `ArrayFilter`-style collect loop, but each iteration compiles the body
+  via `compile_expr` to a Value-shape `(disc, payload)`, branches on
+  `disc == value_disc::NULL`, and on non-null pushes
+  `cast_u64_to_prim(payload, out_elem)` into the buf.
+- `ArrayFind` (Nullable result → `compile_value_expr`): an early-exit
+  loop whose found / not-found edges jump to a two-word `(disc, payload)`
+  merge block (the same Value-shape phi `compile_ifchain` builds); the
+  found edge packs `(prim_to_value_disc(elem), scalar_to_payload_i64(..))`,
+  the not-found edge packs `(NULL, 0)`. Block-call args are
+  `BlockArg::Value(..)` (cranelift's newer jump-arg API).
++3 Jit fixtures: `array_find_scalar`, `array_find_scalar_none`,
+`array_filter_map_scalar`.
+
+`array::flat_map` (scalar, body `Array<out>`) landed the same way —
+`GirOp::ArrayFlatMap` concatenates each body array into the output. Its
+JIT is *linear* (no nested cranelift loop): the body compiles to an
+owned `*ValArray` and a new `graphix_value_buf_extend_from_array` helper
+(two-pointer sig like `push_array`) clones each element into the buf and
+drops the array — the inner loop runs in Rust. `classify_composite_source`
+needed an explicit `ArrayFlatMap => Owned` arm (its `_ => Borrowed`
+catch-all would otherwise silently mis-classify the owned result and
+clone-then-leak it). Flipped the existing `array_flat_map` None → Jit
+(147 Jit). The scalar non-`emit_gir` HOF sweep (find/filter_map/flat_map)
+is complete.
+
+**Fixture findings (why the *existing* fixtures stay None):**
+- `array_find` / `array_find_map` use `Array<(string, i64)>` (composite
+  tuple elements) + destructure-pattern callbacks `|(k, v)|` — the
+  composite-element-HOF cliff (`in_elem`/`out_elem` are `PrimType`-only),
+  not addressed here. Needed new scalar fixtures to exercise the ops.
+- `array_filter_map` stays None because its `false => x ~ null` arm uses
+  the **Sample operator `~`**, which `emit_expr` doesn't lower (`_ =>
+  None`) — so the body bails before `ArrayFilterMap` is even reached.
+  `array_filter_map_scalar` is the same op with `false => null`.
+
+Follow-ups: composite-element HOFs (widen `in_elem`/`out_elem`
+`PrimType`→`GirType`) to flip the existing composite `find`/`find_map`
+fixtures + nested maps; `array::group`/`find_map` (no `emit_gir` yet);
+`Sample` lowering in `emit_expr` (would flip `array_filter_map`).
+
+Suite green (132 compiler + 1815 graphix-tests).
+
+### Composite-element *output* for `array::init` + `array::map` (Jun 2026)
+
+`array::init(n, |i| <composite>)` and `array::map(arr, |x| <composite>)`
+where the callback returns a tuple/struct/variant/nested-array now fuse +
+JIT (the *input* element stays scalar — `in_elem: PrimType`). The change
+was a simplification, not new machinery: `GirOp::ArrayInit.elem_typ` and
+`GirOp::ArrayMap.out_elem` (both `PrimType`) were *removed* — they always
+equalled `body.typ`, so they were redundant. The output push now dispatches
+on `body.typ`:
+- **interp** (`gir_interp.rs`): `eval(body).into_value()` (handles any
+  `EvalResult` shape — scalar → prim Value, ValArray → `Value::Array`,
+  Variant/Nullable → inner Value, String → `Value::String`) instead of
+  `into_scalar().to_value()`.
+- **JIT** (`gir_jit.rs`): `compile_and_push_field(b, env, ctx, buf, body)`
+  — the same per-shape push helper `StructNew` uses (prim → `push_<T>`,
+  composite → `push_array` owned/borrowed, value-shape → `push_value`,
+  string → `push_arcstr`).
+- **`emit_gir`** (`MapImpl`/`Init`): element type is `body_kir.typ.clone()`
+  (any GirType; only `Unit`/`Null` bail), result `Array(body.typ)`.
+
+Walkers destructure `ArrayInit`/`ArrayMap` with `{ body, .. }`, so removing
+the field only touched the interp/JIT arms + the two `emit_gir`s.
+
+Flipped `array_init3` (`|i| (i, i*i)` → `Array<(i64,i64)>`) None → Jit;
+added `array_map_tuple` (`|x| (x, x*2)`) to cover `map`'s composite output
+without nesting. 147 → 149 Jit.
+
+**Empirical correction:** `array_map1` (`array::map(a, |x| array::map(b,
+|y| x+y))`) was expected to flip too — but it stays None for a *different*
+reason than the output type (verified: it fuses-not, value is correct via
+interp). The inner `array::map(b, ...)` captures the outer element `x`,
+and that nested HOF doesn't lower yet (the capture + inner array input
+aren't threaded into the inner kernel). Reverted its annotation to None
+with the blocker documented; added the non-nested `array_map_tuple` so the
+composite-output path is actually exercised.
+
+Remaining `/array`: composite-element **input** (`array_find`/`find_map`
+read `Array<(string,i64)>` *and* use destructure-pattern callbacks
+`|(k,v)|` — two separate blockers: composite element read+bind, and
+`ensure_lambda_kernel` accepting arg patterns); nested-HOF-with-capture
+(`array_map1`); `array::group` (no `emit_gir`).
+
+Suite green (132 compiler + 1818 graphix-tests).
+
+### `/buffer` EFFECT=Sync + a latent value-shape-DynCall panic (Jun 2026)
+
+The pure buffer builtins (`buffer::to_string`/`from_string`/`len`/
+`concat`/`to_array`/`from_array`/`to_string_lossy`) fuse + JIT now. They
+are `EvalCached` impls (`buffer.rs`) that never set `EFFECT`, so they
+inherited `EvalCached`'s conservative `Async` default — and fusion
+discovery (`try_register_builtin_call_from_callsite`) only registers
+`Sync` builtins, so it skipped them entirely (FUSEBAIL
+`callqual:/buffer/to_string` — the call fell through to the name-based
+path and bailed on the qualified name). **Exactly the `str::escape`
+class.** Fix: `const EFFECT: EffectKind = EffectKind::Sync` on all 9
+`buffer.rs` `EvalCached` impls (every buffer op is pure binary
+manipulation — no I/O).
+
+That exposed a **latent general JIT bug**, not buffer-specific: the
+value-shape-return `DynCall` arm in `compile_value_expr` (`gir_jit.rs`,
+`ret_kind=2`) `debug_assert!`'d `matches!(return_type, Variant | Nullable)`
+and *panicked* (release: UB) on a `bytes` return. `ret_kind=2` boxes any
+`Value` into two words, so every value-shape return routes there —
+widened the assert to `return_type.is_value_shape()`. This was latent
+because no fixture had a bytes/datetime/duration/map-**returning** DynCall
+until buffer; the fix covers all of them.
+
+Flipped 7 simple buffer fixtures (149 → 156 Jit). Still None: byte
+indexing/slicing (`bytes_index`/`bytes_slice*` — `a[i]` on bytes) and the
+`encode`/`decode`/`varint`/`zigzag` family (callbacks take
+`Array<Encode>`/`Array<Decode>` spec args — composite-element + ref
+shapes, a separate cliff).
+
+**Tooling note:** flipping single-line `run!(name, C, |v| {..});`
+fixtures with a script needs *substring* matching of the
+`}; …FuseExpect::None);` close, not line-equality — a line-equality pass
+skips an inline close and corrupts the *next* fixture's annotation
+(caught by the full suite: `bytes_index` flipped instead of `bytes_len`).
+
+Suite green (132 compiler + 1818 graphix-tests).
+
+### `GirOp::ValueEq` — non-primitive `==` / `!=` (Jun 2026)
+
+`gir::cmp` only lowered comparisons whose operands were *primitive*
+(`lhs.typ.as_prim().is_some()`); everything else returned `None`, so a
+fused expression ending in `Map == Map`, `s == "foo"`, `tuple == tuple`,
+etc. bailed. New `GirOp::ValueEq { ne, lhs, rhs }` lowers `==`/`!=` on any
+non-prim same-typed operands (ordering operators on non-prim stay
+unlowered; Unit/Null have no comparable form). It mirrors `ValueArith`:
+- **helper** `graphix_value_eq(l: Value, r: Value) -> u8` — netidx
+  `Value` `PartialEq`; CONSUMES both (the owned-operand contract).
+- **interp**: compares both operands' `into_value()` (already general
+  over every shape — scalar/string/composite/value-shape).
+- **JIT** (in `compile_scalar_impl`, result is `Bool`): compiles both
+  operands to owned `(disc, payload)` via `compile_owned_value_operand`,
+  calls the helper, XORs with 1 for `!=`.
+
+`compile_owned_value_operand` (shared with `ValueArith`) gained the
+operand shapes `ValueEq` can present beyond datetime/duration: Variant/
+Nullable (already value-shape → `ensure_owned_value`), String (compile to
+the owned ArcStr, wrap via `graphix_value_new_string`), and composite
+Array/Tuple/Struct (compile to `*ValArray`, `ensure_owned_composite` to
+clone a Borrowed local, wrap via `graphix_value_new_from_array`). The
+wrap helpers return a two-word `Value`, consumed by `graphix_value_eq`.
+
+Flipped `map_insert`/`map_remove` (both end in `m == {literal}`). No
+*existing* fixture was blocked solely on string/composite `==` (the full
+suite flipped zero when that arm landed), so added `value_eq_string`,
+`value_eq_string_ne`, `value_eq_tuple` to exercise + cover the new JIT
+operand paths (don't ship untested codegen). 156 → 161 Jit (560 fixtures).
+
+Walker note: `ValueEq` shares `ValueArith`'s `{ lhs, rhs, .. }` shape, so
+adding it to each recursion site was `| GirOp::ValueEq { lhs, rhs, .. }`
+beside every `GirOp::ValueArith { lhs, rhs, .. }` (plus the `node_shape`
+`GirOpTag`). A `replace_all` only hit the arms with `=>` on the same
+line; the multi-line OR-group heads (collect-walkers) needed manual arms.
+
+Suite green (132 compiler + 1818 graphix-tests; the 3 new lang fixtures
+bring graphix-tests to 1827).
+
+### `GirOp::BytesIndex` — `bytes[i]` (Jun 2026)
+
+`bytes[i]` now fuses + JITs. Extracted a shared
+`node::array::bytes_index(b: &PBytes, i: i64) -> Value` (bounds-checked,
+negative-from-end, → `Value::U8` or the OOB error — same seam as
+`array_index`) and refactored the node-walk `ArrayRef::update`'s two
+inline bytes arms to call it, so node-walk / gir-interp / JIT agree
+bit-for-bit. `emit_array_ref` tries the array path first
+(`resolve_array_input` → `ArrayGet`); if that returns `None` it
+`emit_node`s the source and, when its type is `GirType::Bytes`, emits
+`GirOp::BytesIndex { bytes, idx }` typed `Nullable<u8>`
+(`[u8, Error<…>]`). JIT (in `compile_value_expr`, value-shape result):
+`graphix_bytes_index(v: Value, i: i64) -> Value` over an *owned* bytes
+operand (`compile_owned_value_operand`, which the `ValueEq` work already
+taught to wrap any value-shape/string/composite). Flipped `bytes_index`
+(`b[0]`) + `bytes_neg_index` (`b[-1]`); 161 → 163. Still None in
+`/buffer`: `bytes_slice*` (`b[a..c]?` — needs slice lowering + the `?`
+error operator) and the `encode`/`decode`/`varint`/`zigzag` family.
+
+Suite green (132 compiler + 1827 graphix-tests).
+
+### Abstract-type resolution in fusion (Jun 2026)
+
+A cross-module call to a graphix function whose arg/return is an
+**abstract** type couldn't fuse. Abstract types are declared opaque in
+a `.gxi` (`type T;`) with the concrete definition private in the `.gx`
+(`type T = i64`). At the call site `inner::get(inner::make(42))`, the
+arg type reaching `ensure_lambda_kernel` is a `Type::Ref("T")` — and
+`GirType::from_type` has no `Env`, so it can't resolve the name to the
+concrete rep and returns `None`, bailing the kernel build. (An empirical
+`elk` probe pinned it: `arg '/inner/get' typ=T from_type=None`.)
+
+**Two pieces:**
+
+1. **`gir::ABSTRACT_REGISTRY`** — a global
+   `LazyLock<RwLock<IntMap<AbstractId, Type>>>`. `node::module::check_sig`,
+   which already builds the transient abstract→concrete map to verify the
+   impl matches the signature, now also persists each entry
+   (`td.typ.scope_refs(&scope.lexical)`) keyed by the globally-unique
+   `AbstractId`. The type system stays unchanged — abstracts remain
+   opaque everywhere; only the optimizer consults the registry.
+
+2. **`resolve_abstract(typ, env, depth)`** (fusion-internal, in
+   `fusion/lowering.rs`) — resolves `Type::Ref` via `lookup_ref(env)` and
+   `Type::Abstract { params: [] }` via the registry, recursing through
+   `Tuple`/`Array`/`Set`/`Struct` composites so nested abstracts resolve
+   too. A depth cap (16) + return-as-is-on-failure makes recursive types
+   (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate — `from_type` then
+   yields `None` and they simply don't fuse, which is correct. Applied at
+   the 3 `GirType::from_type` sites in `ensure_lambda_kernel` (arg,
+   capture, return). `from_type`'s own `Type::Abstract` arm stays as a
+   defensive net for any direct-`Abstract` path; the registry lookup is a
+   no-op when the program has no abstract types.
+
+`params.is_empty()` gates both the registry insert-consumer and
+`from_type`'s arm, so **parameterized abstracts** (`Box<'a>` — the
+registry holds the unsubstituted body) correctly stay `None`.
+
+Flipped **11 `/inner` fixtures None → Jit** (`abstract_type_basic`,
+`byref`, `multiple`, `different_modules`, `in_array`, `in_tuple`,
+`map_key`/`map_value`/`map_key_and_value`, `nested_module`,
+`two_modules_combined`) and **`abstract_type_in_typedef` None → Interp**
+(its `Pair = {first: First, second: string}` struct param has a string
+field — a composite-with-string *kernel param* isn't JIT-lowerable yet,
+so it fuses on the interpreter). 163 → 174 Jit, 0 → 1 Interp. Still None:
+parameterized abstracts, `recursive` (`List`), `in_variant` (abstract
+variant payload), `struct_impl` (cross-module string return).
+
+Suite green (132 compiler + 1827 graphix-tests).
+
+### `GirOp::MapRef` — `m{key}` map access (Jun 2026)
+
+`m{key}` now fuses + JITs, the same value-shape-result seam as
+`bytes[i]`. Extracted a shared `node::map::map_get(src: &Value, key:
+&Value) -> Value` (the looked-up value, or the `MapKeyError` "map key
+not found" error — the exact `[V, Error]` the node-walk `MapRef`
+produced inline) and routed the node-walk `MapRef::update`, the
+fusion interpreter, and the JIT through it so all three agree
+bit-for-bit. `emit_map_ref` (`fusion/lowering.rs`, dispatched from
+`emit_node`'s new `NodeView::MapRef` arm) lowers a `MapRef` node whose
+source is `GirType::Map` to `GirOp::MapRef { map, key }` typed
+`Nullable<V>` (from the node's `[V, Error]` Set result via `from_type`).
+Both operands compile through `compile_owned_value_operand` →
+`graphix_map_ref(map: Value, key: Value) -> Value` (consumes both,
+returns the result Value's two words — same 4-word-in / 2-word-out
+helper sig as `graphix_value_add`). `classify_composite_source` treats
+`MapRef` as `Owned` (its result is a fresh Value). Flipped `map_ref0`
+(`m{"b"}`), `map_ref1` (int key), `map_ref2` (bool key), and
+`map_ref_missing` (the error arm); 174 → 178 Jit. Still None:
+`map_nested`/`map_complex_keys`/`map_with_arrays` (their composite map
+*literals* don't constant-fold — `emit_map_new` bails on
+non-constant/composite entries, a separate cliff) and
+`map_ref_wrong_type` (a typecheck error — correct-None). Remaining map
+ops: `map::change`/HOFs (`map`/`filter`/`fold`/`iter` — MapQ-style
+codegen over `CMap`) and `map::insert`/`remove`.
+
+Suite green (132 compiler + 1827 graphix-tests).
+
+### Composite-literal const-folding in map literals (Jun 2026)
+
+`node_const_value` (the const-folder behind `emit_map_new`, which builds a
+map literal as one `GirOp::ConstValue`) only handled `Constant` /
+`ExplicitParens` — so a map literal whose value was itself a composite
+literal (`{"outer" => {"inner" => 42}}`, `{"nums" => [1,2,3]}`) bailed,
+defeating the whole map literal's fusion. Now it recurses into
+`NodeView::Array` / `Tuple` (→ a flat `Value::Array(ValArray)`, the shared
+array/tuple runtime shape) and `NodeView::Map` (→ `Value::Map`) when every
+element folds. Two shared helpers: `const_valarray(elems)` and
+`const_map(keys, vals)` — the latter now also backs `emit_map_new` (was a
+near-duplicate inline loop). Flipped `map_nested` None → Jit (178 → 179).
+Did NOT flip `map_with_arrays` (its `m{"nums"}` result type is a
+heterogeneous union `[Array<i64>, Array<string>]` — `from_type` returns
+None; a union-value-lowering cliff, not const-folding) or `map_complex_keys`
+(struct keys are `let`-bound `Ref`s, which `node_const_value` doesn't
+resolve — needs let-const-propagation). The recursion is broadly useful
+beyond maps: any nested-composite constant in a fused expression now folds
+to one `ConstValue`.
+
+Suite green (132 compiler + 1827 graphix-tests).
+
+### `GirOp::ArraySlice` — `a[i..j]` (Jun 2026)
+
+`a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` now fuse + JIT, the same
+value-shape-result seam as `bytes[i]` / `m{key}`. Two shared helpers in
+`node::array`: `array_slice(src, start, end)` (usize bounds — the
+Array/Bytes subslice + out-of-bounds / type errors; the node-walk
+`ArraySlice::update` is refactored to call it) and `array_slice_i64(src,
+start, end)` (the fused-kernel representation — i64 bounds → usize, a
+negative bound is the node-walk's "expected a non negative number" error).
+`emit_array_slice` lowers an `ArraySlice` node (source `GirType::Array` or
+`Bytes`, optional integer-scalar bounds) to `GirOp::ArraySlice { source,
+start, end }` typed `Nullable<source>` (the node's `[source, Error]` via
+`from_type`). Interp calls `array_slice_i64`; JIT routes through
+`compile_value_expr` calling `graphix_array_slice(src: Value, start, end,
+flags)` (flags bit0/bit1 = start/end present; absent bounds pass 0). Source
+compiles via `compile_owned_value_operand` (wraps the array/bytes operand
+into an owned `Value`); `classify_composite_source` treats `ArraySlice` as
+`Owned`. Flipped `array_indexing1`/`2`/`3`/`4` (all four bound
+combinations) None → Jit + added 2 error-path fixtures (`array_slice_oob`,
+`array_slice_oob_is_err` — OOB slice → error, agreeing across all three
+backends). 179 → 185 Jit. The helper also handles `Bytes`, so the 3
+`bytes_slice*` fixtures (`buffer::to_string(b[1..4]?)`) flipped None →
+**Interp**: the ArraySlice + `?` + `buffer::to_string` chain now fuses on
+the interpreter, but JIT-compiling a `QopUnwrap` whose success type is
+value-shape (bytes) isn't wired yet (`compile_value_expr`'s QopUnwrap arm),
+so jit mode falls back to interp (1 → 4 Interp). Wiring that arm is the
+follow-up to make them Jit.
+
+Suite green (132 compiler + 1833 graphix-tests).
+
+### Value-shape `QopUnwrap` JIT codegen (Jun 2026)
+
+The follow-up the ArraySlice entry flagged: `?` (`GirOp::QopUnwrap`) on a
+`Nullable<T>` whose success `T` is **value-shape** (Variant / Nullable /
+DateTime / Duration / Bytes / Map) had no `compile_value_expr` arm — the
+scalar arm (`compile_scalar_impl`) only handled Prim / String / composite-
+pointer success types and `Err`'d on value-shape, so a value-shape `?` chain
+fell back to the interpreter. Added the `compile_value_expr` arm:
+`compile_expr` already routes a value-shape-typed `QopUnwrap` here (its
+`typ == success_typ`, set by `wrap_qop`). The inner `Nullable<T>` compiles
+to an owned `(disc, payload)`; an `icmp_imm Equal disc Typ::Error` branches
+to a `pre_pending` block that **drops the owned error Value**
+(`graphix_value_drop`), signals pending (`graphix_dyncall_set_pending`),
+runs `emit_pending_cleanup`, and jumps to `pending_exit`; the non-error path
+passes the `(disc, payload)` straight through as the result `T` (the
+consumer takes ownership — no clone). The error-path drop is the correctness
+nuance the scalar arm omits (its error Value leaks on the rare pending
+path); the value-shape arm does it right. Flipped the 3 `bytes_slice*`
+fixtures Interp → Jit (the `b[1..4]?` → `buffer::to_string` chain JITs
+end-to-end). 185 → 188 Jit, 4 → 1 Interp.
+
+Suite green (132 compiler + 1833 graphix-tests).
+
+### `{s with f: x}` (StructWith) via expand-to-StructNew (Jun 2026)
+
+A struct functional-update `{s with f: x, ...}` now fuses — with **no new
+GirOp**. The struct's type (hence its sorted field set) is known at compile
+time, so `emit_struct_with` (`fusion/lowering.rs`) expands it into a
+`GirOp::StructNew` whose fields are, in sorted order, either the per-field
+replacement value (`emit_node` of the `with` expr) or a `GirOp::StructGet`
+copying the unchanged field from the source. `source` must be a `Ref` to a
+struct kernel input (same constraint as `emit_struct_ref`); the
+`StructInput`'s `name`/`fields` are cloned up front so the `find_struct`
+borrow drops before the per-field `emit_node` calls. Both `StructNew` and
+`StructGet` are already lowered on both backends, so nothing else changed.
+Flipped `structwith2` (`{selected with y}` field-shorthand) and
+`structwith3` (`{selected with y: selected.y + 1}` — the replacement reads
+the source) None → Jit. Stays None: `structwith0` (typecheck error —
+replacing a `string` field with an `int`); `structwith1` (its struct has a
+`string` field copied via StructGet — the composite-with-string-in-block
+cliff, same as `structaccessor`); `structwith4`/`5` (`node:Lambda`). 188 →
+190 Jit.
+
+Suite green (132 compiler + 1833 graphix-tests).
+
+### Composite-element + destructure-pattern HOF fusion — foundation (Jun 2026)
+
+The largest remaining tractable cluster (composite array HOFs + the whole
+map-HOF cluster) is blocked by **four compounding cliffs**: composite-
+element input, `|(k,v)|` destructure-pattern callbacks, string-in-composite
+locals, and CMap iteration. Full multi-phase plan in
+`design/composite_hof_fusion.md`. **Phases 1–2 (interp) landed** —
+`array::map(a, |(k, v)| k + v)` over `Array<(i64,i64)>` now fuses
+(interp-first; `array_map_destructure` fixture, `Interp`).
+
+- **Phase 1 (trait widening):** `MapFn`/`FoldFn::emit_gir` `in_elem`
+  `PrimType` → `GirType` (graphix-package-core); `MapQ`/`FoldQ::emit_gir`
+  pass `ai.elem.clone()`. The 6 array impls keep `as_prim()?` (composite
+  still bails there) — behavior-preserving.
+- **Phase 2 (destructure):**
+  - `StructPatternNode::tuple_leaves(&self) -> Option<Vec<(BindId,
+    usize)>>` (node/pattern.rs) — `node::pattern` is `pub(crate)`, so core
+    reaches the `|(k,v)|` leaves through this accessor rather than matching
+    the enum.
+  - `register_kir_binding_bid` — tags a kernel slot with a `BindId` (today
+    `register_kir_binding` hard-coded `None`); the Ref arm prefers
+    `lookup_local_by_bind_id`, so a leaf slot tagged with the pattern's
+    BindId resolves the body's `Ref`s without a source name.
+  - `FusionCtx::input_snapshot`/`input_restore` (scoped multi-slot
+    registration) + `emit_hof_body_destructured(ctx, ec, body, elem_local,
+    in_elem, leaves)` — registers each leaf (synthetic `__leaf_<bindid>`
+    name, BindId-tagged) and builds the body as `Block { lets: [Let{leaf,
+    TupleGet(elem_local, pos)}…], tail: body }`. The body references the
+    leaves, not `elem_local`, so only the leaves need registering; the leaf
+    lets reference `elem_local` via manually-built `TupleGet`.
+  - `MapFn`/`FoldFn::emit_gir` gain `elem_binds: &[(BindId, usize)]`;
+    `MapQ`/`FoldQ::emit_gir` extract it via `tuple_leaves` (synthesizing a
+    `__elem` name for the composite element). `MapImpl` lowers the
+    destructure; the 5 other array impls explicitly bail on non-empty
+    `elem_binds`.
+  - `GirOp::ArrayMap.in_elem`: `PrimType` → `GirType`. The interp loop
+    (`gir_interp.rs`) branches on `in_elem.as_prim()` — `Some` = today's
+    scalar `locals` fast path; `None` = composite, binds the element
+    `Value::Array` into the `arrays` slot per-iter (the body's `TupleGet`
+    reads it). The JIT arm `as_prim().ok_or(…)?`-bails on composite (→
+    interp).
+
+**Phase 2-JIT** then flipped the new `array_map_destructure` fixture
+(`[(1,2),(3,4)]`, `|(k,v)| k+v` → `[3,7]`) Interp → **Jit**: the JIT
+`ArrayMap` arm branches on `in_elem.as_prim()` — `Some` = scalar fast
+path; `None` = composite, per-iter `graphix_valarray_get_array` (owned
+`*mut ValArray` clone) → `bind_composite(elem_local)` → body (`TupleGet`s
+clone the fields) → `graphix_valarray_drop` of the owned per-iter element
+(no leak/double-free — getter and field reads clone, the drop frees the
+clone). 190 → 191 Jit, 2 → 1 Interp.
+
+**`array::fold` extended the same way** (`array_fold_destructure`,
+`array::fold(a, 0, |acc, (k,v)| acc+k+v)` → `10`, **Jit**):
+`ArrayFold.elem_typ` `PrimType` → `GirType`; the interp + JIT loops got the
+identical scalar/composite element split (the accumulator stays scalar);
+`FoldImpl::emit_gir` lowers the destructure via `emit_hof_body_destructured`
+nested inside a `with_input` for the scalar acc. 191 → 192 Jit. The
+composite-element + destructure mechanism is now proven on **two** HOFs.
+
+**`array::filter` extended too** (`array_filter_destructure`,
+`array::filter(a, |(k,v)| v>3)` → kept composites, **Jit**):
+`ArrayFilter.elem` `PrimType` → `GirType`; the interp loop pushes the
+*original* composite element on a `keep`. The JIT `ArrayFilter` arm
+branches scalar/composite: composite gets each element via
+`graphix_valarray_get_array` (owned `*ValArray`), binds it, evals the
+predicate, then on `keep` **moves** it into the output
+(`graphix_value_buf_push_array`) / on not-keep **drops** it
+(`graphix_valarray_drop`) through a dedicated `drop_block` — the owned
+per-iter element is consumed exactly once (no leak / double-free). This is
+the **conditional-drop** wrinkle distinct from map/fold's unconditional
+consume. (Watch for over-broad `perl` edits on `*elem` — they silently hit
+the sibling `ArrayFind`/`ArrayFilterMap` arms whose `elem` is still
+`PrimType`; the build caught it but scope `*elem` edits per-arm.)
+
+**All 3 array HOFs (map/fold/filter) now JIT composite elements +
+destructure.** Remaining (tracked, task #149): the other 3 array HOFs
+(`Find`/`FilterMap`/`FlatMap` — `Find` also needs composite *output*
+`Nullable<composite>`, `FilterMap` a conditional transform); composite-with
+-string elements (string leaf → interp; flips the existing `find`/`find_map`
+cliffs which ALSO need composite-output / the `~` Sample operator); and
+Phase 3–4 = map `MapFn` impls + CMap iteration for the map-HOF cluster.
+
+Suite green (132 compiler + 1842 graphix-tests).
+
+### Sample operator `~` lowering (guarded) (Jun 2026)
+
+`a ~ b` (sample `b` when `a` fires) now lowers in a fused kernel — to
+`b` — but **only when sound**. The subtlety: a fused sync kernel
+recomputes its *whole* output whenever *any* input fires, whereas `~`
+emits `b` *only* when the trigger `a` fires and holds its value between
+`a`'s firings. So `a ~ b ≡ b` is sound iff `b` can't update without `a`
+also updating — i.e. **every external ref of the value `b` is also an
+external ref of the trigger `a`** (a recompute caused by a value-dep
+change then implies a trigger-dep change too). `Sample` is a *stateful*
+node (a `triggered` counter that gates emission), so lowering it loses
+that gating — the guard is what keeps the loss sound. The `emit_node`
+`NodeView::Sample` arm walks `s.trigger.refs()` and `s.arg.node.refs()`,
+collects the trigger's external refs, and lowers `emit_node(arg)` only if
+every arg external ref is in that set; otherwise it bails (the Sample
+doesn't fuse). The trigger's refs still surface as region inputs via
+`Sample::refs`, so the kernel re-fires on `a`. Flips `array_filter_map`
+(its `false => x ~ null` arm — `null` has no external refs, trivially ⊆
+the trigger's) None → **Jit** (193 → 194); `array_filter_map_scalar`
+already fused (no `~`). The common reactive `trigger ~ state` shape
+(where `state` depends on inputs the trigger doesn't) correctly does
+*not* fuse.
+
+Suite green (132 compiler + 1842 graphix-tests).
+
+### `GirOp::ArrayFindMap` — `array::find_map` (Jun 2026)
+
+Closes the `array_find_map` cliff (composite `(string,i64)` element +
+`|(k, v)|` destructure + a `false => v ~ null` Sample arm — all the pieces
+landed above). The new op = `ArrayFilterMap`'s Nullable body + `ArrayFind`'s
+early-exit: iterate, eval the body (`Nullable<out>`), return the **first
+non-null** body result as that `Nullable<out>` (or `null`). `in_elem` is a
+`GirType` (composite-capable), bound via the proven scalar/`arrays`-slot
+split. `FindMapImpl::emit_gir` (previously absent → DynCall) builds it with
+the `elem_binds.is_empty()` scalar vs `emit_hof_body_destructured`
+composite branch. **Interp-first**: `ArrayFindMap` is value-shape
+(`Nullable<out>`) and composite-input; the JIT arm `Err`s ("not yet
+JIT-lowered") so `compile_value_expr`'s catch-all → `fuse()` runs it on the
+interpreter — lands **Interp** (1 → 2 Interp). The walker/`node_shape`
+exhaustive arms mirror `ArrayFilterMap` (`{ body, .. }`); added a
+`GirOpTag::ArrayFindMap`.
+
+**JIT done (for all-prim composite elements).** The `compile_value_expr`
+`ArrayFindMap` arm mirrors `ArrayFind`'s early-exit value-shape merge, but
+compiles the body to its `Nullable<out>` `(disc,payload)` directly (not a
+predicate) and drops the owned per-iter composite element *every* pass (the
+result is the body value, not the element — unlike `ArrayFind` where the
+found result IS the element). `(bdisc,bpayload)` computed in `loop_body`
+dominates `found`, so the found edge jumps to the `exit` phi with them
+directly (no `found` block params). New `array_find_map_prim`
+(`array::find_map([(1,10),(2,20),…], |(k,v)| select k==2 {true=>v,
+false=>null})` → `20`) fuses + **Jit** — validating the codegen on an
+all-prim `(i64,i64)` element. The sibling `array_find_map` **stays
+Interp**: its `(string, i64)` element keeps the kernel off the JIT — a
+separate **composite-with-string-element** cliff (the all-prim case JITs
+cleanly through the very same arm, proving it's the string field, not
+`ArrayFindMap`). 194 → 195 Jit.
+
+Suite green (132 compiler + 1845 graphix-tests).
+
+### Block-let-String JIT codegen gap (Jun 2026)
+
+Found by a `JITDBG` probe (temporary `eprintln!` on the swallowed
+`compile_kernel_with_callees` error at `fusion/mod.rs`, since `fuse()`
+silently `continue`s on a JIT-compile `Err`): the `GirOp::Block` let arm
+in `gir_jit.rs` (~3167) **errored** on a `GirType::String` value
+("String locals aren't supported on either backend"), even though the
+May-2026 *String locals* work made them first-class. That work updated
+`GirStmt::Let` + `bind_string` but **missed the parallel `GirOp::Block`
+let arm** — so any kernel with a string `let` *inside a block* (vs a
+top-level `GirStmt::Let`) silently failed JIT compile and fell back to
+interp. The most common trigger: a `|(k, v)|` destructure callback over
+`Array<(string, _)>`, where `emit_hof_body_destructured` wraps the body
+in a `Block` whose leaf `let k = TupleGet(elem, 0)` binds a string local.
+Fix mirrors `GirStmt::Let`'s String arm: `compile_scalar` (the String SSA
+is an owned ArcStr) → `bind_string`; the block scope-exit already drops
+`env.strings`. This is a correctness/completeness fix beyond the metric —
+string locals now JIT in *all* contexts. It flipped `array_find_map`
+(`|(k, v): (string,i64)|` …) Interp → **Jit** (195 → 196); the suite found
+no other fixture exercising the gap. **Lesson** ([[feedback-run-the-code]]):
+the swallowed-error `continue` in `fuse()` hides JIT-compile failures as
+silent interp fallback — a `JITDBG` env probe on that arm is the way to
+surface *why* a should-JIT kernel runs on the interpreter.
+
+Suite green (132 compiler + 1845 graphix-tests).
+
+### `array::flat_map` composite element + destructure (Jun 2026)
+
+The 5th and last linear/conditional array HOF gets composite-element +
+destructure support, completing the foundation: **map / fold / filter /
+flat_map / find_map all JIT composite elements + `|(k,v)|` destructure
+callbacks**. `GirOp::ArrayFlatMap.in_elem` widened `PrimType` → `GirType`
+(mirror of the earlier 4); the interp + JIT loops got the identical
+scalar/composite element split — `in_elem.as_prim()` is `Some` for the
+scalar `locals`/`valarray_get_<prim>` fast path, `None` for the composite
+`arrays`-slot (interp) / `graphix_valarray_get_array` owned-clone + `bind_
+composite` + per-iter `graphix_valarray_drop` (JIT) path. `flat_map`'s
+output stays an owned `Array<out>` per iteration that the existing linear
+`graphix_value_buf_extend_from_array` concatenates + drops — so the
+composite *element* is the only new owned per-iter value to drop (the
+`Some(elem_var)` guard drops it after the body, before `extend`). No
+early-exit / conditional-drop wrinkle (unlike `find_map` / `filter`).
+`FlatMapImpl::emit_gir` lost its `!elem_binds.is_empty() => None` bail and
+now mirrors `MapImpl`/`FilterImpl`: scalar via `with_input`, destructure
+via `emit_hof_body_destructured`. New `array_flat_map_destructure`
+(`array::flat_map([(1,10),(2,20)], |(k,v)| [k,v])` → `[1,10,2,20]`) fuses +
+**Jit**. 196 → 197 Jit.
+
+**Composite-element + destructure is now proven across all 5 array HOFs.**
+Remaining (tracked, task #149): composite-with-**string** elements (string
+leaf forces interp via the `find_map` `(string,i64)` case — would flip the
+existing `array_find`/`array_find_map` cliffs); composite *output* for
+`find` (`Nullable<composite>`); and the map-HOF cluster (CMap iteration
+GirOps + `MapFn` impls).
+
+Suite green (132 compiler + 1848 graphix-tests).
+
+### `array::find` composite element + composite output (Jun 2026)
+
+Closes the last array-HOF composite gap: `array::find` over a composite
+element where the *result* is the matched element itself — a
+`Nullable<composite>` (the composite-**output** case, distinct from the
+composite-**element** case the other HOFs needed, since `find` doesn't
+transform the element). `GirOp::ArrayFind.elem` widened `PrimType` →
+`GirType`; `FindImpl::emit_gir` gained the destructure
+(`emit_hof_body_destructured`) + composite-element branch and types the
+result `Nullable<in_elem>` (composite).
+
+The interp arm got the standard scalar/composite element split; `found`
+holds `arr[i].clone()` (the whole `Value::Array`) for composite, surfaced
+as `EvalResult::Nullable(Value::Array(..))`.
+
+The JIT arm is the interesting half — a **conditional-consume** of the
+owned per-iter composite element, like `ArrayFilter` but feeding a
+value-shape early-exit merge: the element is fetched owned via
+`graphix_valarray_get_array`, bound (`bind_composite`) for the predicate;
+on the **found** edge it's wrapped into a value-shape
+`(ARRAY_DISC, payload)` Value via `graphix_value_new_from_array` (consumes
+it) and jumps to the two-word merge; on the **advance** edge (not matched
+this iteration) it's dropped via `graphix_valarray_drop`. The scalar case
+is unchanged (found wraps via `prim_to_value_disc` + `scalar_to_payload_i64`,
+no drop). The `(elem_var, elem_prim)` tuple from the bind match carries the
+`Variable` + scalar-prim flag to both exit edges (cranelift SSA: `elem_var`
+is defined in `loop_body`, which dominates `found`/`advance`).
+
+`array_find` (`(string, i64)` element, `|(k, _)| k == "bar"`) flipped
+None → **Jit**; new `array_find_composite` (`(i64, i64)`, `|(k, _)| k == 2`
+→ `(2, 20)`) exercises the composite-output JIT codegen without a string
+leaf. **All 5 array HOFs now JIT composite elements + `|(k,v)|` destructure,
+and `find` JITs composite output.** 197 → 199 Jit.
+
+Suite green (132 compiler + 1851 graphix-tests).
