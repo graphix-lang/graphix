@@ -556,15 +556,28 @@ stability check needed. Remove during M8.
 ## Status (May 2026)
 
 Milestones M5–M9 from the implementation plan are all complete.
-Past the original plan, several follow-up milestones landed under
-the M8.4 banner — most notably *maximal sync subgraph splitting*,
-where an Async sub-expression doesn't split a region, it becomes
-a kernel input fed by a separately-compiled feeder Node
-(`RegionInputSource::Lifted`). The fusion pipeline today carves
-regions whose internal Sync ops absorb into a single GIR kernel,
-JIT-compiles via cranelift (region kernels included, not just
-lambda kernels), and feeds Async edges through the runtime
-variable system.
+The fusion pipeline today carves regions whose internal Sync ops
+absorb into a single GIR kernel, JIT-compiles via cranelift
+(region kernels included, not just lambda kernels), and feeds
+free-var Refs through the runtime variable system.
+
+> **CORRECTION (2026-06-06):** earlier revisions of this section
+> claimed *maximal sync subgraph splitting* landed under an "M8.4
+> banner" — an Async sub-expression promoted to a kernel input
+> (`RegionInputSource::Lifted`) rather than splitting the region. A
+> code trace found this was **never wired**: `RegionInputSource::Lifted`
+> has zero constructors in the live tree (only the enum variant, an
+> unreachable consumer at `lowering.rs:3609`, and doc comments survive);
+> `collect_region`/`collect_lifted_async`/`discover_region_inputs`
+> (named in the old CLAUDE.md entries) do not exist; every `RegionInput`
+> producer uses `RegionInputSource::Binding`. **The live pipeline still
+> uses the initial model** — a region is a fully-sync subtree, and an
+> Async sub-expression *splits* the region (it is NOT lifted across it).
+> The `## Fusion model` section above describes the *intended* maximal
+> model; it is the target, not the current pipeline. Building the lift
+> — bidirectionally (async upstream *and* downstream) and applied to
+> lambda bodies for per-slot HOF callbacks — is the
+> `design/impure_hof_fusion.md` milestone.
 
 The dispatch granularity bottleneck the design called out is
 substantially closed: per-element array operations inline into
@@ -575,7 +588,7 @@ explicit reasoning, captured under [[feedback-predictable-fusion]]):
 each one fixed in turn — JIT string support, string locals on
 both backends, anonymous-lambda fusion, composite-element
 producer ops, BindId-keyed unstable bindings, FusedRegion JIT
-path, module-kernel async lifting.
+path.
 
 Remaining cliffs identified by the post-landings audit (May 2026):
 composite-element arrays (`array::map(arr_of_tuples, ...)`),

@@ -608,11 +608,20 @@ FusedKernel wrappers (lightweight — an Arc clone + a small
 feeder list per wrapper). **No runtime GIR generation. No loss
 of per-slot async state.**
 
-This is conceptually the same trick maximal-fusion uses for
-outer-binding Refs: an Async sub-expression becomes a "lifted
-input" of a sync kernel, fed by a separately-compiled Node.
-The HOF case extends this: lifted inputs are filled **dynamically
-per slot** instead of from a single statically-known Bind.
+This is conceptually the same trick the *designed* maximal-fusion
+lifted-input mechanism would use for outer-binding Refs: an Async
+sub-expression becomes a "lifted input" of a sync kernel, fed by a
+separately-compiled Node. **Note (2026-06-06): that lifted-input
+mechanism (`RegionInputSource::Lifted`) is designed but NOT yet
+wired** — it has no constructor in the live tree (see
+`whole_graph_fusion.md` Status). The HOF case extends it: lifted
+inputs are filled **dynamically per slot** instead of from a single
+statically-known Bind — and the impure case needs it
+*bidirectionally* (async downstream consumers too, not just inputs).
+The concrete plan for all of this — fuse the concretely-typed
+CallSite via `fusion::fuse_callsite`, partial-body split, per-slot
+shared-kernel dispatch — now lives in
+**`design/impure_hof_fusion.md`**, which supersedes this section.
 
 #### Scope for the initial migration
 

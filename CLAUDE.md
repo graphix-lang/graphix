@@ -992,6 +992,25 @@ issues found.
 
 ### M8.4 maximal sync subgraph splitting (May 2026)
 
+> **CORRECTION (2026-06-06):** this entry and the "Module-kernel
+> lifting" half of the next one describe the maximal/lifted split
+> (`RegionInputSource::Lifted`, `collect_region`, `collect_lifted_async`,
+> `discover_region_inputs`) as landed. A code trace found it was **never
+> wired**: `RegionInputSource::Lifted` has zero constructors in the live
+> tree (only the enum variant, an unreachable consumer at
+> `lowering.rs:3609`, and `FusionCtx::lifted_inputs` written solely in
+> that dead branch survive); the named `collect_region`/
+> `collect_lifted_async`/`discover_region_inputs` functions **do not
+> exist** (only `collect_region_inputs` at `mod.rs:368`, which emits
+> `RegionInputSource::Binding` only). The live pipeline still uses the
+> initial model — an Async edge *splits* a region, it is not lifted
+> across it. (Tells were already in the entry: the differential test
+> "doesn't itself trigger a splice"; only a now-dead unit test
+> `region_kernel_lifted_input` exercised the path.) Building the lift —
+> bidirectionally, and applied to lambda bodies for per-slot HOF
+> callbacks — is the `design/impure_hof_fusion.md` milestone. Treat the
+> two M8.4 entries below as *aspirational design notes*, not landed work.
+
 The M8.4 "initial model" — regions are fully-sync subtrees, every
 Async edge splits a region — left a lot of fusion on the table.
 A typical `let x = subscribe(...); let y = x + 1` couldn't fuse the
