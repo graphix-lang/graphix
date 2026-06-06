@@ -704,6 +704,17 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     /// per-slot async state is preserved because runtime continues
     /// to synthesize fresh Slots per array element.
     pub analysis_pred: Option<Slot<R, E>>,
+    /// Per-slot fused-callback artifact, built once in
+    /// [`Apply::static_resolve_fn_args`] from `analysis_pred` via
+    /// `fuse_callsite` when the callback body lowers to a kernel. When
+    /// `Some`, `update()`'s per-slot loop builds each slot's `pred` as a
+    /// shared-kernel `FusedKernel` Node instead of an interpreted
+    /// `genn::apply` CallSite — so a callback that doesn't batch-loop
+    /// (`emit_gir` → `GirOp::ArrayMap` bailed) still fuses, per slot.
+    /// `None` falls back to today's interpreted per-slot dispatch. See
+    /// `design/impure_hof_fusion.md`.
+    pub fused_callback:
+        Option<graphix_compiler::fusion::lowering::FusedCallback>,
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
@@ -740,6 +751,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
                     cur: Default::default(),
                     t: T::default(),
                     analysis_pred: None,
+                    fused_callback: None,
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -809,6 +821,13 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             return Ok(());
         };
         cs.resolve_static(ctx, cb.lambda, fv)?;
+        // Build the per-slot fused-callback artifact from the now-
+        // resolved, concretely-typed CallSite. `None` (async body,
+        // unrepresentable arg/return/capture types, …) falls back to
+        // today's interpreted per-slot dispatch in `update()`. See
+        // design/impure_hof_fusion.md.
+        self.fused_callback =
+            graphix_compiler::fusion::lowering::fuse_callsite(cs, ctx);
         self.analysis_pred = Some(Slot { id, pred, cur: None });
         Ok(())
     }
@@ -844,20 +863,65 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                             self.etyp.clone(),
                             self.top_id,
                         );
-                        let fargs = vec![node];
-                        let fnode = genn::reference(
-                            ctx,
-                            self.predid,
-                            Type::Fn(self.mftyp.clone()),
-                            self.top_id,
-                        );
-                        let pred = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            fargs,
-                            &self.mftyp,
-                            self.top_id,
-                        );
+                        // Fused per-slot dispatch: build a `FusedKernel`
+                        // Node sharing the callback's compiled kernel,
+                        // fed by this slot's element binding (`node`).
+                        // Falls back to the interpreted CallSite when the
+                        // callback didn't fuse, or (defensively) if the
+                        // slot build fails. See design/impure_hof_fusion.md.
+                        let pred = match &self.fused_callback {
+                            Some(fc) => {
+                                let scope = self.scope.clone();
+                                match fc.build_slot(
+                                    ctx,
+                                    vec![node],
+                                    scope,
+                                    self.top_id,
+                                ) {
+                                    Ok(n) => n,
+                                    Err(e) => {
+                                        log::warn!(
+                                            "fused HOF slot build failed, \
+                                             interp fallback: {e}"
+                                        );
+                                        let node = genn::reference(
+                                            ctx,
+                                            id,
+                                            self.etyp.clone(),
+                                            self.top_id,
+                                        );
+                                        let fnode = genn::reference(
+                                            ctx,
+                                            self.predid,
+                                            Type::Fn(self.mftyp.clone()),
+                                            self.top_id,
+                                        );
+                                        genn::apply(
+                                            fnode,
+                                            self.scope.clone(),
+                                            vec![node],
+                                            &self.mftyp,
+                                            self.top_id,
+                                        )
+                                    }
+                                }
+                            }
+                            None => {
+                                let fnode = genn::reference(
+                                    ctx,
+                                    self.predid,
+                                    Type::Fn(self.mftyp.clone()),
+                                    self.top_id,
+                                );
+                                genn::apply(
+                                    fnode,
+                                    self.scope.clone(),
+                                    vec![node],
+                                    &self.mftyp,
+                                    self.top_id,
+                                )
+                            }
+                        };
                         self.slots.push(Slot { id, pred, cur: None });
                     }
                     (Some(a), true)

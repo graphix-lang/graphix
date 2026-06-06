@@ -49,9 +49,9 @@ tool that turns "this fixture is None" into "this fixture is None
 
 | state | count | share | meaning |
 |---|---:|---:|---|
-| **Jit** | 204 | 36% | fuses + JIT-compiles + runs native |
+| **Jit** | 207 | 37% | fuses + JIT-compiles + runs native |
 | **Interp** | 1 | 0% | fuses, runs on interp (JIT can't lower yet) |
-| **None** | 367 | 66% | no fused kernel |
+| **None** | 364 | 65% | no fused kernel |
 
 (562 fixtures total. The 2026-06-05 work: scalar `find`/`filter_map`/
 `flat_map` lowerings, composite-element *output* for `init`/`map`,
@@ -525,3 +525,13 @@ slices, StructWith).
   GirType::Error` arm (the `[T, Error]` Result shape still lowers to
   `Nullable` via the `Type::Set` arm). ~29 exhaustiveness sites swept via one
   `perl` pass + 2 standalone arms. `filter_err` stays None (streaming/Async).
+- **2026-06-06**: impure-HOF-fusion **Phase 1** — per-slot shared-kernel
+  dispatch (`fuse_callsite` / `FusedCallback::build_slot`; see
+  `design/impure_hof_fusion.md`). MapQ's per-slot loop now builds each
+  slot's `pred` as a shared-kernel `FusedKernel` (own per-instance state)
+  instead of an interpreted `GXLambda`, when the callback body lowers.
+  Flipped `list_map`/`list_filter`/`list_find_miss` **None → Jit** (+3;
+  204 → 207). Non-array collection HOFs (`list::*`) never batch-loop into
+  `GirOp::ArrayMap`, so this per-slot path is the only way they fuse — the
+  doc's "~zero value standalone" prediction was wrong. Phase 2 (the
+  partial-body split for *impure* callbacks) is the remaining milestone.

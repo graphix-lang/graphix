@@ -415,9 +415,10 @@ const LIST_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `list::map` over `list::from_array([1,2,3])` with `|x| x*2` now fuses
+// PER-SLOT: the list HOF doesn't batch-loop, so its callback dispatches
+// through `fuse_callsite` → a shared-kernel `FusedKernel` per element
+// (design/impure_hof_fusion.md, Phase 1).
 run!(list_map, LIST_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -426,7 +427,7 @@ run!(list_map, LIST_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 const LIST_MAP_TYPE_ERR: &str = r#"
 {
@@ -448,9 +449,7 @@ const LIST_FILTER: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `list::filter` now fuses + JITs per-slot (Phase 1, see list_map).
 run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -459,7 +458,7 @@ run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 // ── Filter map ──────────────────────────────────────────────────
 
@@ -565,12 +564,10 @@ const LIST_FIND_MISS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `list::find` (no match → null) now fuses + JITs per-slot (Phase 1).
 run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 // ── Find map ────────────────────────────────────────────────────
 

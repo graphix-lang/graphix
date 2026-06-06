@@ -278,47 +278,89 @@ Confirmed the bail by running code (see §"Empirically confirmed"):
 impure `array::map` → zero fusion, bail at `emit_do_as_expr` catch-all on
 the first non-sync statement.
 
-### Phase 1 — pure-callback shared dispatch (mostly refactor)
-Make the per-slot path dispatch a **wholly-sync** callback to a shared
-kernel (no split yet). This gets the `fuse_callsite` plumbing in place.
-~80% existing machinery:
-1. Split `ensure_lambda_kernel` into *build* (returns the `CachedKernel`
-   artifact) vs *register-into-FusionCtx* (today it returns `Option<()>`
-   and mutates transient `FusionCtx`, `lowering.rs:2437`).
-2. Drive the JIT compile + runnable node build (`compile_kernel_with_callees`
-   + `FusedKernel::new`, currently in `fuse()` at `mod.rs:252-299`) inside
-   the build path so the artifact is runnable, not just an interp
-   `Arc<GirKernel>`.
-3. Switch kernel keying from Ref-derived `source_name` to a **unique
-   per-`LambdaId` name** — the migration the SAFETY INVARIANT at
-   `lowering.rs:2284-2294` flags as required once a kernel is reached
-   without a Ref fnode.
-4. Wrap the artifact in a `LambdaDef` so the per-slot `CallSite::setup_bind`
-   resolves to it (or change per-slot construction to call the InitFn
-   directly).
-5. Resolve captures **without a parent FusionCtx** — today captures
-   resolve via `lookup_local_by_bind_id` against the enclosing region's
-   input slots; a free-standing per-slot InitFn must forward captures as
-   explicit extra args at slot-build time.
+### Phase 1 — per-slot shared-kernel dispatch ✅ DONE (2026-06-06)
+Make MapQ's per-slot loop dispatch a callback to a **shared compiled
+kernel** instead of an interpreted `GXLambda`, when the callback body
+lowers (no split yet). Landed green; **132 compiler + 1863 graphix-tests**.
 
-> Phase 1 alone delivers ~zero of the motivating value — the use case is
-> impure *by construction* (that's why MapQ uses per-slot machinery at
-> all). It exists to land the plumbing green before the hard part.
+What landed:
+1. **`build_lambda_kernel`** (`lowering.rs`) — the FusionCtx-free core
+   extracted from `ensure_lambda_kernel`: builds (or cache-hits) the
+   `CachedKernel` and *returns* it. `ensure_lambda_kernel` is now a thin
+   wrapper that registers the result into `FusionCtx`.
+2. **`fuse_callsite(&CallSite, &mut ExecCtx) -> Option<FusedCallback>`**
+   (`lowering.rs`) — from a concretely-typed, statically-resolved
+   analysis CallSite, build `build_lambda_kernel` + JIT-compile
+   (`compile_kernel_with_callees`, gated on `ec.jit_enabled`) and package
+   a `FusedCallback`. Keys the kernel by a unique per-`LambdaId` name (no
+   Ref fnode → the source-name SAFETY INVARIANT requires uniqueness; the
+   per-slot path keys no `GirOp::Call` on it).
+3. **`FusedCallback::build_slot(ctx, element_feeders, scope, top_id)`** —
+   builds a fresh `builder::FusedKernel` Node per slot, sharing the kernel
+   `Arc` (own per-instance `GirNode` state), fed by the element feeder(s)
+   ++ shared capture feeders (`Ref`s to the captured bindings). The
+   `FusedKernel` *owns its feeders* — which cleanly handles captures, the
+   reason this won over the `InitFn`-via-`LambdaDef` shape (an `InitFn`
+   returns a `Box<dyn Apply>` driven only with the CallSite's formal args,
+   with no place for captures).
+4. **`ExecCtx.jit_enabled`** — set by `compile()` from
+   `!flags.contains(JitDisabled)`, so `fuse_callsite` (called from a
+   builtin's `static_resolve_fn_args`, which doesn't get the flags)
+   respects the 3-mode harness's fused (interp) mode.
+5. **MapQ wiring** — `static_resolve_fn_args` calls `fuse_callsite` on
+   `analysis_pred.pred`; `update()`'s per-slot loop builds each `Slot.pred`
+   via `build_slot` when `fused_callback` is `Some`, else today's
+   interpreted `genn::apply`.
+
+**The "~zero value standalone" prediction was WRONG.** It assumed array
+batch-loop competition: a sync array callback either batch-loops
+(`GirOp::ArrayMap`, faster, so the per-slot loop never runs) or doesn't
+lower (so per-slot can't either). But **non-array collection HOFs never
+batch-loop** — `list::map`/`filter`/`find` over a recursive-variant
+`List` go straight through MapQ's per-slot path, so per-slot `fuse_callsite`
+dispatch is the *only* way they fuse. Result: `list_map`, `list_filter`,
+`list_find_miss` flipped **None → Jit** (correct in all three modes — the
+differential harness validated interp == fused == jit). Phase 1 is a real
+win for the whole non-array-HOF cluster, not just plumbing.
+
+**Follow-up (efficiency, not correctness):** `fuse_callsite` runs *eagerly*
+in `static_resolve_fn_args` for every statically-resolved map callback —
+including array maps that will batch-loop and never use the per-slot path,
+wasting one kernel build + JIT compile each. Optimize by building the
+`FusedCallback` *lazily* on first slot creation in `update()` (which only
+runs when the map did NOT batch-loop). Bounded compile-time cost; deferred.
 
 ### Phase 2 — partial-body fusion (the milestone)
-The net-new capability that gates the use case:
-1. **Effect-frontier body partitioning** in `emit_do`/`emit_body`: stop at
-   the async frontier, emit the maximal sync prefix as a kernel, hand back
-   the residue — instead of `?`-propagating `None` on the first async op.
-2. **Async-residue representation** the per-slot machinery can
-   re-instantiate per element while sharing one kernel — *bidirectional*
-   (async upstream feeders that become kernel inputs; async downstream
-   consumers fed by kernel outputs).
-3. **Per-slot residue rebuild wiring** (kernel-output → fresh downstream
-   async; fresh upstream async → kernel-input). No analog in the
-   codebase today.
-4. **Lift the lambda-body async exclusion** (`lowering.rs:3437-3441`;
-   `analysis_pred` *is* such a body).
+
+**Approach refined against the code (2026-06-06):** the split CANNOT live
+inside `emit_do`/`emit_body` as the doc first guessed. `emit_do_as_expr`
+(`lowering.rs:1967`) emits a `GirOp::Block` — a *kernel* `GirExpr` — and a
+kernel expression has no way to *carry* an async residue (the residue is
+reactive nodes, not kernel code). So the split lives one level up, at the
+**`fuse_callsite` / body level** (a body-analysis + rewrite), and reuses
+the Phase-1 machinery:
+
+1. **Classify body statements sync vs async by `emit_node` success.**
+   There is no live per-node effect map (`infer_effects`/
+   `program_effect_map` are dead M8.4 references). But `emit_node`
+   succeeding *is* "this is sync (lowers to a kernel)"; bailing is "async
+   residue." Reuse it as the classifier.
+2. **Build the kernel from the sync part** (the body with async statements
+   removed) via the Phase-1 `build_lambda_kernel` — the kernel returns the
+   *frontier* (the sync values the residue + the slot value need).
+3. **Rebuild the residue per slot by RECOMPILING** (not cloning): per slot,
+   build `FusedKernel(element, captures) → frontier bindings`, then build
+   the async residue nodes (the `<-`/`publish`/…) wired to read those
+   frontier bindings. Recompiling the thin residue gives fresh BindIds for
+   free (no `Node: Clone`, no remap) and is strictly *less* per-slot work
+   than today (MapQ already recompiles the whole body per slot; this moves
+   the sync calc into the shared kernel).
+
+**Minimal first cut:** the narrow shape `{ let v = <sync>; <async stmt
+referencing v>; v }` (the probe / publish-tail / `<-` shapes) — where the
+async statements are side-effects and the frontier is a single value.
+Generalize to multi-value frontiers + async-upstream (`subscribe` feeding
+the calc) after.
 
 **Minimal first cut:** handle only the simplest split shape —
 `{ <sync prefix>; <one async consumer of the result> }` (the `net/sum.gx`

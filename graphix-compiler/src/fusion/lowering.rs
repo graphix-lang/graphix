@@ -2295,6 +2295,44 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     if ctx.known_fns.contains_key(source_name) {
         return Some(());
     }
+    let (cached, sub_called) = build_lambda_kernel(g, source_name, ec)?;
+    ctx.known_fns.insert(source_name.clone(), cached.signature.clone());
+    ctx.called_kernels.insert(source_name.clone(), cached);
+    // Propagate transitively-called sub-kernels (the inner build's
+    // called_kernels) into the outer scope so the splice's
+    // KernelRegistry covers the full transitive closure of calls
+    // reachable from the parent kernel's body.
+    for (k, v) in sub_called {
+        ctx.called_kernels.entry(k).or_insert(v);
+    }
+    Some(())
+}
+
+/// FusionCtx-free core of [`ensure_lambda_kernel`]: build (or cache-hit)
+/// the fused [`CachedKernel`] for a resolved, concretely-typed lambda
+/// `g`, populating the per-`ExecCtx` `(LambdaId, resolved FnType)` cache.
+/// Does NOT touch the transient `FusionCtx` (no `known_fns` /
+/// `called_kernels`). Returns the cached kernel plus the transitively-
+/// called sub-kernels discovered during this build (empty on a cache
+/// hit). Shared by `ensure_lambda_kernel` (the region-splice
+/// `GirOp::Call` path, which then registers into `FusionCtx`) and — the
+/// reason it's extracted — the per-slot HOF dispatch path
+/// (`design/impure_hof_fusion.md`), which wraps the artifact in a
+/// runtime `GirNode` instead.
+///
+/// `kernel_name` becomes the built `CachedKernel.fn_name`; a cache hit
+/// returns the first builder's name. The region-splice path passes the
+/// call site's source name; the per-slot path passes a unique
+/// per-`LambdaId` name (the SAFETY INVARIANT above requires uniqueness
+/// once a kernel is reached without a Ref fnode — there is no
+/// `GirOp::Call` keyed on the name in the per-slot path, so a
+/// first-builder-wins `fn_name` is benign there, but uniqueness keeps
+/// the two paths from cross-contaminating a shared cache entry's name).
+fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
+    g: &crate::node::lambda::GXLambda<R, E>,
+    kernel_name: &ArcStr,
+    ec: &mut crate::ExecCtx<R, E>,
+) -> Option<(CachedKernel, std::collections::BTreeMap<ArcStr, CachedKernel>)> {
     // Cache key: (LambdaId, resolved FnType). `resolve_tvars` deep-
     // clones, dereffing every TVar to its bound concrete type, so
     // monomorphizations agree across syntactically-distinct but
@@ -2302,9 +2340,7 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     let resolved_typ = std::sync::Arc::new(g.typ().resolve_tvars());
     let key = (g.id(), resolved_typ);
     if let Some(cached) = ec.fusion_kernels.lock().get(&key).cloned() {
-        ctx.known_fns.insert(source_name.clone(), cached.signature.clone());
-        ctx.called_kernels.insert(source_name.clone(), cached);
-        return Some(());
+        return Some((cached, std::collections::BTreeMap::new()));
     }
     // Translate each lambda formal arg into a kernel `RegionInput`.
     // The arg's source-level name (from `FnArgKind`) becomes the
@@ -2415,7 +2451,6 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     if matches!(return_typ, GirType::String | GirType::Unit | GirType::Null) {
         return None;
     }
-    let kernel_name = source_name.clone();
     let (kernel, sig, sub_called) = build_kir_kernel_from_region::<R, E>(
         kernel_name.as_str(),
         g.body(),
@@ -2430,20 +2465,157 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     let cached = CachedKernel {
         fn_name: kernel_name.clone(),
         kernel: std::sync::Arc::new(kernel),
-        signature: sig.clone(),
+        signature: sig,
         captures,
     };
     ec.fusion_kernels.lock().insert(key, cached.clone());
-    ctx.known_fns.insert(source_name.clone(), sig);
-    ctx.called_kernels.insert(source_name.clone(), cached);
-    // Propagate transitively-called sub-kernels (the inner build's
-    // called_kernels) into the outer scope so the splice's
-    // KernelRegistry covers the full transitive closure of calls
-    // reachable from the parent kernel's body.
-    for (k, v) in sub_called {
-        ctx.called_kernels.entry(k).or_insert(v);
+    Some((cached, sub_called))
+}
+
+/// A callback fused for per-slot reactive dispatch by a HOF builtin
+/// (MapQ / FoldQ / …). Built once at compile time from a concretely-
+/// typed, statically-resolved analysis CallSite via [`fuse_callsite`];
+/// each per-slot invocation builds a fresh [`builder::FusedKernel`] Node
+/// (its own per-instance state) that *shares* the compiled kernel
+/// artifacts via `Arc`. This is the per-slot dispatch primitive of the
+/// impure-HOF-fusion milestone (`design/impure_hof_fusion.md`): the
+/// builtin keeps its own per-slot reactive lifecycle (one graph per
+/// element, fresh BindIds), and only the pure kernel is shared.
+pub struct FusedCallback {
+    kernel: std::sync::Arc<crate::gir::GirKernel>,
+    wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
+    called_kernels: std::collections::BTreeMap<ArcStr, CachedKernel>,
+    /// Captured outer bindings (closure conversion), in kernel-input
+    /// order *after* the formal args. Each is fed by a shared `Ref`
+    /// feeder (to its bind_id) appended after the per-slot element
+    /// feeder(s).
+    captures: Vec<CaptureSlot>,
+    /// Number of formal args — the per-slot element feeders the caller
+    /// supplies. Kernel inputs are `formal args ++ captures`.
+    n_formal: usize,
+    /// Body spec + result type for the per-slot `FusedKernel` Node.
+    spec: crate::expr::Expr,
+    typ: crate::typ::Type,
+}
+
+impl std::fmt::Debug for FusedCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FusedCallback")
+            .field("n_formal", &self.n_formal)
+            .field("captures", &self.captures.len())
+            .field("jit", &self.wrapped.is_some())
+            .finish()
     }
-    Some(())
+}
+
+/// Build a per-slot-dispatchable [`FusedCallback`] from a concretely-
+/// typed, statically-resolved analysis CallSite (e.g. MapQ's
+/// `analysis_pred.pred`). Returns `None` — caller falls back to the
+/// interpreted per-slot dispatch — when the callback isn't a resolved
+/// lambda, or its body doesn't lower to a kernel (today: any async op
+/// in the body bails `build_kir_kernel_from_region`; the partial-body
+/// split that lifts that is Phase 2 of `design/impure_hof_fusion.md`).
+/// JIT-compiles the kernel when `ec.jit_enabled` (interp fallback inside
+/// `FusedKernel` handles the `None`).
+pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
+    cs: &crate::node::callsite::CallSite<R, E>,
+    ec: &mut crate::ExecCtx<R, E>,
+) -> Option<FusedCallback> {
+    let g = match cs.resolved_apply()? {
+        crate::ApplyView::Lambda(g) => g,
+        _ => return None,
+    };
+    // Unique per-`LambdaId` kernel name. There is no Ref fnode here, so
+    // the source-name SAFETY INVARIANT in `ensure_lambda_kernel` would
+    // be violated by reusing a source name — and the per-slot path keys
+    // no `GirOp::Call` on the name anyway, so uniqueness is both
+    // required and sufficient.
+    let kernel_name: ArcStr =
+        compact_str::format_compact!("__hof_{}", g.id().inner())
+            .as_str()
+            .into();
+    let n_formal = g.typ().args.len();
+    let spec = g.body().spec().clone();
+    let typ = g.body().typ().clone();
+    let (cached, sub_called) = build_lambda_kernel(g, &kernel_name, ec)?;
+    let wrapped = if ec.jit_enabled {
+        let callees: std::collections::BTreeMap<
+            ArcStr,
+            std::sync::Arc<crate::gir::GirKernel>,
+        > = sub_called
+            .iter()
+            .map(|(n, c)| (n.clone(), c.kernel.clone()))
+            .collect();
+        match crate::gir_jit::compile_kernel_with_callees(
+            &mut ec.jit.lock(),
+            &cached.kernel,
+            &callees,
+        ) {
+            Ok(w) => Some(std::sync::Arc::new(w)),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    Some(FusedCallback {
+        kernel: cached.kernel,
+        wrapped,
+        called_kernels: sub_called,
+        captures: cached.captures,
+        n_formal,
+        spec,
+        typ,
+    })
+}
+
+impl FusedCallback {
+    /// Build a fresh per-slot [`builder::FusedKernel`] Node sharing this
+    /// callback's compiled kernel `Arc`. `element_feeders` are the
+    /// formal-arg feeders the caller supplies per slot (for MapQ: the
+    /// slot's element binding Node); the capture feeders (shared `Ref`s
+    /// to the captured bindings) are appended automatically, in the same
+    /// `formal args ++ captures` order the kernel inputs were built.
+    pub fn build_slot<R: crate::Rt, E: crate::UserEvent>(
+        &self,
+        ctx: &mut crate::ExecCtx<R, E>,
+        element_feeders: Vec<crate::Node<R, E>>,
+        scope: crate::Scope,
+        top_id: crate::expr::ExprId,
+    ) -> anyhow::Result<crate::Node<R, E>> {
+        if element_feeders.len() != self.n_formal {
+            anyhow::bail!(
+                "fused HOF slot: expected {} formal feeder(s), got {}",
+                self.n_formal,
+                element_feeders.len()
+            );
+        }
+        let mut feeders = element_feeders;
+        for cap in &self.captures {
+            let typ = ctx
+                .env
+                .by_id
+                .get(&cap.bind_id)
+                .map(|b| b.typ.clone())
+                .unwrap_or(crate::typ::Type::Bottom);
+            feeders.push(crate::node::genn::reference(
+                ctx,
+                cap.bind_id,
+                typ,
+                top_id,
+            ));
+        }
+        crate::fusion::builder::FusedKernel::<R, E>::new(
+            ctx,
+            self.spec.clone(),
+            self.typ.clone(),
+            self.kernel.clone(),
+            self.wrapped.clone(),
+            feeders.into_boxed_slice(),
+            scope,
+            top_id,
+            self.called_kernels.clone(),
+        )
+    }
 }
 
 /// Node-based public entry point. Walks the compiled Node tree

@@ -1288,6 +1288,14 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
             (LambdaId, std::sync::Arc<typ::FnType>),
             fusion::lowering::CachedKernel,
         >>,
+    /// Whether JIT compilation is enabled for the current compile.
+    /// Set by [`compile`] from `!flags.contains(CFlag::JitDisabled)`.
+    /// Read by code paths that JIT-compile outside `fuse()`'s
+    /// flag-aware loop — notably the per-slot HOF dispatch
+    /// (`fusion::fuse_callsite`, `design/impure_hof_fusion.md`), which
+    /// runs from a builtin's `static_resolve_fn_args` hook that doesn't
+    /// receive the compile flags. Defaults `true`.
+    pub jit_enabled: bool,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1325,6 +1333,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             builtin_bindings: ahash::AHashMap::default(),
             jit: parking_lot::Mutex::new(gir_jit::Jit::new()?,),
             fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
+            jit_enabled: true,
         })
     }
 
@@ -1433,6 +1442,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<Node<R, E>> {
+    ctx.jit_enabled = !flags.contains(CFlag::JitDisabled);
     let top_id = spec.id;
     let env = ctx.env.clone();
     let st = Instant::now();
