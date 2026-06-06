@@ -130,6 +130,14 @@ run!(array_slice_oob, r#"{ let a = [0, 1, 2]; a[1..10] }"#,
 run!(array_slice_oob_is_err, r#"{ let a = [0, 1, 2]; is_err(a[1..10]) }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))));
 
+// Negative slice bound → error. The node-walk's `cast_to::<usize>()` wraps
+// a negative i64 to usize::MAX (`i as usize`); `array_slice_i64` now does
+// the same wrap, so all three backends route through the SAME `array_slice`
+// with the SAME usize::MAX bound and produce the identical out-of-bounds
+// error (rather than the fused path's old "expected a non negative number").
+run!(array_slice_negative, r#"{ let a = [0, 1, 2]; let s = -1; a[s..] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+
 const ARRAY_INDEXING5: &str = r#"
 {
   let a = [0, 1, 2, 3, 4, 5, 6];

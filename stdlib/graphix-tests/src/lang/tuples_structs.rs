@@ -22,6 +22,26 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
 }; graphix_package_core::testing::FuseExpect::Jit;
    shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::TupleNew)));
 
+// A composite literal with a value-shape (Duration) field. The
+// `compile_and_push_field` helper-selection already routed all six
+// value-shapes to the 2-register `push_value`, but the compile-dispatch
+// only handled Variant|Nullable — so a Duration/DateTime/Bytes/Map field
+// fell to the scalar arm, `.single()` Err'd, and the whole tuple silently
+// de-fused. Now both dispatches key on `is_value_shape()`, so this JITs.
+const TUPLE_DURATION_FIELD: &str = r#"
+{
+  let t = (duration:1.s, 2);
+  t
+}
+"#;
+
+run!(tuple_duration_field, TUPLE_DURATION_FIELD, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        matches!(&a[..], [Value::Duration(_), Value::I64(2)])
+    }
+    _ => false,
+});
+
 const TUPLES1: &str = r#"
 {
   let t: (string, Number, Number) = ("foo", 42, 23.5);

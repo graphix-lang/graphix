@@ -124,24 +124,20 @@ pub(crate) fn array_slice(
     }
 }
 
-/// `array_slice` with `i64` bounds (the fused-kernel representation):
-/// a negative bound is the "expected a non negative number" error the
-/// node-walk produces when its `cast_to::<usize>()` fails. Shared by the
-/// gir-interp and JIT slice paths.
+/// `array_slice` with `i64` bounds (the fused-kernel representation).
+/// A negative bound wraps to `usize::MAX` via `i as usize`, exactly
+/// matching the node-walk's `cast_to::<usize>()` (whose `FromValue for
+/// usize` does `Value::I64(v) => Ok(v as usize)`). So an out-of-range
+/// (incl. negative) bound surfaces the SAME "out of bounds" error in all
+/// three backends — this is just `array_slice` (the node-walk's own
+/// function) with the i64→usize wrap applied. Shared by the gir-interp
+/// and JIT slice paths.
 pub(crate) fn array_slice_i64(
     src: &Value,
     start: Option<i64>,
     end: Option<i64>,
 ) -> Value {
-    let to_bound = |b: Option<i64>| match b {
-        None => Ok(None),
-        Some(i) if i >= 0 => Ok(Some(i as usize)),
-        Some(_) => Err(()),
-    };
-    match (to_bound(start), to_bound(end)) {
-        (Ok(s), Ok(e)) => array_slice(src, s, e),
-        _ => err!(ERR_TAG, "expected a non negative number"),
-    }
+    array_slice(src, start.map(|i| i as usize), end.map(|i| i as usize))
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {

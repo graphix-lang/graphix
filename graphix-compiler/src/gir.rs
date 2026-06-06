@@ -273,6 +273,16 @@ pub enum GirType {
     /// (`map::len`, `map::get`, …) consume/produce it via `DynCall`.
     /// (Dynamic map literals and `m{key}` access aren't lowered yet.)
     Map,
+    /// `Error<T>` — graphix's `Type::Error`. Runtime representation is
+    /// `Value::Error(Arc<Value>)`, a refcounted thin pointer, so — like
+    /// [`Bytes`](GirType::Bytes) / [`Map`](GirType::Map) — it's a
+    /// **Value-shape** type (two-register `Value`) reusing the
+    /// `graphix_value_clone`/`drop` + `value_inputs` machinery. The
+    /// `error(v)` builtin produces one via `DynCall`; consumers store
+    /// and pass it opaquely. Note this is a BARE `Error<T>` — the
+    /// `[T, Error]` Result/Option shape still lowers to
+    /// [`Nullable`](GirType::Nullable), not here.
+    Error,
 }
 
 impl GirType {
@@ -290,6 +300,7 @@ impl GirType {
                 | GirType::Duration
                 | GirType::Bytes
                 | GirType::Map
+                | GirType::Error
         )
     }
     /// Convenience for `GirType::Prim(_)` — when callers know they have
@@ -444,6 +455,12 @@ impl GirType {
             }
             // `Map<K, V>` — Value-shape (runtime `Value::Map(CMap)`).
             Type::Map { .. } => Some(GirType::Map),
+            // Bare `Error<T>` — Value-shape (runtime
+            // `Value::Error(Arc<Value>)`), produced by `error(v)`. The
+            // `[T, Error]` Result shape is handled by the `Type::Set`
+            // arm below (→ `Nullable`); this is only a standalone
+            // `Type::Error` (e.g. `error`'s `-> Error<'a>` return).
+            Type::Error(_) => Some(GirType::Error),
             // `T | null` collapsed-primitive option shape: a multi-flag
             // primitive carrying `Null` plus exactly one other primitive
             // bit. The typechecker represents `[T, null]` this way
@@ -1563,7 +1580,7 @@ impl GirKernel {
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes | GirType::Map => Some(AbiReturn::Two),
+            | GirType::Bytes | GirType::Map | GirType::Error => Some(AbiReturn::Two),
             GirType::Null => None,
         }
     }

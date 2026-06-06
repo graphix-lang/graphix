@@ -605,6 +605,23 @@ run!(array_init1, ARRAY_INIT1, |v: Result<&Value>| {
     }
 });
 
+// Negative count → empty array (clamped to 0). Both fused backends used
+// to abort: interp `as_usize()` and the JIT `buf_new(neg)` reserve
+// usize::MAX and panic. Both now clamp `n.max(0)` like the node-walk.
+const ARRAY_INIT_NEGATIVE: &str = r#"
+{
+  let k = -1;
+  array::init(k, |i| i)
+}
+"#;
+
+run!(array_init_negative, ARRAY_INIT_NEGATIVE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => a.is_empty(),
+        _ => false,
+    }
+});
+
 const ARRAY_INIT2: &str = r#"
 {
   let a = array::init(3, |i| i + 1);

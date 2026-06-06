@@ -3684,3 +3684,137 @@ leaf. **All 5 array HOFs now JIT composite elements + `|(k,v)|` destructure,
 and `find` JITs composite output.** 197 → 199 Jit.
 
 Suite green (132 compiler + 1851 graphix-tests).
+
+### Adversarial review of the fusion/JIT batch — 9 ownership/divergence fixes (Jun 2026)
+
+After the user committed the session's fusion/JIT work (range
+`ec08094..HEAD`, ~10k lines), a multi-agent adversarial review
+(7 finder angles → perspective-diverse verification → synthesis,
+~50 agents) surfaced **14 findings → 9 distinct confirmed bugs**,
+all fixed. The headline lesson reinforces [[feedback-run-the-code]]:
+the bugs were in **untested paths** (negative/error/no-match inputs,
+Borrowed-vs-Owned classification, pending edges) that the 3-mode
+harness — which only checks *value* equality on the *tested*
+fixtures — structurally cannot see. Most are leaks/double-frees
+invisible without allocator instrumentation; the review's ownership
+trace caught them by reading every control-flow path.
+
+**The fixes** (all `gir_jit.rs` unless noted):
+
+1. **CRITICAL — value-shape `QopUnwrap` double-free.** The `?` error
+   edge unconditionally `graphix_value_drop`'d its inner `(disc,
+   payload)`, then `emit_pending_cleanup` → `drop_owned_composites`
+   dropped the env slots too. A Borrowed (Local-read) inner is owned
+   by its env slot → double Arc decrement / UAF. Fix: drop on the
+   error edge only when `classify_composite_source(inner) == Owned`;
+   on the success edge route through `ensure_owned_value` so the
+   result matches QopUnwrap's now-`Owned` classification (a Borrowed
+   inner gets cloned, else it'd alias the env slot the consumer also
+   drops). The interp `?` never double-dropped — JIT-specific.
+
+2. **`classify_composite_source` missing owned producers.**
+   `ConstValue` (datetime/duration/bytes/map literal — owned via
+   `graphix_value_clone_from_static`'s Arc bump), `ValueArith`
+   (owned via `graphix_value_<op>`), `ArrayFindMap` (owned
+   `Nullable<out>`), and `QopUnwrap` all fell to the `_ => Borrowed`
+   catch-all → `ensure_owned_value` re-cloned + `mem::forget`'d the
+   original → **+1 refcount leak per kernel execution** (unbounded in
+   a reactive kernel). Live fixtures `bytes_const_local`, `map0`,
+   `datetime_arith*` leaked. Fix: add all four to the Owned arm.
+
+3. **value-shape `Block` arm leaked block-local Strings.** Its
+   scope-exit dropped composites/variants/nullables but not
+   `env.strings` (the scalar Block arm had it). A `|(k,v)|`
+   destructure over `Array<(string,_)>` (the `array_find_map` shape)
+   binds a String leaf into a Block → one ArcStr leak per element.
+   Fix: add the `env.strings[mark..]` `graphix_arcstr_drop` loop.
+
+4. **scalar `QopUnwrap` missing error-edge drop.** Asymmetric with
+   the value-shape arm — the scalar `?` pending edge never dropped
+   its owned inner error Value → leak per failed `?` (`str::parse
+   (...)?`). Fix: drop if Owned. Also made its String/composite
+   success path clone a Borrowed inner (QopUnwrap is now Owned).
+
+5. **`array::init` negative-`n` runtime abort.** The node-walk clamps
+   `n.max(0)` → `[]`; both fused backends aborted — interp
+   `as_usize()` wraps `-1` to `usize::MAX` → `reserve` panic; JIT
+   `buf_new(neg)` reserves `usize::MAX` → panic across the FFI
+   boundary (UB). Fix: clamp `max(0)` in both (interp `as_i64().max
+   (0)`, JIT `select(n<0, 0, n)` before `buf_new`). Regression:
+   `array_init_negative` → `[]` all 3 modes.
+
+6. **`compile_and_push_field` value-shape dispatch desync.** The
+   helper-selection routed all six value-shapes to `push_value`
+   (3-arg), but the compile-dispatch only sent `Variant|Nullable`
+   down the 2-register path → a DateTime/Duration/Bytes/Map field in
+   a tuple/struct/array literal fell to `.single()`, Err'd, and
+   silently **de-fused the whole kernel**. Fix: both dispatches key
+   on `is_value_shape()`. Regression: `tuple_duration_field`
+   (`(duration:1.s, 2)`) None → Jit.
+
+7. **`array_slice_i64` negative-bound payload divergence**
+   (`node/array.rs`). The fused path rejected negatives with
+   "expected a non negative number"; the node-walk's
+   `cast_to::<usize>()` does `i as usize` (verified in vendored
+   `convert.rs:283`), wrapping `-1` → `usize::MAX` → a different
+   "out of bounds" error. Fix: `array_slice_i64` now wraps `i as
+   usize` too — it's a thin wrapper over `array_slice` (the
+   node-walk's own fn), so all three backends produce the identical
+   error by construction. Regression: `array_slice_negative`.
+
+8. **HOF output buf leaked on a mid-loop pend** (latent). The 5
+   accumulating arms (Map/Filter/FilterMap/FlatMap/Init) allocated
+   the output `buf` as a bare SSA value registered nowhere; a
+   value-shape/composite DynCall or `?` in the body that pends jumps
+   to `pending_exit`, and `emit_pending_cleanup` dropped only the
+   env + DynCall-arg bufs — the half-built output buf (+ accumulated
+   elements) leaked. Fix: new `register_hof_buf` / `unregister_hof_buf`
+   helpers mirror the DynCall arg-buf registration (push the buf
+   Variable onto `dyncall_buf_stack` after `buf_new`, pop before
+   `finalize`). The ~20 existing HOF JIT fixtures regression-cover
+   the normal (non-pending) push/pop path.
+
+The review also **confirmed clean** (no real bug) on: composite
+producer/consumer refcounting, the ABI kind-grouped ordering across
+all consumers, the `ValueEq`/`BytesIndex`/`MapRef` seams, and
+cranelift block/SSA discipline in the new loops.
+
+Fixes verified: 132 compiler + 1863 graphix-tests green (+12 over the
+prior 1851 — three regression fixtures × 3 modes + the earlier
+flat_map/find composite work). The leak fixes (#2–#4, #8) aren't
+observable in the value-only harness; they're sound-by-construction
+(mirroring proven owned/borrowed discipline) and the suite confirms
+no regression on the common paths.
+
+### `GirType::Error` (Value-shape) — `error(v)` fusion (Jun 2026)
+
+`error(v)` — the core `fn(e: 'a) -> Error<'a>` Sync builtin — now fuses
++ JITs. Runtime `Value::Error(Arc<Value>)` is a refcounted thin pointer,
+so `GirType::Error` is a **Value-shape** leaf reusing the *entire*
+two-register `Value` pipeline (the bytes/map pattern): `is_value_shape()`,
+the kind-grouped ABI, `graphix_value_clone`/`drop`, DynCall value-shape
+arg/return marshalling (`ret_kind=2`), and the `value_inputs`/`nullables`
+slots — **no error-specific JIT helpers, ops, or slot lists**. `error()`
+lowers as an ordinary value-shape `DynCall`; no new `GirOp`.
+
+The only real change beyond the mechanical exhaustiveness sweep:
+`GirType::from_type` gained a **bare** `Type::Error(_) => GirType::Error`
+arm. The `[T, Error]` Result/Option shape is unaffected — it still lowers
+via the `Type::Set` arm to `GirType::Nullable` (the error becomes the null
+case); only a *standalone* `Type::Error` (like `error`'s `-> Error<'a>`
+return) routes to the new leaf. `is_dyncall_supported` + the `fuse()`
+return-type filter accept it (was the blocker — `from_type` returned None,
+so `error` was never discovered as a DynCall).
+
+The 14th-commandment exhaustiveness check drove the rest: adding the
+variant produced ~29 non-exhaustive match errors, each a value-shape
+dispatch site that gained `| GirType::Error` (one `perl` pass over the
+`| GirType::Bytes | GirType::Map` inline groups, then 2 standalone arms —
+`gir_type_to_graphix_type` → `Type::Error(tvar)`, and the `fuse()` filter).
+`EvalResult` needs no new carrier — `wrap_value_shape`'s `_ => DateTime`
+catch-all + `into_value`'s unwrap-any-carrier already marshal it (verified:
+all 3 modes return `Value::Error`).
+
+Flipped `error` None → **Jit** (203 → 204). `filter_err` stays None — it's
+a streaming/Async builtin over `array::iter`, a different cliff.
+132 compiler + 1863 graphix-tests green.

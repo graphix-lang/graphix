@@ -1134,7 +1134,7 @@ fn compile_into_function(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes | GirType::Map => {
+            | GirType::Bytes | GirType::Map | GirType::Error => {
                 let s0 = b.ins().iconst(types::I64, 0);
                 let s1 = b.ins().iconst(types::I64, 0);
                 b.ins().return_(&[s0, s1]);
@@ -2315,7 +2315,7 @@ fn compile_body(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes | GirType::Map => {
+                    | GirType::Bytes | GirType::Map | GirType::Error => {
                         // Value-shape local: stored as a `(disc,
                         // payload)` pair (`ValueVar`). The source
                         // expression compiles to a `CompiledExpr::Value`;
@@ -2419,7 +2419,7 @@ fn compile_body(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes | GirType::Map => {
+                    | GirType::Bytes | GirType::Map | GirType::Error => {
                         let cv = compile_expr(b, e, env, ctx)?;
                         let (disc, payload) =
                             ensure_owned_value(b, ctx, e, cv)?;
@@ -2854,7 +2854,7 @@ fn marshal_dyncall_args(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes | GirType::Map => match classify_composite_source(a) {
+            | GirType::Bytes | GirType::Map | GirType::Error => match classify_composite_source(a) {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => {
                     "graphix_value_buf_push_value_borrowed"
@@ -3142,7 +3142,7 @@ fn compile_value_expr(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes | GirType::Map => {
+                    | GirType::Bytes | GirType::Map | GirType::Error => {
                         let cv = compile_expr(b, &l.value, env, ctx)?;
                         let (owned_disc, owned_payload) =
                             ensure_owned_value(b, ctx, &l.value, cv)?;
@@ -3220,6 +3220,19 @@ fn compile_value_expr(
                 let d = b.use_var(vv.disc);
                 let p = b.use_var(vv.payload);
                 b.ins().call(val_drop, &[d, p]);
+            }
+            // String locals bound in this block (e.g. a `|(k, v)|`
+            // destructure leaf over `Array<(string, _)>`) hold an owned
+            // ArcStr — drop them too. The scalar Block arm already does
+            // this; the value-shape arm omitted it, leaking one ArcStr
+            // per block entry (per element in a HOF loop body).
+            let str_drop =
+                ctx.helper_refs.get("graphix_arcstr_drop").ok_or_else(
+                    || anyhow!("missing graphix_arcstr_drop"),
+                )?;
+            for (_, var) in &env.strings[mark.strings..] {
+                let s = b.use_var(*var);
+                b.ins().call(str_drop, &[s]);
             }
             env.truncate(mark);
             Ok(CompiledExpr::Value { disc, payload })
@@ -3408,17 +3421,32 @@ fn compile_value_expr(
 
             b.switch_to_block(pre_pending);
             b.seal_block(pre_pending);
-            // Drop the owned error Value before aborting (the success
-            // path moves it to the consumer; the error path must not
-            // leak it).
-            b.ins().call(value_drop, &[disc, payload]);
+            // Drop the owned error Value before aborting — but ONLY when
+            // `inner` is an owned producer. A Borrowed (Local) inner is
+            // owned by its env slot, which `emit_pending_cleanup` ->
+            // `drop_owned_composites` already drops; dropping it here too
+            // would double-free (Arc double-decrement / use-after-free).
+            if classify_composite_source(inner) == CompositeSource::Owned {
+                b.ins().call(value_drop, &[disc, payload]);
+            }
             b.ins().call(pending_set, &[]);
             emit_pending_cleanup(b, env, ctx)?;
             b.ins().jump(pending_exit, &[]);
 
             b.switch_to_block(continue_block);
             b.seal_block(continue_block);
-            Ok(CompiledExpr::Value { disc, payload })
+            // The non-error Value IS the result T. Ensure it's owned: a
+            // Borrowed (Local) inner aliases its env slot, which is also
+            // dropped at scope exit — handing those bits to the consumer
+            // (QopUnwrap is classified Owned) would double-free. An Owned
+            // inner passes through unchanged.
+            let (od, op) = ensure_owned_value(
+                b,
+                ctx,
+                inner,
+                CompiledExpr::Value { disc, payload },
+            )?;
+            Ok(CompiledExpr::Value { disc: od, payload: op })
         }
         GirOp::ArrayFind { array, elem, elem_local, predicate } => {
             // First element matching `predicate`, as a Nullable<elem>
@@ -3789,6 +3817,12 @@ fn compile_scalar_impl(
                 .ok_or_else(|| {
                     anyhow!("missing graphix_dyncall_set_pending")
                 })?;
+            let value_drop = ctx
+                .helper_refs
+                .get("graphix_value_drop")
+                .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+            let inner_owned =
+                classify_composite_source(inner) == CompositeSource::Owned;
             let pre_pending = b.create_block();
             let continue_block = b.create_block();
             let pending_exit = {
@@ -3806,6 +3840,13 @@ fn compile_scalar_impl(
 
             b.switch_to_block(pre_pending);
             b.seal_block(pre_pending);
+            // Drop the owned error Value before aborting — only when
+            // `inner` is an owned producer (a Borrowed Local inner is
+            // owned by its env slot, which `emit_pending_cleanup` drops;
+            // dropping it here too would double-free).
+            if inner_owned {
+                b.ins().call(value_drop, &[disc, payload]);
+            }
             b.ins().call(pending_set, &[]);
             emit_pending_cleanup(b, env, ctx)?;
             b.ins().jump(pending_exit, &[]);
@@ -3816,20 +3857,49 @@ fn compile_scalar_impl(
             // payload. For Prim, the payload word holds the bits cast
             // through `cast_u64_to_prim`. For String, the payload IS
             // the ArcStr's thin pointer bits. For composite shapes,
-            // the payload is the `*mut ValArray` (owned).
+            // the payload is the `*mut ValArray`. QopUnwrap is classified
+            // Owned, so a String/composite success from a Borrowed (Local)
+            // inner must be cloned — otherwise the consumer and the env
+            // slot both drop the same allocation (double-free).
             match success_typ {
                 GirType::Prim(p) => Ok(cast_u64_to_prim(b, payload, *p)),
-                GirType::String => Ok(payload),
+                GirType::String => {
+                    if inner_owned {
+                        Ok(payload)
+                    } else {
+                        let clone = ctx
+                            .helper_refs
+                            .get("graphix_arcstr_clone")
+                            .ok_or_else(|| {
+                                anyhow!("missing graphix_arcstr_clone")
+                            })?;
+                        let call = b.ins().call(clone, &[payload]);
+                        Ok(b.inst_results(call)[0])
+                    }
+                }
                 GirType::Array(_)
                 | GirType::Tuple(_)
-                | GirType::Struct(_) => Ok(payload),
+                | GirType::Struct(_) => {
+                    if inner_owned {
+                        Ok(payload)
+                    } else {
+                        let clone = ctx
+                            .helper_refs
+                            .get("graphix_valarray_clone")
+                            .ok_or_else(|| {
+                                anyhow!("missing graphix_valarray_clone")
+                            })?;
+                        let call = b.ins().call(clone, &[payload]);
+                        Ok(b.inst_results(call)[0])
+                    }
+                }
                 // Value-shape success types belong in
                 // `compile_value_expr`; routing got here in error.
                 GirType::Variant(_)
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes | GirType::Map => Err(anyhow!(
+                | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
                     "QopUnwrap with Value-shape success_typ reached \
                      compile_scalar_impl — compile_expr should route \
                      to compile_value_expr"
@@ -3873,7 +3943,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes | GirType::Map => Err(anyhow!(
+                | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
                     "compile_scalar_impl reached for Value-shape Local \
                      `{name}` — `compile_expr` should have routed to \
                      `compile_value_expr`"
@@ -4031,7 +4101,7 @@ fn compile_scalar_impl(
                     | GirType::Nullable(_)
                     | GirType::DateTime
                     | GirType::Duration
-                    | GirType::Bytes | GirType::Map => {
+                    | GirType::Bytes | GirType::Map | GirType::Error => {
                         // Value-shape block local — same `ValueVar`
                         // pair + `ensure_owned_value` discipline as
                         // GirStmt::Let. Block-scope drop happens at
@@ -4153,7 +4223,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes | GirType::Map => 2,
+                | GirType::Bytes | GirType::Map | GirType::Error => 2,
                 // Unit return: dispatcher returns 0 (the slot is
                 // discarded by the caller). ret_kind=3 tells
                 // dispatch_typed not to box anything.
@@ -4229,7 +4299,7 @@ fn compile_scalar_impl(
                 | GirType::Nullable(_)
                 | GirType::DateTime
                 | GirType::Duration
-                | GirType::Bytes | GirType::Map => Err(anyhow!(
+                | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
                     "DynCall with Value-shape return reached \
                      `compile_scalar_impl` — `compile_expr` should \
                      have routed to `compile_value_expr`"
@@ -4437,11 +4507,24 @@ fn compile_scalar_impl(
                 .get("graphix_valarray_finalize")
                 .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
             let n_raw = compile_scalar(b, n, env, ctx)?;
-            let n_val = widen_to_i64(b, n_raw, prim_of(&n.typ));
+            let n_widened = widen_to_i64(b, n_raw, prim_of(&n.typ));
+            // Clamp a negative `n` to 0 (matching the node-walk's
+            // `n.max(0)`): `buf_new(neg)` reserves usize::MAX and panics
+            // across the extern "C" boundary. The loop guard
+            // (`i < n_val`, signed) already wouldn't iterate, but the
+            // allocation happens first.
+            let zero_clamp = b.ins().iconst(types::I64, 0);
+            let is_neg =
+                b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
+            let n_val = b.ins().select(is_neg, zero_clamp, n_widened);
             let call = b.ins().call(buf_new, &[n_val]);
             let buf = b.inst_results(call)[0];
-            // Loop counter `i` as a CLIF Variable so the loop-back
-            // edge can update it. CLIF auto-inserts the SSA phi.
+            // Register the in-progress output buf for pending cleanup: a
+            // value-shape/composite DynCall or a `?` (QopUnwrap) in the
+            // body can pend mid-loop and jump to `pending_exit`; without
+            // this the half-built buf (+ its accumulated elements) leaks.
+            // Popped before `finalize` on the normal path.
+            register_hof_buf(b, ctx, buf);
             let i_var = b.declare_var(types::I64);
             let zero = b.ins().iconst(types::I64, 0);
             b.def_var(i_var, zero);
@@ -4474,6 +4557,7 @@ fn compile_scalar_impl(
             // Exit: finalize and return the array pointer.
             b.switch_to_block(loop_exit);
             b.seal_block(loop_exit);
+            unregister_hof_buf(ctx);
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
         }
@@ -4508,6 +4592,7 @@ fn compile_scalar_impl(
             let len = b.inst_results(call)[0];
             let call = b.ins().call(buf_new, &[len]);
             let buf = b.inst_results(call)[0];
+            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
             let i_var = b.declare_var(types::I64);
             let zero = b.ins().iconst(types::I64, 0);
             b.def_var(i_var, zero);
@@ -4571,6 +4656,7 @@ fn compile_scalar_impl(
             b.seal_block(loop_header);
             b.switch_to_block(loop_exit);
             b.seal_block(loop_exit);
+            unregister_hof_buf(ctx);
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
         }
@@ -4625,6 +4711,7 @@ fn compile_scalar_impl(
             let len = b.inst_results(call)[0];
             let call = b.ins().call(buf_new, &[len]);
             let buf = b.inst_results(call)[0];
+            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
             let i_var = b.declare_var(types::I64);
             let zero = b.ins().iconst(types::I64, 0);
             b.def_var(i_var, zero);
@@ -4691,6 +4778,7 @@ fn compile_scalar_impl(
             b.seal_block(loop_header);
             b.switch_to_block(loop_exit);
             b.seal_block(loop_exit);
+            unregister_hof_buf(ctx);
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
         }
@@ -4730,6 +4818,7 @@ fn compile_scalar_impl(
             let len = b.inst_results(call)[0];
             let call = b.ins().call(buf_new, &[len]);
             let buf = b.inst_results(call)[0];
+            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
             let i_var = b.declare_var(types::I64);
             let zero = b.ins().iconst(types::I64, 0);
             b.def_var(i_var, zero);
@@ -4780,6 +4869,7 @@ fn compile_scalar_impl(
             b.seal_block(loop_header);
             b.switch_to_block(loop_exit);
             b.seal_block(loop_exit);
+            unregister_hof_buf(ctx);
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
         }
@@ -4814,6 +4904,7 @@ fn compile_scalar_impl(
             let len = b.inst_results(call)[0];
             let call = b.ins().call(buf_new, &[len]);
             let buf = b.inst_results(call)[0];
+            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
             let i_var = b.declare_var(types::I64);
             let zero = b.ins().iconst(types::I64, 0);
             b.def_var(i_var, zero);
@@ -4880,6 +4971,7 @@ fn compile_scalar_impl(
             b.seal_block(loop_header);
             b.switch_to_block(loop_exit);
             b.seal_block(loop_exit);
+            unregister_hof_buf(ctx);
             let call = b.ins().call(finalize, &[buf]);
             Ok(b.inst_results(call)[0])
         }
@@ -5095,10 +5187,20 @@ fn classify_composite_source(e: &GirExpr) -> CompositeSource {
         | GirOp::ArrayFilter { .. }
         | GirOp::ArrayFind { .. }
         | GirOp::ArrayFilterMap { .. }
+        | GirOp::ArrayFindMap { .. }
         | GirOp::ArrayFlatMap { .. }
         | GirOp::BytesIndex { .. }
         | GirOp::MapRef { .. }
         | GirOp::ArraySlice { .. }
+        // A `ConstValue` (datetime/duration/bytes/map literal) is lowered
+        // via `graphix_value_clone_from_static`, which bumps the inner
+        // Arc — a fresh owned ref. `ValueArith` (datetime/duration math)
+        // returns an owned Value from `graphix_value_<op>`. The
+        // value-shape `QopUnwrap` success path runs its result through
+        // `ensure_owned_value`, so it too hands out an owned Value.
+        | GirOp::ConstValue(_)
+        | GirOp::ValueArith { .. }
+        | GirOp::QopUnwrap { .. }
         | GirOp::VariantNew { .. } => CompositeSource::Owned,
         // A composite-return DynCall hands back an owned `*mut
         // ValArray` / `*mut Value` (`Box::into_raw` of a fresh box in
@@ -5183,7 +5285,7 @@ fn compile_call_clif_args(
             GirType::String
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes | GirType::Map
+            | GirType::Bytes | GirType::Map | GirType::Error
             | GirType::Unit
             | GirType::Null => {
                 return Err(anyhow!(
@@ -5305,7 +5407,7 @@ fn ensure_owned_composite(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes | GirType::Map => Err(anyhow!(
+        | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
             "ensure_owned_composite reached for Value-shape type \
              `{:?}` — caller should use `ensure_owned_value` instead",
             e.typ
@@ -5464,6 +5566,27 @@ fn drop_owned_composites(
         b.ins().call(str_drop, &[ptr]);
     }
     Ok(())
+}
+
+/// Register an in-progress HOF output buf (`graphix_value_buf_new`) for
+/// pending cleanup: declare it as a CLIF Variable and push onto
+/// `ctx.dyncall_buf_stack`, so a value-shape/composite DynCall or `?`
+/// (QopUnwrap) that pends inside the loop body drops it from its
+/// `pre_pending` block via [`emit_pending_cleanup`]. Mirrors the
+/// DynCall arg-buf registration in [`marshal_dyncall_args`]. Pair with
+/// [`unregister_hof_buf`] before `finalize` on the normal (non-pending)
+/// path — `finalize` consumes the buf there, so the runtime drop happens
+/// exactly once (cleanup on pend, finalize otherwise).
+fn register_hof_buf(b: &mut FunctionBuilder, ctx: &LowerCtx, buf: ClifValue) {
+    let buf_var = b.declare_var(types::I64);
+    b.def_var(buf_var, buf);
+    ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+}
+
+/// Pop the HOF output buf registered by [`register_hof_buf`]. Called on
+/// the normal path just before `finalize` consumes the buf.
+fn unregister_hof_buf(ctx: &LowerCtx) {
+    ctx.dyncall_buf_stack.borrow_mut().pop();
 }
 
 /// Emit drops for everything the JIT'd kernel currently owns, for
@@ -5645,7 +5768,7 @@ fn compile_and_push_field(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes | GirType::Map => {
+        | GirType::Bytes | GirType::Map | GirType::Error => {
             match classify_composite_source(field) {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => {
@@ -5675,27 +5798,28 @@ fn compile_and_push_field(
         .helper_refs
         .get(helper_name)
         .ok_or_else(|| anyhow!("missing {helper_name}"))?;
-    // Value-shape fields (Variant/Nullable) need both `(disc, payload)`
-    // registers from the typed Value ABI; everything else is a single
-    // ClifValue.
-    match &field.typ {
-        GirType::Variant(_) | GirType::Nullable(_) => {
-            let cv = compile_expr(b, field, env, ctx)?;
-            let (disc, payload) = match cv {
-                CompiledExpr::Value { disc, payload } => (disc, payload),
-                CompiledExpr::Single(_) => {
-                    return Err(anyhow!(
-                        "Value-shape field compiled to Single — \
-                         compile_expr dispatch is broken"
-                    ));
-                }
-            };
-            b.ins().call(push, &[buf, disc, payload]);
-        }
-        _ => {
-            let v = compile_scalar(b, field, env, ctx)?;
-            b.ins().call(push, &[buf, v]);
-        }
+    // Value-shape fields (Variant/Nullable/DateTime/Duration/Bytes/Map)
+    // need both `(disc, payload)` registers from the typed Value ABI;
+    // everything else is a single ClifValue. This dispatch MUST match the
+    // helper-selection above — both key on the full value-shape set
+    // (`is_value_shape()`). When it only listed Variant|Nullable, a
+    // DateTime/Duration/Bytes/Map field fell to the `_` arm and
+    // `.single()` Err'd, silently de-fusing the whole kernel.
+    if field.typ.is_value_shape() {
+        let cv = compile_expr(b, field, env, ctx)?;
+        let (disc, payload) = match cv {
+            CompiledExpr::Value { disc, payload } => (disc, payload),
+            CompiledExpr::Single(_) => {
+                return Err(anyhow!(
+                    "Value-shape field compiled to Single — \
+                     compile_expr dispatch is broken"
+                ));
+            }
+        };
+        b.ins().call(push, &[buf, disc, payload]);
+    } else {
+        let v = compile_scalar(b, field, env, ctx)?;
+        b.ins().call(push, &[buf, v]);
     }
     Ok(())
 }
@@ -5771,7 +5895,7 @@ fn element_read_helper(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes | GirType::Map => {
+        | GirType::Bytes | GirType::Map | GirType::Error => {
             if struct_access {
                 "graphix_struct_get_value"
             } else {
@@ -6302,7 +6426,7 @@ fn clif_of(t: &GirType) -> ClifType {
         // datetime/duration are Value-shape (two registers at the
         // boundary); the single-type defensive ABI is a pointer slot,
         // same as Nullable below.
-        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => types::I64,
+        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => types::I64,
         // Unit at the ABI is just a zero pointer slot — see
         // `define_typed_kernel`'s return_clif handling.
         GirType::Unit => types::I64,

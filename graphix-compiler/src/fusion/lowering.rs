@@ -528,7 +528,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes | GirType::Map
+            | GirType::Bytes | GirType::Map | GirType::Error
             | GirType::String => true,
             GirType::Unit | GirType::Null => false,
         }
@@ -545,7 +545,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes | GirType::Map
+        | GirType::Bytes | GirType::Map | GirType::Error
         | GirType::Unit
         | GirType::String => true,
         GirType::Null => false,
@@ -915,7 +915,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
             | GirType::Nullable(_)
             | GirType::DateTime
             | GirType::Duration
-            | GirType::Bytes | GirType::Map
+            | GirType::Bytes | GirType::Map | GirType::Error
             | GirType::String => true,
             // Bare Unit args don't appear in practice (Unit is a
             // return-only shape). Bare Null is always widened to
@@ -935,7 +935,7 @@ fn try_register_builtin_call<R: crate::Rt, E: crate::UserEvent>(
         | GirType::Nullable(_)
         | GirType::DateTime
         | GirType::Duration
-        | GirType::Bytes | GirType::Map
+        | GirType::Bytes | GirType::Map | GirType::Error
         | GirType::Unit
         | GirType::String => true,
         GirType::Null => false,
@@ -2096,7 +2096,7 @@ pub(crate) fn register_kir_binding_bid(
                 bind_id,
             });
         }
-        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
             ctx.value_inputs.push(crate::gir::ValueInput {
                 name: name.clone(),
                 typ: value_typ.clone(),
@@ -3544,7 +3544,7 @@ pub(crate) fn gir_type_to_region_input_kind(t: GirType) -> Option<RegionInputKin
         GirType::Variant(cs) => Some(RegionInputKind::Variant(cs)),
         GirType::Nullable(e) => Some(RegionInputKind::Nullable(*e)),
         GirType::String => Some(RegionInputKind::String),
-        t @ (GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map) => {
+        t @ (GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error) => {
             Some(RegionInputKind::Value(t))
         }
         GirType::Unit | GirType::Null => None,

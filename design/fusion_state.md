@@ -45,13 +45,13 @@ The `run!` discovery branch harvests these per fixture. This is the
 tool that turns "this fixture is None" into "this fixture is None
 *because* X", which is what makes the gap map actionable.
 
-## Current metric (graphix-tests, 556 `run!` fixtures)
+## Current metric (graphix-tests, 559 `run!` fixtures)
 
 | state | count | share | meaning |
 |---|---:|---:|---|
-| **Jit** | 200 | 36% | fuses + JIT-compiles + runs native |
+| **Jit** | 204 | 36% | fuses + JIT-compiles + runs native |
 | **Interp** | 1 | 0% | fuses, runs on interp (JIT can't lower yet) |
-| **None** | 368 | 66% | no fused kernel |
+| **None** | 367 | 66% | no fused kernel |
 
 (562 fixtures total. The 2026-06-05 work: scalar `find`/`filter_map`/
 `flat_map` lowerings, composite-element *output* for `init`/`map`,
@@ -502,3 +502,26 @@ slices, StructWith).
   `GirOp::ArrayFind` conditional-drop path with zero wraps (the most likely
   place a leak/double-free in the owned-element drop would surface); all three
   modes agree on `null`.
+- **2026-06-06** (adversarial review + fixes): a 7-angle multi-agent review of
+  the committed batch (`ec08094..HEAD`) found **9 confirmed ownership/divergence
+  bugs**, all fixed (+3 Jit from regression fixtures; 200 → 203). Highlights:
+  a CRITICAL value-shape `?` (QopUnwrap) double-free of a Borrowed inner;
+  `classify_composite_source` missing `ConstValue`/`ValueArith`/`ArrayFindMap`/
+  `QopUnwrap` → per-execution refcount leaks; the value-shape `Block` arm
+  leaking block-local Strings; `array::init(neg)` aborting both fused backends
+  (now clamped `max(0)`); `compile_and_push_field` silently de-fusing
+  DateTime/Duration/Bytes/Map composite fields; `array_slice_i64` diverging
+  from the node-walk on negative bounds; and the HOF output buf leaking on a
+  mid-loop pend (new `register_hof_buf`/`unregister_hof_buf`). New regression
+  fixtures: `array_init_negative`, `array_slice_negative`, `tuple_duration_field`.
+  Lesson: every bug was in an UNTESTED path (negative/error/no-match inputs,
+  Borrowed-vs-Owned, pending edges) the value-only 3-mode harness can't see —
+  see CLAUDE.md for the full catalog. 132 compiler + 1863 graphix-tests green.
+- **2026-06-06**: `GirType::Error` value-shape leaf — `error(v)` fusion (+1
+  Jit; 203 → 204, `error` None → Jit). `Value::Error(Arc)` is a thin-pointer
+  value-shape, so `GirType::Error` reuses the whole two-register `Value`
+  pipeline (bytes/map pattern) with no error-specific helpers/ops. The only
+  non-mechanical change: `from_type` gained a bare `Type::Error(_) →
+  GirType::Error` arm (the `[T, Error]` Result shape still lowers to
+  `Nullable` via the `Type::Set` arm). ~29 exhaustiveness sites swept via one
+  `perl` pass + 2 standalone arms. `filter_err` stays None (streaming/Async).

@@ -958,7 +958,7 @@ fn eval_expr(
                 },
                 GirType::Variant(_) => EvalResult::Variant(inner_value),
                 GirType::Nullable(_) => EvalResult::Nullable(inner_value),
-                GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+                GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
                     wrap_value_shape(inner_value, success_typ)
                 }
                 GirType::Unit | GirType::Null => panic!(
@@ -1023,7 +1023,7 @@ fn eval_expr(
             ),
             // datetime/duration locals share the `nullables` slot (a
             // name→Value map); re-wrap by the ref's type.
-            GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+            GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
                 let v = env
                     .lookup_nullable(name)
                     .unwrap_or_else(|| {
@@ -1150,7 +1150,7 @@ fn eval_expr(
                     },
                     // datetime/duration/bytes are bare value-shape; the
                     // callee holds them in `value_params`.
-                    GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+                    GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
                         values.push(r.into_value())
                     }
                     GirType::Unit | GirType::Null => panic!(
@@ -1272,7 +1272,7 @@ fn eval_expr(
                 // datetime/duration-returning DynCall: the runtime
                 // Value is a `Value::DateTime`/`Value::Duration`; wrap
                 // it by the declared type.
-                GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+                GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
                     wrap_value_shape(result, return_type)
                 }
                 // Bare `GirType::Null` return: the function's only
@@ -1431,9 +1431,14 @@ fn eval_expr(
             // Evaluate `n` once, allocate a single output buffer,
             // then loop the body with `idx_local` bound to 0..n,
             // pushing each result. `into_value` handles any element
-            // shape (prim or composite tuple/struct/variant/…).
-            let n_val =
-                eval_expr(env, n, registry, dispatch)?.into_scalar().as_usize();
+            // shape (prim or composite tuple/struct/variant/…). Clamp a
+            // negative `n` to 0 (matching the node-walk's `n.max(0)`) —
+            // `as_usize()` on a negative i64 wraps to usize::MAX and
+            // panics at `reserve`.
+            let n_val = eval_expr(env, n, registry, dispatch)?
+                .into_scalar()
+                .as_i64()
+                .max(0) as usize;
             let mark = env.mark();
             env.push(idx_local.clone(), RegValue::I64(0));
             let idx_slot = env.locals.len() - 1;
@@ -1937,7 +1942,7 @@ fn extract_composite_or_scalar(
         GirType::Nullable(_) => EvalResult::Nullable(arr[idx].clone()),
         // datetime/duration slot: the inner Value is a
         // Value::DateTime/Duration; wrap by the slot type.
-        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
             wrap_value_shape(arr[idx].clone(), slot_typ)
         }
         GirType::Unit => panic!(
@@ -2572,6 +2577,11 @@ pub(crate) fn gir_type_to_graphix_type(
             key: triomphe::Arc::new(Type::empty_tvar()),
             value: triomphe::Arc::new(Type::empty_tvar()),
         },
+        // `Error<T>` — the leaf GirType carries no inner type, so map
+        // back to `Error<tvar>` (like `Map`'s fresh-tvar reconstruction).
+        GirType::Error => {
+            Type::Error(triomphe::Arc::new(Type::empty_tvar()))
+        }
         // Unit is the discard-return shape; source-level `_` → Bottom.
         GirType::Unit => Type::Bottom,
         // String maps back to `Type::Primitive(Typ::String)`.
@@ -3564,7 +3574,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                     }
                     // datetime/duration return: same two-word Value
                     // decode as Variant/Nullable.
-                    GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map => {
+                    GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => {
                         let owned: Value =
                             unsafe { std::mem::transmute(out) };
                         wrap_value_shape(owned, &self.kernel.return_type)
