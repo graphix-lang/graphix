@@ -4232,18 +4232,41 @@ clone form); the proptest grammar gained an arm-binding `select` arm
 (fresh name `q`, so it can't hit #167). 132 compiler + 1891 graphix-
 tests green (1 ignored — the #167 doc).
 
-**#167 surfaced (separate, pre-existing, NOT fusion).** A select arm
+**#167 surfaced + FIXED (a node-walk correctness bug).** A select arm
 binding that shadows an outer name a SIBLING arm references — `let n =
-100; … select x { 1 => n, n => n*2 }` — HANGS in the pure node-graph
-interpreter (verified under `CFlag::FusionDisabled`). The #162 guard
-routes these pathological cases to the interp (avoiding the wrong value
-an unguarded name-keyed bind would give), where this pre-existing hang
-surfaces — exposed, not caused, by the guard. `#[ignore]`'d
-`shadow_arm_binding_outer_ref`; queued for the off-topic-bug
-conversation. A "robust" #162 variant (bind by pattern BindId + a `Block`
-let, so `lookup_local_by_bind_id` beats a shadowing input) would fuse
-these correctly and sidestep #167 — tracked, not done (more code,
-inconsistent with the variant case, and #167 is the proper layer).
+100; … select x { 1 => n, n => n*2 }` in a per-slot HOF — HANGS,
+producing no value. Reproduced under `CFlag::FusionDisabled` (no
+fusion), so a **node-walk** bug, not a fusion bug.
+
+Root cause (instrumented `bind_variable`/`Ref::compile` via a
+`GRAPHIX_167DBG` env probe, diffed shadow vs no-shadow; corroborated by
+a 3-agent workflow): `Select::compile` gives each arm a FRESH unique
+sub-scope (`scope.append("sel{SelectId::new()}")`) so arms are isolated
+(`lookup_bind` walks ancestors only). But `Select::clone_rebind` — which
+MapQ uses to build the per-slot node graph even with fusion off — re-
+minted every arm's pattern + cloned every arm's body in ONE shared
+`scope`. So arm 2's binding `n` polluted the shared scope; a *later*
+clone (template → per-slot) resolved arm 1's `Ref(n)` to that stale
+sibling binding, which is only written when arm 2 fires
+(`bind_event` runs for the selected arm only) — so when arm 1 fires it
+reads an unwritten BindId, produces nothing, and the map never emits.
+
+**Fix** (`node/select.rs`): `Select::clone_rebind` appends a fresh
+per-arm `sel<SelectId::new()>` sub-scope, mirroring `Select::compile`.
+Per-arm isolation is a `select` correctness invariant; clone_rebind must
+preserve it. **The node walk is graphix's canonical execution model and
+must always be correct — never sidestep a node-walk bug by fusing**
+([[feedback-node-walk-is-canonical]], the user's principle that drove
+fixing #167 properly instead of leaving the #162 guard to route around
+it). The guard now composes cleanly: its bail-to-interp yields the
+CORRECT value, not a hang. Block/Lambda clone_rebind are unaffected —
+their bindings are SEQUENTIAL (later shadows earlier, which is correct);
+only select's PARALLEL arms have the sibling-isolation requirement.
+
+Regression: `shadow_arm_binding_outer_ref` (un-`#[ignore]`'d → `[100,4,
+6,8]`) + `shadow_arm_binding_node_walk` (same under `FusionDisabled`,
+asserting the canonical model directly). 132 compiler + 1897 graphix-
+tests green, **0 ignored**.
 
 **Pulling the thread — an adversarial review of the #162 fix found TWO
 MORE confirmed wrong-output bugs** ([[feedback-run-the-code]] — both
@@ -4280,3 +4303,60 @@ Regression: `fused_select_scrutinee_evaluated_once` (rand `n==n` → true),
 payload_shadow`. 132 compiler + 1895 graphix-tests green (1 ignored —
 #167). The review CONFIRMED-clean the scalar `Bind` correctness and the
 guard's non-shadow completeness.
+
+### #168 FIXED — nested-HOF grandparent capture lost in `Lambda::clone_rebind` (Jun 2026)
+
+Found by AUDITING for more `clone_rebind`-vs-`compile` divergences after
+#167 (the user's "audit whether any other clone_rebind impl silently
+diverges"). A HOF whose INNER callback references a GRANDPARENT capture —
+a binding outside BOTH HOFs — hung, producing no value:
+
+  let n = 100; array::map([1, 2], |y| array::map([1], |x| x + n))   // HUNG
+
+Narrowed empirically (printed-value signal, since the reactive CLI stays
+alive regardless): inner refs the OUTER ELEMENT `y` works; inner refs a
+grandparent module `n` hangs; routing `n` through a parent-callback `let
+w = n` works; single-level map capture works; nested `fold` hangs too. So
+the inner callback could capture its IMMEDIATE parent's bindings but not a
+grandparent's. Affects fused / clone / genn paths alike, AND the node walk
+(`CFlag::FusionDisabled`).
+
+Root cause (a 3-agent workflow with decisive runtime traces): the inner
+`array::map`'s callback `|x| x+n` is a BARE, unresolved Lambda node (the
+static-resolve walker never descends into Lambda bodies). When MapQ clones
+the outer callback per-slot, the outer (resolved) callee clones
+structurally — preserving the `Ref`-to-`n` capture, which is why single-
+level works. But the inner bare Lambda falls to the recompile-DEFAULT
+`clone_rebind` (lib.rs), which recompiles the lambda spec in the per-slot
+clone scope (rooted at `/array`, the array package, NOT the program
+scope). The recompile-default's capture-safety alias loop sources from
+`self.refs()` — but `Lambda::refs` is intentionally EMPTY (a lambda value
+has no runtime refs until applied) — so `n` is never aliased; the recompile
+then can't resolve `n` (it lives in the program scope, unreachable from
+`/array`) → "n not defined" → the inner map produces nothing → hang. The
+outer element `y` works because MapQ binds it into the `/array` scope
+per-slot; a grandparent binding has no such path.
+
+**Fix** (`node/lambda.rs`): give `Lambda` a structural `clone_rebind` that,
+before recompiling, walks the spec body for free-var names and aliases each
+one that's UNRESOLVABLE in the clone scope but RESOLVABLE in the lambda's
+`def.env` (where it was captured). Slot-local captures (the enclosing HOF's
+element) already resolve in the clone scope and are left untouched —
+additive, so existing cases are unaffected. Over-collection is harmless:
+an inner-let / nested-lambda-arg name won't resolve in `def.scope` either,
+so it's skipped. Mirrors `Select::clone_rebind`'s #167 fix in spirit —
+clone_rebind must faithfully reproduce `compile`'s scoping
+([[feedback-node-walk-is-canonical]]).
+
+Regression: `nested_hof_grandparent_capture` ([[101],[101]]),
+`nested_hof_capture_element_and_grandparent` (both `y` slot-local and `n`
+grandparent → [[7],[8]]), `nested_fold_grandparent_capture`, and
+`nested_hof_grandparent_capture_node_walk` (same under `FusionDisabled` —
+the canonical model). 132 compiler + 1901 graphix-tests green, **0
+ignored**.
+
+The deeper enabler the workflow flagged (NOT done): statically resolve
+nested-HOF call sites inside callback bodies so the inner `array::map`
+gets an `analysis_pred` and clones structurally like the single-level
+case — a larger architectural change; the `Lambda::clone_rebind` alias
+directly closes the capture-loss leak.

@@ -603,6 +603,57 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
 
     fn refs(&self, _refs: &mut Refs) {}
 
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        // `Lambda::refs` is intentionally empty (a lambda VALUE has no
+        // runtime refs until it is applied), so the recompile-default
+        // `clone_rebind` never aliases this lambda's CAPTURES into the
+        // clone scope. Recompiling the body in `scope` then fails to
+        // resolve any capture that isn't reachable from `scope` — e.g. a
+        // grandparent binding when this lambda is the callback of a HOF
+        // NESTED inside another HOF's callback, whose per-slot clone
+        // scope is rooted in the array package, not the program (#168).
+        // The lambda's DEFINITION env still resolves those captures, so
+        // alias each body free-var that's unresolvable in the clone scope
+        // but resolvable in `def.env` before recompiling. Slot-local
+        // captures (the enclosing HOF's element) already resolve in the
+        // clone scope and are left untouched, so existing cases are
+        // unaffected. Over-collection is harmless: an inner-let / nested-
+        // lambda-arg name won't resolve in `def.scope` either, so it's
+        // skipped.
+        if let (expr::ExprKind::Lambda(lam), Some(def)) =
+            (&self.spec.kind, self.def.downcast_ref::<LambdaDef<R, E>>())
+        {
+            if let Either::Left(body) = &lam.body {
+                let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
+                body.fold((), &mut |(), e| {
+                    if let expr::ExprKind::Ref { name } = &e.kind {
+                        let s: &str = name.0.as_ref();
+                        if netidx::path::Path::levels(s) == 1 {
+                            if let Some(base) = netidx::path::Path::basename(s) {
+                                names.push(ArcStr::from(base));
+                            }
+                        }
+                    }
+                });
+                for base in names.iter() {
+                    let mp = crate::expr::ModPath::from_iter([base.as_str()]);
+                    if ctx.env.lookup_bind(&scope.lexical, &mp).is_some() {
+                        continue;
+                    }
+                    let cap_id = def
+                        .env
+                        .lookup_bind(&def.scope.lexical, &mp)
+                        .map(|(_, b)| b.id);
+                    if let Some(id) = cap_id {
+                        ctx.env.alias_variable(&scope.lexical, base.as_str(), id);
+                    }
+                }
+            }
+        }
+        compile(ctx, BitFlags::empty(), self.spec.clone(), scope, self.spec.id)
+            .expect("Lambda::clone_rebind recompile failed")
+    }
+
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

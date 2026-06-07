@@ -283,8 +283,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             .arms
             .iter()
             .map(|(pat, body)| {
-                let pat = pat.clone_rebind(ctx, scope);
-                let body = Cached::new(body.node.clone_rebind(ctx, scope));
+                // Each arm gets a FRESH sub-scope, exactly as
+                // `Select::compile` does (`scope.append("sel{id}")`).
+                // Without it, re-minting arm 2's binding `n` into the
+                // shared `scope` pollutes it: a later clone (template →
+                // per-slot) then resolves arm 1's `Ref(n)` to that stale
+                // sibling binding (never written when arm 1 fires)
+                // instead of the outer `n` → the arm produces nothing and
+                // the HOF hangs (#167). Per-arm isolation is a
+                // correctness invariant of `select`, and clone_rebind —
+                // which builds the per-slot node graph — must preserve it.
+                let arm_scope =
+                    scope.append(&format_compact!("sel{}", SelectId::new().0));
+                let pat = pat.clone_rebind(ctx, &arm_scope);
+                let body = Cached::new(body.node.clone_rebind(ctx, &arm_scope));
                 (pat, body)
             })
             .collect();

@@ -274,14 +274,30 @@ graphix-tests green.
 ## Bottom line
 
 All four efforts done. One real pre-existing bug found (#162, let-bound
-select arm binding — now FIXED, see below) — and pulling that thread
-(an adversarial review of the fix) surfaced two MORE confirmed wrong-
-output bugs (non-idempotent scrutinee duplication + variant-payload
-shadow), both now fixed and one parser limitation
-surfaced (`(a,b).0`). `clone_rebind` itself is validated across every
-axis: per-shape (matrix), accounting (no leak), env/alias path (sound),
-and random composition (proptest). No clone_rebind defect found — the
-design holds.
+select arm binding — now FIXED) — and pulling that thread surfaced a
+CASCADE of deeper bugs, each one level below the last, all now fixed:
+
+1. **#162** — fused `select` arm binding panic (found by the matrix).
+2. **Scrutinee duplication** (`rand n==n → false`) + **variant-payload
+   shadow** (found by an adversarial review of the #162 fix).
+3. **#167** — `Select::clone_rebind` re-minted arm patterns in one shared
+   scope instead of per-arm `sel<id>` sub-scopes → a sibling arm's binding
+   shadowed a selected arm's outer ref → hang (found by the matrix; fixed
+   in the node walk per [[feedback-node-walk-is-canonical]]).
+4. **#168** — `Lambda::clone_rebind` (the recompile-default) dropped a
+   nested HOF callback's GRANDPARENT capture, because `Lambda::refs` is
+   empty so the alias loop never aliased it → the inner map hung (found by
+   AUDITING for more clone_rebind-vs-compile divergences after #167).
+
+The through-line: **`clone_rebind` must faithfully reproduce `compile`'s
+scoping/capture behavior** — #167 (per-arm scopes) and #168 (lambda
+captures) were both silent divergences from the compile path. Plus a
+parser limitation surfaced (`(a,b).0`). The original four test efforts
+validated `clone_rebind` on the axes they covered (per-shape matrix,
+accounting, alias path, random composition); the cascade shows those axes
+didn't exercise nested/shadowing scope edges — now covered by the #167
+and #168 regression fixtures (incl. `CFlag::FusionDisabled` node-walk
+variants). 132 compiler + 1901 graphix-tests green, 0 ignored.
 
 ## #162 FIXED — fused `select` arm binding (Jun 2026)
 
@@ -315,20 +331,40 @@ Regression suite (`lang::fusion`): the two #162 tests un-`#[ignore]`'d
 grammar gained an arm-binding `select` arm. 132 compiler + 1891
 graphix-tests green.
 
-### #167 — a SEPARATE pre-existing interp bug surfaced
+### #167 FIXED — `Select::clone_rebind` per-arm scope leak
 
 Stress-testing the #162 fix found that a `select` arm binding that
-shadows an outer name a SIBLING arm references — e.g. `let n = 100;
-… select x { 1 => n, n => n*2 }` — HANGS in the pure node-graph
-interpreter (verified under `CFlag::FusionDisabled`, no fusion at all).
-It's an interp scoping bug (`node/select.rs`/`node/pattern.rs`), not
-fusion. The #162 shadow guard routes these pathological cases to the
-interpreter (avoiding the wrong value `[100,200,200,200]`), where this
-pre-existing hang surfaces — the guard *exposes* it, doesn't cause it.
-Documented as `#[ignore]`'d `lang::fusion::shadow_arm_binding_outer_ref`;
-queued for the off-topic-bug conversation. A future "robust" #162 fix
-(register the arm binding by its pattern BindId + a `Block` let, so
-`lookup_local_by_bind_id` resolves it past a shadowing input) would make
-these cases *fuse* correctly and sidestep #167's interp path entirely —
-tracked but not done (it's more code, inconsistent with the variant
-case, and #167 is the proper layer to fix the shadow semantics).
+shadows an outer name a SIBLING arm references — `let n = 100;
+… select x { 1 => n, n => n*2 }` in a per-slot HOF callback — HANGS,
+producing no value. Reproduced under `CFlag::FusionDisabled` (no
+fusion), so a **node-walk correctness bug**, not a fusion bug.
+
+Root cause (traced by instrumenting `bind_variable`/`Ref::compile` with
+`GRAPHIX_167DBG` and diffing shadow vs no-shadow; corroborated by a
+3-agent workflow that reached the identical conclusion): `Select::compile`
+gives each arm a FRESH unique sub-scope (`scope.append("sel{SelectId::
+new()}")`), so an arm's pattern binding can never be seen by a sibling
+arm's body (`lookup_bind` walks ancestors only, never siblings). But
+`Select::clone_rebind` — which MapQ uses to build the per-slot node
+graph (even with fusion off) — re-minted every arm's pattern + cloned
+every arm's body in ONE shared `scope`. So arm 2's binding `n` polluted
+the shared scope; a *later* clone (template → per-slot) then resolved
+arm 1's `Ref(n)` to that stale sibling binding — which is only written
+when arm 2 fires (`bind_event` runs for the selected arm only) — so when
+arm 1 fires, the ref reads an unwritten BindId, the arm produces nothing,
+and the map never emits.
+
+Fix (`node/select.rs`): `Select::clone_rebind` appends a fresh per-arm
+`sel<SelectId::new()>` sub-scope, exactly mirroring `Select::compile`.
+Per-arm isolation is a correctness invariant of `select`, and
+clone_rebind must preserve it — **the node walk is graphix's canonical
+execution model and must always be correct; we never sidestep a node-
+walk bug by fusing around it** (the user's principle —
+[[feedback-node-walk-is-canonical]]). With #167 fixed, the #162 shadow
+guard's bail-to-interp now yields the CORRECT value, not a hang — so the
+guard and this fix compose cleanly.
+
+Regression: `shadow_arm_binding_outer_ref` (un-`#[ignore]`'d → `[100,4,
+6,8]`) + `shadow_arm_binding_node_walk` (the same under
+`CFlag::FusionDisabled`, asserting the canonical model directly).
+132 compiler + 1897 graphix-tests green, **0 ignored**.

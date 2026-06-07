@@ -740,6 +740,111 @@ fn assert_strs(v: &Value, expected: &[&str]) -> Result<()> {
     }
 }
 
+fn assert_nested_i64s(v: &Value, expected: &[&[i64]]) -> Result<()> {
+    let Value::Array(outer) = v else { bail!("not an array: {v:?}") };
+    if outer.len() != expected.len() {
+        bail!("outer len {} != {}, got {v:?}", outer.len(), expected.len());
+    }
+    for (inner, exp) in outer.iter().zip(expected) {
+        assert_i64s(inner, exp)?;
+    }
+    Ok(())
+}
+
+// ─── #168 nested-HOF grandparent-capture regression ───────────────────
+//
+// A HOF whose INNER callback references a GRANDPARENT capture (a binding
+// outside BOTH HOFs) hung: the inner bare Lambda node fell to the
+// recompile-default `clone_rebind`, which — because `Lambda::refs` is
+// empty — never aliased the capture into the per-slot clone scope (rooted
+// in the array package, not the program), so the capture couldn't resolve
+// and the inner map produced nothing. Fixed by aliasing the lambda body's
+// def-resolvable free vars in `Lambda::clone_rebind`. The single-level and
+// outer-element-capture cases always worked (the latter is bound into the
+// per-slot scope by MapQ); these assert the grandparent case + that the
+// working cases didn't regress.
+
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_grandparent_capture() -> Result<()> {
+    let v = load_and_await(
+        "let n = 100; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| x + n))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[101], &[101]])
+}
+
+/// Inner callback captures BOTH the outer element `y` (slot-local) and a
+/// grandparent `n` — the fix must alias `n` while leaving `y` (resolvable
+/// in the per-slot scope) alone.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_capture_element_and_grandparent() -> Result<()> {
+    let v = load_and_await(
+        "let n = 5; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| x + y + n))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[7], &[8]])
+}
+
+/// nested `fold` (not map-specific) referencing a grandparent capture.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_fold_grandparent_capture() -> Result<()> {
+    let v = load_and_await(
+        "let n = 100; \
+         array::map([1, 2], |y: i64| \
+           array::fold([1], 0, |acc: i64, x: i64| acc + x + n))",
+    )
+    .await?;
+    assert_i64s(&v, &[101, 101])
+}
+
+/// Same grandparent-capture nest under the PURE NODE WALK
+/// (`CFlag::FusionDisabled`) — the canonical model must produce the value
+/// (MapQ uses clone_rebind for the per-slot graph even with fusion off).
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_grandparent_capture_node_walk() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(16);
+    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
+        tx,
+        crate::TEST_REGISTER,
+        vec![],
+        graphix_compiler::CFlag::FusionDisabled.into(),
+        |_| {},
+    )
+    .await?;
+    let res = ctx
+        .rt
+        .load(Source::Internal(ArcStr::from(
+            "let n = 100; \
+             array::map([1, 2], |y: i64| array::map([1], |x: i64| x + n))",
+        )))
+        .await?;
+    let eid = res.exprs.first().unwrap().id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => {
+                ctx.shutdown().await;
+                bail!("#168 node-walk regressed — hang under FusionDisabled");
+            }
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut b) => for e in b.drain(..) {
+                    if let GXEvent::Updated(id, v) = &e {
+                        if *id == eid {
+                            let r = assert_nested_i64s(v, &[&[101], &[101]]);
+                            ctx.shutdown().await;
+                            return r;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `Add`/`Mul` carrying a capture (`x*k + k`).
 #[tokio::test(flavor = "current_thread")]
 async fn clone_arith_capture() -> Result<()> {
@@ -1031,19 +1136,17 @@ async fn fused_variant_payload_shadow() -> Result<()> {
     assert_i64s(&v, &[14, 15, 16, 17])
 }
 
-/// PRE-EXISTING node-graph interpreter bug (NOT #162, NOT clone_rebind),
-/// surfaced while stress-testing the #162 fix. A `select` arm BINDING
-/// (`n =>`) that shadows an outer `n` which ANOTHER arm references
-/// (`1 => n`), inside a per-slot HOF callback, HANGS in the pure
-/// interpreter. Verified under `CFlag::FusionDisabled` (no fusion at
-/// all — see the probe history in git), so it's an interpreter scoping
-/// bug, not a fusion bug. The #162 shadow guard routes this case to the
-/// interpreter (rather than silently returning the wrong value
-/// `[100,200,200,200]` an unguarded name-keyed bind would produce),
-/// where this pre-existing hang surfaces. Expected: `[100,4,6,8]`.
-/// IGNORED until the interp scoping bug is fixed; the timeout makes it
-/// FAIL rather than hang the suite if run.
-#[ignore = "pre-existing interp bug: select arm-binding shadows an outer-referenced name"]
+/// #167 (FIXED): a `select` arm BINDING (`n =>`) that shadows an outer
+/// `n` which ANOTHER arm references (`1 => n`), inside a per-slot HOF
+/// callback. Was a node-graph correctness bug: `Select::clone_rebind`
+/// (which builds the per-slot node graph) re-minted every arm's pattern
+/// in ONE shared scope instead of per-arm `sel<id>` sub-scopes (as
+/// `Select::compile` does), so a later clone resolved arm 1's `Ref(n)` to
+/// arm 2's stale sibling binding — never written when arm 1 fires — and
+/// the slot produced nothing → the map hung. Fixed by appending a fresh
+/// per-arm scope in `Select::clone_rebind`. x=1 → arm 1 → outer `n`=100;
+/// x=2..4 → arm 2 binds the scrutinee → 4,6,8. The timeout keeps a
+/// regression from hanging the suite.
 #[tokio::test(flavor = "current_thread")]
 async fn shadow_arm_binding_outer_ref() -> Result<()> {
     let fut = load_and_await(
@@ -1052,7 +1155,56 @@ async fn shadow_arm_binding_outer_ref() -> Result<()> {
     );
     match tokio::time::timeout(std::time::Duration::from_secs(5), fut).await {
         Ok(r) => assert_i64s(&r?, &[100, 4, 6, 8]),
-        Err(_) => bail!("timed out — the pre-existing interp shadow hang"),
+        Err(_) => bail!("#167 regressed — select arm-binding shadow hangs"),
+    }
+}
+
+/// #167 under the PURE NODE WALK (`CFlag::FusionDisabled`). The node-walk
+/// interpreter is graphix's canonical execution model and must be correct
+/// independently of fusion — MapQ builds the per-slot graph via
+/// `clone_rebind` even with fusion off, so this exercises the same
+/// `Select::clone_rebind` scope fix. Asserts `[100,4,6,8]` with a timeout
+/// so a regression fails rather than hangs the suite.
+#[tokio::test(flavor = "current_thread")]
+async fn shadow_arm_binding_node_walk() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(16);
+    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
+        tx,
+        crate::TEST_REGISTER,
+        vec![],
+        graphix_compiler::CFlag::FusionDisabled.into(),
+        |_| {},
+    )
+    .await?;
+    let res = ctx
+        .rt
+        .load(Source::Internal(ArcStr::from(
+            "let n = 100; \
+             array::map([1, 2, 3, 4], |x: i64| select x { 1 => n, n => n * 2 })",
+        )))
+        .await?;
+    let eid = res.exprs.first().unwrap().id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => {
+                ctx.shutdown().await;
+                bail!("#167 node-walk regressed — hang under FusionDisabled");
+            }
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut b) => for e in b.drain(..) {
+                    if let GXEvent::Updated(id, v) = &e {
+                        if *id == eid {
+                            let r = assert_i64s(v, &[100, 4, 6, 8]);
+                            ctx.shutdown().await;
+                            return r;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
