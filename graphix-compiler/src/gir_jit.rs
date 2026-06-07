@@ -6314,15 +6314,38 @@ fn compile_cmp(
     r: ClifValue,
 ) -> ClifValue {
     if operand_typ.is_float() {
-        let cc = match op {
-            CmpOp::Eq => FloatCC::Equal,
-            CmpOp::Ne => FloatCC::NotEqual,
-            CmpOp::Lt => FloatCC::LessThan,
-            CmpOp::Gt => FloatCC::GreaterThan,
-            CmpOp::Lte => FloatCC::LessThanOrEqual,
-            CmpOp::Gte => FloatCC::GreaterThanOrEqual,
-        };
-        b.ins().fcmp(cc, l, r)
+        // Float comparison uses graphix's TOTAL order, matching
+        // `Value::partial_cmp` / the node-walk: NaN == NaN, and NaN sorts
+        // below every non-NaN value. `FloatCC::Equal`/`LessThan`/etc. are
+        // the IEEE *ordered* predicates (any NaN operand → false); a NaN
+        // is the only value unordered with itself, so `fcmp Unordered x x`
+        // tests "x is NaN". fcmp yields an I8 0/1, so `bxor_imm(v, 1)` is
+        // logical NOT. We build `eq` and `lt` under the total order and
+        // derive the rest.
+        let l_nan = b.ins().fcmp(FloatCC::Unordered, l, l);
+        let r_nan = b.ins().fcmp(FloatCC::Unordered, r, r);
+        let not_l_nan = b.ins().bxor_imm(l_nan, 1);
+        let not_r_nan = b.ins().bxor_imm(r_nan, 1);
+        // eq: ordered-equal, OR both NaN.
+        let ord_eq = b.ins().fcmp(FloatCC::Equal, l, r);
+        let both_nan = b.ins().band(l_nan, r_nan);
+        let eq = b.ins().bor(ord_eq, both_nan);
+        // lt: ordered IEEE l<r, OR (l is NaN and r is not) since NaN is least.
+        let ord_lt = b.ins().fcmp(FloatCC::LessThan, l, r);
+        let nan_lt = b.ins().band(l_nan, not_r_nan);
+        let lt = b.ins().bor(ord_lt, nan_lt);
+        // gt: ordered IEEE l>r, OR (r is NaN and l is not).
+        let ord_gt = b.ins().fcmp(FloatCC::GreaterThan, l, r);
+        let nan_gt = b.ins().band(r_nan, not_l_nan);
+        let gt = b.ins().bor(ord_gt, nan_gt);
+        match op {
+            CmpOp::Eq => eq,
+            CmpOp::Ne => b.ins().bxor_imm(eq, 1),
+            CmpOp::Lt => lt,
+            CmpOp::Gt => gt,
+            CmpOp::Lte => b.ins().bxor_imm(gt, 1), // not gt
+            CmpOp::Gte => b.ins().bxor_imm(lt, 1), // not lt
+        }
     } else {
         let cc = if operand_typ.is_signed() || operand_typ == PrimType::Bool {
             // Bool comparisons are fine via signed (or unsigned) — but

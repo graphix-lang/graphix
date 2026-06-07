@@ -4355,8 +4355,233 @@ grandparent → [[7],[8]]), `nested_fold_grandparent_capture`, and
 the canonical model). 132 compiler + 1901 graphix-tests green, **0
 ignored**.
 
-The deeper enabler the workflow flagged (NOT done): statically resolve
-nested-HOF call sites inside callback bodies so the inner `array::map`
-gets an `analysis_pred` and clones structurally like the single-level
-case — a larger architectural change; the `Lambda::clone_rebind` alias
-directly closes the capture-loss leak.
+The deeper enabler the workflow flagged: statically resolve nested-HOF
+call sites inside callback bodies so the inner `array::map` gets an
+`analysis_pred` and clones structurally like the single-level case — a
+larger architectural change; the `Lambda::clone_rebind` alias directly
+closes the capture-loss leak. (Turned out NOT to be needed for the
+function-capture case — see #169.)
+
+### #169 FIXED — `Expr::fold` silently skipped the Apply callee (Jun 2026)
+
+Continuing the post-#168 capture/scope correctness sweep: a FUNCTION-
+typed grandparent capture CALLED in a nested HOF still hung:
+
+  let f = |z| z*2; array::map([1, 2], |y| array::map([1], |x| f(x)))   // hung
+
+Value/composite grandparent captures all worked after #168 (a 14-shape
+sweep confirmed it); only *function-position* captures failed. It LOOKED
+like the larger static-resolve-descent architectural change — but a
+2-agent diagnostic workflow (which built + instrumented + reverted)
+pinned it to a **one-line root cause**: `Expr::fold` (expr/mod.rs)'s
+`Apply` arm was `ExprKind::Apply(ApplyExpr { args, function: _ })` — it
+folded the call's ARGUMENTS but **skipped the `function` expression**. So
+the #168 `Lambda::clone_rebind` alias pass (which `fold`s the body to
+collect free-var names) never saw the callee `f` — `f` was in function
+position — so it was never aliased and the inner callback's recompile
+couldn't resolve it. Decisive control: `|x| { let g = f; g(x) }` (where
+`f` is a value Ref in a Bind, which `fold` DOES visit) worked — same `f`,
+same scopes, the ONLY difference call-position vs value-position.
+
+**Fix** (`expr/mod.rs`): make the `Apply` arm fold `function` before
+`args` — `Expr::fold` is now a true full-tree walk (it was silently
+incomplete). Blast radius audited: `fold`'s two callers
+(`Lambda::clone_rebind` — the intended beneficiary — and
+`Expr::has_unresolved_modules`) both benefit or are unaffected (a call's
+function is a Ref/Lambda, never an unresolved module path). The fix also
+enables nested ANONYMOUS-lambda calls (`(|z| z+n)(x)`) — fold now descends
+the callee Lambda and collects its captures too.
+
+**Lesson:** a localized fix that newly *depends* on a shared helper can
+surface a latent incompleteness in that helper — `Expr::fold` had been
+silently dropping the Apply callee forever; it only mattered once
+`Lambda::clone_rebind` relied on `fold` being complete. The "it must be
+the big architectural change" instinct was wrong; the diagnostic workflow
+(build + instrument + control-case) found the one-liner instead
+([[feedback-run-the-code]]).
+
+Regression: `nested_hof_function_capture` ([[2],[2]]),
+`nested_hof_function_and_value_capture` (both arms of fold),
+`nested_hof_anon_lambda_capture`, `nested_hof_function_capture_node_walk`
+(`FusionDisabled`). 132 compiler + 1905 graphix-tests green, **0 ignored**.
+
+**The full cascade from "fix #162":** #162 → scrutinee-duplication →
+variant-payload-shadow → #167 (Select::clone_rebind per-arm scopes) → #168
+(Lambda::clone_rebind value-capture alias) → #169 (Expr::fold callee) →
+#170 (Expr::fold StructWith.source + lambda arg defaults). Seven bugs,
+each one level below the last.
+
+### #170 — `Expr::fold` was incomplete in TWO more positions (Jun 2026)
+
+The post-#169 capture sweep found that the `Apply.function` gap wasn't
+the only `Expr::fold` hole. Two more, same root-cause class (a capture in
+that position inside a nested HOF wasn't aliased → hang):
+
+1. **`StructWith.source`** — `ExprKind::StructWith(StructWithExpr {
+   replace, .. })` folded `replace` but the `..` SKIPPED `source`.
+   Confirmed bug: `let base = {a:1,b:9}; … {base with a: x} …` with `base`
+   a grandparent capture hung; parent-let control + single-level worked.
+2. **Lambda `Arg.labeled` defaults** — the `Lambda` arm folded only the
+   body, skipping labeled-arg DEFAULT exprs (`Arg.labeled:
+   Option<Option<Expr>>`). A `#off = n` default capturing a grandparent
+   wasn't aliased.
+
+Fix (`expr/mod.rs`): the `StructWith` arm now folds `source` then
+`replace`; the `Lambda` arm folds each arg's labeled default then the
+body. `Expr::fold` is now a true full-tree walk for every current
+`ExprKind`. (Future-proofing landed — see the next entry.)
+
+Regression: `nested_hof_structwith_source_capture` ([[9],[9]]),
+`nested_hof_labeled_default_capture` ([[101],[101]]). 132 compiler + 1907
+graphix-tests green, 0 ignored.
+
+**Also confirmed NOT bugs** (expected semantics, the sweep flagged them as
+hangs): a direct-value catch (`catch(e) => 99`) is side-effect-only → no
+value → a HOF slot over it never completes; `$` over an unparseable
+element swallows to no value likewise. Both are the documented try/catch
++ `$` semantics, not nested-HOF defects (single-level behaves the same).
+
+The capture/scope/fold space is now swept clean across value, composite
+(tuple/struct/variant/map), string, function, struct-with-source, and
+labeled-default capture positions — verified by a broad empirical battery
++ the proptest swarm + `FusionDisabled` node-walk regression variants.
+
+### `Expr::fold` future-proofed — completeness is now compiler-checked (Jun 2026)
+
+The #169/#170 cascade was three instances of one failure mode: `Expr::fold`
+(`expr/mod.rs`) — the canonical full-tree `Expr` walker that
+`Lambda::clone_rebind`'s capture-alias pass depends on — silently dropped a
+child `Expr` because a `match` arm used `..` (or partial destructuring) that
+happened to skip an `Expr`-typed field (`Apply.function`, `StructWith.source`,
+the lambda `Arg.labeled` defaults). Each skipped field became a "capture in
+position X inside a nested HOF hangs" bug. Fixing the instances closed the
+holes; this closes the **class**.
+
+Removed **every** `..` from the `fold` match. Each arm now names all of its
+variant's fields explicitly — `Expr`-typed fields are folded, non-`Expr`
+fields are bound to `_`. The only remaining `..` patterns are inside the
+nested `ModuleKind` destructures' siblings, which are also now explicit
+(`Resolved { exprs, sig: _, from_interface: _ }`, etc.). Tuple variants
+(`TypeDef(_)`, `Constant(_)`) are self-guarding — a new positional field
+breaks `(_)` at compile time. Net effect: adding any field to any `ExprKind`
+or `ModuleKind` variant now produces a compile error *in `fold`*, forcing a
+human to decide whether the new field is an `Expr` to walk — exactly the
+14th-commandment "make the compiler check what the human would otherwise have
+to remember." Had this been in place, #169/#170 would have been compile errors
+at the variant-definition commit, not runtime hangs found by a capture sweep.
+
+Behavior-preserving (the set of folded fields is unchanged; only the skipped
+non-`Expr` fields became explicit `_`). 132 compiler + the full graphix-tests
+suite green.
+
+### Checked-arithmetic overflow detection fixed + arith edge tests (Jun 2026)
+
+Surfaced by hand-probing while setting up float edge-case tests for the
+forthcoming differential fuzzer (`design/graphix_fuzz.md`). **`+?`/`-?`/`*?`
+never detected integer overflow** — they silently wrapped and returned the
+garbage value (`is_err(i64:MAX +? 1)` was `false`); only `/?`/`%?` worked.
+
+Root cause: `node/op.rs`'s `arith_op!` macro ran every op via the bare Rust
+**operator** (`$op:tt` = `+`) and only treated a `Value::Error` *result* as the
+error signal. In netidx-value, `impl Add/Sub/Mul for Value` use `wrapping_*`
+(op.rs:456 — never error), while `impl Div/Mod` use `checked_div` (error on
+div-by-zero). So `/?` inherited a checking operator and `+?` a wrapping one.
+netidx-value already had `Value::checked_add`/`checked_sub`/`checked_mul`/
+`checked_div`/`checked_rem` methods (tested in its own suite) — graphix just
+called the wrong thing.
+
+Fix (graphix-side, ~5 lines): the `arith_op!` macro now takes a `$method:ident`
+and calls `lhs.clone().$method(rhs.clone())`. Unchecked variants use the
+operator-trait methods (`add`/`sub`/`mul`/`div`/`rem` — brought into scope via
+`use std::ops::{Add as _, …}`, the `as _` avoiding a name clash with the
+generated `struct Add`); checked variants use the `checked_*` inherent methods.
+**Unchecked stays wrapping** (the fast path) and **floats are untouched**
+(`checked_add` on floats does bare `+` → `inf`, never an error). Confirmed:
+checked overflow now errors for i64 + u8 across add/sub/mul; unchecked still
+wraps; `1.0/0.0 → inf`, `0.0/0.0 → NaN`.
+
+Scope check that made this safe: checked ops **don't fuse** (`emit_node` has
+arms only for unchecked `Add/Sub/Mul/Div/Mod`; `gir::BinOp` has no checked
+variants), so the fix is entirely in the node-walk macro — no JIT/interp
+counterpart to keep in sync, and no risk of *introducing* a divergence. (By
+contrast, changing *unchecked* overflow to error would have to touch the
+node-walk AND the fused paths together or it would create one — left as an open
+question; unchecked-wraps is a defensible "unchecked = no check" semantics.)
+
+New `lib_tests/arith.rs` pins primitive-operator edges the `math::*` builtin
+tests didn't cover: float inexact add, no-FMA-contraction, div-by-zero →
+inf/NaN, signed zero, subnormals, f32; and the checked-overflow regression
+(i64/u8 add/sub/mul → error, no-overflow → bare value, `/?` div0 → error,
+unchecked wrap pinned). 48 tests, all green; every fixture also serves as a
+cross-mode float-determinism guard via `run!`.
+
+**Two findings, two classes** (a useful contrast for the fuzzer design): the
+overflow bug is a "both models agree on the wrong answer" bug — the differential
+oracle (interp vs jit) can **not** catch it (both wrap identically); only a
+semantics-aware check (a hand spec test, or the design doc's agent sources B/E)
+does. The NaN-equality divergence below is the opposite — the differential
+oracle catches it directly.
+
+### #174 FIXED — fused float comparison now uses graphix's total order
+
+Found by the new arith.rs cross-mode tests, then confirmed + re-confirmed by the
+`graphix-fuzz` oracle (below). The node-walk compares floats via
+netidx-value's **total** `Value::partial_cmp`/`eq` (op.rs:153,179): `NaN ==
+NaN`, and `NaN` sorts **below every non-NaN value** — this is what makes `Value`
+`Ord`/`Hash` so it can be a map key. The fused interp (`gir_interp` `eval_cmp`)
+and JIT (`gir_jit` `compile_cmp`) compared **raw f64** (IEEE: `NaN != NaN`, all
+NaN orderings false). So *every* float comparison involving NaN diverged.
+
+**User decision (definitive):** IEEE `NaN != NaN` is the wrong choice for
+graphix — total equality is needed for maps and is saner in a dataflow language.
+So the node-walk is correct and the fused paths are the bug.
+
+Fix: both fused backends now compute the **total order** matching
+`Value::partial_cmp` (`(NaN,NaN)→Equal`, `(NaN,_)→Less`, `(_,NaN)→Greater`, else
+IEEE `partial_cmp`) and derive all six comparisons from it.
+- `gir_interp`: a `cmp_dispatch_float!` macro (3-way `Ordering` → the 6 ops),
+  used for the F32/F64 `eval_cmp` arms.
+- `gir_jit`: `compile_cmp`'s float branch builds `eq`/`lt`/`gt` from
+  `fcmp Equal`/`LessThan`/`GreaterThan` OR'd with the NaN cases — a NaN is the
+  only value `Unordered` with itself, so `fcmp(Unordered, x, x)` tests "x is
+  NaN"; `bxor_imm(v, 1)` is logical NOT for the `Ne`/`Lte`/`Gte` derivations.
+Ordering with NaN is now total on all three paths (`NaN < 1.0` → true,
+`1.0 < NaN` → false, `NaN <= NaN` → true).
+
+The original "only equality" fix was incomplete: it made `==`/`!=` agree but the
+oracle immediately surfaced that `<`/`>`/`<=`/`>=` still diverged (the node-walk
+orders NaN as least, the fused path was IEEE-false) — a clean demonstration that
+the differential oracle catches the *whole class*, not just the one case hand-
+tested. arith.rs gained `nan_eq_self`/`nan_ne_self`/`nan_lt_value`/`value_lt_nan`
+cross-mode fixtures.
+
+### graphix-fuzz V1 — the differential oracle lands (Jun 2026)
+
+First milestone of the differential model-checking fuzzer (`design/graphix_fuzz.md`,
+#172): the **oracle**, the foundation both the mechanical fuzzer and the
+adversarial agent sources depend on. New `graphix-fuzz` crate (workspace member;
+replicates graphix-tests' `TEST_REGISTER` — `#[cfg(test)]`-gated, not importable
+— to wire the full stdlib).
+
+- `run_program(code, mode, timeout) -> Outcome` — runs `let result = {code}`
+  under one `Mode` (`Interp` = `FusionDisabled` reference / `Fused` =
+  `JitDisabled` / `Jit` = no flags), driving to the first `Updated(result)`.
+  `Outcome` = `Value | CompileErr | RuntimeErr | Timeout`. Fresh `ExecCtx` +
+  in-process resolver per call (no JIT/fusion-state leak between runs, matching
+  the test harness). Reuses `graphix_package_core::testing::init_with_flags_and_setup`.
+- `check(code) -> Option<Divergence>` — runs interp vs jit; on disagreement also
+  runs fused and returns the `Divergence` with a `bisect()` label
+  (`interp != fused` ⇒ GIR/emit bug; `interp == fused != jit` ⇒ cranelift
+  codegen bug — exactly the #162–#170 diagnosis pattern). `Outcome::agrees_with`
+  uses `Value` equality (so the now-total NaN semantics are respected);
+  different outcome *kinds* always disagree (catches asymmetric hangs / fusion-
+  introduced errors).
+- CLI: `graphix-fuzz check <file>` (exit 1 + bisected report on divergence) and
+  `graphix-fuzz run <file>` (all three modes).
+
+V1 scope = single-snapshot oracle over pure-sync terminating programs. Validated
+live on #174: `check` on `{ let x = f64:0.0/f64:0.0; x != x }` reported
+`DIVERGENCE — GIR/emit bug (interp false, fused/jit true)` before the fix and
+`AGREE` after — and surfaced the ordering divergence the hand-test missed. Next
+(per the design doc): Source A (fixture mutation) + the typed-AST minimizer,
+then Source E (adversarial agents — needs only this `check` CLI).

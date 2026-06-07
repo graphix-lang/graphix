@@ -845,6 +845,131 @@ async fn nested_hof_grandparent_capture_node_walk() -> Result<()> {
     }
 }
 
+// ─── #169: function-typed grandparent capture in a nested HOF ──────────
+//
+// `let f = |z| z*2; array::map([1,2], |y| array::map([1], |x| f(x)))` —
+// the inner callback CALLS `f`, a function-typed grandparent capture.
+// Was a one-line root cause: `Expr::fold` skipped the Apply's `function`
+// position, so the #168 `Lambda::clone_rebind` alias pass never saw the
+// callee `f` and the inner callback's recompile couldn't resolve it.
+// Fixed by making `Expr::fold` a full-tree walk. Value-position captures
+// (#168) always went through fold's already-covered arms; only call-
+// position refs were dropped.
+
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_function_capture() -> Result<()> {
+    let v = load_and_await(
+        "let f = |z: i64| z * 2; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| f(x)))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[2], &[2]])
+}
+
+/// Function capture mixed with a value capture — exercises both fold
+/// arms (call position `f` + value position `n`).
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_function_and_value_capture() -> Result<()> {
+    let v = load_and_await(
+        "let n = 100; let f = |z: i64| z * 2; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| f(x) + n))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[102], &[102]])
+}
+
+/// A nested ANONYMOUS lambda call capturing a grandparent — the callee is
+/// a Lambda expr in function position, which the fold fix also now
+/// descends into (collecting the inner lambda's own capture `n`).
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_anon_lambda_capture() -> Result<()> {
+    let v = load_and_await(
+        "let n = 5; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| (|z: i64| z + n)(x)))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[6], &[6]])
+}
+
+/// #169 under the PURE NODE WALK (`CFlag::FusionDisabled`) — the
+/// canonical model must produce the value.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_function_capture_node_walk() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(16);
+    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
+        tx,
+        crate::TEST_REGISTER,
+        vec![],
+        graphix_compiler::CFlag::FusionDisabled.into(),
+        |_| {},
+    )
+    .await?;
+    let res = ctx
+        .rt
+        .load(Source::Internal(ArcStr::from(
+            "let f = |z: i64| z * 2; \
+             array::map([1, 2], |y: i64| array::map([1], |x: i64| f(x)))",
+        )))
+        .await?;
+    let eid = res.exprs.first().unwrap().id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => {
+                ctx.shutdown().await;
+                bail!("#169 node-walk regressed — hang under FusionDisabled");
+            }
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut b) => for e in b.drain(..) {
+                    if let GXEvent::Updated(id, v) = &e {
+                        if *id == eid {
+                            let r = assert_nested_i64s(v, &[&[2], &[2]]);
+                            ctx.shutdown().await;
+                            return r;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── #170: Expr::fold completeness (StructWith.source + arg defaults) ──
+//
+// The #168/#169 capture-alias pass `fold`s the callback body to collect
+// free-var names. `Expr::fold` was silently INCOMPLETE — beyond the
+// #169 `Apply.function` gap it also skipped `StructWith.source` (via a
+// `..` pattern) and lambda labeled-arg DEFAULT expressions. So a capture
+// in those positions inside a nested HOF wasn't aliased → hang. Fixed by
+// making `Expr::fold` a true full-tree walk.
+
+/// A struct functional-update `{base with a: x}` whose `base` is a
+/// grandparent capture (StructWith.source position).
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_structwith_source_capture() -> Result<()> {
+    let v = load_and_await(
+        "let base = {a: 1, b: 9}; \
+         array::map([1, 2], |y: i64| \
+           array::map([10], |x: i64| { let r = {base with a: x}; r.b }))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[9], &[9]])
+}
+
+/// A labeled-arg DEFAULT that captures a grandparent (`#off = n`) — fold
+/// now visits `Arg.labeled` defaults.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_hof_labeled_default_capture() -> Result<()> {
+    let v = load_and_await(
+        "let n = 100; let g = |#off: i64 = n, x: i64| x + off; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| g(x)))",
+    )
+    .await?;
+    assert_nested_i64s(&v, &[&[101], &[101]])
+}
+
 /// `Add`/`Mul` carrying a capture (`x*k + k`).
 #[tokio::test(flavor = "current_thread")]
 async fn clone_arith_capture() -> Result<()> {

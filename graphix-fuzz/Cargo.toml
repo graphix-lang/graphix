@@ -1,0 +1,42 @@
+[package]
+name = "graphix-fuzz"
+version = "0.9.0"
+authors = ["Eric Stokes <eestokes@pm.me>"]
+edition = "2024"
+publish = false
+
+# Differential model-checking fuzzer for the graphix fusion/JIT backend.
+# Runs a program under the node-walk interpreter (CFlag::FusionDisabled,
+# the trusted reference) and the fusion+JIT backend, and reports any
+# divergence as a likely bug. See design/graphix_fuzz.md.
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+ahash = { workspace = true }
+enumflags2 = { workspace = true }
+tokio = { workspace = true }
+netidx = { workspace = true }
+netidx-core = { workspace = true }
+netidx-value = { workspace = true }
+poolshark = { workspace = true }
+graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
+graphix-rt = { version = "0.9.0", path = "../graphix-rt" }
+graphix-package = { version = "0.9.0", path = "../graphix-package" }
+graphix-package-core = { version = "0.9.0", path = "../stdlib/graphix-package-core" }
+graphix-package-array = { version = "0.9.0", path = "../stdlib/graphix-package-array" }
+graphix-package-map = { version = "0.9.0", path = "../stdlib/graphix-package-map" }
+graphix-package-str = { version = "0.9.0", path = "../stdlib/graphix-package-str" }
+graphix-package-sys = { version = "0.9.0", path = "../stdlib/graphix-package-sys" }
+graphix-package-http = { version = "0.9.0", path = "../stdlib/graphix-package-http" }
+graphix-package-json = { version = "0.9.0", path = "../stdlib/graphix-package-json" }
+graphix-package-toml = { version = "0.9.0", path = "../stdlib/graphix-package-toml" }
+graphix-package-re = { version = "0.9.0", path = "../stdlib/graphix-package-re" }
+graphix-package-rand = { version = "0.9.0", path = "../stdlib/graphix-package-rand" }
+graphix-package-db = { version = "0.9.0", path = "../stdlib/graphix-package-db" }
+graphix-package-xls = { version = "0.9.0", path = "../stdlib/graphix-package-xls" }
+graphix-package-pack = { version = "0.9.0", path = "../stdlib/graphix-package-pack" }
+graphix-package-args = { version = "0.9.0", path = "../stdlib/graphix-package-args" }
+graphix-package-list = { version = "0.9.0", path = "../stdlib/graphix-package-list" }
+graphix-package-sqlite = { version = "0.9.0", path = "../stdlib/graphix-package-sqlite" }
+graphix-package-hbs = { version = "0.9.0", path = "../stdlib/graphix-package-hbs" }

@@ -561,13 +561,12 @@ impl Expr {
         match &self.kind {
             ExprKind::Constant(_)
             | ExprKind::NoOp
-            | ExprKind::Use { .. }
-            | ExprKind::Ref { .. }
-            | ExprKind::TypeDef { .. } => init,
+            | ExprKind::Use { name: _ }
+            | ExprKind::Ref { name: _ }
+            | ExprKind::TypeDef(_) => init,
             ExprKind::ExplicitParens(e) => e.fold(init, f),
-            ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
-                source.fold(init, f)
-            }
+            ExprKind::StructRef { source, field: _ }
+            | ExprKind::TupleRef { source, field: _ } => source.fold(init, f),
 
             ExprKind::Map { args } => args.iter().fold(init, |init, (k, v)| {
                 let init = k.fold(init, f);
@@ -577,32 +576,47 @@ impl Expr {
                 let init = source.fold(init, f);
                 key.fold(init, f)
             }
-            ExprKind::Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
-                exprs.iter().fold(init, |init, e| e.fold(init, f))
-            }
             ExprKind::Module {
+                name: _,
+                value: ModuleKind::Resolved { exprs, sig: _, from_interface: _ },
+            } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
+            ExprKind::Module {
+                name: _,
                 value: ModuleKind::Dynamic { sandbox: _, sig: _, source },
-                ..
             } => source.fold(init, f),
-            ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => init,
+            ExprKind::Module {
+                name: _,
+                value: ModuleKind::Unresolved { from_interface: _ },
+            } => init,
             ExprKind::Do { exprs } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::Bind(b) => b.value.fold(init, f),
-            ExprKind::StructWith(StructWithExpr { replace, .. }) => {
+            ExprKind::StructWith(StructWithExpr { source, replace }) => {
+                let init = source.fold(init, f);
                 replace.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
-            ExprKind::Connect { value, .. } => value.fold(init, f),
-            ExprKind::Lambda(l) => match &l.body {
-                Either::Left(e) => e.fold(init, f),
-                Either::Right(_) => init,
-            },
-            ExprKind::TypeCast { expr, .. } => expr.fold(init, f),
-            ExprKind::Apply(ApplyExpr { args, function: _ }) => {
+            ExprKind::Connect { name: _, value, deref: _ } => value.fold(init, f),
+            ExprKind::Lambda(l) => {
+                // Fold labeled-arg DEFAULT expressions (`#x = expr`) — they
+                // are real sub-expressions that can reference captures, so a
+                // complete tree walk must visit them. Then the body.
+                let init = l.args.iter().fold(init, |init, a| match &a.labeled {
+                    Some(Some(default)) => default.fold(init, f),
+                    _ => init,
+                });
+                match &l.body {
+                    Either::Left(e) => e.fold(init, f),
+                    Either::Right(_) => init,
+                }
+            }
+            ExprKind::TypeCast { expr, typ: _ } => expr.fold(init, f),
+            ExprKind::Apply(ApplyExpr { args, function }) => {
+                let init = function.fold(init, f);
                 args.iter().fold(init, |init, (_, e)| e.fold(init, f))
             }
             ExprKind::Any { args }
             | ExprKind::Array { args }
             | ExprKind::Tuple { args }
-            | ExprKind::Variant { args, .. }
+            | ExprKind::Variant { tag: _, args }
             | ExprKind::StringInterpolate { args } => {
                 args.iter().fold(init, |init, e| e.fold(init, f))
             }

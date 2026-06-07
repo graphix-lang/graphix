@@ -1,3 +1,4 @@
+mod arith;
 mod args;
 mod array;
 mod bitwise;

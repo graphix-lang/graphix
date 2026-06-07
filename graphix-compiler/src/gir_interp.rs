@@ -2029,6 +2029,31 @@ fn eval_cmp(op: CmpOp, lhs: RegValue, rhs: RegValue) -> RegValue {
             })
         };
     }
+    // Float comparison uses graphix's TOTAL order, matching
+    // `Value::partial_cmp` / the node-walk so a fused float compare never
+    // diverges from the reference: NaN == NaN, and NaN sorts below every
+    // non-NaN value. (This is what makes `Value` `Ord` — usable as a map
+    // key / sortable.)
+    macro_rules! cmp_dispatch_float {
+        ($a:expr, $b:expr) => {{
+            use std::cmp::Ordering;
+            let ord = match ($a.is_nan(), $b.is_nan()) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                // Neither is NaN, so `partial_cmp` is total here.
+                (false, false) => $a.partial_cmp(&$b).unwrap(),
+            };
+            RegValue::Bool(match op {
+                CmpOp::Eq => ord == Ordering::Equal,
+                CmpOp::Ne => ord != Ordering::Equal,
+                CmpOp::Lt => ord == Ordering::Less,
+                CmpOp::Gt => ord == Ordering::Greater,
+                CmpOp::Lte => ord != Ordering::Greater,
+                CmpOp::Gte => ord != Ordering::Less,
+            })
+        }};
+    }
     match (lhs, rhs) {
         (RegValue::I8(a), RegValue::I8(b)) => cmp_dispatch!(a, b),
         (RegValue::I16(a), RegValue::I16(b)) => cmp_dispatch!(a, b),
@@ -2038,8 +2063,8 @@ fn eval_cmp(op: CmpOp, lhs: RegValue, rhs: RegValue) -> RegValue {
         (RegValue::U16(a), RegValue::U16(b)) => cmp_dispatch!(a, b),
         (RegValue::U32(a), RegValue::U32(b)) => cmp_dispatch!(a, b),
         (RegValue::U64(a), RegValue::U64(b)) => cmp_dispatch!(a, b),
-        (RegValue::F32(a), RegValue::F32(b)) => cmp_dispatch!(a, b),
-        (RegValue::F64(a), RegValue::F64(b)) => cmp_dispatch!(a, b),
+        (RegValue::F32(a), RegValue::F32(b)) => cmp_dispatch_float!(a, b),
+        (RegValue::F64(a), RegValue::F64(b)) => cmp_dispatch_float!(a, b),
         (RegValue::Bool(a), RegValue::Bool(b)) => cmp_dispatch!(a, b),
         _ => panic!(
             "eval_cmp: type mismatch ({:?} vs {:?}) — GIR is malformed",

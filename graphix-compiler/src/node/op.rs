@@ -11,6 +11,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, ValArray, Value};
 use std::fmt;
+use std::ops::{Add as _, Div as _, Mul as _, Rem as _, Sub as _};
 use triomphe::Arc;
 
 macro_rules! compare_op {
@@ -360,7 +361,7 @@ impl fmt::Display for Op {
 defetyp!(ARITH_ERR, ARITH_ERR_TAG, "ArithError", "Error<`{}(string)>");
 
 macro_rules! arith_op {
-    ($name:ident, $opn:expr, $checked:literal, $op:tt) => {
+    ($name:ident, $opn:expr, $checked:literal, $method:ident) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
@@ -410,7 +411,7 @@ macro_rules! arith_op {
                 let lhs = self.lhs.cached.as_ref()?;
                 let rhs = self.rhs.cached.as_ref()?;
                 if lhs_up || rhs_up {
-                    let result = lhs.clone() $op rhs.clone();
+                    let result = lhs.clone().$method(rhs.clone());
                     match result {
                         Value::Error(e) if $checked => {
                             let tag = Value::String(ARITH_ERR_TAG.clone());
@@ -536,14 +537,21 @@ macro_rules! arith_op {
     }
 }
 
-arith_op!(Add, Op::Add, false, +);
-arith_op!(Sub, Op::Sub, false, -);
-arith_op!(Mul, Op::Mul, false, *);
-arith_op!(Div, Op::Div, false, /);
-arith_op!(Mod, Op::Mod, false, %);
+// Unchecked ops use the operator trait methods (`add` = wrapping for ints,
+// `div`/`rem` error on divide-by-zero). Checked ops use the `checked_*`
+// inherent methods, which return `Value::Error` on integer overflow /
+// underflow / divide-by-zero — the `arith_op!` body then wraps that error as
+// the `ArithError` union. Using the bare `+`/`-`/`*` operators for the checked
+// variants (the previous behavior) silently wrapped on overflow, so `+?`/`-?`/
+// `*?` never produced an error.
+arith_op!(Add, Op::Add, false, add);
+arith_op!(Sub, Op::Sub, false, sub);
+arith_op!(Mul, Op::Mul, false, mul);
+arith_op!(Div, Op::Div, false, div);
+arith_op!(Mod, Op::Mod, false, rem);
 
-arith_op!(CheckedAdd, Op::CheckedAdd, true, +);
-arith_op!(CheckedSub, Op::CheckedSub, true, -);
-arith_op!(CheckedMul, Op::CheckedMul, true, *);
-arith_op!(CheckedDiv, Op::CheckedDiv, true, /);
-arith_op!(CheckedMod, Op::CheckedMod, true, %);
+arith_op!(CheckedAdd, Op::CheckedAdd, true, checked_add);
+arith_op!(CheckedSub, Op::CheckedSub, true, checked_sub);
+arith_op!(CheckedMul, Op::CheckedMul, true, checked_mul);
+arith_op!(CheckedDiv, Op::CheckedDiv, true, checked_div);
+arith_op!(CheckedMod, Op::CheckedMod, true, checked_rem);

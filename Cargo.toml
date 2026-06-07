@@ -134,6 +134,7 @@ members = [
     "graphix-rt",
     "graphix-derive",
     "graphix-package",
+    "graphix-fuzz",
     "stdlib/graphix-package-core",
     "stdlib/graphix-package-array",
     "stdlib/graphix-package-list",
