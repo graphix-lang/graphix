@@ -1,5 +1,137 @@
 # Impure HOF fusion via partial-body splitting (plan)
 
+---
+
+## ★ SUPERSEDING DESIGN (Jun 2026): clone the fused template per slot
+
+The splice machinery below (`FusedCallback`/`SplitKernel`/`build_body_split`/
+`splice_into_body`/`slot_spliced`/force-bind/deferred-splice) **shipped and
+works** (green, two regression fixtures), but it's MapQ-special and leaks
+split-awareness into the runtime. We're replacing it with a uniform,
+general mechanism the user and I aligned on: **fuse the `analysis_pred`
+once via the ordinary `fuse()` path, then `clone_rebind` that fused
+template per array slot.** This makes "fuse a partly-async callback" just
+"fuse a node tree, then clone it" — no MapQ-special types.
+
+### Core insight
+
+The per-slot path is *already* a rebinding clone today — it re-compiles
+the callback body from its `Expr` per slot, minting fresh `BindId`s (that's
+how each slot gets independent async state). The ONLY reason we needed the
+splice machinery is that recompile-from-`Expr` produces an **unfused** body
+(fusion is a node-level transform). So: fuse the template once, and
+`clone_rebind` it (preserving the fused structure) instead of recompiling.
+
+A `BindId` is **not** a number on a node — it's a key into three registries
+(`env.by_id`, the scope `name→id` map, the runtime `ref_var` table). So
+re-minting = re-registering via `env.bind_variable`, which updates the
+scope name map — and then refs resolve by name. **The env's scoped name map
+IS the remap; no side `RemapTable`.** (Verified: `env.bind_variable`
+mints/re-mints a fresh `BindId` and writes the name map; `lookup_bind`
+reads it.)
+
+### `clone_rebind` contract (the semantics)
+
+`clone_rebind(&self, ctx, scope) -> Node` produces an independent copy
+positioned as if compiled fresh in the same lexical spot:
+- every binding the subtree *introduces* → fresh env-registered `BindId`;
+- every `Ref` to an *internal* binding → resolves to the copy's fresh one;
+- every *capture* (`Ref` to an external binding) → keeps the outer id;
+- immutable shared artifacts (fused-kernel `Arc`s) → shared, not copied;
+- stateful builtins → fresh independent state via their own `clone_rebind`.
+
+The re-binding rides the env name map exactly as `compile` does (binds
+register fresh names; refs resolve by name). It's the symmetric twin of
+`delete` (which tears down those same three registrations).
+
+### Per-node mechanics (all verified against the live tree)
+
+- **Trait method** on `Update` (→ `Node`) and `Apply` (→ `Box<dyn Apply>`),
+  default = panic so a missed node is loud. **[DONE, green — Step 1.]**
+- **`Ref`** (`node/bind.rs:305`): get the name — from `spec.kind`
+  (`ExprKind::Ref{name}`) for source refs, or `env.by_id[self.id].name`
+  (→ `ModPath::from_iter([name])`) for synthesized (NOP-spec) feeder refs;
+  `lookup_bind(scope.lexical, name)` → fresh id, else keep `self.id`
+  (capture falls out for free); `ctx.rt.ref_var(new_id, top_id)`.
+- **`StructPatternNode`** (`node/pattern.rs`): walk the enum; for each
+  `Bind(old_id)` read `env.by_id[old_id]` → `bind_variable(scope.lexical,
+  name, typ, pos, ori).id` → `Bind(new_id)`; recurse Slice/Struct/Variant
+  sub-patterns + their `all`/`head`/`tail` ids. (`by_id` is `pub`.)
+- **`Bind`** (`node/bind.rs:188`): `rec`-aware order, read from `spec.kind`
+  — non-rec = **value `clone_rebind` then pattern re-mint** (RHS can't see
+  the binding); rec = pattern first then value (mirrors `Bind::compile`
+  lib.rs:84/101 vs 66/75).
+- **`Block`/`Do`**: recurse children in lexical order (the name map is
+  transient scratch, correct as long as binds precede uses — same as
+  `compile`).
+- **`GXLambda`** (reached via `ApplyView::Lambda`): re-mint arg patterns,
+  then `clone_rebind` the body **structurally** (preserve the spliced
+  `FusedKernel`s) — NOT re-init-from-spec (that would un-fuse). Keep the
+  `LambdaId` (clones share the cached JIT kernel).
+- **`CallSite`** (`node/callsite.rs`): Bind-shaped — re-mint the `args`-map
+  ids, re-point `arg_refs` at them, `clone_rebind` `fnode` + the bound
+  callee `Apply`. Precondition: the template CallSite must be **bound +
+  fused** (so there's a fused body to recurse into).
+- **`FusedKernel`/`GirNode`** (`fusion/builder.rs:231`, `gir_interp.rs:2782`):
+  it's an ordinary Node — `clone_rebind` recurses its feeder deps + the
+  `dyn_slot` callback `Apply`s, **shares** the `Arc<GirKernel>`/
+  `Arc<WrappedKernel>`/`Arc<KernelRegistry>` (the kernel is incidental —
+  the precompiled update logic), re-inits per-cycle scratch + re-runs
+  `pre_init` for dyn_slots against the cloned feeders.
+- **Builtins** (delegate 100%): `BuiltInLambda` → inner `apply.clone_rebind`;
+  `defpackage!` macro default for pure builtins (clone arg nodes + fresh
+  state); hand-write the stateful residue ones (`Connect`, then publish/
+  subscribe/timer/count) — cloned subscribe un-subscribes, count resets,
+  timer re-arms.
+
+### Compile-time + runtime rewire
+
+- **Compile-time** (`MapQ::static_resolve_fn_args`): after binding the
+  `analysis_pred`, run `crate::fusion::fuse()` on the callback body
+  (`resolved_apply_mut() → Lambda(g) → g.body_mut()`) — the walker splices
+  the sync regions in place, leaving the async residue. Store the fused +
+  bound `analysis_pred` as the template. Replaces `build_body_split`.
+  (Verified: `fuse(&mut Node, ctx, flags)` operates on any subtree.)
+- **Runtime** (`MapQ::update`, per slot): `genn::bind(scope, "x", …)` →
+  fresh element id; `let pred = template.clone_rebind(ctx, scope)` (the
+  cloned arg[0] ref + the FusedKernel's element feeder both resolve `"x"`
+  → the fresh element via the name map); `Slot{ id: element_id, pred }`;
+  feed the slot value to `element_id` as today. No `slot_spliced`, no
+  `resolve_static` force-bind, no deferred drive-loop splice.
+
+### Deletions once the clone path is sole + green
+
+`FusedCallback`, `SplitKernel`, `build_body_split`, `splice_into_body`,
+`jit_compile_split_kernel`, `build_slot`'s split handling, MapQ's
+`fused_callback`/`slot_spliced` fields.
+
+### Status — DONE + green (132 compiler + 1865 graphix-tests)
+
+All landed: the `clone_rebind` trait method (with a RE-INIT-from-spec
+default, not panic — residue nodes recompile; only the spine overrides
+structurally) + spine impls (`Ref`, `StructPatternNode`, `Bind`, `Block`,
+`GXLambda`, `BuiltInLambda`, `CallSite`, `Connect`, `FusedKernel`/`GirNode`
+via `GirNode::clone_shared`). Compile-time: `static_resolve_fn_args` builds
++ resolves the `analysis_pred` but does NOT fuse it (that poisons the
+surrounding region's JIT for region-fused HOFs). Runtime: `MapQ::update`
+LAZILY fuses the template on the first slot-growing cycle (`template_fused`
+flag), then `clone_rebind`s it per slot. The clone path runs for EVERY HOF
+callback (pure region-fused, pure MapQ, impure) with no regression.
+
+Removed: the old per-slot `build_slot` dispatch, force-bind/deferred-splice,
+`slot_spliced`, `fused_callback`. RETAINED (now the lazy-fuse *mechanism*):
+`FusedCallback`/`SplitKernel`/`build_body_split`/`splice_into_body`/
+`build_slot`/`fuse_callsite`.
+
+**Remaining follow-up (#157):** builtin call in a callback's async residue
+(`|x| { calc; net::publish(p, x) }`) hits the `Apply` panic default —
+current tests use `Connect` residue only. Fix: builtins own `clone_rebind`,
+or `CallSite::clone_rebind` leaves a builtin function unbound to re-init
+fresh per slot. See CLAUDE.md "Impure-HOF fusion rebuilt on clone_rebind".
+
+---
+
+
 Fuse the **sync sub-computation of an impure HOF callback** — an
 `array::map`/`fold`/`filter`/`init` (or any `MapQ`/`FoldQ`-based builtin,
 incl. `map::*`, `list::*`, GUI/TUI widgets) whose callback does
@@ -362,17 +494,79 @@ async statements are side-effects and the frontier is a single value.
 Generalize to multi-value frontiers + async-upstream (`subscribe` feeding
 the calc) after.
 
-**Minimal first cut:** handle only the simplest split shape —
-`{ <sync prefix>; <one async consumer of the result> }` (the `net/sum.gx`
-/ publish-tail shape) — before general bidirectional effect-frontier
-partitioning. That covers a large fraction of the real examples (the
-publish-tail pattern) with far less machinery.
+#### Phase 2 — partial-body fusion ✅ DONE end-to-end (2026-06-06)
+
+**The milestone is complete.** An impure HOF callback now splits at the
+async boundary, fuses + JITs the sync sub-region(s), and runs them
+per-slot — proven observable by `lang::fusion::impure_hof_callback_splits`:
+`array::map([1,2,3], |x| { let v = x*2+1; counter <- v; v })` → `[3,5,7]`
+**and** the sync calc `x*2+1` JIT-ran per slot (`jit_invocations > 0`).
+132 compiler + 1864 graphix-tests green, no regression.
+
+**Per-slot splice — two paths (force + deferred):**
+- **Force-bind at slot construction (the observable path).** In
+  `MapQ::update`'s slot-grow loop, after building the slot's `pred`
+  (a fresh `genn::apply` `CallSite`), the split case force-resolves it
+  *event-free* via `cs.resolve_static(ctx, def, fv)` — `def` is the
+  callback `LambdaDef` extracted from `ctx.cached[predid]` (downcast,
+  the same value `bind()` uses), `fv` its value. Then
+  `fc.splice_into_body(ctx, g.body_mut(), scope, top_id)` splices each
+  `SplitKernel`'s shared `Arc` (feeders from `collect_region_inputs` on
+  the per-slot body, matched by name) into the body **before its first
+  run**. So even a one-shot (static) array fuses on its only cycle.
+  `slot_spliced[i] = true` once resolved, so the deferred path skips it.
+  Any failure (not a `CallSite`, no `fv`, resolve `Err`) leaves
+  `slot_spliced[i] = false` → the deferred path retries.
+- **Deferred splice in the drive loop (the safety net).** After each
+  `s.pred.update`, an un-spliced split slot whose `CallSite` has lazily
+  bound (`resolved_apply_mut() == Lambda(g)`) gets the same
+  `splice_into_body`. This covers any slot the force path missed; the
+  pre-splice cycle runs interpreted but yields the same value (the
+  kernel computes the same sync sub-region), so it's correctness-safe.
+
+`MapQ` gained `slot_spliced: Vec<bool>` parallel to `slots`
+(push `false`/`true` on grow, pop on shrink). The async residue
+(`counter <-`, publish, …) stays interpreted in the per-slot body; only
+the sync `let`-value subgraph is replaced by the spliced `FusedKernel`.
+
+**Perf note:** force-resolve compiles the per-slot `GXLambda` + feeders
+at construction (runtime). That cost already existed for per-slot graphs
+(`genn::apply` builds one graph per element); the splice adds feeder
+compilation. Net win for arrays that update repeatedly (JIT'd sync calc
+each cycle); a possible setup-cost loss for very large one-shot arrays.
+Correctness is unaffected either way.
+
+**Compile-time half** (the split engine, landed first):
+- **`build_body_split(body, ec)`** (`lowering.rs`): when the whole body
+  can't fuse (it has async ops, so `build_lambda_kernel` returns `None`),
+  walk the body `Block`'s children and, for each `let`-value, try
+  `build_region` on it. **`build_region` succeeding *is* the sync/async
+  classifier** — it bails on async ops / unrepresentable types, so a
+  success is exactly "this `let`-value is a fusable sync sub-region."
+  Each success → a shared `SplitKernel` (kernel `Arc` + JIT `WrappedKernel`
+  + the region's free-var inputs + the `value_id` to splice at). Reuses
+  `collect_region_inputs` + `walk_node_for_builtin_calls` + `build_region`
+  + `compile_kernel_with_callees` — the same machinery `fuse()` uses for
+  the program tree, pointed at the callback body.
+- **`fuse_callsite`** now tries the whole-body kernel first (Phase 1);
+  on failure, falls to `build_body_split`. `FusedCallback.kernel` became
+  `Option` (None for the split path) + a `split: Vec<SplitKernel>` field.
+- **`build_slot`** falls back to interp for the split case (the per-slot
+  splice — above — replaces the body instead).
+
+**Generality / follow-ups.** `build_body_split` carves *every* `let`-value
+that builds a region, so a body with several sync `let`s before/around an
+async op fuses each independently — not just the single-prefix shape. Not
+yet covered: a sync sub-region that is the *tail* expression of the block
+(only `let`-values are scanned, not the block tail); a sync region nested
+inside an async op's argument (e.g. `publish(p, bigcalc(x))` with no
+intervening `let`); and multi-level `select`/`try` bodies. Each is an
+extension of the same `build_body_split` scan.
 
 ## Risks
 
-- **R1 (sequencing):** without Phase 2 only pure callbacks fuse, but the
-  use case is impure — Phase 1 alone is near-zero user value. Don't ship
-  Phase 1 as "impure HOF fusion."
+- **R1 (sequencing): RESOLVED.** Phase 2 landed, so impure callbacks now
+  fuse their sync sub-regions end-to-end (not just pure callbacks).
 - **R2:** the fresh async residue rebuilt per slot has no analog (InitFn
   today returns a single `GXLambda`/`BuiltInLambda`) — fully new
   node-construction.

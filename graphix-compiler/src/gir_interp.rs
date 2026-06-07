@@ -2962,6 +2962,31 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         &self.kernel
     }
 
+    /// Clone this node for a fresh array slot ([`crate::Update::clone_rebind`]):
+    /// SHARE the immutable IR / JIT / registry `Arc`s (the kernel is the
+    /// incidental "what `update` does"), but re-run the `build` chokepoint
+    /// so the per-cycle scratch is fresh and the `dyn_slots` are re-inited
+    /// (each slot's inner Apply is a per-slot instance, not shared). `scope`
+    /// + `top_id` are the cloned feeders' scope and the region's spec id.
+    pub fn clone_shared(
+        &self,
+        ctx: &mut crate::ExecCtx<R, E>,
+        n_args: usize,
+        scope: crate::Scope,
+        top_id: crate::expr::ExprId,
+    ) -> ::anyhow::Result<Self> {
+        Self::build(
+            ctx,
+            self.kernel.clone(),
+            n_args,
+            self.jit.clone(),
+            self.async_jit.clone(),
+            self.registry.clone(),
+            scope,
+            top_id,
+        )
+    }
+
     /// Single construction chokepoint. Builds the GirNode and runs
     /// both pre-init helpers (`pre_init_binding_slots` for binding-
     /// source fn_params, `pre_init_builtin_slots` for builtin-source

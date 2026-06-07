@@ -214,6 +214,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.sleep(ctx);
     }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Box<dyn Apply<R, E>> {
+        // Re-mint the arg patterns first (fresh param ids enter the scope
+        // name map), then recurse the body STRUCTURALLY so any spliced
+        // FusedKernels are preserved (NOT re-init from spec). Keep the
+        // LambdaId so clones share the cached JIT kernel. Mirrors the
+        // order in `GXLambda::new` (patterns then body, one scope).
+        let args: Box<[StructPatternNode]> =
+            self.args.iter().map(|p| p.clone_rebind(ctx, scope)).collect();
+        let body = self.body.clone_rebind(ctx, scope);
+        Box::new(Self { id: self.id, args, body, typ: self.typ.clone() })
+    }
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -340,6 +356,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.apply.sleep(ctx);
+    }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Box<dyn Apply<R, E>> {
+        // Plumbing wrapper — delegate to the inner builtin's own
+        // clone_rebind (builtins own their clone, 100%).
+        Box::new(Self {
+            typ: self.typ.clone(),
+            apply: self.apply.clone_rebind(ctx, scope),
+        })
     }
 }
 

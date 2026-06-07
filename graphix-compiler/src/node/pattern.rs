@@ -46,7 +46,84 @@ pub enum StructPatternNode {
     },
 }
 
+/// Re-mint one bound id for [`StructPatternNode::clone_rebind`]: read the
+/// original binding's record and bind a fresh id under the same
+/// name/type/pos/ori in `scope`. The fresh id enters `scope`'s name map,
+/// so a subsequent `lookup_bind` by that name (during the cloned body's
+/// `clone_rebind`) resolves to it. Unknown ids are kept as-is (defensive;
+/// every pattern id has a `by_id` record).
+fn remint_bind_id<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    scope: &Scope,
+    old: BindId,
+) -> BindId {
+    match ctx.env.by_id.get(&old) {
+        Some(b) => {
+            let name = b.name.clone();
+            let typ = b.typ.clone();
+            let pos = b.pos;
+            let ori = b.ori.clone();
+            ctx.env.bind_variable(&scope.lexical, &name, typ, pos, ori).id
+        }
+        None => old,
+    }
+}
+
 impl StructPatternNode {
+    /// Produce a structurally-identical pattern with every bound id
+    /// re-minted to a fresh env-registered `BindId` in `scope`. See
+    /// [`crate::Update::clone_rebind`] — the fresh names enter `scope`'s
+    /// name map so the cloned body's `Ref`s resolve to these fresh ids.
+    pub fn clone_rebind<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Self {
+        let opt = |ctx: &mut ExecCtx<R, E>, o: &Option<BindId>| {
+            o.as_ref().map(|id| remint_bind_id(ctx, scope, *id))
+        };
+        match self {
+            Self::Ignore => Self::Ignore,
+            Self::Literal(v) => Self::Literal(v.clone()),
+            Self::Bind(id) => Self::Bind(remint_bind_id(ctx, scope, *id)),
+            Self::Slice { tuple, all, binds } => Self::Slice {
+                tuple: *tuple,
+                all: opt(ctx, all),
+                binds: binds.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
+            },
+            Self::SlicePrefix { all, prefix, tail } => Self::SlicePrefix {
+                all: opt(ctx, all),
+                prefix: prefix
+                    .iter()
+                    .map(|b| b.clone_rebind(ctx, scope))
+                    .collect(),
+                tail: opt(ctx, tail),
+            },
+            Self::SliceSuffix { all, head, suffix } => Self::SliceSuffix {
+                all: opt(ctx, all),
+                head: opt(ctx, head),
+                suffix: suffix
+                    .iter()
+                    .map(|b| b.clone_rebind(ctx, scope))
+                    .collect(),
+            },
+            Self::Struct { all, binds } => Self::Struct {
+                all: opt(ctx, all),
+                binds: binds
+                    .iter()
+                    .map(|(n, i, b)| {
+                        (n.clone(), *i, b.clone_rebind(ctx, scope))
+                    })
+                    .collect(),
+            },
+            Self::Variant { tag, all, binds } => Self::Variant {
+                tag: tag.clone(),
+                all: opt(ctx, all),
+                binds: binds.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
+            },
+        }
+    }
+
     pub fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         type_predicate: &Type,
@@ -674,6 +751,28 @@ pub struct PatternNode<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
+    /// Structural clone for [`crate::Update::clone_rebind`]: re-mint the
+    /// structure's bound ids first (they enter `scope`'s name map), then
+    /// clone the guard so its `Ref`s resolve to the fresh ids.
+    pub(super) fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Self {
+        let structure_predicate =
+            self.structure_predicate.clone_rebind(ctx, scope);
+        let guard = self
+            .guard
+            .as_ref()
+            .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)));
+        Self {
+            explicit_type_predicate: self.explicit_type_predicate,
+            type_predicate: self.type_predicate.clone(),
+            structure_predicate,
+            guard,
+        }
+    }
+
     pub(super) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,

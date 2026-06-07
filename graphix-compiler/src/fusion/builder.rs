@@ -276,6 +276,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::FusedKernel(self)
     }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &crate::Scope,
+    ) -> Node<R, E> {
+        // An ordinary Node: recurse its feeder deps (Refs that re-resolve
+        // to the slot's fresh element / captures by name) and clone the
+        // GirNode by SHARING the immutable kernel/JIT/registry Arcs while
+        // re-initing per-cycle scratch + dyn_slots. The kernel is
+        // incidental — the precompiled update logic, shared across slots.
+        let feeders: Box<[Node<R, E>]> =
+            self.feeders.iter().map(|f| f.clone_rebind(ctx, scope)).collect();
+        let n_args = feeders.len();
+        let inner = self
+            .inner
+            .clone_shared(ctx, n_args, scope.clone(), self.spec.id)
+            .expect("FusedKernel GirNode clone_shared failed");
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            feeders,
+            inner,
+            _phantom: std::marker::PhantomData,
+        })
+    }
 }
 
 /// Splice a `BuiltKernel` into a runtime Node. For Region targets,

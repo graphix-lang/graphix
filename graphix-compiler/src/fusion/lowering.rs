@@ -1274,6 +1274,53 @@ fn ident_of(path: &ModPath) -> Option<&str> {
 
 // ─── Expression-position emitters ────────────────────────────────
 
+/// Bind a non-idempotent SCALAR scrutinee to a fresh temp local so the
+/// `select` evaluates it exactly ONCE. The scrutinee is otherwise
+/// INLINED at every use — each arm condition (`scrut == lit`), the type
+/// predicate (`IsNull(scrut)`), and every pattern-binding reference
+/// (`known_consts[name] = scrut`) — so a non-deterministic / side-
+/// effecting scrutinee (e.g. a `rand()` DynCall) would yield a DIFFERENT
+/// value at each site: `select rand() { n => n == n }` would compare two
+/// independent draws and return `false`. A raw `GirOp::Local` is already
+/// idempotent (a slot read) and is returned unchanged; non-scalar
+/// scrutinees are left alone (variant arms already require a Local, and
+/// the confirmed duplication is scalar — a follow-up can stabilize the
+/// value-shape cases). Returns the scrutinee to feed the arms plus the
+/// optional `let temp = scrut` to emit ahead of them: a `Block` wrapper
+/// in expr form, a prepended `GirStmt::Let` in stmt form. The temp needs
+/// no `register_kir_binding` — the runtime Block/Let provides its value
+/// and `GirOp::Local` dispatches on the expr's own `typ`.
+fn stabilize_scrutinee(
+    scrut: GirExpr,
+    select_id: crate::expr::ExprId,
+) -> (GirExpr, Option<Let>) {
+    if std::env::var("SCRUT_DBG").is_ok() {
+        let dbg = format!("{:?}", scrut.op);
+        let tag = dbg.split(['(', ' ', '{']).next().unwrap_or("?");
+        eprintln!(
+            "SCRUT op={} typ={:?} is_local={}",
+            tag,
+            scrut.typ,
+            matches!(&scrut.op, GirOp::Local(_))
+        );
+    }
+    if matches!(&scrut.op, GirOp::Local(_)) {
+        return (scrut, None);
+    }
+    let Some(prim) = scrut.typ.as_prim() else {
+        if std::env::var("SCRUT_DBG").is_ok() {
+            eprintln!("SCRUT NOT-STABILIZED (value-shape) typ={:?}", scrut.typ);
+        }
+        return (scrut, None);
+    };
+    let temp: ArcStr =
+        compact_str::format_compact!("__sel_scrut_{}", select_id.inner())
+            .as_str()
+            .into();
+    let local = gir::local(temp.clone(), prim);
+    (local, Some(Let { local: temp, value: scrut }))
+}
+
 /// Emit a `select` at expression position as a [`GirOp::IfChain`].
 /// Every arm body must itself emit as a primitive expression, and
 /// every arm body must have the same primitive type (since the chain
@@ -1289,7 +1336,8 @@ fn emit_select_as_expr<R: crate::Rt, E: crate::UserEvent>(
         ExprKind::Select(se) => se,
         _ => return None,
     };
-    let scrut = emit_node(&sel.arg.node, ctx, ec)?;
+    let scrut_raw = emit_node(&sel.arg.node, ctx, ec)?;
+    let (scrut, scrut_let) = stabilize_scrutinee(scrut_raw, sel.spec.id);
     let n = sel.arms.len();
     if n == 0 {
         return None;
@@ -1336,7 +1384,20 @@ fn emit_select_as_expr<R: crate::Rt, E: crate::UserEvent>(
         }
     }
     let typ = unified_typ?;
-    Some(GirExpr { op: GirOp::IfChain { arms }, typ })
+    let chain = GirExpr { op: GirOp::IfChain { arms }, typ };
+    // If the scrutinee was stabilized to a temp, wrap the chain in a
+    // `Block` so `let temp = scrut` runs once before the arms reference
+    // `Local(temp)`.
+    Some(match scrut_let {
+        None => chain,
+        Some(l) => {
+            let typ = chain.typ.clone();
+            GirExpr {
+                op: GirOp::Block { lets: vec![l], tail: Box::new(chain) },
+                typ,
+            }
+        }
+    })
 }
 
 /// Compute the IfChain merge type when arms produced different
@@ -2482,7 +2543,11 @@ fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
 /// builtin keeps its own per-slot reactive lifecycle (one graph per
 /// element, fresh BindIds), and only the pure kernel is shared.
 pub struct FusedCallback {
-    kernel: std::sync::Arc<crate::gir::GirKernel>,
+    /// The whole-body kernel — `Some` for the Phase-1 wholly-sync path
+    /// (`build_slot` wraps it in one `FusedKernel`). `None` when the body
+    /// has async ops and only its sync sub-regions fused — then `split`
+    /// below is non-empty and `build_slot` takes the splice path.
+    kernel: Option<std::sync::Arc<crate::gir::GirKernel>>,
     wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
     called_kernels: std::collections::BTreeMap<ArcStr, CachedKernel>,
     /// Captured outer bindings (closure conversion), in kernel-input
@@ -2494,6 +2559,33 @@ pub struct FusedCallback {
     /// supplies. Kernel inputs are `formal args ++ captures`.
     n_formal: usize,
     /// Body spec + result type for the per-slot `FusedKernel` Node.
+    spec: crate::expr::Expr,
+    typ: crate::typ::Type,
+    /// Phase-2 partial-body split: when the whole body has async ops
+    /// (so `kernel` above couldn't be built over the whole body), this
+    /// holds one shared kernel per maximal sync sub-region (today: each
+    /// fusable `let`-value in the body block). Per slot, the runtime
+    /// splices a fresh `FusedKernel` (sharing each `Arc`) at the
+    /// sub-region's `ExprId` in the freshly-built body, and the async
+    /// residue (Connect/publish/…) runs as interpreted nodes reading the
+    /// published values. Empty for the wholly-sync Phase-1 path.
+    /// See `design/impure_hof_fusion.md` Phase 2.
+    split: Vec<SplitKernel>,
+}
+
+/// One shared sync sub-region kernel of an impure callback body, to be
+/// spliced into each per-slot body at `value_id`. See
+/// [`FusedCallback::split`].
+pub struct SplitKernel {
+    /// The `let`-value `ExprId` to splice the kernel at in each per-slot
+    /// body (the `Bind` wrapping it publishes the result).
+    value_id: crate::expr::ExprId,
+    kernel: std::sync::Arc<crate::gir::GirKernel>,
+    wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
+    called_kernels: std::collections::BTreeMap<ArcStr, CachedKernel>,
+    /// The region's free-var inputs (bind_id + name + kind + typ),
+    /// re-resolved per slot to build the `FusedKernel` feeders.
+    inputs: Vec<crate::fusion::FreeVarInput>,
     spec: crate::expr::Expr,
     typ: crate::typ::Type,
 }
@@ -2537,35 +2629,145 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     let n_formal = g.typ().args.len();
     let spec = g.body().spec().clone();
     let typ = g.body().typ().clone();
-    let (cached, sub_called) = build_lambda_kernel(g, &kernel_name, ec)?;
-    let wrapped = if ec.jit_enabled {
-        let callees: std::collections::BTreeMap<
-            ArcStr,
-            std::sync::Arc<crate::gir::GirKernel>,
-        > = sub_called
-            .iter()
-            .map(|(n, c)| (n.clone(), c.kernel.clone()))
-            .collect();
-        match crate::gir_jit::compile_kernel_with_callees(
-            &mut ec.jit.lock(),
-            &cached.kernel,
-            &callees,
-        ) {
-            Ok(w) => Some(std::sync::Arc::new(w)),
-            Err(_) => None,
+    // Phase 1: try fusing the WHOLE body into one kernel (wholly-sync
+    // callback). Phase 2: if the body has async ops, fuse its sync
+    // sub-regions instead (`build_body_split`).
+    match build_lambda_kernel(g, &kernel_name, ec) {
+        Some((cached, sub_called)) => {
+            let wrapped =
+                jit_compile_split_kernel(ec, &cached.kernel, &sub_called);
+            Some(FusedCallback {
+                kernel: Some(cached.kernel),
+                wrapped,
+                called_kernels: sub_called,
+                captures: cached.captures,
+                n_formal,
+                spec,
+                typ,
+                split: Vec::new(),
+            })
         }
-    } else {
-        None
+        None => {
+            let split = build_body_split(g.body(), ec);
+            if split.is_empty() {
+                return None;
+            }
+            Some(FusedCallback {
+                kernel: None,
+                wrapped: None,
+                called_kernels: std::collections::BTreeMap::new(),
+                captures: Vec::new(),
+                n_formal,
+                spec,
+                typ,
+                split,
+            })
+        }
+    }
+}
+
+/// JIT-compile a kernel + its callees when `ec.jit_enabled`, else `None`
+/// (interp fallback). Shared by the whole-body and split paths.
+fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
+    ec: &mut crate::ExecCtx<R, E>,
+    kernel: &std::sync::Arc<crate::gir::GirKernel>,
+    called_kernels: &std::collections::BTreeMap<ArcStr, CachedKernel>,
+) -> Option<std::sync::Arc<crate::gir_jit::WrappedKernel>> {
+    if !ec.jit_enabled {
+        return None;
+    }
+    let callees: std::collections::BTreeMap<
+        ArcStr,
+        std::sync::Arc<crate::gir::GirKernel>,
+    > = called_kernels
+        .iter()
+        .map(|(n, c)| (n.clone(), c.kernel.clone()))
+        .collect();
+    crate::gir_jit::compile_kernel_with_callees(
+        &mut ec.jit.lock(),
+        kernel,
+        &callees,
+    )
+    .ok()
+    .map(std::sync::Arc::new)
+}
+
+/// Phase-2 partial-body split. The whole callback body couldn't fuse
+/// (it has async ops), so build one shared kernel per fusable sync
+/// sub-region. Today's granularity: each `let`-value in the body block
+/// whose value lowers to a kernel (a `build_region` success). The async
+/// statements (`<-`, `publish`, …) and non-fusing lets are left for the
+/// per-slot interpreted residue. Returns the per-region `SplitKernel`s
+/// (empty when the body isn't a block, or no `let`-value fused). See
+/// `design/impure_hof_fusion.md` Phase 2.
+fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
+    body: &crate::Node<R, E>,
+    ec: &mut crate::ExecCtx<R, E>,
+) -> Vec<SplitKernel> {
+    use crate::NodeView;
+    let mut out: Vec<SplitKernel> = Vec::new();
+    // Statement-level split only handles block bodies (`Do`) — a single-
+    // expr async body has no statement-level sync sub-region (that's the
+    // expression-level split, a follow-up).
+    let children: &[crate::Node<R, E>] = match body.view() {
+        NodeView::Block(blk) => &blk.children,
+        _ => return out,
     };
-    Some(FusedCallback {
-        kernel: cached.kernel,
-        wrapped,
-        called_kernels: sub_called,
-        captures: cached.captures,
-        n_formal,
-        spec,
-        typ,
-    })
+    for child in children {
+        // Each `let`-binding's value is a candidate sync sub-region.
+        let value_node = match child.view() {
+            NodeView::Bind(b) => &b.node,
+            _ => continue,
+        };
+        let value_id = value_node.spec().id;
+        let inputs =
+            crate::fusion::collect_region_inputs::<R, E>(&**value_node, ec);
+        let region_inputs: Vec<RegionInput> = inputs
+            .iter()
+            .map(|fv| RegionInput {
+                expr_id: value_id,
+                name: fv.name.clone(),
+                kind: fv.kind.clone(),
+                source: RegionInputSource::Binding,
+                bind_id: Some(fv.bind_id),
+            })
+            .collect();
+        let mut discovery = BuiltinCallDiscovery::default();
+        walk_node_for_builtin_calls::<R, E>(
+            &**value_node,
+            ec,
+            &crate::expr::ModPath::root(),
+            &mut discovery,
+        );
+        let fn_name = compact_str::format_compact!("__split_{:?}", value_id);
+        // `build_region` succeeds iff the value lowers to a kernel
+        // (it bails on async ops / unrepresentable types) — so a
+        // successful build is exactly "this `let`-value is a fusable
+        // sync sub-region." Failures stay in the per-slot residue.
+        let built = match crate::fusion::builder::build_region::<R, E>(
+            value_node,
+            value_id,
+            fn_name.as_str(),
+            &region_inputs,
+            discovery,
+            ec,
+        ) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let wrapped =
+            jit_compile_split_kernel(ec, &built.kernel, &built.called_kernels);
+        out.push(SplitKernel {
+            value_id,
+            kernel: built.kernel,
+            wrapped,
+            called_kernels: built.called_kernels,
+            inputs,
+            spec: value_node.spec().clone(),
+            typ: value_node.typ().clone(),
+        });
+    }
+    out
 }
 
 impl FusedCallback {
@@ -2589,6 +2791,19 @@ impl FusedCallback {
                 element_feeders.len()
             );
         }
+        // Phase-2 split callbacks have no whole-body kernel; the per-slot
+        // splice (build the interpreted body + splice each `split` kernel
+        // at its `value_id`) is the next increment. For now, fall back to
+        // interpreted per-slot dispatch (MapQ's caller handles the Err).
+        let kernel = match &self.kernel {
+            Some(k) => k.clone(),
+            None => anyhow::bail!(
+                "fused HOF slot: partial-body split per-slot splice not \
+                 yet wired ({} sync sub-region(s) built) — interp fallback \
+                 (design/impure_hof_fusion.md Phase 2)",
+                self.split.len()
+            ),
+        };
         let mut feeders = element_feeders;
         for cap in &self.captures {
             let typ = ctx
@@ -2608,13 +2823,89 @@ impl FusedCallback {
             ctx,
             self.spec.clone(),
             self.typ.clone(),
-            self.kernel.clone(),
+            kernel,
             self.wrapped.clone(),
             feeders.into_boxed_slice(),
             scope,
             top_id,
             self.called_kernels.clone(),
         )
+    }
+
+    /// True when this is a Phase-2 partial-body split callback — the
+    /// caller builds the interpreted per-slot body and calls
+    /// [`splice_into_body`](Self::splice_into_body), rather than using
+    /// [`build_slot`](Self::build_slot)'s whole-body `FusedKernel`.
+    pub fn is_split(&self) -> bool {
+        self.kernel.is_none() && !self.split.is_empty()
+    }
+
+    /// Splice the shared sync-region kernels into a freshly-built
+    /// per-slot body (e.g. MapQ's per-slot `GXLambda` body, accessed via
+    /// `CallSite::resolved_apply_mut` → `ApplyViewMut::Lambda` →
+    /// `body_mut`). For each `SplitKernel`: find its sub-region at
+    /// `value_id`, build a fresh `FusedKernel` (sharing the kernel `Arc`,
+    /// feeders matched **by name** to the per-slot body's free vars —
+    /// BindIds differ per slot, names don't), and splice it in. The
+    /// `Bind` wrapping the value publishes the kernel output; the async
+    /// residue (`<-`/`publish`/…) reads it as interpreted nodes. See
+    /// `design/impure_hof_fusion.md` Phase 2.
+    pub fn splice_into_body<R: crate::Rt, E: crate::UserEvent>(
+        &self,
+        ctx: &mut crate::ExecCtx<R, E>,
+        body: &mut crate::Node<R, E>,
+        scope: crate::Scope,
+        top_id: crate::expr::ExprId,
+    ) -> anyhow::Result<()> {
+        for sk in &self.split {
+            // Locate the sync sub-region in this per-slot body and collect
+            // its free-var bindings (fresh BindIds this slot).
+            let per_slot: Vec<(ArcStr, crate::BindId, crate::typ::Type)> = {
+                let subtree =
+                    match crate::fusion::find_node_by_id(body, sk.value_id) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                crate::fusion::collect_region_inputs::<R, E>(&**subtree, ctx)
+                    .into_iter()
+                    .map(|fv| (fv.name, fv.bind_id, fv.typ))
+                    .collect()
+            };
+            // Feeders in the kernel's input order (`sk.inputs`), matched
+            // by name to this slot's free-var bindings.
+            let mut feeders: Vec<crate::Node<R, E>> =
+                Vec::with_capacity(sk.inputs.len());
+            for ki in &sk.inputs {
+                let (bind_id, typ) =
+                    match per_slot.iter().find(|(n, _, _)| *n == ki.name) {
+                        Some((_, id, t)) => (*id, t.clone()),
+                        None => anyhow::bail!(
+                            "split feeder `{}` not found in per-slot body",
+                            ki.name
+                        ),
+                    };
+                feeders.push(crate::node::genn::reference(
+                    ctx, bind_id, typ, top_id,
+                ));
+            }
+            let fk = crate::fusion::builder::FusedKernel::<R, E>::new(
+                ctx,
+                sk.spec.clone(),
+                sk.typ.clone(),
+                sk.kernel.clone(),
+                sk.wrapped.clone(),
+                feeders.into_boxed_slice(),
+                scope.clone(),
+                top_id,
+                sk.called_kernels.clone(),
+            )?;
+            if let Ok(mut old) =
+                crate::fusion::splice_into(body, sk.value_id, fk)
+            {
+                old.delete(ctx);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -3203,7 +3494,8 @@ fn emit_select<R: crate::Rt, E: crate::UserEvent>(
         ExprKind::Select(se) => se,
         _ => return None,
     };
-    let scrut = emit_node(&sel.arg.node, ctx, ec)?;
+    let scrut_raw = emit_node(&sel.arg.node, ctx, ec)?;
+    let (scrut, scrut_let) = stabilize_scrutinee(scrut_raw, sel.spec.id);
     if spec_select.arms.len() != sel.arms.len() {
         return None;
     }
@@ -3211,6 +3503,11 @@ fn emit_select<R: crate::Rt, E: crate::UserEvent>(
     for ((pat, _), (pat_node, body_cached)) in spec_select.arms.iter().zip(sel.arms.iter()) {
         let arm = emit_arm(&scrut, pat, pat_node, &body_cached.node, ctx, ec, self_info)?;
         arms.push(arm);
+    }
+    // Emit `let temp = scrut` (if stabilized) BEFORE the Select stmt so
+    // the arms' `Local(temp)` reads the single evaluation.
+    if let Some(l) = scrut_let {
+        out.push(GirStmt::Let(l));
     }
     out.push(GirStmt::Select { arms });
     Some(())
@@ -3291,10 +3588,21 @@ fn emit_type_predicate_cond(
             // anything else the predicate could never match and we
             // bail (typecheck should have rejected it anyway).
             match &scrut.typ {
-                GirType::Null | GirType::Nullable(_) => Some(Some(GirExpr {
-                    op: GirOp::IsNull(Box::new(scrut.clone())),
-                    typ: GirType::Prim(PrimType::Bool),
-                })),
+                GirType::Null | GirType::Nullable(_) => {
+                    if std::env::var("SCRUT_DBG").is_ok() {
+                        let dbg = format!("{:?}", scrut.op);
+                        let tag =
+                            dbg.split(['(', ' ', '{']).next().unwrap_or("?");
+                        eprintln!(
+                            "ISNULL emitted cloning scrut.op={} (not stabilized unless Local)",
+                            tag
+                        );
+                    }
+                    Some(Some(GirExpr {
+                        op: GirOp::IsNull(Box::new(scrut.clone())),
+                        typ: GirType::Prim(PrimType::Bool),
+                    }))
+                }
                 _ => None,
             }
         }
@@ -3344,25 +3652,40 @@ fn emit_arm_condition(
     match pat {
         StructurePattern::Ignore => Some(None),
         StructurePattern::Bind(name) => {
-            // Introduce a new local that aliases the scrutinee's type.
-            // The scrutinee value itself isn't auto-bound by name here;
-            // that would require emitting a `let` at the start of the
-            // arm body. Existing tests don't exercise the pattern of
-            // referencing the bound name with a complex scrutinee, so
-            // we preserve the historic behaviour of just adding the
-            // input to ctx — any lookup will resolve to the bound name
-            // as a free identifier in the arm body, which works only
-            // when the scrutinee was itself a bare local of that name.
-            // Compound scrutinee + Bind would leave the bound name
-            // dangling; the rewrite pass should reject that case.
-            // Bind binds a scalar local — array scrutinees aren't
-            // valid match positions per typecheck.
-            let prim = scrut.typ.as_prim()?;
-            arm_ctx.inputs.push(Input {
-                name: name.clone(),
-                prim,
-                bind_id: None,
-            });
+            // Bind the pattern variable to the scrutinee value: the arm
+            // body's `Ref(name)` resolves to the scrutinee expr through
+            // `known_consts` (the same inline-expr channel the
+            // variant-payload binds use, below). The historic
+            // `inputs.push` instead registered `name` as a kernel input
+            // FEEDER with no value, so the arm body's `GirOp::Local(name)`
+            // had nothing to read and panicked at runtime ("undefined
+            // scalar local `name`"). Scalar-only: a composite/array
+            // scrutinee bails here (→ the select runs on the
+            // interpreter), matching the prior `as_prim` restriction —
+            // composite scrutinee binds are a follow-up.
+            if scrut.typ.as_prim().is_none() {
+                if std::env::var("SCRUT_DBG").is_ok() {
+                    eprintln!(
+                        "BIND-ARM BAIL (value-shape scrut) typ={:?} name={}",
+                        scrut.typ, name
+                    );
+                }
+                return None;
+            }
+            // Shadow guard: the `Ref` arm checks `lookup_local` (input
+            // slots) BEFORE `find_const` (known_consts), so if `name`
+            // already names a kernel input, this arm binding can't win —
+            // the body would read the outer input instead of the
+            // scrutinee. Refuse to fuse (→ interp) rather than return a
+            // wrong value. (A non-shadowing nested same-name arm binding
+            // is fine: the inner arm_ctx's known_consts.insert overwrites
+            // for that arm's scope only.)
+            if arm_ctx.lookup_local(name).is_some() {
+                return None;
+            }
+            arm_ctx
+                .known_consts
+                .insert(name.clone(), KnownConst { expr: scrut.clone() });
             Some(None)
         }
         StructurePattern::Literal(v) => {
@@ -3426,6 +3749,17 @@ fn emit_arm_condition(
             {
                 match payload_pat {
                     StructurePattern::Bind(bind_name) => {
+                        // Same shadow guard as the scalar `Bind` arm: the
+                        // `Ref` arm checks `lookup_local` (input slots)
+                        // BEFORE `find_const` (known_consts), so a payload
+                        // bind whose name collides with a kernel input
+                        // would be overridden by the input — the body
+                        // would read the outer value instead of the
+                        // payload. Refuse to fuse (→ interp) rather than
+                        // return a wrong value.
+                        if arm_ctx.lookup_local(bind_name).is_some() {
+                            return None;
+                        }
                         let payload_expr = GirExpr {
                             op: GirOp::VariantPayload {
                                 name: var_name_owned.clone(),

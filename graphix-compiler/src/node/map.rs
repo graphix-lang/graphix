@@ -113,6 +113,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Map(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            keys: self
+                .keys
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+            vals: self
+                .vals
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -212,5 +229,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::MapRef(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            source: Cached::new(self.source.node.clone_rebind(ctx, scope)),
+            key: Cached::new(self.key.node.clone_rebind(ctx, scope)),
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            vtyp: self.vtyp.clone(),
+        })
     }
 }

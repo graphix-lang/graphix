@@ -700,21 +700,20 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     /// the compiler can't statically resolve); fusion falls back
     /// to DynCall for those cases.
     ///
-    /// **Strictly analysis-time.** `update()` ignores this field;
-    /// per-slot async state is preserved because runtime continues
-    /// to synthesize fresh Slots per array element.
+    /// The bound (resolved) representative callback CallSite — the
+    /// PRISTINE prototype. `emit_gir` reads this body at compile time to
+    /// inline the callback into a surrounding region (full fusion); it is
+    /// never mutated. See `design/impure_hof_fusion.md` (superseding).
     pub analysis_pred: Option<Slot<R, E>>,
-    /// Per-slot fused-callback artifact, built once in
-    /// [`Apply::static_resolve_fn_args`] from `analysis_pred` via
-    /// `fuse_callsite` when the callback body lowers to a kernel. When
-    /// `Some`, `update()`'s per-slot loop builds each slot's `pred` as a
-    /// shared-kernel `FusedKernel` Node instead of an interpreted
-    /// `genn::apply` CallSite — so a callback that doesn't batch-loop
-    /// (`emit_gir` → `GirOp::ArrayMap` bailed) still fuses, per slot.
-    /// `None` falls back to today's interpreted per-slot dispatch. See
-    /// `design/impure_hof_fusion.md`.
-    pub fused_callback:
-        Option<graphix_compiler::fusion::lowering::FusedCallback>,
+    /// The per-slot template: a `clone_rebind`'d COPY of `analysis_pred`
+    /// with its sync sub-regions fused. Built lazily once on the first
+    /// slot-growing `update()` — a SEPARATE copy, so the pristine
+    /// `analysis_pred` (which `emit_gir` reads) is never mutated. `update`
+    /// `clone_rebind`s THIS per slot; each clone shares the template's
+    /// compiled kernel `Arc`s with freshly re-bound async residue (fresh
+    /// BindIds → independent per-slot state). `None` until first built, or
+    /// when the callback wasn't statically resolvable (→ interp fallback).
+    pub fused_template: Option<Node<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
@@ -751,7 +750,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
                     cur: Default::default(),
                     t: T::default(),
                     analysis_pred: None,
-                    fused_callback: None,
+                    fused_template: None,
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -821,13 +820,15 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             return Ok(());
         };
         cs.resolve_static(ctx, cb.lambda, fv)?;
-        // Build the per-slot fused-callback artifact from the now-
-        // resolved, concretely-typed CallSite. `None` (async body,
-        // unrepresentable arg/return/capture types, …) falls back to
-        // today's interpreted per-slot dispatch in `update()`. See
-        // design/impure_hof_fusion.md.
-        self.fused_callback =
-            graphix_compiler::fusion::lowering::fuse_callsite(cs, ctx);
+        // The analysis_pred is resolved (bound) but NOT fused here. The
+        // fuse + splice is deferred to the first `update()` (the lazy-fuse
+        // block in `update`) — because `emit_gir` (the array-HOF region
+        // inliner) reads THIS SAME `analysis_pred` body at compile time to
+        // inline the callback into the surrounding region. Mutating it
+        // here (splicing in FusedKernels) corrupts what `emit_gir` reads,
+        // so the HOF can't region-fuse and falls back to MapQ. Deferring
+        // to runtime orders the mutation strictly after `emit_gir` has
+        // read the pristine prototype. See design/impure_hof_fusion.md.
         self.analysis_pred = Some(Slot { id, pred, cur: None });
         Ok(())
     }
@@ -855,58 +856,104 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                     (Some(a), true)
                 }
                 Some(a) => {
-                    while self.slots.len() < a.len() {
-                        let (id, node) = genn::bind(
-                            ctx,
-                            &self.scope.lexical,
-                            "x",
-                            self.etyp.clone(),
-                            self.top_id,
-                        );
-                        // Fused per-slot dispatch: build a `FusedKernel`
-                        // Node sharing the callback's compiled kernel,
-                        // fed by this slot's element binding (`node`).
-                        // Falls back to the interpreted CallSite when the
-                        // callback didn't fuse, or (defensively) if the
-                        // slot build fails. See design/impure_hof_fusion.md.
-                        let pred = match &self.fused_callback {
-                            Some(fc) => {
-                                let scope = self.scope.clone();
-                                match fc.build_slot(
-                                    ctx,
-                                    vec![node],
-                                    scope,
-                                    self.top_id,
-                                ) {
-                                    Ok(n) => n,
-                                    Err(e) => {
-                                        log::warn!(
-                                            "fused HOF slot build failed, \
-                                             interp fallback: {e}"
-                                        );
-                                        let node = genn::reference(
+                    // Build the per-slot template ONCE, lazily at first use:
+                    // a `clone_rebind`'d COPY of the pristine `analysis_pred`
+                    // with its sync sub-regions fused. We fuse the CLONE so
+                    // the prototype `emit_gir` reads stays untouched — the
+                    // two readers never share a mutable object. Lazy keeps a
+                    // HOF that region-fuses from building this unused
+                    // template. Split (impure): splice each sync sub-region;
+                    // whole-body (pure): replace the body with one FusedKernel.
+                    if self.fused_template.is_none()
+                        && self.analysis_pred.is_some()
+                    {
+                        let scope = self.scope.clone();
+                        let ap = self.analysis_pred.as_ref().unwrap();
+                        let element_id = ap.id;
+                        let mut t = ap.pred.clone_rebind(ctx, &scope);
+                        {
+                            let any: &mut dyn Any = &mut *t;
+                            if let Some(cs) =
+                                any.downcast_mut::<CallSite<R, E>>()
+                            {
+                                let fc = graphix_compiler::fusion::lowering::fuse_callsite(cs, ctx);
+                                if let Some(fc) = &fc {
+                                    if fc.is_split() {
+                                        if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
+                                            cs.resolved_apply_mut()
+                                        {
+                                            let _ = fc.splice_into_body(
+                                                ctx,
+                                                g.body_mut(),
+                                                self.scope.clone(),
+                                                self.top_id,
+                                            );
+                                        }
+                                    } else {
+                                        let element_ref = genn::reference(
                                             ctx,
-                                            id,
+                                            element_id,
                                             self.etyp.clone(),
                                             self.top_id,
                                         );
-                                        let fnode = genn::reference(
+                                        if let Ok(fk) = fc.build_slot(
                                             ctx,
-                                            self.predid,
-                                            Type::Fn(self.mftyp.clone()),
-                                            self.top_id,
-                                        );
-                                        genn::apply(
-                                            fnode,
+                                            vec![element_ref],
                                             self.scope.clone(),
-                                            vec![node],
-                                            &self.mftyp,
                                             self.top_id,
-                                        )
+                                        ) {
+                                            if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
+                                                cs.resolved_apply_mut()
+                                            {
+                                                let mut old = std::mem::replace(
+                                                    g.body_mut(),
+                                                    fk,
+                                                );
+                                                old.delete(ctx);
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        }
+                        self.fused_template = Some(t);
+                    }
+                    while self.slots.len() < a.len() {
+                        // Mint this slot's fresh element binding "x" in scope
+                        // (fresh id, no ref_var). The cloned template's arg[0]
+                        // element ref + the FusedKernel's element feeder
+                        // resolve "x" to THIS slot's id via the env name map.
+                        let id = ctx
+                            .env
+                            .bind_variable(
+                                &self.scope.lexical,
+                                "x",
+                                self.etyp.clone(),
+                                Default::default(),
+                                TArc::new(
+                                    graphix_compiler::expr::Origin::default(),
+                                ),
+                            )
+                            .id;
+                        // Clone the fused template for this slot: a fresh
+                        // independent graph whose sync sub-regions SHARE the
+                        // compiled kernel `Arc` and whose async residue is
+                        // freshly re-bound (fresh BindIds → independent
+                        // per-slot state). Fall back to a fresh interpreted
+                        // CallSite when no template was built (callback never
+                        // analysis-resolved). See design/impure_hof_fusion.md.
+                        let pred = match &self.fused_template {
+                            Some(t) => {
+                                let scope = self.scope.clone();
+                                t.clone_rebind(ctx, &scope)
+                            }
                             None => {
+                                let node = genn::reference(
+                                    ctx,
+                                    id,
+                                    self.etyp.clone(),
+                                    self.top_id,
+                                );
                                 let fnode = genn::reference(
                                     ctx,
                                     self.predid,
@@ -1009,6 +1056,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         }
         if let Some(mut s) = self.analysis_pred.take() {
             s.delete(ctx);
+        }
+        if let Some(mut t) = self.fused_template.take() {
+            t.delete(ctx);
         }
     }
 

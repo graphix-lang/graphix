@@ -316,6 +316,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Qop(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        // Re-resolve the nearest catch handler in the clone scope (as
+        // `Qop::compile` does); `None` for an unhandled `?`. A `Qop`
+        // *inside* a `TryCatch` is recompiled as part of that node's
+        // recompile, so this path only sees standalone Qops.
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            id: ctx.env.lookup_catch(&scope.dynamic).ok(),
+            n: self.n.clone_rebind(ctx, scope),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -388,5 +401,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::OrNever(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            n: self.n.clone_rebind(ctx, scope),
+        })
     }
 }

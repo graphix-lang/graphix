@@ -273,4 +273,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Select(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        // The arg (scrutinee) references no arm bindings. Per arm, re-mint
+        // the pattern FIRST (binds enter the scope name map), then clone the
+        // body so its Refs resolve to the fresh pattern ids.
+        let arg = Cached::new(self.arg.node.clone_rebind(ctx, scope));
+        let arms = self
+            .arms
+            .iter()
+            .map(|(pat, body)| {
+                let pat = pat.clone_rebind(ctx, scope);
+                let body = Cached::new(body.node.clone_rebind(ctx, scope));
+                (pat, body)
+            })
+            .collect();
+        Box::new(Self {
+            selected: None,
+            arg,
+            arms,
+            typ: self.typ.clone(),
+            spec: self.spec.clone(),
+        })
+    }
 }

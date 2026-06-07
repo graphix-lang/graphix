@@ -490,12 +490,34 @@ enum ToGX<X: GXExt> {
         id: ExprId,
         res: oneshot::Sender<Option<String>>,
     },
+    /// Introspection: snapshot the compiler-env + runtime-ref
+    /// registry sizes for accounting / leak invariant tests.
+    EnvStats {
+        res: oneshot::Sender<EnvStats>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum GXEvent {
     Updated(ExprId, Value),
     Env(Env),
+}
+
+/// A snapshot of the compiler-env binding registry and the runtime
+/// ref-var registry sizes. Used by accounting-invariant tests that
+/// grow and shrink a reactive structure (e.g. an impure HOF array)
+/// and assert these counts return to baseline — i.e. that every
+/// binding/ref minted by per-slot `clone_rebind` is unbound on
+/// teardown, catching a silent `env.by_id` / `by_ref` growth leak.
+/// See [`GXHandle::env_stats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvStats {
+    /// number of bindings registered in the compiler env (`env.by_id`)
+    pub by_id_len: usize,
+    /// number of distinct BindIds with at least one live runtime ref
+    pub ref_var_keys: usize,
+    /// total runtime ref edges (sum of all ref counts across `by_ref`)
+    pub ref_var_total: usize,
 }
 
 struct GXHandleInner<X: GXExt> {
@@ -674,6 +696,15 @@ impl<X: GXExt> GXHandle<X> {
         self.exec(|res| ToGX::DescribeShape { id, res })
             .await?
             .ok_or_else(|| anyhow!("no node registered for {id:?}"))
+    }
+
+    /// Snapshot the compiler-env binding registry (`env.by_id`) and
+    /// the runtime ref-var registry sizes. Used by accounting-
+    /// invariant tests: grow a reactive structure, shrink it back,
+    /// and assert these counts return to baseline (no per-cycle
+    /// binding/ref leak). See [`EnvStats`].
+    pub async fn env_stats(&self) -> Result<EnvStats> {
+        self.exec(|res| ToGX::EnvStats { res }).await
     }
 
     /// Compile a callable interface to a lambda id

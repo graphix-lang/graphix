@@ -102,6 +102,19 @@ macro_rules! compare_op {
             fn view(&self) -> $crate::NodeView<'_, R, E> {
                 $crate::NodeView::$name(self)
             }
+
+            fn clone_rebind(
+                &self,
+                ctx: &mut ExecCtx<R, E>,
+                scope: &Scope,
+            ) -> Node<R, E> {
+                Box::new(Self {
+                    spec: self.spec.clone(),
+                    typ: self.typ.clone(),
+                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope)),
+                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope)),
+                })
+            }
         }
     };
 }
@@ -200,6 +213,19 @@ macro_rules! bool_op {
             fn view(&self) -> $crate::NodeView<'_, R, E> {
                 $crate::NodeView::$name(self)
             }
+
+            fn clone_rebind(
+                &self,
+                ctx: &mut ExecCtx<R, E>,
+                scope: &Scope,
+            ) -> Node<R, E> {
+                Box::new(Self {
+                    spec: self.spec.clone(),
+                    typ: self.typ.clone(),
+                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope)),
+                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope)),
+                })
+            }
         }
     };
 }
@@ -272,6 +298,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Not(self)
+    }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            n: self.n.clone_rebind(ctx, scope),
+        })
     }
 }
 
@@ -480,6 +518,19 @@ macro_rules! arith_op {
 
             fn view(&self) -> $crate::NodeView<'_, R, E> {
                 $crate::NodeView::$name(self)
+            }
+
+            fn clone_rebind(
+                &self,
+                ctx: &mut ExecCtx<R, E>,
+                scope: &Scope,
+            ) -> Node<R, E> {
+                Box::new(Self {
+                    spec: self.spec.clone(),
+                    typ: self.typ.clone(),
+                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope)),
+                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope)),
+                })
             }
         }
     }

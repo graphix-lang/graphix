@@ -371,6 +371,22 @@ impl<X: GXExt> GX<X> {
                         .map(graphix_compiler::node_shape::describe_node);
                     let _ = res.send(desc);
                 }
+                ToGX::EnvStats { res } => {
+                    let by_id_len = self.ctx.env.by_id.len();
+                    let ref_var_keys = self.ctx.rt.by_ref.len();
+                    let ref_var_total = self
+                        .ctx
+                        .rt
+                        .by_ref
+                        .values()
+                        .map(|m| m.values().copied().sum::<usize>())
+                        .sum();
+                    let _ = res.send(crate::EnvStats {
+                        by_id_len,
+                        ref_var_keys,
+                        ref_var_total,
+                    });
+                }
             }
         }
     }

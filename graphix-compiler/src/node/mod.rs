@@ -144,6 +144,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Nop(self)
     }
+
+    fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
+        Box::new(Self { typ: self.typ.clone() })
+    }
 }
 
 #[derive(Debug)]
@@ -196,6 +200,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::ExplicitParens(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            n: self.n.clone_rebind(ctx, scope),
+        })
     }
 }
 
@@ -434,6 +445,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Constant(self)
     }
+
+    fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            value: self.value.clone(),
+            typ: self.typ.clone(),
+        })
+    }
 }
 
 // used for both mod and do
@@ -552,6 +571,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         }
         Err(replacement)
     }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Node<R, E> {
+        // `Do` children share the block's scope (see `Block::compile`),
+        // so recurse in lexical order — each `Bind` re-mints into the
+        // (transient) scope name map before later siblings resolve names.
+        let children: Box<[Node<R, E>]> = self
+            .children
+            .iter()
+            .map(|c| c.clone_rebind(ctx, scope))
+            .collect();
+        Box::new(Self {
+            module: self.module,
+            spec: self.spec.clone(),
+            children,
+            scope: self.scope.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -645,6 +685,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::StringInterpolate(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            typs: self.typs.clone(),
+            args: self
+                .args
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -734,6 +787,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Connect(self)
+    }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Node<R, E> {
+        // Re-resolve the `<-` target by name: an outer Connect target
+        // (e.g. `counter`, shared across slots) resolves to the unchanged
+        // outer binding; an internal target (a block-local re-minted by an
+        // earlier sibling) resolves to its fresh id. Then re-register it as
+        // unstable and recurse the RHS.
+        let new_id = ctx
+            .env
+            .by_id
+            .get(&self.id)
+            .map(|b| ModPath::from_iter([b.name.as_str()]))
+            .and_then(|n| {
+                ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id)
+            })
+            .unwrap_or(self.id);
+        ctx.unstable_bindings.insert(new_id);
+        let node = self.node.clone_rebind(ctx, scope);
+        Box::new(Self { spec: self.spec.clone(), node, id: new_id })
     }
 }
 
@@ -911,6 +988,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::TypeCast(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            target: self.target.clone(),
+            n: self.n.clone_rebind(ctx, scope),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -981,6 +1067,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Any(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            n: self.n.iter().map(|x| x.clone_rebind(ctx, scope)).collect(),
+        })
     }
 }
 

@@ -892,4 +892,83 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::CallSite(self)
     }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Node<R, E> {
+        // Bind-shaped: re-mint the arg-slot ids (genn-minted, NOT env-named,
+        // so they need a local old→new map), clone each arg value node (the
+        // element ref re-resolves its name to MapQ's fresh element), rebuild
+        // arg_refs to point at the fresh slot ids, then clone the fnode and
+        // the bound callee `Apply` structurally (preserving its fused body).
+        // Precondition: the template CallSite is already bound + fused.
+        let mut id_remap: AHashMap<BindId, BindId> = AHashMap::default();
+        let mut new_args: AHashMap<ArgKey, Arg<R, E>> = AHashMap::default();
+        for (key, arg) in &self.args {
+            let new_id = BindId::new();
+            id_remap.insert(arg.id, new_id);
+            let node = arg.node.as_ref().map(|n| n.clone_rebind(ctx, scope));
+            new_args.insert(
+                key.clone(),
+                Arg { id: new_id, node, is_default: arg.is_default },
+            );
+        }
+        let arg_refs: Vec<Node<R, E>> = self
+            .arg_refs
+            .iter()
+            .map(|r| {
+                let old = (&**r as &dyn std::any::Any)
+                    .downcast_ref::<Ref>()
+                    .expect("arg_ref must be a Ref");
+                let id = id_remap.get(&old.id).copied().unwrap_or(old.id);
+                ctx.rt.ref_var(id, self.top_id);
+                Box::new(Ref {
+                    spec: old.spec.clone(),
+                    typ: old.typ.clone(),
+                    id,
+                    top_id: self.top_id,
+                }) as Node<R, E>
+            })
+            .collect();
+        let fnode = self.fnode.clone_rebind(ctx, scope);
+        // A `GXLambda` callee is cloned STRUCTURALLY — preserving its fused
+        // body. A builtin callee is instead left UNBOUND (`function: None`,
+        // `statically_resolved: false`) so the clone re-binds it on its
+        // first update, re-running the builtin's own `init` to produce a
+        // FRESH independent instance (its own subscription, counter, timer,
+        // …). Re-bind is correct for builtins precisely because they don't
+        // fuse their body, so nothing is lost by rebuilding from `init` —
+        // and it needs zero per-builtin clone code. (A `GXLambda` must NOT
+        // be re-bound that way: re-init would recompile its body from spec,
+        // discarding the spliced FusedKernels.)
+        let (function, statically_resolved) = match &self.function {
+            Some((v, apply))
+                if matches!(apply.view(), crate::ApplyView::Lambda(_)) =>
+            {
+                (
+                    Some((v.clone(), apply.clone_rebind(ctx, scope))),
+                    self.statically_resolved,
+                )
+            }
+            _ => (None, false),
+        };
+        Box::new(Self {
+            spec: self.spec.clone(),
+            ftype: self.ftype.clone(),
+            resolved_ftype: self.resolved_ftype.clone(),
+            rtype: self.rtype.clone(),
+            fnode,
+            args: new_args,
+            arg_refs,
+            function,
+            flags: self.flags,
+            scope: self.scope.clone(),
+            top_id: self.top_id,
+            statically_resolved,
+            // Re-prime on the clone's first update (like a fresh bind).
+            first_static_update: true,
+        })
+    }
 }

@@ -3837,3 +3837,446 @@ all 3 modes return `Value::Error`).
 Flipped `error` None → **Jit** (203 → 204). `filter_err` stays None — it's
 a streaming/Async builtin over `array::iter`, a different cliff.
 132 compiler + 1863 graphix-tests green.
+
+### Impure HOF callback fusion — maximal sync-subgraph split (Jun 2026)
+
+The real M8.4 work, landed end-to-end: an **impure** HOF callback
+(`array::map(a, |x| { let v = bigcalc(x); publish(p, v); v })` — a sync
+calc followed by an async op) now **splits at the async boundary**,
+fuses + JITs the sync sub-region, and runs it per-slot while the async
+residue stays interpreted. User's framing: "scan a node subtree, split
+it at async ops into multiple subtrees, fuse the parts with no async ops
+and make them inputs into the async parts."
+
+**Why a split, not whole-body fusion.** A HOF callback runs **per array
+element** via MapQ's per-slot machinery (`update()`'s
+`while self.slots.len() < a.len()` loop — one graph per element, fed via
+`ctx.cached.insert(s.id, v)`). Async ops keep per-slot state (a
+`publish`/`<-`/`subscribe`/`count` is keyed by compile-time BindId), so
+the async residue **must** stay per-slot — it can't be hoisted into one
+shared kernel. Only the **pure** sub-computation is BindId-free and thus
+shareable as one `Arc<GirKernel>`. The sync/async boundary coincides
+exactly with the shareable/rebuild boundary.
+
+**Concrete types are on the CallSite, not the Lambda.** A `LambdaDef`
+carries unbound polymorphic TVars; the monomorphized `FnType` lives on
+the call site (`CallSite.resolved_ftype` via `resolve_tvars()`). So
+fusion of a HOF callback is a **CallSite-phase** operation — same
+constraint as `NeedsCallSite` builtins. `MapQ::static_resolve_fn_args`
+(a compile-time `BuiltIn` hook) is where the callback's synthetic,
+concretely-typed CallSite (`analysis_pred`) is built and where
+`fuse_callsite` runs.
+
+**Compile-time split engine** (`fusion/lowering.rs`):
+- `fuse_callsite(cs, ec) -> Option<FusedCallback>`: gets the callback
+  `g` via `cs.resolved_apply()` → `ApplyView::Lambda(g)`; tries
+  `build_lambda_kernel` on the **whole** body first (the pure-callback
+  Phase-1 path); on `None` (body has async ops) falls to
+  `build_body_split`.
+- `build_body_split(body, ec) -> Vec<SplitKernel>`: walks the body
+  `Block`'s children and, for each `let`-value, tries `build_region` on
+  it. **`build_region` succeeding *is* the sync/async classifier** — it
+  bails on async ops / unrepresentable types, so a success is exactly "a
+  fusable sync sub-region." Each → a `SplitKernel { value_id, kernel:
+  Arc<GirKernel>, wrapped: Option<WrappedKernel>, inputs, … }`. Reuses
+  the same `collect_region_inputs` + `walk_node_for_builtin_calls` +
+  `build_region` + `compile_kernel_with_callees` machinery `fuse()` uses
+  for the program tree, pointed at the callback body.
+- `FusedCallback.kernel: Option` (None = split path) + `split:
+  Vec<SplitKernel>`; `is_split()` = `kernel.is_none() && !split.is_empty()`.
+- `FusedCallback::splice_into_body(ctx, body: &mut Node, scope, top_id)`:
+  per `SplitKernel`, `find_node_by_id(body, value_id)`,
+  `collect_region_inputs` on the per-slot subtree, build feeders matched
+  **by name** against the slot's region inputs (`genn::reference` per
+  input), `FusedKernel::new(... sk.kernel.clone() ...)`, `splice_into`
+  then `old.delete(ctx)`. The shared `Arc<GirKernel>` is reused across
+  all slots; only the feeders + the `FusedKernel` wrapper are per-slot.
+
+**Runtime per-slot splice** (`MapQ::update`, graphix-package-core):
+- **Force-bind at slot construction (observable path).** After building
+  the slot's fresh `genn::apply` `CallSite` `pred`, the split case
+  force-resolves it event-free: `cs.resolve_static(ctx, def, fv)` where
+  `fv = ctx.cached[predid].clone()` and `def =
+  fv.downcast_ref::<LambdaDef>()` (the same value `bind()` downcasts at
+  `callsite.rs:524`). Then `splice_into_body(ctx, g.body_mut(), …)` via
+  `cs.resolved_apply_mut() -> ApplyViewMut::Lambda(g)`. This splices the
+  sync kernel **before the slot's first run**, so even a one-shot
+  (static) array fuses on its only cycle. `slot_spliced[i] = true` once
+  resolved (the deferred path then skips it). `resolve_static` is
+  event-free (binds the `GXLambda`, no body run); the element `s.id` is
+  primed later (the `ctx.cached.insert(s.id, v)` loop runs before the
+  drive loop), so the spliced kernel's element feeder reads a live value.
+- **Deferred splice in the drive loop (safety net).** After each
+  `s.pred.update`, an un-spliced split slot whose `CallSite` has lazily
+  bound (`resolved_apply_mut() == Lambda(g)`) gets the same
+  `splice_into_body`. The pre-splice cycle runs interpreted but yields
+  the same value (kernel == interpreted sync region), so it's
+  correctness-safe — it only catches slots the force path missed.
+- `MapQ.slot_spliced: Vec<bool>` parallels `slots` (push on grow, pop on
+  shrink).
+
+**Plumbing made `pub(crate)`/`pub`:** `fusion::{FreeVarInput,
+collect_region_inputs, find_node_by_id}`; `ExecCtx.jit_enabled: bool`
+(set from `CFlag::JitDisabled` in `compile()`); `CallSite::
+{resolve_static, resolved_apply_mut}`. `FusedCallback` has a manual
+`Debug` impl (MapQ derives Debug; `WrappedKernel` isn't `Debug`).
+
+**Phase 1 was NOT inert** (an earlier wrong prediction): the per-slot
+shared-kernel dispatch flipped `list::map/filter/find_miss` None → Jit,
+because non-array HOFs (recursive-variant `List`) never batch-loop, so
+per-slot dispatch is their *only* fusion path.
+
+**Proven**: `lang::fusion::impure_hof_callback_splits` —
+`array::map([1,2,3], |x| { let v = x*2+1; counter <- v; v })` → `[3,5,7]`
+**and** `jit_invocations > 0` (the sync `x*2+1` JIT-ran per slot). The
+async `counter <-` stays interpreted. 132 compiler + 1864 graphix-tests
+green, no regression.
+
+**Perf note**: force-resolve compiles the per-slot `GXLambda` + feeders
+at construction (runtime) — a cost that already existed for per-slot
+graphs (`genn::apply` builds one graph per element); the splice adds
+feeder compilation. Net win for arrays that update repeatedly; possible
+setup-cost loss for very large one-shot arrays. Correctness unaffected.
+
+**Follow-ups**: split only scans block `let`-values today — not the
+block *tail* expr, not a sync region nested directly in an async op's
+argument (`publish(p, bigcalc(x))` with no intervening `let`), not
+multi-level `select`/`try` bodies. Each extends the same
+`build_body_split` scan. See `design/impure_hof_fusion.md`.
+
+### Impure-HOF fusion rebuilt on `clone_rebind` — clone the fused template per slot (Jun 2026)
+
+Replaced the MapQ-special split machinery (`FusedCallback`/`build_slot`/
+per-slot `splice_into_body`/`slot_spliced`/force-bind/deferred-splice) with
+a uniform, general mechanism the user drove: **fuse the `analysis_pred`
+template once, then `clone_rebind` it per array slot.** "Fuse a partly-async
+callback" is now just "fuse a node tree, then clone it" — no per-case types.
+
+**The core insight (user's).** The per-slot path was *already* a rebinding
+clone — it recompiled the callback body from its `Expr` per slot, minting
+fresh `BindId`s (that's how each slot gets independent async state). The only
+reason the splice machinery existed is that recompile-from-`Expr` yields an
+*unfused* body (fusion is node-level). So: fuse the template once, and
+`clone_rebind` it (preserving the fused structure) instead of recompiling.
+
+**Why no RemapTable.** A `BindId` is not a number on a node — it's a key into
+three registries (`env.by_id`, the scope `name→id` map, the runtime
+`ref_var` table). Re-minting *requires* `env.bind_variable`, which updates the
+scope name map — and then refs resolve by name. **The env's scoped name map
+IS the remap.** A side table would duplicate the registration we must do
+anyway. (Verified against the live tree; this also killed the early
+"deep-clone with a RemapTable" idea.)
+
+**`clone_rebind` contract** — `clone_rebind(&self, ctx, scope) -> Node` (on
+`Update`; `-> Box<dyn Apply>` on `Apply`): an independent copy as if compiled
+fresh in the same lexical spot — bindings the subtree introduces get fresh
+env-registered ids; internal refs resolve to the copy's fresh ones; captures
+(external refs) keep the outer id; immutable fused-kernel `Arc`s are shared;
+stateful builtins get fresh state. It's the symmetric twin of `delete` (which
+tears down those same three registrations).
+
+**The default is RE-INIT (not panic).** `Update::clone_rebind`'s default
+`compile`s the node's `spec` afresh in `scope` — which re-mints owned
+bindings and re-resolves refs by name, i.e. the clone contract — correct for
+any *residue* node (no fused descendants). Only the **fusion spine** overrides
+with a structural clone, because re-compiling a node with a spliced
+`FusedKernel` descendant would lose the fusion. (Started with a panic default;
+the full suite immediately showed 38 residue node types — `Eq`, comparisons,
+`Select`, … — so the recompile default is both correct and the right call.
+[[feedback-run-the-code]].)
+
+**Spine impls** (all verified, structural so fusion survives):
+- `Ref` (`node/bind.rs`): name from `spec.kind` (`ExprKind::Ref`) or
+  `env.by_id[id].name` (synthesized NOP-spec feeders) → `ModPath::from_iter`
+  → `lookup_bind(scope, name)` → fresh id, else keep (capture); `ref_var`.
+- `StructPatternNode` (`node/pattern.rs`): walk the enum, re-mint each
+  `Bind(old_id)` via `env.by_id[old_id]` → `bind_variable` (`by_id` is `pub`).
+- `Bind`: `rec`-aware order (non-rec value-then-pattern; rec pattern-then-value).
+- `Block`/`Do`: recurse children in lexical order (name map is transient).
+- `GXLambda` (`Apply`): re-mint arg patterns, then `clone_rebind` body
+  STRUCTURALLY (preserve fusion, NOT re-init); keep `LambdaId` (share kernel).
+- `BuiltInLambda`: delegate to inner `apply.clone_rebind`.
+- `CallSite`: Bind-shaped — re-mint the `args`-map ids (a local old→new map;
+  they're genn-minted, not env-named), rebuild `arg_refs` at the fresh ids,
+  `clone_rebind` `fnode` + the bound callee. (Not special vs Bind — the user's
+  call; I'd over-framed it as hard by conflating clone with re-bind.)
+- `Connect`: re-resolve target by name (outer `counter` → unchanged; internal
+  → fresh), re-insert unstable, recurse RHS.
+- `FusedKernel`/`GirNode` (`fusion/builder.rs`, `gir_interp.rs`): an ordinary
+  Node — recurse feeder deps + `dyn_slot` Applys, SHARE the immutable
+  `Arc<GirKernel>`/`Arc<WrappedKernel>`/`Arc<KernelRegistry>` (the kernel is
+  incidental — the precompiled update logic), re-init scratch + dyn_slots via
+  a new `GirNode::clone_shared` that re-runs the `build` chokepoint with the
+  shared Arcs.
+
+**Lazy template fuse — the key bug + fix.** Fusing the template at *compile
+time* (in `static_resolve_fn_args`) POISONED the surrounding region's JIT for
+HOFs that region-fuse (the common pure case: `array::filter_map(a, |x| …)`
+fuses into the program region as `GirOp::ArrayFilterMap`, so MapQ never runs
+and the template is unused — but building+JITing it still broke the region's
+JIT, dropping it to interp). Fix: defer the fuse to the **first `update()`**
+that grows slots (`template_fused: bool` flag). Region-fused HOFs never call
+`update()` → no compile-time interference → region JITs normally; MapQ-run
+HOFs (impure, or non-region-fused like recursive-variant `list::*`) fuse the
+template lazily. `fuse()` (the walker) does NOT splice a lambda-body-internal
+sync region, so the lazy fuse reuses the proven `fuse_callsite` →
+`splice_into_body` (split/impure) / `build_slot`+replace-body (whole-body/pure
+Phase-1). So `FusedCallback`/`SplitKernel`/`build_body_split`/`splice_into_body`/
+`build_slot`/`fuse_callsite` are NOT deleted — they're now the lazy-fuse
+*mechanism*, run once per MapQ.
+
+**MapQ runtime** (`update`'s slot-grow loop): bind a fresh element `"x"` in
+scope (`env.bind_variable`, no ref_var/node), then `template.pred
+.clone_rebind(ctx, scope)` — the cloned arg[0] element ref + the FusedKernel's
+element feeder both resolve `"x"` to this slot's fresh id via the name map.
+Removed: the old per-slot `build_slot`, the force-bind/deferred-splice dance,
+`slot_spliced`, `fused_callback`.
+
+**Proven**: `lang::fusion::impure_hof_callback_splits` + `…_split_captures`
+(impure `array::map([1,2,3], |x| { let v=x*2+1; counter <- v; v })` → `[3,5,7]`
+with the sync `x*2+1` JIT-ran per slot; capture variant `x*k` → `[10,20,30]`).
+Chained sync lets verified by probe. **132 compiler + 1865 graphix-tests, 0
+failed** — the clone path runs for EVERY HOF callback (pure region-fused +
+pure MapQ + impure) with no regression.
+
+**Follow-up (#157):** a builtin call in an impure callback's async residue
+(`array::map(a, |x| { calc; net::publish(p, x) })`) would hit the `Apply`
+panic default (CallSite → BuiltInLambda → inner builtin `clone_rebind`).
+Current tests use `Connect` residue only. Fix: either builtins own
+`clone_rebind` (macro default + stateful overrides), or `CallSite::clone_rebind`
+leaves a builtin function unbound so it lazily re-inits fresh per slot
+(re-bind is correct for builtins — they don't fuse their body). Option (b) is
+likely cleaner.
+
+### Structural clone_rebind for residue + separate-clone template (Jun 2026)
+
+Retired the fragile `clone_rebind` recompile-default for value-computing
+residue and re-enabled MapQ's separate-clone template — biting the bullet on
+a broad mechanical change to kill latent tech debt rather than paper over it.
+
+**Why.** The earlier `clone_rebind` shipped with two shortcut defaults: a
+panic for `Apply` (builtins) and a recompile-from-spec for `Update` (residue).
+Both broke on inputs the tested paths didn't hit. The recompile-default's
+killer: it re-resolves every `Ref` by name in the clone's scope, but a CAPTURE
+was resolved in an *outer* scope not lexically visible from the callback's
+`/array/...` scope → `compile` hard-fails ("k not defined"). Proven by the
+`x*k` separate-clone attempt. The structural `Ref::clone_rebind` handles this
+(keep the original id when a name doesn't resolve = capture preserved); the
+recompile couldn't. ("Imagine a swarm of users feeding valid code to break the
+compiler" — every valid program must clone, not just the tested ones.)
+
+**Builtins (#157) — narrow, closed.** `CallSite::clone_rebind` clones a
+`GXLambda` callee structurally but leaves a *builtin* callee unbound
+(`function: None`, `statically_resolved: false`) so it re-inits fresh per slot
+via its own `init` — zero per-builtin code. The panic was narrower than it
+looked: inner builtin CallSites in the analysis-only template are *already*
+unbound (handled by re-bind), so it was only reachable for a direct
+async-builtin callback (`array::map(a, async_builtin)`). Common
+builtin-in-residue already worked.
+
+**Structural clone_rebind for value nodes (#161).** Recurse children (each
+`Ref` goes through `Ref::clone_rebind`, so captures are preserved); clone
+leaves. Done for: `op.rs` (all 19 arithmetic/comparison/logical + `Not` — one
+edit per the 3 macros, `Cached::new(child.clone_rebind())`), `data.rs`
+(Struct/StructWith/Tuple/Variant/StructRef/TupleRef), `array.rs`
+(Array/ArrayRef/ArraySlice), `map.rs` (Map/MapRef), `select.rs` (Select +
+`PatternNode::clone_rebind` re-minting arm patterns *before* cloning the body
+so its Refs resolve to the fresh ids), `error.rs` (Qop re-resolves the catch
+id via `lookup_catch`; OrNever), `mod.rs` (ExplicitParens/TypeCast/
+StringInterpolate/Any/Constant/Nop).
+
+**Recompile-default RETAINED but capture-safe — for env/reference nodes
+only.** For nodes whose `compile` sets up env state no hand-clone could safely
+duplicate (`TryCatch` catch-scope+handler, `Module` env-snapshots+proxy+
+check_sig, `Lambda`, `Use`/`TypeDef`, and the byref/synthetic-id nodes
+`ByRef`/`Deref`/`Sample`/`ConnectDeref`), recompile-from-spec IS the correct
+structural-equivalent — duplicating Module's env logic by hand would be the
+real tech-debt hazard. Made it capture-safe: before `compile`, alias each
+*unresolved* external ref's name → its original id into the clone scope (via
+`env.alias_variable`); internal re-minted refs already resolve and are left
+alone. A `TryCatch` recompile absorbs all its children (Qops get their catch
+id from `compile`), so the structural `Qop::clone_rebind` only ever sees
+standalone (unhandled) Qops.
+
+**Separate-clone template (the MapQ cleanliness win, now unblocked).** MapQ no
+longer mutates `analysis_pred` in place. On the first slot-growing `update()`
+it `clone_rebind`s the pristine `analysis_pred` into a SEPARATE
+`fused_template: Option<Node>` and fuses *that clone*; the prototype `emit_gir`
+reads at compile time is never touched (the two readers don't share a mutable
+object — structural separation, not temporal ordering). Per slot it clones
+`fused_template`. This is what the `x*k` capture case validates: cloning the
+pristine `Mul{Ref(x), Ref(k)}` now recurses through structural ops →
+`Ref(k)::clone_rebind` keeps the capture → `impure_hof_callback_split_captures`
+passes (it failed before the structural work). `template_fused: bool` →
+`fused_template: Option<Node>` (presence is the "built" flag).
+
+**Note on the recompile-default's reachability.** Lazy-mutate fed
+`clone_rebind` only post-fuse SPINE residue, so the structural value impls were
+never exercised by the impure fixtures. The separate-clone feeds the PRISTINE
+body, so it exercises the structural ops for every MapQ callback — which is why
+re-enabling it is both the cleanliness win and the validation.
+
+132 compiler + 1866 graphix-tests green.
+
+### clone_rebind test campaign (4 efforts) (Jun 2026)
+
+Full plan + per-effort results in `design/clone_rebind_testing.md`. The
+suite was green but mostly proved *value correctness on the tested
+paths*; this campaign targets the three things that nag about the
+clone_rebind design — exactly the classes a passing test can hide. The
+user's framing: "imagine a vast swarm of agents (every user) whose only
+goal is to break the compiler by feeding it valid code. Welcome to
+compilers." Goal: find a bug, not pass.
+
+- **#1 Clone-equivalence matrix** (`lang::fusion::clone_*`, 13 fixtures).
+  One fixture per residue node shape (arith, compare, bool, select,
+  tuple/struct/array/map/variant producers + accessors, string interp,
+  nested), each forced through MapQ's per-slot CLONE path (an `impure`
+  callback via `counter <- x`) AND capturing an outer `k`. A dropped
+  child / swapped field / lost capture makes the value wrong. **Found a
+  real PRE-EXISTING fusion bug (#162):** `let r = select x { 1 => k, n =>
+  n*k }; r` panics "undefined scalar local `n`" — a let-bound (non-tail)
+  `select` with an arm BINDING. NOT clone_rebind: the region-fuse path
+  (`region_select_let_bound`, no clone) panics identically → it's in
+  `emit_select_as_expr` / the let-value emit. The 2 reproducing tests are
+  `#[ignore]`'d as live docs, queued for the off-topic-bug conversation.
+
+- **#2 Accounting invariant** (`env_accounting_grow_shrink`). New
+  `GXHandle::env_stats() -> EnvStats { by_id_len, ref_var_keys,
+  ref_var_total }` introspection hook (a `ToGX::EnvStats` mirroring
+  `match_shape`/`describe_shape`; the gx.rs handler reads
+  `ctx.env.by_id.len()` + walks the runtime `by_ref` registry). Drives an
+  impure HOF (`arr` bound at root, driven by BindId via `GXHandle::set`,
+  so the apparatus mints no bindings) up to N=4 and back to 0, 4×,
+  snapshotting at each bottom. **The invariant HOLDS tightly:** all four
+  arr=[] bottoms byte-identical (`759/750/758`), peak ≫ bottom
+  (`771/766/782` — each grow mints +12/+16/+24, each shrink reverses ALL
+  exactly). So the scariest nag — silent unbounded `env.by_id`/`by_ref`
+  growth, "nothing turns red" — is now an executable, sharp, green
+  invariant. A single-binding-per-cycle leak → `bottoms[1] != bottoms[0]`.
+
+- **#3 Env-node-in-callback fixtures** (4). The recompile-default
+  `clone_rebind` (lib.rs) is the ONLY path that `alias_variable`-mutates
+  the clone scope's name map; it fires for env/reference nodes with no
+  structural override (TryCatch, Sample, ByRef/Deref, …). Each plants one
+  inside an impure callback capturing `k`: `clone_byref_deref_capture`,
+  `clone_sample_capture` (`x ~ k`, not soundly fusable → stays a
+  structural Sample), `clone_trycatch_try_capture` (non-firing), and
+  `clone_trycatch_catch_capture` (firing via the Connect pattern). **All
+  pass — the alias path is SOUND, no cross-slot contamination.** Surfaced
+  the **catch-is-side-effect-only** semantic: `try BODY catch(e) => H`
+  evaluates to BODY's value *always*; a direct-value catch
+  (`catch => 99`) surfaces NOTHING (when BODY is all-error → `never`, the
+  slot times out). Every real firing-catch must `binding <- e` and return
+  the binding separately (cf. CHECKED_DIV0). Two of my fixtures were wrong
+  on this; localizing via the PLAIN non-fused path (not the clone)
+  separated "my mental model is wrong" from "clone is broken"
+  ([[feedback-run-the-code]], in reverse — verify the EXPECTATION too).
+
+- **#4 proptest swarm** (`clone_matches_reference`, 128 cases). Random
+  i64-valued nested bodies over `x`+`k` (`+ - *`, literal-pattern select,
+  tuple/struct accessors as `{ let p = (a,b); p.0 }` block-exprs); assert
+  CLONE path == non-clone REFERENCE path (`pure_map`). **All 128 agree.**
+  Surfaced an off-topic PARSER limitation: the first grammar emitted
+  `(a,b).0`, proptest shrank to `((x,x).0)` — a parse error (field access
+  needs a bound name, not a paren-literal). Reshaped the grammar to the
+  binding-first block form.
+
+**Bottom line:** clone_rebind validated across every axis — per-shape
+(matrix), accounting (no leak), env/alias path (sound), random
+composition (proptest). NO clone_rebind defect. Two off-topic findings:
+#162 (real fusion bug, `#[ignore]`'d) and the `(a,b).0` parser
+limitation. New: `GXHandle::env_stats` + `EnvStats` (graphix-rt),
+`proptest` + `netidx-value` dev-deps (graphix-tests).
+
+132 compiler + 1885 graphix-tests green (2 ignored — the #162 docs).
+
+### #162 FIXED — fused `select` arm binding panic (Jun 2026)
+
+The bug the test campaign found. A fused `select` with an arm BINDING
+pattern (catch-all `n =>`, typed capture `i64 as n =>`, guard-using
+captures) panicked at runtime: "undefined scalar local `n` — GIR is
+malformed" (`gir_interp.rs:999`). Diagnosed empirically (reproduced +
+bounded with the binary) THEN corroborated by a 4-agent understanding
+workflow — both reached the identical root cause + fix. Broader than the
+"let-bound" framing: it hit ANY fused select with an arm binding (tail /
+let-value / arithmetic-operand position alike); the matrix's
+`clone_select_*` fixtures "passed" only because the impure clone path
+doesn't fuse the block TAIL, so the select ran interpreted and dodged it
+([[feedback-run-the-code]] — a passing test that wasn't exercising the
+path it claimed).
+
+**Root cause** (`fusion/lowering.rs`, `emit_arm_condition`'s
+`StructurePattern::Bind(name)` arm): it pushed `arm_ctx.inputs.push(Input
+{ name, prim, bind_id: None })` — registering the bound name as a kernel
+input FEEDER with no value. The arm body's `Ref(name)` then lowered to a
+dangling `GirOp::Local(name)` with nothing to feed it. (The in-code
+comment already admitted the gap: "The scrutinee value itself isn't
+auto-bound by name here.")
+
+**Fix** (one arm): bind `name` to the scrutinee via
+`arm_ctx.known_consts.insert(name, KnownConst { expr: scrut.clone() })` —
+the exact inline-expr channel the sibling variant-payload binds already
+use; the arm body's `Ref(name)` resolves to the scrutinee through
+`find_const`. Backend-agnostic (emit layer) so interp AND JIT benefit;
+verified correct under full fusion+JIT. Plus a **shadow guard**: the
+`Ref` arm checks `lookup_local` (inputs) before `find_const`, so an arm
+binding shadowing a same-named kernel INPUT can't win — that case bails
+to the interpreter (no wrong value) rather than reading the outer input.
+
+**Regression suite** (`lang::fusion`): un-`#[ignore]`'d the two #162
+tests; added 4 `fused_select_*` (catch-all / typed-capture / guard+
+capture / arith-wrapped) that assert the value AND `fusion_invocations >
+0` (the PURE-HOF form actually fuses the select, unlike the dodging
+clone form); the proptest grammar gained an arm-binding `select` arm
+(fresh name `q`, so it can't hit #167). 132 compiler + 1891 graphix-
+tests green (1 ignored — the #167 doc).
+
+**#167 surfaced (separate, pre-existing, NOT fusion).** A select arm
+binding that shadows an outer name a SIBLING arm references — `let n =
+100; … select x { 1 => n, n => n*2 }` — HANGS in the pure node-graph
+interpreter (verified under `CFlag::FusionDisabled`). The #162 guard
+routes these pathological cases to the interp (avoiding the wrong value
+an unguarded name-keyed bind would give), where this pre-existing hang
+surfaces — exposed, not caused, by the guard. `#[ignore]`'d
+`shadow_arm_binding_outer_ref`; queued for the off-topic-bug
+conversation. A "robust" #162 variant (bind by pattern BindId + a `Block`
+let, so `lookup_local_by_bind_id` beats a shadowing input) would fuse
+these correctly and sidestep #167 — tracked, not done (more code,
+inconsistent with the variant case, and #167 is the proper layer).
+
+**Pulling the thread — an adversarial review of the #162 fix found TWO
+MORE confirmed wrong-output bugs** ([[feedback-run-the-code]] — both
+empirically reproduced, neither caught by the existing value-only
+fixtures because they used idempotent/non-colliding scrutinees):
+
+1. **Non-idempotent scrutinee DUPLICATED.** The `known_consts` channel
+   (and the PRE-EXISTING arm-condition `gir::cmp(scrut.clone(), …)`)
+   INLINE the scrutinee GirExpr at every use. For a `Local` scrutinee
+   that's invisible; for a non-deterministic one it diverges. `select
+   rand::rand(…) { n => n == n }` returned `false` (each `n` re-
+   dispatched `rand`); `n - n` returned nonzero. Partly pre-existing —
+   a multi-literal-arm select duplicated the scrutinee across arm
+   conditions regardless of the #162 binding work. **Fix:**
+   `stabilize_scrutinee` (`lowering.rs`) binds a non-`Local` SCALAR
+   scrutinee to a fresh temp local once (`let __sel_scrut_<exprId> =
+   scrut`) and feeds `Local(temp)` to every condition / type-predicate /
+   binding — expr form wraps the `IfChain` in a `GirOp::Block`, stmt
+   form prepends a `GirStmt::Let`. The temp needs no
+   `register_kir_binding` (runtime Block/Let provides the value;
+   `GirOp::Local` dispatches on the expr's own `typ`). Scalar-only for
+   now (the confirmed bug is scalar; value-shape non-idempotent
+   scrutinees are a follow-up).
+
+2. **Variant-payload arm had the SAME shadow bug** the scalar `Bind`
+   guard fixed — a payload bind colliding with a kernel input read the
+   input, not the payload (`select \`Pair(x, b) => x+b` with element `x`
+   in scope → `[4,5,6,7]` instead of `[14,15,16,17]`). **Fix:** the same
+   `lookup_local` shadow guard in the variant payload loop.
+
+Regression: `fused_select_scrutinee_evaluated_once` (rand `n==n` → true),
+`_once_subtract` (rand `n-n` → 0), `fused_select_stabilize_multiref`
+(arith scrutinee bound + referenced 3×, JIT path), `fused_variant_
+payload_shadow`. 132 compiler + 1895 graphix-tests green (1 ignored —
+#167). The review CONFIRMED-clean the scalar `Bind` correctness and the
+guard's non-shadow completeness.

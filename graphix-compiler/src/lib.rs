@@ -608,6 +608,22 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
+
+    /// See [`Update::clone_rebind`]. For a builtin this is the
+    /// builtin's own responsibility — it clones its argument nodes
+    /// through `clone_rebind` (so their internal `Ref`s/binds rebind)
+    /// and constructs fresh initial state: a cloned `subscribe` comes
+    /// back un-subscribed and opens its own subscription on first
+    /// update, a cloned counter resets, a cloned timer arms its own.
+    /// `BuiltInLambda` delegates to the inner `apply`. The default
+    /// panics so a missed builtin is surfaced loudly.
+    fn clone_rebind(
+        &self,
+        _ctx: &mut ExecCtx<R, E>,
+        _scope: &Scope,
+    ) -> Box<dyn Apply<R, E>> {
+        panic!("clone_rebind not implemented for Apply {self:?}")
+    }
 }
 
 /// Typed view of an [`Apply`] for fusion / analysis layer code,
@@ -835,6 +851,65 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
         replacement: Node<R, E>,
     ) -> std::result::Result<Node<R, E>, Node<R, E>> {
         Err(replacement)
+    }
+
+    /// Produce an independent deep copy of this node positioned as if
+    /// it were compiled fresh in the same lexical scope. Semantics:
+    /// every binding the subtree *introduces* is re-minted to a fresh
+    /// env-registered `BindId`; every `Ref` to an internal binding
+    /// re-resolves to this copy's fresh one; every capture (a `Ref` to
+    /// an external binding) keeps pointing at the original outer
+    /// binding; immutable shared artifacts (fused-kernel `Arc`s) are
+    /// shared, not copied; and stateful builtins get fresh independent
+    /// state via their own `clone_rebind`. The re-binding rides the
+    /// env's scoped name map exactly as `compile` does (binds register
+    /// fresh names, refs resolve by name) — no side remap table.
+    ///
+    /// Used by per-slot HOF dispatch (`MapQ`) to instantiate one
+    /// independent graph per array element from a single fused
+    /// template.
+    ///
+    /// The default RE-INITS from the node's `spec`: a fresh `compile`
+    /// in `scope`. This is the *correct* clone for env-managing nodes
+    /// (`TryCatch`, `Module`, `Use`/`TypeDef`, `Lambda`) — `compile`
+    /// re-runs the catch-scope / env-snapshot / proxy setup that no
+    /// hand-written structural clone could safely duplicate. Value-
+    /// computing residue (arithmetic, producers, accessors, `Select`,
+    /// …) and the fusion spine override with structural clones (lighter,
+    /// and the spine must preserve spliced `FusedKernel` descendants).
+    ///
+    /// **Capture-safe.** `compile` re-resolves every `Ref` by name, but a
+    /// CAPTURE was resolved in an *outer* scope not lexically visible from
+    /// `scope`, so a naive recompile would fail ("not defined"). So first
+    /// alias each *unresolved* external ref's name → its original id into
+    /// `scope`; the recompile then resolves it back to the same outer
+    /// binding. Internal refs re-minted into `scope` already resolve and
+    /// are left alone (the alias would wrongly shadow the fresh id).
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        let mut refs = Refs::default();
+        self.refs(&mut refs);
+        for id in refs.refed.iter() {
+            if refs.bound.contains(id) {
+                continue;
+            }
+            let bid = *id;
+            let name = match ctx.env.by_id.get(&bid) {
+                Some(b) => b.name.clone(),
+                None => continue,
+            };
+            let mp = crate::expr::ModPath::from_iter([name.as_str()]);
+            if ctx.env.lookup_bind(&scope.lexical, &mp).is_none() {
+                ctx.env.alias_variable(&scope.lexical, &name, bid);
+            }
+        }
+        crate::compiler::compile(
+            ctx,
+            enumflags2::BitFlags::empty(),
+            self.spec().clone(),
+            scope,
+            self.spec().id,
+        )
+        .expect("clone_rebind: recompile from spec failed")
     }
 }
 

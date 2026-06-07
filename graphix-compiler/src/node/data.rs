@@ -106,6 +106,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Struct(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            names: self.names.clone(),
+            n: self
+                .n
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -271,6 +284,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::StructWith(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            source: self.source.clone_rebind(ctx, scope),
+            current: None,
+            replace: self
+                .replace
+                .iter()
+                .map(|r| Replace {
+                    index: r.index,
+                    name: r.name.clone(),
+                    n: Cached::new(r.n.node.clone_rebind(ctx, scope)),
+                })
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -388,6 +419,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::StructRef(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            source: self.source.clone_rebind(ctx, scope),
+            field: self.field,
+            field_name: self.field_name.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -469,6 +510,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Tuple(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            n: self
+                .n
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+        })
     }
 }
 
@@ -565,6 +618,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Variant(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            tag: self.tag.clone(),
+            n: self
+                .n
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -644,5 +710,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::TupleRef(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            source: self.source.clone_rebind(ctx, scope),
+            field: self.field,
+        })
     }
 }

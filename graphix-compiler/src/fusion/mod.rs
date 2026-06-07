@@ -330,15 +330,15 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
 
 /// One free-var input slot resolved during walker analysis.
 #[derive(Debug, Clone)]
-struct FreeVarInput {
-    bind_id: crate::BindId,
-    name: arcstr::ArcStr,
+pub(crate) struct FreeVarInput {
+    pub(crate) bind_id: crate::BindId,
+    pub(crate) name: arcstr::ArcStr,
     /// Kernel-input classification, computed once from the binding's
     /// GIR type. Drives the `RegionInput.kind` at build time.
-    kind: crate::fusion::lowering::RegionInputKind,
+    pub(crate) kind: crate::fusion::lowering::RegionInputKind,
     /// Full graphix type — used to construct the runtime feeder Node
     /// (`genn::reference`), which needs the complete `Type`.
-    typ: crate::typ::Type,
+    pub(crate) typ: crate::typ::Type,
 }
 
 /// Owned data extracted from a Region candidate so we can free
@@ -365,7 +365,7 @@ struct RegionPlan {
 /// types, bare `String`/`Null`/`Unit`) are skipped — the builder
 /// fails those Refs when emitting them and the candidate stays
 /// unfused (correct fall-back to the interpreter).
-fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
+pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
     subtree: &dyn crate::Update<R, E>,
     ctx: &crate::ExecCtx<R, E>,
 ) -> Vec<FreeVarInput> {
@@ -400,7 +400,7 @@ fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
 /// Returns the owning `&Node<R, E>` reference if found — callers
 /// can call any `Update` trait method (including `view()` for
 /// further NodeView dispatch).
-fn find_node_by_id<'a, R: crate::Rt, E: crate::UserEvent>(
+pub(crate) fn find_node_by_id<'a, R: crate::Rt, E: crate::UserEvent>(
     node: &'a crate::Node<R, E>,
     target: crate::expr::ExprId,
 ) -> Option<&'a crate::Node<R, E>> {

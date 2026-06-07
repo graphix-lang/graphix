@@ -206,6 +206,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::ArrayRef(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            source: Cached::new(self.source.node.clone_rebind(ctx, scope)),
+            i: Cached::new(self.i.node.clone_rebind(ctx, scope)),
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            etyp: self.etyp.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -341,6 +351,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::ArraySlice(self)
     }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            source: Cached::new(self.source.node.clone_rebind(ctx, scope)),
+            start: self
+                .start
+                .as_ref()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope))),
+            end: self
+                .end
+                .as_ref()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope))),
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -422,5 +448,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Array(self)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            n: self
+                .n
+                .iter()
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .collect(),
+        })
     }
 }

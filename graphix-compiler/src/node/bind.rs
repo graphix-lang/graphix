@@ -242,6 +242,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             self.node.splice_child(target, replacement)
         }
     }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Node<R, E> {
+        // `rec`: pattern bound before value (so the value can reference
+        // itself); non-rec: value cloned before the binding is re-minted
+        // (the RHS can't see the new binding). Mirrors `Bind::compile`.
+        let rec = matches!(&self.spec.kind, ExprKind::Bind(b) if b.rec);
+        let (pattern, node) = if rec {
+            let pattern = self.pattern.clone_rebind(ctx, scope);
+            let node = self.node.clone_rebind(ctx, scope);
+            (pattern, node)
+        } else {
+            let node = self.node.clone_rebind(ctx, scope);
+            let pattern = self.pattern.clone_rebind(ctx, scope);
+            (pattern, node)
+        };
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            pattern,
+            node,
+            scope: self.scope.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -335,6 +362,39 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Ref(self)
+    }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+    ) -> Node<R, E> {
+        // Resolve a fresh id by NAME in `scope`. The name comes from the
+        // source spec (`ExprKind::Ref`), or — for a synthesized (NOP-spec)
+        // feeder ref — from the binding record. An internal binding
+        // (re-minted by an enclosing clone) resolves to its fresh id; a
+        // capture (external, not re-bound here) resolves to the unchanged
+        // outer binding; failing to resolve keeps the original id.
+        let name: Option<ModPath> = match &self.spec.kind {
+            ExprKind::Ref { name } => Some(name.clone()),
+            _ => ctx
+                .env
+                .by_id
+                .get(&self.id)
+                .map(|b| ModPath::from_iter([b.name.as_str()])),
+        };
+        let new_id = name
+            .and_then(|n| {
+                ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id)
+            })
+            .unwrap_or(self.id);
+        ctx.rt.ref_var(new_id, self.top_id);
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            id: new_id,
+            top_id: self.top_id,
+        })
     }
 }
 
