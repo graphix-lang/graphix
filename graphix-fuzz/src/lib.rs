@@ -19,6 +19,9 @@
 //! programs (the first emitted value of `result`). Reactive trace
 //! comparison is a later milestone.
 
+pub mod corpus;
+pub mod mutate;
+
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
@@ -204,6 +207,66 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     if interp.agrees_with(&jit) {
         return None;
     }
+    // Suspected divergence — but first rule out nondeterminism: a value
+    // whose identity/Display isn't deterministic (a lambda or abstract
+    // value's id, leaked rand/time/etc.) would diverge between any two
+    // runs, not just across backends. Re-run interp; if it disagrees with
+    // itself, the program is nondeterministic, not a backend bug.
+    let interp2 = run_program(code, Mode::Interp, timeout).await;
+    if !interp.agrees_with(&interp2) {
+        return None;
+    }
     let fused = run_program(code, Mode::Fused, timeout).await;
     Some(Divergence { code: code.to_string(), interp, fused, jit })
+}
+
+/// What a fuzz campaign found.
+#[derive(Debug, Default, Clone)]
+pub struct FuzzStats {
+    /// Mutants that were generated and run through the oracle.
+    pub run: usize,
+    /// Confirmed divergences.
+    pub divergences: usize,
+}
+
+/// Source-A campaign: mutate corpus seeds and run each mutant through the
+/// oracle, recording divergences under `out_dir`. Deterministic in
+/// `seed` — the same seed replays the same run.
+pub async fn fuzz(
+    iters: usize,
+    seed: u64,
+    timeout: Duration,
+    out_dir: &std::path::Path,
+) -> FuzzStats {
+    let donors = mutate::donor_pool(corpus::SEEDS);
+    let mut rng = mutate::Rng::new(seed);
+    let mut stats = FuzzStats::default();
+    for i in 0..iters {
+        let seed_prog = corpus::SEEDS[rng.below(corpus::SEEDS.len())];
+        let prog = match mutate::mutate_program(seed_prog, &donors, &mut rng, 5) {
+            Some(p) => p,
+            None => continue,
+        };
+        stats.run += 1;
+        if let Some(d) = check(&prog, timeout).await {
+            stats.divergences += 1;
+            record_divergence(out_dir, &d, i);
+            println!("[{i}] DIVERGENCE — {}\n    {}", d.bisect(), prog);
+            println!("    interp={:?} fused={:?} jit={:?}", d.interp, d.fused, d.jit);
+        }
+    }
+    stats
+}
+
+fn record_divergence(out_dir: &std::path::Path, d: &Divergence, i: usize) {
+    let _ = std::fs::create_dir_all(out_dir);
+    let body = format!(
+        "// bisect: {}\n// interp: {:?}\n// fused:  {:?}\n// jit:    {:?}\n{}\n",
+        d.bisect(),
+        d.interp,
+        d.fused,
+        d.jit,
+        d.code,
+    );
+    let _ = std::fs::write(out_dir.join(format!("divergence_{i:06}.gx")), body);
 }

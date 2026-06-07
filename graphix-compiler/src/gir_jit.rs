@@ -3986,7 +3986,7 @@ fn compile_scalar_impl(
         GirOp::Bin { op, lhs, rhs } => {
             let l = compile_scalar(b, lhs, env, ctx)?;
             let r = compile_scalar(b, rhs, env, ctx)?;
-            Ok(compile_bin(b, *op, prim_of(&lhs.typ), l, r))
+            compile_bin(b, *op, prim_of(&lhs.typ), l, r)
         }
         GirOp::Cmp { op, lhs, rhs } => {
             let l = compile_scalar(b, lhs, env, ctx)?;
@@ -6258,8 +6258,8 @@ fn compile_bin(
     typ: PrimType,
     l: ClifValue,
     r: ClifValue,
-) -> ClifValue {
-    if typ.is_integer() {
+) -> Result<ClifValue> {
+    Ok(if typ.is_integer() {
         match op {
             BinOp::Add => b.ins().iadd(l, r),
             BinOp::Sub => b.ins().isub(l, r),
@@ -6287,23 +6287,22 @@ fn compile_bin(
             BinOp::Mul => b.ins().fmul(l, r),
             BinOp::Div => b.ins().fdiv(l, r),
             BinOp::Mod => {
-                // Cranelift has no `frem`; the Rust `%` on f64 calls
-                // libm `fmod`. Until we wire libcalls in, this is a
-                // gap — emit a trap so the failure is visible. Fused
-                // kernels for mandelbrot / fib / arith corpus don't
-                // hit this path.
+                // Cranelift has no `frem` — float `%` would need an fmod
+                // libcall, and `compile_bin` has no module handle to emit
+                // one here. Bail so the kernel falls back to the
+                // interpreter (which computes float `%` correctly),
+                // instead of emitting a runtime trap that crashed the
+                // whole runtime. (The trap was a latent crash found by
+                // graphix-fuzz on `f64:7.0 % f64:3.0`; wiring the fmod
+                // libcall so it JITs is a follow-up.)
                 let _ = (l, r);
-                b.ins().trap(cranelift_codegen::ir::TrapCode::user(3).unwrap());
-                // Return a dummy value of the right type — the trap
-                // ensures we never actually use it.
-                if typ == PrimType::F32 {
-                    b.ins().f32const(0.0f32)
-                } else {
-                    b.ins().f64const(0.0f64)
-                }
+                return Err(anyhow!(
+                    "JIT: float modulo unsupported (no cranelift frem); \
+                     kernel runs on the interpreter"
+                ));
             }
         }
-    }
+    })
 }
 
 fn compile_cmp(

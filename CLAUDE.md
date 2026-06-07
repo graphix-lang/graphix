@@ -4582,6 +4582,70 @@ replicates graphix-tests' `TEST_REGISTER` — `#[cfg(test)]`-gated, not importab
 V1 scope = single-snapshot oracle over pure-sync terminating programs. Validated
 live on #174: `check` on `{ let x = f64:0.0/f64:0.0; x != x }` reported
 `DIVERGENCE — GIR/emit bug (interp false, fused/jit true)` before the fix and
-`AGREE` after — and surfaced the ordering divergence the hand-test missed. Next
-(per the design doc): Source A (fixture mutation) + the typed-AST minimizer,
-then Source E (adversarial agents — needs only this `check` CLI).
+`AGREE` after — and surfaced the ordering divergence the hand-test missed.
+
+### graphix-fuzz V1 — Source A (mutation engine + fuzz loop) (Jun 2026)
+
+The mechanical front-end onto the oracle. `mutate.rs` parses a seed expression
+(`parser::parse_one`), applies 1..=5 AST mutations, pretty-prints, and runs the
+mutant through `check`. Three mutations, all **type-blind** (the oracle's compile
+step is the validity filter):
+- **transplant** — replace a random subtree with a subtree from a donor seed
+  (the "mash up two fixtures → novel interaction" idea; high structural novelty,
+  low typecheck yield, but the survivors are interaction-rich).
+- **swap_binop** — change a binary op within its class (arith/checked/cmp/bool);
+  type-preserving.
+- **perturb_literal** — push a numeric/bool literal to an edge (0, ±1, MIN/MAX,
+  inf, NaN); exercises overflow / float edges.
+
+The AST rebuild (`replace_at` / `for_each_child`) mirrors `Expr::fold`'s exhaustive
+child enumeration — preorder index → node, rebuild with one node replaced. Macros
+(`r!`/`ra!`) do the recursion (two closures can't both hold the `&mut ctr`
+borrow). `corpus.rs` is a curated ~33-seed set biased to the bug-rich shapes
+(nested HOFs + captures, composite destructure, select arm bindings, `?`, checked/
+value-shape arith, maps, strings). Deterministic xorshift RNG → any run replays
+from its `seed`. CLI: `graphix-fuzz fuzz [iters] [seed]` → divergences printed +
+written to `fuzz/crashes/`.
+
+**The fuzzer found a bug in itself on its first run** — and the fix is a general
+hardening: a mutant `"sum is [|(k, v)| k + i64:7]"` (a lambda interpolated into a
+string) reported a "divergence" because a lambda's `Display` embeds a
+process-global lambda id that differs per compile (`Abstract(lambda#9489)` vs
+`#10249` vs `#9869`) — nondeterministic output, not a backend bug. Fix (per the
+design doc): a **double-run nondeterminism guard** in `check` — on a *suspected*
+divergence (so nearly free), re-run interp; if it disagrees with *itself*, the
+program is nondeterministic (leaked identity/rand/time) → quarantine, not a
+finding. Sound: a deterministic real bug has `interp == interp2`, so it still
+reports.
+
+Still V1-pending (design doc): the **typed-AST minimizer** (HDD: reduce a found
+divergence to a tiny repro), then Source E (adversarial agents — needs only the
+existing `check` CLI).
+
+### #175 — graphix-fuzz's first real find: float `%` trapped in the JIT (Jun 2026)
+
+A 150-iteration campaign (`fuzz 150 7`) found a genuine JIT bug at iteration 93:
+`f64:0.1 + f64:-1. % f64:3.` → interp/fused `F64(-0.9)`, jit `CompileErr("runtime
+did not respond")`, bisected (`interp == fused != jit`) to a cranelift codegen
+bug. Hand-minimized to **`f64:7.0 % f64:3.0`** (float modulo); controls confirmed
+float `+` and int `%` JIT fine.
+
+Root cause: `compile_bin`'s float-`Mod` arm (gir_jit.rs) emitted a runtime
+**trap** — a *deliberate* known gap (cranelift has no `frem`; the comment even
+said "arith corpus don't hit this path"). The fuzzer proved that bet wrong, and a
+runtime trap crashes the whole runtime task (hence "runtime did not respond"),
+not just the kernel. Fix: `compile_bin` now returns `Result<ClifValue>` and the
+float-`Mod` arm returns `Err` instead of trapping → the kernel fails to JIT-
+compile → `fuse()` falls back to the interpreter, which computes float `%`
+correctly. Its sole caller (the `GirOp::Bin` arm) already propagated a `Result`.
+Verified via the oracle: `f64:7.0 % f64:3.0` → `AGREE` (all modes `1.0`) after
+the fix. Regression: `lib_tests/arith.rs::float_mod` (`FuseExpect::Interp` — it
+fuses on the interpreter but the JIT bails). Follow-up: wire the `fmod` libcall so
+float `%` actually JITs (needs a module handle threaded into `compile_bin`).
+
+This is the headline validation of the whole effort: a mechanical mutation fuzzer,
+~3 days after the oracle landed, surfaced a real latent JIT crash that the hand-
+written 1900-fixture suite never hit — exactly the "find the thing neither of us
+thought of" goal. The trap was a *known* gap the author judged unreachable; the
+fuzzer's value is proving reachability. Smoke runs of the seed corpus otherwise
+execute clean.

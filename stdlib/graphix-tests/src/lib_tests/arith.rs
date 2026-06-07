@@ -97,6 +97,16 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 5e-324_f64 + 5e-324)
 });
 
+// Float modulo. Cranelift has no `frem`, so the JIT bails and the kernel
+// runs on the interpreter (FuseExpect::Interp) — it must still produce
+// the right value. Regression for a fuzzer-found bug (#175): the JIT's
+// float-`%` arm emitted a runtime trap that crashed the whole runtime
+// instead of bailing. Found by graphix-fuzz on `f64:7.0 % f64:3.0`.
+const FLOAT_MOD: &str = "f64:7.0 % f64:3.0";
+run!(float_mod, FLOAT_MOD, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(f)) if *f == 1.0)
+}; graphix_package_core::testing::FuseExpect::Interp);
+
 // f32 inexact add.
 const F32_ADD_INEXACT: &str = "f32:0.1 + f32:0.2";
 run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {

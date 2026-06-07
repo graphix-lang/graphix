@@ -8,7 +8,7 @@
 //! the adversarial agent sources depend on. See design/graphix_fuzz.md.
 
 use anyhow::{bail, Result};
-use graphix_fuzz::{check, run_program, Mode, Outcome};
+use graphix_fuzz::{check, fuzz, run_program, Mode, Outcome};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,33 +29,49 @@ fn first_line(s: &str) -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let (cmd, path) = match args.get(1).map(String::as_str) {
-        Some("check") | Some("run") => match args.get(2) {
-            Some(p) => (args[1].as_str(), p.clone()),
-            None => bail!("usage: graphix-fuzz {} <file>", &args[1]),
-        },
-        _ => bail!("usage: graphix-fuzz <check|run> <file>"),
-    };
-    let code = std::fs::read_to_string(&path)?;
-    let code = code.trim();
-    match cmd {
-        "run" => {
-            for mode in [Mode::Interp, Mode::Fused, Mode::Jit] {
-                let o = run_program(code, mode, TIMEOUT).await;
-                println!("{mode:?}: {}", render(&o));
-            }
-        }
-        "check" => match check(code, TIMEOUT).await {
-            None => println!("AGREE — interp and jit produce the same result"),
-            Some(d) => {
-                println!("DIVERGENCE — {}", d.bisect());
-                println!("  interp: {}", render(&d.interp));
-                println!("  fused:  {}", render(&d.fused));
-                println!("  jit:    {}", render(&d.jit));
+    match args.get(1).map(String::as_str) {
+        Some("fuzz") => {
+            let iters: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let out = std::path::PathBuf::from("fuzz/crashes");
+            println!("fuzzing: iters={iters} seed={seed} → {}/", out.display());
+            let stats = fuzz(iters, seed, TIMEOUT, &out).await;
+            println!(
+                "done: {} mutants run, {} divergences",
+                stats.run, stats.divergences
+            );
+            if stats.divergences > 0 {
                 std::process::exit(1);
             }
-        },
-        _ => unreachable!(),
+        }
+        Some(cmd @ ("check" | "run")) => {
+            let path = match args.get(2) {
+                Some(p) => p,
+                None => bail!("usage: graphix-fuzz {cmd} <file>"),
+            };
+            let code = std::fs::read_to_string(path)?;
+            let code = code.trim();
+            match cmd {
+                "run" => {
+                    for mode in [Mode::Interp, Mode::Fused, Mode::Jit] {
+                        let o = run_program(code, mode, TIMEOUT).await;
+                        println!("{mode:?}: {}", render(&o));
+                    }
+                }
+                "check" => match check(code, TIMEOUT).await {
+                    None => println!("AGREE — interp and jit produce the same result"),
+                    Some(d) => {
+                        println!("DIVERGENCE — {}", d.bisect());
+                        println!("  interp: {}", render(&d.interp));
+                        println!("  fused:  {}", render(&d.fused));
+                        println!("  jit:    {}", render(&d.jit));
+                        std::process::exit(1);
+                    }
+                },
+                _ => unreachable!(),
+            }
+        }
+        _ => bail!("usage: graphix-fuzz <check|run> <file>  |  graphix-fuzz fuzz [iters] [seed]"),
     }
     Ok(())
 }
