@@ -3216,7 +3216,18 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
         NodeView::StringInterpolate(si) => {
             let mut parts = Vec::with_capacity(si.args.len());
             for a in si.args.iter() {
-                parts.push(emit_node(&a.node, ctx, ec)?);
+                let part = emit_node(&a.node, ctx, ec)?;
+                // `Concat` only handles String + scalar-Prim parts. A
+                // non-scalar part — e.g. `Nullable<string>` from `arr[i]`
+                // (the bounds-check `[elem, Error]` shape), a composite,
+                // or a value-shape — makes the interp `Concat` arm panic
+                // ("Concat child has unexpected EvalResult"). The JIT
+                // already returns Err on such a part and falls back to
+                // the node-walk; bail here so the interp matches it.
+                if !matches!(part.typ, GirType::String) && part.typ.as_prim().is_none() {
+                    return rec_bail("emit:StringInterpolate-nonscalar", None);
+                }
+                parts.push(part);
             }
             Some(GirExpr {
                 op: GirOp::Concat(parts),

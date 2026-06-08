@@ -161,8 +161,6 @@ This project maintains very high code quality standards - no shortcuts, careful 
 
 ## Commits and Pull Requests
 
-- Don't commit code unless the user explicitly asks for it
-- Commit messages should be short, lowercase, and imperative (e.g., `fix many parser problems`).
 - PRs should include a concise summary, testing notes, and links to related issues.
 - Treat `docs/` as build output — edit sources in `book/` and regenerate with `mdbook`. If you update docs or examples, rebuild the book.
 
@@ -4677,3 +4675,103 @@ Next (design doc): the richer sources — Source C (typed generation-from-contex
 Source B/E (agent harvest + adversarial agents, which need only the existing
 `check` CLI), the full-corpus harvest — plus coverage-guided selection (Source D).
 And the `fmod` libcall so float `%` actually JITs (#175 follow-up).
+
+### graphix-fuzz V1 — full-corpus harvest (Source A breadth) (Jun 2026)
+
+The mutation source's reach is bounded by its seeds. The hand corpus (~33) had
+saturated (clean across hundreds of mutants), so `build.rs` now harvests the
+**entire graphix-tests fixture corpus** as seeds: it parses every `.rs` under
+`stdlib/graphix-tests/src/{lib_tests,lang}` with `syn` and extracts each
+`const NAME: &str = "..."` value (all ~470 `run!` fixtures use this shape; 0
+inline strings), `LitStr::value()` resolving `\`-continuations + escapes. Output
+→ `$OUT_DIR/harvested_seeds.rs` (`pub static HARVESTED: &[&str]`), `include!`d by
+`corpus.rs`; `all_seeds()` chains the hand seeds (guarantee the bug-rich shapes)
+with the harvest (breadth — every construct the stdlib tests exercise). The
+transplant cross-product grew from ~33² to ~506² (473 harvested + 33 hand).
+`syn` is a `[build-dependencies]` with `features = ["full", "parsing"]` (workspace
+`syn` is bare `"2"`); `cargo:rerun-if-changed` per test file keeps it fresh.
+
+Nondeterministic harvested fixtures (rand/timer/net/fs) are safe — the double-run
+guard quarantines any divergence they cause. Reactive fixtures return their first
+`result` value fast (the drive loop takes the first `Updated`), so they don't
+stall the campaign.
+
+### Source E adversarial hunt — 8 agents found 10 bugs, 9 fixed (Jun 2026)
+
+The multi-agent Source E hunt (the `design/graphix_fuzz.md` adversarial-agent
+source) paid off massively where random mutation had hit its ceiling: 8 agents,
+each given the spec + CLAUDE.md bug taxonomy + the `graphix-fuzz check` CLI and
+told to reason about where JIT codegen and the interpreter could diverge, found
+**10 confirmed deterministic divergences in 4 root-cause clusters** — after a
+400-mutant random campaign over the full ~506-seed corpus found ZERO. Intelligent
+search assembles the coordinated multi-feature shapes random mutation can't. 6 of
+the 10 were *process-crashing* (SIGFPE/panic killing the runtime), not value
+disagreements. The negative space was also valuable: across ~449 programs the
+higher-level fusion machinery (closures, nested HOFs, composites, select,
+strings-as-values, bounds seams) held firm — strong evidence of solidity.
+
+**Cluster A (6 bugs, CRITICAL) — integer div/rem by zero & signed MIN/-1
+overflow crashed both fused backends.** `i64:10 / i64:0`, `i64:MIN % i64:-1`,
+`i32:MIN / i32:-1`, `array::map([0], |x| 1/x)`. The node-walk turns these into an
+arith error → bottom (Timeout); the JIT emitted raw cranelift `sdiv`/`srem` (→
+`#DE`/SIGFPE process crash); the fused-interp used `wrapping_div`/`wrapping_rem`
+(→ PANIC on div0, silent wrap on MIN/-1). The exact integer sibling of #175
+(float-% JIT trap), which only ever covered floats. Fix: (JIT, `gir_jit.rs`
+`GirOp::Bin`) a divisor/overflow guard `brif` to `pending_exit` (kernel returns
+None = bottom), mirroring the QopUnwrap pending pattern; (interp, `gir_interp.rs`
+`eval_bin`) `checked_div`/`checked_rem` → on None, signal pending and `return
+None` (eval_bin now returns `Option<RegValue>`, caller propagates with `?`). Both
+now match the node-walk's bottom. Valid division still JITs (the guard's `bad`
+branch is dead for nonzero divisors).
+
+**Cluster B (2 bugs, HIGH) — `GirType::Error` missing from the gir-interp DynCall
+arg-marshalling match.** `is_err(error(1))` crashed the fused-interp:
+`wrap_value_shape` carries an `error(..)` as `EvalResult::DateTime(Value::Error)`,
+but the value-shape arg arm declared `DateTime | Duration | Bytes | Map` and
+OMITTED `Error` → catch-all `panic!`. The recent GirType::Error work added the
+variant to ~29 exhaustiveness-forced sites, but this arm is a *tuple match behind
+a catch-all*, which exhaustiveness doesn't force — so it slipped (a recurring
+14th-commandment hazard: catch-all-guarded value-shape enumerations). Fix: add
+`| GirType::Error` to the arm.
+
+**Cluster D (1 bug, MEDIUM) — StringInterpolate over a non-scalar part crashed
+the fused Concat.** `"[words[0]]"` interpolates `words[0]` (typed
+`Nullable<string>`, the bounds-check `[elem, Error]` shape); the interp `Concat`
+arm only handles String/scalar parts → panic. The JIT already returns Err on a
+non-scalar part and falls back to the node-walk; the frontend emitted GIR the JIT
+refuses but the interp ran and crashed on. Fix: `StringInterpolate`'s emit arm
+bails (`rec_bail`) when any part's GirType isn't String/Prim, matching the JIT.
+
+**Cluster C (1 bug, MEDIUM, SEMANTICS — flagged, not fixed) — value-shape
+unchecked arith doesn't replicate the node-walk's error-drop.**
+`duration:1.s - duration:2.s` (underflow): the node-walk unchecked op drops the
+`Value::Error` → bottom (Timeout); the fused `GirOp::ValueArith` emits the error
+as a value. Like NaN (#174), this is a deliberate semantics call the user should
+make: match the node-walk (drop → bottom, the canonical-node-walk default), or
+change all three to *propagate* the error value (arguably better UX). Deferred to
+the user.
+
+**META-1 (oracle blind spot, FIXED) — `graphix-fuzz check` compared only
+interp-vs-jit**, so it was structurally blind to the `interp == jit != fused`
+class (clusters B and D — gir-interp panics the JIT dodges via node-walk
+fallback); those were only found via 3-mode `run`. Fixed `check` to compare all
+three modes (interp == fused == jit) — strictly stronger, catches the class
+automatically.
+
+**META-2 (minimizer, follow-up) — the minimizer core-dumps on div-mutations**
+(it re-runs the trapping JIT in-process). Run candidates in a subprocess (or
+catch the signal) so it can auto-minimize crash classes. (Moot for the int-div
+crashes now they're fixed, but the isolation is still correct.)
+
+Regressions in `lib_tests/arith.rs`: `div_valid`/`mod_valid` (guard didn't break
+division — still JITs), `div_in_untaken_arm`, `err_as_dyncall_arg` (fuses+JITs),
+`interp_nonscalar_part` (bails → None). The div0-crash itself can't be a `run!`
+fixture (bottom → timeout); it's verified via the oracle (`check` AGREE, all
+Timeout) and the full suite confirms division is intact. 132 compiler + 1976
+graphix-tests green.
+
+**The lesson (validates the whole design):** the mechanical differential fuzzer
+(Source A) and the agent sources (B/E) are complementary, not redundant — random
+mutation swept the corpus clean, then reasoning agents found 10 real bugs in it.
+Source E needed *nothing new built* — only the `check` CLI. It is the
+single highest-value bug-finder we have.

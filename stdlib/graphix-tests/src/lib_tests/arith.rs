@@ -162,3 +162,40 @@ const UNCHECKED_OVERFLOW_WRAPS: &str = "i64:9223372036854775807 + i64:1";
 run!(unchecked_overflow_wraps, UNCHECKED_OVERFLOW_WRAPS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(i)) if *i == i64::MIN)
 });
+
+// ── Source E (adversarial fuzzer, #176) regressions ──
+
+// Cluster A: integer div/rem by zero / signed MIN-/-1 overflow must NOT
+// crash the runtime — the node-walk drops to bottom (arith error), so the
+// fused backends must too: a divisor guard → pending_exit in the JIT, and
+// checked_div → None (bottom) in the interp. We can't assert "bottom" via
+// run! (it would time out), so pin that VALID division still works AND
+// JITs — i.e. the guard didn't break the common path.
+const DIV_VALID: &str = "i64:10 / i64:2";
+run!(div_valid, DIV_VALID, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))));
+
+const MOD_VALID: &str = "i64:10 % i64:3";
+run!(mod_valid, MOD_VALID, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))));
+
+// A div-by-zero in an UN-taken select arm: the guard codegen is exercised
+// (the arm fuses) and the program still produces a value.
+const DIV_IN_ARM: &str = "select i64:1 { 1 => i64:42, n => n / i64:0 }";
+run!(div_in_untaken_arm, DIV_IN_ARM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+// Cluster B: an error() value passed to a builtin (a value-shape DynCall
+// arg) must not crash the fused interp — the marshalling match was missing
+// the GirType::Error arm.
+const ERR_DYNCALL_ARG: &str = "is_err(error(1))";
+run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});
+
+// Cluster D: interpolating a non-scalar part (Nullable<string> from an
+// array index) must bail the StringInterpolate to the node-walk, not crash
+// the fused Concat (which only handles String/scalar parts).
+const INTERP_NONSCALAR: &str = "{ let words = [\"alpha\", \"beta\"]; \"first=[words[0]]\" }";
+run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s == "first=alpha")
+}; graphix_package_core::testing::FuseExpect::None);

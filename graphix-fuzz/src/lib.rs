@@ -212,9 +212,15 @@ impl Divergence {
 /// Run `code` under interp and jit; if they disagree, also run fused for
 /// bisection and return the `Divergence`. `None` means the modes agree.
 pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
+    // Compare ALL THREE modes — interp (reference), fused (interp
+    // kernels), jit. Comparing only interp-vs-jit is blind to the
+    // `interp == jit != fused` class (a gir-interp bug the JIT dodges via
+    // node-walk fallback) — which is exactly where several real bugs
+    // lived. All three must agree, or it's a divergence.
     let interp = run_program(code, Mode::Interp, timeout).await;
+    let fused = run_program(code, Mode::Fused, timeout).await;
     let jit = run_program(code, Mode::Jit, timeout).await;
-    if interp.agrees_with(&jit) {
+    if interp.agrees_with(&fused) && interp.agrees_with(&jit) {
         return None;
     }
     // Suspected divergence — but first rule out nondeterminism: a value
@@ -226,7 +232,6 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     if !interp.agrees_with(&interp2) {
         return None;
     }
-    let fused = run_program(code, Mode::Fused, timeout).await;
     Some(Divergence { code: code.to_string(), interp, fused, jit })
 }
 
@@ -306,11 +311,12 @@ pub async fn fuzz(
     timeout: Duration,
     out_dir: &std::path::Path,
 ) -> FuzzStats {
-    let donors = mutate::donor_pool(corpus::SEEDS);
+    let seeds = corpus::all_seeds();
+    let donors = mutate::donor_pool(&seeds);
     let mut rng = mutate::Rng::new(seed);
     let mut stats = FuzzStats::default();
     for i in 0..iters {
-        let seed_prog = corpus::SEEDS[rng.below(corpus::SEEDS.len())];
+        let seed_prog = seeds[rng.below(seeds.len())];
         let prog = match mutate::mutate_program(seed_prog, &donors, &mut rng, 5) {
             Some(p) => p,
             None => continue,

@@ -3986,7 +3986,58 @@ fn compile_scalar_impl(
         GirOp::Bin { op, lhs, rhs } => {
             let l = compile_scalar(b, lhs, env, ctx)?;
             let r = compile_scalar(b, rhs, env, ctx)?;
-            compile_bin(b, *op, prim_of(&lhs.typ), l, r)
+            let prim = prim_of(&lhs.typ);
+            // Integer div/rem: a zero divisor (or signed MIN/-1 overflow)
+            // makes raw cranelift sdiv/udiv/srem/urem TRAP (#DE → SIGFPE,
+            // crashing the whole process). The node-walk turns these into
+            // an arith error and drops to bottom, so guard them and route
+            // to `pending_exit` (kernel returns None = bottom) — matching
+            // the node-walk and the interp's checked_div path. (#176
+            // cluster A; the integer sibling of the #175 float-% trap.)
+            if matches!(op, BinOp::Div | BinOp::Mod) && prim.is_integer() {
+                use cranelift_codegen::ir::condcodes::IntCC;
+                let is_zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
+                let bad = if prim.is_signed() {
+                    let min: i64 = match prim {
+                        PrimType::I8 => i8::MIN as i64,
+                        PrimType::I16 => i16::MIN as i64,
+                        PrimType::I32 => i32::MIN as i64,
+                        _ => i64::MIN,
+                    };
+                    let is_min = b.ins().icmp_imm(IntCC::Equal, l, min);
+                    let is_neg1 = b.ins().icmp_imm(IntCC::Equal, r, -1);
+                    let overflow = b.ins().band(is_min, is_neg1);
+                    b.ins().bor(is_zero, overflow)
+                } else {
+                    is_zero
+                };
+                let pending_set = ctx
+                    .helper_refs
+                    .get("graphix_dyncall_set_pending")
+                    .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+                let pre_pending = b.create_block();
+                let continue_block = b.create_block();
+                let pending_exit = {
+                    let mut slot = ctx.pending_exit.borrow_mut();
+                    match *slot {
+                        Some(blk) => blk,
+                        None => {
+                            let blk = b.create_block();
+                            *slot = Some(blk);
+                            blk
+                        }
+                    }
+                };
+                b.ins().brif(bad, pre_pending, &[], continue_block, &[]);
+                b.switch_to_block(pre_pending);
+                b.seal_block(pre_pending);
+                b.ins().call(pending_set, &[]);
+                emit_pending_cleanup(b, env, ctx)?;
+                b.ins().jump(pending_exit, &[]);
+                b.switch_to_block(continue_block);
+                b.seal_block(continue_block);
+            }
+            compile_bin(b, *op, prim, l, r)
         }
         GirOp::Cmp { op, lhs, rhs } => {
             let l = compile_scalar(b, lhs, env, ctx)?;

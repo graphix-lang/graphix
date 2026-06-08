@@ -13,6 +13,17 @@
 //! will harvest the full ~550-fixture corpus; this hand set bootstraps
 //! the loop.
 
+// The full graphix-tests fixture corpus, harvested at build time
+// (see build.rs): `pub static HARVESTED: &[&str]`.
+include!(concat!(env!("OUT_DIR"), "/harvested_seeds.rs"));
+
+/// Hand seeds + the harvested fixture corpus. The hand seeds guarantee
+/// the bug-rich shapes are present even if the fixture set shifts; the
+/// harvest supplies breadth (every construct the stdlib tests exercise).
+pub fn all_seeds() -> Vec<&'static str> {
+    SEEDS.iter().copied().chain(HARVESTED.iter().copied()).collect()
+}
+
 pub const SEEDS: &[&str] = &[
     // arithmetic + comparison (value/edge sensitive)
     "i64:2 + i64:3 * i64:4",

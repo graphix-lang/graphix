@@ -1063,7 +1063,7 @@ fn eval_expr(
         GirOp::Bin { op, lhs, rhs } => {
             let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
             let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
-            EvalResult::Scalar(eval_bin(*op, l, r))
+            EvalResult::Scalar(eval_bin(*op, l, r)?)
         }
         GirOp::Cmp { op, lhs, rhs } => {
             let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
@@ -1196,13 +1196,19 @@ fn eval_expr(
                         Value::String(s)
                     }
                     // Value-shape args (datetime / duration / bytes /
-                    // map): every carrier just wraps the inner `Value`,
-                    // so unwrap whichever value-shape carrier arrived.
+                    // map / error): every carrier just wraps the inner
+                    // `Value`, so unwrap whichever value-shape carrier
+                    // arrived. `GirType::Error` rides the DateTime carrier
+                    // (see `wrap_value_shape`) — without it here, an
+                    // `error(..)` value passed to a builtin (`is_err`,
+                    // `count`, …) fell to the catch-all `panic!` and
+                    // crashed the runtime.
                     (
                         GirType::DateTime
                         | GirType::Duration
                         | GirType::Bytes
-                        | GirType::Map,
+                        | GirType::Map
+                        | GirType::Error,
                         EvalResult::DateTime(v)
                         | EvalResult::Duration(v)
                         | EvalResult::Bytes(v)
@@ -1974,15 +1980,35 @@ fn zero_reg(t: PrimType) -> RegValue {
     }
 }
 
-fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> RegValue {
+fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> Option<RegValue> {
     macro_rules! int_arith {
         ($a:expr, $b:expr, $variant:ident) => {
             RegValue::$variant(match op {
                 BinOp::Add => $a.wrapping_add($b),
                 BinOp::Sub => $a.wrapping_sub($b),
                 BinOp::Mul => $a.wrapping_mul($b),
-                BinOp::Div => $a.wrapping_div($b),
-                BinOp::Mod => $a.wrapping_rem($b),
+                // `checked_div`/`checked_rem` return None on a zero
+                // divisor AND on signed MIN/-1 overflow — the cases the
+                // node-walk's unchecked `/`,`%` turn into an arith error
+                // and drop to bottom. `wrapping_div` PANICS on div0
+                // (wrapping only covers MIN/-1), which crashed the
+                // runtime. On failure, signal pending and `return None`
+                // so the whole eval produces bottom — matching the
+                // node-walk (and the JIT's pending-exit div guard).
+                BinOp::Div => match $a.checked_div($b) {
+                    Some(v) => v,
+                    None => {
+                        crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+                        return None;
+                    }
+                },
+                BinOp::Mod => match $a.checked_rem($b) {
+                    Some(v) => v,
+                    None => {
+                        crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+                        return None;
+                    }
+                },
             })
         };
     }
@@ -1997,7 +2023,7 @@ fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> RegValue {
             })
         };
     }
-    match (lhs, rhs) {
+    Some(match (lhs, rhs) {
         (RegValue::I8(a), RegValue::I8(b)) => int_arith!(a, b, I8),
         (RegValue::I16(a), RegValue::I16(b)) => int_arith!(a, b, I16),
         (RegValue::I32(a), RegValue::I32(b)) => int_arith!(a, b, I32),
@@ -2013,7 +2039,7 @@ fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> RegValue {
             lhs.typ(),
             rhs.typ()
         ),
-    }
+    })
 }
 
 fn eval_cmp(op: CmpOp, lhs: RegValue, rhs: RegValue) -> RegValue {
