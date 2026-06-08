@@ -1,0 +1,7 @@
+// bisect: GIR/emit bug (interp != fused)
+// interp: Value(F64(-1.0999999999999999))
+// fused:  Timeout
+// jit:    Value(F64(-1.0999999999999999))
+// mutant: { let v0 = (i64:-100 + (i64:42 / (i64:42 % i64:1))); (((f64:3.14 - f64:1.0) - f64:3.14) + ((f64:-1.0 % f64:2.5) % f64:0.1)) }
+// minimized:
+{null; (f64:3.14 - f64:1.) - f64:3.14}

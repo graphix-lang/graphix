@@ -495,6 +495,16 @@ enum ToGX<X: GXExt> {
     EnvStats {
         res: oneshot::Sender<EnvStats>,
     },
+    CycleReady {
+        res: oneshot::Sender<bool>,
+    },
+    /// Wait for the next value emitted by `id`, or `None` if the
+    /// runtime goes idle (no cycle ready) before any value arrives.
+    /// See [`GXHandle::wait_result_or_idle`].
+    WaitResultOrIdle {
+        id: ExprId,
+        res: oneshot::Sender<Option<Value>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -705,6 +715,34 @@ impl<X: GXExt> GXHandle<X> {
     /// binding/ref leak). See [`EnvStats`].
     pub async fn env_stats(&self) -> Result<EnvStats> {
         self.exec(|res| ToGX::EnvStats { res }).await
+    }
+
+    /// Whether the runtime has pending work scheduled for the next
+    /// cycle (an updated node, a queued var/custom/net update, a ready
+    /// extension, …). For a purely-synchronous program, once this is
+    /// `false` the runtime is quiescent and will never produce another
+    /// value on its own — so a result that hasn't been emitted by then
+    /// is *bottom*. The fuzz oracle uses this to detect a no-result
+    /// (div-by-zero, filtered, …) program instantly instead of waiting
+    /// out the whole timeout.
+    pub async fn cycle_ready(&self) -> Result<bool> {
+        self.exec(|res| ToGX::CycleReady { res }).await
+    }
+
+    /// Wait for the next value `id` emits, or `None` when the runtime
+    /// goes idle before any value arrives. This is the clean quiescence-
+    /// aware result wait for synchronous programs: it returns `Some(v)`
+    /// the cycle `id` produces `v`, and `None` the moment the runtime has
+    /// no pending work (so no future cycle can ever produce a result).
+    ///
+    /// Note the race a caller must handle: if `id` already emitted before
+    /// this call was serviced (e.g. a synchronous program that produced
+    /// its value during compile), the runtime is already idle and this
+    /// returns `None` — the value is in the event stream, not here. A
+    /// caller that needs that already-emitted value should drain the
+    /// event subscription on `None`.
+    pub async fn wait_result_or_idle(&self, id: ExprId) -> Result<Option<Value>> {
+        self.exec(|res| ToGX::WaitResultOrIdle { id, res }).await
     }
 
     /// Compile a callable interface to a lambda id

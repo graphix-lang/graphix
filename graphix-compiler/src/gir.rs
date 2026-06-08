@@ -1808,7 +1808,7 @@ fn stmt_has_call(stmt: &GirStmt) -> bool {
     }
 }
 
-fn expr_has_call(e: &GirExpr) -> bool {
+pub(crate) fn expr_has_call(e: &GirExpr) -> bool {
     match &e.op {
         GirOp::Call { .. } | GirOp::DynCall { .. } => true,
         GirOp::Const(_)

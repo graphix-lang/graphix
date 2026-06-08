@@ -248,7 +248,7 @@ fn gir_op_tag(op: &GirOp) -> GirOpTag {
 
 /// Visit every `GirOp` in a statement (and its sub-expressions),
 /// depth-first.
-fn visit_ops_stmt(s: &GirStmt, f: &mut impl FnMut(&GirOp)) {
+pub(crate) fn visit_ops_stmt(s: &GirStmt, f: &mut impl FnMut(&GirOp)) {
     match s {
         GirStmt::Let(l) => visit_ops(&l.value, f),
         GirStmt::Return(e) | GirStmt::Discard(e) => visit_ops(e, f),
@@ -267,7 +267,7 @@ fn visit_ops_stmt(s: &GirStmt, f: &mut impl FnMut(&GirOp)) {
 /// Visit `e`'s op and every op in its sub-expressions, depth-first.
 /// Exhaustive over `GirOp` so a new variant forces a sub-expression
 /// audit here.
-fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
+pub(crate) fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
     f(&e.op);
     match &e.op {
         GirOp::Const(_)

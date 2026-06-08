@@ -20,6 +20,7 @@
 //! comparison is a later milestone.
 
 pub mod corpus;
+pub mod generate;
 pub mod mutate;
 
 use ahash::AHashMap;
@@ -155,28 +156,51 @@ async fn drive(
         Err(e) => return Outcome::CompileErr(format!("{e}")),
     };
     let eid = compiled.exprs[0].id;
-    let sleep = tokio::time::sleep(timeout);
-    tokio::pin!(sleep);
-    loop {
-        tokio::select! {
-            _ = &mut sleep => break Outcome::Timeout,
-            batch = rx.recv() => match batch {
-                None => break Outcome::RuntimeErr("runtime died".into()),
-                Some(mut batch) => {
-                    let mut found = None;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                found = Some(v);
-                            }
-                        }
-                    }
-                    if let Some(v) = found {
-                        break Outcome::Value(v);
-                    }
+    // Drain any `Updated(eid)` already in `batch`; `Some(v)` = the result.
+    fn take_result(
+        batch: &mut poolshark::global::GPooled<Vec<GXEvent>>,
+        eid: graphix_compiler::expr::ExprId,
+    ) -> Option<Value> {
+        let mut found = None;
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(id, v) = e {
+                if id == eid {
+                    found = Some(v);
                 }
             }
         }
+        found
+    }
+    // Quiescence-aware wait (see `GXHandle::wait_result_or_idle`):
+    //   - `Some(v)`  — `result` emitted `v` while the watch was live.
+    //   - `None`     — the runtime went idle with no value for `result`.
+    //                  For a synchronous program the value is normally
+    //                  emitted during the compile cycle, BEFORE the watch is
+    //                  registered, so it lands in `rx` rather than the watch.
+    //                  Drain `rx`: the value there is the result, else the
+    //                  program is genuinely bottom (div-by-zero, filtered, …).
+    // `timeout` is a backstop only — a pure-sync program always settles, but
+    // a future async one could loop forever without ever settling or
+    // emitting `result`.
+    tokio::select! {
+        biased;
+        r = ctx.rt.wait_result_or_idle(eid) => match r {
+            Ok(Some(v)) => Outcome::Value(v),
+            Ok(None) => {
+                let mut found = None;
+                while let Ok(mut batch) = rx.try_recv() {
+                    if let Some(v) = take_result(&mut batch, eid) {
+                        found = Some(v);
+                    }
+                }
+                match found {
+                    Some(v) => Outcome::Value(v),
+                    None => Outcome::Timeout,
+                }
+            }
+            Err(e) => Outcome::RuntimeErr(format!("wait_result_or_idle: {e}")),
+        },
+        _ = tokio::time::sleep(timeout) => Outcome::Timeout,
     }
 }
 
@@ -216,10 +240,15 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     // kernels), jit. Comparing only interp-vs-jit is blind to the
     // `interp == jit != fused` class (a gir-interp bug the JIT dodges via
     // node-walk fallback) — which is exactly where several real bugs
-    // lived. All three must agree, or it's a divergence.
-    let interp = run_program(code, Mode::Interp, timeout).await;
-    let fused = run_program(code, Mode::Fused, timeout).await;
-    let jit = run_program(code, Mode::Jit, timeout).await;
+    // lived. All three must agree, or it's a divergence. Each mode spins
+    // up its own runtime, so run all three concurrently — `join!` overlaps
+    // their (mostly I/O-bound) execution on one task, tripling the cores a
+    // single check keeps busy.
+    let (interp, fused, jit) = tokio::join!(
+        run_program(code, Mode::Interp, timeout),
+        run_program(code, Mode::Fused, timeout),
+        run_program(code, Mode::Jit, timeout),
+    );
     if interp.agrees_with(&fused) && interp.agrees_with(&jit) {
         return None;
     }
@@ -293,6 +322,47 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
     (current.to_string(), calls)
 }
 
+/// Run the embedded regression corpus (every saved finding under
+/// `findings/`) through the oracle. Returns any that now DIVERGE — a
+/// regression, i.e. a previously-fixed bug has come back. Empty means the
+/// corpus is clean. Uses a short per-program timeout: a regression
+/// surfaces fast (crash / value mismatch), and a legitimately-bottom
+/// program just confirms "still all-Timeout" quickly.
+pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
+    use tokio::task::JoinSet;
+    let par = parallelism();
+    let entries = corpus::REGRESSION_CORPUS;
+    let mut set: JoinSet<(String, Option<Divergence>)> = JoinSet::new();
+    let mut next = 0usize;
+    let mut spawn_one = |set: &mut JoinSet<_>, i: usize| {
+        let (name, prog) = (entries[i].0.to_string(), entries[i].1.to_string());
+        set.spawn(async move {
+            let d = check(&prog, timeout).await;
+            (name, d)
+        });
+    };
+    while next < entries.len() && set.len() < par {
+        spawn_one(&mut set, next);
+        next += 1;
+    }
+    let mut regressions = Vec::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok((name, Some(d))) = res {
+            regressions.push((name, d));
+        }
+        if next < entries.len() {
+            spawn_one(&mut set, next);
+            next += 1;
+        }
+    }
+    regressions
+}
+
+/// Number of programs in the embedded regression corpus.
+pub fn regression_corpus_len() -> usize {
+    corpus::REGRESSION_CORPUS.len()
+}
+
 /// What a fuzz campaign found.
 #[derive(Debug, Default, Clone)]
 pub struct FuzzStats {
@@ -314,25 +384,134 @@ pub async fn fuzz(
     let seeds = corpus::all_seeds();
     let donors = mutate::donor_pool(&seeds);
     let mut rng = mutate::Rng::new(seed);
-    let mut stats = FuzzStats::default();
-    for i in 0..iters {
-        let seed_prog = seeds[rng.below(seeds.len())];
-        let prog = match mutate::mutate_program(seed_prog, &donors, &mut rng, 5) {
-            Some(p) => p,
-            None => continue,
-        };
-        stats.run += 1;
-        if let Some(d) = check(&prog, timeout).await {
-            stats.divergences += 1;
-            // Auto-minimize before recording — a tiny repro is the
-            // difference between actionable and useless.
-            let (minimized, mcalls) = minimize(&prog, timeout, 80).await;
-            record_divergence(out_dir, &d, &prog, &minimized, i);
-            println!("[{i}] DIVERGENCE — {}", d.bisect());
-            println!("    mutant:    {prog}");
-            println!("    minimized: {minimized}  ({mcalls} checks)");
-            println!("    interp={:?} fused={:?} jit={:?}", d.interp, d.fused, d.jit);
+    run_pool(iters, timeout, out_dir, || {
+        // Mutate a random seed; retry a few times if a mutation chain
+        // didn't yield a parseable program, falling back to a raw seed
+        // (always valid) so the pool never stalls.
+        for _ in 0..8 {
+            let s = seeds[rng.below(seeds.len())];
+            if let Some(p) = mutate::mutate_program(s, &donors, &mut rng, 5) {
+                return p;
+            }
         }
+        seeds[rng.below(seeds.len())].to_string()
+    })
+    .await
+}
+
+/// How many checks to keep in flight — the oracle is mostly I/O/wait
+/// (resolver + runtime spin-up, the quiescence wait), so each check only
+/// keeps a fraction of a core busy. Heavily over-subscribe the cores (8×):
+/// measured at 2× the campaign used ~4 of 14 cores, so ~1/7 of a core per
+/// in-flight check — 8× brings that to full saturation. (True per-core
+/// efficiency wants runtime reuse across checks — one shared in-process
+/// resolver instead of a fresh netidx stack per program — a deeper
+/// follow-up; over-subscription is the cheap win.)
+fn parallelism() -> usize {
+    std::thread::available_parallelism().map(|n| n.get() * 8).unwrap_or(16)
+}
+
+/// Source C campaign: generate valid programs from scratch (type-directed)
+/// and run each through the oracle. Reaches shapes no seed contains.
+/// Deterministic in `seed` (programs are generated sequentially; only the
+/// oracle checks run concurrently). A generated div-by-zero produces
+/// bottom = `Timeout` in all modes (agreement) — those would each waste
+/// the full timeout sleeping, so running a pool of them concurrently is
+/// what keeps the CPU busy.
+pub async fn generate_campaign(
+    iters: usize,
+    seed: u64,
+    timeout: Duration,
+    out_dir: &std::path::Path,
+) -> FuzzStats {
+    let mut rng = mutate::Rng::new(seed);
+    run_pool(iters, timeout, out_dir, || generate::gen_program(&mut rng)).await
+}
+
+/// Worker pool, two saturating phases:
+///   1. Keep `parallelism()` oracle checks in flight over fresh programs
+///      from `next_prog`, collecting raw divergences. Minimization is NOT
+///      done inline — it's a long serial section (≈80 sequential checks)
+///      that would drain the pool and idle the cores between bursts.
+///   2. Minimize the found divergences in a second bounded-parallel pool —
+///      each minimize is internally serial, but they "pair off" across
+///      divergences, so the cores stay busy through the reduction pass too.
+/// `next_prog` runs on the driver task (sequential, deterministic, cheap);
+/// only `check`/`minimize` are parallel. Output is sorted by program index
+/// so it stays deterministic despite parallel completion order.
+async fn run_pool(
+    iters: usize,
+    timeout: Duration,
+    out_dir: &std::path::Path,
+    mut next_prog: impl FnMut() -> String,
+) -> FuzzStats {
+    use tokio::task::JoinSet;
+    let par = parallelism();
+    let mut stats = FuzzStats::default();
+
+    // Phase 1 — saturating run, collect raw divergences only.
+    let mut set: JoinSet<(usize, String, Option<Divergence>)> = JoinSet::new();
+    let mut next = 0usize;
+    let spawn_one = |set: &mut JoinSet<_>, idx: usize, prog: String| {
+        set.spawn(async move {
+            let d = check(&prog, timeout).await;
+            (idx, prog, d)
+        });
+    };
+    while next < iters && set.len() < par {
+        let p = next_prog();
+        spawn_one(&mut set, next, p);
+        next += 1;
+    }
+    let mut found: Vec<(usize, String, Divergence)> = Vec::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok((idx, prog, div)) = res {
+            stats.run += 1;
+            if let Some(d) = div {
+                stats.divergences += 1;
+                found.push((idx, prog, d));
+            }
+        }
+        if next < iters {
+            let p = next_prog();
+            spawn_one(&mut set, next, p);
+            next += 1;
+        }
+    }
+
+    // Phase 2 — minimize in parallel, capped at `par` concurrent.
+    let mut mset: JoinSet<(usize, String, Divergence, String, usize)> = JoinSet::new();
+    let mut fi = found.into_iter();
+    let spawn_min = |mset: &mut JoinSet<_>, idx: usize, prog: String, d: Divergence| {
+        mset.spawn(async move {
+            let (minimized, mcalls) = minimize(&prog, timeout, 80).await;
+            (idx, prog, d, minimized, mcalls)
+        });
+    };
+    for _ in 0..par {
+        match fi.next() {
+            Some((idx, prog, d)) => spawn_min(&mut mset, idx, prog, d),
+            None => break,
+        }
+    }
+    let mut results = Vec::new();
+    while let Some(res) = mset.join_next().await {
+        if let Ok(r) = res {
+            results.push(r);
+        }
+        if let Some((idx, prog, d)) = fi.next() {
+            spawn_min(&mut mset, idx, prog, d);
+        }
+    }
+
+    // Deterministic output (parallel completion order is nondeterministic).
+    results.sort_by_key(|(idx, ..)| *idx);
+    for (idx, prog, d, minimized, mcalls) in results {
+        record_divergence(out_dir, &d, &prog, &minimized, idx);
+        println!("[{idx}] DIVERGENCE — {}", d.bisect());
+        println!("    program:   {prog}");
+        println!("    minimized: {minimized}  ({mcalls} checks)");
+        println!("    interp={:?} fused={:?} jit={:?}", d.interp, d.fused, d.jit);
     }
     stats
 }

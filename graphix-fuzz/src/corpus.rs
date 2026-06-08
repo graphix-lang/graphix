@@ -17,6 +17,11 @@
 // (see build.rs): `pub static HARVESTED: &[&str]`.
 include!(concat!(env!("OUT_DIR"), "/harvested_seeds.rs"));
 
+// The regression corpus — every saved finding under `findings/`, embedded
+// at build time as `pub static REGRESSION_CORPUS: &[(&str, &str)]`
+// (relative-name, program). Run automatically before each fuzz campaign.
+include!(concat!(env!("OUT_DIR"), "/regression_corpus.rs"));
+
 /// Hand seeds + the harvested fixture corpus. The hand seeds guarantee
 /// the bug-rich shapes are present even if the fixture set shifts; the
 /// harvest supplies breadth (every construct the stdlib tests exercise).

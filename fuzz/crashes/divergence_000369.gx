@@ -1,0 +1,7 @@
+// bisect: GIR/emit bug (interp != fused)
+// interp: Value(String(""))
+// fused:  Timeout
+// jit:    Timeout
+// mutant: { let v0 = i64:0; let v1 = (((u8:1 / u8:0), "xyz"), v0, (!true)); "" }
+// minimized:
+{let v0 = i64:0; let v1 = (((u8:1 / u8:0), "xyz"), v0, (!true)); ""}

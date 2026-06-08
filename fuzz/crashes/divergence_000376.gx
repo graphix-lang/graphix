@@ -1,0 +1,7 @@
+// bisect: GIR/emit bug (interp != fused)
+// interp: Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [String("graphix"), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [F64(0.0), F64(2.5), String("xyz")] }) })))), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [I64(100)] }) }))))] }) })))))
+// fused:  Timeout
+// jit:    Timeout
+// mutant: { let v0 = (i64:7 - (i64:100 - (i64:1 / i64:0))); let v1 = i64:100; let v2 = (i64:-100 * ((i64:2 * v1) - (v0 * i64:0))); select i64:100 { 2 => ("xyz", (f64:1.0, f64:1.0, "graphix"), [v2, i64:2]), _ => ("graphix", (f64:0.0, f64:2.5, "xyz"), [i64:100]) } }
+// minimized:
+{let v0 = i64:1 / i64:0; let v1 = i64:100; let v2 = (i64:-100 * ((i64:2 * v1) - (v0 * i64:0))); select i64:100 {i64:2 => ("xyz", (f64:1., f64:1., "graphix"), [v2, i64:2]), _ => ("graphix", (f64:0., f64:2.5, "xyz"), [i64:100])}}

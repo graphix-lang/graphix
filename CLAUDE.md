@@ -4775,3 +4775,74 @@ graphix-tests green.
 mutation swept the corpus clean, then reasoning agents found 10 real bugs in it.
 Source E needed *nothing new built* — only the `check` CLI. It is the
 single highest-value bug-finder we have.
+
+### Cluster C fixed (saturating duration sub) + auto-running regression corpus (Jun 2026)
+
+**Cluster C resolved the right way** (the user's call): `duration:1.s -
+duration:2.s` diverged because `std::time::Duration` is unsigned (no negative
+durations) — the unchecked `-` underflowed to a `Value::Error` that the node-walk
+dropped to bottom but the fused backend emitted. Fix is in **netidx-value**
+(`op.rs` `impl Sub for Value`): the unchecked Duration−Duration case now
+`saturating_sub`s to `0s` instead of `checked_sub`→error. `checked_sub` (the `-?`
+operator) still detects the underflow, so `duration -? duration` errors as
+expected. Now `1s - 2s = 0s` in all three modes — the divergence dissolves (no
+error → nothing to drop or emit). The residual general value-shape unchecked-arith
+error-drop (datetime/duration *overflow* on add/mul) is the open part of #177.
+
+**Auto-running regression corpus.** `graphix-fuzz/findings/**/*.gx` is now a
+committed regression corpus, embedded at build time (`build.rs` →
+`REGRESSION_CORPUS: &[(name, program)]`, stripping the `//`-comment headers).
+`graphix-fuzz regress` runs every finding through the (now 3-way) oracle and
+reports any that diverge — a fixed bug coming back. `graphix-fuzz fuzz` runs this
+gate *before* each mutation campaign (short 3s per-program timeout: a regression
+surfaces fast; a legitimately-bottom div0 program just confirms "still
+all-Timeout"). The dir grows by adding `.gx` files (the 10 round-1 finds are
+seeded there with their bisect + root-cause in the header) and rebuilding. All 10
+findings currently `AGREE` (every bug fixed). `lib::run_regression` /
+`regression_corpus_len` back the CLI.
+
+**The loop** (user's directive — "more subagents, more programs, saved in corpus,
+until we stop finding bugs"): each round runs a bigger Source E hunt, fixes the
+confirmed finds, saves the minimal repros to `findings/` (auto-run thereafter),
+and repeats until a round comes back empty. Round 1: 8 agents → 10 bugs. Round 2:
+12 agents on deeper/unexplored angles (bit-ops, casts, exotic ints/decimal, maps,
+deep arrays, error-flow, strings/bytes, datetime/duration, variants/ADTs, select/
+sample, closures/cross-kernel, interpolation/Display), told the round-1 classes
+are already fixed so they hunt new ones.
+
+### graphix-fuzz Source C — type-directed program generator (Jun 2026)
+
+Built while the Source E agent rounds were API-rate-limited (the generator is
+purely mechanical — no API — so it can run for as long as you let it; the user's
+"leave it running for a month on a cloud instance" use case). Unlike Source A
+(mutating seeds), this builds valid programs from NOTHING, reaching shapes no
+fixture contains.
+
+`generate.rs`: TYPE-DIRECTED text generation. `gen_typed(ctx, ty, depth)` emits a
+graphix expression *of type `ty`*, recursing through only the constructions that
+produce `ty` (literals, in-scope refs of `ty`, arith for numeric, cmp/bool for
+Bool, tuple/array constructors, `select`). This guarantees type-correctness BY
+CONSTRUCTION — the killer constraint (a random parse-valid graphix program
+typechecks ~never; the existing `expr/test.rs` proptest is a *parser* round-trip
+for exactly this reason). It emits TEXT while tracking each subexpression's
+`GenType`, so the oracle compiles from text (no AST/typecheck-cell plumbing). A
+`GenCtx` of in-scope `(name, GenType)` bindings means `let`-bound vars are
+referenced by later expressions — the internal data dependencies that stress
+fusion's region/dataflow analysis. Only pure deterministic constructs (no rand/
+time/net/fs), so the oracle stays sound. Deterministic xorshift seed → replayable.
+
+V1 covers i64/f64/u8/bool/string scalars, +/-/*/`/`/% (biased toward +/-/* since a
+generated `/0` drops to bottom = slow Timeout check), comparison, &&/||/!, tuples,
+arrays, and `select` (numeric scrutinee + literal arm + catch-all). **90% of
+generated programs compile** (type-directed; the ~10% rejects CompileErr in all
+modes → agree → harmlessly filtered). CLI: `graphix-fuzz generate [iters] [seed]`
+(runs the regression gate first, then generates + checks + auto-minimizes + saves
+divergences); `graphix-fuzz gen [n] [seed]` prints generated programs for
+eyeballing.
+
+The four sources now exist: A (fixture mutation), C (this generator), E
+(adversarial agents), plus the regression corpus + minimizer + 3-way oracle.
+Follow-ups: composite accessors (`t.0`, `a[i]`), HOFs, structs/variants/maps,
+value-shape types (datetime/duration/bytes/error), and coverage-guided selection
+(Source D) to steer generation toward new GirOp/FUSEBAIL coverage instead of
+uniform random — the "evolutionary" layer that makes a month-long run efficient.

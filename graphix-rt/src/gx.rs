@@ -33,7 +33,10 @@ use std::{
 };
 use tokio::{
     fs, select,
-    sync::mpsc::{self as tmpsc, error::SendTimeoutError, UnboundedReceiver},
+    sync::{
+        mpsc::{self as tmpsc, error::SendTimeoutError, UnboundedReceiver},
+        oneshot,
+    },
     task::{JoinError, JoinSet},
     time::{self, Instant},
 };
@@ -142,6 +145,10 @@ pub(super) struct GX<X: GXExt> {
     batch_pool: Pool<Vec<GXEvent>>,
     flags: BitFlags<CFlag>,
     commit_tasks: JoinSet<()>,
+    /// A pending `WaitResultOrIdle` request: deliver the first value the
+    /// watched expr emits, or `None` when the runtime next goes idle. See
+    /// `GXHandle::wait_result_or_idle`.
+    result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
 }
 
 impl<X: GXExt> GX<X> {
@@ -182,6 +189,7 @@ impl<X: GXExt> GX<X> {
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
             commit_tasks: JoinSet::new(),
+            result_watch: None,
         };
         let st = Instant::now();
         if let Some(root) = cfg.root {
@@ -279,6 +287,13 @@ impl<X: GXExt> GX<X> {
                     });
                 }
                 if let Some(v) = n.update(&mut self.ctx, &mut self.event) {
+                    let watched =
+                        matches!(self.result_watch.as_ref(), Some((wid, _)) if wid == id);
+                    if watched {
+                        if let Some((_, tx)) = self.result_watch.take() {
+                            let _ = tx.send(Some(v.clone()));
+                        }
+                    }
                     batch.push(GXEvent::Updated(*id, v))
                 }
                 for id in clear.drain(..) {
@@ -386,6 +401,18 @@ impl<X: GXExt> GX<X> {
                         ref_var_keys,
                         ref_var_total,
                     });
+                }
+                ToGX::CycleReady { res } => {
+                    let _ = res.send(self.cycle_ready());
+                }
+                ToGX::WaitResultOrIdle { id, res } => {
+                    // Register the watch. `do_cycle` runs unconditionally
+                    // right after this batch, so the watch gets at least one
+                    // shot at being fulfilled (Some) before the top-of-loop
+                    // idle check fulfills it None on quiescence. A second
+                    // request supersedes any pending watch (its sender drops,
+                    // surfacing as a cancellation to that caller).
+                    self.result_watch = Some((id, res));
                 }
             }
         }
@@ -767,6 +794,14 @@ impl<X: GXExt> GX<X> {
         'main: loop {
             let now = Instant::now();
             let ready = self.cycle_ready();
+            // A `WaitResultOrIdle` watcher whose expr didn't emit during the
+            // previous cycle resolves to `None` the moment the runtime goes
+            // idle — no future cycle can produce its result.
+            if !ready {
+                if let Some((_, tx)) = self.result_watch.take() {
+                    let _ = tx.send(None);
+                }
+            }
             let mut updates = None;
             let mut writes = None;
             macro_rules! peek {
