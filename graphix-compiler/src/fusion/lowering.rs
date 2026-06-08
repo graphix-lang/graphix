@@ -2038,7 +2038,13 @@ fn emit_do_as_expr<R: crate::Rt, E: crate::UserEvent>(
     let last = children.len() - 1;
     for (i, child) in children.iter().enumerate() {
         if i == last {
-            let body = emit_node(child, &mut local_ctx, ec)?;
+            let mut body = emit_node(child, &mut local_ctx, ec)?;
+            // Drop dead, pure lets so an unused bottom can't poison the
+            // block's value (see `prune_dead_lets` / `prune_dead_stmts`),
+            // then sink arm-exclusive bottom-capable lets into the select
+            // arms that consume them (see `sink_into_select_lets`).
+            let lets = prune_dead_lets(lets, &body);
+            let lets = sink_into_select_lets(lets, &mut body);
             let typ = body.typ.clone();
             return Some(GirExpr {
                 op: GirOp::Block { lets, tail: Box::new(body) },
@@ -3392,6 +3398,424 @@ fn emit_body_into<R: crate::Rt, E: crate::UserEvent>(
     }
 }
 
+/// The binding NAME an op references, if any. A binding is referenced not
+/// only via `GirOp::Local` (scalar reads) but also via the `name`/`array`
+/// source field of every accessor and array-HOF op — those read a
+/// composite/array binding by name, NOT through a sub-expression, so a
+/// `Local`-only scan would miss them and wrongly drop a live binding (e.g.
+/// the array fed to `array::map`). Exhaustive over `GirOp` so a new
+/// name-bearing op forces an update here rather than silently breaking the
+/// dead-statement liveness below. The non-referencing ops carry only
+/// sub-expressions (walked by `visit_ops`) or literals.
+fn op_ref_name(op: &GirOp) -> Option<&ArcStr> {
+    use crate::gir::GirOp::*;
+    match op {
+        Local(n)
+        | ArrayLen { name: n }
+        | ArrayGet { name: n, .. }
+        | TupleGet { name: n, .. }
+        | StructGet { name: n, .. }
+        | VariantTagEq { name: n, .. }
+        | VariantPayload { name: n, .. } => Some(n),
+        ArrayFold { array: n, .. }
+        | ArrayMap { array: n, .. }
+        | ArrayFilter { array: n, .. }
+        | ArrayFind { array: n, .. }
+        | ArrayFilterMap { array: n, .. }
+        | ArrayFindMap { array: n, .. }
+        | ArrayFlatMap { array: n, .. } => Some(n),
+        Const(_) | ConstStr(_) | ConstValue(_) | ConstNull | Bin { .. }
+        | Cmp { .. } | BoolBin { .. } | Not(_) | Cast { .. } | Call { .. }
+        | DynCall { .. } | Concat(_) | IsNull(_) | QopUnwrap { .. }
+        | ValueArith { .. } | ValueEq { .. } | BytesIndex { .. } | MapRef { .. }
+        | ArraySlice { .. } | ArrayInit { .. } | TupleNew { .. }
+        | StructNew { .. } | VariantNew { .. } | IfChain { .. } | Block { .. } => {
+            None
+        }
+    }
+}
+
+/// Collect every binding name referenced anywhere in `e` into `live`.
+/// Over-collection (e.g. a HOF body's own `elem_local`) is harmless — the
+/// liveness pass only ever keeps *more* statements, never drops a live
+/// one. Under-collection would be a use-after-free, hence `op_ref_name`'s
+/// exhaustiveness.
+fn collect_referenced_names(e: &GirExpr, live: &mut ahash::AHashSet<ArcStr>) {
+    crate::node_shape::visit_ops(e, &mut |op| {
+        if let Some(n) = op_ref_name(op) {
+            live.insert(n.clone());
+        }
+    });
+}
+
+/// `collect_referenced_names` for a whole statement.
+fn collect_referenced_names_stmt(s: &GirStmt, live: &mut ahash::AHashSet<ArcStr>) {
+    crate::node_shape::visit_ops_stmt(s, &mut |op| {
+        if let Some(n) = op_ref_name(op) {
+            live.insert(n.clone());
+        }
+    });
+}
+
+/// Backward dead-statement elimination over a fused block's statement
+/// stream (the suffix `out[start..]` that this `emit_do` call appended).
+///
+/// A non-tail `let` whose binding is never referenced by the block's tail
+/// (or by another retained statement), and whose value is PURE (no
+/// `DynCall`/`Call`, hence no side effect beyond a possible arith-error
+/// log), is dropped. It cannot affect the block's value, and emitting it
+/// would let a *bottom* in an unused binding (div-by-zero, out-of-bounds,
+/// …) poison the whole fused kernel via `DYNCALL_PENDING`. The node-walk
+/// treats each statement as an independent node — an unreferenced bottom
+/// binding simply never fires and the tail still produces — so this
+/// restores that semantics for the fused path. A pure bare `Discard` (a
+/// non-tail expression whose value is unobservable) is dropped likewise.
+/// Impure statements and live bindings are always kept. Walking backward
+/// collapses a chain of dead pure bindings in one sweep, and a pure
+/// statement that's dropped does NOT propagate its refs — so a binding
+/// referenced only by other dropped statements is itself dropped.
+fn prune_dead_stmts(out: &mut Vec<GirStmt>, start: usize) {
+    use crate::gir::expr_has_call;
+    let mut live: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+    let mut keep = vec![true; out.len()];
+    for i in (start..out.len()).rev() {
+        let drop = match &out[i] {
+            GirStmt::Let(l) => !live.contains(&l.local) && !expr_has_call(&l.value),
+            GirStmt::Discard(e) => !expr_has_call(e),
+            _ => false,
+        };
+        if drop {
+            keep[i] = false;
+        } else {
+            collect_referenced_names_stmt(&out[i], &mut live);
+        }
+    }
+    if keep[start..].iter().all(|k| *k) {
+        return;
+    }
+    let mut i = 0;
+    out.retain(|_| {
+        let k = keep[i];
+        i += 1;
+        k
+    });
+}
+
+/// Expression-form (`GirOp::Block`) counterpart of `prune_dead_stmts`:
+/// drop dead, pure `let`s whose binding the `tail` (and the retained
+/// `let`s) never reference. Same rationale — keep an unused bottom out of
+/// the kernel so it can't poison the block's value.
+fn prune_dead_lets(lets: Vec<Let>, tail: &GirExpr) -> Vec<Let> {
+    use crate::gir::expr_has_call;
+    let mut live: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+    collect_referenced_names(tail, &mut live);
+    let mut keep = vec![false; lets.len()];
+    for i in (0..lets.len()).rev() {
+        if live.contains(&lets[i].local) || expr_has_call(&lets[i].value) {
+            keep[i] = true;
+            collect_referenced_names(&lets[i].value, &mut live);
+        }
+    }
+    lets.into_iter()
+        .zip(keep)
+        .filter_map(|(l, k)| k.then_some(l))
+        .collect()
+}
+
+/// True if `e` can produce a runtime "bottom" (DYNCALL_PENDING) via a PURE
+/// op: an integer div/mod (the div-by-zero / signed-overflow guard) or a
+/// `?` (`QopUnwrap`, which pends on an error value). These are the
+/// computations whose laziness w.r.t. an un-taken select arm actually
+/// matters; gating the sink pass on them keeps its blast radius small
+/// (sinking a non-bottom let is value-correct too, just pointless).
+/// Impure DynCall/Call bottoms are excluded — the sink pass never moves an
+/// impure let, so they can't reach the multi-arm-duplication gate.
+fn is_bottom_capable(e: &GirExpr) -> bool {
+    let mut found = false;
+    crate::node_shape::visit_ops(e, &mut |op| match op {
+        GirOp::Bin { op: crate::gir::BinOp::Div | crate::gir::BinOp::Mod, .. }
+        | GirOp::QopUnwrap { .. } => found = true,
+        _ => {}
+    });
+    found
+}
+
+/// Sink pure, arm-exclusive block-lets DOWN into the select-arm body(ies)
+/// that consume them, so an un-taken arm never evaluates them. The
+/// node-walk evaluates select arms lazily (an unselected arm's body never
+/// fires), so a `let v = 1/0` consumed only by an un-taken arm yields the
+/// taken arm's value; the fused kernel evaluated every block-let eagerly
+/// and so a bottom in one poisoned the whole kernel. Arm bodies are
+/// ALREADY lazy in both fused backends (interp `eval_body` runs only the
+/// matched arm; the JIT compiles each arm into its own `brif`-reached CLIF
+/// block), so MOVING a let into an arm body makes it lazy for free — no
+/// backend/GirOp change. Runs after `prune_dead_stmts` in `emit_do`, on
+/// the `out[start..]` suffix whose last statement is a `GirStmt::Select`.
+///
+/// A let stays EAGER if it is referenced by an arm CONDITION / guard / the
+/// stabilized scrutinee (those are evaluated to pick the arm), by another
+/// still-outer let (the fixpoint sinks that one first, or it's eager), or
+/// is impure (`expr_has_call` — moving it would change side-effect timing).
+/// A let used by exactly one arm is MOVED there; a *bottom-capable* let
+/// used by several arms is DUPLICATED into each (sound because pure ⇒
+/// idempotent; gated on bottom-capability so we don't duplicate harmless
+/// work). The fixpoint re-scan collapses a dependency chain
+/// (`let v=1/0; let w=v+1; select s { 2 => w, _ => 99 }`): `w` sinks first,
+/// then `v`'s only remaining use is inside the arm, so `v` follows.
+///
+/// This NEVER produces a wrong value: it only relocates *where* a let is
+/// evaluated; the runtime still picks the arm, and a let needed on the
+/// taken path (scrutinee, guard, the taken arm) stays/sinks where it's
+/// reached, timing out exactly as the node-walk does. KNOWN gaps (both the
+/// safe Timeout-vs-finite direction, tracked separately): a bottom in an
+/// arm *guard* (the node-walk falls through; here it stays eager), and
+/// value-shape unchecked-arith overflow that emits an error *value* rather
+/// than bottom (#177).
+fn sink_into_select_stmts(out: &mut Vec<GirStmt>, start: usize) {
+    use crate::gir::expr_has_call;
+    loop {
+        let select_idx = match out.len().checked_sub(1) {
+            Some(i) if i >= start && matches!(out[i], GirStmt::Select { .. }) => i,
+            _ => return,
+        };
+        // Arm-condition refs (scrutinee/guard) are EAGER; per-arm body refs
+        // drive sinking.
+        let (eager, arm_refs): (ahash::AHashSet<ArcStr>, Vec<ahash::AHashSet<ArcStr>>) =
+            match &out[select_idx] {
+                GirStmt::Select { arms } => {
+                    let mut eager = ahash::AHashSet::default();
+                    let mut arm_refs = Vec::with_capacity(arms.len());
+                    for a in arms {
+                        if let Some(c) = &a.cond {
+                            collect_referenced_names(c, &mut eager);
+                        }
+                        let mut s = ahash::AHashSet::default();
+                        for st in &a.body {
+                            collect_referenced_names_stmt(st, &mut s);
+                        }
+                        arm_refs.push(s);
+                    }
+                    (eager, arm_refs)
+                }
+                _ => return,
+            };
+        let mut pick: Option<(usize, Vec<usize>)> = None;
+        for i in (start..select_idx).rev() {
+            let l = match &out[i] {
+                GirStmt::Let(l) => l,
+                _ => continue,
+            };
+            // Sinkable iff its value can't have an observable side effect
+            // moved past the select: a PURE let (no call) is always safe; a
+            // CALL-bearing let is only sunk when it's BOTTOM-CAPABLE (a
+            // div/mod/`?` — e.g. `str::parse(x)?`), because then sinking is
+            // REQUIRED to match the node-walk's lazy 99 and the call is a
+            // value-returning builtin (side-effecting I/O builtins return
+            // Unit → `Discard`, never reach here). An impure non-bottom let
+            // (e.g. a bare `rand::rand(...)`) stays eager so its effect
+            // can't become arm-conditional.
+            if (expr_has_call(&l.value) && !is_bottom_capable(&l.value))
+                || eager.contains(&l.local)
+            {
+                continue;
+            }
+            // Referenced by another OUTER let → defer (that let sinks first
+            // via the fixpoint, or it's eager and this one must stay too).
+            let outer_ref = (start..select_idx).any(|j| {
+                j != i
+                    && matches!(&out[j], GirStmt::Let(o) if {
+                        let mut s = ahash::AHashSet::default();
+                        collect_referenced_names(&o.value, &mut s);
+                        s.contains(&l.local)
+                    })
+            });
+            if outer_ref {
+                continue;
+            }
+            let targets: Vec<usize> = (0..arm_refs.len())
+                .filter(|&k| arm_refs[k].contains(&l.local))
+                .collect();
+            if targets.is_empty() {
+                continue; // referenced nowhere live (dead lets are already pruned)
+            }
+            // Single-arm → move; multi-arm → duplicate into each consuming
+            // arm. Duplication is runtime-neutral (exactly one arm fires, so
+            // the let runs once, same as eager) and value-safe (pure ⇒
+            // idempotent), and it's needed so a dependency chain that passes
+            // through a multi-arm let still sinks.
+            pick = Some((i, targets));
+            break;
+        }
+        let (i, targets) = match pick {
+            Some(p) => p,
+            None => break,
+        };
+        let l = match out.remove(i) {
+            GirStmt::Let(l) => l,
+            _ => unreachable!(),
+        };
+        let sidx = out.len() - 1; // the Select shifted up by one
+        if let GirStmt::Select { arms } = &mut out[sidx] {
+            for &k in &targets {
+                arms[k].body.insert(0, GirStmt::Let(l.clone()));
+            }
+        }
+    }
+    // Recurse: a let sunk into an arm whose REAL consumer is a NESTED select
+    // is still eager within the arm body (before that inner select), so sink
+    // it deeper. Bounded by select-nesting depth; a no-op when an arm body
+    // has nothing left to sink.
+    if let Some(GirStmt::Select { arms }) = out.last_mut() {
+        for a in arms.iter_mut() {
+            sink_into_select_stmts(&mut a.body, 0);
+        }
+    }
+}
+
+/// The `IfChain` arms inside a block's `tail`, peeling the optional
+/// scrutinee-stabilization `Block { lets: [scrut], tail: IfChain }` wrapper
+/// that `emit_select_as_expr` builds. Returns `None` when the tail isn't a
+/// select.
+fn ifchain_arms_ref(tail: &GirExpr) -> Option<&Vec<(Option<GirExpr>, GirExpr)>> {
+    match &tail.op {
+        GirOp::IfChain { arms } => Some(arms),
+        GirOp::Block { tail: inner, .. } => match &inner.op {
+            GirOp::IfChain { arms } => Some(arms),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn ifchain_arms_mut(tail: &mut GirExpr) -> Option<&mut Vec<(Option<GirExpr>, GirExpr)>> {
+    match &mut tail.op {
+        GirOp::IfChain { arms } => Some(arms),
+        GirOp::Block { tail: inner, .. } => match &mut inner.op {
+            GirOp::IfChain { arms } => Some(arms),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Expression-form (`GirOp::Block { lets, tail: IfChain }`) counterpart of
+/// `sink_into_select_stmts`. Same rationale and rules; here the select's
+/// arms are `(Option<cond>, value)` pairs and sinking a let into arm `k`
+/// wraps that arm's value in `GirOp::Block { lets: [l], tail: old_value }`
+/// (already lowered lazily by both backends, since `IfChain` only
+/// evaluates the matched arm). Returns the surviving (eager) outer lets.
+fn sink_into_select_lets(mut lets: Vec<Let>, tail: &mut GirExpr) -> Vec<Let> {
+    use crate::gir::expr_has_call;
+    if ifchain_arms_ref(tail).is_none() {
+        return lets;
+    }
+    // A scrutinee-stabilization wrapper's own lets (the scrut temp) and
+    // their value's refs are EAGER (the scrutinee is always evaluated).
+    let mut eager_base: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+    if let GirOp::Block { lets: wl, tail: inner } = &tail.op {
+        if matches!(inner.op, GirOp::IfChain { .. }) {
+            for l in wl {
+                eager_base.insert(l.local.clone());
+                collect_referenced_names(&l.value, &mut eager_base);
+            }
+        }
+    }
+    loop {
+        let (eager, arm_refs) = {
+            let arms = match ifchain_arms_ref(tail) {
+                Some(a) => a,
+                None => return lets,
+            };
+            let mut eager = eager_base.clone();
+            let mut arm_refs = Vec::with_capacity(arms.len());
+            for (cond, value) in arms.iter() {
+                if let Some(c) = cond {
+                    collect_referenced_names(c, &mut eager);
+                }
+                let mut s = ahash::AHashSet::default();
+                collect_referenced_names(value, &mut s);
+                arm_refs.push(s);
+            }
+            (eager, arm_refs)
+        };
+        let mut pick: Option<(usize, Vec<usize>)> = None;
+        for i in (0..lets.len()).rev() {
+            let l = &lets[i];
+            // Sinkable iff pure, or call-bearing-but-bottom-capable (see the
+            // statement-form note in `sink_into_select_stmts`).
+            if (expr_has_call(&l.value) && !is_bottom_capable(&l.value))
+                || eager.contains(&l.local)
+            {
+                continue;
+            }
+            let outer_ref = lets.iter().enumerate().any(|(j, o)| {
+                j != i && {
+                    let mut s = ahash::AHashSet::default();
+                    collect_referenced_names(&o.value, &mut s);
+                    s.contains(&l.local)
+                }
+            });
+            if outer_ref {
+                continue;
+            }
+            let targets: Vec<usize> = (0..arm_refs.len())
+                .filter(|&k| arm_refs[k].contains(&l.local))
+                .collect();
+            if targets.is_empty() {
+                continue;
+            }
+            pick = Some((i, targets));
+            break;
+        }
+        let (i, targets) = match pick {
+            Some(p) => p,
+            None => break,
+        };
+        let l = lets.remove(i);
+        if let Some(arms) = ifchain_arms_mut(tail) {
+            for &k in &targets {
+                let old = std::mem::replace(
+                    &mut arms[k].1,
+                    GirExpr { op: GirOp::ConstNull, typ: GirType::Null },
+                );
+                let typ = old.typ.clone();
+                arms[k].1 = GirExpr {
+                    op: GirOp::Block { lets: vec![l.clone()], tail: Box::new(old) },
+                    typ,
+                };
+            }
+        }
+    }
+    // Recurse into each arm value: a let just sunk into an arm whose real
+    // consumer is a NESTED select (the arm value is now a `Block` wrapping a
+    // deeper `IfChain`, or is itself an `IfChain`) must sink deeper.
+    if let Some(arms) = ifchain_arms_mut(tail) {
+        for (_, value) in arms.iter_mut() {
+            sink_nested_value(value);
+        }
+    }
+    lets
+}
+
+/// Drive `sink_into_select_lets` into any nested select reachable from an
+/// arm value — a `Block { lets, tail }` (sink `lets` into `tail`'s arms,
+/// then descend) or a bare `IfChain` (descend into its arm values).
+fn sink_nested_value(v: &mut GirExpr) {
+    match &mut v.op {
+        GirOp::Block { lets, tail } => {
+            let taken = std::mem::take(lets);
+            *lets = sink_into_select_lets(taken, tail);
+            sink_nested_value(tail);
+        }
+        GirOp::IfChain { arms } => {
+            for (_, av) in arms.iter_mut() {
+                sink_nested_value(av);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Emit a Do block as a sequence of body statements: each non-last
 /// node becomes a `Let` (or skipped NoOp); the last is the tail.
 fn emit_do<R: crate::Rt, E: crate::UserEvent>(
@@ -3404,6 +3828,7 @@ fn emit_do<R: crate::Rt, E: crate::UserEvent>(
     if children.is_empty() {
         return None;
     }
+    let start = out.len();
     let mut local_ctx = ctx.clone();
     let last = children.len() - 1;
     use crate::NodeView;
@@ -3436,6 +3861,13 @@ fn emit_do<R: crate::Rt, E: crate::UserEvent>(
             }
         }
     }
+    // Drop dead, pure non-tail statements so an unused bottom can't poison
+    // the kernel (see `prune_dead_stmts`), then sink the surviving
+    // arm-exclusive bottom-capable lets into the select arms that consume
+    // them so an un-taken arm's bottom can't poison it either (matching the
+    // node-walk's per-arm laziness; see `sink_into_select_stmts`).
+    prune_dead_stmts(out, start);
+    sink_into_select_stmts(out, start);
     Some(())
 }
 

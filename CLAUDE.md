@@ -4846,3 +4846,183 @@ Follow-ups: composite accessors (`t.0`, `a[i]`), HOFs, structs/variants/maps,
 value-shape types (datetime/duration/bytes/error), and coverage-guided selection
 (Source D) to steer generation toward new GirOp/FUSEBAIL coverage instead of
 uniform random — the "evolutionary" layer that makes a month-long run efficient.
+
+### `wait_result_or_idle` + fuzzer parallelism/corpus + dead-statement elimination (Jun 2026)
+
+Three coupled pieces from a fuzzer-driven session.
+
+**`GXHandle::wait_result_or_idle(eid)` (graphix-rt).** A quiescence-aware
+result wait the main loop services: returns `Some(v)` the cycle `eid`
+emits `v`, or `None` the moment `cycle_ready()` goes false (no future
+cycle can produce a result). `ToGX::WaitResultOrIdle` registers a
+`result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>` on `GX`;
+`do_cycle`'s node-emit loop fulfills it `Some` when the watched expr
+emits, and the top-of-loop idle check fulfills it `None` on quiescence.
+The fuzz oracle's `drive` replaced 2ms polling with one
+`wait_result_or_idle` + an rx-drain on `None` (a synchronous program
+normally emits its value during the compile cycle, before the watch is
+registered, so the value lands in the event stream, not the watch). A
+bottom program (div0) is now detected in ~0.46s instead of sleeping out
+the timeout.
+
+**Fuzzer parallelism + persistent deduped corpus (graphix-fuzz).**
+`parallelism()` 2×→8× cores (measured ~26%→~91% of 14 cores); `check`'s
+three modes run via `tokio::join!`; and the inline-minimize-stalls-the-
+pool problem (minimize is ≈80 serial checks that drained the cores
+between bursts) is gone — `run_pool` now spawns a bounded-parallel
+minimize+record task per divergence so the check pool stays saturated.
+New `Corpus` struct: loads existing `*.gx` at startup (dedup key = the
+minimized program text), and `record()` writes each genuinely-new
+divergence to its own file IMMEDIATELY on discovery (not at run end).
+`generate`/`fuzz` accept `iters = forever`/`0` to run until killed,
+printing new divergences live with a periodic heartbeat. NB: the
+workspace target dir is redirected to `/home/eric/tmp/target` — run the
+binary via `cargo run -p graphix-fuzz` or the real path, not
+`./target/...`.
+
+**Dead-statement elimination — fused block bottom-poison (fusion).** The
+first real generate campaign found a 37/500 divergence cluster, all one
+root cause: a fused block (`emit_do`/`emit_do_as_expr` → `GirOp::Block`)
+evaluated EVERY statement eagerly, so a bottom in a non-tail statement
+(div/mod-by-zero → `DYNCALL_PENDING`) poisoned the whole kernel — while
+the node-walk treats each statement as an independent node (an
+unreferenced bottom binding never fires; the tail still produces). Fix
+(user chose dead-statement elimination over dependency-isolation): a
+backward liveness pass (`prune_dead_stmts` for the `out: Vec<GirStmt>`
+stream, `prune_dead_lets` for the expr-form `lets`+`tail`) drops a
+non-tail `let` whose binding is unreferenced by the tail/later-live
+statements AND whose value is PURE (`!gir::expr_has_call` — no
+DynCall/Call, so no side effect beyond the dropped arith-error log), and
+a pure bare `Discard`. Backward order + not-propagating-dropped-refs
+collapses dead chains in one sweep (`{let v=1/0; v; 42}` → 42).
+
+The liveness MUST count ALL references, not just `GirOp::Local`: accessor
+and array-HOF ops reference a composite/array binding via a `name`/
+`array` field (e.g. `array::map(a, …)` reads `a` through `ArrayMap.array`,
+not a `Local`). A first cut used a `Local`-only `visit_ops` scan, wrongly
+dropped the live array binding, and crashed 58 tests with "undefined
+array `a`". Fixed with `op_ref_name(&GirOp) -> Option<&ArcStr>` —
+EXHAUSTIVE over `GirOp` (a new name-bearing op forces an update here
+rather than a silent use-after-free), combined with `visit_ops` for the
+sub-expr recursion. `expr_has_call` + `visit_ops`/`visit_ops_stmt` are
+now `pub(crate)`.
+
+The fix cleared 36/37; the remaining 1 is a DEEPER class (a bottom
+binding that IS referenced, but only by a select arm that isn't taken at
+runtime — the node-walk is lazy per-arm, the fused kernel is eager;
+saved to `fuzz/crashes`). Regression fixtures in `lib_tests/arith.rs`
+(`dead_let_bottom`, `bare_bottom_stmt`, `dead_let_fixpoint`,
+`dead_let_keeps_live`) assert all three modes agree. 132 compiler + 1997
+graphix-tests green.
+
+### Select-arm sinking — fused kernel matches node-walk per-arm laziness (Jun 2026)
+
+The dead-statement-elimination fix above cleared 36/37 of the first
+generate campaign's divergences; the 37th was a DEEPER class the fuzzer
+kept finding: a bottom (div0/mod0) in a block-`let` that IS referenced —
+but only by a select arm that isn't taken at runtime. The node-walk
+evaluates select arms LAZILY (an unselected arm's body never fires via the
+demand-driven `update` walk), so `{ let v=1/0; select 5 { 2 => v, _ => 99 } }`
+yields 99; the fused kernel evaluated every block-`let` EAGERLY before the
+select and so the bottom poisoned the whole kernel → Timeout.
+
+**Design via workflow** (understand → 3 approaches × adversarial judges).
+An empirical 12-case truth-table (run through the oracle) pinned the exact
+boundary: a bottom INLINE in an un-taken arm BODY already AGREES across all
+modes — both fused backends ALREADY evaluate arm bodies lazily (interp
+`eval_body` runs only the matched arm; the JIT compiles each arm into its
+own `brif`-reached CLIF block; `GirOp::IfChain` returns on first match).
+So the ONLY problem is hoisted block-lets being eager. The judges scored
+**sinking** (correctness 7, cost 8, **perf 10**, value-SOUND) over
+poison-as-value (correctness 6, cost 3 — and it diverges on async-DynCall
+bottoms it carves out of the model) and confirmed sinking can never produce
+a wrong finite value — it only relocates WHERE a let is evaluated; the
+runtime still picks the arm.
+
+**The fix (compile-time GIR→GIR, ZERO backend/GirOp changes), all in
+`fusion/lowering.rs`:** `sink_into_select_stmts` (statement form, trailing
+`GirStmt::Select`) and `sink_into_select_lets` (expression form,
+`GirOp::Block { lets, tail: IfChain }`) move a pure, arm-exclusive block-let
+DOWN into the arm body/value that consumes it, where it's lazy for free.
+Run after `prune_dead_stmts`/`prune_dead_lets` in `emit_do`/`emit_do_as_expr`.
+
+Rules: a let stays EAGER if referenced by an arm CONDITION/guard or the
+stabilized scrutinee (those pick the arm), by another still-outer let, or
+is impure (`expr_has_call` — moving it would change side-effect timing). A
+single-arm let is MOVED; a *bottom-capable* (`is_bottom_capable`: int
+div/mod or `?`) let used by ≥2 arms is DUPLICATED into each (sound because
+pure ⇒ idempotent; gated so harmless work isn't cloned). A fixpoint re-scan
+collapses dependency chains (`let v=1/0; let w=v+1; …w…`: `w` sinks first,
+then `v`'s only use is inside the arm, so `v` follows). Expr form wraps the
+arm value in `GirOp::Block { lets:[l], tail: old_value }`; it peels the
+scrutinee-stabilization `Block` wrapper to reach the `IfChain` and treats
+the scrut temp as eager. Termination: each progressing iteration strictly
+shrinks the outer let count.
+
+All 12 truth-table cases AGREE (the 5 that diverged — one-arm, multi-arm via
+duplication, chain via fixpoint, nested-select, mod — now match; the 7 that
+already agreed stay agreeing). Composite/string/value-shape sunk lets and
+multi-arm composite duplication all verified value-correct on both backends.
+Regression fixtures in `lib_tests/arith.rs` (`sink_one_arm`, `sink_mod`,
+`sink_multi_arm`, `sink_chain`, `sink_nested`, `sink_literal_arm_taken`,
+`sink_expr_operand`). Post-fix fuzz campaigns (seed 7 that found the
+original, + fresh seed 99) find 0 divergences. 132 compiler + 2018
+graphix-tests green.
+
+**Known gaps (both safe Timeout-vs-finite, NOT wrong values; tracked):**
+(1) a bottom in an arm GUARD (`n if v>0 =>`) — the node-walk falls through
+to the next arm (a bottom guard fails to match → 99), but the guard is
+evaluated to PICK the arm so it can't be sunk; it stays eager → Timeout.
+The fuzzer's generator never emits guards, so it can't auto-find this; the
+real fix is bottom-guard → arm-skip in IfChain/Select codegen (a separate
+mechanism). (2) value-shape unchecked-arith overflow that emits an error
+VALUE rather than bottom (#177) — orthogonal, already tracked.
+
+### Select-arm sinking — adversarial-review hardening (Jun 2026)
+
+A focused adversarial-review workflow (4 attack angles → verify) on the
+sinking pass found 5 confirmed divergences in TWO classes (all
+safe-direction Timeout, never wrong values) — fixed 4, the 5th deferred:
+
+1. **Call-bearing bottom-capable lets** (`str::parse(x)?`, `1/0 +
+   str::len(x)`): the `expr_has_call` purity gate ran BEFORE the
+   bottom-capability check, excluding any bottom-capable let that also
+   contained a (pure) call. Since `EffectKind` has no purity flag (rand is
+   `Sync` but nondeterministic), the gate is now **bottom-capable OR pure**:
+   a pure let always sinks; a call-bearing let sinks only when bottom-capable
+   (where sinking is REQUIRED to match the node-walk's lazy value, and the
+   call is a value-returning builtin — side-effecting I/O builtins return
+   Unit → `Discard`, never a value-let). An impure NON-bottom let (a bare
+   `rand`) stays eager so its effect can't become arm-conditional (and since
+   it doesn't bottom, eager eval agrees anyway).
+2. **Multi-arm dependency chains** (`let x=len(); let w=x/0; let v=w+1;
+   select x { 6 => v, _ => v }`): the multi-arm-duplication gate was
+   `is_bottom_capable`, which blocked sinking a PURE intermediate (`v`) that
+   a bottom-capable producer (`w`) feeds. Dropped the gate — duplicating a
+   sinkable let into each consuming arm is **runtime-neutral** (exactly one
+   arm fires, so it runs once, same as eager) and value-safe (pure ⇒
+   idempotent). Now any sinkable arm-exclusive let, single or multi, sinks.
+3. **Nested-tail selects** (`select s { 7 => select t { 3 => v, _ => 50 },
+   _ => 99 }`): sinking `v` into the OUTER arm body left it eager *before*
+   the inner select. Both forms now RECURSE — after the fixpoint,
+   `sink_into_select_stmts` re-runs on each arm body and `sink_into_select_lets`
+   drives `sink_nested_value` into each arm value (a `Block` wrapping a deeper
+   `IfChain`, or a bare `IfChain`).
+
+Regression fixtures added (`sink_call_bearing`, `sink_qop_parse`,
+`sink_multi_arm_chain`, `sink_nested_stmt`, `sink_rand_stays_eager`). All 12
+truth-table cases + the 4 fixed findings agree; 132 compiler + 2018+
+graphix-tests green; two 600- and one 1500-program fuzz campaigns find 0
+divergences.
+
+**The 5th finding — DEFERRED (a known gap):** a bottom feeding an un-taken
+arm of a select that is BOUND TO A LET and used downstream (`let r = select
+s { 7 => select t { 3 => v, _ => 50 }, _ => 99 }; r + 0`). The select isn't
+the block tail (the tail is `r + 0`), so the tail-only sink never reaches it.
+The mechanical generator does NOT produce this pattern (0 divergences across
+3600+ generated programs; it took an adversarial agent to construct), so the
+fuzzer can't auto-find it. Fully closing it requires generalizing the pass to
+sink into a select WHEREVER it appears in the block (any let value, not just
+the tail) — i.e. general partial-lazy-code-motion, an open-ended optimization.
+Deferred pending a decision on the investment level. The two earlier gaps
+(bottom in an arm GUARD; #177 value-shape error-value) also remain.

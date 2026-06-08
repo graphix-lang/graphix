@@ -199,3 +199,144 @@ const INTERP_NONSCALAR: &str = "{ let words = [\"alpha\", \"beta\"]; \"first=[wo
 run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "first=alpha")
 }; graphix_package_core::testing::FuseExpect::None);
+
+// ── Dead-statement elimination (fuzzer-found, block bottom-poison) ──
+//
+// A fused block evaluated EVERY statement eagerly, so a bottom in a non-
+// tail statement (div/mod-by-zero → DYNCALL_PENDING) poisoned the whole
+// kernel — while the node-walk treats each statement as an independent
+// node: an unreferenced bottom binding simply never fires and the tail
+// still produces. `prune_dead_stmts`/`prune_dead_lets` drop dead, pure
+// non-tail statements so the bottom never executes. All three modes must
+// now agree on the tail value (and the pruned block still fuses).
+
+// A dead (unreferenced) bottom `let` is dropped; the tail is produced.
+const DEAD_LET_BOTTOM: &str = "{ let v = i64:1 / i64:0; i64:42 }";
+run!(dead_let_bottom, DEAD_LET_BOTTOM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+// A bare (value-discarded) bottom statement is dropped.
+const BARE_BOTTOM_STMT: &str = "{ i64:1 / i64:0; i64:42 }";
+run!(bare_bottom_stmt, BARE_BOTTOM_STMT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+// The backward-fixpoint case: `v` is referenced only by a bare statement
+// that is itself dropped, so `v`'s bottom binding is dropped too.
+const DEAD_LET_FIXPOINT: &str = "{ let v = i64:1 / i64:0; v; i64:42 }";
+run!(dead_let_fixpoint, DEAD_LET_FIXPOINT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+// Pruning must NOT touch a live binding: `a` flows to the tail, only the
+// dead `b` (a bottom) is dropped.
+const DEAD_LET_KEEPS_LIVE: &str = "{ let a = i64:7; let b = i64:1 / i64:0; a + i64:1 }";
+run!(dead_let_keeps_live, DEAD_LET_KEEPS_LIVE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(8)))
+});
+
+// ── Select-arm sinking (fuzzer-found, per-arm laziness) ──
+//
+// The node-walk evaluates select arms lazily (an unselected arm's body
+// never fires), so a bottom (div0/mod0) feeding ONLY an un-taken arm
+// yields the taken arm's value. Dead-statement elimination can't fix this
+// (the binding IS referenced — by an un-taken arm). `sink_into_select_stmts`
+// moves the arm-exclusive bottom-capable let INTO the consuming arm body,
+// where it becomes lazy for free (arm bodies are already lazy in both
+// fused backends). All three modes must agree, and the pruned/sunk block
+// still fuses.
+
+// v feeds only the un-taken arm (scrutinee 5, arm key 2) -> v sinks into
+// arm 2 -> never runs -> 99.
+const SINK_ONE_ARM: &str = "{ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
+run!(sink_one_arm, SINK_ONE_ARM, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+
+// mod-by-zero — operator-agnostic, same mechanism.
+const SINK_MOD: &str = "{ let v = i64:1 % i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
+run!(sink_mod, SINK_MOD, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+
+// v feeds TWO un-taken arms -> duplicated into each (pure ⇒ idempotent).
+const SINK_MULTI_ARM: &str =
+    "{ let v = i64:1 / i64:0; select i64:5 { 1 => v, 2 => v, _ => i64:99 } }";
+run!(sink_multi_arm, SINK_MULTI_ARM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(99)))
+});
+
+// Dependency chain v -> w, w feeds only an un-taken arm: the fixpoint sinks
+// w first, then v follows into the same arm.
+const SINK_CHAIN: &str =
+    "{ let v = i64:1 / i64:0; let w = v + i64:1; select i64:5 { 2 => w, _ => i64:99 } }";
+run!(sink_chain, SINK_CHAIN, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+
+// v is referenced only inside a nested select living in the outer un-taken
+// arm -> v sinks into the outer arm body.
+const SINK_NESTED: &str = "{ let v = i64:1 / i64:0; \
+    select i64:5 { 2 => select i64:1 { 1 => v, _ => i64:0 }, _ => i64:99 } }";
+run!(sink_nested, SINK_NESTED, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
+
+// A bottom in a let consumed by the TAKEN arm must STILL bottom (matches
+// node-walk): v sinks into arm 2 but arm 2 IS taken -> all three Timeout.
+// Can't assert Timeout via run!; instead pin the sibling where the scrutinee
+// picks the literal arm whose body does NOT use v -> 99 even though v is
+// referenced by the (un-taken) catch-all.
+const SINK_LITERAL_ARM_TAKEN: &str =
+    "{ let v = i64:1 / i64:0; select i64:7 { 7 => i64:42, _ => v } }";
+run!(sink_literal_arm_taken, SINK_LITERAL_ARM_TAKEN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+// Expression form: a block-with-select used as a sub-expression lowers to
+// `GirOp::Block { lets, tail: IfChain }`; the sink pass must reach the
+// IfChain arms there too (here the block is an arithmetic operand).
+const SINK_EXPR_OPERAND: &str =
+    "({ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }) + i64:1";
+run!(sink_expr_operand, SINK_EXPR_OPERAND, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(100)))
+});
+
+// A bottom-capable let that ALSO contains a (pure) call: the `expr_has_call`
+// gate must not exclude it — `1/0` is bottom-capable, so it sinks even
+// though `str::len` is a call. (Caught by adversarial review.)
+const SINK_CALL_BEARING: &str =
+    "{ let v = i64:1 / i64:0 + str::len(\"x\"); select i64:5 { 2 => v, _ => i64:99 } }";
+run!(sink_call_bearing, SINK_CALL_BEARING, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(99)))
+});
+
+// A `?`-on-parse-error bottom feeding an un-taken arm: the QopUnwrap makes
+// the let bottom-capable, so it sinks (the str::parse call is value-
+// returning/pure). Sunk -> the parse never runs on the taken arm -> 99.
+const SINK_QOP_PARSE: &str =
+    "{ let v: i64 = str::parse(\"notanumber\")?; select i64:5 { 2 => v, _ => i64:99 } }";
+run!(sink_qop_parse, SINK_QOP_PARSE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(99)))
+});
+
+// Dependency chain THROUGH a multi-arm let: v (pure) feeds two un-taken
+// arms, w (bottom) feeds v. Both must sink (v duplicated, w follows) — the
+// multi-arm gate had to be dropped for this. (Caught by adversarial review.)
+const SINK_MULTI_ARM_CHAIN: &str = "{ let x = str::len(\"hello\"); let w = x / i64:0; \
+    let v = w + i64:1; select x { 5 => i64:99, 6 => v, _ => v } }";
+run!(sink_multi_arm_chain, SINK_MULTI_ARM_CHAIN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(99)))
+});
+
+// A bottom whose only consumer is an arm of a NESTED select inside an outer
+// un-taken arm: the sink must recurse into nested selects. s=7 -> outer arm
+// 7 -> inner select t=2 -> `_ => 50` (v's `3 =>` arm un-taken). (Caught by
+// adversarial review.)
+const SINK_NESTED_STMT: &str = "{ let s = i64:7; let t = i64:2; let v = i64:10 / i64:0; \
+    select s { 7 => select t { 3 => v + i64:1, _ => i64:50 }, _ => i64:99 } }";
+run!(sink_nested_stmt, SINK_NESTED_STMT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(50)))
+});
+
+// An impure NON-bottom let (a bare `rand`) must stay EAGER so its effect
+// can't become arm-conditional — and since rand doesn't bottom, eager eval
+// is harmless and all modes agree at the taken arm's 99.
+const SINK_RAND_STAYS_EAGER: &str =
+    "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
+run!(sink_rand_stays_eager, SINK_RAND_STAYS_EAGER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(99)))
+}; graphix_package_core::testing::FuseExpect::Jit);

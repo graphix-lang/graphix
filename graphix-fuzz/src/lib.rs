@@ -368,23 +368,117 @@ pub fn regression_corpus_len() -> usize {
 pub struct FuzzStats {
     /// Mutants that were generated and run through the oracle.
     pub run: usize,
-    /// Confirmed divergences.
+    /// Confirmed divergences (including duplicates of already-saved bugs).
     pub divergences: usize,
 }
 
+/// A persistent, deduplicated divergence corpus on disk. Loaded once at
+/// startup (so a campaign never re-reports a finding it already saved),
+/// then grown live: each genuinely-new divergence is minimized, deduped
+/// by its minimized text, and written to its own `.gx` immediately — not
+/// at the end of the run, so a `forever` campaign surfaces findings as
+/// they're found. Thread-safe: the worker pool records concurrently.
+pub struct Corpus {
+    dir: std::path::PathBuf,
+    seen: std::sync::Mutex<std::collections::HashSet<String>>,
+    counter: std::sync::atomic::AtomicUsize,
+}
+
+impl Corpus {
+    /// Load every `*.gx` already in `dir`, keying the dedup set on each
+    /// file's minimized program. Creates `dir` if absent.
+    pub fn load(dir: &std::path::Path) -> Self {
+        let _ = std::fs::create_dir_all(dir);
+        let mut seen = std::collections::HashSet::new();
+        let mut max_idx = 0usize;
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for ent in rd.flatten() {
+                let path = ent.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("gx") {
+                    continue;
+                }
+                if let Ok(body) = std::fs::read_to_string(&path) {
+                    if let Some(m) = extract_minimized(&body) {
+                        seen.insert(m);
+                    }
+                }
+                if let Some(n) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.strip_prefix("divergence_"))
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    max_idx = max_idx.max(n + 1);
+                }
+            }
+        }
+        Corpus {
+            dir: dir.to_path_buf(),
+            seen: std::sync::Mutex::new(seen),
+            counter: std::sync::atomic::AtomicUsize::new(max_idx),
+        }
+    }
+
+    /// Number of distinct divergences in the corpus.
+    pub fn len(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Record a divergence if its minimized form is new. Returns `true`
+    /// when newly written (caller prints it), `false` for a duplicate.
+    /// The dedup key is the minimized text, so distinct root causes get
+    /// distinct files while many raw mutants that reduce to the same
+    /// canonical repro collapse to one.
+    pub fn record(&self, d: &Divergence, mutant: &str, minimized: &str) -> bool {
+        let key = minimized.trim().to_string();
+        {
+            let mut seen = self.seen.lock().unwrap();
+            if !seen.insert(key) {
+                return false;
+            }
+        }
+        let n = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let body = format!(
+            "// bisect: {}\n// interp: {:?}\n// fused:  {:?}\n// jit:    {:?}\n\
+             // mutant: {}\n// minimized:\n{}\n",
+            d.bisect(),
+            d.interp,
+            d.fused,
+            d.jit,
+            mutant,
+            minimized,
+        );
+        let _ = std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body);
+        true
+    }
+}
+
+/// Extract the minimized program (the text after the `// minimized:`
+/// marker) from a recorded divergence file, trimmed — the dedup key.
+fn extract_minimized(body: &str) -> Option<String> {
+    body.split_once("// minimized:\n")
+        .map(|(_, m)| m.trim().to_string())
+}
+
 /// Source-A campaign: mutate corpus seeds and run each mutant through the
-/// oracle, recording divergences under `out_dir`. Deterministic in
-/// `seed` — the same seed replays the same run.
+/// oracle, recording new divergences into `corpus` as they're found.
+/// Deterministic in `seed`. `iters = None` runs forever.
 pub async fn fuzz(
-    iters: usize,
+    iters: Option<usize>,
     seed: u64,
     timeout: Duration,
-    out_dir: &std::path::Path,
+    corpus: &std::sync::Arc<Corpus>,
 ) -> FuzzStats {
     let seeds = corpus::all_seeds();
     let donors = mutate::donor_pool(&seeds);
     let mut rng = mutate::Rng::new(seed);
-    run_pool(iters, timeout, out_dir, || {
+    run_pool(corpus, iters, timeout, || {
         // Mutate a random seed; retry a few times if a mutation chain
         // didn't yield a parseable program, falling back to a raw seed
         // (always valid) so the pool never stalls.
@@ -419,120 +513,88 @@ fn parallelism() -> usize {
 /// the full timeout sleeping, so running a pool of them concurrently is
 /// what keeps the CPU busy.
 pub async fn generate_campaign(
-    iters: usize,
+    iters: Option<usize>,
     seed: u64,
     timeout: Duration,
-    out_dir: &std::path::Path,
+    corpus: &std::sync::Arc<Corpus>,
 ) -> FuzzStats {
     let mut rng = mutate::Rng::new(seed);
-    run_pool(iters, timeout, out_dir, || generate::gen_program(&mut rng)).await
+    run_pool(corpus, iters, timeout, || generate::gen_program(&mut rng)).await
 }
 
-/// Worker pool, two saturating phases:
-///   1. Keep `parallelism()` oracle checks in flight over fresh programs
-///      from `next_prog`, collecting raw divergences. Minimization is NOT
-///      done inline — it's a long serial section (≈80 sequential checks)
-///      that would drain the pool and idle the cores between bursts.
-///   2. Minimize the found divergences in a second bounded-parallel pool —
-///      each minimize is internally serial, but they "pair off" across
-///      divergences, so the cores stay busy through the reduction pass too.
-/// `next_prog` runs on the driver task (sequential, deterministic, cheap);
-/// only `check`/`minimize` are parallel. Output is sorted by program index
-/// so it stays deterministic despite parallel completion order.
+/// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh
+/// programs from `next_prog`. On a divergence it fires a bounded-parallel
+/// task that minimizes, dedups against `corpus`, and — if the minimized
+/// form is new — writes the `.gx` and prints it immediately, all WITHOUT
+/// stalling the check pool (minimization is ≈80 serial checks; running it
+/// inline drained the cores). `iters = None` runs forever (until killed),
+/// surfacing new divergences live; `Some(n)` stops after `n` programs.
+/// `next_prog` runs on the driver task (sequential, deterministic, cheap).
 async fn run_pool(
-    iters: usize,
+    corpus: &std::sync::Arc<Corpus>,
+    iters: Option<usize>,
     timeout: Duration,
-    out_dir: &std::path::Path,
     mut next_prog: impl FnMut() -> String,
 ) -> FuzzStats {
     use tokio::task::JoinSet;
     let par = parallelism();
     let mut stats = FuzzStats::default();
-
-    // Phase 1 — saturating run, collect raw divergences only.
-    let mut set: JoinSet<(usize, String, Option<Divergence>)> = JoinSet::new();
-    let mut next = 0usize;
-    let spawn_one = |set: &mut JoinSet<_>, idx: usize, prog: String| {
-        set.spawn(async move {
+    let mut checks: JoinSet<(String, Option<Divergence>)> = JoinSet::new();
+    let mut minims: JoinSet<()> = JoinSet::new();
+    let mut launched = 0usize;
+    let want = |launched: usize| iters.map_or(true, |n| launched < n);
+    let spawn_check = |checks: &mut JoinSet<_>, prog: String| {
+        checks.spawn(async move {
             let d = check(&prog, timeout).await;
-            (idx, prog, d)
+            (prog, d)
         });
     };
-    while next < iters && set.len() < par {
-        let p = next_prog();
-        spawn_one(&mut set, next, p);
-        next += 1;
+    while want(launched) && checks.len() < par {
+        spawn_check(&mut checks, next_prog());
+        launched += 1;
     }
-    let mut found: Vec<(usize, String, Divergence)> = Vec::new();
-    while let Some(res) = set.join_next().await {
-        if let Ok((idx, prog, div)) = res {
-            stats.run += 1;
-            if let Some(d) = div {
-                stats.divergences += 1;
-                found.push((idx, prog, d));
+    loop {
+        tokio::select! {
+            biased;
+            Some(res) = checks.join_next() => {
+                if let Ok((prog, div)) = res {
+                    stats.run += 1;
+                    if stats.run % 1000 == 0 {
+                        eprintln!(
+                            "  …{} run, {} divergences, {} in corpus",
+                            stats.run, stats.divergences, corpus.len()
+                        );
+                    }
+                    if let Some(d) = div {
+                        stats.divergences += 1;
+                        // Bound concurrent minimizations so a regressed
+                        // (everything-diverges) run can't pile up unboundedly.
+                        if minims.len() >= par {
+                            let _ = minims.join_next().await;
+                        }
+                        let corpus = corpus.clone();
+                        minims.spawn(async move {
+                            let (min, _) = minimize(&prog, timeout, 80).await;
+                            if corpus.record(&d, &prog, &min) {
+                                println!("DIVERGENCE — {}", d.bisect());
+                                println!("    minimized: {min}");
+                                println!(
+                                    "    interp={:?} fused={:?} jit={:?}",
+                                    d.interp, d.fused, d.jit
+                                );
+                            }
+                        });
+                    }
+                }
+                if want(launched) {
+                    spawn_check(&mut checks, next_prog());
+                    launched += 1;
+                }
             }
-        }
-        if next < iters {
-            let p = next_prog();
-            spawn_one(&mut set, next, p);
-            next += 1;
+            Some(_) = minims.join_next() => {}
+            else => break,
         }
     }
-
-    // Phase 2 — minimize in parallel, capped at `par` concurrent.
-    let mut mset: JoinSet<(usize, String, Divergence, String, usize)> = JoinSet::new();
-    let mut fi = found.into_iter();
-    let spawn_min = |mset: &mut JoinSet<_>, idx: usize, prog: String, d: Divergence| {
-        mset.spawn(async move {
-            let (minimized, mcalls) = minimize(&prog, timeout, 80).await;
-            (idx, prog, d, minimized, mcalls)
-        });
-    };
-    for _ in 0..par {
-        match fi.next() {
-            Some((idx, prog, d)) => spawn_min(&mut mset, idx, prog, d),
-            None => break,
-        }
-    }
-    let mut results = Vec::new();
-    while let Some(res) = mset.join_next().await {
-        if let Ok(r) = res {
-            results.push(r);
-        }
-        if let Some((idx, prog, d)) = fi.next() {
-            spawn_min(&mut mset, idx, prog, d);
-        }
-    }
-
-    // Deterministic output (parallel completion order is nondeterministic).
-    results.sort_by_key(|(idx, ..)| *idx);
-    for (idx, prog, d, minimized, mcalls) in results {
-        record_divergence(out_dir, &d, &prog, &minimized, idx);
-        println!("[{idx}] DIVERGENCE — {}", d.bisect());
-        println!("    program:   {prog}");
-        println!("    minimized: {minimized}  ({mcalls} checks)");
-        println!("    interp={:?} fused={:?} jit={:?}", d.interp, d.fused, d.jit);
-    }
+    while minims.join_next().await.is_some() {}
     stats
-}
-
-fn record_divergence(
-    out_dir: &std::path::Path,
-    d: &Divergence,
-    mutant: &str,
-    minimized: &str,
-    i: usize,
-) {
-    let _ = std::fs::create_dir_all(out_dir);
-    let body = format!(
-        "// bisect: {}\n// interp: {:?}\n// fused:  {:?}\n// jit:    {:?}\n\
-         // mutant: {}\n// minimized:\n{}\n",
-        d.bisect(),
-        d.interp,
-        d.fused,
-        d.jit,
-        mutant,
-        minimized,
-    );
-    let _ = std::fs::write(out_dir.join(format!("divergence_{i:06}.gx")), body);
 }

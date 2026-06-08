@@ -10,9 +10,24 @@
 use anyhow::{bail, Result};
 use graphix_fuzz::{
     check, fuzz, generate_campaign, minimize, regression_corpus_len, run_program, run_regression,
-    Mode, Outcome,
+    Corpus, Mode, Outcome,
 };
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Parse an iteration count. `forever`/`inf`/`0` → run forever (`None`);
+/// a number → that many; absent/garbage → a sane default.
+fn parse_iters(arg: Option<&String>, default: usize) -> Option<usize> {
+    match arg.map(String::as_str) {
+        None => Some(default),
+        Some("forever") | Some("inf") | Some("0") => None,
+        Some(s) => Some(s.parse().unwrap_or(default)),
+    }
+}
+
+fn fmt_iters(iters: Option<usize>) -> String {
+    iters.map_or_else(|| "forever".to_string(), |n| n.to_string())
+}
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 // A regression surfaces fast (crash / value mismatch); a legitimately-
@@ -74,36 +89,42 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Some("generate") => {
-            let iters: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100);
+        Some(cmd @ ("generate" | "fuzz")) => {
+            // `iters` may be `forever`/`0` to run until killed, surfacing new
+            // divergences live. The corpus is loaded up front so a campaign
+            // never re-reports a finding it (or a prior run) already saved.
+            let iters = parse_iters(args.get(2), if cmd == "fuzz" { 50 } else { 100 });
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let out = std::path::PathBuf::from("fuzz/crashes");
-            let regressions = print_regression().await;
-            println!("generating: iters={iters} seed={seed} → {}/", out.display());
-            let stats = generate_campaign(iters, seed, CAMPAIGN_TIMEOUT, &out).await;
+            let corpus = Arc::new(Corpus::load(&out));
             println!(
-                "done: {} programs generated, {} divergences",
-                stats.run, stats.divergences
+                "corpus: {} existing divergences loaded from {}/",
+                corpus.len(),
+                out.display()
             );
-            if stats.divergences > 0 || regressions > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some("fuzz") => {
-            let iters: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50);
-            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            // Regression gate first: re-check every saved finding so a
-            // fixed bug coming back is caught loudly before we hunt for
-            // new ones.
+            // Regression gate first: re-check every saved finding so a fixed
+            // bug coming back is caught loudly before we hunt for new ones.
             let regressions = print_regression().await;
-            let out = std::path::PathBuf::from("fuzz/crashes");
-            println!("fuzzing: iters={iters} seed={seed} → {}/", out.display());
-            let stats = fuzz(iters, seed, CAMPAIGN_TIMEOUT, &out).await;
+            let before = corpus.len();
             println!(
-                "done: {} mutants run, {} divergences",
-                stats.run, stats.divergences
+                "{cmd}: iters={} seed={seed} → {}/",
+                fmt_iters(iters),
+                out.display()
             );
-            if stats.divergences > 0 || regressions > 0 {
+            let stats = if cmd == "fuzz" {
+                fuzz(iters, seed, CAMPAIGN_TIMEOUT, &corpus).await
+            } else {
+                generate_campaign(iters, seed, CAMPAIGN_TIMEOUT, &corpus).await
+            };
+            // (Only reached in finite mode; `forever` runs until killed.)
+            let new = corpus.len() - before;
+            println!(
+                "done: {} programs, {} divergences ({new} new, {} total in corpus)",
+                stats.run,
+                stats.divergences,
+                corpus.len()
+            );
+            if new > 0 || regressions > 0 {
                 std::process::exit(1);
             }
         }
