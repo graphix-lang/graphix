@@ -4649,3 +4649,31 @@ written 1900-fixture suite never hit — exactly the "find the thing neither of 
 thought of" goal. The trap was a *known* gap the author judged unreachable; the
 fuzzer's value is proving reachability. Smoke runs of the seed corpus otherwise
 execute clean.
+
+### graphix-fuzz V1 — typed-AST minimizer (Jun 2026)
+
+The reducer that turns a found divergence into a tiny repro (every fusion bug
+this session was diagnosed from a hand-reduced program; #175 was hand-minimized).
+Hierarchical delta-debugging on the parsed `Expr`, reusing Source A's AST
+machinery:
+- `mutate::reductions(prog, target)` — candidate replacements for a node: each of
+  its direct children (hoist a sub-expression up) + a few minimal constants
+  (`i64:0`/`f64:0.0`/`true`/`null`, collapse a computation to a literal).
+- `mutate::replace` / `node_count` / `parse` — the same `replace_at` rebuild.
+- `lib::minimize(code, timeout, budget)` — confirm the divergence, capture its
+  `bucket` (bisect class + interp/jit outcome kinds), then repeatedly apply
+  reductions, keeping any that still parse AND reproduce the **same bucket** (so a
+  reduction can't turn bug A into a different bug B); restart the scan on each
+  smaller program; stop at a fixpoint or the oracle-call budget (partial minima
+  accepted — the oracle is ~3s/check, so the budget is the real bound). The
+  oracle's compile step is the type filter — reductions are type-blind, and a
+  reduction that breaks typing makes both modes `CompileErr` (agree → rejected).
+
+Wired into the fuzz loop: every divergence is auto-minimized before it's recorded
+to `fuzz/crashes/` (both the raw mutant and the reduced form). CLI: `graphix-fuzz
+minimize <file>`.
+
+Next (design doc): the richer sources — Source C (typed generation-from-context),
+Source B/E (agent harvest + adversarial agents, which need only the existing
+`check` CLI), the full-corpus harvest — plus coverage-guided selection (Source D).
+And the `fmod` libcall so float `%` actually JITs (#175 follow-up).

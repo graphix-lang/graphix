@@ -424,3 +424,42 @@ pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
     }
     pool
 }
+
+// ── minimization support (used by the typed-AST reducer in `lib`) ──
+
+/// Parse an expression, or `None` if it doesn't parse.
+pub fn parse(s: &str) -> Option<Expr> {
+    parse_one(s).ok()
+}
+
+/// Total node count (preorder), so a reduction target can be chosen.
+pub fn node_count(e: &Expr) -> usize {
+    count(e)
+}
+
+/// Replace the node at preorder index `target` with `repl`.
+pub fn replace(prog: &Expr, target: usize, repl: &Expr) -> Expr {
+    let mut ctr = 0;
+    replace_at(prog, target, &mut ctr, repl)
+}
+
+/// Candidate reductions for the node at preorder index `target`:
+/// each of its direct children (hoist a sub-expression up), plus a few
+/// minimal constants (collapse a whole computation to a literal). The
+/// reducer keeps any candidate that still parses, still typechecks, and
+/// reproduces the same divergence — so these are type-blind here and the
+/// oracle filters them.
+pub fn reductions(prog: &Expr, target: usize) -> Vec<Expr> {
+    let mut nodes = Vec::new();
+    collect_preorder(prog, &mut nodes);
+    if target >= nodes.len() {
+        return Vec::new();
+    }
+    let node = &nodes[target];
+    let mut out = Vec::new();
+    for_each_child(node, &mut |c| out.push(c.clone()));
+    for v in [Value::I64(0), Value::F64(0.0), Value::Bool(true), Value::Null] {
+        out.push(Expr::new(ExprKind::Constant(v), node.pos));
+    }
+    out
+}

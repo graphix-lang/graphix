@@ -8,7 +8,7 @@
 //! the adversarial agent sources depend on. See design/graphix_fuzz.md.
 
 use anyhow::{bail, Result};
-use graphix_fuzz::{check, fuzz, run_program, Mode, Outcome};
+use graphix_fuzz::{check, fuzz, minimize, run_program, Mode, Outcome};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,6 +44,22 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some("minimize") => {
+            let path = match args.get(2) {
+                Some(p) => p,
+                None => bail!("usage: graphix-fuzz minimize <file>"),
+            };
+            let code = std::fs::read_to_string(path)?;
+            let (min, calls) = minimize(code.trim(), TIMEOUT, 200).await;
+            match check(&min, TIMEOUT).await {
+                None => println!("no divergence to minimize (program agrees)"),
+                Some(d) => {
+                    println!("minimized ({calls} checks) — {}", d.bisect());
+                    println!("{min}");
+                    println!("  interp={} jit={}", render(&d.interp), render(&d.jit));
+                }
+            }
+        }
         Some(cmd @ ("check" | "run")) => {
             let path = match args.get(2) {
                 Some(p) => p,
@@ -71,7 +87,10 @@ async fn main() -> Result<()> {
                 _ => unreachable!(),
             }
         }
-        _ => bail!("usage: graphix-fuzz <check|run> <file>  |  graphix-fuzz fuzz [iters] [seed]"),
+        _ => bail!(
+            "usage: graphix-fuzz <check|run|minimize> <file>  |  \
+             graphix-fuzz fuzz [iters] [seed]"
+        ),
     }
     Ok(())
 }

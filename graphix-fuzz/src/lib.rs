@@ -110,6 +110,16 @@ impl Outcome {
             _ => false,
         }
     }
+
+    /// Coarse variant discriminant, for the "same bug" bucket key.
+    pub fn kind(&self) -> u8 {
+        match self {
+            Outcome::Value(_) => 0,
+            Outcome::CompileErr(_) => 1,
+            Outcome::RuntimeErr(_) => 2,
+            Outcome::Timeout => 3,
+        }
+    }
 }
 
 /// Run `code` (a graphix expression) under `mode`, returning its first
@@ -220,6 +230,64 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     Some(Divergence { code: code.to_string(), interp, fused, jit })
 }
 
+/// Coarse "same bug" key: the bisection class + the interp/jit outcome
+/// kinds. Two divergences with the same bucket are treated as the same
+/// bug — used by the minimizer to ensure a reduction preserves the bug
+/// rather than reducing bug A into a different bug B.
+fn bucket(d: &Divergence) -> (&'static str, u8, u8) {
+    (d.bisect(), d.interp.kind(), d.jit.kind())
+}
+
+/// Hierarchical delta-debugging on the typed AST: repeatedly try to
+/// replace a subtree with one of its children (hoist) or a minimal
+/// constant, keeping any reduction that still parses, still typechecks,
+/// and reproduces the SAME divergence bucket. Returns the minimized
+/// program and the number of oracle checks spent (capped by `budget`).
+/// Accepts partial minima — a smaller-but-not-minimal repro still beats
+/// the raw mutant.
+pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, usize) {
+    let d0 = match check(code, timeout).await {
+        Some(d) => d,
+        None => return (code.to_string(), 1),
+    };
+    let target = bucket(&d0);
+    let mut current = match mutate::parse(code) {
+        Some(e) => e,
+        None => return (code.to_string(), 1),
+    };
+    let mut calls = 1;
+    loop {
+        let n = mutate::node_count(&current);
+        let cur_text = current.to_string();
+        let mut reduced = false;
+        'scan: for t in 0..n {
+            for repl in mutate::reductions(&current, t) {
+                if calls >= budget {
+                    break 'scan;
+                }
+                let cand = mutate::replace(&current, t, &repl).to_string();
+                if cand == cur_text || mutate::parse(&cand).is_none() {
+                    continue;
+                }
+                calls += 1;
+                if let Some(d) = check(&cand, timeout).await {
+                    if bucket(&d) == target {
+                        if let Some(e) = mutate::parse(&cand) {
+                            current = e;
+                            reduced = true;
+                            break 'scan; // restart on the smaller program
+                        }
+                    }
+                }
+            }
+        }
+        if !reduced || calls >= budget {
+            break;
+        }
+    }
+    (current.to_string(), calls)
+}
+
 /// What a fuzz campaign found.
 #[derive(Debug, Default, Clone)]
 pub struct FuzzStats {
@@ -250,23 +318,36 @@ pub async fn fuzz(
         stats.run += 1;
         if let Some(d) = check(&prog, timeout).await {
             stats.divergences += 1;
-            record_divergence(out_dir, &d, i);
-            println!("[{i}] DIVERGENCE — {}\n    {}", d.bisect(), prog);
+            // Auto-minimize before recording — a tiny repro is the
+            // difference between actionable and useless.
+            let (minimized, mcalls) = minimize(&prog, timeout, 80).await;
+            record_divergence(out_dir, &d, &prog, &minimized, i);
+            println!("[{i}] DIVERGENCE — {}", d.bisect());
+            println!("    mutant:    {prog}");
+            println!("    minimized: {minimized}  ({mcalls} checks)");
             println!("    interp={:?} fused={:?} jit={:?}", d.interp, d.fused, d.jit);
         }
     }
     stats
 }
 
-fn record_divergence(out_dir: &std::path::Path, d: &Divergence, i: usize) {
+fn record_divergence(
+    out_dir: &std::path::Path,
+    d: &Divergence,
+    mutant: &str,
+    minimized: &str,
+    i: usize,
+) {
     let _ = std::fs::create_dir_all(out_dir);
     let body = format!(
-        "// bisect: {}\n// interp: {:?}\n// fused:  {:?}\n// jit:    {:?}\n{}\n",
+        "// bisect: {}\n// interp: {:?}\n// fused:  {:?}\n// jit:    {:?}\n\
+         // mutant: {}\n// minimized:\n{}\n",
         d.bisect(),
         d.interp,
         d.fused,
         d.jit,
-        d.code,
+        mutant,
+        minimized,
     );
     let _ = std::fs::write(out_dir.join(format!("divergence_{i:06}.gx")), body);
 }
