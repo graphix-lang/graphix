@@ -1,0 +1,10 @@
+// bisect: GIR lowering of unchecked integer `/` (and `%`) does not match the node-walk's overflow-error semantics, on three different sub-paths: node-walk returns error/bottom, fused-interp wraps, JIT traps.
+// interp/jit: Confirmed reproducing and deterministic. Ran `graphix-fuzz run` and `check` 3x each — stable every time: Interp=Timeout, Fused=Value(i64:-9223372036854775808), Jit=SIGFPE (exit 136, process crash before Jit line prints). Program is pure integer-literal arithmetic (let/select/`/`); no rand/sys::time/
+// root_cause: Signed-division overflow (i64::MIN / -1, no representable quotient) is handled three different ways. (1) Node-walk reference: graphix-compiler/src/node/op.rs:550 `arith_op!(Div, Op::Div, false, div)` routes unchecked `/` through netidx's `Value::div`, which returns Value::Error on the overflow; the `$checked==false` arm at op.rs:422-426 logs "arith error" and returns None -> bottom -> no value -> Interp Timeout. (2) Fused interpreter: graphix-compiler/src/gir_interp.rs:1984 `BinOp::Div => $a.wrapping_div($b)` silently wraps i64::MIN/-1 to i64::MIN, producing Value(i64:-9223372036854775808). (3
+
+{
+  let neg = -1;
+  select (-9223372036854775807 - 1) {
+    n => n / neg
+  }
+}

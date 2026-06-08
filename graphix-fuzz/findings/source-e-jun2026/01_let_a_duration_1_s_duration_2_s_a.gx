@@ -1,0 +1,5 @@
+// bisect: GIR/emit bug (interp != fused)
+// interp/jit: Verified independently. `graphix-fuzz check` reports DIVERGENCE (GIR/emit bug, interp != fused) stably across 3 runs: interp=Timeout, fused=Value(error:"duration arithmetic error"), jit=Value(error:"duration arithmetic error"). `graphix-fuzz run` confirms the same three-mode result. The program {let
+// root_cause: Value-shape UNCHECKED arithmetic error-drop semantics are not replicated by the fused GirOp::ValueArith. The node-walk unchecked-operator node (graphix-compiler/src/node/op.rs:422-426) computes `lhs - rhs` via netidx's Value Sub, gets Value::Error (duration underflow 1s-2s), and in the unchecked (!$checked) arm logs it and returns None (bottom -> no value), so the reactive runtime never settles -> Timeout. The fused interp path (graphix-compiler/src/gir_interp.rs:862-876, GirOp::ValueArith) computes the same `l - r` and passes the Value::Error straight through wrap_value_shape (line 876), emit
+
+{let a = duration:1.s - duration:2.s; a}

@@ -1,0 +1,5 @@
+// bisect: GIR/emit bug (fused/GIR-interp panics; interp == jit == true)
+// interp/jit: Verified deterministically. `graphix-fuzz run /tmp/verify_iserr.gx` reports Interp=Value(true), Jit=Value(true), Fused=RuntimeErr(runtime died) with a panic at gir_interp.rs:1225: "DynCall arg shape mismatch: declared Error, got DateTime(Error(I64(1)))". Stable and identical across 3 runs. Program u
+// root_cause: graphix-compiler/src/gir_interp.rs — the GirOp::DynCall value-shape argument-marshalling match (~lines 1185-1229) has no arm for declared type GirType::Error. A bare Error<...> value from error(1) is wrapped by wrap_value_shape's `_ => EvalResult::DateTime(v)` catch-all (gir_interp.rs:848, no Error arm there either) into EvalResult::DateTime(Value::Error(I64(1))). At the marshalling site the declared arg type is GirType::Error, which matches neither the value-shape arm (declared DateTime|Duration|Bytes|Map only, line 1201-1210) nor the Nullable/Null/Unit arms, so it falls to the catch-all pani
+
+is_err(error(1))

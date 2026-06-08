@@ -1,0 +1,8 @@
+// bisect: JIT/fused mode crashes the runtime process with a signal (exit 132 SIGILL or 136 SIGFPE, both >=128) before the oracle can emit a normal AGREE/DIVERGENCE label; interp mode logs "arith error in module test" and yields bottom (Timeout/no value). The crash itself is the divergence: canonical node-walk recovers gracefully, both fused backends die.
+// interp/jit: The exact reported program (no rand/time/net/fs, no lambda/abstract interpolated into a string) deterministically crashes the runtime in fused/JIT mode (8+/8 runs, stable exit 132/136) while the canonical node-walk interpreter recovers gracefully to bottom. Located both un-guarded codegen sites: JIT
+// root_cause: Integer division/remainder by zero (and INT_MIN/-1 signed overflow) in a fused kernel is lowered without a divisor guard. JIT: graphix-compiler/src/gir_jit.rs:6267-6280 (compile_bin) emits raw cranelift sdiv/udiv/srem/urem, which trap on zero divisor -> SIGILL/SIGFPE crashing the process. Fused-interp: graphix-compiler/src/gir_interp.rs:1984-1985 (eval_bin int_arith! macro) uses wrapping_div/wrapping_rem, which PANIC on a zero divisor (wrapping only covers the INT_MIN/-1 overflow case, not div-by-zero) -> runtime task dies. The canonical node-walk (graphix-compiler/src/node/op.rs, arith_op!/Di
+
+{
+  let a = [0];
+  array::map(a, |x| 1 / x)
+}
