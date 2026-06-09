@@ -261,10 +261,24 @@ pub enum EvalResult {
     /// Value-shape like `Bytes`; produced by a constant map literal
     /// (`GirOp::ConstValue`) and map-returning DynCalls.
     Map(Value),
+    /// A value-level **bottom** — an integer div/mod-by-zero (or signed
+    /// MIN/-1) result, or a `?` on an error value. This is the fused
+    /// counterpart of the node-walk's `None`-from-`update`: a representable
+    /// value that ABSORBS through pure ops (any `Bottom` operand → `Bottom`
+    /// result), is dropped by a select when it lands in an un-taken arm,
+    /// and converts to a runtime `None` (the kernel emits nothing) ONLY when
+    /// it is the kernel's OUTPUT value (see `into_value_checked`). It is
+    /// distinct from async-pending (a DynCall with no value this cycle),
+    /// which still aborts the whole kernel via the `None` return channel.
+    /// See `design/representable_bottom.md`.
+    Bottom,
 }
 
 impl EvalResult {
-    /// Convert to a netidx `Value` for the runtime boundary.
+    /// Convert to a netidx `Value` for the runtime boundary. Infallible —
+    /// callers that reach this already hold a real (non-bottom) value. A
+    /// `Bottom` here is a bug: bottom must be absorbed by ops and converted
+    /// to `None` at the kernel output via [`into_value_checked`].
     pub fn into_value(self) -> Value {
         match self {
             EvalResult::Scalar(r) => r.to_value(),
@@ -276,6 +290,19 @@ impl EvalResult {
             EvalResult::DateTime(v)
             | EvalResult::Duration(v)
             | EvalResult::Bytes(v) | EvalResult::Map(v) => v,
+            EvalResult::Bottom => {
+                unreachable!("EvalResult::Bottom marshalled to Value — bottom must convert to None at the kernel output")
+            }
+        }
+    }
+
+    /// Kernel-output boundary conversion: a `Bottom` output means the kernel
+    /// emits nothing this cycle (`None`); any other value marshals normally.
+    /// This is the ONE site where a value-bottom becomes a runtime `None`.
+    pub fn into_value_checked(self) -> Option<Value> {
+        match self {
+            EvalResult::Bottom => None,
+            other => Some(other.into_value()),
         }
     }
 
@@ -362,6 +389,12 @@ struct InterpEnv {
     /// bump), so each consumer site gets its own owned ArcStr without
     /// disturbing the env's slot.
     strings: Vec<(arcstr::ArcStr, arcstr::ArcStr)>,
+    /// Names of let-bindings whose value is a **bottom** (a div0/`?`-error
+    /// value, see [`EvalResult::Bottom`]). Carries no value — bottom is a
+    /// single absorbing marker. A `GirOp::Local` of a name here returns
+    /// `EvalResult::Bottom`, which the consuming op absorbs. Truncated on
+    /// block scope-exit alongside the other slot lists.
+    bottoms: Vec<arcstr::ArcStr>,
     /// Tail-call slot map for the kernel currently being evaluated.
     /// Source-arg order; entry `i` describes the destination of the
     /// `i`th tail-call arg. Empty for non-tail kernels.
@@ -379,8 +412,17 @@ impl InterpEnv {
             variants: Vec::new(),
             nullables: Vec::new(),
             strings: Vec::new(),
+            bottoms: Vec::new(),
             tail_call_slots: Vec::new(),
         }
+    }
+
+    fn push_bottom(&mut self, name: arcstr::ArcStr) {
+        self.bottoms.push(name);
+    }
+
+    fn lookup_bottom(&self, name: &str) -> bool {
+        self.bottoms.iter().rev().any(|n| n.as_str() == name)
     }
 
     fn rebind_array(&mut self, name: &str, value: ValArray) {
@@ -491,6 +533,10 @@ impl InterpEnv {
                 "EvalResult::Null pushed as local — kernel build \
                  should have widened to Nullable<T>, GIR is malformed"
             ),
+            // A bottom binding (`let v = 1/0`) records only its name; a
+            // later `GirOp::Local` read returns `Bottom`, which the
+            // consumer absorbs. The binding does NOT abort the block.
+            EvalResult::Bottom => self.push_bottom(name),
         }
     }
 
@@ -746,6 +792,17 @@ fn eval_body(
                     smallvec::SmallVec::with_capacity(args.len());
                 for a in args {
                     match eval_expr(env, a, registry, dispatch) {
+                        // A bottom tail-call arg can't be a positional param;
+                        // the recursion can't meaningfully continue, so the
+                        // kernel's output is bottom (→ None at the boundary,
+                        // not Pending — a value-bottom won't resolve next
+                        // cycle, so Pending would re-fire forever). A
+                        // conservative over-approximation: if the recursion
+                        // ignored the bottom param the node-walk could still
+                        // produce a value, but a bottom-fed tail call is rare.
+                        Some(EvalResult::Bottom) => {
+                            return BodyResult::Return(EvalResult::Bottom)
+                        }
                         Some(v) => new_vals.push(v),
                         None => return BodyResult::Pending,
                     }
@@ -796,6 +853,9 @@ fn eval_body(
                                 "TailCall rebind of bare Null — \
                                  should have widened to Nullable<T>"
                             ),
+                            // Filtered out above (a bottom tail-call arg
+                            // returns Bottom before reaching new_vals).
+                            EvalResult::Bottom => unreachable!(),
                         }
                     }
                     env.tail_call_slots = slots;
@@ -809,6 +869,9 @@ fn eval_body(
                         None => true,
                         Some(cond) => {
                             match eval_expr(env, cond, registry, dispatch) {
+                                // A bottom guard → arm doesn't match → fall
+                                // through (the node-walk's guard semantics).
+                                Some(EvalResult::Bottom) => false,
                                 Some(v) => v.into_scalar().as_bool(),
                                 None => return BodyResult::Pending,
                             }
@@ -855,6 +918,19 @@ fn eval_expr(
     registry: &KernelRegistry,
     dispatch: DynDispatch<'_>,
 ) -> Option<EvalResult> {
+    // Evaluate an operand and ABSORB bottom: if it is `EvalResult::Bottom`,
+    // short-circuit the enclosing op to `Bottom` (the value-bottom
+    // propagation rule). The trailing `?` still propagates async-pending
+    // (`None`). Use for PURE ops only — a DynCall/Call argument bottom is
+    // handled separately (it pends, not absorbs).
+    macro_rules! ev {
+        ($e:expr) => {
+            match eval_expr(env, $e, registry, dispatch)? {
+                EvalResult::Bottom => return Some(EvalResult::Bottom),
+                r => r,
+            }
+        };
+    }
     Some(match &e.op {
         GirOp::Const(c) => EvalResult::Scalar(RegValue::from_const(*c)),
         GirOp::ConstStr(s) => EvalResult::String(s.clone()),
@@ -864,8 +940,8 @@ fn eval_expr(
             // `into_value`), then compute through netidx's `Value`
             // arithmetic — byte-identical to the non-fused arith node,
             // which does the same `lhs $op rhs`.
-            let l = eval_expr(env, lhs, registry, dispatch)?.into_value();
-            let r = eval_expr(env, rhs, registry, dispatch)?.into_value();
+            let l = ev!(lhs).into_value();
+            let r = ev!(rhs).into_value();
             let result = match op {
                 BinOp::Add => l + r,
                 BinOp::Sub => l - r,
@@ -878,8 +954,8 @@ fn eval_expr(
         GirOp::ValueEq { ne, lhs, rhs } => {
             // Compare both operands as netidx `Value`s via PartialEq —
             // byte-identical to the non-fused `==`/`!=` node.
-            let l = eval_expr(env, lhs, registry, dispatch)?.into_value();
-            let r = eval_expr(env, rhs, registry, dispatch)?.into_value();
+            let l = ev!(lhs).into_value();
+            let r = ev!(rhs).into_value();
             let eq = l == r;
             EvalResult::Scalar(RegValue::Bool(if *ne { !eq } else { eq }))
         }
@@ -892,7 +968,7 @@ fn eval_expr(
             // a DynCall return). A `Variant(Value::Null)` would mean
             // somebody mis-typed a Nullable slot — debug check on it
             // for now, but treat it as null for resilience.
-            let v = eval_expr(env, inner, registry, dispatch)?;
+            let v = ev!(inner);
             let is_null = match &v {
                 EvalResult::Null => true,
                 EvalResult::Nullable(Value::Null) => true,
@@ -911,7 +987,7 @@ fn eval_expr(
             // `Nullable(Value::Null)` is a legal "no-error null"
             // value and passes through (graphix's `?` doesn't
             // propagate plain null, only `Value::Error`).
-            let v = eval_expr(env, inner, registry, dispatch)?;
+            let v = ev!(inner);
             let inner_value = match v {
                 EvalResult::Nullable(v) => v,
                 other => {
@@ -924,10 +1000,10 @@ fn eval_expr(
                 }
             };
             if matches!(inner_value, Value::Error(_)) {
-                // Signal pending — wrapper-level check returns None.
-                crate::gir_jit_helpers::DYNCALL_PENDING
-                    .with(|c| c.set(true));
-                return None;
+                // `?` on an error value is a value-level BOTTOM (NOT
+                // async-pending). It flows as a value and absorbs;
+                // converts to None only if it's the kernel output.
+                return Some(EvalResult::Bottom);
             }
             // Extract success T from the Value. The shape depends on
             // `success_typ`: a primitive extracts as Scalar; a String
@@ -979,7 +1055,7 @@ fn eval_expr(
             use netidx_value::NakedValue;
             let mut buf = CompactString::default();
             for part in parts {
-                let v = eval_expr(env, part, registry, dispatch)?;
+                let v = ev!(part);
                 match v {
                     EvalResult::String(s) => buf.push_str(&s),
                     EvalResult::Scalar(r) => {
@@ -994,6 +1070,7 @@ fn eval_expr(
             }
             EvalResult::String(arcstr::ArcStr::from(buf.as_str()))
         }
+        GirOp::Local(name) if env.lookup_bottom(name) => EvalResult::Bottom,
         GirOp::Local(name) => match &e.typ {
             GirType::Prim(_) => EvalResult::Scalar(env.lookup(name).unwrap_or_else(
                 || panic!("undefined scalar local `{name}` — GIR is malformed"),
@@ -1061,41 +1138,34 @@ fn eval_expr(
             ),
         },
         GirOp::Bin { op, lhs, rhs } => {
-            let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
-            let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
-            EvalResult::Scalar(eval_bin(*op, l, r)?)
+            let l = ev!(lhs).into_scalar();
+            let r = ev!(rhs).into_scalar();
+            // eval_bin's `None` is a value-bottom (div0/MIN-/-1), NOT pending.
+            match eval_bin(*op, l, r) {
+                Some(v) => EvalResult::Scalar(v),
+                None => EvalResult::Bottom,
+            }
         }
         GirOp::Cmp { op, lhs, rhs } => {
-            let l = eval_expr(env, lhs, registry, dispatch)?.into_scalar();
-            let r = eval_expr(env, rhs, registry, dispatch)?.into_scalar();
+            let l = ev!(lhs).into_scalar();
+            let r = ev!(rhs).into_scalar();
             EvalResult::Scalar(eval_cmp(*op, l, r))
         }
         GirOp::BoolBin { op, lhs, rhs } => {
-            // Short-circuit to match Rust && / ||.
-            let l = eval_expr(env, lhs, registry, dispatch)?
-                .into_scalar()
-                .as_bool();
+            // Short-circuit to match Rust && / || — bottom in the
+            // un-evaluated operand is never reached (`false && ⊥ = false`).
+            let l = ev!(lhs).into_scalar().as_bool();
             let result = match op {
-                BoolOp::And => {
-                    l && eval_expr(env, rhs, registry, dispatch)?
-                        .into_scalar()
-                        .as_bool()
-                }
-                BoolOp::Or => {
-                    l || eval_expr(env, rhs, registry, dispatch)?
-                        .into_scalar()
-                        .as_bool()
-                }
+                BoolOp::And => l && ev!(rhs).into_scalar().as_bool(),
+                BoolOp::Or => l || ev!(rhs).into_scalar().as_bool(),
             };
             EvalResult::Scalar(RegValue::Bool(result))
         }
-        GirOp::Not(inner) => EvalResult::Scalar(RegValue::Bool(
-            !eval_expr(env, inner, registry, dispatch)?
-                .into_scalar()
-                .as_bool(),
-        )),
+        GirOp::Not(inner) => {
+            EvalResult::Scalar(RegValue::Bool(!ev!(inner).into_scalar().as_bool()))
+        }
         GirOp::Cast { inner, target } => {
-            let v = eval_expr(env, inner, registry, dispatch)?.into_scalar();
+            let v = ev!(inner).into_scalar();
             EvalResult::Scalar(eval_cast(v, *target))
         }
         GirOp::Call { fn_name, args } => {
@@ -1132,6 +1202,15 @@ fn eval_expr(
                 smallvec::SmallVec::new();
             for a in args {
                 let r = eval_expr(env, a, registry, dispatch)?;
+                // A bottom argument to a (cross-kernel) Call does NOT absorb:
+                // the node-walk's bottom arg-edge doesn't fire but the call
+                // still dispatches; the faithful fused approximation is "no
+                // fresh value this cycle" — the kernel emits nothing (None),
+                // keeping value-bottom and call-dispatch disjoint. See
+                // `design/representable_bottom.md`.
+                if matches!(r, EvalResult::Bottom) {
+                    return None;
+                }
                 match &a.typ {
                     GirType::Prim(_) => scalars.push(r.into_scalar()),
                     GirType::Array(_) => arrays.push(r.into_valarray()),
@@ -1181,6 +1260,13 @@ fn eval_expr(
                 smallvec::SmallVec::with_capacity(args.len());
             for (a, t) in args.iter().zip(arg_types.iter()) {
                 let r = eval_expr(env, a, registry, dispatch)?;
+                // A bottom DynCall argument does NOT absorb — the call still
+                // "dispatches" in the node-walk; the fused analogue is "no
+                // fresh value this cycle" (the kernel emits nothing). See the
+                // Call arm + `design/representable_bottom.md`.
+                if matches!(r, EvalResult::Bottom) {
+                    return None;
+                }
                 value_args.push(match (t, r) {
                     (GirType::Prim(p), EvalResult::Scalar(s)) => {
                         debug_assert_eq!(s.typ(), *p, "DynCall scalar arg mismatch");
@@ -1322,12 +1408,22 @@ fn eval_expr(
             for (cond, body) in arms {
                 let matches = match cond {
                     None => true,
-                    Some(c) => eval_expr(env, c, registry, dispatch)?
-                        .into_scalar()
-                        .as_bool(),
+                    // A bottom GUARD means the arm does NOT match → fall
+                    // through to the next arm (byte-for-byte the node-walk's
+                    // `is::match`, where a guard sub-node returning None
+                    // makes the arm not match).
+                    Some(c) => match eval_expr(env, c, registry, dispatch)? {
+                        EvalResult::Bottom => false,
+                        v => v.into_scalar().as_bool(),
+                    },
                 };
                 if matches {
                     let r = eval_expr(env, body, registry, dispatch)?;
+                    // The taken arm's bottom flows out as the select's value
+                    // (absorb) — don't normalize a Bottom.
+                    if matches!(r, EvalResult::Bottom) {
+                        return Some(EvalResult::Bottom);
+                    }
                     let r = if want_nullable {
                         normalize_to_nullable(r)
                     } else {
@@ -1338,12 +1434,14 @@ fn eval_expr(
             }
             panic!("if-chain fell through without a match — GIR is malformed");
         }
+        GirOp::ArrayLen { name } if env.lookup_bottom(name) => EvalResult::Bottom,
         GirOp::ArrayLen { name } => {
             let arr = env.lookup_array(name).unwrap_or_else(|| {
                 panic!("undefined array `{name}` — GIR is malformed")
             });
             EvalResult::Scalar(RegValue::U64(arr.len() as u64))
         }
+        GirOp::ArrayGet { name, .. } if env.lookup_bottom(name) => EvalResult::Bottom,
         GirOp::ArrayGet { name, idx } => {
             // `array[i]` — bounds-checked, negative-from-end. Routes
             // through the shared `array_index` so the interp, node-walk
@@ -1361,16 +1459,14 @@ fn eval_expr(
                     panic!("undefined array `{name}` — GIR is malformed")
                 })
                 .clone();
-            let i =
-                eval_expr(env, idx, registry, dispatch)?.into_scalar().as_i64();
+            let i = ev!(idx).into_scalar().as_i64();
             EvalResult::Nullable(crate::node::array::array_index(&arr, i))
         }
         GirOp::BytesIndex { bytes, idx } => {
             // `bytes[i]` — shared bounds-checked `bytes_index`; result
             // `Nullable<u8>` (`[u8, Error<…>]`).
-            let b = eval_expr(env, bytes, registry, dispatch)?.into_value();
-            let i =
-                eval_expr(env, idx, registry, dispatch)?.into_scalar().as_i64();
+            let b = ev!(bytes).into_value();
+            let i = ev!(idx).into_scalar().as_i64();
             let r = match b {
                 Value::Bytes(pb) => crate::node::array::bytes_index(&pb, i),
                 _ => Value::error("ArrayIndexError: expected bytes"),
@@ -1380,28 +1476,25 @@ fn eval_expr(
         GirOp::MapRef { map, key } => {
             // `m{key}` — shared `map_get`; result `Nullable<V>`
             // (`[V, Error]`: the value or `map key not found`).
-            let m = eval_expr(env, map, registry, dispatch)?.into_value();
-            let k = eval_expr(env, key, registry, dispatch)?.into_value();
+            let m = ev!(map).into_value();
+            let k = ev!(key).into_value();
             EvalResult::Nullable(crate::node::map::map_get(&m, &k))
         }
         GirOp::ArraySlice { source, start, end } => {
             // `a[i..j]` — shared `array_slice_i64`; result
             // `Nullable<source>` (the slice or an out-of-bounds error).
-            let src = eval_expr(env, source, registry, dispatch)?.into_value();
+            let src = ev!(source).into_value();
             let s = match start {
-                Some(e) => {
-                    Some(eval_expr(env, e, registry, dispatch)?.into_scalar().as_i64())
-                }
+                Some(e) => Some(ev!(e).into_scalar().as_i64()),
                 None => None,
             };
             let en = match end {
-                Some(e) => {
-                    Some(eval_expr(env, e, registry, dispatch)?.into_scalar().as_i64())
-                }
+                Some(e) => Some(ev!(e).into_scalar().as_i64()),
                 None => None,
             };
             EvalResult::Nullable(crate::node::array::array_slice_i64(&src, s, en))
         }
+        GirOp::TupleGet { name, .. } if env.lookup_bottom(name) => EvalResult::Bottom,
         GirOp::TupleGet { name, idx, elem_typ } => {
             // Tuple values are flat ValArrays. Branch on the slot's
             // GirType — primitive slots use the fast unsafe scalar
@@ -1416,6 +1509,7 @@ fn eval_expr(
                 .clone();
             extract_composite_or_scalar(&arr, *idx, elem_typ)
         }
+        GirOp::StructGet { name, .. } if env.lookup_bottom(name) => EvalResult::Bottom,
         GirOp::StructGet { name, sorted_idx, elem_typ, .. } => {
             // Runtime struct layout is `[Array([name, val]), ...]` —
             // each field is a 2-element kv-pair subarray. Two-level
@@ -1441,10 +1535,7 @@ fn eval_expr(
             // negative `n` to 0 (matching the node-walk's `n.max(0)`) —
             // `as_usize()` on a negative i64 wraps to usize::MAX and
             // panics at `reserve`.
-            let n_val = eval_expr(env, n, registry, dispatch)?
-                .into_scalar()
-                .as_i64()
-                .max(0) as usize;
+            let n_val = ev!(n).into_scalar().as_i64().max(0) as usize;
             let mark = env.mark();
             env.push(idx_local.clone(), RegValue::I64(0));
             let idx_slot = env.locals.len() - 1;
@@ -1458,6 +1549,20 @@ fn eval_expr(
             }
             env.truncate(mark);
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
+        }
+        // A bottom array-HOF SOURCE → the HOF result is bottom. (A bottom
+        // produced PER-ELEMENT inside a HOF body is a Phase-1 gap — handled
+        // when HOF-body bottom flow lands; not exercised by the suite.)
+        GirOp::ArrayFold { array: name, .. }
+        | GirOp::ArrayMap { array: name, .. }
+        | GirOp::ArrayFilter { array: name, .. }
+        | GirOp::ArrayFind { array: name, .. }
+        | GirOp::ArrayFilterMap { array: name, .. }
+        | GirOp::ArrayFindMap { array: name, .. }
+        | GirOp::ArrayFlatMap { array: name, .. }
+            if env.lookup_bottom(name) =>
+        {
+            EvalResult::Bottom
         }
         GirOp::ArrayMap { array, in_elem, elem_local, body } => {
             let arr = env
@@ -1749,8 +1854,7 @@ fn eval_expr(
                 poolshark::local::LPooled::take();
             out.reserve(fields.len());
             for f in fields.iter() {
-                let r = eval_expr(env, f, registry, dispatch)?;
-                out.push(r.into_value());
+                out.push(ev!(f).into_value());
             }
             EvalResult::ValArray(ValArray::from_iter_exact(out.drain(..)))
         }
@@ -1762,7 +1866,7 @@ fn eval_expr(
                 poolshark::local::LPooled::take();
             out.reserve(sorted_fields.len());
             for (fname, fexpr) in sorted_fields.iter() {
-                let r = eval_expr(env, fexpr, registry, dispatch)?;
+                let r = ev!(fexpr);
                 let kv = ValArray::from_iter_exact(
                     [Value::String(fname.clone()), r.into_value()].into_iter(),
                 );
@@ -1784,13 +1888,17 @@ fn eval_expr(
                 out.reserve(payloads.len() + 1);
                 out.push(Value::String(tag.clone()));
                 for p in payloads.iter() {
-                    let r = eval_expr(env, p, registry, dispatch)?;
-                    out.push(r.into_value());
+                    out.push(ev!(p).into_value());
                 }
                 EvalResult::Variant(Value::Array(ValArray::from_iter_exact(
                     out.drain(..),
                 )))
             }
+        }
+        GirOp::VariantTagEq { name, .. } | GirOp::VariantPayload { name, .. }
+            if env.lookup_bottom(name) =>
+        {
+            EvalResult::Bottom
         }
         GirOp::VariantTagEq { name, expected_tag } => {
             // Variants are `Value::String(tag)` for nullary or
@@ -1991,23 +2099,17 @@ fn eval_bin(op: BinOp, lhs: RegValue, rhs: RegValue) -> Option<RegValue> {
                 // divisor AND on signed MIN/-1 overflow — the cases the
                 // node-walk's unchecked `/`,`%` turn into an arith error
                 // and drop to bottom. `wrapping_div` PANICS on div0
-                // (wrapping only covers MIN/-1), which crashed the
-                // runtime. On failure, signal pending and `return None`
-                // so the whole eval produces bottom — matching the
-                // node-walk (and the JIT's pending-exit div guard).
+                // (wrapping only covers MIN/-1). On failure, `return None`
+                // — eval_bin's `None` now means a value-level BOTTOM (NOT
+                // async-pending); the `GirOp::Bin` caller turns it into
+                // `EvalResult::Bottom`, which flows as a value and absorbs.
                 BinOp::Div => match $a.checked_div($b) {
                     Some(v) => v,
-                    None => {
-                        crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
-                        return None;
-                    }
+                    None => return None,
                 },
                 BinOp::Mod => match $a.checked_rem($b) {
                     Some(v) => v,
-                    None => {
-                        crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
-                        return None;
-                    }
+                    None => return None,
                 },
             })
         };
@@ -3663,7 +3765,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                 }
             }
         };
-        Some(result.into_value())
+        // The ONE site a value-bottom output becomes a runtime `None` (the
+        // kernel emits nothing). A non-bottom output marshals normally.
+        result.into_value_checked()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {

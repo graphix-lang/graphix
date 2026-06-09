@@ -5026,3 +5026,75 @@ sink into a select WHEREVER it appears in the block (any let value, not just
 the tail) — i.e. general partial-lazy-code-motion, an open-ended optimization.
 Deferred pending a decision on the investment level. The two earlier gaps
 (bottom in an arm GUARD; #177 value-shape error-value) also remain.
+
+### Representable value-bottom — interp phase landed (Jun 2026)
+
+The principled fix the user directed ("of course bottom has to be a value,
+just like in the interpreter"): a value-level bottom (integer div/mod-by-
+zero, signed MIN/-1, `?` on an error value) is now a REPRESENTABLE VALUE in
+the fused **interpreter**, replacing the global `DYNCALL_PENDING` abort for
+value-errors. Full design + adversarial review in
+`design/representable_bottom.md`. The JIT half (per-value validity bit +
+taint) is the tracked continuation.
+
+**Why bottom was a problem (the root cause):** the node-walk's `None`-from-
+`update` is LOCAL to one node; fusion collapses N nodes into one kernel, so
+signalling bottom via the global flag aborts the WHOLE kernel even when the
+output never consumes the bottom (an un-taken select arm, a dead let, a
+let-bound select used downstream, an arm guard). Sinking + dead-elim were a
+structural band-aid with an edge-case tail.
+
+**The interp model (`gir_interp.rs`):** new `EvalResult::Bottom` (payload-
+free, like node-walk `None`). The two value-bottom producers — `eval_bin`
+Div/Mod and `GirOp::QopUnwrap`'s error branch — emit `Bottom` instead of
+`set(DYNCALL_PENDING)+None`. A new `bottoms: Vec<ArcStr>` env slot holds
+bottom let-bindings (`push_local` routes `Bottom` there; `GirOp::Local`/the
+name-reading accessors return `Bottom` for a bottom binding). An `ev!`
+operand macro ABSORBS bottom through every pure op (Bin/Cmp/BoolBin/Not/
+Cast/ValueArith/ValueEq/IsNull/Concat/producers/accessors/slice/map/bytes/
+ArrayInit) — any bottom operand → bottom result. `BoolBin` short-circuit is
+preserved. Select/IfChain already evaluate only the taken arm, so an
+un-taken arm's bottom is never computed; the taken arm's bottom flows out
+(absorb); a bottom GUARD → arm does NOT match → fall through (byte-for-byte
+the node-walk's `is::match`). The boundary `into_value_checked()` at
+`GirNode::update` converts a bottom OUTPUT → `None` (the ONE site) — a
+non-bottom output marshals normally.
+
+**Async-pending stays a whole-kernel abort, cleanly separated:** the only
+remaining `DYNCALL_PENDING`/`None`-channel use is the DynCall dispatcher
+returning None (genuine "no value this cycle"). The four value-bottom sites
+no longer touch the flag (the cosmetic rename → `ASYNC_PENDING` is deferred;
+the separation itself is done). Per the adversarial review, a bottom DynCall/
+Call ARGUMENT does NOT absorb — the node-walk's bottom arg-edge doesn't fire
+but the call still dispatches, so the faithful fused analogue is "no fresh
+value this cycle" (the kernel emits `None`); the arg loops `return None` on a
+bottom arg, keeping value-bottom and call-dispatch disjoint by construction.
+
+**Sinking + dead-elim are now OPTIMIZATIONS, not correctness** — they elide a
+provably-dead bottom so it's never represented; a bottom that survives them
+flows as a value and is absorbed at the output. Kept on (the suite stays
+green; bottoms are elided in existing fixtures, so the bottom-as-value path
+is exercised by the validation probes, not the differential suite — the
+finding-5/guard fixtures land with the JIT, since `jit` mode still aborts).
+
+**Validated:** fused-interp == node-walk on the full truth-table AND the two
+cases the sink pass could NOT handle — `guard_bottom` (`n if v>0 =>` with
+v=1/0 → 99) and `finding5` (let-bound nested select, bottom in an un-taken
+inner arm → 50) — resolved UNIFORMLY by the same mechanism. 132 compiler +
+2033 graphix-tests green.
+
+**Interp gaps to close before the final fuzz campaigns** (not suite-
+exercised): a bottom produced PER-ELEMENT inside a HOF body (`array::map(a,
+|x| x/0)`) still hits an `into_value` on `Bottom` (the array-HOF SOURCE being
+bottom IS handled); a bottom tail-call arg conservatively returns a bottom
+output. Both rare; tracked.
+
+**Next (JIT, Phases 3–4):** per-value validity — tainted scalars as
+`CompiledExpr::Scalar2{value,valid}` (non-tainted stay `Single`, zero cost);
+composites/strings use a NULL marker, value-shape a reserved `BOTTOM_DISC`
+ABOVE the netidx disc space (the review caught `0x4000` colliding with
+`Bool`) with guarded decode; the div guard becomes a branchless
+`valid=!bad` sentinel; the IfChain merge threads validity; the boundary
+decodes the output marker → None; cross-kernel `Call` bails on a tainted
+scalar arg/return (V1). Then demote sink/dead-elim + add the finding-5/
+guard/`async_call(x/0)` all-modes fixtures + fuzz campaigns.
