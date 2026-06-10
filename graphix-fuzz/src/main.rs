@@ -50,7 +50,6 @@ async fn print_regression() -> usize {
     for (name, d) in &regr {
         println!("  REGRESSION {name} — {}", d.bisect());
         println!("    interp={}", render(&d.interp));
-        println!("    fused= {}", render(&d.fused));
         println!("    jit=  {}", render(&d.jit));
     }
     regr.len()
@@ -153,7 +152,7 @@ async fn main() -> Result<()> {
             let code = code.trim();
             match cmd {
                 "run" => {
-                    for mode in [Mode::Interp, Mode::Fused, Mode::Jit] {
+                    for mode in [Mode::Interp, Mode::Jit] {
                         let o = run_program(code, mode, TIMEOUT).await;
                         println!("{mode:?}: {}", render(&o));
                     }
@@ -163,7 +162,6 @@ async fn main() -> Result<()> {
                     Some(d) => {
                         println!("DIVERGENCE — {}", d.bisect());
                         println!("  interp: {}", render(&d.interp));
-                        println!("  fused:  {}", render(&d.fused));
                         println!("  jit:    {}", render(&d.jit));
                         std::process::exit(1);
                     }

@@ -639,7 +639,7 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// - `elem_name`: the callback's parameter name (`x` in
     ///   `|x| body`), used as the [`Input`] name when scoping the
     ///   body emit so its body's `Ref` lookups find the kernel slot.
-    /// - `in_elem`: the array's element type as a [`GirType`] (a
+    /// - `in_elem`: the array's element type as a [`Type`] (a
     ///   `Prim` for scalar elements, or a composite for
     ///   `Array<(k, v)>`-style elements). Implementors that only
     ///   handle scalar elements call `in_elem.as_prim()?`.
@@ -654,7 +654,7 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
         _array_arg: &Node<R, E>,
         _body: &Node<R, E>,
         _elem_name: &ArcStr,
-        _in_elem: graphix_compiler::gir::GirType,
+        _in_elem: graphix_compiler::typ::Type,
         // Tuple-destructure callback leaves `(BindId, position)` when the
         // arg is `|(k, v)|`; empty for a single-name `|x|` callback.
         _elem_binds: &[(graphix_compiler::BindId, usize)],
@@ -1161,7 +1161,7 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
         _body: &Node<R, E>,
         _acc_name: &ArcStr,
         _elem_name: &ArcStr,
-        _in_elem: graphix_compiler::gir::GirType,
+        _in_elem: graphix_compiler::typ::Type,
         // Tuple-destructure leaves for an `|acc, (k, v)|` callback;
         // empty for `|acc, x|`.
         _elem_binds: &[(graphix_compiler::BindId, usize)],

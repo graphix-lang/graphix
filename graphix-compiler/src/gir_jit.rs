@@ -52,9 +52,10 @@
 //! limitation; both lift in M4.
 
 use crate::gir::{
-    AbiParamKind, AbiReturn, BinOp, BoolOp, CmpOp, ConstVal, GirExpr, GirKernel,
-    GirOp, GirStmt, GirType, PrimType, SelectArm,
+    self, AbiKind, AbiParamKind, AbiReturn, BinOp, BoolOp, CmpOp, GirExpr,
+    GirKernel, GirOp, GirStmt, PrimType, SelectArm,
 };
+use crate::typ::Type;
 use anyhow::{anyhow, Context as AnyContext, Result};
 use arcstr::ArcStr;
 use netidx_value::Value;
@@ -314,8 +315,8 @@ fn define_typed_kernel(
 /// The wrapper itself is JIT-compiled cranelift code that loads each
 /// arg from the slot at the correct CLIF type, calls the typed
 /// kernel, and stores the result into `*out` as raw bits. Pack and
-/// unpack helpers ([`pack_reg_to_u64`], [`unpack_u64_to_reg`]) handle
-/// the Rust-side bit-fiddling.
+/// unpack helpers ([`pack_value_to_u64`], [`unpack_u64_to_value`])
+/// handle the Rust-side bit-fiddling.
 ///
 /// Owns its `JitCtx` (for the local-module path) or holds `None` (for
 /// the shared-module path, where a static [`SHARED_JIT`] keeps the
@@ -810,46 +811,83 @@ fn define_wrapper(
     Ok(wrapper_id)
 }
 
-/// Pack a [`crate::gir_interp::RegValue`] into a u64 slot for passing
-/// into a JIT'd wrapper. The bits represent the primitive's value;
-/// for narrower primitives the upper bits are unused (the wrapper
-/// loads at the CLIF type and ignores them).
-pub fn pack_reg_to_u64(r: &crate::gir_interp::RegValue) -> u64 {
-    use crate::gir_interp::RegValue as R;
-    match r {
-        R::I8(x) => *x as i64 as u64,
-        R::I16(x) => *x as i64 as u64,
-        R::I32(x) => *x as i64 as u64,
-        R::I64(x) => *x as u64,
-        R::U8(x) => *x as u64,
-        R::U16(x) => *x as u64,
-        R::U32(x) => *x as u64,
-        R::U64(x) => *x,
-        R::F32(x) => x.to_bits() as u64,
-        R::F64(x) => x.to_bits(),
-        R::Bool(b) => *b as u64,
+/// Pack a scalar [`Value`] into a u64 slot for passing into a JIT'd
+/// wrapper, extracting the scalar according to the declared `prim`.
+/// The bits represent the primitive's value; for narrower primitives
+/// the upper bits are unused (the wrapper loads at the CLIF type and
+/// ignores them). Panics if `v` isn't a scalar of `prim`'s shape — a
+/// kernel built against a typechecker decision the runtime now
+/// disagrees with, which is a bug. (`Z32`/`Z64`/`V32`/`V64` accepted
+/// for the matching fixed-width prim.)
+pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> u64 {
+    macro_rules! bad {
+        () => {
+            panic!("pack_value_to_u64: {v:?} isn't a {prim:?} scalar")
+        };
+    }
+    match prim {
+        PrimType::I8 => match v {
+            Value::I8(x) => *x as i64 as u64,
+            _ => bad!(),
+        },
+        PrimType::I16 => match v {
+            Value::I16(x) => *x as i64 as u64,
+            _ => bad!(),
+        },
+        PrimType::I32 => match v {
+            Value::I32(x) | Value::Z32(x) => *x as i64 as u64,
+            _ => bad!(),
+        },
+        PrimType::I64 => match v {
+            Value::I64(x) | Value::Z64(x) => *x as u64,
+            _ => bad!(),
+        },
+        PrimType::U8 => match v {
+            Value::U8(x) => *x as u64,
+            _ => bad!(),
+        },
+        PrimType::U16 => match v {
+            Value::U16(x) => *x as u64,
+            _ => bad!(),
+        },
+        PrimType::U32 => match v {
+            Value::U32(x) | Value::V32(x) => *x as u64,
+            _ => bad!(),
+        },
+        PrimType::U64 => match v {
+            Value::U64(x) | Value::V64(x) => *x,
+            _ => bad!(),
+        },
+        PrimType::F32 => match v {
+            Value::F32(x) => x.to_bits() as u64,
+            _ => bad!(),
+        },
+        PrimType::F64 => match v {
+            Value::F64(x) => x.to_bits(),
+            _ => bad!(),
+        },
+        PrimType::Bool => match v {
+            Value::Bool(b) => *b as u64,
+            _ => bad!(),
+        },
     }
 }
 
 /// Unpack a u64 slot from a JIT'd wrapper's `out` parameter into the
-/// appropriate [`crate::gir_interp::RegValue`] variant.
-pub fn unpack_u64_to_reg(
-    bits: u64,
-    prim: PrimType,
-) -> crate::gir_interp::RegValue {
-    use crate::gir_interp::RegValue as R;
+/// scalar [`Value`] of the declared `prim`.
+pub fn unpack_u64_to_value(bits: u64, prim: PrimType) -> Value {
     match prim {
-        PrimType::I8 => R::I8(bits as i8),
-        PrimType::I16 => R::I16(bits as i16),
-        PrimType::I32 => R::I32(bits as i32),
-        PrimType::I64 => R::I64(bits as i64),
-        PrimType::U8 => R::U8(bits as u8),
-        PrimType::U16 => R::U16(bits as u16),
-        PrimType::U32 => R::U32(bits as u32),
-        PrimType::U64 => R::U64(bits),
-        PrimType::F32 => R::F32(f32::from_bits(bits as u32)),
-        PrimType::F64 => R::F64(f64::from_bits(bits)),
-        PrimType::Bool => R::Bool(bits != 0),
+        PrimType::I8 => Value::I8(bits as i8),
+        PrimType::I16 => Value::I16(bits as i16),
+        PrimType::I32 => Value::I32(bits as i32),
+        PrimType::I64 => Value::I64(bits as i64),
+        PrimType::U8 => Value::U8(bits as u8),
+        PrimType::U16 => Value::U16(bits as u16),
+        PrimType::U32 => Value::U32(bits as u32),
+        PrimType::U64 => Value::U64(bits),
+        PrimType::F32 => Value::F32(f32::from_bits(bits as u32)),
+        PrimType::F64 => Value::F64(f64::from_bits(bits)),
+        PrimType::Bool => Value::Bool(bits != 0),
     }
 }
 
@@ -1110,19 +1148,24 @@ fn compile_into_function(
     let pending_exit_block = *lower.pending_exit.borrow();
     if let Some(pe) = pending_exit_block {
         b.switch_to_block(pe);
-        match &kernel.return_type {
-            GirType::Prim(p) => {
-                let s = zero_const(b, *p);
+        match gir::abi_kind(&kernel.return_type) {
+            Some(AbiKind::Scalar(p)) => {
+                let s = zero_const(b, p);
                 b.ins().return_(&[s]);
             }
             // Composite returns: the kernel's typed signature returns
             // a single `I64` pointer. The pending sentinel is null.
-            GirType::Array(_)
-            | GirType::Tuple(_)
-            | GirType::Struct(_)
-            // Unit returns the I64 ABI slot too (the caller
-            // discards).
-            | GirType::Unit => {
+            // Unit returns the I64 ABI slot too (the caller discards).
+            // String returns travel as a single `i64` (ArcStr's thin
+            // pointer); the sentinel is `0` (null pointer) — the caller
+            // checks the pending flag before decoding.
+            Some(
+                AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::Unit
+                | AbiKind::String,
+            ) => {
                 let s = b.ins().iconst(types::I64, 0);
                 b.ins().return_(&[s]);
             }
@@ -1130,28 +1173,15 @@ fn compile_into_function(
             // pending sentinel is `(0, 0)` — the caller's pending
             // check fires from `DYNCALL_PENDING` before decoding,
             // so the bits are never observed.
-            GirType::Variant(_)
-            | GirType::Nullable(_)
-            | GirType::DateTime
-            | GirType::Duration
-            | GirType::Bytes | GirType::Map | GirType::Error => {
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
                 let s0 = b.ins().iconst(types::I64, 0);
                 let s1 = b.ins().iconst(types::I64, 0);
                 b.ins().return_(&[s0, s1]);
             }
-            // String returns travel as a single `i64` (ArcStr's thin
-            // pointer). Sentinel is `0` (null pointer) — the caller
-            // checks the pending flag before decoding, so a null
-            // ArcStr pointer never reaches `GirNode::update`'s
-            // boundary marshaling.
-            GirType::String => {
-                let s = b.ins().iconst(types::I64, 0);
-                b.ins().return_(&[s]);
-            }
-            // Bare Null returns aren't a real shape — fusion widens
-            // to Nullable<T> before producing.
-            GirType::Null => unreachable!(
-                "kernel returns bare GirType::Null but reached JIT \
+            // Bare Null / non-fusable returns aren't a real shape —
+            // fusion widens to Nullable<T> before producing.
+            Some(AbiKind::Null) | None => unreachable!(
+                "kernel returns bare Null / non-fusable but reached JIT \
                  pending-exit emission — should have widened earlier"
             ),
         }
@@ -1234,11 +1264,13 @@ impl KernelStrings {
     }
 }
 
-/// Per-kernel datetime/duration constants table — stable-address
-/// `Value` slots whose `*const Value` the codegen bakes for
-/// [`GirOp::ConstValue`]. Mirrors [`KernelStrings`]: the `Box<[Value]>`
-/// never moves its heap allocation, so the baked pointers stay valid
-/// as long as the table (held on the kernel) lives.
+/// Per-kernel value-shape constants table — stable-address `Value`
+/// slots whose `*const Value` the codegen bakes for value-shape
+/// [`GirOp::Const`]s (datetime/duration/bytes/map). Mirrors
+/// [`KernelStrings`]: the `Box<[Value]>` never moves its heap
+/// allocation, so the baked pointers stay valid as long as the table
+/// (held on the kernel) lives. (Scalar `Const`s aren't interned — they
+/// lower inline.)
 pub struct KernelValues {
     slots: Box<[Value]>,
 }
@@ -1248,7 +1280,8 @@ impl KernelValues {
         Self { slots: Box::new([]) }
     }
 
-    /// Pre-walk `kernel`, collect each distinct `ConstValue` literal.
+    /// Pre-walk `kernel`, collect each distinct value-shape `Const`
+    /// literal.
     pub fn build(kernel: &GirKernel) -> Self {
         let mut slots: Vec<Value> = Vec::new();
         for stmt in &kernel.body {
@@ -1258,14 +1291,14 @@ impl KernelValues {
     }
 
     /// Stable `*const Value` for `v`. Panics on a pre-walk miss (a
-    /// `ConstValue`-using op the walk didn't cover).
+    /// value-shape `Const`-using op the walk didn't cover).
     pub fn get(&self, v: &Value) -> *const Value {
         self.slots
             .iter()
             .find(|s| *s == v)
             .map(|s| s as *const Value)
             .unwrap_or_else(|| {
-                panic!("KernelValues: lookup miss for a ConstValue literal")
+                panic!("KernelValues: lookup miss for a value-shape Const literal")
             })
     }
 }
@@ -1277,7 +1310,10 @@ fn collect_values_stmt(s: &GirStmt, out: &mut Vec<Value>) {
         GirStmt::TailCall { args } => {
             args.iter().for_each(|a| collect_values_expr(a, out))
         }
-        GirStmt::Select { arms } => {
+        GirStmt::Select { scrut, arms } => {
+            if let Some(s) = scrut {
+                collect_values_expr(s, out);
+            }
             for arm in arms {
                 if let Some(c) = &arm.cond {
                     collect_values_expr(c, out);
@@ -1289,8 +1325,11 @@ fn collect_values_stmt(s: &GirStmt, out: &mut Vec<Value>) {
 }
 
 fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
-    if let GirOp::ConstValue(v) = &e.op {
-        if !out.iter().any(|s| s == v) {
+    // Only VALUE-SHAPE `Const`s (datetime/duration/bytes/map) go in the
+    // table — they bake a `*const Value`. Scalar `Const`s lower inline
+    // via `compile_const` and aren't interned.
+    if let GirOp::Const(v) = &e.op {
+        if gir::is_value_shape(&e.typ) && !out.iter().any(|s| s == v) {
             out.push(v.clone());
         }
     }
@@ -1314,7 +1353,10 @@ fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
             lets.iter().for_each(|l| collect_values_expr(&l.value, out));
             collect_values_expr(tail, out);
         }
-        GirOp::IfChain { arms } => {
+        GirOp::IfChain { scrut, arms } => {
+            if let Some(s) = scrut {
+                collect_values_expr(s, out);
+            }
             for (c, v) in arms {
                 if let Some(c) = c {
                     collect_values_expr(c, out);
@@ -1372,7 +1414,6 @@ fn collect_values_expr(e: &GirExpr, out: &mut Vec<Value>) {
         }
         GirOp::Const(_)
         | GirOp::ConstStr(_)
-        | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. }
@@ -1393,7 +1434,10 @@ fn collect_strings_stmt(s: &GirStmt, out: &mut std::collections::BTreeSet<ArcStr
                 collect_strings_expr(a, out);
             }
         }
-        GirStmt::Select { arms } => {
+        GirStmt::Select { scrut, arms } => {
+            if let Some(s) = scrut {
+                collect_strings_expr(s, out);
+            }
             for arm in arms {
                 if let Some(c) = &arm.cond {
                     collect_strings_expr(c, out);
@@ -1408,7 +1452,7 @@ fn collect_strings_stmt(s: &GirStmt, out: &mut std::collections::BTreeSet<ArcStr
 
 fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr>) {
     match &e.op {
-        GirOp::Const(_) | GirOp::ConstValue(_) | GirOp::ConstNull
+        GirOp::Const(_) | GirOp::ConstNull
         | GirOp::Local(_) => {}
         GirOp::IsNull(inner) => collect_strings_expr(inner, out),
         GirOp::QopUnwrap { inner, .. } => collect_strings_expr(inner, out),
@@ -1448,7 +1492,10 @@ fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
             }
             collect_strings_expr(tail, out);
         }
-        GirOp::IfChain { arms } => {
+        GirOp::IfChain { scrut, arms } => {
+            if let Some(s) = scrut {
+                collect_strings_expr(s, out);
+            }
             for (cond, body) in arms {
                 if let Some(c) = cond {
                     collect_strings_expr(c, out);
@@ -1556,7 +1603,7 @@ struct LowerCtx<'a> {
     /// on the resulting `WrappedKernel` so the pointers remain
     /// valid for as long as the compiled code does.
     strings: &'a KernelStrings,
-    /// Per-kernel datetime/duration constants table. `GirOp::ConstValue`
+    /// Per-kernel value-shape constants table. Value-shape `GirOp::Const`
     /// codegen looks up the literal here to get a stable `*const Value`
     /// to emit as an iconst, then clones it (`graphix_value_clone_from_static`).
     /// Lives on the resulting kernel so the pointers stay valid as long
@@ -1789,7 +1836,7 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         }
         "graphix_value_new_from_array"
         | "graphix_value_new_string_from_arcstr"
-        // Clone a `*const Value` static (datetime/duration ConstValue):
+        // Clone a `*const Value` static (value-shape Const):
         // one pointer arg, a Value (two words) returned.
         | "graphix_value_clone_from_static" => {
             sig.params.push(AbiParam::new(types::I64)); // *mut ValArray / *const ArcStr / *const Value
@@ -2098,13 +2145,37 @@ struct ValueVar {
 #[derive(Debug, Clone, Copy)]
 enum CompiledExpr {
     Single(ClifValue),
+    /// A scalar that MAY be a value-bottom (div/mod-by-zero, signed
+    /// MIN/-1, scalar `?` on an error). `valid` is an I8 0/1 bool —
+    /// 1 = has a value, 0 = bottom. A scalar that can't be bottom
+    /// stays [`CompiledExpr::Single`] (the taint optimization — zero
+    /// codegen cost for the common case). Taint propagates through
+    /// pure scalar ops (Bin/Cmp/BoolBin/Not/Cast/IfChain) and is
+    /// resolved at the kernel OUTPUT: an invalid output makes
+    /// `GirNode::update` return `None` (the boundary moves the abort
+    /// from the producing site to the output, so an intermediate
+    /// bottom an un-taken arm never consumes no longer aborts the
+    /// whole kernel — see `design/representable_bottom.md`).
+    Scalar2 { value: ClifValue, valid: ClifValue },
     Value { disc: ClifValue, payload: ClifValue },
 }
 
 impl CompiledExpr {
+    /// Extract a definitely-valid scalar. A [`CompiledExpr::Scalar2`]
+    /// (a possibly-bottom scalar) errors — the caller doesn't handle
+    /// taint, so the kernel must fall back to the interpreter (which
+    /// represents bottom faithfully). This is the safe default: any
+    /// scalar consumer that hasn't been taught taint-propagation bails
+    /// the whole kernel to interp rather than silently dropping a
+    /// bottom. Consumers that DO propagate taint use
+    /// [`CompiledExpr::scalar_with_validity`].
     fn single(self) -> Result<ClifValue> {
         match self {
             CompiledExpr::Single(v) => Ok(v),
+            CompiledExpr::Scalar2 { .. } => Err(anyhow!(
+                "JIT: scalar consumer reached a possibly-bottom (Scalar2) \
+                 value but doesn't propagate validity — bail to interp"
+            )),
             CompiledExpr::Value { .. } => Err(anyhow!(
                 "JIT: expected single CLIF value, got Value-shaped (disc, \
                  payload) pair — GIR is malformed or consumer is wrong"
@@ -2112,23 +2183,88 @@ impl CompiledExpr {
         }
     }
 
+    /// Extract a scalar value together with its I8 validity bit. A
+    /// non-tainted [`CompiledExpr::Single`] is always valid (validity
+    /// = `iconst.I8 1`). Used by the taint-propagating consumers
+    /// (Bin/Cmp/BoolBin/Not/Cast/IfChain/Return). Errors on a
+    /// Value-shape result (consumer in scalar position).
+    fn scalar_with_validity(
+        self,
+        b: &mut FunctionBuilder,
+    ) -> Result<(ClifValue, ClifValue)> {
+        match self {
+            CompiledExpr::Single(v) => {
+                let valid = b.ins().iconst(types::I8, 1);
+                Ok((v, valid))
+            }
+            CompiledExpr::Scalar2 { value, valid } => Ok((value, valid)),
+            CompiledExpr::Value { .. } => Err(anyhow!(
+                "JIT: expected scalar, got Value-shaped (disc, payload) \
+                 pair — GIR is malformed or consumer is wrong"
+            )),
+        }
+    }
+
     fn value(self) -> Result<(ClifValue, ClifValue)> {
         match self {
             CompiledExpr::Value { disc, payload } => Ok((disc, payload)),
-            CompiledExpr::Single(_) => Err(anyhow!(
-                "JIT: expected Value-shaped (disc, payload), got single \
-                 — GIR is malformed or consumer is wrong"
-            )),
+            CompiledExpr::Single(_) | CompiledExpr::Scalar2 { .. } => {
+                Err(anyhow!(
+                    "JIT: expected Value-shaped (disc, payload), got single \
+                     — GIR is malformed or consumer is wrong"
+                ))
+            }
         }
+    }
+}
+
+/// Combine the validity bits of several operands into the result
+/// validity. Returns `None` when every operand is non-tainted
+/// (`Single`) — the result should stay `Single` (the fast path, zero
+/// codegen). Returns `Some(band(...))` when at least one operand is
+/// tainted (`Scalar2`) — the result must be `Scalar2`. A bottom in any
+/// consumed operand taints the result (`valid = AND of operand
+/// validities`), mirroring the interp's `?`-absorb.
+fn combine_validity(
+    b: &mut FunctionBuilder,
+    operands: &[CompiledExpr],
+) -> Option<ClifValue> {
+    let mut acc: Option<ClifValue> = None;
+    let mut any_tainted = false;
+    for op in operands {
+        if let CompiledExpr::Scalar2 { valid, .. } = op {
+            any_tainted = true;
+            acc = Some(match acc {
+                None => *valid,
+                Some(a) => b.ins().band(a, *valid),
+            });
+        }
+    }
+    if any_tainted { Some(acc.unwrap()) } else { None }
+}
+
+/// Wrap a computed scalar `value` with combined operand validity:
+/// `Single` if no operand was tainted, else `Scalar2`.
+fn scalar_result(
+    value: ClifValue,
+    validity: Option<ClifValue>,
+) -> CompiledExpr {
+    match validity {
+        None => CompiledExpr::Single(value),
+        Some(valid) => CompiledExpr::Scalar2 { value, valid },
     }
 }
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
 struct JitEnv {
-    /// Scalar locals: `(name, var, prim)`. Lookups walk back-to-front
-    /// for proper shadowing.
-    locals: Vec<(ArcStr, Variable, PrimType)>,
+    /// Scalar locals: `(name, var, valid, prim)`. Lookups walk
+    /// back-to-front for proper shadowing. `valid` is `Some(var)`
+    /// only for a TAINTED local (`let v = 1/0`) — its I8 validity bit
+    /// rides alongside the value so `let`-bound bottoms flow through a
+    /// later read; a non-tainted local has `valid: None` (the fast
+    /// path, read back as `CompiledExpr::Single`).
+    locals: Vec<(ArcStr, Variable, Option<Variable>, PrimType)>,
     /// Composite parameter pointer Variables: `(name, var)`. The var
     /// holds a `*const ValArray` (CLIF i64 on 64-bit targets). Array,
     /// tuple, and struct params share this table — they differ only
@@ -2169,8 +2305,22 @@ impl JitEnv {
         }
     }
 
+    /// Bind a non-tainted scalar local (the common path).
     fn bind(&mut self, name: ArcStr, var: Variable, prim: PrimType) {
-        self.locals.push((name, var, prim));
+        self.locals.push((name, var, None, prim));
+    }
+
+    /// Bind a possibly-tainted scalar local — `valid` is its I8
+    /// validity Variable. A later `GirOp::Local` read returns
+    /// `CompiledExpr::Scalar2 { value, valid }`.
+    fn bind_tainted(
+        &mut self,
+        name: ArcStr,
+        var: Variable,
+        valid: Variable,
+        prim: PrimType,
+    ) {
+        self.locals.push((name, var, Some(valid), prim));
     }
 
     fn bind_composite(&mut self, name: ArcStr, var: Variable) {
@@ -2189,10 +2339,13 @@ impl JitEnv {
         self.strings.push((name, var));
     }
 
-    fn lookup(&self, name: &str) -> Option<(Variable, PrimType)> {
-        for (n, v, p) in self.locals.iter().rev() {
+    fn lookup(
+        &self,
+        name: &str,
+    ) -> Option<(Variable, Option<Variable>, PrimType)> {
+        for (n, v, valid, p) in self.locals.iter().rev() {
             if n.as_str() == name {
-                return Some((*v, *p));
+                return Some((*v, *valid, *p));
             }
         }
         None
@@ -2276,6 +2429,47 @@ struct EnvMark {
 
 // ─── Body / statement compilation ────────────────────────────────
 
+/// Bind a scalar `let local = value` into `env.locals`, preserving
+/// per-value validity. A non-tainted value binds via `env.bind`
+/// (read back as `Single`); a possibly-bottom (`Scalar2`) value binds
+/// via `env.bind_tainted` so a later `GirOp::Local` read surfaces its
+/// validity bit and the bottom flows. Shared by `GirStmt::Let`,
+/// `GirOp::Block`'s let arm, and `compile_block_value`'s let arm.
+fn bind_scalar_let(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+    name: &ArcStr,
+    value: &GirExpr,
+    p: PrimType,
+) -> Result<()> {
+    let cv = compile_expr(b, value, env, ctx)?;
+    match cv {
+        // Non-tainted: bind the value alone (read back as `Single`).
+        CompiledExpr::Single(v) => {
+            let var = b.declare_var(prim_to_clif(p));
+            b.def_var(var, v);
+            env.bind(name.clone(), var, p);
+        }
+        // Tainted: store the value AND its validity bit so a later
+        // `GirOp::Local` read of this local surfaces the bottom.
+        CompiledExpr::Scalar2 { value, valid } => {
+            let var = b.declare_var(prim_to_clif(p));
+            b.def_var(var, value);
+            let valid_var = b.declare_var(types::I8);
+            b.def_var(valid_var, valid);
+            env.bind_tainted(name.clone(), var, valid_var, p);
+        }
+        CompiledExpr::Value { .. } => {
+            return Err(anyhow!(
+                "bind_scalar_let: Value-shape result for a scalar let — GIR \
+                 is malformed"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn compile_body(
     b: &mut FunctionBuilder,
     stmts: &[GirStmt],
@@ -2285,16 +2479,11 @@ fn compile_body(
     for stmt in stmts {
         match stmt {
             GirStmt::Let(l) => {
-                match &l.value.typ {
-                    GirType::Prim(p) => {
-                        let v = compile_scalar(b, &l.value, env, ctx)?;
-                        let var = b.declare_var(prim_to_clif(*p));
-                        b.def_var(var, v);
-                        env.bind(l.local.clone(), var, *p);
+                match gir::abi_kind(&l.value.typ) {
+                    Some(AbiKind::Scalar(p)) => {
+                        bind_scalar_let(b, env, ctx, &l.local, &l.value, p)?;
                     }
-                    GirType::Array(_)
-                    | GirType::Tuple(_)
-                    | GirType::Struct(_) => {
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                         // Composite local: an owned `*mut ValArray`
                         // stored as I64. `ensure_owned_composite`
                         // clones a Borrowed source (e.g. `let a = b`
@@ -2311,11 +2500,9 @@ fn compile_body(
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    GirType::Variant(_)
-                    | GirType::Nullable(_)
-                    | GirType::DateTime
-                    | GirType::Duration
-                    | GirType::Bytes | GirType::Map | GirType::Error => {
+                    Some(
+                        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value,
+                    ) => {
                         // Value-shape local: stored as a `(disc,
                         // payload)` pair (`ValueVar`). The source
                         // expression compiles to a `CompiledExpr::Value`;
@@ -2325,9 +2512,9 @@ fn compile_body(
                         // this local exclusively owns its ref. Dropped
                         // at function exit (and on pending paths by
                         // the per-DynCall `pre_pending` block).
-                        // datetime/duration share the `nullables`
-                        // ValueVar slot (same `(disc, payload)` wire
-                        // shape).
+                        // datetime/duration/bytes/map/error share the
+                        // `nullables` ValueVar slot (same `(disc,
+                        // payload)` wire shape).
                         let cv = compile_expr(b, &l.value, env, ctx)?;
                         let (owned_disc, owned_payload) =
                             ensure_owned_value(b, ctx, &l.value, cv)?;
@@ -2337,7 +2524,10 @@ fn compile_body(
                         b.def_var(payload_var, owned_payload);
                         let vv =
                             ValueVar { disc: disc_var, payload: payload_var };
-                        if matches!(l.value.typ, GirType::Variant(_)) {
+                        if matches!(
+                            gir::abi_kind(&l.value.typ),
+                            Some(AbiKind::Variant)
+                        ) {
                             env.bind_variant(l.local.clone(), vv);
                         } else {
                             env.bind_nullable(l.local.clone(), vv);
@@ -2345,7 +2535,7 @@ fn compile_body(
                     }
                     // Unreachable in well-formed GIR — `emit_bind_stmt`
                     // routes Unit-typed lets through `GirStmt::Discard`.
-                    GirType::Unit => {
+                    Some(AbiKind::Unit) => {
                         return Err(anyhow!(
                             "GIR malformed: GirStmt::Let with Unit value"
                         ));
@@ -2357,21 +2547,22 @@ fn compile_body(
                     // No `ensure_owned_string` needed — every site
                     // that produces a String SSA value owns it.
                     // Dropped at scope exit by `drop_owned_strings`.
-                    GirType::String => {
+                    Some(AbiKind::String) => {
                         let v = compile_scalar(b, &l.value, env, ctx)?;
                         let var = b.declare_var(types::I64);
                         b.def_var(var, v);
                         env.bind_string(l.local.clone(), var);
                     }
-                    // Bare `GirType::Null` is the singleton produced
-                    // by `GirOp::ConstNull` — fusion always widens it
-                    // to `Nullable<T>` before binding (`emit_select_as_expr`
-                    // /  `unify_arm_types`), so a bare-`Null` let is a
-                    // malformed kernel.
-                    GirType::Null => {
+                    // Bare `Null` is the singleton produced by
+                    // `GirOp::ConstNull` — fusion always widens it to
+                    // `Nullable<T>` before binding (`emit_select_as_expr`
+                    // /  `unify_arm_types`), so a bare-`Null` let (or a
+                    // non-fusable type) is a malformed kernel.
+                    Some(AbiKind::Null) | None => {
                         return Err(anyhow!(
-                            "GirStmt::Let with bare Null value — should \
-                             have widened to Nullable<T> at construction"
+                            "GirStmt::Let with bare Null / non-fusable value \
+                             — should have widened to Nullable<T> at \
+                             construction"
                         ));
                     }
                 }
@@ -2414,12 +2605,10 @@ fn compile_body(
                 //
                 // Scalar / Unit returns: no allocation, no leak —
                 // skip the pending check.
-                match &e.typ {
-                    GirType::Variant(_)
-                    | GirType::Nullable(_)
-                    | GirType::DateTime
-                    | GirType::Duration
-                    | GirType::Bytes | GirType::Map | GirType::Error => {
+                match gir::abi_kind(&e.typ) {
+                    Some(
+                        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value,
+                    ) => {
                         let cv = compile_expr(b, e, env, ctx)?;
                         let (disc, payload) =
                             ensure_owned_value(b, ctx, e, cv)?;
@@ -2430,9 +2619,7 @@ fn compile_body(
                         drop_owned_composites(b, env, ctx)?;
                         b.ins().return_(&[disc, payload]);
                     }
-                    GirType::Array(_)
-                    | GirType::Tuple(_)
-                    | GirType::Struct(_) => {
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                         let v = compile_scalar(b, e, env, ctx)?;
                         let v = ensure_owned_composite(b, ctx, e, v)?;
                         emit_return_pending_check(
@@ -2442,7 +2629,7 @@ fn compile_body(
                         drop_owned_composites(b, env, ctx)?;
                         b.ins().return_(&[v]);
                     }
-                    GirType::String => {
+                    Some(AbiKind::String) => {
                         // String returns produce an owned `ArcStr`
                         // (refcount bumped). On the pending path
                         // `GirNode::update` discards the wrapper
@@ -2462,14 +2649,65 @@ fn compile_body(
                         b.ins().return_(&[v]);
                     }
                     _ => {
-                        // Scalar / Unit: no owned allocation to leak;
-                        // `GirNode::update`'s wrapper-level pending
-                        // check still fires correctly via the still-
-                        // set flag.
-                        let v = compile_scalar(b, e, env, ctx)?;
-                        let v = ensure_owned_composite(b, ctx, e, v)?;
-                        drop_owned_composites(b, env, ctx)?;
-                        b.ins().return_(&[v]);
+                        // Scalar / Unit: no owned allocation to leak.
+                        // BUT a Scalar2 (possibly-bottom) return is the
+                        // OUTPUT-consumes-bottom case: when its validity
+                        // bit is 0, set the pending flag and route to
+                        // `pending_exit` so `GirNode::update` returns
+                        // `None` (the abort moves from the producing site
+                        // to the output — an intermediate bottom an
+                        // un-taken arm never consumes no longer aborts).
+                        // A `Single` return can't be bottom — skip the
+                        // check.
+                        let cv = compile_expr(b, e, env, ctx)?;
+                        match cv {
+                            CompiledExpr::Scalar2 { value, valid } => {
+                                let pending_set = ctx
+                                    .helper_refs
+                                    .get("graphix_dyncall_set_pending")
+                                    .ok_or_else(|| {
+                                        anyhow!(
+                                            "missing graphix_dyncall_set_pending"
+                                        )
+                                    })?;
+                                let pre_pending = b.create_block();
+                                let ret_block = b.create_block();
+                                let pending_exit = {
+                                    let mut slot = ctx.pending_exit.borrow_mut();
+                                    match *slot {
+                                        Some(blk) => blk,
+                                        None => {
+                                            let blk = b.create_block();
+                                            *slot = Some(blk);
+                                            blk
+                                        }
+                                    }
+                                };
+                                // valid == 0 → bottom output → pending.
+                                b.ins().brif(
+                                    valid, ret_block, &[], pre_pending, &[],
+                                );
+                                b.switch_to_block(pre_pending);
+                                b.seal_block(pre_pending);
+                                b.ins().call(pending_set, &[]);
+                                emit_pending_cleanup(b, env, ctx)?;
+                                b.ins().jump(pending_exit, &[]);
+                                b.switch_to_block(ret_block);
+                                b.seal_block(ret_block);
+                                drop_owned_composites(b, env, ctx)?;
+                                b.ins().return_(&[value]);
+                            }
+                            CompiledExpr::Single(v) => {
+                                drop_owned_composites(b, env, ctx)?;
+                                b.ins().return_(&[v]);
+                            }
+                            CompiledExpr::Value { .. } => {
+                                return Err(anyhow!(
+                                    "GirStmt::Return scalar arm got a \
+                                     Value-shape result — GIR malformed"
+                                ));
+                            }
+                        }
                     }
                 }
                 return Ok(());
@@ -2539,7 +2777,7 @@ fn compile_body(
                 for (slot, v) in slots.iter().zip(new_vals.iter()) {
                     match slot.kind {
                         TailCallSlotKind::Scalar(_) => {
-                            let (var, _) =
+                            let (var, _, _) =
                                 env.lookup(&slot.name).ok_or_else(|| {
                                     anyhow!(
                                         "TailCall: scalar slot `{}` not in env",
@@ -2664,7 +2902,15 @@ fn compile_body(
                 b.ins().jump(head, &[]);
                 return Ok(());
             }
-            GirStmt::Select { arms } => {
+            GirStmt::Select { scrut, arms } => {
+                // A bottom SCRUTINEE poisons the whole select (the
+                // node-walk's Select doesn't fire without a scrutinee
+                // value). The scrutinee is folded into the arm conds; we
+                // re-compile it here only to extract its validity bit and
+                // route to `pending_exit` when invalid (kernel returns
+                // None). A bottom GUARD, by contrast, only fails its own
+                // arm — handled inside `compile_select_stmt`.
+                compile_select_scrut_gate(b, scrut.as_ref(), env, ctx)?;
                 compile_select_stmt(b, arms, env, ctx)?;
                 // Each arm body terminates (return or tail-jump) so
                 // there is no fallthrough after the select.
@@ -2675,6 +2921,98 @@ fn compile_body(
     Err(anyhow!(
         "GIR malformed: body fell through with no return or tail call"
     ))
+}
+
+/// Emit a value-bottom abort: when the I8 `valid` bit is 0, set the
+/// pending flag, run `emit_pending_cleanup`, and jump to `pending_exit`
+/// (so `GirNode::update` returns `None`). Falls through to a fresh
+/// `continue_block` when valid. Used where a tainted scalar is consumed
+/// by a site that has no per-value validity channel (e.g. a composite
+/// producer field) — the bottom must propagate to the kernel OUTPUT.
+fn emit_bottom_abort(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+    valid: ClifValue,
+) -> Result<()> {
+    let pending_set = ctx
+        .helper_refs
+        .get("graphix_dyncall_set_pending")
+        .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+    let pre_pending = b.create_block();
+    let continue_block = b.create_block();
+    let pending_exit = {
+        let mut slot = ctx.pending_exit.borrow_mut();
+        match *slot {
+            Some(blk) => blk,
+            None => {
+                let blk = b.create_block();
+                *slot = Some(blk);
+                blk
+            }
+        }
+    };
+    b.ins().brif(valid, continue_block, &[], pre_pending, &[]);
+    b.switch_to_block(pre_pending);
+    b.seal_block(pre_pending);
+    b.ins().call(pending_set, &[]);
+    emit_pending_cleanup(b, env, ctx)?;
+    b.ins().jump(pending_exit, &[]);
+    b.switch_to_block(continue_block);
+    b.seal_block(continue_block);
+    Ok(())
+}
+
+/// Emit the statement-form `select`'s SCRUTINEE bottom-check gate. A
+/// bottom scrutinee poisons the whole select (interp parity, #178): if
+/// the scrutinee's validity bit is 0, set the pending flag and route to
+/// `pending_exit` (kernel returns None). A non-tainted (`Single`) or
+/// absent scrutinee is a no-op. The scrutinee is folded into the arm
+/// conds, so we only need its validity bit here.
+fn compile_select_scrut_gate(
+    b: &mut FunctionBuilder,
+    scrut: Option<&GirExpr>,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<()> {
+    let Some(s) = scrut else { return Ok(()) };
+    // Only scalar scrutinees can be a value-bottom (`Scalar2`). A
+    // value-shape scrutinee carries bottom in-band via the existing
+    // pending machinery at its producer.
+    if !matches!(gir::abi_kind(&s.typ), Some(AbiKind::Scalar(_))) {
+        return Ok(());
+    }
+    let cv = compile_expr(b, s, env, ctx)?;
+    let CompiledExpr::Scalar2 { valid, .. } = cv else {
+        return Ok(());
+    };
+    let pending_set = ctx
+        .helper_refs
+        .get("graphix_dyncall_set_pending")
+        .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+    let pre_pending = b.create_block();
+    let continue_block = b.create_block();
+    let pending_exit = {
+        let mut slot = ctx.pending_exit.borrow_mut();
+        match *slot {
+            Some(blk) => blk,
+            None => {
+                let blk = b.create_block();
+                *slot = Some(blk);
+                blk
+            }
+        }
+    };
+    // valid == 0 → bottom scrutinee → pending.
+    b.ins().brif(valid, continue_block, &[], pre_pending, &[]);
+    b.switch_to_block(pre_pending);
+    b.seal_block(pre_pending);
+    b.ins().call(pending_set, &[]);
+    emit_pending_cleanup(b, env, ctx)?;
+    b.ins().jump(pending_exit, &[]);
+    b.switch_to_block(continue_block);
+    b.seal_block(continue_block);
+    Ok(())
 }
 
 fn compile_select_stmt(
@@ -2710,7 +3048,11 @@ fn compile_select_stmt(
                 None
             }
             Some(cond) => {
-                let cv = compile_scalar(b, cond, env, ctx)?;
+                // A bottom GUARD → the arm doesn't match (fall through).
+                // `effective_cond = cond_value AND cond_valid`.
+                let (cval, cvalid) =
+                    compile_expr(b, cond, env, ctx)?.scalar_with_validity(b)?;
+                let cv = b.ins().band(cval, cvalid);
                 if is_last {
                     let trap_block = b.create_block();
                     b.ins().brif(cv, body_block, &[], trap_block, &[]);
@@ -2777,11 +3119,431 @@ fn compile_expr(
     // Sites that need the full enum reach this branch via
     // `compile_expr` directly; sites that only handle scalars use
     // `compile_scalar` which asserts Single and bails on Value-shape.
-    if e.typ.is_value_shape() || matches!(e.op, GirOp::ConstNull) {
+    if gir::is_value_shape(&e.typ) || matches!(e.op, GirOp::ConstNull) {
         return compile_value_expr(b, e, env, ctx);
+    }
+    // Taint-aware scalar ops: these can PRODUCE a value-bottom
+    // (`Bin` div/mod, `QopUnwrap`) or PROPAGATE one from their
+    // operands (`Bin` non-div, `Cmp`, `BoolBin`, `Not`, `Cast`,
+    // scalar `IfChain`). They route through `compile_tainted_scalar`
+    // which returns `CompiledExpr::Scalar2` when a result may be
+    // bottom; everything else stays `Single` (the taint optimization).
+    match &e.op {
+        GirOp::Bin { .. }
+        | GirOp::Cmp { .. }
+        | GirOp::BoolBin { .. }
+        | GirOp::Not(_)
+        | GirOp::Cast { .. }
+        | GirOp::QopUnwrap { .. }
+        | GirOp::IfChain { .. }
+        | GirOp::Block { .. } => {
+            return compile_tainted_scalar(b, e, env, ctx);
+        }
+        // A scalar `Local` read of a TAINTED local must surface its
+        // validity bit (`let v = 1/0; … v …`). Non-tainted scalar
+        // locals (and composite/string locals) fall through to
+        // `compile_scalar_impl` → `Single`.
+        GirOp::Local(name) if matches!(gir::abi_kind(&e.typ), Some(AbiKind::Scalar(_))) => {
+            let (var, valid, _) = env.lookup(name).ok_or_else(|| {
+                anyhow!("GIR malformed: undefined scalar local `{name}`")
+            })?;
+            let value = b.use_var(var);
+            return Ok(match valid {
+                None => CompiledExpr::Single(value),
+                Some(vv) => {
+                    CompiledExpr::Scalar2 { value, valid: b.use_var(vv) }
+                }
+            });
+        }
+        _ => {}
     }
     let v = compile_scalar_impl(b, e, env, ctx)?;
     Ok(CompiledExpr::Single(v))
+}
+
+/// Compile the scalar ops that can produce or propagate a value-bottom
+/// (per-value validity). See [`CompiledExpr::Scalar2`]. Dispatched from
+/// [`compile_expr`] before the plain `compile_scalar_impl` path; the
+/// same ops in `compile_scalar_impl` are now unreachable (they error if
+/// routing drifts).
+fn compile_tainted_scalar(
+    b: &mut FunctionBuilder,
+    e: &GirExpr,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<CompiledExpr> {
+    match &e.op {
+        GirOp::Bin { op, lhs, rhs } => {
+            let lcv = compile_expr(b, lhs, env, ctx)?;
+            let rcv = compile_expr(b, rhs, env, ctx)?;
+            let (l, _) = lcv.scalar_with_validity(b)?;
+            let (r, _) = rcv.scalar_with_validity(b)?;
+            let prim = prim_of(&lhs.typ);
+            // Integer div/rem: a zero divisor (or signed MIN/-1
+            // overflow) makes raw cranelift sdiv/udiv/srem/urem TRAP
+            // (#DE → SIGFPE). Instead of aborting the kernel, compute
+            // a per-value validity bit and a BRANCHLESS safe result:
+            // `safe_r = select(bad, 1, r)` so the hardware op never
+            // traps. The result is `Scalar2 { value, valid: !bad &
+            // operand_valids }` — a bottom that the OUTPUT never
+            // consumes (un-taken arm, dead let) no longer aborts the
+            // kernel; the abort moves to the boundary (`GirStmt::Return`).
+            if matches!(op, BinOp::Div | BinOp::Mod)
+                && prim.is_integer()
+                && gir::int_div_may_bottom(lhs, rhs)
+            {
+                use cranelift_codegen::ir::condcodes::IntCC;
+                let is_zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
+                let bad = if prim.is_signed() {
+                    let min: i64 = match prim {
+                        PrimType::I8 => i8::MIN as i64,
+                        PrimType::I16 => i16::MIN as i64,
+                        PrimType::I32 => i32::MIN as i64,
+                        _ => i64::MIN,
+                    };
+                    let is_min = b.ins().icmp_imm(IntCC::Equal, l, min);
+                    let is_neg1 = b.ins().icmp_imm(IntCC::Equal, r, -1);
+                    let overflow = b.ins().band(is_min, is_neg1);
+                    b.ins().bor(is_zero, overflow)
+                } else {
+                    is_zero
+                };
+                // `bad` is an I8 bool; safe divisor = 1 when bad so the
+                // op can't trap. `select` needs the same CLIF type for
+                // both arms — produce `1` in the operand's prim width.
+                let one = b.ins().iconst(prim_to_clif(prim), 1);
+                let safe_r = b.ins().select(bad, one, r);
+                let value = compile_bin(b, *op, prim, l, safe_r)?;
+                // result valid = !bad AND operand validities.
+                let not_bad = {
+                    let one_i8 = b.ins().iconst(types::I8, 1);
+                    b.ins().bxor(bad, one_i8)
+                };
+                let mut valid = not_bad;
+                if let CompiledExpr::Scalar2 { valid: lv, .. } = lcv {
+                    valid = b.ins().band(valid, lv);
+                }
+                if let CompiledExpr::Scalar2 { valid: rv, .. } = rcv {
+                    valid = b.ins().band(valid, rv);
+                }
+                return Ok(CompiledExpr::Scalar2 { value, valid });
+            }
+            let value = compile_bin(b, *op, prim, l, r)?;
+            let valid = combine_validity(b, &[lcv, rcv]);
+            Ok(scalar_result(value, valid))
+        }
+        GirOp::Cmp { op, lhs, rhs } => {
+            let lcv = compile_expr(b, lhs, env, ctx)?;
+            let rcv = compile_expr(b, rhs, env, ctx)?;
+            let (l, _) = lcv.scalar_with_validity(b)?;
+            let (r, _) = rcv.scalar_with_validity(b)?;
+            let value = compile_cmp(b, *op, prim_of(&lhs.typ), l, r);
+            let valid = combine_validity(b, &[lcv, rcv]);
+            Ok(scalar_result(value, valid))
+        }
+        GirOp::BoolBin { op, lhs, rhs } => {
+            // STRICT — both operands are compiled, so a bottom operand
+            // taints the result (uniform with every other binary op;
+            // matches the node-walk's `bool_op!` and the interp).
+            let lcv = compile_expr(b, lhs, env, ctx)?;
+            let rcv = compile_expr(b, rhs, env, ctx)?;
+            let (l, _) = lcv.scalar_with_validity(b)?;
+            let (r, _) = rcv.scalar_with_validity(b)?;
+            let value = match op {
+                BoolOp::And => b.ins().band(l, r),
+                BoolOp::Or => b.ins().bor(l, r),
+            };
+            let valid = combine_validity(b, &[lcv, rcv]);
+            Ok(scalar_result(value, valid))
+        }
+        GirOp::Not(inner) => {
+            let cv = compile_expr(b, inner, env, ctx)?;
+            let (v, _) = cv.scalar_with_validity(b)?;
+            let one = b.ins().iconst(types::I8, 1);
+            let value = b.ins().bxor(v, one);
+            let valid = combine_validity(b, &[cv]);
+            Ok(scalar_result(value, valid))
+        }
+        GirOp::Cast { inner, target } => {
+            let cv = compile_expr(b, inner, env, ctx)?;
+            let (v, _) = cv.scalar_with_validity(b)?;
+            let value = compile_cast(b, v, prim_of(&inner.typ), *target);
+            let valid = combine_validity(b, &[cv]);
+            Ok(scalar_result(value, valid))
+        }
+        GirOp::QopUnwrap { inner, success_typ } => {
+            compile_scalar_qop_unwrap(b, inner, success_typ, env, ctx)
+        }
+        GirOp::IfChain { scrut, arms } => {
+            // Scalar / composite IfChain — Value-shape IfChains go
+            // through `compile_value_expr` via `compile_expr`'s
+            // dispatch, so reaching here means the result is
+            // single-shape (scalar or composite pointer).
+            compile_ifchain(b, scrut.as_deref(), arms, &e.typ, env, ctx)
+        }
+        GirOp::Block { lets, tail } => compile_block_scalar(b, lets, tail, env, ctx),
+        other => Err(anyhow!(
+            "compile_tainted_scalar reached for non-taint op {other:?}"
+        )),
+    }
+}
+
+/// Compile a scalar / composite-pointer `GirOp::Block` (lets + tail),
+/// propagating per-value validity: if the tail is a value-bottom
+/// (`Scalar2`) the Block result is too. Value-shape Blocks route to
+/// `compile_block_value` instead (via `compile_expr`'s shape dispatch).
+fn compile_block_scalar(
+    b: &mut FunctionBuilder,
+    lets: &[crate::gir::Let],
+    tail: &GirExpr,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<CompiledExpr> {
+    let mark = env.mark();
+    for l in lets {
+        match gir::abi_kind(&l.value.typ) {
+            Some(AbiKind::Scalar(p)) => {
+                bind_scalar_let(b, env, ctx, &l.local, &l.value, p)?;
+            }
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                // Owned `*mut ValArray`. `ensure_owned_composite`
+                // clones a Borrowed source so this block exclusively
+                // owns the local — otherwise the block-exit drop below
+                // would free a buffer the enclosing scope still holds.
+                let v = compile_scalar(b, &l.value, env, ctx)?;
+                let owned = ensure_owned_composite(b, ctx, &l.value, v)?;
+                let var = b.declare_var(types::I64);
+                b.def_var(var, owned);
+                env.bind_composite(l.local.clone(), var);
+            }
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                // Value-shape block local — same `ValueVar` pair +
+                // `ensure_owned_value` discipline as GirStmt::Let.
+                let cv = compile_expr(b, &l.value, env, ctx)?;
+                let (owned_disc, owned_payload) =
+                    ensure_owned_value(b, ctx, &l.value, cv)?;
+                let disc_var = b.declare_var(types::I64);
+                let payload_var = b.declare_var(types::I64);
+                b.def_var(disc_var, owned_disc);
+                b.def_var(payload_var, owned_payload);
+                let vv = ValueVar { disc: disc_var, payload: payload_var };
+                if matches!(gir::abi_kind(&l.value.typ), Some(AbiKind::Variant)) {
+                    env.bind_variant(l.local.clone(), vv);
+                } else {
+                    env.bind_nullable(l.local.clone(), vv);
+                }
+            }
+            Some(AbiKind::Unit) => {
+                return Err(anyhow!(
+                    "GIR malformed: GirOp::Block let with Unit value"
+                ));
+            }
+            Some(AbiKind::String) => {
+                // Block-scoped String local — owned ArcStr ptr.
+                let v = compile_scalar(b, &l.value, env, ctx)?;
+                let var = b.declare_var(types::I64);
+                b.def_var(var, v);
+                env.bind_string(l.local.clone(), var);
+            }
+            Some(AbiKind::Null) | None => {
+                return Err(anyhow!(
+                    "GirOp::Block let with bare Null / non-fusable value — \
+                     should have widened to Nullable<T>"
+                ));
+            }
+        }
+    }
+    // The tail's value may alias a block-scoped composite local we're
+    // about to drop — `ensure_owned_composite` clones a Borrowed result
+    // so it outlives the block. A tainted tail surfaces its validity
+    // (the block result is then a `Scalar2`).
+    let tail_cv = compile_expr(b, tail, env, ctx)?;
+    let result = match tail_cv {
+        CompiledExpr::Single(v) => {
+            CompiledExpr::Single(ensure_owned_composite(b, ctx, tail, v)?)
+        }
+        CompiledExpr::Scalar2 { value, valid } => {
+            // A tainted tail is always a scalar (taint only rides
+            // scalars), so `ensure_owned_composite` is a pass-through.
+            let value = ensure_owned_composite(b, ctx, tail, value)?;
+            CompiledExpr::Scalar2 { value, valid }
+        }
+        CompiledExpr::Value { .. } => {
+            return Err(anyhow!(
+                "compile_block_scalar: Value-shape tail — should route to \
+                 compile_block_value"
+            ));
+        }
+    };
+    // Drop the composite/variant/nullable/string locals introduced by
+    // THIS block (owned pointers — they'd otherwise leak per iteration
+    // in a loop body). Scalars need no drop. The pending path is
+    // mutually exclusive (its `pre_pending` runs `emit_pending_cleanup`).
+    let arr_drop = ctx
+        .helper_refs
+        .get("graphix_valarray_drop")
+        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+    let val_drop = ctx
+        .helper_refs
+        .get("graphix_value_drop")
+        .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+    let str_drop = ctx
+        .helper_refs
+        .get("graphix_arcstr_drop")
+        .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
+    for (_, var) in &env.composites[mark.composites..] {
+        let ptr = b.use_var(*var);
+        b.ins().call(arr_drop, &[ptr]);
+    }
+    for (_, vv) in &env.variants[mark.variants..] {
+        let disc = b.use_var(vv.disc);
+        let payload = b.use_var(vv.payload);
+        b.ins().call(val_drop, &[disc, payload]);
+    }
+    for (_, vv) in &env.nullables[mark.nullables..] {
+        let disc = b.use_var(vv.disc);
+        let payload = b.use_var(vv.payload);
+        b.ins().call(val_drop, &[disc, payload]);
+    }
+    for (_, var) in &env.strings[mark.strings..] {
+        let ptr = b.use_var(*var);
+        b.ins().call(str_drop, &[ptr]);
+    }
+    env.truncate(mark);
+    Ok(result)
+}
+
+/// Compile a scalar-success `?` (`GirOp::QopUnwrap`). The inner is a
+/// Nullable `(disc, payload)`; `disc == Typ::Error` (`0x2000_0000`)
+/// means bottom. For a PRIM success type, this is BRANCHLESS: the
+/// payload bits are cast to the prim and the result is
+/// `Scalar2 { value, valid: !is_err }` — a `?` whose error the OUTPUT
+/// never consumes (un-taken arm, dead let) no longer aborts; the abort
+/// moves to the boundary, exactly like div/mod.
+///
+/// String / composite success types KEEP the branch-to-`pending_exit`
+/// abort: on the error branch the payload is the error's `Arc<Value>`,
+/// NOT an ArcStr/ValArray, so a branchless "extract the success" would
+/// type-confuse the eventual ownership/drop. They return `Single`
+/// (no per-value validity for those shapes in this phase).
+fn compile_scalar_qop_unwrap(
+    b: &mut FunctionBuilder,
+    inner: &GirExpr,
+    success_typ: &Type,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<CompiledExpr> {
+    use cranelift_codegen::ir::condcodes::IntCC;
+    let cv = compile_expr(b, inner, env, ctx)?;
+    let (disc, payload) = match cv {
+        CompiledExpr::Value { disc, payload } => (disc, payload),
+        _ => {
+            return Err(anyhow!(
+                "GirOp::QopUnwrap: inner not Value-shape — emit_expr should \
+                 only emit on Nullable inner"
+            ))
+        }
+    };
+    let is_err = b.ins().icmp_imm(IntCC::Equal, disc, 0x2000_0000_i64);
+
+    match gir::abi_kind(success_typ) {
+        // Prim success — BRANCHLESS per-value validity. The payload
+        // word holds the success bits when !is_err; on the error path
+        // the bits are garbage but `valid=0` means they're never used.
+        // The error Value isn't dropped here: a `Value::Error` carries
+        // an `Arc<Value>` payload, but a scalar `Nullable` inner is a
+        // by-value scalar (no heap), so nothing leaks. (A Local-read
+        // Borrowed inner is owned by its env slot and dropped at scope
+        // exit either way.)
+        Some(AbiKind::Scalar(p)) => {
+            let value = cast_u64_to_prim(b, payload, p);
+            let one = b.ins().iconst(types::I8, 1);
+            let valid = b.ins().bxor(is_err, one); // !is_err
+            Ok(CompiledExpr::Scalar2 { value, valid })
+        }
+        // String / composite success — keep the branch-abort path.
+        Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let pending_set = ctx
+                .helper_refs
+                .get("graphix_dyncall_set_pending")
+                .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+            let value_drop = ctx
+                .helper_refs
+                .get("graphix_value_drop")
+                .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+            let inner_owned =
+                classify_composite_source(inner) == CompositeSource::Owned;
+            let pre_pending = b.create_block();
+            let continue_block = b.create_block();
+            let pending_exit = {
+                let mut slot = ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
+            b.switch_to_block(pre_pending);
+            b.seal_block(pre_pending);
+            // Drop the owned error Value only when `inner` is an owned
+            // producer (a Borrowed Local is owned by its env slot, which
+            // `emit_pending_cleanup` drops — dropping here too would
+            // double-free).
+            if inner_owned {
+                b.ins().call(value_drop, &[disc, payload]);
+            }
+            b.ins().call(pending_set, &[]);
+            emit_pending_cleanup(b, env, ctx)?;
+            b.ins().jump(pending_exit, &[]);
+            b.switch_to_block(continue_block);
+            b.seal_block(continue_block);
+            // Extract success T (now known non-error). QopUnwrap is
+            // classified Owned, so a String/composite success from a
+            // Borrowed (Local) inner must be cloned.
+            let v = match gir::abi_kind(success_typ) {
+                Some(AbiKind::String) => {
+                    if inner_owned {
+                        payload
+                    } else {
+                        let clone = ctx
+                            .helper_refs
+                            .get("graphix_arcstr_clone")
+                            .ok_or_else(|| anyhow!("missing graphix_arcstr_clone"))?;
+                        let call = b.ins().call(clone, &[payload]);
+                        b.inst_results(call)[0]
+                    }
+                }
+                _ => {
+                    if inner_owned {
+                        payload
+                    } else {
+                        let clone = ctx
+                            .helper_refs
+                            .get("graphix_valarray_clone")
+                            .ok_or_else(|| {
+                                anyhow!("missing graphix_valarray_clone")
+                            })?;
+                        let call = b.ins().call(clone, &[payload]);
+                        b.inst_results(call)[0]
+                    }
+                }
+            };
+            Ok(CompiledExpr::Single(v))
+        }
+        // Value-shape success types belong in `compile_value_expr`.
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => Err(anyhow!(
+            "QopUnwrap with Value-shape success_typ reached the scalar path \
+             — compile_expr should route to compile_value_expr"
+        )),
+        Some(AbiKind::Unit | AbiKind::Null) | None => Err(anyhow!(
+            "QopUnwrap with unsupported success_typ {:?}",
+            success_typ
+        )),
+    }
 }
 
 /// Wrapper for sites that only handle scalar/pointer-shaped exprs.
@@ -2816,7 +3578,7 @@ fn compile_scalar(
 fn marshal_dyncall_args(
     b: &mut FunctionBuilder,
     args: &[GirExpr],
-    arg_types: &[GirType],
+    arg_types: &[Type],
     env: &mut JitEnv,
     ctx: &LowerCtx,
 ) -> Result<ClifValue> {
@@ -2838,9 +3600,9 @@ fn marshal_dyncall_args(
         // bound to a local) transfers ownership into the buf. Using the
         // borrowed helper on an Owned source leaks the original; the
         // move helper on a Borrowed source double-frees it.
-        let helper_name: &str = match t {
-            GirType::Prim(p) => value_buf_push_helper(*p)?,
-            GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+        let helper_name: &str = match gir::abi_kind(t) {
+            Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 match classify_composite_source(a) {
                     CompositeSource::Owned => "graphix_value_buf_push_array",
                     CompositeSource::Borrowed => {
@@ -2848,26 +3610,25 @@ fn marshal_dyncall_args(
                     }
                 }
             }
-            // Variant / Nullable / datetime / duration / bytes all ride
-            // the two-word `(disc, payload)` Value wire shape.
-            GirType::Variant(_)
-            | GirType::Nullable(_)
-            | GirType::DateTime
-            | GirType::Duration
-            | GirType::Bytes | GirType::Map | GirType::Error => match classify_composite_source(a) {
-                CompositeSource::Owned => "graphix_value_buf_push_value",
-                CompositeSource::Borrowed => {
-                    "graphix_value_buf_push_value_borrowed"
+            // Variant / Nullable / datetime / duration / bytes / map /
+            // error all ride the two-word `(disc, payload)` Value wire
+            // shape.
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                match classify_composite_source(a) {
+                    CompositeSource::Owned => "graphix_value_buf_push_value",
+                    CompositeSource::Borrowed => {
+                        "graphix_value_buf_push_value_borrowed"
+                    }
                 }
-            },
-            GirType::String => "graphix_value_buf_push_string",
-            GirType::Unit => {
+            }
+            Some(AbiKind::String) => "graphix_value_buf_push_string",
+            Some(AbiKind::Unit) => {
                 return Err(anyhow!("GIR malformed: DynCall arg has Unit type"));
             }
-            GirType::Null => {
+            Some(AbiKind::Null) | None => {
                 return Err(anyhow!(
-                    "DynCall arg with bare Null type — should have widened \
-                     to Nullable<T> at construction"
+                    "DynCall arg with bare Null / non-fusable type — should \
+                     have widened to Nullable<T> at construction"
                 ));
             }
         };
@@ -2875,7 +3636,7 @@ fn marshal_dyncall_args(
             .helper_refs
             .get(helper_name)
             .ok_or_else(|| anyhow!("missing push helper `{helper_name}`"))?;
-        if t.is_value_shape() {
+        if gir::is_value_shape(t) {
             let (disc, payload) = compile_value_expr(b, a, env, ctx)?.value()?;
             b.ins().call(push, &[buf, disc, payload]);
         } else {
@@ -2905,10 +3666,12 @@ fn compile_value_expr(
             let payload = b.ins().iconst(types::I64, 0);
             Ok(CompiledExpr::Value { disc, payload })
         }
-        // datetime/duration literal: bake a stable `*const Value` from
-        // the kernel's value-constants table and clone it (bumps the
-        // inner Arc) → an owned `(disc, payload)` Value.
-        GirOp::ConstValue(v) => {
+        // Value-shape constant (datetime/duration/bytes/map literal):
+        // bake a stable `*const Value` from the kernel's value-constants
+        // table and clone it (bumps the inner Arc) → an owned
+        // `(disc, payload)` Value. (Scalar `Const`s route through
+        // `compile_scalar_impl` via `gir::is_value_shape(&e.typ)`.)
+        GirOp::Const(v) => {
             let ptr = ctx.values.get(v) as i64;
             let ptr_val = b.ins().iconst(types::I64, ptr);
             let clone = ctx
@@ -2949,7 +3712,7 @@ fn compile_value_expr(
             // env still owns the ref; consumers either drop their own
             // clone (via `ensure_owned_value`) or call borrow-mode
             // helpers that `mem::forget` the input.
-            let vv = if matches!(e.typ, GirType::Variant(_)) {
+            let vv = if matches!(gir::abi_kind(&e.typ), Some(AbiKind::Variant)) {
                 env.lookup_variant(name).ok_or_else(|| {
                     anyhow!("GIR malformed: undefined variant local `{name}`")
                 })?
@@ -2963,7 +3726,14 @@ fn compile_value_expr(
                 payload: b.use_var(vv.payload),
             })
         }
-        GirOp::IfChain { arms } => compile_ifchain(b, arms, &e.typ, env, ctx),
+        // Value-shape IfChain. `scrut` is passed through to
+        // `compile_ifchain`, which AND's a bottom scrutinee's validity
+        // into the result for the scalar path; the value-shape merge
+        // carries bottom in-band via the existing pending machinery, so
+        // the scrut gate is a no-op for it today.
+        GirOp::IfChain { scrut, arms } => {
+            compile_ifchain(b, scrut.as_deref(), arms, &e.typ, env, ctx)
+        }
         GirOp::VariantNew { tag, payloads, payload_types } => {
             // Nullary variant → Value::String(tag): route through
             //   `graphix_value_new_string_from_arcstr`, which clones
@@ -3061,7 +3831,7 @@ fn compile_value_expr(
             // ret_kind=2 boxes any `Value` into two words, so every
             // value-shape return (Variant/Nullable/DateTime/Duration/
             // Bytes/Map) routes here, not just Variant/Nullable.
-            debug_assert!(return_type.is_value_shape());
+            debug_assert!(gir::is_value_shape(&return_type));
             let fn_idx_val =
                 b.ins().iconst(types::I32, *fn_index as i64);
             let ret_kind_val = b.ins().iconst(types::I8, ret_kind);
@@ -3121,16 +3891,11 @@ fn compile_value_expr(
             // the original's drop).
             let mark = env.mark();
             for l in lets {
-                match &l.value.typ {
-                    GirType::Prim(p) => {
-                        let v = compile_scalar(b, &l.value, env, ctx)?;
-                        let var = b.declare_var(prim_to_clif(*p));
-                        b.def_var(var, v);
-                        env.bind(l.local.clone(), var, *p);
+                match gir::abi_kind(&l.value.typ) {
+                    Some(AbiKind::Scalar(p)) => {
+                        bind_scalar_let(b, env, ctx, &l.local, &l.value, p)?;
                     }
-                    GirType::Array(_)
-                    | GirType::Tuple(_)
-                    | GirType::Struct(_) => {
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                         let v = compile_scalar(b, &l.value, env, ctx)?;
                         let owned =
                             ensure_owned_composite(b, ctx, &l.value, v)?;
@@ -3138,11 +3903,9 @@ fn compile_value_expr(
                         b.def_var(var, owned);
                         env.bind_composite(l.local.clone(), var);
                     }
-                    GirType::Variant(_)
-                    | GirType::Nullable(_)
-                    | GirType::DateTime
-                    | GirType::Duration
-                    | GirType::Bytes | GirType::Map | GirType::Error => {
+                    Some(
+                        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value,
+                    ) => {
                         let cv = compile_expr(b, &l.value, env, ctx)?;
                         let (owned_disc, owned_payload) =
                             ensure_owned_value(b, ctx, &l.value, cv)?;
@@ -3152,14 +3915,15 @@ fn compile_value_expr(
                         b.def_var(payload_var, owned_payload);
                         let vv =
                             ValueVar { disc: disc_var, payload: payload_var };
-                        if matches!(l.value.typ, GirType::Variant(_)) {
+                        if matches!(gir::abi_kind(&l.value.typ), Some(AbiKind::Variant)) {
                             env.bind_variant(l.local.clone(), vv);
                         } else {
-                            // datetime/duration share the nullables slot.
+                            // datetime/duration/bytes/map/error share the
+                            // nullables slot.
                             env.bind_nullable(l.local.clone(), vv);
                         }
                     }
-                    GirType::Unit => {
+                    Some(AbiKind::Unit) => {
                         return Err(anyhow!(
                             "GIR malformed: Block let with Unit value"
                         ));
@@ -3173,16 +3937,16 @@ fn compile_value_expr(
                     // kept any kernel with a string `let` (e.g. a
                     // `|(k, v)|` destructure over `Array<(string, _)>`)
                     // off the JIT.
-                    GirType::String => {
+                    Some(AbiKind::String) => {
                         let v = compile_scalar(b, &l.value, env, ctx)?;
                         let var = b.declare_var(types::I64);
                         b.def_var(var, v);
                         env.bind_string(l.local.clone(), var);
                     }
-                    GirType::Null => {
+                    Some(AbiKind::Null) | None => {
                         return Err(anyhow!(
-                            "Block let with bare Null value — should \
-                             have widened to Nullable<T>"
+                            "Block let with bare Null / non-fusable value — \
+                             should have widened to Nullable<T>"
                         ));
                     }
                 }
@@ -3386,7 +4150,7 @@ fn compile_value_expr(
             // scalar/string/composite success cases live in the
             // `compile_scalar_impl` arm.
             debug_assert!(
-                success_typ.is_value_shape(),
+                gir::is_value_shape(&success_typ),
                 "QopUnwrap in compile_value_expr with non-value-shape \
                  success_typ {success_typ:?}"
             );
@@ -3489,7 +4253,7 @@ fn compile_value_expr(
             // owned element is consumed (wrapped into a Value) on the found
             // edge and dropped on the advance edge (matched-once / not-this-
             // iteration), like `ArrayFilter`'s conditional consume.
-            let (elem_var, elem_prim) = match elem.as_prim() {
+            let (elem_var, elem_prim) = match gir::scalar_prim(&elem) {
                 Some(prim) => {
                     let get_helper = ctx
                         .helper_refs
@@ -3614,7 +4378,7 @@ fn compile_value_expr(
             b.switch_to_block(loop_body);
             let i_now = b.use_var(i_var);
             let mark = env.mark();
-            let composite_elem = match in_elem.as_prim() {
+            let composite_elem = match gir::scalar_prim(&in_elem) {
                 Some(prim) => {
                     let get_helper = ctx
                         .helper_refs
@@ -3714,11 +4478,19 @@ fn compile_scalar_impl(
     ctx: &LowerCtx,
 ) -> Result<ClifValue> {
     match &e.op {
-        GirOp::Const(c) => Ok(compile_const(b, *c)),
+        // A scalar `Const` — the prim comes from the expression's `typ`
+        // (a value-shape `Const` would have routed to
+        // `compile_value_expr` via `gir::is_value_shape(&e.typ)`).
+        GirOp::Const(c) => {
+            let prim = gir::scalar_prim(&e.typ).ok_or_else(|| {
+                anyhow!("compile_scalar_impl: Const with non-prim typ {:?}", e.typ)
+            })?;
+            Ok(compile_const(b, c, prim))
+        }
         // Value-shape ops belong in `compile_value_expr`; reaching the
         // scalar path means routing drifted (or the kernel can't JIT,
         // which `compile_value_expr` reports as Err → interp fallback).
-        GirOp::ConstValue(_) | GirOp::ValueArith { .. } => Err(anyhow!(
+        GirOp::ValueArith { .. } => Err(anyhow!(
             "compile_scalar_impl reached for Value-shape datetime/duration \
              op — should route to compile_value_expr (interp fallback)"
         )),
@@ -3781,151 +4553,36 @@ fn compile_scalar_impl(
             let (disc, _payload) = compile_expr(b, inner, env, ctx)?.value()?;
             Ok(b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL))
         }
-        GirOp::QopUnwrap { inner, success_typ } => {
-            // Compile inner — must be Nullable, so the result is a
-            // Value-shape `(disc, payload)` pair. Compare disc
-            // against `Typ::Error` (0x2000_0000); if equal, signal
-            // pending and jump to `pending_exit`. Else extract
-            // success T from the payload according to `success_typ`.
-            //
-            // For composite/Value-shape success types route to a
-            // dedicated arm in `compile_value_expr` — this arm
-            // handles only the scalar-shaped success cases (Prim,
-            // String, composite-pointer).
-            let cv = compile_expr(b, inner, env, ctx)?;
-            let (disc, payload) = match cv {
-                CompiledExpr::Value { disc, payload } => (disc, payload),
-                CompiledExpr::Single(_) => {
-                    return Err(anyhow!(
-                        "GirOp::QopUnwrap: inner not Value-shape — \
-                         emit_expr should only emit on Nullable inner"
-                    ))
-                }
-            };
-            // Error-disc check + pending-branch. Mirrors the existing
-            // composite-DynCall pending-branch pattern: a side block
-            // that runs `emit_pending_cleanup` + jumps to
-            // `pending_exit` once we set the flag.
-            let is_err = b.ins().icmp_imm(
-                cranelift_codegen::ir::condcodes::IntCC::Equal,
-                disc,
-                0x2000_0000_i64, // Typ::Error discriminant
-            );
-            let pending_set = ctx
-                .helper_refs
-                .get("graphix_dyncall_set_pending")
-                .ok_or_else(|| {
-                    anyhow!("missing graphix_dyncall_set_pending")
-                })?;
-            let value_drop = ctx
-                .helper_refs
-                .get("graphix_value_drop")
-                .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-            let inner_owned =
-                classify_composite_source(inner) == CompositeSource::Owned;
-            let pre_pending = b.create_block();
-            let continue_block = b.create_block();
-            let pending_exit = {
-                let mut slot = ctx.pending_exit.borrow_mut();
-                match *slot {
-                    Some(blk) => blk,
-                    None => {
-                        let blk = b.create_block();
-                        *slot = Some(blk);
-                        blk
-                    }
-                }
-            };
-            b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
-
-            b.switch_to_block(pre_pending);
-            b.seal_block(pre_pending);
-            // Drop the owned error Value before aborting — only when
-            // `inner` is an owned producer (a Borrowed Local inner is
-            // owned by its env slot, which `emit_pending_cleanup` drops;
-            // dropping it here too would double-free).
-            if inner_owned {
-                b.ins().call(value_drop, &[disc, payload]);
-            }
-            b.ins().call(pending_set, &[]);
-            emit_pending_cleanup(b, env, ctx)?;
-            b.ins().jump(pending_exit, &[]);
-
-            b.switch_to_block(continue_block);
-            b.seal_block(continue_block);
-            // Extract success T from the (now-known-non-error) Value's
-            // payload. For Prim, the payload word holds the bits cast
-            // through `cast_u64_to_prim`. For String, the payload IS
-            // the ArcStr's thin pointer bits. For composite shapes,
-            // the payload is the `*mut ValArray`. QopUnwrap is classified
-            // Owned, so a String/composite success from a Borrowed (Local)
-            // inner must be cloned — otherwise the consumer and the env
-            // slot both drop the same allocation (double-free).
-            match success_typ {
-                GirType::Prim(p) => Ok(cast_u64_to_prim(b, payload, *p)),
-                GirType::String => {
-                    if inner_owned {
-                        Ok(payload)
-                    } else {
-                        let clone = ctx
-                            .helper_refs
-                            .get("graphix_arcstr_clone")
-                            .ok_or_else(|| {
-                                anyhow!("missing graphix_arcstr_clone")
-                            })?;
-                        let call = b.ins().call(clone, &[payload]);
-                        Ok(b.inst_results(call)[0])
-                    }
-                }
-                GirType::Array(_)
-                | GirType::Tuple(_)
-                | GirType::Struct(_) => {
-                    if inner_owned {
-                        Ok(payload)
-                    } else {
-                        let clone = ctx
-                            .helper_refs
-                            .get("graphix_valarray_clone")
-                            .ok_or_else(|| {
-                                anyhow!("missing graphix_valarray_clone")
-                            })?;
-                        let call = b.ins().call(clone, &[payload]);
-                        Ok(b.inst_results(call)[0])
-                    }
-                }
-                // Value-shape success types belong in
-                // `compile_value_expr`; routing got here in error.
-                GirType::Variant(_)
-                | GirType::Nullable(_)
-                | GirType::DateTime
-                | GirType::Duration
-                | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
-                    "QopUnwrap with Value-shape success_typ reached \
-                     compile_scalar_impl — compile_expr should route \
-                     to compile_value_expr"
-                )),
-                GirType::Unit | GirType::Null => Err(anyhow!(
-                    "QopUnwrap with unsupported success_typ {:?}",
-                    success_typ
-                )),
-            }
-        }
+        GirOp::QopUnwrap { .. } => Err(anyhow!(
+            "GirOp::QopUnwrap reached compile_scalar_impl — `compile_expr` \
+             routes it through `compile_tainted_scalar`"
+        )),
         GirOp::Local(name) => {
             // Dispatch on the expression's GirType: scalar locals
             // sit in `env.locals`, composite locals (array/tuple/
             // struct pointers) in `env.composites`. The CLIF type
             // returned matches — scalars get their prim type,
             // composites get I64 (the pointer).
-            match &e.typ {
-                GirType::Prim(_) => {
-                    let (var, _) = env.lookup(name).ok_or_else(|| {
+            match gir::abi_kind(&e.typ) {
+                // Scalar Locals are intercepted in `compile_expr` (so a
+                // tainted local surfaces its validity as `Scalar2`); a
+                // non-tainted local reaching here is fine, a tainted one
+                // would lose its validity bit — error so it bails to
+                // interp rather than silently dropping a bottom.
+                Some(AbiKind::Scalar(_)) => {
+                    let (var, valid, _) = env.lookup(name).ok_or_else(|| {
                         anyhow!("GIR malformed: undefined scalar local `{name}`")
                     })?;
+                    if valid.is_some() {
+                        return Err(anyhow!(
+                            "compile_scalar_impl reached for tainted scalar \
+                             local `{name}` — `compile_expr` should surface \
+                             its validity"
+                        ));
+                    }
                     Ok(b.use_var(var))
                 }
-                GirType::Array(_)
-                | GirType::Tuple(_)
-                | GirType::Struct(_) => {
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     let var = env.lookup_composite(name).ok_or_else(|| {
                         anyhow!(
                             "GIR malformed: undefined composite local `{name}`"
@@ -3933,22 +4590,20 @@ fn compile_scalar_impl(
                     })?;
                     Ok(b.use_var(var))
                 }
-                // Variant / Nullable Locals are Value-shape and
-                // belong in `compile_value_expr`, not here.
+                // Variant / Nullable / value-shape Locals are Value-shape
+                // and belong in `compile_value_expr`, not here.
                 // `compile_expr` dispatches on the expression's typ
                 // before calling `compile_scalar_impl`, so this arm
                 // is unreachable in well-formed routing — but we
                 // surface the error in case routing drifts.
-                GirType::Variant(_)
-                | GirType::Nullable(_)
-                | GirType::DateTime
-                | GirType::Duration
-                | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
-                    "compile_scalar_impl reached for Value-shape Local \
-                     `{name}` — `compile_expr` should have routed to \
-                     `compile_value_expr`"
-                )),
-                GirType::Unit => Err(anyhow!(
+                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                    Err(anyhow!(
+                        "compile_scalar_impl reached for Value-shape Local \
+                         `{name}` — `compile_expr` should have routed to \
+                         `compile_value_expr`"
+                    ))
+                }
+                Some(AbiKind::Unit) => Err(anyhow!(
                     "GIR malformed: Local `{name}` has Unit type"
                 )),
                 // String Local: read the slot's bits (an `ArcStr`
@@ -3957,7 +4612,7 @@ fn compile_scalar_impl(
                 // returns a fresh clone). The slot's variable still
                 // logically holds the original ref; the clone is
                 // owned by this expression's caller.
-                GirType::String => {
+                Some(AbiKind::String) => {
                     let var = env.lookup_string(name).ok_or_else(|| {
                         anyhow!(
                             "GIR malformed: undefined string local `{name}`"
@@ -3973,77 +4628,19 @@ fn compile_scalar_impl(
                     let call = b.ins().call(clone, &[s]);
                     Ok(b.inst_results(call)[0])
                 }
-                // Bare `GirType::Null` locals don't exist; the only
-                // `Null`-typed expression is the inline `ConstNull`
-                // literal, which fusion always widens to `Nullable<T>`
-                // before binding.
-                GirType::Null => Err(anyhow!(
-                    "Local `{name}` has bare Null type — should have \
-                     widened to Nullable<T> at construction"
+                // Bare `Null` locals don't exist; the only `Null`-typed
+                // expression is the inline `ConstNull` literal, which
+                // fusion always widens to `Nullable<T>` before binding.
+                Some(AbiKind::Null) | None => Err(anyhow!(
+                    "Local `{name}` has bare Null / non-fusable type — \
+                     should have widened to Nullable<T> at construction"
                 )),
             }
         }
-        GirOp::Bin { op, lhs, rhs } => {
-            let l = compile_scalar(b, lhs, env, ctx)?;
-            let r = compile_scalar(b, rhs, env, ctx)?;
-            let prim = prim_of(&lhs.typ);
-            // Integer div/rem: a zero divisor (or signed MIN/-1 overflow)
-            // makes raw cranelift sdiv/udiv/srem/urem TRAP (#DE → SIGFPE,
-            // crashing the whole process). The node-walk turns these into
-            // an arith error and drops to bottom, so guard them and route
-            // to `pending_exit` (kernel returns None = bottom) — matching
-            // the node-walk and the interp's checked_div path. (#176
-            // cluster A; the integer sibling of the #175 float-% trap.)
-            if matches!(op, BinOp::Div | BinOp::Mod) && prim.is_integer() {
-                use cranelift_codegen::ir::condcodes::IntCC;
-                let is_zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
-                let bad = if prim.is_signed() {
-                    let min: i64 = match prim {
-                        PrimType::I8 => i8::MIN as i64,
-                        PrimType::I16 => i16::MIN as i64,
-                        PrimType::I32 => i32::MIN as i64,
-                        _ => i64::MIN,
-                    };
-                    let is_min = b.ins().icmp_imm(IntCC::Equal, l, min);
-                    let is_neg1 = b.ins().icmp_imm(IntCC::Equal, r, -1);
-                    let overflow = b.ins().band(is_min, is_neg1);
-                    b.ins().bor(is_zero, overflow)
-                } else {
-                    is_zero
-                };
-                let pending_set = ctx
-                    .helper_refs
-                    .get("graphix_dyncall_set_pending")
-                    .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
-                let pre_pending = b.create_block();
-                let continue_block = b.create_block();
-                let pending_exit = {
-                    let mut slot = ctx.pending_exit.borrow_mut();
-                    match *slot {
-                        Some(blk) => blk,
-                        None => {
-                            let blk = b.create_block();
-                            *slot = Some(blk);
-                            blk
-                        }
-                    }
-                };
-                b.ins().brif(bad, pre_pending, &[], continue_block, &[]);
-                b.switch_to_block(pre_pending);
-                b.seal_block(pre_pending);
-                b.ins().call(pending_set, &[]);
-                emit_pending_cleanup(b, env, ctx)?;
-                b.ins().jump(pending_exit, &[]);
-                b.switch_to_block(continue_block);
-                b.seal_block(continue_block);
-            }
-            compile_bin(b, *op, prim, l, r)
-        }
-        GirOp::Cmp { op, lhs, rhs } => {
-            let l = compile_scalar(b, lhs, env, ctx)?;
-            let r = compile_scalar(b, rhs, env, ctx)?;
-            Ok(compile_cmp(b, *op, prim_of(&lhs.typ), l, r))
-        }
+        GirOp::Bin { .. } | GirOp::Cmp { .. } => Err(anyhow!(
+            "GirOp::Bin / Cmp reached compile_scalar_impl — `compile_expr` \
+             routes them through `compile_tainted_scalar`"
+        )),
         GirOp::ValueEq { ne, lhs, rhs } => {
             // Value-shape `==`/`!=`: compile both operands to OWNED
             // `(disc, payload)` pairs (the helper consumes them) and
@@ -4063,30 +4660,11 @@ fn compile_scalar_impl(
                 eq
             })
         }
-        GirOp::BoolBin { op, lhs, rhs } => {
-            // We use eager (non-short-circuit) evaluation here for
-            // simplicity — GIR only ever emits BoolBin over pure
-            // expressions, so eager eval has no observable effect.
-            // The interpreter does short-circuit; the AOT-emitted
-            // Rust `&&`/`||` short-circuit. No correctness diff for
-            // pure code; if we ever fuse expressions with side-effects
-            // we'll need to revisit.
-            let l = compile_scalar(b, lhs, env, ctx)?;
-            let r = compile_scalar(b, rhs, env, ctx)?;
-            Ok(match op {
-                BoolOp::And => b.ins().band(l, r),
-                BoolOp::Or => b.ins().bor(l, r),
-            })
-        }
-        GirOp::Not(inner) => {
-            let v = compile_scalar(b, inner, env, ctx)?;
-            // Bool is I8 in CLIF; XOR with 1 flips the low bit.
-            let one = b.ins().iconst(types::I8, 1);
-            Ok(b.ins().bxor(v, one))
-        }
-        GirOp::Cast { inner, target } => {
-            let v = compile_scalar(b, inner, env, ctx)?;
-            Ok(compile_cast(b, v, prim_of(&inner.typ), *target))
+        GirOp::BoolBin { .. } | GirOp::Not(_) | GirOp::Cast { .. } => {
+            Err(anyhow!(
+                "GirOp::BoolBin / Not / Cast reached compile_scalar_impl — \
+                 `compile_expr` routes them through `compile_tainted_scalar`"
+            ))
         }
         GirOp::Call { fn_name, args } => {
             // Cross-kernel call returning a scalar or composite pointer
@@ -4122,134 +4700,16 @@ fn compile_scalar_impl(
             emit_call_arg_drops(b, ctx, &drops)?;
             Ok(result)
         }
-        GirOp::Block { lets, tail } => {
-            let mark = env.mark();
-            for l in lets {
-                match &l.value.typ {
-                    GirType::Prim(p) => {
-                        let v = compile_scalar(b, &l.value, env, ctx)?;
-                        let var = b.declare_var(prim_to_clif(*p));
-                        b.def_var(var, v);
-                        env.bind(l.local.clone(), var, *p);
-                    }
-                    GirType::Array(_)
-                    | GirType::Tuple(_)
-                    | GirType::Struct(_) => {
-                        // Owned `*mut ValArray`. `ensure_owned_composite`
-                        // clones a Borrowed source so this block
-                        // exclusively owns the local — otherwise the
-                        // block-exit drop below would free a buffer the
-                        // enclosing scope still holds.
-                        let v = compile_scalar(b, &l.value, env, ctx)?;
-                        let owned = ensure_owned_composite(
-                            b, ctx, &l.value, v,
-                        )?;
-                        let var = b.declare_var(types::I64);
-                        b.def_var(var, owned);
-                        env.bind_composite(l.local.clone(), var);
-                    }
-                    GirType::Variant(_)
-                    | GirType::Nullable(_)
-                    | GirType::DateTime
-                    | GirType::Duration
-                    | GirType::Bytes | GirType::Map | GirType::Error => {
-                        // Value-shape block local — same `ValueVar`
-                        // pair + `ensure_owned_value` discipline as
-                        // GirStmt::Let. Block-scope drop happens at
-                        // exit (via `env.truncate` + the per-list
-                        // `val_drop` calls below).
-                        let cv = compile_expr(b, &l.value, env, ctx)?;
-                        let (owned_disc, owned_payload) =
-                            ensure_owned_value(b, ctx, &l.value, cv)?;
-                        let disc_var = b.declare_var(types::I64);
-                        let payload_var = b.declare_var(types::I64);
-                        b.def_var(disc_var, owned_disc);
-                        b.def_var(payload_var, owned_payload);
-                        let vv =
-                            ValueVar { disc: disc_var, payload: payload_var };
-                        if matches!(l.value.typ, GirType::Variant(_)) {
-                            env.bind_variant(l.local.clone(), vv);
-                        } else {
-                            env.bind_nullable(l.local.clone(), vv);
-                        }
-                    }
-                    GirType::Unit => {
-                        return Err(anyhow!(
-                            "GIR malformed: GirOp::Block let with Unit value"
-                        ));
-                    }
-                    GirType::String => {
-                        // Block-scoped String local: same ownership
-                        // discipline as `GirStmt::Let`'s String arm
-                        // (producers / Local-reads both return
-                        // owned ArcStr ptrs). Dropped at block exit
-                        // alongside variants/nullables/composites.
-                        let v = compile_scalar(b, &l.value, env, ctx)?;
-                        let var = b.declare_var(types::I64);
-                        b.def_var(var, v);
-                        env.bind_string(l.local.clone(), var);
-                    }
-                    GirType::Null => {
-                        return Err(anyhow!(
-                            "GirOp::Block let with bare Null value — \
-                             should have widened to Nullable<T>"
-                        ));
-                    }
-                }
-            }
-            // The tail's value may alias a block-scoped composite
-            // local we're about to drop (e.g. `tail = Local(block_let)`)
-            // — `ensure_owned_composite` clones a Borrowed result so
-            // the value handed back outlives the block.
-            let result = compile_scalar(b, tail, env, ctx)?;
-            let result = ensure_owned_composite(b, ctx, tail, result)?;
-            // Drop the composite/variant locals introduced by THIS
-            // block (owned pointers — they'd otherwise leak, once per
-            // iteration if the block sits in a loop body). Scalars
-            // need no drop. The pending path (a DynCall inside the
-            // block) is mutually exclusive: its `pre_pending` block
-            // runs `emit_pending_cleanup`, which drops every
-            // `env.composites`/`env.variants` entry — these included.
-            let arr_drop =
-                ctx.helper_refs.get("graphix_valarray_drop").ok_or_else(
-                    || anyhow!("missing graphix_valarray_drop"),
-                )?;
-            let val_drop =
-                ctx.helper_refs.get("graphix_value_drop").ok_or_else(
-                    || anyhow!("missing graphix_value_drop"),
-                )?;
-            let str_drop =
-                ctx.helper_refs.get("graphix_arcstr_drop").ok_or_else(
-                    || anyhow!("missing graphix_arcstr_drop"),
-                )?;
-            for (_, var) in &env.composites[mark.composites..] {
-                let ptr = b.use_var(*var);
-                b.ins().call(arr_drop, &[ptr]);
-            }
-            for (_, vv) in &env.variants[mark.variants..] {
-                let disc = b.use_var(vv.disc);
-                let payload = b.use_var(vv.payload);
-                b.ins().call(val_drop, &[disc, payload]);
-            }
-            for (_, vv) in &env.nullables[mark.nullables..] {
-                let disc = b.use_var(vv.disc);
-                let payload = b.use_var(vv.payload);
-                b.ins().call(val_drop, &[disc, payload]);
-            }
-            for (_, var) in &env.strings[mark.strings..] {
-                let ptr = b.use_var(*var);
-                b.ins().call(str_drop, &[ptr]);
-            }
-            env.truncate(mark);
-            Ok(result)
-        }
-        GirOp::IfChain { arms } => {
-            // Scalar / composite IfChain — Value-shape IfChains go
-            // through `compile_value_expr` via `compile_expr`'s
-            // dispatch, so reaching here means the result is single-
-            // shape.
-            compile_ifchain(b, arms, &e.typ, env, ctx)?.single()
-        }
+        GirOp::Block { .. } => Err(anyhow!(
+            "GirOp::Block reached compile_scalar_impl — `compile_expr` routes \
+             scalar Blocks through `compile_tainted_scalar` (and Value-shape \
+             ones through `compile_value_expr`)"
+        )),
+        GirOp::IfChain { .. } => Err(anyhow!(
+            "GirOp::IfChain reached compile_scalar_impl — `compile_expr` \
+             routes scalar IfChains through `compile_tainted_scalar` (and \
+             Value-shape ones through `compile_value_expr`)"
+        )),
         GirOp::DynCall { fn_index, args, arg_types, return_type } => {
             // Marshal args into an `LPooled<Vec<Value>>` (per-shape
             // dispatch lives in `marshal_dyncall_args`), then call
@@ -4263,31 +4723,28 @@ fn compile_scalar_impl(
                 .get("graphix_dyncall")
                 .ok_or_else(|| anyhow!("missing graphix_dyncall"))?;
             let buf = marshal_dyncall_args(b, args, arg_types, env, ctx)?;
-            let ret_kind: i64 = match return_type {
-                GirType::Prim(_) => 0,
-                GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => 1,
-                // Variant and Nullable both come back as a boxed
-                // `*mut Value` (dispatch_typed wraps the dispatcher's
-                // returned `Value` in `Box::into_raw` regardless of the
-                // outer enum tag), so they share the ret_kind=2 path.
-                GirType::Variant(_)
-                | GirType::Nullable(_)
-                | GirType::DateTime
-                | GirType::Duration
-                | GirType::Bytes | GirType::Map | GirType::Error => 2,
+            let ret_kind: i64 = match gir::abi_kind(return_type) {
+                Some(AbiKind::Scalar(_)) => 0,
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => 1,
+                // Variant / Nullable / value-shape all come back as a
+                // boxed `*mut Value` (dispatch_typed wraps the
+                // dispatcher's returned `Value` in `Box::into_raw`
+                // regardless of the outer enum tag), so they share the
+                // ret_kind=2 path.
+                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => 2,
                 // Unit return: dispatcher returns 0 (the slot is
                 // discarded by the caller). ret_kind=3 tells
                 // dispatch_typed not to box anything.
-                GirType::Unit => 3,
+                Some(AbiKind::Unit) => 3,
                 // String return: dispatcher extracts the ArcStr from
                 // `Value::String`, transmutes to raw u64 bits, returns
                 // in word0. Caller's SSA reads the bits directly as
                 // an owned `arcstr::ArcStr` (`repr(transparent)`).
-                GirType::String => 4,
-                GirType::Null => {
+                Some(AbiKind::String) => 4,
+                Some(AbiKind::Null) | None => {
                     return Err(anyhow!(
-                        "DynCall with bare Null return — should have \
-                         widened to Nullable<T> at construction"
+                        "DynCall with bare Null / non-fusable return — \
+                         should have widened to Nullable<T> at construction"
                     ));
                 }
             };
@@ -4311,23 +4768,23 @@ fn compile_scalar_impl(
             // try to double-free it.
             ctx.dyncall_buf_stack.borrow_mut().pop();
 
-            match return_type {
-                GirType::Prim(p) => {
+            match gir::abi_kind(return_type) {
+                Some(AbiKind::Scalar(p)) => {
                     // Scalar return: 0 on pending is a harmless
                     // sentinel for downstream scalar arithmetic.
                     // No branch needed — the wrapper-level
                     // DYNCALL_PENDING check in GirNode::update
                     // discards the whole kernel result.
-                    Ok(cast_u64_to_prim(b, raw_u64, *p))
+                    Ok(cast_u64_to_prim(b, raw_u64, p))
                 }
-                GirType::Unit => {
+                Some(AbiKind::Unit) => {
                     // Unit return: dispatcher returned (0, _). The
                     // downstream `Discard` throws it away. The
                     // wrapper-level DYNCALL_PENDING check still
                     // fires.
                     Ok(raw_u64)
                 }
-                GirType::String => {
+                Some(AbiKind::String) => {
                     // String return: `raw_u64` is the ArcStr's raw
                     // thin-pointer bits (transferred ownership). The
                     // wrapper-level DYNCALL_PENDING check in
@@ -4336,28 +4793,24 @@ fn compile_scalar_impl(
                     // is never decoded.
                     Ok(raw_u64)
                 }
-                GirType::Null => {
+                Some(AbiKind::Null) | None => {
                     return Err(anyhow!(
-                        "DynCall with bare Null return — should have \
-                         widened to Nullable<T> at construction"
+                        "DynCall with bare Null / non-fusable return — \
+                         should have widened to Nullable<T> at construction"
                     ));
                 }
-                // Variant / Nullable DynCall returns are Value-shape
-                // and belong in `compile_value_expr`; compile_expr
-                // dispatches before reaching this scalar arm. Surface
-                // an error in case routing drifts.
-                GirType::Variant(_)
-                | GirType::Nullable(_)
-                | GirType::DateTime
-                | GirType::Duration
-                | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
-                    "DynCall with Value-shape return reached \
-                     `compile_scalar_impl` — `compile_expr` should \
-                     have routed to `compile_value_expr`"
-                )),
-                GirType::Array(_)
-                | GirType::Tuple(_)
-                | GirType::Struct(_) => {
+                // Variant / Nullable / value-shape DynCall returns are
+                // Value-shape and belong in `compile_value_expr`;
+                // compile_expr dispatches before reaching this scalar
+                // arm. Surface an error in case routing drifts.
+                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                    Err(anyhow!(
+                        "DynCall with Value-shape return reached \
+                         `compile_scalar_impl` — `compile_expr` should \
+                         have routed to `compile_value_expr`"
+                    ))
+                }
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     // Composite return: `raw_u64` is an owned
                     // `*mut ValArray`, or null on pending. Null can't
                     // be deref'd by downstream ops, so we branch: on
@@ -4658,7 +5111,7 @@ fn compile_scalar_impl(
             b.switch_to_block(loop_body);
             let i_now = b.use_var(i_var);
             let mark = env.mark();
-            match in_elem.as_prim() {
+            match gir::scalar_prim(&in_elem) {
                 // Scalar element: get the scalar, bind into the `locals`
                 // slot.
                 Some(prim) => {
@@ -4721,7 +5174,7 @@ fn compile_scalar_impl(
             // A composite element is an owned `*mut ValArray`: on keep it
             // moves into the output (`push_array`), on not-keep it must be
             // dropped — hence the extra `drop_block` for the composite case.
-            let composite = elem.as_prim().is_none();
+            let composite = gir::scalar_prim(&elem).is_none();
             let buf_new = ctx
                 .helper_refs
                 .get("graphix_value_buf_new")
@@ -4734,7 +5187,7 @@ fn compile_scalar_impl(
                 .helper_refs
                 .get("graphix_valarray_len")
                 .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
-            let get_helper = match elem.as_prim() {
+            let get_helper = match gir::scalar_prim(&elem) {
                 Some(prim) => ctx
                     .helper_refs
                     .get(valarray_get_helper(prim)?)
@@ -4744,7 +5197,7 @@ fn compile_scalar_impl(
                     .get("graphix_valarray_get_array")
                     .ok_or_else(|| anyhow!("missing graphix_valarray_get_array"))?,
             };
-            let push = match elem.as_prim() {
+            let push = match gir::scalar_prim(&elem) {
                 Some(prim) => ctx
                     .helper_refs
                     .get(value_buf_push_helper(prim)?)
@@ -4793,7 +5246,7 @@ fn compile_scalar_impl(
                 env.bind_composite(elem_local.clone(), v);
                 v
             } else {
-                let prim = elem.as_prim().unwrap();
+                let prim = gir::scalar_prim(&elem).unwrap();
                 let v = b.declare_var(prim_to_clif(prim));
                 b.def_var(v, elem_val);
                 env.bind(elem_local.clone(), v, prim);
@@ -4895,7 +5348,7 @@ fn compile_scalar_impl(
             env.truncate(mark);
             let (disc, payload) = match cv {
                 CompiledExpr::Value { disc, payload } => (disc, payload),
-                CompiledExpr::Single(_) => {
+                _ => {
                     return Err(anyhow!(
                         "ArrayFilterMap body not Value-shape — expected \
                          a Nullable result"
@@ -4972,7 +5425,7 @@ fn compile_scalar_impl(
             let mark = env.mark();
             // Element binding: scalar (locals) or composite (owned
             // `*ValArray` in the composite slot, dropped after the body).
-            let composite_elem = match in_elem.as_prim() {
+            let composite_elem = match gir::scalar_prim(&in_elem) {
                 Some(prim) => {
                     let get_helper = ctx
                         .helper_refs
@@ -5027,7 +5480,7 @@ fn compile_scalar_impl(
             Ok(b.inst_results(call)[0])
         }
         GirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
-            // acc_var = compile init  (scalar, type = body.typ.as_prim())
+            // acc_var = compile init  (scalar, type = gir::scalar_prim(&body.typ))
             // loop i in 0..len:
             //   elem = get(arr, i)
             //   bind acc_local = acc_var, elem_local = elem
@@ -5069,7 +5522,7 @@ fn compile_scalar_impl(
             // Element binding: scalar (locals) or composite (an owned
             // `*mut ValArray` in the composite slot, dropped after the
             // body) — the same split as `ArrayMap`.
-            let elem_composite_var = match elem_typ.as_prim() {
+            let elem_composite_var = match gir::scalar_prim(&elem_typ) {
                 Some(prim) => {
                     let get_helper = ctx
                         .helper_refs
@@ -5163,7 +5616,7 @@ fn compile_scalar_impl(
 }
 
 /// Cast a u64 (typically the raw bits of a scalar primitive packed
-/// via [`pack_reg_to_u64`] or returned from `graphix_dyncall`) to a
+/// via [`pack_value_to_u64`] or returned from `graphix_dyncall`) to a
 /// CLIF value of the target prim type. Integer truncations use
 /// `ireduce`; floats route through a same-width integer then
 /// `bitcast`.
@@ -5243,13 +5696,13 @@ fn classify_composite_source(e: &GirExpr) -> CompositeSource {
         | GirOp::BytesIndex { .. }
         | GirOp::MapRef { .. }
         | GirOp::ArraySlice { .. }
-        // A `ConstValue` (datetime/duration/bytes/map literal) is lowered
-        // via `graphix_value_clone_from_static`, which bumps the inner
-        // Arc — a fresh owned ref. `ValueArith` (datetime/duration math)
-        // returns an owned Value from `graphix_value_<op>`. The
+        // A value-shape `Const` (datetime/duration/bytes/map literal) is
+        // lowered via `graphix_value_clone_from_static`, which bumps the
+        // inner Arc — a fresh owned ref. `ValueArith` (datetime/duration
+        // math) returns an owned Value from `graphix_value_<op>`. The
         // value-shape `QopUnwrap` success path runs its result through
         // `ensure_owned_value`, so it too hands out an owned Value.
-        | GirOp::ConstValue(_)
+        | GirOp::Const(_)
         | GirOp::ValueArith { .. }
         | GirOp::QopUnwrap { .. }
         | GirOp::VariantNew { .. } => CompositeSource::Owned,
@@ -5319,26 +5772,31 @@ fn compile_call_clif_args(
     ctx: &LowerCtx,
 ) -> Result<(Vec<ClifValue>, Vec<CallArgDrop>)> {
     for a in args {
-        // String and bare value-shape (DateTime/Duration/Bytes) args
-        // are valid kernel params (the callee declares string_params /
-        // value_params), but the *calling* kernel's JIT arg emit for
-        // them isn't wired yet — bail so the caller falls back to the
-        // interpreter (which routes these correctly). Unit/Null have
-        // no kernel-param shape at all. Listing every remaining
-        // GirType keeps a future variant from silently dropping an arg.
-        match &a.typ {
-            GirType::Prim(_)
-            | GirType::Array(_)
-            | GirType::Tuple(_)
-            | GirType::Struct(_)
-            | GirType::Variant(_)
-            | GirType::Nullable(_) => {}
-            GirType::String
-            | GirType::DateTime
-            | GirType::Duration
-            | GirType::Bytes | GirType::Map | GirType::Error
-            | GirType::Unit
-            | GirType::Null => {
+        // Scalar / composite (array/tuple/struct) / Variant / Nullable
+        // args are wired on the calling side. String, bare value-shape
+        // (DateTime/Duration/Bytes/Map/Error) args are valid kernel
+        // params (the callee declares string_params / value_params),
+        // but the *calling* kernel's JIT arg emit for them isn't wired
+        // yet — bail so the caller falls back to the interpreter (which
+        // routes these correctly). Unit/Null have no kernel-param shape
+        // at all. Exhaustive match keeps a future AbiKind from silently
+        // dropping an arg.
+        match gir::abi_kind(&a.typ) {
+            Some(
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::Variant
+                | AbiKind::Nullable,
+            ) => {}
+            Some(
+                AbiKind::String
+                | AbiKind::Value
+                | AbiKind::Unit
+                | AbiKind::Null,
+            )
+            | None => {
                 return Err(anyhow!(
                     "JIT GirOp::Call `{fn_name}` arg type {:?} not yet \
                      lowered on the calling side — falling back to interp",
@@ -5347,18 +5805,19 @@ fn compile_call_clif_args(
             }
         }
     }
+    let is_kind = |a: &&GirExpr, k: AbiKind| gir::abi_kind(&a.typ) == Some(k);
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(args.len());
     let mut drops: Vec<CallArgDrop> = Vec::new();
     // Scalars first.
-    for a in args.iter().filter(|a| matches!(a.typ, GirType::Prim(_))) {
+    for a in args.iter().filter(|a| matches!(gir::abi_kind(&a.typ), Some(AbiKind::Scalar(_)))) {
         clif_args.push(compile_scalar(b, a, env, ctx)?);
     }
     // Composite pointers: array, then tuple, then struct.
     let composite = args
         .iter()
-        .filter(|a| matches!(a.typ, GirType::Array(_)))
-        .chain(args.iter().filter(|a| matches!(a.typ, GirType::Tuple(_))))
-        .chain(args.iter().filter(|a| matches!(a.typ, GirType::Struct(_))));
+        .filter(|a| is_kind(a, AbiKind::Array))
+        .chain(args.iter().filter(|a| is_kind(a, AbiKind::Tuple)))
+        .chain(args.iter().filter(|a| is_kind(a, AbiKind::Struct)));
     for a in composite {
         let ptr = compile_scalar(b, a, env, ctx)?;
         clif_args.push(ptr);
@@ -5369,8 +5828,8 @@ fn compile_call_clif_args(
     // Value-shape: variant, then nullable — two words each.
     let value = args
         .iter()
-        .filter(|a| matches!(a.typ, GirType::Variant(_)))
-        .chain(args.iter().filter(|a| matches!(a.typ, GirType::Nullable(_))));
+        .filter(|a| is_kind(a, AbiKind::Variant))
+        .chain(args.iter().filter(|a| is_kind(a, AbiKind::Nullable)));
     for a in value {
         let (disc, payload) = compile_value_expr(b, a, env, ctx)?.value()?;
         clif_args.push(disc);
@@ -5436,13 +5895,15 @@ fn ensure_owned_composite(
     // owned), and `GirOp::Local` of a String slot calls
     // `graphix_arcstr_clone` (refcount bump) at the lookup site.
     // Pass them through unchanged.
-    if matches!(e.typ, GirType::Prim(_) | GirType::Unit | GirType::String)
-        || classify_composite_source(e) == CompositeSource::Owned
+    if matches!(
+        gir::abi_kind(&e.typ),
+        Some(AbiKind::Scalar(_) | AbiKind::Unit | AbiKind::String)
+    ) || classify_composite_source(e) == CompositeSource::Owned
     {
         return Ok(v);
     }
-    match &e.typ {
-        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+    match gir::abi_kind(&e.typ) {
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let helper = ctx
                 .helper_refs
                 .get("graphix_valarray_clone")
@@ -5450,28 +5911,26 @@ fn ensure_owned_composite(
             let call = b.ins().call(helper, &[v]);
             Ok(b.inst_results(call)[0])
         }
-        // Value-shape (Variant / Nullable) sources use
+        // Value-shape (Variant / Nullable / datetime / …) sources use
         // `ensure_owned_value` instead — they're two CLIF values, not
         // one, so they can't flow through this single-ClifValue path.
         // Reaching here means the consumer mis-routed.
-        GirType::Variant(_)
-        | GirType::Nullable(_)
-        | GirType::DateTime
-        | GirType::Duration
-        | GirType::Bytes | GirType::Map | GirType::Error => Err(anyhow!(
-            "ensure_owned_composite reached for Value-shape type \
-             `{:?}` — caller should use `ensure_owned_value` instead",
-            e.typ
-        )),
-        GirType::Prim(_) | GirType::Unit | GirType::String => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            Err(anyhow!(
+                "ensure_owned_composite reached for Value-shape type \
+                 `{:?}` — caller should use `ensure_owned_value` instead",
+                e.typ
+            ))
+        }
+        Some(AbiKind::Scalar(_) | AbiKind::Unit | AbiKind::String) => {
             unreachable!("guarded above")
         }
         // Bare `Null` is the singleton from `GirOp::ConstNull` — fusion
         // always widens to `Nullable<T>` before any binding / merge,
         // so a bare-`Null` reaching this clone path is malformed.
-        GirType::Null => Err(anyhow!(
-            "ensure_owned_composite reached for bare Null type — \
-             should have widened to Nullable<T> at construction"
+        Some(AbiKind::Null) | None => Err(anyhow!(
+            "ensure_owned_composite reached for bare Null / non-fusable \
+             type — should have widened to Nullable<T> at construction"
         )),
     }
 }
@@ -5517,23 +5976,18 @@ fn compile_owned_value_operand(
     ctx: &LowerCtx,
 ) -> Result<(ClifValue, ClifValue)> {
     use cranelift_codegen::ir::types;
-    match &e.typ {
-        GirType::Variant(_)
-        | GirType::Nullable(_)
-        | GirType::DateTime
-        | GirType::Duration
-        | GirType::Bytes
-        | GirType::Map => {
+    match gir::abi_kind(&e.typ) {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let cv = compile_expr(b, e, env, ctx)?;
             ensure_owned_value(b, ctx, e, cv)
         }
-        GirType::Prim(p) => {
+        Some(AbiKind::Scalar(p)) => {
             let s = compile_scalar(b, e, env, ctx)?;
-            let disc = b.ins().iconst(types::I64, prim_to_value_disc(*p));
-            let payload = scalar_to_payload_i64(b, *p, s);
+            let disc = b.ins().iconst(types::I64, prim_to_value_disc(p));
+            let payload = scalar_to_payload_i64(b, p, s);
             Ok((disc, payload))
         }
-        GirType::String => {
+        Some(AbiKind::String) => {
             // ConstStr/Concat/Local-read all produce an owned ArcStr;
             // `graphix_value_new_string` consumes it into a Value.
             let s = compile_scalar(b, e, env, ctx)?;
@@ -5546,7 +6000,7 @@ fn compile_owned_value_operand(
             let p = b.inst_results(call)[1];
             Ok((d, p))
         }
-        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let cv = compile_expr(b, e, env, ctx)?;
             let ptr = cv.single()?;
             let ptr = ensure_owned_composite(b, ctx, e, ptr)?;
@@ -5805,9 +6259,9 @@ fn compile_and_push_field(
     buf: ClifValue,
     field: &GirExpr,
 ) -> Result<()> {
-    let helper_name: &str = match &field.typ {
-        GirType::Prim(p) => value_buf_push_helper(*p)?,
-        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+    let helper_name: &str = match gir::abi_kind(&field.typ) {
+        Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             match classify_composite_source(field) {
                 CompositeSource::Owned => "graphix_value_buf_push_array",
                 CompositeSource::Borrowed => {
@@ -5815,11 +6269,7 @@ fn compile_and_push_field(
                 }
             }
         }
-        GirType::Variant(_)
-        | GirType::Nullable(_)
-        | GirType::DateTime
-        | GirType::Duration
-        | GirType::Bytes | GirType::Map | GirType::Error => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             match classify_composite_source(field) {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => {
@@ -5833,15 +6283,16 @@ fn compile_and_push_field(
         // the ArcStr's bits as a pointer to its own struct (UAF/UB).
         // `_push_string` takes ArcStr by value (consumes), which is
         // what we want for an owned String SSA field.
-        GirType::String => "graphix_value_buf_push_string",
-        GirType::Unit => {
+        Some(AbiKind::String) => "graphix_value_buf_push_string",
+        Some(AbiKind::Unit) => {
             return Err(anyhow!(
                 "producer-op field has Unit type — emit_*_new should reject"
             ));
         }
-        GirType::Null => {
+        Some(AbiKind::Null) | None => {
             return Err(anyhow!(
-                "producer-op field has bare Null type — should widen to Nullable<T>"
+                "producer-op field has bare Null / non-fusable type — should \
+                 widen to Nullable<T>"
             ));
         }
     };
@@ -5856,11 +6307,11 @@ fn compile_and_push_field(
     // (`is_value_shape()`). When it only listed Variant|Nullable, a
     // DateTime/Duration/Bytes/Map field fell to the `_` arm and
     // `.single()` Err'd, silently de-fusing the whole kernel.
-    if field.typ.is_value_shape() {
+    if gir::is_value_shape(&field.typ) {
         let cv = compile_expr(b, field, env, ctx)?;
         let (disc, payload) = match cv {
             CompiledExpr::Value { disc, payload } => (disc, payload),
-            CompiledExpr::Single(_) => {
+            _ => {
                 return Err(anyhow!(
                     "Value-shape field compiled to Single — \
                      compile_expr dispatch is broken"
@@ -5869,8 +6320,26 @@ fn compile_and_push_field(
         };
         b.ins().call(push, &[buf, disc, payload]);
     } else {
-        let v = compile_scalar(b, field, env, ctx)?;
-        b.ins().call(push, &[buf, v]);
+        // A composite producer has no per-field validity channel, so a
+        // bottom (`Scalar2`) field must propagate to the kernel OUTPUT:
+        // abort to `pending_exit` when the field is invalid, then push
+        // the (now-known-valid) value. A non-tainted `Single` skips the
+        // check (the common path).
+        match compile_expr(b, field, env, ctx)? {
+            CompiledExpr::Single(v) => {
+                b.ins().call(push, &[buf, v]);
+            }
+            CompiledExpr::Scalar2 { value, valid } => {
+                emit_bottom_abort(b, env, ctx, valid)?;
+                b.ins().call(push, &[buf, value]);
+            }
+            CompiledExpr::Value { .. } => {
+                return Err(anyhow!(
+                    "scalar producer field compiled to Value-shape — \
+                     compile_expr dispatch is broken"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -5917,45 +6386,41 @@ fn struct_get_helper(p: PrimType) -> Result<&'static str> {
 /// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
 /// level kv-pair read) family over the flat `valarray_get_*` family.
 fn element_read_helper(
-    elem: &GirType,
+    elem: &Type,
     struct_access: bool,
 ) -> Result<&'static str> {
-    Ok(match elem {
-        GirType::Prim(p) => {
+    Ok(match gir::abi_kind(elem) {
+        Some(AbiKind::Scalar(p)) => {
             if struct_access {
-                struct_get_helper(*p)?
+                struct_get_helper(p)?
             } else {
-                valarray_get_helper(*p)?
+                valarray_get_helper(p)?
             }
         }
-        GirType::String => {
+        Some(AbiKind::String) => {
             if struct_access {
                 "graphix_struct_get_arcstr"
             } else {
                 "graphix_valarray_get_arcstr"
             }
         }
-        GirType::Array(_) | GirType::Tuple(_) | GirType::Struct(_) => {
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             if struct_access {
                 "graphix_struct_get_array"
             } else {
                 "graphix_valarray_get_array"
             }
         }
-        GirType::Variant(_)
-        | GirType::Nullable(_)
-        | GirType::DateTime
-        | GirType::Duration
-        | GirType::Bytes | GirType::Map | GirType::Error => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             if struct_access {
                 "graphix_struct_get_value"
             } else {
                 "graphix_valarray_get_value"
             }
         }
-        GirType::Unit | GirType::Null => {
+        Some(AbiKind::Unit | AbiKind::Null) | None => {
             return Err(anyhow!(
-                "element read of Unit/Null-typed slot — GIR is malformed"
+                "element read of Unit/Null/non-fusable slot — GIR is malformed"
             ));
         }
     })
@@ -5972,7 +6437,7 @@ fn compile_element_read(
     b: &mut FunctionBuilder,
     arr_ptr: ClifValue,
     idx_val: ClifValue,
-    elem: &GirType,
+    elem: &Type,
     struct_access: bool,
     ctx: &LowerCtx,
 ) -> Result<CompiledExpr> {
@@ -5983,7 +6448,7 @@ fn compile_element_read(
         .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
     let r = b.inst_results(call);
-    if elem.is_value_shape() {
+    if gir::is_value_shape(&elem) {
         Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
     } else {
         Ok(CompiledExpr::Single(r[0]))
@@ -6014,8 +6479,9 @@ fn widen_to_i64(
 
 fn compile_ifchain(
     b: &mut FunctionBuilder,
+    scrut: Option<&GirExpr>,
     arms: &[(Option<GirExpr>, GirExpr)],
-    result_typ: &GirType,
+    result_typ: &Type,
     env: &mut JitEnv,
     ctx: &LowerCtx,
 ) -> Result<CompiledExpr> {
@@ -6025,16 +6491,48 @@ fn compile_ifchain(
     // Merge block holds the result via block parameters. For a
     // scalar / composite-pointer result, that's a single I64 (or
     // the prim's CLIF type). For a Value-shape result (Variant /
-    // Nullable) it's two I64s (disc, payload). Every arm normalizes
-    // its result to the merge shape before jumping.
-    let is_value_shape =
-        matches!(result_typ, GirType::Variant(_) | GirType::Nullable(_));
+    // Nullable / datetime / …) it's two I64s (disc, payload). Every
+    // arm normalizes its result to the merge shape before jumping.
+    let is_value_shape = gir::is_value_shape(result_typ);
+
+    // The SCRUTINEE gate (interp parity, #178): the node-walk's Select
+    // fires iff the scrutinee has a value. A bottom scrutinee poisons
+    // the WHOLE select — it AND's into the result validity (whereas a
+    // bottom GUARD, below, just fails its arm). The JIT folds the
+    // scrutinee into the arm conds (a `Local` / `__sel_scrut` temp), so
+    // we re-compile it here only to extract its validity bit; the bits
+    // themselves are unused.
+    let scrut_valid: Option<ClifValue> = match scrut {
+        Some(s) if !is_value_shape || matches!(gir::abi_kind(&s.typ), Some(AbiKind::Scalar(_))) => {
+            match compile_expr(b, s, env, ctx)? {
+                CompiledExpr::Scalar2 { valid, .. } => Some(valid),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+
+    // For a scalar/composite result, thread an I8 validity bit through
+    // the merge phi IFF a guard, the scrutinee, or any arm body can be
+    // tainted (the taint optimization — a clean IfChain stays `Single`).
+    // Value-shape results carry bottom in-band today via the existing
+    // pending machinery, so they don't get a validity phi here.
+    let scalar_taintable = !is_value_shape
+        && (scrut_valid.is_some()
+            || arms.iter().any(|(c, body)| {
+                c.as_ref().is_some_and(gir::expr_may_value_bottom)
+                    || gir::expr_may_value_bottom(body)
+            }));
+
     let merge = b.create_block();
     if is_value_shape {
         b.append_block_param(merge, types::I64); // disc
         b.append_block_param(merge, types::I64); // payload
     } else {
         b.append_block_param(merge, clif_of(result_typ));
+        if scalar_taintable {
+            b.append_block_param(merge, types::I8); // validity
+        }
     }
 
     for (i, (cond, body)) in arms.iter().enumerate() {
@@ -6046,7 +6544,14 @@ fn compile_ifchain(
                 None
             }
             Some(c) => {
-                let cv = compile_scalar(b, c, env, ctx)?;
+                // A GUARD that is bottom → the arm does NOT match (the
+                // node-walk's `is::match` on a bottom guard falls
+                // through). `effective_cond = cond_value AND cond_valid`
+                // — an invalid guard reads as `false`, advancing to the
+                // next arm.
+                let (cval, cvalid) =
+                    compile_expr(b, c, env, ctx)?.scalar_with_validity(b)?;
+                let cv = b.ins().band(cval, cvalid);
                 if is_last {
                     let trap_block = b.create_block();
                     b.ins().brif(cv, body_block, &[], trap_block, &[]);
@@ -6080,10 +6585,31 @@ fn compile_ifchain(
                 &[BlockArg::Value(disc), BlockArg::Value(payload)],
             );
         } else {
-            let v = compile_scalar(b, body, env, ctx)?;
-            let v = ensure_owned_composite(b, ctx, body, v)?;
-            env.truncate(mark);
-            b.ins().jump(merge, &[BlockArg::Value(v)]);
+            let cv = compile_expr(b, body, env, ctx)?;
+            if scalar_taintable {
+                // Result validity = arm-body validity AND scrut validity
+                // (a bottom scrutinee poisons every arm's output).
+                let (v, valid) = cv.scalar_with_validity(b)?;
+                // A tainted IfChain result is always a scalar (taint
+                // only rides scalars), so `ensure_owned_composite` is a
+                // no-op pass-through here; kept for symmetry with the
+                // composite branch.
+                let v = ensure_owned_composite(b, ctx, body, v)?;
+                let valid = match scrut_valid {
+                    Some(sv) => b.ins().band(valid, sv),
+                    None => valid,
+                };
+                env.truncate(mark);
+                b.ins().jump(
+                    merge,
+                    &[BlockArg::Value(v), BlockArg::Value(valid)],
+                );
+            } else {
+                let v = cv.single()?;
+                let v = ensure_owned_composite(b, ctx, body, v)?;
+                env.truncate(mark);
+                b.ins().jump(merge, &[BlockArg::Value(v)]);
+            }
         }
         match next_block {
             Some(next) => {
@@ -6099,6 +6625,9 @@ fn compile_ifchain(
         let params = b.block_params(merge);
         let (disc, payload) = (params[0], params[1]);
         Ok(CompiledExpr::Value { disc, payload })
+    } else if scalar_taintable {
+        let params = b.block_params(merge);
+        Ok(CompiledExpr::Scalar2 { value: params[0], valid: params[1] })
     } else {
         Ok(CompiledExpr::Single(b.block_params(merge)[0]))
     }
@@ -6117,25 +6646,28 @@ fn widen_arm_to_value(
     ctx: &LowerCtx,
     body: &GirExpr,
     cv: CompiledExpr,
-    _result_typ: &GirType,
+    _result_typ: &Type,
 ) -> Result<(ClifValue, ClifValue)> {
-    match (&body.typ, cv) {
-        (GirType::Variant(_), _) | (GirType::Nullable(_), _) => {
+    match gir::abi_kind(&body.typ) {
+        // Already value-shape (Variant / Nullable / datetime / …):
+        // refcount-bump a borrowed source so the merge owns a fresh ref.
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             ensure_owned_value(b, ctx, body, cv)
         }
-        (GirType::Null, _) => {
+        Some(AbiKind::Null) => {
             let disc = b.ins().iconst(types::I64, value_disc::NULL);
             let payload = b.ins().iconst(types::I64, 0);
             Ok((disc, payload))
         }
-        (GirType::Prim(p), CompiledExpr::Single(v)) => {
+        Some(AbiKind::Scalar(p)) => {
+            let v = cv.single()?;
             let disc =
-                b.ins().iconst(types::I64, prim_to_value_disc(*p));
+                b.ins().iconst(types::I64, prim_to_value_disc(p));
             // Promote/bitcast the scalar to the I64 payload slot.
-            let payload = scalar_to_payload_i64(b, *p, v);
+            let payload = scalar_to_payload_i64(b, p, v);
             Ok((disc, payload))
         }
-        (other, _) => Err(anyhow!(
+        other => Err(anyhow!(
             "widen_arm_to_value: source type {other:?} can't widen \
              to Value shape — fusion should have rejected this arm"
         )),
@@ -6221,8 +6753,8 @@ fn compile_concat(
     let call = b.ins().call(new_buf, &[]);
     let buf = b.inst_results(call)[0];
     for part in parts {
-        match &part.typ {
-            GirType::String => {
+        match gir::abi_kind(&part.typ) {
+            Some(AbiKind::String) => {
                 let s = compile_scalar(b, part, env, ctx)?;
                 let push = ctx
                     .helper_refs
@@ -6232,7 +6764,7 @@ fn compile_concat(
                     })?;
                 b.ins().call(push, &[buf, s]);
             }
-            GirType::Prim(p) => {
+            Some(AbiKind::Scalar(p)) => {
                 let v = compile_scalar(b, part, env, ctx)?;
                 let helper_name = match p {
                     PrimType::I64 => "graphix_string_buf_push_i64",
@@ -6269,20 +6801,63 @@ fn compile_concat(
     Ok(b.inst_results(call)[0])
 }
 
-fn compile_const(b: &mut FunctionBuilder, c: ConstVal) -> ClifValue {
-    match c {
-        ConstVal::I8(x) => b.ins().iconst(types::I8, x as i64),
-        ConstVal::I16(x) => b.ins().iconst(types::I16, x as i64),
-        ConstVal::I32(x) => b.ins().iconst(types::I32, x as i64),
-        ConstVal::I64(x) => b.ins().iconst(types::I64, x),
-        ConstVal::U8(x) => b.ins().iconst(types::I8, x as i64),
-        ConstVal::U16(x) => b.ins().iconst(types::I16, x as i64),
-        ConstVal::U32(x) => b.ins().iconst(types::I32, x as i64),
-        ConstVal::U64(x) => b.ins().iconst(types::I64, x as i64),
-        ConstVal::F32(x) => b.ins().f32const(x),
-        ConstVal::F64(x) => b.ins().f64const(x),
-        ConstVal::Bool(true) => b.ins().iconst(types::I8, 1),
-        ConstVal::Bool(false) => b.ins().iconst(types::I8, 0),
+/// Lower a scalar [`Value`] constant of the given `prim` to a CLIF
+/// `iconst`/`f32const`/`f64const`. `prim` comes from the `GirOp::Const`
+/// expression's `typ`; `v` must be the matching scalar (`Z*`/`V*`
+/// accepted for their fixed-width prim). Panics otherwise — a malformed
+/// kernel.
+fn compile_const(b: &mut FunctionBuilder, v: &Value, prim: PrimType) -> ClifValue {
+    macro_rules! bad {
+        () => {
+            panic!("compile_const: {v:?} isn't a {prim:?} scalar")
+        };
+    }
+    match prim {
+        PrimType::I8 => match v {
+            Value::I8(x) => b.ins().iconst(types::I8, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::I16 => match v {
+            Value::I16(x) => b.ins().iconst(types::I16, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::I32 => match v {
+            Value::I32(x) | Value::Z32(x) => b.ins().iconst(types::I32, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::I64 => match v {
+            Value::I64(x) | Value::Z64(x) => b.ins().iconst(types::I64, *x),
+            _ => bad!(),
+        },
+        PrimType::U8 => match v {
+            Value::U8(x) => b.ins().iconst(types::I8, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::U16 => match v {
+            Value::U16(x) => b.ins().iconst(types::I16, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::U32 => match v {
+            Value::U32(x) | Value::V32(x) => b.ins().iconst(types::I32, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::U64 => match v {
+            Value::U64(x) | Value::V64(x) => b.ins().iconst(types::I64, *x as i64),
+            _ => bad!(),
+        },
+        PrimType::F32 => match v {
+            Value::F32(x) => b.ins().f32const(*x),
+            _ => bad!(),
+        },
+        PrimType::F64 => match v {
+            Value::F64(x) => b.ins().f64const(*x),
+            _ => bad!(),
+        },
+        PrimType::Bool => match v {
+            Value::Bool(true) => b.ins().iconst(types::I8, 1),
+            Value::Bool(false) => b.ins().iconst(types::I8, 0),
+            _ => bad!(),
+        },
     }
 }
 
@@ -6482,34 +7057,33 @@ fn compile_cast(
 /// interpreter via the explicit error arm in `compile_expr`. This
 /// helper crashes loudly on misuse rather than silently producing
 /// nonsense lowering.
-fn prim_of(t: &GirType) -> PrimType {
-    t.as_prim().expect("JIT scalar-only: array typ slipped past compile_expr")
+fn prim_of(t: &Type) -> PrimType {
+    gir::scalar_prim(t).expect("JIT scalar-only: array typ slipped past compile_expr")
 }
 
-/// CLIF type of a [`GirType`] at the JIT ABI level. Primitives map to
-/// their natural CLIF type; every composite (array/tuple/struct/
-/// variant) is a pointer, i.e. `I64` on a 64-bit target.
-fn clif_of(t: &GirType) -> ClifType {
-    match t {
-        GirType::Prim(p) => prim_to_clif(*p),
-        GirType::Array(_)
-        | GirType::Tuple(_)
-        | GirType::Struct(_)
-        | GirType::Variant(_) => types::I64,
-        // datetime/duration are Value-shape (two registers at the
-        // boundary); the single-type defensive ABI is a pointer slot,
-        // same as Nullable below.
-        GirType::DateTime | GirType::Duration | GirType::Bytes | GirType::Map | GirType::Error => types::I64,
-        // Unit at the ABI is just a zero pointer slot — see
-        // `define_typed_kernel`'s return_clif handling.
-        GirType::Unit => types::I64,
-        // String should never reach JIT (guarded by
-        // `kernel_contains_string`); ABI it as a pointer to keep this
-        // helper total in case `clif_of` is called defensively.
-        GirType::String => types::I64,
-        // Null/Nullable should never reach JIT either; same
-        // defensive pointer ABI as String.
-        GirType::Null | GirType::Nullable(_) => types::I64,
+/// CLIF type of a [`Type`] at the JIT ABI level. Primitives map to
+/// their natural CLIF type; every composite / value-shape / string /
+/// option leaf is a pointer-or-register slot, i.e. `I64` on a 64-bit
+/// target.
+fn clif_of(t: &Type) -> ClifType {
+    match gir::abi_kind(t) {
+        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
+        // Composite pointers, value-shape (datetime/duration/bytes/map/
+        // error and variant/nullable), Unit's zero slot, String's
+        // thin pointer, and the bare-Null defensive slot all ABI as a
+        // single `I64`.
+        Some(
+            AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value
+            | AbiKind::Unit
+            | AbiKind::String
+            | AbiKind::Null,
+        )
+        | None => types::I64,
     }
 }
 
@@ -6539,8 +7113,9 @@ fn clif_size(p: PrimType) -> u32 {
 mod tests {
     use super::*;
     use crate::gir::{
-        arith, bool_op, cast, cmp, const_expr, local, BinOp, BoolOp, CmpOp,
-        ConstVal, Input, GirExpr, GirKernel, GirOp, GirStmt, GirType, Let,
+        arith, bool_op, cast, cmp, const_expr, datetime_type, duration_type,
+        local, null_type, nullable_type, prim_type, string_type, tuple_type,
+        BinOp, BoolOp, CmpOp, Input, GirExpr, GirKernel, GirOp, GirStmt, Let,
         PrimType, SelectArm,
     };
 
@@ -6554,6 +7129,14 @@ mod tests {
 
     fn loc(name: &str, prim: PrimType) -> GirExpr {
         local(ArcStr::from(name), prim)
+    }
+
+    /// Pack a scalar `Value` into its ABI u64 slot, deriving the
+    /// `PrimType` from the value's own variant. Test convenience for
+    /// building wrapper-call arg arrays.
+    fn pack(v: &Value) -> u64 {
+        let prim = crate::gir::scalar_prim_of_value(v).expect("scalar value");
+        pack_value_to_u64(v, prim)
     }
 
     /// Compile a kernel and return the function pointer typed as a
@@ -6596,7 +7179,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         };
@@ -6624,13 +7207,13 @@ mod tests {
                 tail: Box::new(
                     arith(
                         loc("c", PrimType::F64),
-                        const_expr(ConstVal::F64(2.0)),
+                        const_expr(Value::F64(2.0)),
                         BinOp::Mul,
                     )
                     .unwrap(),
                 ),
             },
-            typ: GirType::Prim(PrimType::F64),
+            typ: prim_type(PrimType::F64),
         };
         let kernel = GirKernel {
             fn_name: ArcStr::from("scaled"),
@@ -6644,7 +7227,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::F64),
+            return_type: prim_type(PrimType::F64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(block)],
         };
@@ -6659,13 +7242,13 @@ mod tests {
         let body = bool_op(
             cmp(
                 loc("x", PrimType::F64),
-                const_expr(ConstVal::F64(0.0)),
+                const_expr(Value::F64(0.0)),
                 CmpOp::Gt,
             )
             .unwrap(),
             cmp(
                 loc("y", PrimType::F64),
-                const_expr(ConstVal::F64(10.0)),
+                const_expr(Value::F64(10.0)),
                 CmpOp::Lt,
             )
             .unwrap(),
@@ -6684,7 +7267,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::Bool),
+            return_type: prim_type(PrimType::Bool),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         };
@@ -6711,7 +7294,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::F64),
+            return_type: prim_type(PrimType::F64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         };
@@ -6728,12 +7311,12 @@ mod tests {
             cond: Some(
                 cmp(
                     loc("i", PrimType::I64),
-                    const_expr(ConstVal::I64(0)),
+                    const_expr(Value::I64(0)),
                     CmpOp::Eq,
                 )
                 .unwrap(),
             ),
-            body: vec![GirStmt::Return(const_expr(ConstVal::I64(0)))],
+            body: vec![GirStmt::Return(const_expr(Value::I64(0)))],
         };
         let escaped_cond = cmp(
             arith(
@@ -6752,7 +7335,7 @@ mod tests {
                 BinOp::Add,
             )
             .unwrap(),
-            const_expr(ConstVal::F64(4.0)),
+            const_expr(Value::F64(4.0)),
             CmpOp::Gt,
         )
         .unwrap();
@@ -6784,7 +7367,7 @@ mod tests {
         let new_zi = arith(
             arith(
                 arith(
-                    const_expr(ConstVal::F64(2.0)),
+                    const_expr(Value::F64(2.0)),
                     loc("zr", PrimType::F64),
                     BinOp::Mul,
                 )
@@ -6799,7 +7382,7 @@ mod tests {
         .unwrap();
         let new_i = arith(
             loc("i", PrimType::I64),
-            const_expr(ConstVal::I64(1)),
+            const_expr(Value::I64(1)),
             BinOp::Sub,
         )
         .unwrap();
@@ -6833,9 +7416,9 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: true,
-            body: vec![GirStmt::Select { arms: vec![arm0, arm1, arm2] }],
+            body: vec![GirStmt::Select { scrut: None, arms: vec![arm0, arm1, arm2] }],
         }
     }
 
@@ -6859,19 +7442,19 @@ mod tests {
             cond: Some(
                 cmp(
                     loc("n", PrimType::I64),
-                    const_expr(ConstVal::I64(0)),
+                    const_expr(Value::I64(0)),
                     CmpOp::Eq,
                 )
                 .unwrap(),
             ),
-            body: vec![GirStmt::Return(const_expr(ConstVal::I64(0)))],
+            body: vec![GirStmt::Return(const_expr(Value::I64(0)))],
         };
         let arm1 = SelectArm {
             cond: None,
             body: vec![GirStmt::TailCall {
                 args: vec![arith(
                     loc("n", PrimType::I64),
-                    const_expr(ConstVal::I64(1)),
+                    const_expr(Value::I64(1)),
                     BinOp::Sub,
                 )
                 .unwrap()],
@@ -6889,9 +7472,9 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: true,
-            body: vec![GirStmt::Select { arms: vec![arm0, arm1] }],
+            body: vec![GirStmt::Select { scrut: None, arms: vec![arm0, arm1] }],
         };
         let (_ctx, p) = jit(&kernel);
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(p) };
@@ -6903,33 +7486,34 @@ mod tests {
         // |x| if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
         let chain = GirExpr {
             op: GirOp::IfChain {
+                scrut: None,
                 arms: vec![
                     (
                         Some(
                             cmp(
                                 loc("x", PrimType::I64),
-                                const_expr(ConstVal::I64(0)),
+                                const_expr(Value::I64(0)),
                                 CmpOp::Gt,
                             )
                             .unwrap(),
                         ),
-                        const_expr(ConstVal::I64(1)),
+                        const_expr(Value::I64(1)),
                     ),
                     (
                         Some(
                             cmp(
                                 loc("x", PrimType::I64),
-                                const_expr(ConstVal::I64(0)),
+                                const_expr(Value::I64(0)),
                                 CmpOp::Lt,
                             )
                             .unwrap(),
                         ),
-                        const_expr(ConstVal::I64(-1)),
+                        const_expr(Value::I64(-1)),
                     ),
-                    (None, const_expr(ConstVal::I64(0))),
+                    (None, const_expr(Value::I64(0))),
                 ],
             },
-            typ: GirType::Prim(PrimType::I64),
+            typ: prim_type(PrimType::I64),
         };
         let kernel = GirKernel {
             fn_name: ArcStr::from("sign"),
@@ -6943,7 +7527,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(chain)],
         };
@@ -6962,23 +7546,23 @@ mod tests {
     // the refactor lands; for now this block intentionally has none.
     #[cfg(any())]
     fn wrapper_nullable_kernel_param() {
-        use crate::gir_interp::RegValue;
         use netidx_value::Value;
         let is_null_check = GirExpr {
             op: GirOp::IsNull(Box::new(GirExpr {
                 op: GirOp::Local(ArcStr::from("x")),
-                typ: GirType::Nullable(Box::new(GirType::Prim(PrimType::I64))),
+                typ: nullable_type(prim_type(PrimType::I64)),
             })),
-            typ: GirType::Prim(PrimType::Bool),
+            typ: prim_type(PrimType::Bool),
         };
         let chain = GirExpr {
             op: GirOp::IfChain {
+                scrut: None,
                 arms: vec![
-                    (Some(is_null_check), const_expr(ConstVal::I64(-1))),
-                    (None, const_expr(ConstVal::I64(7))),
+                    (Some(is_null_check), const_expr(Value::I64(-1))),
+                    (None, const_expr(Value::I64(7))),
                 ],
             },
-            typ: GirType::Prim(PrimType::I64),
+            typ: prim_type(PrimType::I64),
         };
         let kernel = GirKernel {
             fn_name: ArcStr::from("nullable_dispatch"),
@@ -6990,14 +7574,14 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![crate::gir::NullableInput {
                 name: ArcStr::from("x"),
-                elem: GirType::Prim(PrimType::I64),
+                elem: prim_type(PrimType::I64),
                 bind_id: None,
             }],
             tail_call_slots: vec![crate::gir::TailCallSlot {
                 name: ArcStr::from("x"),
                 kind: crate::gir::TailCallSlotKind::Nullable,
             }],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(chain)],
         };
@@ -7010,14 +7594,14 @@ mod tests {
         let args = [&arg as *const Value as u64];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(7));
+        assert_eq!(unpack_u64_to_value(out, PrimType::I64), Value::I64(7));
 
         // Pass `Value::Null`: IsNull true → return -1.
         let arg = Value::Null;
         let args = [&arg as *const Value as u64];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(-1));
+        assert_eq!(unpack_u64_to_value(out, PrimType::I64), Value::I64(-1));
     }
 
     #[cfg(any())]
@@ -7025,19 +7609,20 @@ mod tests {
         use netidx_value::Value;
         let body = GirExpr {
             op: GirOp::IfChain {
+                scrut: None,
                 arms: vec![
                     (
                         Some(
                             cmp(
                                 loc("n", PrimType::I64),
-                                const_expr(ConstVal::I64(0)),
+                                const_expr(Value::I64(0)),
                                 CmpOp::Gt,
                             )
                             .unwrap(),
                         ),
                         arith(
                             loc("n", PrimType::I64),
-                            const_expr(ConstVal::I64(1)),
+                            const_expr(Value::I64(1)),
                             BinOp::Add,
                         )
                         .unwrap(),
@@ -7046,12 +7631,12 @@ mod tests {
                         None,
                         GirExpr {
                             op: GirOp::ConstNull,
-                            typ: GirType::Null,
+                            typ: null_type(),
                         },
                     ),
                 ],
             },
-            typ: GirType::Nullable(Box::new(GirType::Prim(PrimType::I64))),
+            typ: nullable_type(prim_type(PrimType::I64)),
         };
         let kernel = GirKernel {
             fn_name: ArcStr::from("maybe_inc"),
@@ -7068,9 +7653,7 @@ mod tests {
                 name: ArcStr::from("n"),
                 kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
             }],
-            return_type: GirType::Nullable(Box::new(GirType::Prim(
-                PrimType::I64,
-            ))),
+            return_type: nullable_type(prim_type(PrimType::I64)),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         };
@@ -7079,7 +7662,7 @@ mod tests {
         let f = unsafe { wrapped.fn_ptr() };
 
         // n=10: non-null branch → Value::I64(11)
-        let args = [pack_reg_to_u64(&crate::gir_interp::RegValue::I64(10))];
+        let args = [pack(&Value::I64(10))];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
         let returned =
@@ -7087,7 +7670,7 @@ mod tests {
         assert_eq!(returned, Value::I64(11));
 
         // n=-3: null branch → Value::Null
-        let args = [pack_reg_to_u64(&crate::gir_interp::RegValue::I64(-3))];
+        let args = [pack(&Value::I64(-3))];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
         let returned =
@@ -7102,7 +7685,6 @@ mod tests {
         // through the canonical WrapperFn, unpack the result.
         // Verifies the (args*, out*) ABI works for mixed f64/i64
         // signatures with a tail-recursive body.
-        use crate::gir_interp::RegValue;
         let kernel = mandelbrot_iterate_kernel();
         let wrapped = compile_kernel_with_wrapper(&kernel)
             .expect("compile wrapper");
@@ -7110,27 +7692,27 @@ mod tests {
 
         // c=1+0i, i=10 → 7
         let args = [
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::F64(1.0)),
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::I64(10)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::F64(1.0)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::I64(10)),
         ];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, kernel.return_type.as_prim().unwrap()), RegValue::I64(7));
+        assert_eq!(unpack_u64_to_value(out, gir::scalar_prim(&kernel.return_type).unwrap()), Value::I64(7));
 
         // c=0+0i, i=20 → 0
         let args = [
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::F64(0.0)),
-            pack_reg_to_u64(&RegValue::I64(20)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::F64(0.0)),
+            pack(&Value::I64(20)),
         ];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, kernel.return_type.as_prim().unwrap()), RegValue::I64(0));
+        assert_eq!(unpack_u64_to_value(out, gir::scalar_prim(&kernel.return_type).unwrap()), Value::I64(0));
     }
 
     #[test]
@@ -7138,7 +7720,7 @@ mod tests {
         // i64::MAX + 1 should wrap to i64::MIN.
         let body = arith(
             loc("x", PrimType::I64),
-            const_expr(ConstVal::I64(1)),
+            const_expr(Value::I64(1)),
             BinOp::Add,
         )
         .unwrap();
@@ -7154,7 +7736,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         };
@@ -7170,7 +7752,6 @@ mod tests {
     /// result.
     #[test]
     fn shared_module_cross_kernel_call() {
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
         // square(x: i64) -> i64 { x * x }
         let square = Arc::new(GirKernel {
@@ -7185,7 +7766,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(
                 arith(
@@ -7202,9 +7783,9 @@ mod tests {
                 fn_name: ArcStr::from("square"),
                 args: vec![loc("n", PrimType::I64)],
             },
-            typ: GirType::Prim(PrimType::I64),
+            typ: prim_type(PrimType::I64),
         };
-        let body = arith(call_expr, const_expr(ConstVal::I64(10)), BinOp::Add)
+        let body = arith(call_expr, const_expr(Value::I64(10)), BinOp::Add)
             .unwrap();
         let caller = Arc::new(GirKernel {
             fn_name: ArcStr::from("caller"),
@@ -7218,7 +7799,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         });
@@ -7228,10 +7809,10 @@ mod tests {
         let wrapped = compile_kernel_with_callees(&mut jit, &caller, &callees)
             .expect("compile_kernel_with_callees");
         let f = unsafe { wrapped.fn_ptr() };
-        let args = [pack_reg_to_u64(&RegValue::I64(7))];
+        let args = [pack(&Value::I64(7))];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, caller.return_type.as_prim().unwrap()), RegValue::I64(59));
+        assert_eq!(unpack_u64_to_value(out, gir::scalar_prim(&caller.return_type).unwrap()), Value::I64(59));
     }
 
     /// #131-JIT: cross-kernel call with a COMPOSITE (tuple) arg. The
@@ -7245,9 +7826,8 @@ mod tests {
     #[test]
     fn cross_kernel_call_tuple_arg() {
         use crate::gir::TupleInput;
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
-        let i64t = || GirType::Prim(PrimType::I64);
+        let i64t = || prim_type(PrimType::I64);
         let tget = |idx: usize| GirExpr {
             op: GirOp::TupleGet {
                 name: ArcStr::from("p"),
@@ -7289,7 +7869,7 @@ mod tests {
                 fields: vec![loc("a", PrimType::I64), loc("b", PrimType::I64)],
                 elem_types: vec![i64t(), i64t()],
             },
-            typ: GirType::Tuple(vec![i64t(), i64t()]),
+            typ: tuple_type(vec![i64t(), i64t()]),
         };
         let call = GirExpr {
             op: GirOp::Call {
@@ -7325,13 +7905,13 @@ mod tests {
             .expect("compile_kernel_with_callees");
         let f = unsafe { wrapped.fn_ptr() };
         let args = [
-            pack_reg_to_u64(&RegValue::I64(10)),
-            pack_reg_to_u64(&RegValue::I64(20)),
-            pack_reg_to_u64(&RegValue::I64(5)),
+            pack(&Value::I64(10)),
+            pack(&Value::I64(20)),
+            pack(&Value::I64(5)),
         ];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(35));
+        assert_eq!(unpack_u64_to_value(out, PrimType::I64), Value::I64(35));
     }
 
     /// #131-JIT: cross-kernel call RETURNING a value-shape (Nullable).
@@ -7341,24 +7921,24 @@ mod tests {
     /// return decode.
     #[test]
     fn cross_kernel_call_nullable_return() {
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
         let nullable_i64 =
-            || GirType::Nullable(Box::new(GirType::Prim(PrimType::I64)));
+            || nullable_type(prim_type(PrimType::I64));
         // h(x: i64) -> [i64, null] = if x == 0 { null } else { x }
         let h_body = GirExpr {
             op: GirOp::IfChain {
+                scrut: None,
                 arms: vec![
                     (
                         Some(
                             cmp(
                                 loc("x", PrimType::I64),
-                                const_expr(ConstVal::I64(0)),
+                                const_expr(Value::I64(0)),
                                 CmpOp::Eq,
                             )
                             .unwrap(),
                         ),
-                        GirExpr { op: GirOp::ConstNull, typ: GirType::Null },
+                        GirExpr { op: GirOp::ConstNull, typ: null_type() },
                     ),
                     (None, loc("x", PrimType::I64)),
                 ],
@@ -7412,7 +7992,7 @@ mod tests {
             .expect("compile_kernel_with_callees");
         let f = unsafe { wrapped.fn_ptr() };
         let decode = |x: i64| -> netidx_value::Value {
-            let args = [pack_reg_to_u64(&RegValue::I64(x))];
+            let args = [pack(&Value::I64(x))];
             let mut out = [0u64; 2];
             unsafe { f(args.as_ptr(), out.as_mut_ptr()) };
             unsafe { std::mem::transmute::<[u64; 2], netidx_value::Value>(out) }
@@ -7435,10 +8015,9 @@ mod tests {
     #[test]
     fn cross_kernel_call_owned_nullable_arg() {
         use crate::gir::NullableInput;
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
         let nullable_i64 =
-            || GirType::Nullable(Box::new(GirType::Prim(PrimType::I64)));
+            || nullable_type(prim_type(PrimType::I64));
         // h(m: [i64, null]) -> [i64, null] = m
         let h = Arc::new(GirKernel {
             fn_name: ArcStr::from("h"),
@@ -7450,7 +8029,7 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![NullableInput {
                 name: ArcStr::from("m"),
-                elem: GirType::Prim(PrimType::I64),
+                elem: prim_type(PrimType::I64),
                 bind_id: None,
             }],
             string_params: vec![],
@@ -7466,17 +8045,18 @@ mod tests {
         // caller(x) -> [i64, null] = h(if x == 0 { null } else { x })
         let arg = GirExpr {
             op: GirOp::IfChain {
+                scrut: None,
                 arms: vec![
                     (
                         Some(
                             cmp(
                                 loc("x", PrimType::I64),
-                                const_expr(ConstVal::I64(0)),
+                                const_expr(Value::I64(0)),
                                 CmpOp::Eq,
                             )
                             .unwrap(),
                         ),
-                        GirExpr { op: GirOp::ConstNull, typ: GirType::Null },
+                        GirExpr { op: GirOp::ConstNull, typ: null_type() },
                     ),
                     (None, loc("x", PrimType::I64)),
                 ],
@@ -7512,7 +8092,7 @@ mod tests {
             .expect("compile_kernel_with_callees");
         let f = unsafe { wrapped.fn_ptr() };
         let decode = |x: i64| -> netidx_value::Value {
-            let args = [pack_reg_to_u64(&RegValue::I64(x))];
+            let args = [pack(&Value::I64(x))];
             let mut out = [0u64; 2];
             unsafe { f(args.as_ptr(), out.as_mut_ptr()) };
             unsafe { std::mem::transmute::<[u64; 2], netidx_value::Value>(out) }
@@ -7530,9 +8110,8 @@ mod tests {
     #[test]
     fn jit_is_null_on_nullable_param() {
         use crate::gir::NullableInput;
-        use crate::gir_interp::RegValue;
         let nullable_i64 =
-            || GirType::Nullable(Box::new(GirType::Prim(PrimType::I64)));
+            || nullable_type(prim_type(PrimType::I64));
         let kernel = GirKernel {
             fn_name: ArcStr::from("h"),
             params: vec![],
@@ -7543,20 +8122,20 @@ mod tests {
             variant_params: vec![],
             nullable_params: vec![NullableInput {
                 name: ArcStr::from("m"),
-                elem: GirType::Prim(PrimType::I64),
+                elem: prim_type(PrimType::I64),
                 bind_id: None,
             }],
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::Bool),
+            return_type: prim_type(PrimType::Bool),
             has_tail_loop: false,
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::IsNull(Box::new(GirExpr {
                     op: GirOp::Local(ArcStr::from("m")),
                     typ: nullable_i64(),
                 })),
-                typ: GirType::Prim(PrimType::Bool),
+                typ: prim_type(PrimType::Bool),
             })],
         };
         let wrapped = compile_kernel_with_wrapper(&kernel)
@@ -7564,14 +8143,14 @@ mod tests {
         let f = unsafe { wrapped.fn_ptr() };
         // Nullable param `m` arrives as its two `repr(u64)` Value words
         // (disc, payload) — the same packing `GirNode::update` does.
-        let run = |v: netidx_value::Value| -> RegValue {
+        let run = |v: netidx_value::Value| -> Value {
             let words: [u64; 2] = unsafe { std::mem::transmute(v) };
             let mut out = 0u64;
             unsafe { f(words.as_ptr(), &mut out) };
-            unpack_u64_to_reg(out, PrimType::Bool)
+            unpack_u64_to_value(out, PrimType::Bool)
         };
-        assert_eq!(run(netidx_value::Value::Null), RegValue::Bool(true));
-        assert_eq!(run(netidx_value::Value::I64(7)), RegValue::Bool(false));
+        assert_eq!(run(netidx_value::Value::Null), Value::Bool(true));
+        assert_eq!(run(netidx_value::Value::I64(7)), Value::Bool(false));
     }
 
     /// String + bare value-shape (DateTime) kernel params, JIT side.
@@ -7601,11 +8180,11 @@ mod tests {
             }],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::String,
+            return_type: string_type(),
             has_tail_loop: false,
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::Local(ArcStr::from("s")),
-                typ: GirType::String,
+                typ: string_type(),
             })],
         };
         let wrapped = compile_kernel_with_wrapper(&str_kernel)
@@ -7639,25 +8218,25 @@ mod tests {
             string_params: vec![],
             value_params: vec![crate::gir::ValueInput {
                 name: ArcStr::from("d"),
-                typ: GirType::DateTime,
+                typ: datetime_type(),
                 bind_id: None,
             }],
             tail_call_slots: vec![],
-            return_type: GirType::DateTime,
+            return_type: datetime_type(),
             has_tail_loop: false,
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::ValueArith {
                     op: BinOp::Add,
                     lhs: Box::new(GirExpr {
                         op: GirOp::Local(ArcStr::from("d")),
-                        typ: GirType::DateTime,
+                        typ: datetime_type(),
                     }),
                     rhs: Box::new(GirExpr {
-                        op: GirOp::ConstValue(one_sec.clone()),
-                        typ: GirType::Duration,
+                        op: GirOp::Const(one_sec.clone()),
+                        typ: duration_type(),
                     }),
                 },
-                typ: GirType::DateTime,
+                typ: datetime_type(),
             })],
         };
         let wrapped = compile_kernel_with_wrapper(&dt_kernel)
@@ -7687,7 +8266,6 @@ mod tests {
     /// returns the right answer for a small fib input.
     #[test]
     fn shared_module_self_recursion() {
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
         // fib(n) = if n < 2 { n } else { fib(n-1) + fib(n-2) }
         let fib_call = |which: i64| GirExpr {
@@ -7695,12 +8273,12 @@ mod tests {
                 fn_name: ArcStr::from("fib"),
                 args: vec![arith(
                     loc("n", PrimType::I64),
-                    const_expr(ConstVal::I64(which)),
+                    const_expr(Value::I64(which)),
                     BinOp::Sub,
                 )
                 .unwrap()],
             },
-            typ: GirType::Prim(PrimType::I64),
+            typ: prim_type(PrimType::I64),
         };
         let recursive_body =
             arith(fib_call(1), fib_call(2), BinOp::Add).unwrap();
@@ -7709,7 +8287,7 @@ mod tests {
                 cond: Some(
                     cmp(
                         loc("n", PrimType::I64),
-                        const_expr(ConstVal::I64(2)),
+                        const_expr(Value::I64(2)),
                         CmpOp::Lt,
                     )
                     .unwrap(),
@@ -7733,9 +8311,9 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
-            body: vec![GirStmt::Select { arms }],
+            body: vec![GirStmt::Select { scrut: None, arms }],
         });
         // Lazy fusion would put the parent's own kernel in the
         // registry to support self-recursion in the interpreter.
@@ -7749,13 +8327,13 @@ mod tests {
         let f = unsafe { wrapped.fn_ptr() };
         // fib(10) = 55, fib(15) = 610.
         let mut out = 0u64;
-        let args = [pack_reg_to_u64(&RegValue::I64(10))];
+        let args = [pack(&Value::I64(10))];
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(55));
+        assert_eq!(unpack_u64_to_value(out, PrimType::I64), Value::I64(55));
         let mut out = 0u64;
-        let args = [pack_reg_to_u64(&RegValue::I64(15))];
+        let args = [pack(&Value::I64(15))];
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(610));
+        assert_eq!(unpack_u64_to_value(out, PrimType::I64), Value::I64(610));
     }
 
     /// Three-level chain: outer → middle → leaf, all in the shared
@@ -7767,7 +8345,6 @@ mod tests {
     /// fan-out path works end-to-end.
     #[test]
     fn shared_module_transitive_fan_out() {
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
         // leaf(x) = x + 1
         let leaf = Arc::new(GirKernel {
@@ -7782,12 +8359,12 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(
                 arith(
                     loc("x", PrimType::I64),
-                    const_expr(ConstVal::I64(1)),
+                    const_expr(Value::I64(1)),
                     BinOp::Add,
                 )
                 .unwrap(),
@@ -7806,7 +8383,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(
                 arith(
@@ -7815,9 +8392,9 @@ mod tests {
                             fn_name: ArcStr::from("leaf"),
                             args: vec![loc("x", PrimType::I64)],
                         },
-                        typ: GirType::Prim(PrimType::I64),
+                        typ: prim_type(PrimType::I64),
                     },
-                    const_expr(ConstVal::I64(2)),
+                    const_expr(Value::I64(2)),
                     BinOp::Mul,
                 )
                 .unwrap(),
@@ -7836,7 +8413,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(
                 arith(
@@ -7845,9 +8422,9 @@ mod tests {
                             fn_name: ArcStr::from("middle"),
                             args: vec![loc("x", PrimType::I64)],
                         },
-                        typ: GirType::Prim(PrimType::I64),
+                        typ: prim_type(PrimType::I64),
                     },
-                    const_expr(ConstVal::I64(3)),
+                    const_expr(Value::I64(3)),
                     BinOp::Sub,
                 )
                 .unwrap(),
@@ -7861,10 +8438,10 @@ mod tests {
             .expect("compile transitive chain");
         let f = unsafe { wrapped.fn_ptr() };
         // outer(10) = ((10 + 1) * 2) - 3 = 19
-        let args = [pack_reg_to_u64(&RegValue::I64(10))];
+        let args = [pack(&Value::I64(10))];
         let mut out = 0u64;
         unsafe { f(args.as_ptr(), &mut out) };
-        assert_eq!(unpack_u64_to_reg(out, PrimType::I64), RegValue::I64(19));
+        assert_eq!(unpack_u64_to_value(out, PrimType::I64), Value::I64(19));
     }
 
     /// Same callee Arc invoked via two separate parent kernels. The
@@ -7873,7 +8450,6 @@ mod tests {
     /// answer (so the shared callee is correctly addressable from each).
     #[test]
     fn shared_module_callee_dedup() {
-        use crate::gir_interp::RegValue;
         use std::sync::Arc;
         let square = Arc::new(GirKernel {
             fn_name: ArcStr::from("square"),
@@ -7887,7 +8463,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-            return_type: GirType::Prim(PrimType::I64),
+            return_type: prim_type(PrimType::I64),
             has_tail_loop: false,
             body: vec![GirStmt::Return(
                 arith(
@@ -7904,11 +8480,11 @@ mod tests {
                     fn_name: ArcStr::from("square"),
                     args: vec![loc("n", PrimType::I64)],
                 },
-                typ: GirType::Prim(PrimType::I64),
+                typ: prim_type(PrimType::I64),
             };
             let body = arith(
                 call_expr,
-                const_expr(ConstVal::I64(add_const)),
+                const_expr(Value::I64(add_const)),
                 BinOp::Add,
             )
             .unwrap();
@@ -7924,7 +8500,7 @@ mod tests {
             string_params: vec![],
             value_params: vec![],
             tail_call_slots: vec![],
-                return_type: GirType::Prim(PrimType::I64),
+                return_type: prim_type(PrimType::I64),
                 has_tail_loop: false,
                 body: vec![GirStmt::Return(body)],
             })
@@ -7945,14 +8521,14 @@ mod tests {
             .expect("compile b");
         let fa = unsafe { wa.fn_ptr() };
         let fb = unsafe { wb.fn_ptr() };
-        let args = [pack_reg_to_u64(&RegValue::I64(5))];
+        let args = [pack(&Value::I64(5))];
         let (mut oa, mut ob) = (0u64, 0u64);
         unsafe {
             fa(args.as_ptr(), &mut oa);
             fb(args.as_ptr(), &mut ob);
         }
-        assert_eq!(unpack_u64_to_reg(oa, PrimType::I64), RegValue::I64(26));
-        assert_eq!(unpack_u64_to_reg(ob, PrimType::I64), RegValue::I64(125));
+        assert_eq!(unpack_u64_to_value(oa, PrimType::I64), Value::I64(26));
+        assert_eq!(unpack_u64_to_value(ob, PrimType::I64), Value::I64(125));
     }
 
     /// Regression: when `DYNCALL_PENDING` is set BEFORE the JIT'd
@@ -7977,7 +8553,6 @@ mod tests {
     /// branch was taken.
     #[test]
     fn return_pending_check_drops_composite_result() {
-        use crate::gir_interp::RegValue;
         // |x: i64| -> (i64, i64) (x, x + 1)
         // Body is just TupleNew of two scalars — no DynCall.
         let body = GirExpr {
@@ -7986,19 +8561,19 @@ mod tests {
                     loc("x", PrimType::I64),
                     arith(
                         loc("x", PrimType::I64),
-                        const_expr(ConstVal::I64(1)),
+                        const_expr(Value::I64(1)),
                         BinOp::Add,
                     )
                     .unwrap(),
                 ],
                 elem_types: vec![
-                    GirType::Prim(PrimType::I64),
-                    GirType::Prim(PrimType::I64),
+                    prim_type(PrimType::I64),
+                    prim_type(PrimType::I64),
                 ],
             },
-            typ: GirType::Tuple(vec![
-                GirType::Prim(PrimType::I64),
-                GirType::Prim(PrimType::I64),
+            typ: tuple_type(vec![
+                prim_type(PrimType::I64),
+                prim_type(PrimType::I64),
             ]),
         };
         let kernel = GirKernel {
@@ -8016,9 +8591,9 @@ mod tests {
                 name: ArcStr::from("x"),
                 kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
             }],
-            return_type: GirType::Tuple(vec![
-                GirType::Prim(PrimType::I64),
-                GirType::Prim(PrimType::I64),
+            return_type: tuple_type(vec![
+                prim_type(PrimType::I64),
+                prim_type(PrimType::I64),
             ]),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
@@ -8026,7 +8601,7 @@ mod tests {
         let wrapped =
             compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
         let f = unsafe { wrapped.fn_ptr() };
-        let args = [pack_reg_to_u64(&RegValue::I64(21))];
+        let args = [pack(&Value::I64(21))];
 
         // First: baseline — pending NOT set, kernel returns a real
         // *mut ValArray pointer. Reclaim and verify the tuple
@@ -8085,10 +8660,9 @@ mod tests {
     ///   (peek, not clear).
     #[test]
     fn return_pending_check_drops_string_result() {
-        use crate::gir_interp::RegValue;
         let body = GirExpr {
             op: GirOp::ConstStr(ArcStr::from("hi")),
-            typ: GirType::String,
+            typ: string_type(),
         };
         let kernel = GirKernel {
             fn_name: ArcStr::from("returns_str"),
@@ -8105,14 +8679,14 @@ mod tests {
                 name: ArcStr::from("x"),
                 kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
             }],
-            return_type: GirType::String,
+            return_type: string_type(),
             has_tail_loop: false,
             body: vec![GirStmt::Return(body)],
         };
         let wrapped =
             compile_kernel_with_wrapper(&kernel).expect("compile wrapper");
         let f = unsafe { wrapped.fn_ptr() };
-        let args = [pack_reg_to_u64(&RegValue::I64(0))];
+        let args = [pack(&Value::I64(0))];
 
         // Baseline: pending NOT set, wrapper returns a real ArcStr
         // pointer. Transmute back, verify content, drop properly.

@@ -12,32 +12,39 @@ pub struct TestCtx {
 }
 
 /// The fusion outcome a [`run!`] fixture asserts for its program.
-/// Checked bidirectionally in the `fused` and `jit` modes: a fixture
-/// that fuses when it shouldn't (or fails to fuse / JIT when it
-/// should) fails the test, so the suite is a live, drift-detecting
-/// map of the fusion frontier.
+/// Checked bidirectionally in the `jit` mode: a fixture that fuses
+/// when it shouldn't (or fails to fuse / JIT when it should) fails the
+/// test, so the suite is a live, drift-detecting map of the fusion
+/// frontier.
+///
+/// The GIR interpreter is gone — fusion is JIT-only. A kernel that
+/// can't JIT-compile is never spliced; its original nodes node-walk
+/// instead. So there is no "fuses but runs on the interpreter" state:
+/// a program either fuses + JITs (`Jit`) or doesn't fuse at all
+/// (`None`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FuseExpect {
     /// The program builds a fused kernel AND the JIT compiles + runs
-    /// it natively. `JIT_INVOCATIONS > 0` in `jit` mode.
+    /// it natively. `FUSION > 0 && JIT > 0` in `jit` mode.
     Jit,
-    /// The program builds a fused kernel, but it runs on the
-    /// interpreter — the JIT can't lower this shape yet (e.g.
-    /// composite cross-kernel call args). `FUSION > 0 && JIT == 0`.
-    Interp,
     /// The program produces no fused kernel at all — async/IO edges,
-    /// error-expecting fixtures, or pure language-feature tests with
-    /// no sync subgraph to fuse. `FUSION == 0`.
+    /// error-expecting fixtures, language-feature tests with no sync
+    /// subgraph to fuse, or sync subgraphs the JIT can't lower yet
+    /// (which fall back to the node-walk). `FUSION == 0`.
     None,
 }
 
 /// Assert the observed fusion counters match `expect`. Called after a
-/// fixture runs, in the `fused` (jit_active=false) and `jit`
-/// (jit_active=true) modes. Reads the per-thread `FUSION_INVOCATIONS`
-/// / `JIT_INVOCATIONS` counters (reset after runtime init, so they
-/// reflect only the fixture's own program).
+/// fixture runs, in the `jit` mode only. Reads the per-thread
+/// `FUSION_INVOCATIONS` / `JIT_INVOCATIONS` counters (reset after
+/// runtime init, so they reflect only the fixture's own program).
+///
+/// With the GIR interpreter gone, a fused kernel always JITs (`fuse()`
+/// only splices a kernel it could JIT-compile), so `FUSION > 0` and
+/// `JIT > 0` move together. A kernel that can't JIT isn't spliced —
+/// FUSION stays 0 and the program node-walks.
 #[cfg(debug_assertions)]
-pub fn check_fuse_expectation(expect: FuseExpect, jit_active: bool) {
+pub fn check_fuse_expectation(expect: FuseExpect) {
     use graphix_compiler::gir_jit_helpers::{
         fusion_invocations, jit_invocations,
     };
@@ -48,45 +55,22 @@ pub fn check_fuse_expectation(expect: FuseExpect, jit_active: bool) {
             assert!(
                 fusion > 0,
                 "fuse: Jit — expected a fused kernel to run but \
-                 FUSION_INVOCATIONS=0 (no kernel built/ran). Downgrade \
-                 to `fuse: None`, or fix the cliff.",
+                 FUSION_INVOCATIONS=0 (no kernel built/ran — the JIT \
+                 couldn't compile it, so it node-walked). Downgrade to \
+                 `fuse: None`, or fix the cliff.",
             );
-            if jit_active {
-                assert!(
-                    jit > 0,
-                    "fuse: Jit — kernel ran but JIT_INVOCATIONS=0; it \
-                     fell back to the interpreter. Downgrade to \
-                     `fuse: Interp`, or fix the JIT cliff.",
-                );
-            }
-        }
-        FuseExpect::Interp => {
-            // In jit mode a JIT-compile failure makes `fuse()` skip the
-            // splice entirely (FUSION==0), so the only reliable signal
-            // here is "it didn't JIT". The presence of fusion is
-            // asserted in fused mode (JitDisabled), where the kernel
-            // splices and runs on the interpreter.
-            if jit_active {
-                assert!(
-                    jit == 0,
-                    "fuse: Interp — but JIT_INVOCATIONS>0, this now JITs. \
-                     Upgrade the annotation to `fuse: Jit`.",
-                );
-            } else {
-                assert!(
-                    fusion > 0,
-                    "fuse: Interp — expected a fused kernel to run on the \
-                     interpreter (fused mode) but FUSION_INVOCATIONS=0. \
-                     Downgrade to `fuse: None`.",
-                );
-            }
+            assert!(
+                jit > 0,
+                "fuse: Jit — FUSION>0 but JIT_INVOCATIONS=0. With the \
+                 interpreter gone this should be impossible; investigate.",
+            );
         }
         FuseExpect::None => {
             assert!(
                 fusion == 0,
                 "fuse: None — expected NO fusion but FUSION_INVOCATIONS>0; \
                  this program now fuses. Upgrade the annotation to \
-                 `fuse: Interp` (or `fuse: Jit` if it JITs).",
+                 `fuse: Jit`.",
             );
         }
     }
@@ -258,49 +242,28 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
     res
 }
 
-/// Run a graphix fixture under three modes and assert the supplied
-/// predicate holds for the produced Value in each.
-///
-/// **Mode 1 (interp)**: `fusion_disabled=true`. Every lambda runs as
-///   `GXLambda`. This is the ground-truth path.
-/// **Mode 2 (fused)**: `fusion_disabled=false, jit_mode=Off,
-///   whole_graph=true`. Fused kernels dispatch through `gir_interp`.
-/// **Mode 3 (jit)**: `fusion_disabled=false, jit_mode=Forced,
-///   whole_graph=true`. Soft JIT failures panic; the JIT
-///   invocation counter must be > 0 after the run.
-///
-/// The macro expands to a child module with three
-/// `#[tokio::test(flavor = "current_thread")]` functions named
-/// `interp`, `fused`, and `jit`. Each runs the same fixture under
-/// its mode and asserts `$pred`.
-///
-/// Use `run_no_jit!` for fixtures that legitimately can't JIT
-/// (async builtins, network IO, or any program that won't produce
-/// a kernel — yet — but should still round-trip through interp).
-/// Run a graphix fixture under three modes and assert the supplied
+/// Run a graphix fixture under two modes and assert the supplied
 /// predicate holds for the produced Value in each:
 ///
-/// - **interp**: `CFlag::FusionDisabled` set. Fusion is a no-op;
-///   the program runs purely through the Update-trait node-graph
-///   interpreter. Ground truth for differential testing.
-/// - **fused**: `CFlag::JitDisabled` set. Fusion builds and
-///   splices kernels but they dispatch via [`crate::gir_interp`]
-///   instead of native code. Validates the GIR translation
-///   independently of the JIT backend.
-/// - **jit**: no flags set. The full fusion + JIT path. Resets
-///   the JIT invocation counter at start, runs, asserts the
-///   counter is `> 0` at the end — proves the JIT actually ran
-///   rather than silently falling back. `cfg(debug_assertions)`-
-///   gated since the counter only exists in debug builds.
+/// - **interp**: `CFlag::FusionDisabled` set. Fusion is a no-op; the
+///   program runs purely through the Update-trait node-walk. Ground
+///   truth for differential testing.
+/// - **jit**: no flags set. The full fusion + JIT path. Resets the
+///   fusion + JIT invocation counters at start, runs, asserts the
+///   `FuseExpect` annotation (and the optional `; shape:` NodeShape)
+///   against the live post-fusion graph. The shape is checked here
+///   (was in the removed `fused` mode) — with the interpreter gone, a
+///   fused kernel always JITs, so the graph shape is identical whether
+///   we observe it in jit mode or not. `cfg(debug_assertions)`-gated
+///   since the counters only exist in debug builds.
 ///
-/// Expands to a child module `mod $name { fn interp() … fn fused()
-/// … fn jit() … }` so cargo test reports a separate result per
-/// mode.
-///
-/// Use [`run_no_jit!`] for fixtures that legitimately can't JIT —
-/// async builtins, network IO, or anything whose kernel build
-/// doesn't succeed today but should still round-trip through
-/// interp + fused.
+/// The GIR interpreter has been deleted, so the old middle `fused`
+/// mode (`JitDisabled` — fusion on, dispatch via the interpreter) no
+/// longer exists: with no interpreter, `JitDisabled` means "build
+/// kernels but don't splice them", which is identical to `interp`
+/// (node-walk). The macro now expands to a child module `mod $name {
+/// fn interp() … fn jit() … }` — two `#[tokio::test(flavor =
+/// "current_thread")]` functions, one result per mode.
 #[macro_export]
 macro_rules! run {
     // ── NodeShape-bearing forms (trailing `; shape: <NodeShape>`) ──
@@ -352,7 +315,7 @@ macro_rules! run {
             async fn run_with_flags(
                 flags: ::graphix_compiler::BitFlags<::graphix_compiler::CFlag>,
                 reset_counters_after_init: bool,
-                fusion_check: ::std::option::Option<bool>,
+                fusion_check: bool,
                 check_shape: bool,
             ) -> ::anyhow::Result<()> {
                 let pred = $pred;
@@ -423,12 +386,12 @@ macro_rules! run {
                     }
                 }
                 // Bidirectional fusion-expectation check (debug only).
-                // `fusion_check` is `Some(jit_active)` in the modes
-                // that should check, `None` otherwise (interp mode,
-                // or `run_no_jit!`'s unchecked fixtures).
+                // `fusion_check` is true only in `jit` mode; the interp
+                // (FusionDisabled) mode never fuses, so there's nothing
+                // to assert there.
                 #[cfg(debug_assertions)]
-                if let ::std::option::Option::Some(jit_active) = fusion_check {
-                    $crate::testing::check_fuse_expectation($fexpect, jit_active);
+                if fusion_check {
+                    $crate::testing::check_fuse_expectation($fexpect);
                 }
                 ctx.shutdown().await;
                 Ok(())
@@ -436,25 +399,13 @@ macro_rules! run {
 
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {
-                // Ground truth: fusion fully disabled, no check.
+                // Ground truth: fusion fully disabled (node-walk only),
+                // no fusion/shape check.
                 run_with_flags(
                     ::graphix_compiler::CFlag::FusionDisabled.into(),
                     false,
-                    ::std::option::Option::None,
                     false,
-                ).await
-            }
-
-            #[::tokio::test(flavor = "current_thread")]
-            async fn fused() -> ::anyhow::Result<()> {
-                // Fusion on, JIT off: kernels dispatch via gir_interp.
-                // Checks fusion PRESENCE (Jit/Interp → FUSION>0,
-                // None → FUSION==0) but not the JIT distinction.
-                run_with_flags(
-                    ::graphix_compiler::CFlag::JitDisabled.into(),
-                    true,
-                    ::std::option::Option::Some(false),
-                    true,
+                    false,
                 ).await
             }
 
@@ -465,30 +416,25 @@ macro_rules! run {
                 // run every fixture (checked or not) through the full
                 // fusion+JIT path WITHOUT asserting, then print the
                 // observed level (`FUSEMAP <path> <level>`). Harvests
-                // the whole-corpus fusion-state map in one run.
+                // the whole-corpus fusion-state map in one run. With the
+                // interpreter gone, "fuses" and "JITs" coincide — a
+                // single full-path run measures both.
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
-                    // Two crash-safe measurements:
-                    //  - fused mode (JitDisabled): does it fuse at all?
-                    //    (FUSION>0). Never invokes cranelift, so it
-                    //    can't hit a JIT-compile panic.
-                    //  - jit mode (full): does it JIT? (JIT>0). May
-                    //    panic for kernels the JIT mis-compiles; run it
-                    //    second so the fused-mode signal is already
-                    //    printed.
                     run_with_flags(
-                        ::graphix_compiler::CFlag::JitDisabled.into(),
+                        ::graphix_compiler::BitFlags::empty(),
                         true,
-                        ::std::option::Option::None,
+                        false,
                         false,
                     ).await?;
-                    let fused_fusion =
+                    let fusion =
                         ::graphix_compiler::gir_jit_helpers::fusion_invocations();
+                    let jit =
+                        ::graphix_compiler::gir_jit_helpers::jit_invocations();
                     eprintln!(
                         "FUSEMAPF\t{}\t{}",
                         module_path!(),
-                        if fused_fusion > 0 { "Fuses" } else { "None" },
+                        if fusion > 0 { "Fuses" } else { "None" },
                     );
-                    #[cfg(debug_assertions)]
                     {
                         let bails =
                             ::graphix_compiler::gir_jit_helpers::take_fuse_bails();
@@ -503,14 +449,6 @@ macro_rules! run {
                             joined,
                         );
                     }
-                    run_with_flags(
-                        ::graphix_compiler::BitFlags::empty(),
-                        true,
-                        ::std::option::Option::None,
-                        false,
-                    ).await?;
-                    let jit =
-                        ::graphix_compiler::gir_jit_helpers::jit_invocations();
                     eprintln!(
                         "FUSEMAPJ\t{}\t{}",
                         module_path!(),
@@ -518,14 +456,15 @@ macro_rules! run {
                     );
                     return Ok(());
                 }
-                // Full fusion + JIT; checks the precise expectation.
-                // Shape is asserted in `fused` mode (backend-
-                // independent), so skip it here to avoid redundancy.
+                // Full fusion + JIT; checks the precise `FuseExpect`
+                // and (since the interpreter is gone, so the old
+                // `fused`-mode shape check is gone with it) the
+                // backend-independent NodeShape against the live graph.
                 run_with_flags(
                     ::graphix_compiler::BitFlags::empty(),
                     true,
-                    ::std::option::Option::Some(true),
-                    false,
+                    true,
+                    true,
                 ).await
             }
         }

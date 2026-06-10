@@ -17,7 +17,8 @@
 //! place, not part of the assertion path.
 
 use crate::{
-    gir::{GirExpr, GirKernel, GirOp, GirStmt, GirType},
+    gir::{GirExpr, GirKernel, GirOp, GirStmt},
+    typ::Type,
     Node, NodeView, Rt, UserEvent,
 };
 use arcstr::ArcStr;
@@ -92,7 +93,7 @@ impl NodeShape {
 #[derive(Debug, Clone, Default)]
 pub struct GirMatcher {
     /// Require this exact kernel return type.
-    pub return_type: Option<GirType>,
+    pub return_type: Option<Type>,
     /// Require exactly these scalar param names, in order.
     pub param_names: Option<Vec<ArcStr>>,
     /// Each tag must appear somewhere in the kernel body.
@@ -105,7 +106,7 @@ impl GirMatcher {
     }
 
     /// Require the kernel's return type.
-    pub fn returns(mut self, t: GirType) -> Self {
+    pub fn returns(mut self, t: Type) -> Self {
         self.return_type = Some(t);
         self
     }
@@ -159,7 +160,6 @@ impl GirMatcher {
 pub enum GirOpTag {
     Const,
     ConstStr,
-    ConstValue,
     ValueArith,
     ValueEq,
     Concat,
@@ -202,9 +202,10 @@ pub enum GirOpTag {
 /// update here (and a matching `GirOpTag` variant).
 fn gir_op_tag(op: &GirOp) -> GirOpTag {
     match op {
+        // Const covers both scalar and value-shape constants now
+        // (ConstValue was merged into Const; see gir::GirOp::Const).
         GirOp::Const(_) => GirOpTag::Const,
         GirOp::ConstStr(_) => GirOpTag::ConstStr,
-        GirOp::ConstValue(_) => GirOpTag::ConstValue,
         GirOp::ValueArith { .. } => GirOpTag::ValueArith,
         GirOp::ValueEq { .. } => GirOpTag::ValueEq,
         GirOp::Concat(_) => GirOpTag::Concat,
@@ -253,7 +254,10 @@ pub(crate) fn visit_ops_stmt(s: &GirStmt, f: &mut impl FnMut(&GirOp)) {
         GirStmt::Let(l) => visit_ops(&l.value, f),
         GirStmt::Return(e) | GirStmt::Discard(e) => visit_ops(e, f),
         GirStmt::TailCall { args } => args.iter().for_each(|e| visit_ops(e, f)),
-        GirStmt::Select { arms } => {
+        GirStmt::Select { scrut, arms } => {
+            if let Some(s) = scrut {
+                visit_ops(s, f);
+            }
             for a in arms {
                 if let Some(c) = &a.cond {
                     visit_ops(c, f);
@@ -272,7 +276,6 @@ pub(crate) fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
     match &e.op {
         GirOp::Const(_)
         | GirOp::ConstStr(_)
-        | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. }
@@ -338,7 +341,10 @@ pub(crate) fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
             lets.iter().for_each(|l| visit_ops(&l.value, f));
             visit_ops(tail, f);
         }
-        GirOp::IfChain { arms } => {
+        GirOp::IfChain { scrut, arms } => {
+            if let Some(s) = scrut {
+                visit_ops(s, f);
+            }
             for (c, v) in arms {
                 if let Some(c) = c {
                     visit_ops(c, f);

@@ -97,15 +97,16 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 5e-324_f64 + 5e-324)
 });
 
-// Float modulo. Cranelift has no `frem`, so the JIT bails and the kernel
-// runs on the interpreter (FuseExpect::Interp) — it must still produce
-// the right value. Regression for a fuzzer-found bug (#175): the JIT's
+// Float modulo. Cranelift has no `frem`, so the JIT bails — and with the
+// GIR interpreter gone, a kernel that can't JIT isn't spliced at all, so
+// the program node-walks (FuseExpect::None). It must still produce the
+// right value. Regression for a fuzzer-found bug (#175): the JIT's
 // float-`%` arm emitted a runtime trap that crashed the whole runtime
 // instead of bailing. Found by graphix-fuzz on `f64:7.0 % f64:3.0`.
 const FLOAT_MOD: &str = "f64:7.0 % f64:3.0";
 run!(float_mod, FLOAT_MOD, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 1.0)
-}; graphix_package_core::testing::FuseExpect::Interp);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // f32 inexact add.
 const F32_ADD_INEXACT: &str = "f32:0.1 + f32:0.2";
@@ -340,3 +341,26 @@ const SINK_RAND_STAYS_EAGER: &str =
 run!(sink_rand_stays_eager, SINK_RAND_STAYS_EAGER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(99)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// ── Bottom scrutinee vs bottom guard (differential-found) ──
+//
+// A bottom (None) SCRUTINEE must poison the whole select — the node-walk's
+// Select node only fires when the scrutinee has a value — NOT fall through
+// to the catch-all. The fused IfChain/Select folds the scrutinee into the
+// per-arm conds, so a bottom scrutinee previously made the conditional arm
+// fail to match and the `_` catch-all (cond None) win, returning its value
+// instead of bottom. Fixed via a `scrut` gate evaluated up front and
+// bottom-checked.
+//
+// The poison case produces *bottom* (all modes Timeout) and so can't be a
+// `run!` fixture — it's pinned in the findings/bottom-scrutinee-jun2026
+// oracle corpus instead. The COMPLEMENT — the cases that must STILL produce
+// a value, proving the fix doesn't over-poison — is the existing `sink_*`
+// family above (`sink_one_arm` etc.: a fine scrutinee with a bottom value
+// in an un-taken arm still yields the taken arm's value, all three modes).
+// The bottom-GUARD distinction (`select 5 { n if v>0 => …, _ => 99 }` with
+// v = 1/0 → 99, scrutinee fine + guard bottom → fall through) is verified
+// in the same oracle corpus; it can't be a `run!` fixture because the guard
+// is EAGER, so the JIT aborts the kernel at the `let v = 1/0` producer
+// (Timeout) while interp/fused recover 99 — an expected `interp == fused !=
+// jit` shape, not a value `run!` can assert across all three arms.

@@ -5027,67 +5027,87 @@ the tail) — i.e. general partial-lazy-code-motion, an open-ended optimization.
 Deferred pending a decision on the investment level. The two earlier gaps
 (bottom in an arm GUARD; #177 value-shape error-value) also remain.
 
-### Representable value-bottom — interp phase landed (Jun 2026)
+### Representable value-bottom — interp rebuilt on `Option<Value>` (Jun 2026)
 
-The principled fix the user directed ("of course bottom has to be a value,
-just like in the interpreter"): a value-level bottom (integer div/mod-by-
-zero, signed MIN/-1, `?` on an error value) is now a REPRESENTABLE VALUE in
-the fused **interpreter**, replacing the global `DYNCALL_PENDING` abort for
-value-errors. Full design + adversarial review in
-`design/representable_bottom.md`. The JIT half (per-value validity bit +
-taint) is the tracked continuation.
+The principled fix the user directed, in two corrections that collapse to
+one principle: **be the node-walk.** (1) "Of course bottom has to be a
+value, just like in the interpreter" — a value-level bottom (integer div/
+mod-by-zero, signed MIN/-1, `?` on an error value) must be a representable
+value, not a global abort. (2) "What's the actual difference between async-
+pending and bottom? In the interpreter there isn't one… for a kernel with
+multiple async inputs it just isn't true that the whole kernel is bottom if
+any of the async inputs is pending." (3) "Why invent `EvalResult`? Why not
+`Option<Value>`?" All three land as: the fused interpreter now mirrors the
+node-walk's `update` contract exactly. Full design in
+`design/representable_bottom.md`; the JIT half is the tracked continuation.
 
-**Why bottom was a problem (the root cause):** the node-walk's `None`-from-
-`update` is LOCAL to one node; fusion collapses N nodes into one kernel, so
-signalling bottom via the global flag aborts the WHOLE kernel even when the
-output never consumes the bottom (an un-taken select arm, a dead let, a
-let-bound select used downstream, an arm guard). Sinking + dead-elim were a
-structural band-aid with an edge-case tail.
+**The model (`gir_interp.rs`): `eval_expr -> Option<Value>`, `None` IS
+bottom.** A FIRST cut this session built an `EvalResult` enum with a `Bottom`
+variant + a separate async-pending channel — the user correctly called that
+the wrong abstraction (it reinvented `Option<Value>` and bolted bottom on
+the side). The rewrite **deletes** `EvalResult` (+ its `Bottom` variant, the
+`ev!` absorb macro, all `into_*` conversions, `wrap_value_shape`/
+`normalize_to_nullable`/`extract_composite_or_scalar`), `BodyResult::Pending`,
+and the interp's use of `DYNCALL_PENDING`. (`RegValue` stays — `gir_jit.rs`
+uses it; only the interp eval stopped.)
+- **The env is one `Vec<(ArcStr, Option<Value>)>`** — every binding is a
+  `Value`, a `None` is a bottom binding. The 7 typed slot lists (arrays/
+  variants/nullables/strings/bottoms) collapse to this single map.
+- **`?` IS the absorb.** A pure op reads each operand via `eval_expr(...)?`;
+  a bottom (`None`) operand short-circuits the op to `None` for free — no
+  macro. Arithmetic uses netidx `Value`'s own operators (mirroring
+  `node/op.rs`): Add/Sub/Mul wrap; Div/Mod map a `Value::Error` (div0/MIN-/-1)
+  → `None`. `Cmp` uses `Value`'s total-order `PartialEq`/`PartialOrd` (#174).
+  `QopUnwrap` → `None` on `Value::Error`. `error(v)` → `Some(Value::Error)`
+  (a VALUE, not bottom). `GirStmt::Let` binds the `Option<Value>` (incl. a
+  bottom) WITHOUT short-circuiting.
+- **The boundary IS the identity:** `eval_kernel_full` takes one
+  `&[Option<Value>]` and returns `Option<Value>`; `GirNode::update` returns
+  it directly (`None` = emit nothing) — literally the node-walk's `update`.
 
-**The interp model (`gir_interp.rs`):** new `EvalResult::Bottom` (payload-
-free, like node-walk `None`). The two value-bottom producers — `eval_bin`
-Div/Mod and `GirOp::QopUnwrap`'s error branch — emit `Bottom` instead of
-`set(DYNCALL_PENDING)+None`. A new `bottoms: Vec<ArcStr>` env slot holds
-bottom let-bindings (`push_local` routes `Bottom` there; `GirOp::Local`/the
-name-reading accessors return `Bottom` for a bottom binding). An `ev!`
-operand macro ABSORBS bottom through every pure op (Bin/Cmp/BoolBin/Not/
-Cast/ValueArith/ValueEq/IsNull/Concat/producers/accessors/slice/map/bytes/
-ArrayInit) — any bottom operand → bottom result. `BoolBin` short-circuit is
-preserved. Select/IfChain already evaluate only the taken arm, so an
-un-taken arm's bottom is never computed; the taken arm's bottom flows out
-(absorb); a bottom GUARD → arm does NOT match → fall through (byte-for-byte
-the node-walk's `is::match`). The boundary `into_value_checked()` at
-`GirNode::update` converts a bottom OUTPUT → `None` (the ONE site) — a
-non-bottom output marshals normally.
+**Async-pending UNIFIED with value-bottom (the line-3429 fix).** There is no
+separate pending channel. A never-fired kernel input feeds `None` (a bottom
+param) instead of `?`-aborting the whole kernel at the old `self.args[i]
+.as_ref()?` — so `select c { 0 => x, 1 => never_fired }` with `c=0` yields
+`x` (the un-taken arm's bottom input isn't consumed). A DynCall returning
+`None` flows as bottom. "Resolves later vs. never" is handled entirely by the
+runtime re-firing on input-change + the `self.args[i]` cache — not a
+this-cycle distinction. (The JIT path still classifies typed args + aborts on
+a missing input; only the interp path feeds bottom. JIT bottom is the next
+phase.)
 
-**Async-pending stays a whole-kernel abort, cleanly separated:** the only
-remaining `DYNCALL_PENDING`/`None`-channel use is the DynCall dispatcher
-returning None (genuine "no value this cycle"). The four value-bottom sites
-no longer touch the flag (the cosmetic rename → `ASYNC_PENDING` is deferred;
-the separation itself is done). Per the adversarial review, a bottom DynCall/
-Call ARGUMENT does NOT absorb — the node-walk's bottom arg-edge doesn't fire
-but the call still dispatches, so the faithful fused analogue is "no fresh
-value this cycle" (the kernel emits `None`); the arg loops `return None` on a
-bottom arg, keeping value-bottom and call-dispatch disjoint by construction.
+**Bottom GUARD vs bottom SCRUTINEE** (see the next entry, #178): a bottom
+*guard* (`n if v>0`) → arm doesn't match → fall through (byte-for-byte the
+node-walk's `is::match`); a bottom *scrutinee* → poisons the WHOLE select
+(the Select fires iff the scrutinee has a value). The scrutinee fix added an
+explicit `scrut` field to `GirOp::IfChain`/`GirStmt::Select`.
 
-**Sinking + dead-elim are now OPTIMIZATIONS, not correctness** — they elide a
-provably-dead bottom so it's never represented; a bottom that survives them
-flows as a value and is absorbed at the output. Kept on (the suite stays
-green; bottoms are elided in existing fixtures, so the bottom-as-value path
-is exercised by the validation probes, not the differential suite — the
-finding-5/guard fixtures land with the JIT, since `jit` mode still aborts).
+**Sinking + dead-elim are now pure OPTIMIZATIONS, not correctness** — they
+elide a provably-dead bottom so it's never represented; a bottom that
+survives them flows as a value and is absorbed at the output.
 
-**Validated:** fused-interp == node-walk on the full truth-table AND the two
-cases the sink pass could NOT handle — `guard_bottom` (`n if v>0 =>` with
-v=1/0 → 99) and `finding5` (let-bound nested select, bottom in an un-taken
-inner arm → 50) — resolved UNIFORMLY by the same mechanism. 132 compiler +
-2033 graphix-tests green.
+**Validated:** the {div0,`?`,missing-input,bottom-scrutinee} × {output,
+dead-let,un-taken-arm,taken-arm,guard,scrutinee} truth table all agree
+(fused-interp == node-walk), INCLUDING the two cases the sink pass could NOT
+handle (`guard_bottom`→99, `finding5`→50, resolved uniformly). **~4000 fuzz
+programs (generate + mutate, multiple seeds): ZERO `interp != fused`
+divergences.** 132 compiler + 2033 graphix-tests green.
 
-**Interp gaps to close before the final fuzz campaigns** (not suite-
-exercised): a bottom produced PER-ELEMENT inside a HOF body (`array::map(a,
-|x| x/0)`) still hits an `into_value` on `Bottom` (the array-HOF SOURCE being
-bottom IS handled); a bottom tail-call arg conservatively returns a bottom
-output. Both rare; tracked.
+**Method note** ([[feedback-run-the-code]]): the bottom-scrutinee bug and
+the gaps below were found by the differential ORACLE, not the suite — the
+`run!` fixtures all have their bottoms sink-elided, so the bottom-as-value
+path is exercised by oracle probes + fuzz, not the differential suite. The
+all-modes finding-5/guard/scrutinee fixtures land with the JIT phase (jit
+mode still aborts on an eager bottom).
+
+**JIT half still to do (phases 3–5):** the JIT aborts on bottom via the
+flag, so `interp == fused != jit` for any JIT'd kernel that produces an
+EAGER bottom (bottom guard, un-taken-arm bottom, bottom scrutinee). Next:
+per-value validity (`Scalar2{value,valid}` for tainted scalars, NULL/
+`BOTTOM_DISC` for composites/value-shape, div→branchless sentinel, IfChain
+phi threads validity, boundary decodes the output marker → None, cross-kernel
+`Call` bails on a tainted scalar V1). Then phase 5: demote sink/dead-elim +
+add the now-all-modes-green differential fixtures.
 
 **Next (JIT, Phases 3–4):** per-value validity — tainted scalars as
 `CompiledExpr::Scalar2{value,valid}` (non-tainted stay `Single`, zero cost);
@@ -5098,3 +5118,291 @@ ABOVE the netidx disc space (the review caught `0x4000` colliding with
 decodes the output marker → None; cross-kernel `Call` bails on a tainted
 scalar arg/return (V1). Then demote sink/dead-elim + add the finding-5/
 guard/`async_call(x/0)` all-modes fixtures + fuzz campaigns.
+
+### Bottom SCRUTINEE poisons the fused select (differential-found, Jun 2026)
+
+A differential check (node-walk interp vs fused-interp) caught a real
+semantic bug the `Option<Value>` bottom migration introduced: a bottom
+(`None`) SCRUTINEE wrongly fell through to the catch-all instead of
+poisoning the whole select. E.g. `{ let v = i64:1 / i64:0; select v { 0 =>
+i64:1, _ => i64:2 } }` gave fused=`Value(2)` while the trusted node-walk
+gave bottom (Timeout) — the Select node only fires when the scrutinee has a
+value, so a bottom scrutinee makes the WHOLE select bottom.
+
+**Root cause.** Fusion folds the scrutinee into the per-arm conditions (a
+pattern arm's cond is `scrut == literal`; the scrutinee is a bare `Local`,
+or a `__sel_scrut` temp via `stabilize_scrutinee`). With a bottom
+scrutinee, the conditional arm's cond `v == 0` is bottom → absorbed to
+`None` → "arm doesn't match" → fall through → the unconditional catch-all
+(`_`, cond `None`) wins. So the catch-all matched on a bottom scrutinee,
+which is exactly wrong. This is the SAME absorb-to-no-match logic that is
+CORRECT for a bottom *guard* (a per-arm condition) but WRONG for the
+scrutinee (the once-evaluated dispatch value): the node-walk evaluates the
+scrutinee up front and the Select fires iff it has a value, whereas guards
+are per-arm and a bottom guard just fails that arm.
+
+**Fix** (`gir.rs` / `fusion/lowering.rs` / `gir_interp.rs`). Added an
+explicit `scrut` field to `GirOp::IfChain` (`Option<Box<GirExpr>>`) and
+`GirStmt::Select` (`Option<GirExpr>`), lowered from `emit_select` /
+`emit_select_as_expr` (it's the same `Local`/`__sel_scrut` the arm conds
+already read — idempotent for the common scalar case, and value-shape
+scrutinees were already double-evaluated by the existing `IsNull`/
+`VariantTagEq` cond clones). The interpreter evaluates the scrut gate ONCE
+up front and a bottom scrutinee poisons: `eval_expr(scrut)?` in the IfChain
+arm (the `?` returns `None`), `return BodyResult::Return(None)` in the
+Select-stmt arm — BEFORE any arm is tried. A bottom guard is unchanged
+(still absorbs to a non-match). Bonus: an EXHAUSTIVE (no catch-all)
+bottom-scrutinee select used to `panic!("select fell through")`; the gate
+now poisons first, so that panic is unreachable.
+
+**JIT leaves the gate unconsumed (sound).** The JIT relies on the
+producing-site `pending_exit` abort it already emits: a bottom value is
+only ever produced by an internal div0/`?`/degenerate-builtin op, which
+aborts the kernel at the PRODUCER (the scrutinee's stabilization `Let`, or
+the upstream `let v = …` for a bare-`Local` scrutinee), so a bottom
+scrutinee never reaches the JIT'd select. (Region inputs are gated on
+availability by the runtime → never bottom.) The JIT arms destructure
+`{ scrut: _, arms }` with a comment; `compile_ifchain`/`compile_select_stmt`
+are unchanged. The 14th-commandment exhaustiveness sweep updated the GIR
+walkers in `gir.rs` (`stmt_has_*`/`expr_has_*`, `walk_call_sites_*`),
+`node_shape.rs` (`visit_ops`/`visit_ops_stmt`), `gir_jit.rs`
+(`collect_values_*`/`collect_strings_*`), and the lowering's `sink_*`/
+`ifchain_arms_*` helpers (a new `ifchain_scrut_ref` makes the scrut's refs
+EAGER so a let feeding it can't be sunk into an arm).
+
+**Validated.** The 6 task probes all agree `interp == fused`: probes 1/3
+(bottom scrutinee) all Timeout; probes 4/6 all the right value (incl. jit);
+probes 2/5 (bottom GUARD / bottom in an un-taken nested arm) are
+`interp == fused == 99/50` with `jit` Timeout — the expected
+`interp == fused != jit` (the JIT can't make an EAGER bottom-capable
+producer lazy). Two oracle-corpus regressions in
+`findings/bottom-scrutinee-jun2026` (both AGREE post-fix). 3400 fuzz
+programs (generate seeds 7/42/99 + mutation seeds 7/99) found ZERO
+`interp != fused` divergences; the one mutation finding
+(`select MAX { 2 => rand(...), _ => MAX }`) is `interp == fused != jit` (a
+pre-existing rand-DynCall JIT-bottom case, unrelated). 132 compiler + 2033
+graphix-tests green.
+
+### Value-first unification — delete RegValue + ConstVal, use Value (Jun 2026)
+
+First cut of the "stop maintaining parallel representations" refactor the
+user drove from reading `gir.rs`: the fusion layer had built a parallel
+*value* algebra (`RegValue` — the interp's 11-variant scalar enum;
+`ConstVal` — the GIR's scalar-const twin) alongside the parallel *type*
+algebra (`GirType`, addressed separately). The user's argument, confirmed
+in the code: netidx `Value` is `#[repr(u64)]` 16 bytes, and `RegValue`/
+`ConstVal` are ALSO 16 bytes (8-byte payload + tag) — **zero space saved**.
+`Value`'s `Clone` is already copy-optimized (`if self.is_copy() {
+ptr::read(self) }` — `is_copy()` is `discriminant() <= COPY_MAX`, one
+compare), so a scalar clone is a branch + 16-byte memcpy. `RegValue`'s
+entire reason to exist was eliding that one branch — not worth a parallel
+type + conversions at every boundary + a per-shape maintenance tax.
+
+- **`Value::copy_unchecked(&self) -> Value`** added to `netidx-value`
+  (`ptr::read`, `debug_assert!(is_copy())`) — the branch-free counterpart
+  to `clone()`, sound where the shape is statically a scalar (mirrors the
+  existing `get_as_unchecked` "shape proven, skip the check" precedent).
+- **`RegValue` deleted** (`gir_interp.rs` + `gir_jit.rs`, ~208 refs). The
+  `Option<Value>` interp rewrite had already removed it from the hot eval
+  path; what remained was `eval_cast` (now delegates to `Value::cast` —
+  the SAME primitive the node-walk's `TypeCast` uses, so interp == node-walk
+  by construction; added `PrimType::to_typ()` to drive it) and the JIT
+  boundary marshalling (`pack_reg_to_u64`/`unpack_u64_to_reg` →
+  `pack_value_to_u64(v, prim)`/`unpack_u64_to_value(bits, prim)`, going
+  Value↔CLIF directly via the declared PrimType; the ABI is unchanged).
+- **`ConstVal` deleted** (~150 refs); **`GirOp::Const(ConstVal)` +
+  `GirOp::ConstValue(Value)` merged → one `GirOp::Const(Value)`**. emit
+  produces `Const(value)` directly (it had a `Value` in hand and was
+  building `ConstVal` *from* it); interp `Const(v) => v.clone()`; JIT
+  dispatches on `e.typ.is_value_shape()` — scalar consts lower inline
+  (iconst/f64const, extracting the scalar for the known prim), value-shape
+  consts (datetime/duration/bytes/map) bake into `KernelValues` exactly as
+  `ConstValue` did. `ConstStr`/`ConstNull` left as distinct SSA shapes.
+  `GirOpTag::ConstValue` merged into `Const`.
+
+`rg 'RegValue|ConstVal'` is now 0. Differential oracle self-check (the
+suite can't catch a cast/const divergence): every cast (`cast<f64>(i64:7)`,
+`cast<i64>(f64:3.9)`, `cast<u8>(i64:300)`→44, neg→unsigned, inf→int,
+narrowing) and every const (i64/f64 inline, datetime/duration/bytes
+value-shape bake) agrees interp==fused==jit. 132 compiler + 2033
+graphix-tests green. This is the warm-up before the larger `GirType` →
+`Type` + `AbiShape` sweep (the type-layer twin of the same disease).
+
+### `&&`/`||` are STRICT — fused interp short-circuit was the bug (Jun 2026)
+
+The value-first fuzz campaign surfaced a pre-existing `interp != fused`
+divergence: `{ let v = 1/0; (0==0) || (v==1) }` → node-walk `Timeout`
+(bottom), fused `true`. The node-walk's `bool_op!` (`node/op.rs`) is
+**strict** — it produces only when BOTH operands are `Some(Value::Bool)`,
+so `true || ⊥ = ⊥`. The fused interp (since the `Option<Value>` rewrite)
+**short-circuited** (`l || eval(rhs)`, skipping `rhs` when `l` is true).
+
+**Initial mis-fix, then the user's correction (the important part).** I
+first read short-circuit as intended (it's what imperative languages do)
+and changed the node-walk to short-circuit too — WRONG. The user corrected
+it, and the reasoning is fundamental: **strict is correct; short-circuit is
+exactly wrong for a dataflow language.** A value must reflect *all* its
+inputs — if `x || async_op` produced `true` before `async_op` ever fired, a
+downstream `select x || async_op { … }` would commit to a branch on
+incomplete information, "making a decision before you even know the answer,"
+and you can't reason about a program where a decision precedes its inputs.
+Strict also keeps `&&`/`||` **uniform** with every other binary op (`a + b`
+waits for both, so must `a && b`); short-circuit would make them the
+surprising special case. So `false && ⊥ = ⊥`, `true || ⊥ = ⊥`.
+
+Final fix: **reverted** the node-walk to strict (the original `bool_op!`,
+`(Some(Bool), Some(Bool)) => b0 $op b1, _ => None`); **fixed the fused
+interp** `GirOp::BoolBin` to evaluate BOTH operands (`let l = …?; let r =
+…?;` then `l $op r`) so a bottom in either makes the result bottom. The
+**JIT was already strict** — it eagerly compiles both operands, so a bottom
+operand's div0/`?` aborts the kernel at its `pending_exit` before the
+`band`/`bor` (its comment, which claimed "the interpreter does
+short-circuit", was stale and is now corrected). All three backends now
+agree: `{div0}×{&&,||}×{absorbing,non-absorbing left}` all → bottom
+(Timeout) in interp == fused == jit; normal both-operands-fire cases
+unchanged. The suite stayed green (132 + 2033) at both the (wrong)
+short-circuit and the (correct) strict state — no fixture distinguishes
+them because they all fire both operands; only the oracle + fuzzer exercise
+a non-firing/bottom operand, which is why this slipped in originally and
+why the fuzzer caught it. `divergence_000478` now fully agrees across all
+three modes (no longer a divergence).
+
+Lesson ([[feedback-node-walk-is-canonical]], both directions): the node-walk
+being canonical means *don't casually change it* — a fused/node-walk
+divergence is at least as likely a fused bug as a node-walk one (here it was
+the fused). And a glance-level "looks right" on a semantics question still
+deserves the canonical-model test before changing the canonical model.
+
+### GirType deleted — fusion carries netidx Type + an AbiKind classifier (Jun 2026)
+
+The big type-layer cut the user drove from reading `gir.rs`: the parallel
+type enum `GirType` (15 variants re-encoding a fusable subset of `Type`)
+is **deleted**; the GIR now carries netidx `Type` everywhere and codegen
+dispatches on a small flat classifier. The user's argument — confirmed by
+the CLAUDE.md history (every recent shape addition was "add a GirType
+variant + from_type arm + a ~30-arm perl sweep") — was that maintaining a
+parallel, less-expressive type system whose every gap is a fusion cliff
+costs far more than a bail-check. ~1346 `GirType` references collapsed.
+
+**Foundation, proven first** (`gir.rs`, additive — the de-risking
+checkpoint): `enum AbiKind { Scalar(PrimType) | Array | Tuple | Struct |
+String | Variant | Nullable | Value | Unit | Null }` (flat top-level
+runtime-shape classifier; `Value` = bare value-shape DateTime/Duration/
+Bytes/Map/Error); `abi_kind(&Type) -> Option<AbiKind>`; `freeze_concrete
+(&Type) -> Option<Type>` (TVar-deref'd / Ref-free / nullary-abstract-
+expanded concrete Type, `None` iff `from_type` was `None`); structure
+accessors `array_elem`/`tuple_slots`/`struct_fields`/`variant_cases`/
+`nullable_inner` (the last NORMALIZES all 3 option forms: `[T,null]` Set,
+collapsed `T|null` prim, `[T,Error]` Set → success T). A **differential
+test** proved `abi_kind`/`freeze_concrete`/accessors reproduce
+`GirType::from_type`'s exact accept/reject + shape across ~40 shapes
+(it even caught a `[null, Error<T>]` priority edge — null-marker wins) —
+demonstrating `GirType` is losslessly replaceable BEFORE the cut. (The
+test was deleted post-sweep since it referenced the now-gone `from_type`.)
+
+**The cut**: `GirExpr.typ`, every `*Input` slot struct, `GirOp` type
+fields, `GirKernel.return_type`, `RegionInputKind`, and the stdlib
+`MapFn`/`FoldFn::emit_gir` surface now carry `Type`; ~40 variant-dispatch
+matches became `match abi_kind(&typ)` + accessors; emit calls
+`freeze_concrete` (not `from_type`); `gir_type_to_graphix_type` (the
+reverse) collapsed. The kind-grouped param ABI is unchanged
+(`abi_kind→AbiParamKind`).
+
+**Two regressions the sweep itself surfaced + fixed**: with precise `Type`,
+a `DynCall` arg-equality check (`e.typ != arg_types[i]`) that held loosely
+under coarse `GirType` broke 20 fixtures (a map literal's frozen `Type`
+vs the call-site `Map<K,V>`; `[T,null]` vs `[T,Error]`). Fixed by comparing
+DynCall args by **`abi_kind` shape**, not exact `Type` (sound: a genuinely-
+different inner type is a typecheck error; the relaxation only loosens
+representation). `emit_map_new` now tags the const map with its real
+frozen `Type`.
+
+**Verification (the sweep touched everything; the suite alone is
+insufficient)**: 133 compiler + 2033 graphix-tests green; oracle agrees
+interp==fused==jit on every type shape; fuzz (1500+ generate+mutate) found
+0 real divergences (1 was an async-timer timing flake). A 6-angle
+adversarial-review workflow surfaced 27 candidates; its verify phase
+failed (agents didn't emit StructuredOutput) so **I verified all 27 by
+hand** — **1 real**, the rest refuted (arg-equality by typecheck; JIT
+value-shape ownership by `classify_composite_source` inspection — it
+correctly marks every value-shape producer Owned; others stale/
+speculative).
+
+**The 1 real finding — the freeze landmine (fixed)**: `tuple_slots`/
+`struct_fields`/`array_elem` match `Type::Tuple`/etc. WITHOUT deref, but
+`abi_kind` DOES deref — so a (bound-)TVar-wrapped composite Type classified
+as `Tuple` by `abi_kind` would return `None` from `tuple_slots`, which
+`populate_kernel_inputs` silently `unwrap_or_default()`'d into an EMPTY
+slot → runtime crash. The design said "freeze at the boundary"; the sweep
+missed three: `type_to_region_input_kind`, `register_kir_binding_bid`,
+`emit_hof_body_destructured` now `freeze_concrete(&t)?` at entry (so the
+stored/queried Type is concrete and the non-derefing accessors always
+succeed); the silent `unwrap_or_default()` sites became `.expect("freeze
+invariant")` (a future freeze-gap fails LOUD, not silent-empty).
+
+**Why `PrimType` stays (and `GirType` goes)** — the user's earlier
+question, resolved: `PrimType` is a CLOSED, hardware-determined set (11
+register scalars) that ~32 exhaustive no-bail matches ride on; `GirType`
+re-encoded an OPEN, growing structure (the whole nested type tree). One is
+the good kind of classifier enum (small, closed, makes-illegal-states-
+unrepresentable), the other the bad kind. `AbiKind::Scalar(PrimType)` keeps
+it; `abi_kind` is the single `Typ`→`PrimType` narrowing point.
+
+### GIR interpreter DELETED — fusion is JIT-only, node-walk is the fallback (Jun 2026)
+
+Removed the third evaluator. Graphix had THREE: the node-walk (`Box<dyn
+Update>` graph, the canonical model), the GIR interpreter
+(`gir_interp.rs::eval_kernel_full` — a centralized `match` over `GirOp`),
+and the cranelift JIT. The interpreter was redundant — centralized jump-
+table dispatch SLOWER than the node-walk's distributed vtable dispatch, the
+chosen backend for only ~3/547 fixtures (all closeable JIT gaps), and it
+forced every semantics fix to be written three times.
+
+**The architecture is now binary.** Fusion builds a `GirKernel` and JIT-
+compiles it: **JIT success → splice the native kernel + delete the originals;
+JIT failure (or `JitDisabled`) → DON'T splice, leave the original nodes to
+node-walk.** The node-walk is the universal fallback.
+
+- **Chokepoint (`GirNode::build`, gir_interp.rs):** a fused node REQUIRES a
+  JIT. `build` bails `Err("no JIT … must node-walk")` when both `jit` and
+  `async_jit` are `None`. `GirNode::new` (the old interp-only constructor)
+  routes through `build`, so it now always errors — kept only for API
+  symmetry. `FusedKernel::new` propagates the `Err` via `?`; every splice
+  site (`fusion/mod.rs:202,268,302`, plus `gx.rs`/MapQ/`fuse_callsite`)
+  already had `Err(_) => continue`, so a non-JIT-able kernel is automatically
+  left un-spliced → node-walks.
+- **`GirNode::update`** dispatches unconditionally into the JIT wrapper —
+  the `else { eval_kernel_full(...) }` branch is gone. The only `None`-
+  wrapper case is an async-JIT slot not yet filled (returns `None`, re-fires
+  when it fills). Kept: `GirNode`, `build_arg_layout`/`ArgKind`/arg-packing,
+  `DynCallSlot`, and the `pack_value_to_u64`/`unpack_u64_to_value` boundary
+  helpers (used by the JIT).
+- **Deleted from gir_interp.rs:** `eval_kernel_full`, `eval_kernel`,
+  `eval_kernel_with_registry`, `eval_expr`, `eval_body`, `eval_cast`,
+  `InterpEnv`, `BodyResult`, and every `GirOp` eval arm + helpers. The file
+  went 4966 → 1473 lines (just `GirNode` + its JIT dispatch + arg-packing).
+  `rg 'fn eval_expr|fn eval_kernel_full'` = 0.
+- **Test harness (`graphix-package-core/testing.rs`): 3 modes → 2.** `run!`
+  expands to `interp` (node-walk, `FusionDisabled`) + `jit` (fusion+JIT,
+  `BitFlags::empty()`); the old middle `fused` mode (`JitDisabled` — which now
+  just means "build kernels but node-walk", == `interp`) is gone. `FuseExpect`
+  is `{ Jit, None }` (the 3 ex-`Interp` fixtures → `None`; their VALUE
+  assertions stay green via node-walk). The `FUSION_INVOCATIONS` +
+  `; shape:` NodeShape checks moved into the `jit` arm (where the kernel
+  fuses+JITs, both counters fire, and the graph shape is backend-independent).
+- **Fuzzer (`graphix-fuzz`): 3 modes → 2.** `Mode { Interp, Jit }`; `check`
+  compares interp vs jit; `Divergence::bisect()` collapsed to "fusion/JIT bug
+  (interp != jit)" (localize by dumping the GIR). The double-run
+  nondeterminism guard stays.
+
+**The payoff (verified via the oracle):** the eager-bottom select
+`{ let v = i64:1/i64:0; select i64:5 { 2 => v, _ => i64:99 } }` now yields
+**99 in BOTH interp and jit** — the JIT can't lower the eager bottom, so the
+kernel doesn't splice → node-walks → 99. The JIT-bottom-correctness gap is
+closed by the node-walk fallback, not by making the JIT handle every bottom.
+
+**Validation:** full workspace builds clean; 115/115 compiler tests; **1419/
+1419** graphix-tests (down from ~2033 — the `fused` mode removed ≈1 test per
+fixture); oracle `AGREE` on `x*3`→15, `7.0%3.0`→1.0, the eager-bottom select
+→99 both modes, tuple `t.0+t.1`→3; regression corpus 12/12, 0 regressions;
+fuzz generate seeds 7 and 99 (500 programs total) → 0 divergences.

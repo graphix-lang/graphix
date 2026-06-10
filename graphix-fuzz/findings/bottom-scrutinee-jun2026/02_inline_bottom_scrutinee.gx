@@ -1,0 +1,4 @@
+// bisect: GIR/emit bug (interp != fused)
+// interp/jit: Variant of 01 where the scrutinee is an INLINE bottom (no intervening `let`). The stabilize_scrutinee path binds it to a `__sel_scrut` temp; the IfChain's `scrut` gate is `Local(__sel_scrut)`. All three modes Timeout after the fix.
+// root_cause: Same bottom-scrutinee poisoning fix as 01 — exercises the stabilized (non-Local) scrutinee path of the new `scrut` gate.
+select (i64:1/i64:0) { 0 => i64:1, _ => i64:2 }

@@ -40,14 +40,16 @@ use crate::{
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
 use std::sync::LazyLock;
+use triomphe::Arc;
 
 /// Fusion-time registry mapping each abstract type's [`AbstractId`] to its
 /// concrete implementation type. Populated by
 /// `node::module::check_sig` when a signed module's `type X;` is matched
-/// to its impl `type X = …`. [`GirType::from_type`] consults it to lower
-/// an abstract-typed value to its concrete `GirType` — the optimizer peeks
-/// through the abstraction, but only here (the type system keeps it opaque
-/// everywhere else, and `from_type` is only ever called during fusion).
+/// to its impl `type X = …`. The fusion classifier ([`abi_kind`] /
+/// [`freeze_concrete`]) consults it to resolve an abstract-typed value
+/// to its concrete shape — the optimizer peeks through the abstraction,
+/// but only here (the type system keeps it opaque everywhere else, and
+/// the registry is only ever read during fusion).
 /// Keyed by the globally-unique `AbstractId`, so it is safe to share
 /// across concurrently-compiling `ExecCtx`s.
 pub static ABSTRACT_REGISTRY: LazyLock<
@@ -91,6 +93,26 @@ impl PrimType {
             Typ::Bool => PrimType::Bool,
             _ => return None,
         })
+    }
+
+    /// The netidx [`Typ`] for this primitive. The inverse of
+    /// [`from_typ`](PrimType::from_typ) on the eleven prim variants.
+    /// Used to drive [`Value::cast`] so the fused cast matches the
+    /// node-walk (which casts through the same `Value::cast`).
+    pub fn to_typ(self) -> Typ {
+        match self {
+            PrimType::I8 => Typ::I8,
+            PrimType::I16 => Typ::I16,
+            PrimType::I32 => Typ::I32,
+            PrimType::I64 => Typ::I64,
+            PrimType::U8 => Typ::U8,
+            PrimType::U16 => Typ::U16,
+            PrimType::U32 => Typ::U32,
+            PrimType::U64 => Typ::U64,
+            PrimType::F32 => Typ::F32,
+            PrimType::F64 => Typ::F64,
+            PrimType::Bool => Typ::Bool,
+        }
     }
 
     /// Derive a [`PrimType`] from a fully-resolved Graphix [`Type`].
@@ -151,441 +173,570 @@ impl PrimType {
     }
 }
 
-// ─── Composite types ────────────────────────────────────────────
+// ─── Composite types: see the Type-based classifier below ────────
+//
+// The fused-kernel type lattice is plain netidx [`Type`]; shape
+// classification + the structure accessors live in the
+// classifier section (`abi_kind`, `freeze_concrete`, `array_elem`,
+// `tuple_slots`, `struct_fields`, `variant_cases`, `nullable_inner`,
+// `scalar_prim`, `is_value_shape`).
 
-/// Type of a value that can flow through a fused kernel.
+
+// ─── Type-based classifier (additive foundation for the GirType→Type
+//     refactor) ─────────────────────────────────────────────────────
+//
+// These three pieces — [`AbiKind`], [`abi_kind`], and
+// [`freeze_concrete`] — reproduce the *decisions* of
+// [`GirType::from_type`] while carrying the structure in a plain
+// netidx [`Type`] instead of the parallel [`GirType`] enum. The
+// differential test at the bottom of this file proves the
+// correspondence shape-by-shape. None of this touches `GirType`,
+// `from_type`, or any existing usage; it is purely additive groundwork
+// before the larger cut.
+//
+// **Important parity note.** `from_type` is `Env`-free and does NOT
+// resolve `Type::Ref` aliases (a bare `Type::Ref` reaching it falls
+// through to `PrimType::from_type` → `None`); the fusion callers
+// pre-resolve Refs via `resolve_abstract` before calling `from_type`.
+// To keep the invariant `freeze_concrete(t).is_some() ==
+// from_type(t).is_some()` *exact* (and the signature `Env`-free, like
+// `from_type`), `freeze_concrete` mirrors `from_type`'s traversal
+// precisely: it derefs TVars (`with_deref`) and expands nullary
+// `Type::Abstract` via [`ABSTRACT_REGISTRY`], but it does NOT resolve
+// `Type::Ref`. A frozen `Type` is therefore TVar-free and (nullary-)
+// abstract-free over the fusable subset; Ref-resolution, if needed,
+// happens in the caller exactly as it does for `from_type` today.
+
+/// The flat, top-level runtime-shape classifier — the `Type`-based
+/// twin of the leaf shapes [`GirType::from_type`] produces. Unlike
+/// `GirType`, this is *not* nested: any structure (element / field /
+/// payload types) is carried by the classified [`Type`] itself and
+/// read back out via the structure accessors ([`array_elem`],
+/// [`tuple_slots`], [`struct_fields`], [`variant_cases`],
+/// [`nullable_inner`]).
 ///
-/// Variants:
-/// - `Prim(p)`: scalar primitive.
-/// - `Array(p)`: flat array of one primitive type. Nested arrays
-///   aren't supported in v1.
-/// - `Tuple(elems)`: heterogeneous fixed-arity ordered values like
-///   `(i64, f64, bool)`. Same `ValArray` runtime layout as `Array`,
-///   different per-slot types. Field access is by compile-time
-///   index.
-/// - `Struct(fields)`: heterogeneous fixed-arity values keyed by
-///   alphabetically-sorted field name. Same `ValArray` layout. Field
-///   access is by name → sorted-index.
-///
-/// Both Tuple and Struct reuse the array boundary plumbing
-/// (`get_unchecked<T>(i)` per slot, `from_iter_exact` for the output);
-/// they're really arrays-with-per-slot-types. Fusion lowering
-/// recognises `(a, b, c)` / `{x: a, y: b}` literal forms as producer
-/// ops and `t.0` / `s.field` as accessor ops.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum GirType {
-    Prim(PrimType),
-    /// `Array<T>` — element type is any `GirType`, including nested
-    /// composites (`Array<Tuple<i64, string>>`, `Array<Array<i64>>`,
-    /// etc.). The runtime stores arrays as `ValArray<Value>` and
-    /// `Value` is already nested-capable, so no runtime layout change
-    /// is needed; only the static GIR type needs to track nesting.
-    Array(Box<GirType>),
-    /// `(T0, T1, T2, ...)` — order matters; per-slot types in source
-    /// order. Slots can be any `GirType` (nested tuples / arrays /
-    /// structs / variants allowed).
-    Tuple(Vec<GirType>),
-    /// `{field0: T0, field1: T1, ...}` — sorted alphabetically by
-    /// field name (matching graphix's canonical struct layout). Field
-    /// types can be any `GirType`.
-    Struct(Vec<(ArcStr, GirType)>),
-    /// `` `Foo(T0, T1) | `Bar(U0) `` — tagged union of cases. Each
-    /// case carries its tag (an `ArcStr`) and zero-or-more payload
-    /// types (any `GirType`). At runtime, a variant value with
-    /// payloads is `Value::Array([Value::String("tag"), payload0,
-    /// ...])`; nullary cases (no payloads) are
-    /// `Value::String("tag")` and fall outside this fusion path (the
-    /// v0 emitter rejects them). The cases list is the set of all
-    /// cases that can flow into this position — typecheck-derived.
-    Variant(Vec<(ArcStr, Vec<GirType>)>),
-    /// "No useful value" — the return shape of side-effect-only
-    /// builtins like `println`, `dbg`, `log`. Graphix surfaces it as
-    /// `_` in val sigs, which the parser resolves to `Type::Bottom`.
-    /// Kernels never *produce* a Unit-typed value that downstream
-    /// code reads: `GirOp::DynCall { return_type: Unit }` discards
-    /// the runtime `Value` returned by `Apply::update`. `Unit` is
-    /// a **leaf type** — composing it (Array<Unit>, Tuple<[Unit,
-    /// …]>, …) is rejected by the constructors. Adding it lets
-    /// `extract_fn_signature` accept Bottom-returning callees,
-    /// which is what `discover_builtin_fn_inputs` needs to register
-    /// sync side-effect builtins as `FnSource::Builtin` slots.
-    Unit,
-    /// `ArcStr`-backed string. Lives outside [`PrimType`] because
-    /// `ArcStr` isn't `Copy` (a refcounted thin pointer). The
-    /// interpreter holds strings via
-    /// [`crate::gir_interp::EvalResult::String`]; the JIT lowers
-    /// String SSA values as a single `i64` (ArcStr's thin pointer)
-    /// with explicit clone/drop helpers. Produced by
-    /// [`GirOp::ConstStr`] and [`GirOp::Concat`]; consumed by
-    /// `GirOp::DynCall` arg-marshalling to push a `Value::String`.
-    /// Like `Unit`, treated as a **leaf type** — `Array<String>`,
-    /// `Tuple<[String, _]>`, etc. aren't expressible at this layer.
+/// Mirrors [`AbiParamKind`] plus the two non-param leaf shapes
+/// `from_type` can yield (`Unit` from `Type::Bottom`, `Null` from the
+/// null primitive). `Value` here is the *bare* value-shape group —
+/// `DateTime` / `Duration` / `Bytes` / `Map` / `Error` — which all
+/// share the two-register `Value` wire form and which `GirType`
+/// distinguishes only to pick the right runtime carrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiKind {
+    Scalar(PrimType),
+    Array,
+    Tuple,
+    Struct,
     String,
-    /// The single-value `null` type — graphix's `Type::Primitive(Typ::Null)`.
-    /// Runtime representation is `Value::Null`. Used as the None case
-    /// of [`Nullable`](`GirType::Nullable`) and to type the literal
-    /// expression `null`. Like other leaves (`Unit`, `String`), Null
-    /// is not composable directly into Tuple/Struct/Variant payload
-    /// positions — those want a real T; nullability is expressed via
-    /// `Nullable(Box<T>)`.
+    Variant,
+    Nullable,
+    /// Bare value-shape: `DateTime` / `Duration` / `Bytes` / `Map` /
+    /// `Error`. Two-register `Value` at the ABI; the carried `Type`
+    /// says which.
+    Value,
+    /// `Type::Bottom` — side-effect-only return shape. Not a valid
+    /// kernel parameter.
+    Unit,
+    /// The single-value `null` type. Not a valid kernel parameter.
     Null,
-    /// `[T, null]` — graphix's option shape. The runtime value is
-    /// either `Value::Null` or `T`'s runtime form (no discriminator
-    /// tag in between). Produced by builtins like
-    /// `array::filter_map`'s callback return, struct fields typed
-    /// `[T, null]`, etc. Consumed by `select x { null as _ => …, t as
-    /// v => … }` patterns. Nesting (`Array<Nullable<T>>`,
-    /// `Tuple<[Nullable<T>, _]>`, etc.) is expressible — the runtime
-    /// just sees a slot whose value may be Null.
-    Nullable(Box<GirType>),
-    /// `datetime` — graphix's `Type::Primitive(Typ::DateTime)`.
-    /// Runtime representation is `Value::DateTime(Arc<DateTime<Utc>>)`
-    /// — a thin `Arc` pointer, so it flows through the JIT as a
-    /// two-register `Value` (disc + payload), exactly like
-    /// [`Variant`](GirType::Variant) / [`Nullable`](GirType::Nullable).
-    /// Arithmetic (`datetime ± duration`) lowers to [`GirOp::ValueArith`]
-    /// which reuses netidx's `impl {Add,Sub} for Value`.
-    DateTime,
-    /// `duration` — graphix's `Type::Primitive(Typ::Duration)`.
-    /// Runtime representation is `Value::Duration(Arc<Duration>)`;
-    /// Value-shape like [`DateTime`](GirType::DateTime). Arithmetic
-    /// (`duration ± duration`, `duration {*,/} <number>`,
-    /// `<number> * duration`) lowers to [`GirOp::ValueArith`].
-    Duration,
-    /// `bytes` — graphix's `Type::Primitive(Typ::Bytes)`. Runtime
-    /// representation is `Value::Bytes(PBytes)` (a refcounted thin
-    /// pointer). Treated as a **Value-shape** type (two-register
-    /// `Value`, like [`DateTime`](GirType::DateTime)) rather than a
-    /// single-register leaf like [`String`](GirType::String): a `bytes`
-    /// literal lowers to [`GirOp::ConstValue`] and rides the same
-    /// `graphix_value_clone`/`drop` + `value_inputs` machinery, so no
-    /// bytes-specific JIT helpers / slot lists are needed. (The
-    /// redundant disc word vs. String's single-register form is a
-    /// negligible cost for a much smaller, DRY implementation.)
-    Bytes,
-    /// `Map<K, V>` — graphix's `Type::Map`. Runtime representation is
-    /// `Value::Map(CMap)` where `CMap = immutable_chunkmap::Map` is a
-    /// refcounted thin pointer, so — like [`Bytes`](GirType::Bytes) —
-    /// it's a **Value-shape** type (two-register `Value`) reusing the
-    /// `graphix_value_clone`/`drop` + `value_inputs` machinery. A
-    /// constant map literal (`{"a" => 1, ...}` with all-constant
-    /// keys/values) folds to [`GirOp::ConstValue`]; map builtins
-    /// (`map::len`, `map::get`, …) consume/produce it via `DynCall`.
-    /// (Dynamic map literals and `m{key}` access aren't lowered yet.)
-    Map,
-    /// `Error<T>` — graphix's `Type::Error`. Runtime representation is
-    /// `Value::Error(Arc<Value>)`, a refcounted thin pointer, so — like
-    /// [`Bytes`](GirType::Bytes) / [`Map`](GirType::Map) — it's a
-    /// **Value-shape** type (two-register `Value`) reusing the
-    /// `graphix_value_clone`/`drop` + `value_inputs` machinery. The
-    /// `error(v)` builtin produces one via `DynCall`; consumers store
-    /// and pass it opaquely. Note this is a BARE `Error<T>` — the
-    /// `[T, Error]` Result/Option shape still lowers to
-    /// [`Nullable`](GirType::Nullable), not here.
-    Error,
 }
 
-impl GirType {
-    /// True for the "Value-shape" types — those whose JIT/runtime
-    /// representation is a two-register `Value` (disc + payload), not
-    /// a bare scalar / pointer / arcstr. These share the variant ABI:
-    /// passed/returned as two `I64`s, cloned via `graphix_value_clone`,
-    /// dropped via `graphix_value_drop`.
-    pub fn is_value_shape(&self) -> bool {
-        matches!(
-            self,
-            GirType::Variant(_)
-                | GirType::Nullable(_)
-                | GirType::DateTime
-                | GirType::Duration
-                | GirType::Bytes
-                | GirType::Map
-                | GirType::Error
-        )
-    }
-    /// Convenience for `GirType::Prim(_)` — when callers know they have
-    /// a scalar.
-    pub fn prim(p: PrimType) -> Self {
-        GirType::Prim(p)
-    }
-
-    /// Convenience for `GirType::Array(_)` with a primitive element.
-    /// For composite elements construct directly via
-    /// `GirType::Array(Box::new(inner))`.
-    pub fn array(elem: PrimType) -> Self {
-        GirType::Array(Box::new(GirType::Prim(elem)))
-    }
-
-    /// Returns the inner `PrimType` if this is a scalar; `None`
-    /// otherwise. Use to gate ops that only make sense on scalars
-    /// (binary arithmetic, casts, etc.).
-    pub fn as_prim(&self) -> Option<PrimType> {
-        match self {
-            GirType::Prim(p) => Some(*p),
-            _ => None,
-        }
-    }
-
-    /// Returns the element type if this is an array; `None` for
-    /// scalars / tuples / structs.
-    pub fn as_array_elem(&self) -> Option<&GirType> {
-        match self {
-            GirType::Array(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    /// Backwards-compatible helper: returns the element `PrimType` if
-    /// this is `Array<Prim(P)>`; `None` if the element is composite or
-    /// the value isn't an array. Use [`Self::as_array_elem`] for the
-    /// fully-general accessor; this exists for sites that genuinely
-    /// only handle the scalar case (e.g. legacy JIT helper selection).
-    pub fn as_array_prim(&self) -> Option<PrimType> {
-        self.as_array_elem().and_then(GirType::as_prim)
-    }
-
-    /// Returns the per-slot types if this is a tuple; `None` otherwise.
-    pub fn as_tuple_elems(&self) -> Option<&[GirType]> {
-        match self {
-            GirType::Tuple(es) => Some(es),
-            _ => None,
-        }
-    }
-
-    /// Returns the (sorted) field list if this is a struct; `None`
-    /// otherwise.
-    pub fn as_struct_fields(&self) -> Option<&[(ArcStr, GirType)]> {
-        match self {
-            GirType::Struct(fs) => Some(fs),
-            _ => None,
-        }
-    }
-
-    /// Returns the case list if this is a variant; `None` otherwise.
-    pub fn as_variant_cases(&self) -> Option<&[(ArcStr, Vec<GirType>)]> {
-        match self {
-            GirType::Variant(cs) => Some(cs),
-            _ => None,
-        }
-    }
-
-    /// Try to derive a [`GirType`] from a fully-resolved Graphix
-    /// [`Type`]. Recognises:
-    /// - `Type::Primitive` (one variant) → `Prim(_)`
-    /// - `Type::Array(elem)` → `Array(_)`
-    /// - `Type::Tuple(elems)` → `Tuple(_)` (each elem must be primitive)
-    /// - `Type::Struct(fields)` → `Struct(_)` (each field must be primitive)
-    /// Returns `None` for any other shape — callers fall back to
-    /// non-fused execution.
-    pub fn from_type(t: &Type) -> Option<GirType> {
-        // Helper: pull out a single `Type::Variant(tag, payloads)`
-        // case where every payload converts to a GirType (now
-        // possibly composite). Nullary cases (empty payloads) are
-        // accepted — they flow at runtime as `Value::String(tag)`,
-        // distinct from `Value::Array([tag, ...payloads])` for the
-        // with-payload case; the kernel boundary takes `&Value` and
-        // dispatches at access sites.
-        fn variant_case(
-            t: &Type,
-        ) -> Option<(ArcStr, Vec<GirType>)> {
-            t.with_deref(|resolved| match resolved? {
-                Type::Variant(tag, ts) => {
-                    let payloads: Option<Vec<GirType>> = ts
-                        .iter()
-                        .map(|p| GirType::from_type(p))
-                        .collect();
-                    payloads.map(|p| (tag.clone(), p))
-                }
-                _ => None,
-            })
-        }
-        // Helper: identify a `Type::Primitive` whose only variant is
-        // `Typ::Null`. Used both as a top-level lowering (→
-        // `GirType::Null`) and as the marker arm of a
-        // `[T, null]` Set (→ `GirType::Nullable(T)`).
-        fn is_null_primitive(t: &Type) -> bool {
-            t.with_deref(|resolved| match resolved {
-                Some(Type::Primitive(p)) => {
-                    p.contains(netidx_value::Typ::Null) && p.iter().count() == 1
-                }
-                _ => false,
-            })
-        }
-        t.with_deref(|resolved| match resolved? {
-            // `_` (Bottom) is the return type of side-effect-only
-            // builtins. Lower it to `GirType::Unit` so dispatch can
-            // register them — the value is never consumed downstream.
-            Type::Bottom => Some(GirType::Unit),
-            // String primitives lower to `GirType::String` (lives
-            // outside `PrimType` because ArcStr doesn't fit a
-            // register).
-            Type::Primitive(p)
-                if p.contains(netidx_value::Typ::String)
-                    && p.iter().count() == 1 =>
-            {
-                Some(GirType::String)
-            }
-            // Null primitive lowers to `GirType::Null` — the
-            // single-value null shape.
-            Type::Primitive(p)
-                if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
-            {
-                Some(GirType::Null)
-            }
-            // `datetime` / `duration` — Value-shape types (runtime
-            // `Value::DateTime`/`Value::Duration`, both `Arc`-payload).
-            Type::Primitive(p)
-                if p.contains(netidx_value::Typ::DateTime)
-                    && p.iter().count() == 1 =>
-            {
-                Some(GirType::DateTime)
-            }
-            Type::Primitive(p)
-                if p.contains(netidx_value::Typ::Duration)
-                    && p.iter().count() == 1 =>
-            {
-                Some(GirType::Duration)
-            }
-            // `bytes` — Value-shape (runtime `Value::Bytes(PBytes)`).
-            Type::Primitive(p)
-                if p.contains(netidx_value::Typ::Bytes)
-                    && p.iter().count() == 1 =>
-            {
-                Some(GirType::Bytes)
-            }
-            // `Map<K, V>` — Value-shape (runtime `Value::Map(CMap)`).
-            Type::Map { .. } => Some(GirType::Map),
-            // Bare `Error<T>` — Value-shape (runtime
-            // `Value::Error(Arc<Value>)`), produced by `error(v)`. The
-            // `[T, Error]` Result shape is handled by the `Type::Set`
-            // arm below (→ `Nullable`); this is only a standalone
-            // `Type::Error` (e.g. `error`'s `-> Error<'a>` return).
-            Type::Error(_) => Some(GirType::Error),
-            // `T | null` collapsed-primitive option shape: a multi-flag
-            // primitive carrying `Null` plus exactly one other primitive
-            // bit. The typechecker represents `[T, null]` this way
-            // (rather than as a `Type::Set`) when `T` is itself a
-            // primitive bitflag — e.g. `select x { 0 => null, n => n }`
-            // infers `i64 | null`, and a block whose tail has that type
-            // surfaces the collapsed form. Same `GirType::Nullable`
-            // shape as the `[T, null]` `Set` arm below. Without this,
-            // such a value misses the typed-AST fast path in
-            // `infer_body_rtype` and falls back to walking the body,
-            // which silently de-fuses any block that produces an option
-            // value (a predictable-performance cliff).
-            Type::Primitive(p)
-                if p.contains(netidx_value::Typ::Null) && p.iter().count() == 2 =>
-            {
-                let other =
-                    p.iter().find(|f| *f != netidx_value::Typ::Null)?;
-                // The non-null bit becomes the Nullable's inner GirType
-                // — a scalar prim, or `String` (which lives outside
-                // `PrimType`). Mirrors the `[T, null]` `Set` arm's
-                // recursion so both representations agree.
-                let inner = if other == netidx_value::Typ::String {
-                    GirType::String
-                } else {
-                    GirType::Prim(PrimType::from_typ(other)?)
-                };
-                Some(GirType::Nullable(Box::new(inner)))
-            }
-            Type::Array(inner) => {
-                GirType::from_type(inner).map(|t| GirType::Array(Box::new(t)))
-            }
-            Type::Tuple(elems) => {
-                let elems: Option<Vec<GirType>> = elems
-                    .iter()
-                    .map(|e| GirType::from_type(e))
-                    .collect();
-                elems.map(GirType::Tuple)
-            }
-            Type::Variant(_, _) => {
-                // Single-case variant (uncommon but legal).
-                variant_case(resolved?).map(|c| GirType::Variant(vec![c]))
-            }
-            Type::Set(members) => {
-                // First try `[T, null]` shape (graphix's `Option<T>`):
-                // exactly two members, one of which is the null
-                // primitive. Order-independent — `[T, null]` and
-                // `[null, T]` both lower to `GirType::Nullable(T)`.
-                if members.len() == 2 {
-                    let (null_idx, t_idx) =
-                        match (is_null_primitive(&members[0]), is_null_primitive(&members[1])) {
-                            (true, false) => (0, 1),
-                            (false, true) => (1, 0),
-                            _ => (usize::MAX, usize::MAX),
-                        };
-                    if null_idx != usize::MAX {
-                        if let Some(inner) = GirType::from_type(&members[t_idx]) {
-                            return Some(GirType::Nullable(Box::new(inner)));
-                        }
-                        return None;
-                    }
-                    // `[T, Error<X>]` shape (graphix's `Result<T, X>`):
-                    // exactly two members, one a `Type::Error`. Lowered
-                    // to `GirType::Nullable(T)` — the wire shape is
-                    // identical (Value-shape two-register) and the
-                    // boundary marshals the inner `Value` through
-                    // opaquely, so a `Value::Error(...)` flows through
-                    // as-is to downstream consumers that store it
-                    // (Bind) or read it (Ref). Pattern-matching the
-                    // Error case won't dispatch correctly — that's a
-                    // documented cliff requiring a real `GirType::Result`
-                    // variant.
-                    let is_err = |t: &Type| -> bool {
-                        t.with_deref(|r| matches!(r, Some(Type::Error(_))))
-                    };
-                    let (err_idx, t_idx) =
-                        match (is_err(&members[0]), is_err(&members[1])) {
-                            (true, false) => (0, 1),
-                            (false, true) => (1, 0),
-                            _ => (usize::MAX, usize::MAX),
-                        };
-                    if err_idx != usize::MAX {
-                        if let Some(inner) = GirType::from_type(&members[t_idx]) {
-                            return Some(GirType::Nullable(Box::new(inner)));
-                        }
-                        return None;
-                    }
-                }
-                // Variant unions: `[ \`Foo(...), \`Bar(...) ]` parses
-                // as a Set of single-Variant types. Match this
-                // shape; reject Sets with non-variant members
-                // (those are general unions — different fusion
-                // story).
-                let cases: Option<Vec<(ArcStr, Vec<GirType>)>> = members
-                    .iter()
-                    .map(|m| variant_case(m))
-                    .collect();
-                cases.map(GirType::Variant)
-            }
-            Type::Struct(fields) => {
-                let fs: Option<Vec<(ArcStr, GirType)>> = fields
-                    .iter()
-                    .map(|(n, t)| GirType::from_type(t).map(|p| (n.clone(), p)))
-                    .collect();
-                fs.map(GirType::Struct)
-            }
-            // Abstract (opaque) types lower to their concrete impl
-            // representation, registered by `node::module::check_sig` in
-            // `ABSTRACT_REGISTRY`. The type system keeps them opaque
-            // everywhere else; fusion peeks so abstract-typed values flow
-            // through kernels. Parameterized abstracts (`Box<'a>`) would
-            // need param substitution into the concrete — not handled
-            // yet, so they fall through to `None`.
-            Type::Abstract { id, params } if params.is_empty() => {
-                let concrete = ABSTRACT_REGISTRY.read().get(id).cloned();
-                concrete.and_then(|c| GirType::from_type(&c))
-            }
-            other => PrimType::from_type(other).map(GirType::Prim),
+impl AbiKind {
+    /// Map a top-level shape to the [`AbiParamKind`] used by the param
+    /// path. `Unit`/`Null` are not valid parameter shapes (they aren't
+    /// produced as kernel params), so they map to `None`. The bare
+    /// `Value` group all binds via the `Value` param kind (its carried
+    /// `Type` selects the runtime carrier at access sites).
+    pub fn to_abi_param_kind(self) -> Option<AbiParamKind> {
+        Some(match self {
+            AbiKind::Scalar(p) => AbiParamKind::Scalar(p),
+            AbiKind::Array => AbiParamKind::Array,
+            AbiKind::Tuple => AbiParamKind::Tuple,
+            AbiKind::Struct => AbiParamKind::Struct,
+            AbiKind::String => AbiParamKind::String,
+            AbiKind::Variant => AbiParamKind::Variant,
+            AbiKind::Nullable => AbiParamKind::Nullable,
+            AbiKind::Value => AbiParamKind::Value,
+            AbiKind::Unit | AbiKind::Null => return None,
         })
     }
 }
 
-impl From<PrimType> for GirType {
-    fn from(p: PrimType) -> Self {
-        GirType::Prim(p)
+/// True for a `Type::Primitive` carrying exactly the single bit `which`.
+/// Derefs TVars, like `from_type`'s own primitive arms.
+fn is_single_prim(t: &Type, which: Typ) -> bool {
+    t.with_deref(|r| match r {
+        Some(Type::Primitive(p)) => {
+            p.contains(which) && p.iter().count() == 1
+        }
+        _ => false,
+    })
+}
+
+/// Classify the TOP-LEVEL runtime shape of a `Type`, mirroring the
+/// arms of [`GirType::from_type`] but returning the flat [`AbiKind`]
+/// (it does NOT recurse to verify element fusability — that's
+/// [`freeze_concrete`]'s job). Derefs TVars via `with_deref`; expands
+/// nullary `Type::Abstract` via [`ABSTRACT_REGISTRY`]. Returns `None`
+/// for the same top-level shapes `from_type` rejects (unbound TVar,
+/// `Type::Fn`, multi-member non-option/non-variant `Set`,
+/// parameterized abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
+pub fn abi_kind(t: &Type) -> Option<AbiKind> {
+    t.with_deref(|resolved| {
+        let resolved = resolved?;
+        // Order matches `from_type`: Bottom, then the single-bit
+        // primitive special cases, then the value-shape composites,
+        // then the collapsed-option primitive, then the structural
+        // composites and Set, then the abstract registry.
+        match resolved {
+            Type::Bottom => return Some(AbiKind::Unit),
+            Type::Map { .. } => return Some(AbiKind::Value),
+            Type::Error(_) => return Some(AbiKind::Value),
+            Type::Array(_) => return Some(AbiKind::Array),
+            Type::Tuple(_) => return Some(AbiKind::Tuple),
+            Type::Struct(_) => return Some(AbiKind::Struct),
+            Type::Variant(_, _) => return Some(AbiKind::Variant),
+            Type::Abstract { id, params } if params.is_empty() => {
+                let concrete = ABSTRACT_REGISTRY.read().get(id).cloned();
+                return concrete.as_ref().and_then(abi_kind);
+            }
+            _ => {}
+        }
+        // Single-bit primitives.
+        if is_single_prim(resolved, Typ::String) {
+            return Some(AbiKind::String);
+        }
+        if is_single_prim(resolved, Typ::Null) {
+            return Some(AbiKind::Null);
+        }
+        if is_single_prim(resolved, Typ::DateTime)
+            || is_single_prim(resolved, Typ::Duration)
+            || is_single_prim(resolved, Typ::Bytes)
+        {
+            return Some(AbiKind::Value);
+        }
+        if let Type::Primitive(p) = resolved {
+            // Collapsed `T | null` (exactly 2 bits, one of them Null).
+            if p.contains(Typ::Null) && p.iter().count() == 2 {
+                return Some(AbiKind::Nullable);
+            }
+            // Plain single-register scalar.
+            if let Some(prim) = PrimType::from_type(resolved) {
+                return Some(AbiKind::Scalar(prim));
+            }
+            return None;
+        }
+        // `Type::Set`: option (`[T, null]`) and result (`[T, Error]`)
+        // both classify as Nullable; a set of single-Variant types is
+        // Variant; anything else is non-fusable.
+        if let Type::Set(members) = resolved {
+            // Mirror `from_type`'s exact two-stage priority for a
+            // 2-member set: NULL-marker first (the other member is the
+            // success T, even if that T is itself an Error/value-shape),
+            // then ERROR-marker, only if neither member is null. The
+            // success member must itself be classifiable, else the whole
+            // shape is non-fusable.
+            if let Some(succ) = option_result_success(members) {
+                return succ.and_then(|s| abi_kind(s)).map(|_| AbiKind::Nullable);
+            }
+            // Variant union: every member must be a single Variant.
+            let all_variants = members.iter().all(|m| {
+                m.with_deref(|r| matches!(r, Some(Type::Variant(_, _))))
+            });
+            if all_variants {
+                // Note: an EMPTY set classifies as a variant union here
+                // (zero members vacuously all-variant) — matching
+                // `from_type`, whose variant-union collect over zero
+                // members yields `Some(vec![])` → `GirType::Variant`.
+                return Some(AbiKind::Variant);
+            }
+            return None;
+        }
+        None
+    })
+}
+
+/// If `members` (a `Type::Set`'s members) is the option/result shape —
+/// a 2-member set with exactly one null/Error marker — returns
+/// `Some(Some(success_member))`. NULL-marker takes precedence over
+/// Error (so `[null, Error<T>]` is `Nullable<Error<T>>`, with null as
+/// the marker), exactly as `from_type` resolves it. Returns `None` if
+/// it isn't the option/result shape at all (so the caller falls to the
+/// variant-union path). The inner `Option` lets the caller distinguish
+/// "is the option shape, here's the success member" from "isn't".
+fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
+    if members.len() != 2 {
+        return None;
     }
+    let is_null = |m: &Type| is_single_prim(m, Typ::Null);
+    let is_err =
+        |m: &Type| m.with_deref(|r| matches!(r, Some(Type::Error(_))));
+    // Stage 1: `[T, null]` — exactly one member is the null primitive;
+    // the OTHER is the success T (regardless of what T is).
+    match (is_null(&members[0]), is_null(&members[1])) {
+        (true, false) => return Some(Some(&members[1])),
+        (false, true) => return Some(Some(&members[0])),
+        // (true, true) → `[null, null]`: not option; falls through to
+        // the Error stage (neither is Error) and then variant-union.
+        // (false, false) → no null; try Error.
+        _ => {}
+    }
+    // Stage 2: `[T, Error]` — only reached when NEITHER member is null.
+    match (is_err(&members[0]), is_err(&members[1])) {
+        (true, false) => Some(Some(&members[1])),
+        (false, true) => Some(Some(&members[0])),
+        // (true, true) → `[Error, Error]`: not option/result.
+        // (false, false) → no marker at all.
+        _ => None,
+    }
+}
+
+/// Produce a fully-concrete `Type` (no live TVars, no nullary
+/// abstracts) over the fusable subset, mirroring
+/// [`GirType::from_type`]'s traversal and accept/reject decisions
+/// exactly. Returns `None` iff `from_type` returns `None` for the same
+/// input — that is the load-bearing invariant the differential test
+/// asserts.
+///
+/// A `depth` cap (16, matching `resolve_abstract`) terminates on
+/// recursive abstract types: when the cap trips we return `None`,
+/// which is also what `from_type` does for such types (it would
+/// recurse until the registry yields a shape it can't represent, or
+/// stack-overflow — here we simply cap and reject, which is the safe
+/// matching behavior since recursive types aren't fusable anyway).
+pub fn freeze_concrete(t: &Type) -> Option<Type> {
+    freeze_concrete_d(t, 0)
+}
+
+fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
+    if depth > 16 {
+        return None;
+    }
+    t.with_deref(|resolved| {
+        let resolved = resolved?;
+        match resolved {
+            // Leaves that `from_type` accepts as-is.
+            Type::Bottom => Some(Type::Bottom),
+            Type::Map { .. } => Some(resolved.clone()),
+            Type::Error(_) => Some(resolved.clone()),
+            // Single-bit special primitives + collapsed option +
+            // plain scalar all just need their top-level shape
+            // recognized; the primitive carries no further structure to
+            // freeze, so clone the resolved (TVar-free) form.
+            Type::Primitive(p) => {
+                if is_single_prim(resolved, Typ::String)
+                    || is_single_prim(resolved, Typ::Null)
+                    || is_single_prim(resolved, Typ::DateTime)
+                    || is_single_prim(resolved, Typ::Duration)
+                    || is_single_prim(resolved, Typ::Bytes)
+                {
+                    return Some(Type::Primitive(*p));
+                }
+                // Collapsed `T | null` (2 bits incl. Null): the inner
+                // bit must be String or a register prim (matching
+                // `from_type`'s collapsed-option arm).
+                if p.contains(Typ::Null) && p.iter().count() == 2 {
+                    let other = p.iter().find(|f| *f != Typ::Null)?;
+                    if other == Typ::String
+                        || PrimType::from_typ(other).is_some()
+                    {
+                        return Some(Type::Primitive(*p));
+                    }
+                    return None;
+                }
+                // Plain single-register scalar.
+                PrimType::from_type(resolved).map(|_| Type::Primitive(*p))
+            }
+            Type::Array(inner) => {
+                let inner = freeze_concrete_d(inner, depth + 1)?;
+                Some(Type::Array(Arc::new(inner)))
+            }
+            Type::Tuple(elems) => {
+                let frozen: Option<Vec<Type>> = elems
+                    .iter()
+                    .map(|e| freeze_concrete_d(e, depth + 1))
+                    .collect();
+                Some(Type::Tuple(Arc::from_iter(frozen?)))
+            }
+            Type::Struct(fields) => {
+                let frozen: Option<Vec<(ArcStr, Type)>> = fields
+                    .iter()
+                    .map(|(n, ft)| {
+                        freeze_concrete_d(ft, depth + 1).map(|t| (n.clone(), t))
+                    })
+                    .collect();
+                Some(Type::Struct(Arc::from_iter(frozen?)))
+            }
+            Type::Variant(tag, payloads) => {
+                let frozen: Option<Vec<Type>> = payloads
+                    .iter()
+                    .map(|p| freeze_concrete_d(p, depth + 1))
+                    .collect();
+                Some(Type::Variant(tag.clone(), Arc::from_iter(frozen?)))
+            }
+            Type::Set(members) => {
+                // `[T, null]` / `[T, Error]` → freeze the success
+                // member (the marker stays as-is). Uses the SAME
+                // null-first priority as `from_type` (via
+                // `option_result_success`): `[null, Error<T>]` is the
+                // option of `Error<T>`, not a degenerate.
+                if let Some(succ_opt) = option_result_success(members) {
+                    let succ = succ_opt?;
+                    // The success member is `members[0]` or `members[1]`;
+                    // the other is the marker (kept as-is). Freeze the
+                    // success in place, preserving member order.
+                    let succ_idx =
+                        if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
+                    let frozen_succ = freeze_concrete_d(succ, depth + 1)?;
+                    let m0 = if succ_idx == 0 {
+                        frozen_succ.clone()
+                    } else {
+                        members[0].clone()
+                    };
+                    let m1 = if succ_idx == 1 {
+                        frozen_succ
+                    } else {
+                        members[1].clone()
+                    };
+                    return Some(Type::Set(Arc::from_iter([m0, m1])));
+                }
+                // Variant union: every member a single Variant; freeze
+                // each.
+                let frozen: Option<Vec<Type>> = members
+                    .iter()
+                    .map(|m| {
+                        m.with_deref(|r| match r {
+                            Some(Type::Variant(tag, payloads)) => {
+                                let fp: Option<Vec<Type>> = payloads
+                                    .iter()
+                                    .map(|p| freeze_concrete_d(p, depth + 1))
+                                    .collect();
+                                Some(Type::Variant(
+                                    tag.clone(),
+                                    Arc::from_iter(fp?),
+                                ))
+                            }
+                            _ => None,
+                        })
+                    })
+                    .collect();
+                Some(Type::Set(Arc::from_iter(frozen?)))
+            }
+            Type::Abstract { id, params } if params.is_empty() => {
+                let concrete = ABSTRACT_REGISTRY.read().get(id).cloned()?;
+                freeze_concrete_d(&concrete, depth + 1)
+            }
+            // Everything else: Any, Fn, Ref, ByRef, parameterized
+            // Abstract, multi-member non-option/non-variant Set
+            // (handled above), unbound TVar (None via with_deref).
+            _ => None,
+        }
+    })
+}
+
+// ─── Structure accessors over a (frozen) `Type` ──────────────────────
+//
+// These read nesting out of a `Type` the way the `GirType::as_*`
+// accessors read it out of a `GirType`. They expect a frozen (concrete)
+// `Type` but tolerate live TVars by deref'ing; they do not resolve
+// Refs (parity with `from_type`).
+
+/// Element type of a `Type::Array`; `None` otherwise.
+pub fn array_elem(t: &Type) -> Option<&Type> {
+    match t {
+        Type::Array(e) => Some(e),
+        _ => None,
+    }
+}
+
+/// Per-slot types of a `Type::Tuple`; `None` otherwise.
+pub fn tuple_slots(t: &Type) -> Option<&[Type]> {
+    match t {
+        Type::Tuple(es) => Some(es),
+        _ => None,
+    }
+}
+
+/// Sorted field list of a `Type::Struct`; `None` otherwise.
+pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type)]> {
+    match t {
+        Type::Struct(fs) => Some(fs),
+        _ => None,
+    }
+}
+
+/// The variant cases of a `Type`: a single `Type::Variant` yields one
+/// case; a `Type::Set` of single-Variant members yields the case list
+/// (mirroring `GirType::from_type`'s Variant-union handling). `None`
+/// for any other shape. Each case is `(tag, payload-types)`.
+pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
+    fn one(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
+        t.with_deref(|r| match r {
+            Some(Type::Variant(tag, payloads)) => {
+                Some((tag.clone(), payloads.iter().cloned().collect()))
+            }
+            _ => None,
+        })
+    }
+    match t {
+        Type::Variant(_, _) => one(t).map(|c| vec![c]),
+        Type::Set(members) => members.iter().map(one).collect(),
+        _ => None,
+    }
+}
+
+/// Normalizes ALL THREE option-shaped forms `GirType::Nullable`
+/// collapses and returns the (frozen) success type `T`:
+/// - `Type::Set([T, null])` (the explicit option Set),
+/// - `Type::Set([T, Error])` (the result Set),
+/// - the collapsed 2-bit primitive `T | null`.
+/// Returns `None` for any non-option shape. The returned `T` is frozen
+/// (run through [`freeze_concrete`]) so callers get a concrete inner.
+pub fn nullable_inner(t: &Type) -> Option<Type> {
+    t.with_deref(|resolved| {
+        let resolved = resolved?;
+        match resolved {
+            // Collapsed `T | null` primitive.
+            Type::Primitive(p)
+                if p.contains(Typ::Null) && p.iter().count() == 2 =>
+            {
+                let other = p.iter().find(|f| *f != Typ::Null)?;
+                if other == Typ::String {
+                    return Some(Type::Primitive(Typ::String.into()));
+                }
+                PrimType::from_typ(other)
+                    .map(|pt| Type::Primitive(pt.to_typ().into()))
+            }
+            Type::Set(members) => {
+                // Same null-first priority as `from_type` /
+                // `freeze_concrete`. `[null, Error<T>]` → success is
+                // `Error<T>` (null is the marker).
+                let succ = option_result_success(members)??;
+                freeze_concrete(succ)
+            }
+            _ => None,
+        }
+    })
+}
+
+/// The scalar [`PrimType`] of a `Type` whose top-level shape is a plain
+/// register scalar; `None` for any composite / string / value-shape /
+/// option type. Replaces `GirType::as_prim`.
+pub fn scalar_prim(t: &Type) -> Option<PrimType> {
+    match abi_kind(t) {
+        Some(AbiKind::Scalar(p)) => Some(p),
+        _ => None,
+    }
+}
+
+/// If `t` is `Array<P>` with a plain scalar element, the element
+/// `PrimType`; `None` if the element is composite or `t` isn't an
+/// array. Replaces `GirType::as_array_prim`.
+pub fn array_scalar_prim(t: &Type) -> Option<PrimType> {
+    array_elem(t).and_then(scalar_prim)
+}
+
+/// True for the "Value-shape" types — those whose JIT/runtime
+/// representation is a two-register `Value` (disc + payload):
+/// `Variant`, `Nullable`/option/result, `DateTime`, `Duration`,
+/// `Bytes`, `Map`, `Error`. Replaces `GirType::is_value_shape`.
+pub fn is_value_shape(t: &Type) -> bool {
+    matches!(
+        abi_kind(t),
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
+    )
+}
+
+// ─── Concrete-`Type` constructors for the leaf shapes ────────────────
+//
+// Carrying `Type` in the GIR means the emitter sometimes needs to mint
+// a concrete `Type` for a shape it knows by hand (a `string` let, a
+// `null` literal, a scalar result). These build the frozen `Type` the
+// classifier recognizes.
+
+/// A plain scalar `Type` for a [`PrimType`] (`Type::Primitive`).
+pub fn prim_type(p: PrimType) -> Type {
+    Type::Primitive(p.to_typ().into())
+}
+
+/// The `string` type (`Type::Primitive(Typ::String)`).
+pub fn string_type() -> Type {
+    Type::Primitive(Typ::String.into())
+}
+
+/// The `null` type (`Type::Primitive(Typ::Null)`).
+pub fn null_type() -> Type {
+    Type::Primitive(Typ::Null.into())
+}
+
+/// The unit / side-effect-only type (`Type::Bottom`).
+pub fn unit_type() -> Type {
+    Type::Bottom
+}
+
+/// The `bytes` type (`Type::Primitive(Typ::Bytes)`).
+pub fn bytes_type() -> Type {
+    Type::Primitive(Typ::Bytes.into())
+}
+
+/// The `datetime` type (`Type::Primitive(Typ::DateTime)`).
+pub fn datetime_type() -> Type {
+    Type::Primitive(Typ::DateTime.into())
+}
+
+/// The `duration` type (`Type::Primitive(Typ::Duration)`).
+pub fn duration_type() -> Type {
+    Type::Primitive(Typ::Duration.into())
+}
+
+/// A generic `Map<_, _>` type. Only the top-level `AbiKind::Value`
+/// classification matters for the fused kernel (the runtime value is a
+/// thin-pointer `Value::Map`); the key/value structure isn't inspected
+/// by codegen, so a placeholder `Null`-keyed/`Null`-valued map suffices
+/// for the leaf-shape classification (`abi_kind` → `Value`).
+pub fn map_type() -> Type {
+    Type::Map {
+        key: triomphe::Arc::new(null_type()),
+        value: triomphe::Arc::new(null_type()),
+    }
+}
+
+/// `Array<elem>`.
+pub fn array_type(elem: Type) -> Type {
+    Type::Array(triomphe::Arc::new(elem))
+}
+
+/// `(T0, T1, ...)` from per-slot element types.
+pub fn tuple_type(elems: Vec<Type>) -> Type {
+    Type::Tuple(triomphe::Arc::from_iter(elems))
+}
+
+/// `{f0: T0, f1: T1, ...}` from a sorted field list.
+pub fn struct_type(fields: Vec<(ArcStr, Type)>) -> Type {
+    Type::Struct(triomphe::Arc::from_iter(fields))
+}
+
+/// Reconstruct a variant `Type` from a `(tag, payload-types)` case
+/// list — a single case is a `Type::Variant`, multiple cases a
+/// `Type::Set` of single-Variant members (the inverse of
+/// [`variant_cases`]).
+pub fn variant_type_from_cases(cases: &[(ArcStr, Vec<Type>)]) -> Type {
+    let mk = |(tag, payloads): &(ArcStr, Vec<Type>)| {
+        Type::Variant(tag.clone(), triomphe::Arc::from_iter(payloads.clone()))
+    };
+    if cases.len() == 1 {
+        mk(&cases[0])
+    } else {
+        Type::Set(triomphe::Arc::from_iter(cases.iter().map(mk)))
+    }
+}
+
+/// `[inner, null]` option shape — the canonical `Nullable<inner>`
+/// representation (a 2-member Set with a null marker). Used when the
+/// emitter knows it has produced an option value but only has the
+/// success inner type in hand (HOF callback bodies, etc.).
+pub fn nullable_type(inner: Type) -> Type {
+    Type::Set(triomphe::Arc::from_iter([inner, null_type()]))
 }
 
 // ─── Operators ───────────────────────────────────────────────────
@@ -615,64 +766,6 @@ pub enum BoolOp {
     Or,
 }
 
-// ─── Constants ───────────────────────────────────────────────────
-
-/// A primitive-typed compile-time constant. Used by `GirOp::Const` and
-/// when we recognise an outer-scope `let x = <literal>` for inlining.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConstVal {
-    I8(i8),
-    I16(i16),
-    I32(i32),
-    I64(i64),
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    F32(f32),
-    F64(f64),
-    Bool(bool),
-}
-
-impl ConstVal {
-    pub fn typ(&self) -> PrimType {
-        match self {
-            ConstVal::I8(_) => PrimType::I8,
-            ConstVal::I16(_) => PrimType::I16,
-            ConstVal::I32(_) => PrimType::I32,
-            ConstVal::I64(_) => PrimType::I64,
-            ConstVal::U8(_) => PrimType::U8,
-            ConstVal::U16(_) => PrimType::U16,
-            ConstVal::U32(_) => PrimType::U32,
-            ConstVal::U64(_) => PrimType::U64,
-            ConstVal::F32(_) => PrimType::F32,
-            ConstVal::F64(_) => PrimType::F64,
-            ConstVal::Bool(_) => PrimType::Bool,
-        }
-    }
-
-    /// Try to lift a netidx [`Value`] to a primitive constant. Returns
-    /// `None` for any non-primitive variant (string, bytes, datetime,
-    /// arrays, decimals, …).
-    pub fn from_value(v: &Value) -> Option<ConstVal> {
-        Some(match v {
-            Value::I8(x) => ConstVal::I8(*x),
-            Value::I16(x) => ConstVal::I16(*x),
-            Value::I32(x) | Value::Z32(x) => ConstVal::I32(*x),
-            Value::I64(x) | Value::Z64(x) => ConstVal::I64(*x),
-            Value::U8(x) => ConstVal::U8(*x),
-            Value::U16(x) => ConstVal::U16(*x),
-            Value::U32(x) | Value::V32(x) => ConstVal::U32(*x),
-            Value::U64(x) | Value::V64(x) => ConstVal::U64(*x),
-            Value::F32(x) => ConstVal::F32(*x),
-            Value::F64(x) => ConstVal::F64(*x),
-            Value::Bool(b) => ConstVal::Bool(*b),
-            _ => return None,
-        })
-    }
-
-}
-
 // ─── Inputs and known fns/consts ─────────────────────────────────
 
 /// One input to a fused kernel — a binding the kernel reads. `name` is
@@ -694,7 +787,7 @@ pub struct Input {
 #[derive(Debug, Clone)]
 pub struct ArrayInput {
     pub name: ArcStr,
-    pub elem: GirType,
+    pub elem: Type,
     pub bind_id: Option<BindId>,
 }
 
@@ -704,7 +797,7 @@ pub struct ArrayInput {
 #[derive(Debug, Clone)]
 pub struct TupleInput {
     pub name: ArcStr,
-    pub elems: Vec<GirType>,
+    pub elems: Vec<Type>,
     pub bind_id: Option<BindId>,
 }
 
@@ -714,7 +807,7 @@ pub struct TupleInput {
 #[derive(Debug, Clone)]
 pub struct StructInput {
     pub name: ArcStr,
-    pub fields: Vec<(ArcStr, GirType)>,
+    pub fields: Vec<(ArcStr, Type)>,
     pub bind_id: Option<BindId>,
 }
 
@@ -727,7 +820,7 @@ pub struct StructInput {
 #[derive(Debug, Clone)]
 pub struct VariantInput {
     pub name: ArcStr,
-    pub cases: Vec<(ArcStr, Vec<GirType>)>,
+    pub cases: Vec<(ArcStr, Vec<Type>)>,
     pub bind_id: Option<BindId>,
 }
 
@@ -739,7 +832,7 @@ pub struct VariantInput {
 #[derive(Debug, Clone)]
 pub struct NullableInput {
     pub name: ArcStr,
-    pub elem: GirType,
+    pub elem: Type,
     pub bind_id: Option<BindId>,
 }
 
@@ -763,7 +856,7 @@ pub struct StringInput {
 #[derive(Debug, Clone)]
 pub struct ValueInput {
     pub name: ArcStr,
-    pub typ: GirType,
+    pub typ: Type,
     pub bind_id: Option<BindId>,
 }
 
@@ -816,9 +909,9 @@ pub struct KnownFusedFn {
     pub body_fn_name: String,
     /// Positional argument types in declaration order. Either scalar
     /// primitives or flat arrays of primitives.
-    pub arg_types: Vec<GirType>,
+    pub arg_types: Vec<Type>,
     /// Return type — scalar or array.
-    pub return_type: GirType,
+    pub return_type: Type,
 }
 
 /// A compile-time-known primitive expression bound to a Graphix-level
@@ -834,7 +927,7 @@ pub struct KnownConst {
 }
 
 impl KnownConst {
-    pub fn typ(&self) -> GirType {
+    pub fn typ(&self) -> Type {
         self.expr.typ.clone()
     }
 }
@@ -847,21 +940,24 @@ impl KnownConst {
 #[derive(Debug, Clone)]
 pub struct GirExpr {
     pub op: GirOp,
-    pub typ: GirType,
+    pub typ: Type,
 }
 
 #[derive(Debug, Clone)]
 pub enum GirOp {
-    /// A primitive constant.
-    Const(ConstVal),
-    /// A Value-shape constant — a `datetime`/`duration` literal whose
-    /// runtime form is `Value::DateTime`/`Value::Duration` (an `Arc`
-    /// payload that doesn't fit a `ConstVal` register). Result type is
-    /// [`GirType::DateTime`] / [`GirType::Duration`]. The interpreter
-    /// clones the `Value`; the JIT interns it in a per-kernel value-
-    /// constants table (like `ConstStr`'s string table) and emits the
-    /// `(disc, payload)` words, cloning the `Arc` on use.
-    ConstValue(Value),
+    /// A compile-time constant carrying a netidx [`Value`]. The
+    /// interpreter clones the `Value`. The JIT dispatches on the
+    /// value's shape: a `Value::is_copy()` scalar (`i64`/`f64`/`bool`/
+    /// …) lowers inline as an `iconst`/`f64const` (extracting the
+    /// scalar for the `PrimType` from the expression's `typ`), while a
+    /// non-copy value-shape constant (datetime/duration/bytes/map) is
+    /// interned in a per-kernel value-constants table (like
+    /// `ConstStr`'s string table) and emitted as the `(disc, payload)`
+    /// words, cloning the `Arc` on use. Result type matches the
+    /// value's shape via the expression's `typ` ([`GirType::Prim`] for
+    /// scalars, [`GirType::DateTime`]/`Duration`/`Bytes`/`Map` for
+    /// value-shape).
+    Const(Value),
     /// Arithmetic on Value-shape operands — `datetime ± duration`,
     /// `duration ± duration`, `duration {*,/} <number>`,
     /// `<number> * duration`. Either operand may be scalar (promoted
@@ -887,10 +983,10 @@ pub enum GirOp {
     },
     /// A string-typed constant. Used by `emit_expr`'s
     /// `ExprKind::Constant(Value::String)` arm and by `Concat`'s
-    /// literal segments. Result type is [`GirType::String`].
-    /// Lives outside [`ConstVal`] because [`ConstVal`] is `Copy` and
-    /// `ArcStr` isn't — keeping `ConstVal` `Copy` matters for the
-    /// `gir_interp` register paths.
+    /// literal segments. Result type is [`GirType::String`]. A distinct
+    /// op from [`GirOp::Const`] because String SSA is a single-register
+    /// thin pointer (`ArcStr`), not the two-register `Value` shape the
+    /// JIT uses for [`GirOp::Const`]'s value-shape constants.
     ConstStr(ArcStr),
     /// Concatenation of string-renderable parts — the GIR form of
     /// `ExprKind::StringInterpolate` (`"x=[x]"`). Each child must
@@ -926,7 +1022,7 @@ pub enum GirOp {
     /// boundary uses.
     QopUnwrap {
         inner: Box<GirExpr>,
-        success_typ: GirType,
+        success_typ: Type,
     },
     /// Reference to a function arg or let-bound local. Identified by
     /// name; the Rust backend uses the name directly, the CLIF backend
@@ -971,7 +1067,7 @@ pub enum GirOp {
     /// reads the `fn_index`-th slot of the kernel's fn-args table
     /// (populated by [`crate::gir_interp::GirNode`] from its incoming
     /// args), invokes the resulting `LambdaDef`'s `Apply`, and
-    /// converts the result back to a `RegValue`.
+    /// returns the resulting `Value`.
     ///
     /// The cranelift JIT supports `DynCall` end-to-end (scalar /
     /// composite args, scalar / composite / Value-shape returns,
@@ -989,12 +1085,12 @@ pub enum GirOp {
         /// (in the JIT path) to pick the right buf-push helper —
         /// scalars marshal as primitives, composites pass as
         /// refcount-bumped clones of the caller's owned pointer.
-        arg_types: Vec<GirType>,
+        arg_types: Vec<Type>,
         /// Return type. Equals the wrapping `GirExpr.typ`; carried
         /// here for symmetry with `arg_types` and so the JIT can
         /// pick the right `cast_u64_to_*` / `Box::from_raw` decode
         /// path without re-walking `GirExpr.typ`.
-        return_type: GirType,
+        return_type: Type,
     },
     /// Expression-form block: `{ let a = ..; let b = ..; tail }`.
     /// All non-tail items are let-bindings; the tail provides the
@@ -1008,7 +1104,18 @@ pub enum GirOp {
     /// `else`. If no entry is unconditional, lowering inserts an
     /// `unreachable!()` tail (typecheck should make this unreachable
     /// in practice).
+    ///
+    /// `scrut` is the select's scrutinee (the dispatch value). It is
+    /// evaluated ONCE up front and bottom-checked: a bottom (`None`)
+    /// scrutinee poisons the whole chain (it produces bottom), matching
+    /// the node-walk where a `select` node with no scrutinee value
+    /// never fires. This is distinct from a bottom *arm condition*
+    /// (e.g. a guard), which just makes that arm fail to match and
+    /// falls through. `scrut` is `None` only for selects with no
+    /// representable scrutinee gate (none today — lowering always sets
+    /// it); a `None` here means "no up-front bottom-check".
     IfChain {
+        scrut: Option<Box<GirExpr>>,
         arms: Vec<(Option<GirExpr>, GirExpr)>,
     },
     /// Length of a flat array parameter, as `u64`. `name` must
@@ -1087,7 +1194,7 @@ pub enum GirOp {
         /// body usually reads the bound `elem_local`). The loop binds
         /// `elem_local` as a scalar local for `Prim`, a composite
         /// otherwise (same split as `ArrayMap`).
-        elem_typ: GirType,
+        elem_typ: Type,
         init: Box<GirExpr>,
         acc_local: ArcStr,
         elem_local: ArcStr,
@@ -1134,7 +1241,7 @@ pub enum GirOp {
         /// `Array<(k, v)>`-style elements. The loop binds `elem_local`
         /// as a scalar local for `Prim` and a composite local
         /// otherwise.
-        in_elem: GirType,
+        in_elem: Type,
         elem_local: ArcStr,
         // Output element type is `body.typ` (any GirType — prim or
         // composite); no separate field needed.
@@ -1158,7 +1265,7 @@ pub enum GirOp {
         /// `Array<(k,v)>`. The loop binds `elem_local` scalar/composite
         /// (same split as `ArrayMap`); on a `keep`, the *original*
         /// element is pushed to the output.
-        elem: GirType,
+        elem: Type,
         elem_local: ArcStr,
         /// Predicate body — must emit as `GirType::Prim(Bool)`.
         predicate: Box<GirExpr>,
@@ -1173,7 +1280,7 @@ pub enum GirOp {
         /// bound the same way as `ArrayMap`. The result is
         /// `Nullable<elem>` — the matched element (scalar or composite)
         /// or `null`.
-        elem: GirType,
+        elem: Type,
         elem_local: ArcStr,
         /// Predicate body — must emit as `GirType::Prim(Bool)`.
         predicate: Box<GirExpr>,
@@ -1201,7 +1308,7 @@ pub enum GirOp {
     /// as `ArrayMap` (scalar local vs `arrays` slot).
     ArrayFindMap {
         array: ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_local: ArcStr,
         /// Body — must emit as `GirType::Nullable(out)`; the op's
         /// result type is the same `Nullable<out>`.
@@ -1215,7 +1322,7 @@ pub enum GirOp {
         array: ArcStr,
         /// Element type — `Prim` for scalar elements, composite for
         /// `Array<(k,v)>`; bound the same way as `ArrayMap`.
-        in_elem: GirType,
+        in_elem: Type,
         elem_local: ArcStr,
         /// Element type of the *output* — the element type of the body's
         /// `Array` result.
@@ -1235,7 +1342,7 @@ pub enum GirOp {
     TupleGet {
         name: ArcStr,
         idx: usize,
-        elem_typ: GirType,
+        elem_typ: Type,
     },
     /// Build a tuple from per-slot expressions. Each `fields[i]`
     /// emits to a GIR expression of type `elem_types[i]`; the
@@ -1245,7 +1352,7 @@ pub enum GirOp {
     /// Result type is `GirType::Tuple(elem_types)`.
     TupleNew {
         fields: Vec<GirExpr>,
-        elem_types: Vec<GirType>,
+        elem_types: Vec<Type>,
     },
     /// Read struct field `field` from `name` (a struct kernel
     /// parameter), at the sorted index `sorted_idx`. Result type
@@ -1257,7 +1364,7 @@ pub enum GirOp {
         name: ArcStr,
         field: ArcStr,
         sorted_idx: usize,
-        elem_typ: GirType,
+        elem_typ: Type,
     },
     /// Build a struct from per-field expressions. `sorted_fields` is
     /// the canonical alphabetical order (graphix's runtime layout).
@@ -1267,7 +1374,7 @@ pub enum GirOp {
     /// generalisation).
     StructNew {
         sorted_fields: Vec<(ArcStr, GirExpr)>,
-        sorted_types: Vec<(ArcStr, GirType)>,
+        sorted_types: Vec<(ArcStr, Type)>,
     },
     /// Test whether a variant param's runtime tag matches a
     /// compile-time-known tag string. Reads `name`'s slot 0 (the
@@ -1297,7 +1404,7 @@ pub enum GirOp {
     VariantNew {
         tag: ArcStr,
         payloads: Vec<GirExpr>,
-        payload_types: Vec<GirType>,
+        payload_types: Vec<Type>,
     },
 }
 
@@ -1328,7 +1435,14 @@ pub enum GirStmt {
     /// unconditional; arms after an unconditional arm are dead. If
     /// no arm is unconditional, lowering inserts a fallthrough
     /// `unreachable!()` — typecheck should forbid this in practice.
-    Select { arms: Vec<SelectArm> },
+    ///
+    /// `scrut` is the scrutinee, evaluated once up front and
+    /// bottom-checked: a bottom scrutinee poisons the select (the
+    /// kernel returns bottom), mirroring the node-walk's "Select fires
+    /// iff the scrutinee has a value." See [`GirOp::IfChain`] for the
+    /// scrutinee-vs-guard distinction. `None` means no up-front
+    /// bottom-check (none today).
+    Select { scrut: Option<GirExpr>, arms: Vec<SelectArm> },
     /// Evaluate `expr` for its side effect, discard the result.
     /// Used for `GirType::Unit` calls (`println`, `dbg`, `log`, …)
     /// and any other expression whose value the program doesn't
@@ -1396,7 +1510,7 @@ pub struct GirKernel {
     /// lambda's source argspec order. Only populated when
     /// `has_tail_loop` is true; otherwise empty.
     pub tail_call_slots: Vec<TailCallSlot>,
-    pub return_type: GirType,
+    pub return_type: Type,
     /// True iff the body contains a self-tail-call. Backends wrap the
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
     /// (CLIF) accordingly.
@@ -1569,19 +1683,17 @@ impl GirKernel {
     /// before producing). Callers translate `None` into their own
     /// error with context.
     pub fn abi_return(&self) -> Option<AbiReturn> {
-        match &self.return_type {
-            GirType::Prim(p) => Some(AbiReturn::One { prim: Some(*p) }),
-            GirType::Array(_)
-            | GirType::Tuple(_)
-            | GirType::Struct(_)
-            | GirType::Unit
-            | GirType::String => Some(AbiReturn::One { prim: None }),
-            GirType::Variant(_)
-            | GirType::Nullable(_)
-            | GirType::DateTime
-            | GirType::Duration
-            | GirType::Bytes | GirType::Map | GirType::Error => Some(AbiReturn::Two),
-            GirType::Null => None,
+        match abi_kind(&self.return_type)? {
+            AbiKind::Scalar(p) => Some(AbiReturn::One { prim: Some(p) }),
+            AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Unit
+            | AbiKind::String => Some(AbiReturn::One { prim: None }),
+            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
+                Some(AbiReturn::Two)
+            }
+            AbiKind::Null => None,
         }
     }
 }
@@ -1601,11 +1713,11 @@ pub struct FnParam {
     /// primitives plus composite (Array/Tuple/Struct/Variant)
     /// shapes — the JIT marshals each arg into a `netidx::Value`
     /// per its declared kind before dispatch.
-    pub arg_types: Vec<GirType>,
+    pub arg_types: Vec<Type>,
     /// Return type of the callee. May be scalar or composite; the
     /// dispatcher and JIT codegen branch on the kind to pick the
     /// right encode/decode path.
-    pub return_type: GirType,
+    pub return_type: Type,
 }
 
 /// How a [`FnParam`]'s callable is sourced at dispatch time.
@@ -1694,14 +1806,14 @@ pub enum BuiltinSlot {
 // fusion attempt.
 
 pub fn arith(lhs: GirExpr, rhs: GirExpr, op: BinOp) -> Option<GirExpr> {
-    let lp = lhs.typ.as_prim()?;
-    let rp = rhs.typ.as_prim()?;
+    let lp = scalar_prim(&lhs.typ)?;
+    let rp = scalar_prim(&rhs.typ)?;
     if lp != rp || !lp.is_numeric() {
         return None;
     }
     Some(GirExpr {
         op: GirOp::Bin { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
-        typ: GirType::Prim(lp),
+        typ: prim_type(lp),
     })
 }
 
@@ -1709,10 +1821,10 @@ pub fn cmp(lhs: GirExpr, rhs: GirExpr, op: CmpOp) -> Option<GirExpr> {
     if lhs.typ != rhs.typ {
         return None;
     }
-    if lhs.typ.as_prim().is_some() {
+    if scalar_prim(&lhs.typ).is_some() {
         return Some(GirExpr {
             op: GirOp::Cmp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
-            typ: GirType::Prim(PrimType::Bool),
+            typ: prim_type(PrimType::Bool),
         });
     }
     // Non-primitive `==` / `!=` (String, composite Array/Tuple/Struct, or
@@ -1720,7 +1832,7 @@ pub fn cmp(lhs: GirExpr, rhs: GirExpr, op: CmpOp) -> Option<GirExpr> {
     // via `Value`'s PartialEq. Ordering operators on non-prim types
     // aren't lowered, and Unit/Null have no comparable runtime form.
     if matches!(op, CmpOp::Eq | CmpOp::Ne)
-        && !matches!(lhs.typ, GirType::Unit | GirType::Null)
+        && !matches!(abi_kind(&lhs.typ), Some(AbiKind::Unit | AbiKind::Null))
     {
         return Some(GirExpr {
             op: GirOp::ValueEq {
@@ -1728,14 +1840,14 @@ pub fn cmp(lhs: GirExpr, rhs: GirExpr, op: CmpOp) -> Option<GirExpr> {
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },
-            typ: GirType::Prim(PrimType::Bool),
+            typ: prim_type(PrimType::Bool),
         });
     }
     None
 }
 
 pub fn bool_op(lhs: GirExpr, rhs: GirExpr, op: BoolOp) -> Option<GirExpr> {
-    let bool_t = GirType::Prim(PrimType::Bool);
+    let bool_t = prim_type(PrimType::Bool);
     if lhs.typ != bool_t || rhs.typ != bool_t {
         return None;
     }
@@ -1746,7 +1858,7 @@ pub fn bool_op(lhs: GirExpr, rhs: GirExpr, op: BoolOp) -> Option<GirExpr> {
 }
 
 pub fn not(inner: GirExpr) -> Option<GirExpr> {
-    let bool_t = GirType::Prim(PrimType::Bool);
+    let bool_t = prim_type(PrimType::Bool);
     if inner.typ != bool_t {
         return None;
     }
@@ -1756,32 +1868,63 @@ pub fn not(inner: GirExpr) -> Option<GirExpr> {
 pub fn cast(inner: GirExpr, target: PrimType) -> Option<GirExpr> {
     // Rust's `as` doesn't accept bool↔integer in either direction;
     // those need a `match`. Until the emitter grows that, refuse.
-    let inner_p = inner.typ.as_prim()?;
+    let inner_p = scalar_prim(&inner.typ)?;
     if target == PrimType::Bool || inner_p == PrimType::Bool {
         return None;
     }
     Some(GirExpr {
         op: GirOp::Cast { inner: Box::new(inner), target },
-        typ: GirType::Prim(target),
+        typ: prim_type(target),
     })
 }
 
-pub fn const_expr(c: ConstVal) -> GirExpr {
-    let typ = GirType::Prim(c.typ());
-    GirExpr { op: GirOp::Const(c), typ }
+/// Build a primitive-typed [`GirOp::Const`] from a scalar [`Value`].
+/// The lowered [`PrimType`] is derived from the value's variant via
+/// [`scalar_prim_of_value`] (collapsing `Z32`/`V64`/… to their fixed-
+/// width form). Panics on a non-scalar `Value` — a GIR-malformed
+/// condition; value-shape constants (datetime/duration/bytes/map) are
+/// emitted as `GirExpr { op: GirOp::Const(v), typ: <value-shape> }`
+/// directly by the lowering code, which knows the [`GirType`].
+pub fn const_expr(value: Value) -> GirExpr {
+    let prim = scalar_prim_of_value(&value).unwrap_or_else(|| {
+        panic!("const_expr: non-scalar Value {value:?} — GIR malformed")
+    });
+    GirExpr { op: GirOp::Const(value), typ: prim_type(prim) }
+}
+
+/// Map a scalar [`Value`] to the [`PrimType`] the kernel should treat
+/// it as. Variable-width variants (`Z32`/`Z64`/`V32`/`V64`) collapse
+/// to their fixed-width form (`I32`/`I64`/`U32`/`U64`), matching how
+/// the interpreter and JIT extract the scalar. Returns `None` for any
+/// non-scalar `Value` (string, bytes, array, datetime, decimal, …).
+pub fn scalar_prim_of_value(v: &Value) -> Option<PrimType> {
+    Some(match v {
+        Value::I8(_) => PrimType::I8,
+        Value::I16(_) => PrimType::I16,
+        Value::I32(_) | Value::Z32(_) => PrimType::I32,
+        Value::I64(_) | Value::Z64(_) => PrimType::I64,
+        Value::U8(_) => PrimType::U8,
+        Value::U16(_) => PrimType::U16,
+        Value::U32(_) | Value::V32(_) => PrimType::U32,
+        Value::U64(_) | Value::V64(_) => PrimType::U64,
+        Value::F32(_) => PrimType::F32,
+        Value::F64(_) => PrimType::F64,
+        Value::Bool(_) => PrimType::Bool,
+        _ => return None,
+    })
 }
 
 pub fn local(name: ArcStr, prim: PrimType) -> GirExpr {
-    GirExpr { op: GirOp::Local(name), typ: GirType::Prim(prim) }
+    GirExpr { op: GirOp::Local(name), typ: prim_type(prim) }
 }
 
 /// Construct a [`GirExpr`] referring to an array-typed local. The
-/// element type goes on `GirType::Array(elem)` so downstream ops
+/// element type goes on `Type::Array(elem)` so downstream ops
 /// (ArrayMap, ArrayFold) can read it back without a separate sidecar.
 pub fn local_array(name: ArcStr, elem: PrimType) -> GirExpr {
     GirExpr {
         op: GirOp::Local(name),
-        typ: GirType::Array(Box::new(GirType::Prim(elem))),
+        typ: array_type(prim_type(elem)),
     }
 }
 
@@ -1801,10 +1944,120 @@ fn stmt_has_call(stmt: &GirStmt) -> bool {
         GirStmt::Return(e) => expr_has_call(e),
         GirStmt::Discard(e) => expr_has_call(e),
         GirStmt::TailCall { args } => args.iter().any(expr_has_call),
-        GirStmt::Select { arms } => arms.iter().any(|a| {
-            a.cond.as_ref().is_some_and(expr_has_call)
-                || a.body.iter().any(stmt_has_call)
-        }),
+        GirStmt::Select { scrut, arms } => {
+            scrut.as_ref().is_some_and(expr_has_call)
+                || arms.iter().any(|a| {
+                    a.cond.as_ref().is_some_and(expr_has_call)
+                        || a.body.iter().any(stmt_has_call)
+                })
+        }
+    }
+}
+
+/// Extract the integer value of a `GirOp::Const(Value::<int>)` as an
+/// `i128` (covers every signed/unsigned width). `None` for non-constant
+/// or non-integer exprs.
+pub(crate) fn const_int(e: &GirExpr) -> Option<i128> {
+    match &e.op {
+        GirOp::Const(v) => match v {
+            Value::I8(n) => Some(*n as i128),
+            Value::I16(n) => Some(*n as i128),
+            Value::I32(n) => Some(*n as i128),
+            Value::I64(n) | Value::Z64(n) => Some(*n as i128),
+            Value::U8(n) => Some(*n as i128),
+            Value::U16(n) => Some(*n as i128),
+            Value::U32(n) | Value::V32(n) => Some(*n as i128),
+            Value::U64(n) | Value::V64(n) => Some(*n as i128),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether an integer div/mod (`lhs op rhs`) could be a value-bottom
+/// (div/mod-by-zero, or signed MIN/-1 overflow). Returns `false` only
+/// when both the divisor is a known-nonzero constant AND the overflow
+/// case is provably absent — i.e. the op provably can't bottom (so it
+/// stays a non-tainted `Single`, the fast path). A non-constant divisor
+/// conservatively returns `true`.
+pub(crate) fn int_div_may_bottom(lhs: &GirExpr, rhs: &GirExpr) -> bool {
+    match const_int(rhs) {
+        // Non-constant divisor: could be zero (or -1 with a MIN
+        // dividend) at runtime.
+        None => true,
+        Some(0) => true,
+        // Divisor -1 can overflow only with a signed MIN dividend.
+        // Stay conservative unless the dividend is a non-MIN constant.
+        Some(-1) => {
+            let signed = scalar_prim(&lhs.typ)
+                .is_some_and(|p| p.is_signed());
+            if !signed {
+                false
+            } else {
+                match (const_int(lhs), scalar_prim(&lhs.typ)) {
+                    (Some(l), Some(p)) => l == signed_min_i128(p),
+                    _ => true,
+                }
+            }
+        }
+        // Any other nonzero constant divisor can't bottom.
+        Some(_) => false,
+    }
+}
+
+fn signed_min_i128(p: PrimType) -> i128 {
+    match p {
+        PrimType::I8 => i8::MIN as i128,
+        PrimType::I16 => i16::MIN as i128,
+        PrimType::I32 => i32::MIN as i128,
+        _ => i64::MIN as i128,
+    }
+}
+
+/// Whether a SCALAR `GirExpr` could compile to a value-bottom
+/// (`CompiledExpr::Scalar2` in the JIT) — i.e. produce or propagate an
+/// integer div/mod-by-zero, signed MIN/-1, or scalar `?`-on-error.
+/// Used by the JIT's `compile_ifchain` to decide whether the scalar
+/// merge block needs a validity-bit phi. MUST over-approximate (never
+/// under-report) — a missed taint would silently drop a bottom.
+///
+/// Returns `true` for any op that produces taint (int div/mod, scalar
+/// QopUnwrap) or propagates it from a sub-expression (the pure scalar
+/// consumers Bin/Cmp/BoolBin/Not/Cast/IfChain), AND for a bare scalar
+/// `Local` (which may read a tainted let-bound local — invisible from
+/// the expression alone, so conservatively assumed taintable). Non-
+/// taintable: composite/value-shape producers, DynCalls/Calls,
+/// accessors, constants.
+pub(crate) fn expr_may_value_bottom(e: &GirExpr) -> bool {
+    match &e.op {
+        // Producers.
+        GirOp::Bin { op, lhs, rhs } => {
+            (matches!(op, BinOp::Div | BinOp::Mod)
+                && scalar_prim(&lhs.typ).is_some_and(|p| p.is_integer())
+                && int_div_may_bottom(lhs, rhs))
+                || expr_may_value_bottom(lhs)
+                || expr_may_value_bottom(rhs)
+        }
+        GirOp::QopUnwrap { .. } => true,
+        // Propagating scalar consumers.
+        GirOp::Cmp { lhs, rhs, .. } | GirOp::BoolBin { lhs, rhs, .. } => {
+            expr_may_value_bottom(lhs) || expr_may_value_bottom(rhs)
+        }
+        GirOp::Not(inner) | GirOp::Cast { inner, .. } => {
+            expr_may_value_bottom(inner)
+        }
+        GirOp::IfChain { scrut, arms } => {
+            scrut.as_ref().is_some_and(|s| expr_may_value_bottom(s))
+                || arms
+                    .iter()
+                    .any(|(_, body)| expr_may_value_bottom(body))
+        }
+        // A scalar Local may read a tainted let-bound local.
+        GirOp::Local(_) => {
+            matches!(abi_kind(&e.typ), Some(AbiKind::Scalar(_)))
+        }
+        // Non-taintable in scalar position.
+        _ => false,
     }
 }
 
@@ -1813,7 +2066,6 @@ pub(crate) fn expr_has_call(e: &GirExpr) -> bool {
         GirOp::Call { .. } | GirOp::DynCall { .. } => true,
         GirOp::Const(_)
         | GirOp::ConstStr(_)
-        | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. } => false,
@@ -1862,9 +2114,12 @@ pub(crate) fn expr_has_call(e: &GirExpr) -> bool {
         GirOp::Block { lets, tail } => {
             lets.iter().any(|l| expr_has_call(&l.value)) || expr_has_call(tail)
         }
-        GirOp::IfChain { arms } => arms
-            .iter()
-            .any(|(c, v)| c.as_ref().is_some_and(expr_has_call) || expr_has_call(v)),
+        GirOp::IfChain { scrut, arms } => {
+            scrut.as_ref().is_some_and(|s| expr_has_call(s))
+                || arms.iter().any(|(c, v)| {
+                    c.as_ref().is_some_and(expr_has_call) || expr_has_call(v)
+                })
+        }
     }
 }
 
@@ -1885,10 +2140,16 @@ pub fn kernel_contains_composite_element_op(kernel: &GirKernel) -> bool {
 /// today, so such kernels route through the interpreter — same
 /// fallback shape as `kernel_contains_string`.
 pub fn kernel_contains_null(kernel: &GirKernel) -> bool {
-    if matches!(kernel.return_type, GirType::Null | GirType::Nullable(_)) {
+    if is_null_or_nullable(&kernel.return_type) {
         return true;
     }
     kernel.body.iter().any(stmt_has_null)
+}
+
+/// True if `t`'s top-level shape is the `null` type or a
+/// `Nullable`/option/result shape.
+fn is_null_or_nullable(t: &Type) -> bool {
+    matches!(abi_kind(t), Some(AbiKind::Null | AbiKind::Nullable))
 }
 
 fn stmt_has_null(s: &GirStmt) -> bool {
@@ -1897,22 +2158,25 @@ fn stmt_has_null(s: &GirStmt) -> bool {
         GirStmt::Return(e) => expr_has_null(e),
         GirStmt::Discard(e) => expr_has_null(e),
         GirStmt::TailCall { args } => args.iter().any(expr_has_null),
-        GirStmt::Select { arms } => arms.iter().any(|a| {
-            a.cond.as_ref().is_some_and(expr_has_null)
-                || a.body.iter().any(stmt_has_null)
-        }),
+        GirStmt::Select { scrut, arms } => {
+            scrut.as_ref().is_some_and(expr_has_null)
+                || arms.iter().any(|a| {
+                    a.cond.as_ref().is_some_and(expr_has_null)
+                        || a.body.iter().any(stmt_has_null)
+                })
+        }
     }
 }
 
 fn expr_has_null(e: &GirExpr) -> bool {
-    if matches!(e.typ, GirType::Null | GirType::Nullable(_)) {
+    if is_null_or_nullable(&e.typ) {
         return true;
     }
     match &e.op {
         GirOp::ConstNull | GirOp::IsNull(_) => true,
         // QopUnwrap operates on a Nullable inner — counts as touching null.
         GirOp::QopUnwrap { .. } => true,
-        GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::ConstValue(_)
+        GirOp::Const(_) | GirOp::ConstStr(_)
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. } | GirOp::TupleGet { .. }
         | GirOp::StructGet { .. } | GirOp::VariantTagEq { .. }
@@ -1958,15 +2222,16 @@ fn expr_has_null(e: &GirExpr) -> bool {
         GirOp::Block { lets, tail } => {
             lets.iter().any(|l| expr_has_null(&l.value)) || expr_has_null(tail)
         }
-        GirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
-            c.as_ref().is_some_and(expr_has_null) || expr_has_null(v)
-        }),
+        GirOp::IfChain { scrut, arms } => {
+            scrut.as_ref().is_some_and(|s| expr_has_null(s))
+                || arms.iter().any(|(c, v)| {
+                    c.as_ref().is_some_and(expr_has_null) || expr_has_null(v)
+                })
+        }
         GirOp::Call { args, .. } => args.iter().any(expr_has_null),
         GirOp::DynCall { args, arg_types, return_type, .. } => {
-            matches!(return_type, GirType::Null | GirType::Nullable(_))
-                || arg_types.iter().any(|t| {
-                    matches!(t, GirType::Null | GirType::Nullable(_))
-                })
+            is_null_or_nullable(return_type)
+                || arg_types.iter().any(is_null_or_nullable)
                 || args.iter().any(expr_has_null)
         }
     }
@@ -1980,22 +2245,25 @@ fn stmt_has_composite_element_op(s: &GirStmt) -> bool {
         GirStmt::TailCall { args } => {
             args.iter().any(expr_has_composite_element_op)
         }
-        GirStmt::Select { arms } => arms.iter().any(|a| {
-            a.cond.as_ref().is_some_and(expr_has_composite_element_op)
-                || a.body.iter().any(stmt_has_composite_element_op)
-        }),
+        GirStmt::Select { scrut, arms } => {
+            scrut.as_ref().is_some_and(expr_has_composite_element_op)
+                || arms.iter().any(|a| {
+                    a.cond.as_ref().is_some_and(expr_has_composite_element_op)
+                        || a.body.iter().any(stmt_has_composite_element_op)
+                })
+        }
     }
 }
 
 fn expr_has_composite_element_op(e: &GirExpr) -> bool {
     match &e.op {
         GirOp::TupleGet { elem_typ, .. } | GirOp::StructGet { elem_typ, .. } => {
-            !matches!(elem_typ, GirType::Prim(_))
+            scalar_prim(elem_typ).is_none()
         }
         // ArrayGet's element type lives on `e.typ` (no separate
         // elem_typ field). Composite-result ArrayGet routes to interp.
         GirOp::ArrayGet { idx, .. } => {
-            !matches!(e.typ, GirType::Prim(_))
+            scalar_prim(&e.typ).is_none()
                 || expr_has_composite_element_op(idx)
         }
         GirOp::BytesIndex { bytes, idx } => {
@@ -2011,7 +2279,7 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
                 || start.as_ref().is_some_and(|e| expr_has_composite_element_op(e))
                 || end.as_ref().is_some_and(|e| expr_has_composite_element_op(e))
         }
-        GirOp::Const(_) | GirOp::ConstStr(_) | GirOp::ConstValue(_)
+        GirOp::Const(_) | GirOp::ConstStr(_)
         | GirOp::ConstNull
         | GirOp::Local(_) | GirOp::ArrayLen { .. }
         | GirOp::VariantTagEq { .. } | GirOp::VariantPayload { .. } => false,
@@ -2060,10 +2328,13 @@ fn expr_has_composite_element_op(e: &GirExpr) -> bool {
             lets.iter().any(|l| expr_has_composite_element_op(&l.value))
                 || expr_has_composite_element_op(tail)
         }
-        GirOp::IfChain { arms } => arms.iter().any(|(c, v)| {
-            c.as_ref().is_some_and(expr_has_composite_element_op)
-                || expr_has_composite_element_op(v)
-        }),
+        GirOp::IfChain { scrut, arms } => {
+            scrut.as_ref().is_some_and(|s| expr_has_composite_element_op(s))
+                || arms.iter().any(|(c, v)| {
+                    c.as_ref().is_some_and(expr_has_composite_element_op)
+                        || expr_has_composite_element_op(v)
+                })
+        }
         GirOp::Call { args, .. } | GirOp::DynCall { args, .. } => {
             args.iter().any(expr_has_composite_element_op)
         }
@@ -2092,7 +2363,10 @@ fn walk_call_sites_stmt(s: &GirStmt, out: &mut std::collections::BTreeSet<ArcStr
                 walk_call_sites_expr(a, out);
             }
         }
-        GirStmt::Select { arms } => {
+        GirStmt::Select { scrut, arms } => {
+            if let Some(s) = scrut {
+                walk_call_sites_expr(s, out);
+            }
             for a in arms {
                 if let Some(c) = &a.cond {
                     walk_call_sites_expr(c, out);
@@ -2128,7 +2402,6 @@ fn walk_call_sites_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
         }
         GirOp::Const(_)
         | GirOp::ConstStr(_)
-        | GirOp::ConstValue(_)
         | GirOp::ConstNull
         | GirOp::Local(_)
         | GirOp::ArrayLen { .. } => {}
@@ -2198,7 +2471,10 @@ fn walk_call_sites_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
             }
             walk_call_sites_expr(tail, out);
         }
-        GirOp::IfChain { arms } => {
+        GirOp::IfChain { scrut, arms } => {
+            if let Some(s) = scrut {
+                walk_call_sites_expr(s, out);
+            }
             for (c, v) in arms {
                 if let Some(c) = c {
                     walk_call_sites_expr(c, out);
@@ -2219,11 +2495,11 @@ mod tests {
     use super::*;
 
     fn i64c(x: i64) -> GirExpr {
-        const_expr(ConstVal::I64(x))
+        const_expr(Value::I64(x))
     }
 
     fn f64c(x: f64) -> GirExpr {
-        const_expr(ConstVal::F64(x))
+        const_expr(Value::F64(x))
     }
 
     fn loc(name: &str, prim: PrimType) -> GirExpr {
@@ -2238,8 +2514,8 @@ mod tests {
         // Mismatched types: rejected.
         assert!(arith(i64c(1), f64c(2.0), BinOp::Add).is_none());
         // Bool isn't numeric.
-        let t = const_expr(ConstVal::Bool(true));
-        let f = const_expr(ConstVal::Bool(false));
+        let t = const_expr(Value::Bool(true));
+        let f = const_expr(Value::Bool(false));
         assert!(arith(t, f, BinOp::Add).is_none());
     }
 
@@ -2249,5 +2525,27 @@ mod tests {
         assert!(cast(x, PrimType::I64).is_none());
         let y = loc("y", PrimType::I64);
         assert!(cast(y, PrimType::Bool).is_none());
+    }
+
+    #[test]
+    fn abi_kind_to_param_kind_round_trips() {
+        // Unit / Null aren't valid params; everything else maps.
+        assert!(AbiKind::Unit.to_abi_param_kind().is_none());
+        assert!(AbiKind::Null.to_abi_param_kind().is_none());
+        assert!(matches!(
+            AbiKind::Scalar(PrimType::I64).to_abi_param_kind(),
+            Some(AbiParamKind::Scalar(PrimType::I64))
+        ));
+        for k in [
+            AbiKind::Array,
+            AbiKind::Tuple,
+            AbiKind::Struct,
+            AbiKind::String,
+            AbiKind::Variant,
+            AbiKind::Nullable,
+            AbiKind::Value,
+        ] {
+            assert!(k.to_abi_param_kind().is_some(), "{k:?} should be a param");
+        }
     }
 }

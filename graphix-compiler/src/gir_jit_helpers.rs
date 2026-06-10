@@ -415,8 +415,9 @@ pub extern "C" fn graphix_value_clone(v: Value) -> Value {
 }
 
 /// Clone a `Value` from a stable `*const Value` static — a kernel's
-/// value-constants table slot (datetime/duration `ConstValue`). Bumps
-/// any inner `Arc`. Returns the clone by value (two registers).
+/// value-constants table slot (a value-shape `GirOp::Const`:
+/// datetime/duration/bytes/map). Bumps any inner `Arc`. Returns the
+/// clone by value (two registers).
 ///
 /// # Safety
 /// `ptr` must point to a live `Value` that outlives the JIT'd code.
@@ -435,8 +436,8 @@ pub unsafe extern "C" fn graphix_value_clone_from_static(
 // helper CONSUMES both args (netidx's operators take `self`/`rhs` by
 // value); codegen passes OWNED Values (`ensure_owned_value` clones a
 // Borrowed Local read, scalar operands are freshly promoted, producer
-// ops like `ConstValue` are already owned), so there's no leak or
-// double-free.
+// ops like a value-shape `Const` are already owned), so there's no
+// leak or double-free.
 macro_rules! value_arith_helper {
     ($name:ident, $op:tt) => {
         pub extern "C" fn $name(l: Value, r: Value) -> Value {

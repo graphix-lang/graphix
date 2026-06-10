@@ -10,7 +10,7 @@ use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
     fusion::lowering::{emit_expr_node, FusionCtx, Input},
-    gir::{GirExpr, GirOp, GirType, PrimType},
+    gir::{self, GirExpr, GirOp, PrimType},
     node::genn,
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
@@ -26,6 +26,13 @@ use poolshark::local::LPooled;
 use smallvec::{smallvec, SmallVec};
 use std::{collections::hash_map::Entry, collections::VecDeque, fmt::Debug, iter};
 use triomphe::Arc as TArc;
+
+/// True if a (frozen) `Type`'s top-level shape is `Unit` (side-effect-
+/// only) or bare `Null` — neither is a valid array element shape.
+fn is_unit_or_null(t: &Type) -> bool {
+    use gir::AbiKind;
+    matches!(gir::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null))
+}
 
 #[derive(Debug, Default)]
 struct MapImpl;
@@ -47,7 +54,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         // Array param name (the array kernel input the loop reads).
@@ -57,12 +64,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // `|(k, v)|` destructure) a composite element local plus the
         // per-leaf `TupleGet` lets, wrapped into the body's `Block`.
         let (in_elem, body_kir) = if elem_binds.is_empty() {
-            let prim = in_elem.as_prim()?;
+            let prim = gir::scalar_prim(&in_elem)?;
             let body_kir = ctx.with_input(
                 Input { name: elem_name.clone(), prim, bind_id: None },
                 |inner| emit_expr_node(body, inner, ec),
             )?;
-            (GirType::Prim(prim), body_kir)
+            (gir::prim_type(prim), body_kir)
         } else {
             let body_block = graphix_compiler::fusion::lowering::emit_hof_body_destructured(
                 ctx, ec, body, elem_name, &in_elem, elem_binds,
@@ -72,7 +79,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // Output element type is the body's type — prim or composite
         // (e.g. a nested `array::map` producing `Array<_>`).
         let out = body_kir.typ.clone();
-        if matches!(out, GirType::Unit | GirType::Null) {
+        if is_unit_or_null(&out) {
             return None;
         }
         Some(GirExpr {
@@ -82,7 +89,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
                 elem_local: elem_name.clone(),
                 body: Box::new(body_kir),
             },
-            typ: GirType::Array(Box::new(out)),
+            typ: gir::array_type(out),
         })
     }
 }
@@ -112,17 +119,17 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         let array_name = ctx.resolve_array_input(array_arg)?;
         let (elem, pred_kir) = if elem_binds.is_empty() {
-            let prim = in_elem.as_prim()?;
+            let prim = gir::scalar_prim(&in_elem)?;
             let pred_kir = ctx.with_input(
                 Input { name: elem_name.clone(), prim, bind_id: None },
                 |inner| emit_expr_node(body, inner, ec),
             )?;
-            (GirType::Prim(prim), pred_kir)
+            (gir::prim_type(prim), pred_kir)
         } else {
             let pred_block =
                 graphix_compiler::fusion::lowering::emit_hof_body_destructured(
@@ -131,7 +138,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
             (in_elem, pred_block)
         };
         // Predicate must return bool.
-        if pred_kir.typ != GirType::Prim(PrimType::Bool) {
+        if pred_kir.typ != gir::prim_type(PrimType::Bool) {
             return None;
         }
         Some(GirExpr {
@@ -141,7 +148,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
                 elem_local: elem_name.clone(),
                 predicate: Box::new(pred_kir),
             },
-            typ: GirType::Array(Box::new(elem)),
+            typ: gir::array_type(elem),
         })
     }
 }
@@ -171,12 +178,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         let array_name = ctx.resolve_array_input(array_arg)?;
         let body_kir = if elem_binds.is_empty() {
-            let prim = in_elem.as_prim()?;
+            let prim = gir::scalar_prim(&in_elem)?;
             ctx.with_input(
                 Input { name: elem_name.clone(), prim, bind_id: None },
                 |inner| emit_expr_node(body, inner, ec),
@@ -188,10 +195,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         };
         // Fuse only the array-returning shape of the `['b, Array<'b>]`
         // callback (a bare-element body bails to the runtime dispatch).
-        let out_elem = match &body_kir.typ {
-            GirType::Array(inner) => inner.as_prim()?,
-            _ => return None,
-        };
+        let out_elem = gir::array_scalar_prim(&body_kir.typ)?;
         Some(GirExpr {
             op: GirOp::ArrayFlatMap {
                 array: array_name,
@@ -200,7 +204,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                 out_elem,
                 body: Box::new(body_kir),
             },
-            typ: GirType::Array(Box::new(GirType::Prim(out_elem))),
+            typ: gir::array_type(gir::prim_type(out_elem)),
         })
     }
 }
@@ -230,23 +234,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         if !elem_binds.is_empty() {
             return None; // tuple-destructure callbacks not supported here yet
         }
-        let in_elem = in_elem.as_prim()?;
+        let in_elem = gir::scalar_prim(&in_elem)?;
         let array_name = ctx.resolve_array_input(array_arg)?;
         let body_kir = ctx.with_input(
             Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
             |inner| emit_expr_node(body, inner, ec),
         )?;
         // Body must return an option `[out_elem, null]`.
-        let out_elem = match &body_kir.typ {
-            GirType::Nullable(inner) => inner.as_prim()?,
-            _ => return None,
-        };
+        let out_elem = gir::scalar_prim(&gir::nullable_inner(&body_kir.typ)?)?;
         Some(GirExpr {
             op: GirOp::ArrayFilterMap {
                 array: array_name,
@@ -255,7 +256,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
                 out_elem,
                 body: Box::new(body_kir),
             },
-            typ: GirType::Array(Box::new(GirType::Prim(out_elem))),
+            typ: gir::array_type(gir::prim_type(out_elem)),
         })
     }
 }
@@ -289,12 +290,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         let array_name = ctx.resolve_array_input(array_arg)?;
         let pred_kir = if elem_binds.is_empty() {
-            let prim = in_elem.as_prim()?;
+            let prim = gir::scalar_prim(&in_elem)?;
             ctx.with_input(
                 Input { name: elem_name.clone(), prim, bind_id: None },
                 |inner| emit_expr_node(body, inner, ec),
@@ -305,7 +306,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             )?
         };
         // Predicate must return bool.
-        if pred_kir.typ != GirType::Prim(PrimType::Bool) {
+        if pred_kir.typ != gir::prim_type(PrimType::Bool) {
             return None;
         }
         // The matched element (scalar or composite) is the result, as an
@@ -317,7 +318,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
                 elem_local: elem_name.clone(),
                 predicate: Box::new(pred_kir),
             },
-            typ: GirType::Nullable(Box::new(in_elem)),
+            typ: gir::nullable_type(in_elem),
         })
     }
 }
@@ -349,17 +350,17 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         array_arg: &Node<R, E>,
         body: &Node<R, E>,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         let array_name = ctx.resolve_array_input(array_arg)?;
         let (elem_typ, body_kir) = if elem_binds.is_empty() {
-            let prim = in_elem.as_prim()?;
+            let prim = gir::scalar_prim(&in_elem)?;
             let body_kir = ctx.with_input(
                 Input { name: elem_name.clone(), prim, bind_id: None },
                 |inner| emit_expr_node(body, inner, ec),
             )?;
-            (GirType::Prim(prim), body_kir)
+            (gir::prim_type(prim), body_kir)
         } else {
             let body_block =
                 graphix_compiler::fusion::lowering::emit_hof_body_destructured(
@@ -369,7 +370,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         };
         // Body must return an option `[out, null]`; the op returns the
         // first non-null body value as that same `Nullable<out>`.
-        if !matches!(body_kir.typ, GirType::Nullable(_)) {
+        if !matches!(
+            gir::abi_kind(&body_kir.typ),
+            Some(gir::AbiKind::Nullable)
+        ) {
             return None;
         }
         let out_ty = body_kir.typ.clone();
@@ -403,19 +407,19 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         body: &Node<R, E>,
         acc_name: &ArcStr,
         elem_name: &ArcStr,
-        in_elem: GirType,
+        in_elem: Type,
         elem_binds: &[(BindId, usize)],
     ) -> Option<GirExpr> {
         let array_name = ctx.resolve_array_input(array_arg)?;
         // Lower init in the outer ctx — no new locals needed.
         let init_kir = emit_expr_node(init_arg, ctx, ec)?;
-        let acc_typ = init_kir.typ.as_prim()?;
+        let acc_typ = gir::scalar_prim(&init_kir.typ)?;
         // The body emits with the accumulator (always scalar) plus the
         // element binding in scope: a single scalar `Input` for `|acc,
         // x|`, or (for `|acc, (k, v)|`) a composite element local + the
         // per-leaf `TupleGet` lets wrapped into the body's `Block`.
         let (elem_typ, body_kir) = if elem_binds.is_empty() {
-            let prim = in_elem.as_prim()?;
+            let prim = gir::scalar_prim(&in_elem)?;
             let body_kir = ctx.with_input(
                 Input { name: acc_name.clone(), prim: acc_typ, bind_id: None },
                 |inner| {
@@ -425,7 +429,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
                     )
                 },
             )?;
-            (GirType::Prim(prim), body_kir)
+            (gir::prim_type(prim), body_kir)
         } else {
             let body_block = ctx.with_input(
                 Input { name: acc_name.clone(), prim: acc_typ, bind_id: None },
@@ -437,7 +441,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             )?;
             (in_elem, body_block)
         };
-        if body_kir.typ != GirType::Prim(acc_typ) {
+        if body_kir.typ != gir::prim_type(acc_typ) {
             return None;
         }
         Some(GirExpr {
@@ -449,7 +453,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
                 elem_local: elem_name.clone(),
                 body: Box::new(body_kir),
             },
-            typ: GirType::Prim(acc_typ),
+            typ: gir::prim_type(acc_typ),
         })
     }
 }
@@ -643,7 +647,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
         let arr_name = ctx.resolve_array_input(callsite.arg_positional(0)?)?;
         Some(GirExpr {
             op: GirOp::ArrayLen { name: arr_name },
-            typ: GirType::Prim(PrimType::U64),
+            typ: gir::prim_type(PrimType::U64),
         })
     }
 }
@@ -1335,7 +1339,7 @@ impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
         // Positional arg 0 is the array size (`n`).
         let n_node = callsite.arg_positional(0)?;
         let n_kir = emit_expr_node(n_node, ctx, ec)?;
-        if !n_kir.typ.as_prim().is_some_and(|p| p.is_integer()) {
+        if !gir::scalar_prim(&n_kir.typ).is_some_and(|p| p.is_integer()) {
             return None;
         }
         // Body Node via the inner CallSite's resolved Apply.
@@ -1363,7 +1367,7 @@ impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
         // (tuple/struct/variant/…). Reject shapes with no array-element
         // representation.
         let elem = body_kir.typ.clone();
-        if matches!(elem, GirType::Unit | GirType::Null) {
+        if is_unit_or_null(&elem) {
             return None;
         }
         Some(GirExpr {
@@ -1372,7 +1376,7 @@ impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
                 idx_local: idx_name,
                 body: Box::new(body_kir),
             },
-            typ: GirType::Array(Box::new(elem)),
+            typ: gir::array_type(elem),
         })
     }
 }

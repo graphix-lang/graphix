@@ -1,5 +1,89 @@
 # Representable value-bottom in the fused backends
 
+## CORRECTION (Jun 2026): be the node-walk — `Option<Value>`, `None` = bottom
+
+The first cut (below) invented `EvalResult` with a `Bottom` variant and a
+separate async-pending channel. Two user corrections collapse both:
+
+1. **Async-pending and value-bottom are the SAME thing** — "no value this
+   cycle." A never-fired input, a pending DynCall, and a div-by-zero are all
+   bottom. A kernel emits `None` IFF its OUTPUT consumes a bottom — never
+   because some unrelated input pends. (`gir_interp.rs:3429`'s
+   `self.args[i].as_ref()?` whole-kernel abort on any missing input is the
+   exact bug: `select c { 0 => x, 1 => never_fired }` with `c=0` must yield
+   `x`.) "Resolves later vs. never" is not a this-cycle distinction — the
+   runtime re-fires on input-change (subscribe firing is an input update →
+   re-fire; the arg cache at `self.args[i]` already gives `x + subscribe` a
+   value once subscribe has *ever* fired), and a div0 simply never triggers
+   a re-fire.
+
+2. **Don't invent `EvalResult` — use `Option<Value>`.** `Value` is already
+   the universal `#[repr(u64)]` tagged union (16 bytes, no heap); the
+   node-walk's `update` already returns `Option<Value>`. The fused interp
+   only runs when the JIT is off, so the unboxed-scalar micro-opt isn't
+   worth a parallel type + its `into_*` conversions.
+
+**The corrected interp model (`gir_interp.rs`):** `eval_expr -> Option<Value>`,
+`None` = bottom. The env is one `Vec<(name, Option<Value>)>` (a binding may
+be `None`). `?` IS the absorb (a bottom operand short-circuits the op to
+`None`) — the `ev!` macro and `EvalResult::Bottom` are deleted. Unchecked
+div/mod map their div0 to `None` (extract scalar, `checked_div`, `None` on
+failure); `?` on `Value::Error` → `None`. `error(v)` → `Some(Value::Error)`
+(a value, not bottom). Select/IfChain return the taken arm's `Option<Value>`;
+a `None` guard → arm doesn't match → fall through. The boundary IS the
+identity: `update` returns the kernel's `Option<Value>` (`None` = emit
+nothing). A missing kernel input feeds `None`; a DynCall returning `None`
+flows as `None`. `DYNCALL_PENDING` / `BodyResult::Pending` are **deleted** —
+there is no separate pending channel; the runtime's input-change re-fire is
+the only re-run mechanism.
+
+The JIT half (per-value validity / sentinel, below) is unchanged in spirit:
+the JIT's analogue of `Option<Value>` is "value + validity," and a missing
+input / pending DynCall / div0 all set `valid=false`; the kernel returns
+`None` iff the OUTPUT is invalid. The "async vs bottom" separation in the
+original JIT plan is likewise dropped.
+
+### STATUS (Jun 2026): interp phases 1–2 LANDED
+
+The `Option<Value>` rewrite of `gir_interp.rs` is done and validated:
+- `EvalResult` (+ its `Bottom` variant, `into_*` conversions, the `ev!`
+  macro, `wrap_value_shape`/`normalize_to_nullable`/`extract_composite_or_scalar`),
+  `BodyResult::Pending`, and the interp's use of `DYNCALL_PENDING` are all
+  **deleted**. `eval_expr -> Option<Value>`, `None` = bottom, `?` = absorb,
+  the env is one `Vec<(ArcStr, Option<Value>)>`, `eval_kernel_full` takes a
+  single `&[Option<Value>]` and returns `Option<Value>`. (`RegValue` stays —
+  the JIT still uses it; only the interp eval stopped.)
+- **The line-3429 async-unification fix is in**: `GirNode::update`'s interp
+  path feeds a missing input as `None` (bottom) instead of `?`-aborting the
+  whole kernel — `select c { 0 => x, 1 => never_fired }` with `c=0` yields
+  `x`. A DynCall returning `None` flows as bottom. There is no separate
+  pending channel on the interp path.
+- **Bottom-scrutinee poisoning** (#178): a `select` whose *scrutinee* is
+  bottom poisons the whole select (the node-walk's Select doesn't fire
+  without a scrutinee value), whereas a bottom *guard* falls through. The
+  scrutinee was folded into the arm conds, so the fix added an explicit
+  `scrut` field to `GirOp::IfChain` + `GirStmt::Select`, evaluated once
+  up front; bottom → `None`. (Found by the differential oracle, NOT the
+  suite — the suite has no `select <bottom> {…}` fixture.)
+- Validated: the {div0,`?`,missing-input,bottom-scrutinee} × {output,
+  dead-let,un-taken-arm,taken-arm,guard,scrutinee} truth table all agree
+  (fused-interp == node-walk); **~4000 fuzz programs, zero `interp != fused`
+  divergences**; 132 compiler + 2033 graphix-tests green.
+
+**Still to do (the JIT half, phases 3–5):** the JIT still aborts on bottom
+via the `DYNCALL_PENDING` flag, so `interp == fused != jit` for any program
+whose JIT'd kernel produces an *eager* bottom (bottom guard, bottom in an
+un-taken arm, bottom scrutinee). The JIT validity codegen (Scalar2 / NULL /
+BOTTOM_DISC, div→sentinel, IfChain phi, guard→band, boundary decode,
+Call-tainted bail — below) is the next milestone. Then phase 5: demote
+sink/dead-elim to pure optimizations and add the now-all-modes-green
+differential fixtures.
+
+---
+
+## Original design (superseded by the correction above for the representation choice; the JIT validity mechanics still apply)
+
+
 ## Problem
 
 In the node-walk, every binding/statement is its own node and "bottom" is

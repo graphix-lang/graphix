@@ -59,12 +59,18 @@ pub const REGISTER: &[RegisterFn] = &[
 ];
 
 /// The mode a program was run under.
+///
+/// The GIR interpreter is gone, so there are only two evaluators: the
+/// node-walk (the reference) and fusion + cranelift JIT (the system
+/// under test). The old middle `Fused` mode (`CFlag::JitDisabled` —
+/// fusion on, dispatch via the interpreter) no longer has an
+/// interpreter to dispatch into: with `JitDisabled`, fusion builds
+/// kernels but can't splice them, so the program node-walks — identical
+/// to `Interp`. We drop it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Node-walk interpreter (`CFlag::FusionDisabled`) — the reference.
     Interp,
-    /// Fusion on the interpreter (`CFlag::JitDisabled`).
-    Fused,
     /// Fusion + cranelift JIT (no flags) — the system under test.
     Jit,
 }
@@ -73,7 +79,6 @@ impl Mode {
     pub fn flags(self) -> BitFlags<CFlag> {
         match self {
             Mode::Interp => CFlag::FusionDisabled.into(),
-            Mode::Fused => CFlag::JitDisabled.into(),
             Mode::Jit => BitFlags::empty(),
         }
     }
@@ -204,52 +209,37 @@ async fn drive(
     }
 }
 
-/// A detected disagreement between the reference (interp) and the system
-/// under test (jit), with the bisection (fused) outcome included.
+/// A detected disagreement between the reference (interp = node-walk)
+/// and the system under test (jit = fusion + cranelift).
 #[derive(Debug, Clone)]
 pub struct Divergence {
     pub code: String,
     pub interp: Outcome,
-    pub fused: Outcome,
     pub jit: Outcome,
 }
 
 impl Divergence {
-    /// A one-line classification of where the divergence first appears,
-    /// mirroring how the #162–#170 cascade was diagnosed:
-    /// `interp == fused != jit` ⇒ a cranelift codegen bug;
-    /// `interp != fused` ⇒ a GIR/emit (fusion-lowering) bug.
+    /// A one-line classification. With only two evaluators left, every
+    /// divergence is "node-walk vs fused+JIT" — the fusion path (GIR
+    /// emit + cranelift codegen, which can't be told apart now that
+    /// there's no interpreter-only mode to bisect against) produced a
+    /// different result from the canonical node-walk.
     pub fn bisect(&self) -> &'static str {
-        if !self.interp.agrees_with(&self.fused) {
-            "GIR/emit bug (interp != fused)"
-        } else if !self.fused.agrees_with(&self.jit) {
-            "cranelift codegen bug (interp == fused != jit)"
-        } else {
-            // interp != jit but interp == fused == jit pairwise: a
-            // non-transitive Value comparison or a flaky/nondeterministic
-            // program.
-            "non-transitive or nondeterministic (re-check determinism)"
-        }
+        "fusion/JIT bug (interp != jit)"
     }
 }
 
-/// Run `code` under interp and jit; if they disagree, also run fused for
-/// bisection and return the `Divergence`. `None` means the modes agree.
+/// Run `code` under interp (node-walk) and jit (fusion + cranelift); if
+/// they disagree, return the `Divergence`. `None` means they agree.
 pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
-    // Compare ALL THREE modes — interp (reference), fused (interp
-    // kernels), jit. Comparing only interp-vs-jit is blind to the
-    // `interp == jit != fused` class (a gir-interp bug the JIT dodges via
-    // node-walk fallback) — which is exactly where several real bugs
-    // lived. All three must agree, or it's a divergence. Each mode spins
-    // up its own runtime, so run all three concurrently — `join!` overlaps
-    // their (mostly I/O-bound) execution on one task, tripling the cores a
-    // single check keeps busy.
-    let (interp, fused, jit) = tokio::join!(
+    // The two evaluators must agree, or it's a divergence. Each mode
+    // spins up its own runtime, so run them concurrently — `join!`
+    // overlaps their (mostly I/O-bound) execution on one task.
+    let (interp, jit) = tokio::join!(
         run_program(code, Mode::Interp, timeout),
-        run_program(code, Mode::Fused, timeout),
         run_program(code, Mode::Jit, timeout),
     );
-    if interp.agrees_with(&fused) && interp.agrees_with(&jit) {
+    if interp.agrees_with(&jit) {
         return None;
     }
     // Suspected divergence — but first rule out nondeterminism: a value
@@ -261,7 +251,7 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     if !interp.agrees_with(&interp2) {
         return None;
     }
-    Some(Divergence { code: code.to_string(), interp, fused, jit })
+    Some(Divergence { code: code.to_string(), interp, jit })
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
@@ -445,11 +435,10 @@ impl Corpus {
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let body = format!(
-            "// bisect: {}\n// interp: {:?}\n// fused:  {:?}\n// jit:    {:?}\n\
+            "// bisect: {}\n// interp: {:?}\n// jit:    {:?}\n\
              // mutant: {}\n// minimized:\n{}\n",
             d.bisect(),
             d.interp,
-            d.fused,
             d.jit,
             mutant,
             minimized,
@@ -579,8 +568,8 @@ async fn run_pool(
                                 println!("DIVERGENCE — {}", d.bisect());
                                 println!("    minimized: {min}");
                                 println!(
-                                    "    interp={:?} fused={:?} jit={:?}",
-                                    d.interp, d.fused, d.jit
+                                    "    interp={:?} jit={:?}",
+                                    d.interp, d.jit
                                 );
                             }
                         });

@@ -206,21 +206,19 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
         // intermediate inside fused expressions — Nullable is the
         // proper kernel-return shape — and `Unit` is a side-effect-
         // only marker that we don't expose to the runtime here.
-        match built.kernel.return_type {
-            crate::gir::GirType::Prim(_)
-            | crate::gir::GirType::Array(_)
-            | crate::gir::GirType::Tuple(_)
-            | crate::gir::GirType::Struct(_)
-            | crate::gir::GirType::Variant(_)
-            | crate::gir::GirType::Nullable(_)
-            | crate::gir::GirType::DateTime
-            | crate::gir::GirType::Duration
-            | crate::gir::GirType::Bytes
-            | crate::gir::GirType::Map
-            | crate::gir::GirType::Error
-            | crate::gir::GirType::String => {}
-            crate::gir::GirType::Unit
-            | crate::gir::GirType::Null => continue,
+        use crate::gir::AbiKind;
+        match crate::gir::abi_kind(&built.kernel.return_type) {
+            Some(
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value
+                | AbiKind::String,
+            ) => {}
+            Some(AbiKind::Unit | AbiKind::Null) | None => continue,
         }
         // Skip identity kernels — a region whose body is just
         // `Return(Local(x))` forwards one input unchanged and does no
@@ -378,11 +376,11 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
             return;
         }
         let Some(b) = ctx.env.by_id.get(&id) else { return };
-        let Some(gt) = crate::gir::GirType::from_type(&b.typ) else {
+        let Some(frozen) = crate::gir::freeze_concrete(&b.typ) else {
             return;
         };
         let Some(kind) =
-            crate::fusion::lowering::gir_type_to_region_input_kind(gt)
+            crate::fusion::lowering::type_to_region_input_kind(frozen)
         else {
             return;
         };

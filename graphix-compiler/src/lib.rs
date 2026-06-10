@@ -80,13 +80,16 @@ pub enum CFlag {
     /// typecheck and returns the regular Node graph; no kernels
     /// are built, no splicing happens. Used by the test harness's
     /// `interp` mode as ground truth — the program executes
-    /// purely through the Update-trait node-graph interpreter.
+    /// purely through the Update-trait node-walk.
     FusionDisabled,
     /// Run the fusion phase but skip JIT-compilation. Kernels are
-    /// still built (GIR emission, splicing) and `FusedKernel`
-    /// dispatches via [`crate::gir_interp`] instead of native
-    /// code. Used by the test harness's `fused` mode to validate
-    /// GIR translation independently of the JIT backend.
+    /// still BUILT (GIR emission), but with no JIT wrapper a
+    /// [`crate::gir_interp::GirNode`] can't be constructed (the GIR
+    /// interpreter is gone — fusion is JIT-only), so nothing is
+    /// spliced and the program node-walks. With the interpreter
+    /// removed this is now behaviourally identical to
+    /// `FusionDisabled`; it remains as the "build kernels but don't
+    /// JIT" knob.
     JitDisabled,
 }
 

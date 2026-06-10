@@ -171,6 +171,13 @@ macro_rules! bool_op {
                 let lhs_up = self.lhs.update(ctx, event);
                 let rhs_up = self.rhs.update(ctx, event);
                 if lhs_up || rhs_up {
+                    // STRICT — like every other binary op, `&&`/`||` need
+                    // BOTH operands. A bottom (non-firing) operand makes
+                    // the result bottom: `false && ⊥ = ⊥`, `true || ⊥ =
+                    // ⊥`. NOT short-circuit: in a dataflow language a
+                    // value must reflect all its inputs, so a downstream
+                    // consumer never commits to a decision before every
+                    // input is known.
                     return match (self.lhs.cached.as_ref(), self.rhs.cached.as_ref()) {
                         (Some(Value::Bool(b0)), Some(Value::Bool(b1))) => Some(Value::Bool(*b0 $op *b1)),
                         (_, _) => None

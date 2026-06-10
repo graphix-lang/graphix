@@ -1637,7 +1637,7 @@ proptest::proptest! {
 // `load_uses_external_scalar`).
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
-    use graphix_compiler::gir::{GirType, PrimType};
+    use graphix_compiler::gir::{prim_type, PrimType};
     use graphix_compiler::node_shape::{GirMatcher, GirOpTag, NodeShape};
 
     let (tx, _rx) = mpsc::channel(10);
@@ -1650,7 +1650,7 @@ async fn node_shape_external_scalar() -> Result<()> {
     // returns i64, body multiplies (a `Bin` op).
     let spec = NodeShape::fused(
         GirMatcher::new()
-            .returns(GirType::Prim(PrimType::I64))
+            .returns(prim_type(PrimType::I64))
             .params(&["foo"])
             .contains(GirOpTag::Bin),
     );
