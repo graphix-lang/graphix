@@ -18,10 +18,18 @@ pub mod gir_interp;
 pub mod gir_jit;
 pub mod gir_jit_helpers;
 pub mod gir_jit_intern;
+pub mod kernel_abi;
 pub mod node;
 pub mod node_shape;
 pub mod static_resolve;
 pub mod typ;
+
+// Re-exported so packages implementing `Apply::emit_clif` get the
+// cranelift types through the compiler — no direct cranelift dep in a
+// package, so version lockstep with the JIT is structural.
+pub use cranelift_codegen;
+pub use cranelift_frontend;
+pub use fusion::FusionStats;
 
 use crate::{
     effects::EffectKind,
@@ -91,6 +99,18 @@ pub enum CFlag {
     /// `FusionDisabled`; it remains as the "build kernels but don't
     /// JIT" knob.
     JitDisabled,
+    /// Stage 1 of `design/delete_gir_ir.md`. When set, the fusion
+    /// JIT-compile path emits the fused region's body by walking the
+    /// region-root [`Node`] graph directly (via `NodeView`), through
+    /// the new `gir_jit::compile_node`, instead of lowering the body
+    /// to a `GirKernel`'s `GirStmt` op-list and running `compile_expr`
+    /// over it. The kernel ABI (params / return / wrapper) still comes
+    /// from the `GirKernel`; only the body codegen changes. Off by
+    /// default — the GIR body path is the production path. `compile_node`
+    /// covers a scalar-only slice today; any unsupported `NodeView`
+    /// makes the kernel build fail, so the region simply doesn't fuse
+    /// and node-walks (the universal fallback).
+    DirectNodeJit,
 }
 
 #[allow(dead_code)]
@@ -627,6 +647,26 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     ) -> Box<dyn Apply<R, E>> {
         panic!("clone_rebind not implemented for Apply {self:?}")
     }
+
+    /// Emit this call site into the open JIT kernel as CLIF (the
+    /// builtin-owned half of distributed emission — see
+    /// [`Update::emit_clif`]). The contract:
+    ///
+    /// - `Ok(Some(cv))` — emitted; `cv` is the call's result.
+    /// - `Ok(None)` — shape not handled; the call site falls back to
+    ///   its next strategy (a runtime `DynCall`, or no fusion). The
+    ///   impl MUST NOT have emitted any instructions before returning
+    ///   `Ok(None)`.
+    /// - `Err` — abort the whole kernel build; the subtree node-walks.
+    ///   Partial emission before `Err` is fine — the half-built
+    ///   function is discarded.
+    fn emit_clif(
+        &self,
+        _callsite: &crate::node::callsite::CallSite<R, E>,
+        _cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<Option<crate::gir_jit::CompiledExpr>> {
+        Ok(None)
+    }
 }
 
 /// Typed view of an [`Apply`] for fusion / analysis layer code,
@@ -913,6 +953,53 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
             self.spec().id,
         )
         .expect("clone_rebind: recompile from spec failed")
+    }
+
+    /// Emit this node's computation into the open JIT kernel as CLIF
+    /// and return its SSA result. Emission recursion is distributed —
+    /// an impl compiles its children via `child.emit_clif(cx)`; the
+    /// raw cranelift builder is `cx.b` and the graphix-specific
+    /// surface (env binds, helper FuncRefs, taint/pending) lives on
+    /// [`crate::gir_jit::BodyCx`].
+    ///
+    /// The default is `Err`: this node doesn't emit, so any kernel
+    /// attempt whose subtree contains it fails to compile and the
+    /// subtree node-walks — the universal fallback. Correctness is
+    /// structural: a missing (or not-yet-written) impl can lose
+    /// fusion, never produce a wrong answer.
+    fn emit_clif(
+        &self,
+        _cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        anyhow::bail!(
+            "node does not emit CLIF (spec id {:?}) — subtree node-walks",
+            self.spec().id
+        )
+    }
+
+    /// Fuse this subtree. The contract:
+    ///
+    /// - `Ok(Some(replacement))` — "I fused myself: delete me and swap
+    ///   this in." The caller (the parent node, or the compile-time
+    ///   driver for roots) calls `old.delete(ctx)` after the swap.
+    /// - `Ok(None)` — no replacement at this level. The impl already
+    ///   recursed `jit` into its own children via `&mut self` (using
+    ///   [`crate::fusion::jit_node`], which also attempts
+    ///   [`crate::fusion::try_fuse`] on each child) and swapped any
+    ///   that returned a replacement.
+    ///
+    /// Policy is per-node — that's the point of the design: a
+    /// container recurses, `Bind` fuses its value, MapQ fuses its
+    /// callback template, and the maximal-region property falls out of
+    /// top-down order (the highest subtree whose `try_fuse` succeeds
+    /// is spliced and nothing below it is attempted). The default is
+    /// `Ok(None)` with no recursion — correct for leaves; container
+    /// nodes override.
+    fn jit(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
+        Ok(None)
     }
 }
 
@@ -1374,6 +1461,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// runs from a builtin's `static_resolve_fn_args` hook that doesn't
     /// receive the compile flags. Defaults `true`.
     pub jit_enabled: bool,
+    /// Compile-time fusion outcome counters, accumulated across every
+    /// `compile()` this context runs. See [`FusionStats`].
+    pub fusion_stats: FusionStats,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1412,6 +1502,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             jit: parking_lot::Mutex::new(gir_jit::Jit::new()?,),
             fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             jit_enabled: true,
+            fusion_stats: FusionStats::default(),
         })
     }
 

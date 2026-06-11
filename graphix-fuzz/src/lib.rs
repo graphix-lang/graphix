@@ -26,7 +26,7 @@ pub mod mutate;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use graphix_compiler::{expr::ModuleResolver, CFlag};
+use graphix_compiler::{expr::ModuleResolver, CFlag, FusionStats};
 use graphix_package::Package;
 use graphix_package_core::testing::{init_with_flags_and_setup, RegisterFn, TestCtx};
 use graphix_rt::{GXEvent, NoExt};
@@ -73,6 +73,14 @@ pub enum Mode {
     Interp,
     /// Fusion + cranelift JIT (no flags) — the system under test.
     Jit,
+    /// Fusion + cranelift JIT, but the fused region body is emitted by
+    /// walking the region-root Node directly (`CFlag::DirectNodeJit` —
+    /// Stage 1 of `design/delete_gir_ir.md`'s `compile_node`). Same
+    /// observable semantics as `Jit`; only the body codegen path
+    /// differs. A region whose shape `compile_node` doesn't cover yet
+    /// simply doesn't fuse and node-walks (so `DirectJit` never produces
+    /// a *worse* value than `Interp`).
+    DirectJit,
 }
 
 impl Mode {
@@ -80,6 +88,7 @@ impl Mode {
         match self {
             Mode::Interp => CFlag::FusionDisabled.into(),
             Mode::Jit => BitFlags::empty(),
+            Mode::DirectJit => CFlag::DirectNodeJit.into(),
         }
     }
 }
@@ -137,6 +146,21 @@ impl Outcome {
 /// test harness, and avoiding cranelift codegen-context poisoning across
 /// programs).
 pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
+    run_program_with_stats(code, mode, timeout).await.0
+}
+
+/// [`run_program`], also returning the compile-time [`FusionStats`]
+/// delta for the program itself. Stats accumulate per `ExecCtx` across
+/// every compile the runtime dispatches — including the stdlib root —
+/// so the baseline snapshot taken after init is subtracted, leaving
+/// only the regions of `code`'s own compile. Stats are compile-time
+/// only, so fetching them after the run observes the same values as
+/// fetching right after compile.
+pub async fn run_program_with_stats(
+    code: &str,
+    mode: Mode,
+    timeout: Duration,
+) -> (Outcome, FusionStats) {
     let (tx, mut rx) = mpsc::channel(64);
     let wrapped = format!("let result = {code}");
     let tbl = AHashMap::from_iter([(Path::from("/test.gx"), ArcStr::from(wrapped))]);
@@ -144,11 +168,26 @@ pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
     let ctx =
         match init_with_flags_and_setup(tx, REGISTER, vec![resolver], mode.flags(), |_| {}).await {
             Ok(c) => c,
-            Err(e) => return Outcome::RuntimeErr(format!("runtime init failed: {e}")),
+            Err(e) => {
+                return (
+                    Outcome::RuntimeErr(format!("runtime init failed: {e}")),
+                    FusionStats::default(),
+                )
+            }
         };
+    let base = ctx.fusion_stats().await.unwrap_or_default();
     let outcome = drive(&ctx, &mut rx, timeout).await;
+    let stats = match ctx.fusion_stats().await {
+        Ok(mut s) => {
+            s.attempted -= base.attempted;
+            s.fused -= base.fused;
+            s.failed.drain(..base.failed.len());
+            s
+        }
+        Err(_) => FusionStats::default(),
+    };
     ctx.shutdown().await;
-    outcome
+    (outcome, stats)
 }
 
 async fn drive(
@@ -324,7 +363,7 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
     let entries = corpus::REGRESSION_CORPUS;
     let mut set: JoinSet<(String, Option<Divergence>)> = JoinSet::new();
     let mut next = 0usize;
-    let mut spawn_one = |set: &mut JoinSet<_>, i: usize| {
+    let spawn_one = |set: &mut JoinSet<_>, i: usize| {
         let (name, prog) = (entries[i].0.to_string(), entries[i].1.to_string());
         set.spawn(async move {
             let d = check(&prog, timeout).await;
@@ -586,4 +625,385 @@ async fn run_pool(
     }
     while minims.join_next().await.is_some() {}
     stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stage 1 of `design/delete_gir_ir.md`. These probes pin the new
+    /// `CFlag::DirectNodeJit` body-codegen path (`gir_jit::compile_node`)
+    /// against both the node-walk reference (`Interp`) and the production
+    /// GIR JIT (`Jit`). All three must agree on every program; a program
+    /// the direct path can't compile must still produce the right value
+    /// under `DirectJit` by not fusing → node-walking. When `must_fuse`
+    /// is set, additionally assert (via the per-program [`FusionStats`])
+    /// that at least one region actually compiled + spliced under
+    /// `DirectJit` — value agreement alone can't distinguish "fused
+    /// correctly" from "silently never fused" (the C5 freeze gap: no
+    /// select-rooted region was ever attempted and every value test
+    /// passed).
+    async fn check_three(code: &str, must_fuse: bool) {
+        let t = Duration::from_secs(10);
+        let (interp, jit, (direct, stats)) = tokio::join!(
+            run_program(code, Mode::Interp, t),
+            run_program(code, Mode::Jit, t),
+            run_program_with_stats(code, Mode::DirectJit, t),
+        );
+        assert!(
+            interp.agrees_with(&jit),
+            "Interp vs Jit disagree for `{code}`: {interp:?} vs {jit:?}"
+        );
+        assert!(
+            interp.agrees_with(&direct),
+            "Interp vs DirectJit disagree for `{code}`: \
+             {interp:?} vs {direct:?}"
+        );
+        if must_fuse {
+            let why: String = stats
+                .failed
+                .iter()
+                .map(|(id, why)| format!("\n  {id:?}: {why}"))
+                .collect();
+            assert!(
+                stats.fused > 0,
+                "expected `{code}` to fuse under DirectJit but no region \
+                 compiled (attempted={}); failures:{why}",
+                stats.attempted,
+            );
+        }
+    }
+
+    async fn all_three_agree(code: &str) {
+        check_three(code, false).await
+    }
+
+    /// [`all_three_agree`] + "it really fused": the probe is KNOWN to
+    /// compile under the direct path, so a `fused == 0` run is a
+    /// coverage regression even though every value still agrees.
+    async fn all_three_agree_fused(code: &str) {
+        check_three(code, true).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_scalar_probes() {
+        // const + bin region
+        all_three_agree_fused("{ let x = i64:5; x * i64:3 }").await;
+        // multiple scalar lets + nested arithmetic with a Ref read twice
+        all_three_agree_fused(
+            "{ let x = i64:5; let y = i64:2; (x + y) * (x - y) }",
+        )
+        .await;
+        // div-by-zero → value-bottom (Timeout in all three via the
+        // taint/guard → boundary pending → no result emitted). Fuses —
+        // the bottom is a RUNTIME outcome of the compiled kernel.
+        all_three_agree_fused("i64:10 / i64:0").await;
+        // comparison + strict bool — `a > 3 && a < 10`
+        all_three_agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }")
+            .await;
+        // float arithmetic
+        all_three_agree_fused("f64:3.0 + f64:1.0").await;
+        // cast then float add. The original probe (`cast<f64>(7) +
+        // 1.0`, no `$`) never compiled at all — `cast` returns
+        // `[f64, Error]`, so it was a typecheck error in EVERY mode and
+        // CompileErr == CompileErr passed silently for the test's whole
+        // life (the exact bug class FusionStats exists to catch).
+        // Repaired with `$`; it still doesn't fuse — the `cast`
+        // CallSite doesn't emit CLIF on the direct path yet ("node
+        // does not emit CLIF"), so it node-walks: deliberate fallback.
+        all_three_agree("cast<f64>(i64:7)$ + f64:1.0").await;
+        // Nested block: the INNER block references `outer`, which is
+        // external to the inner region — so under DirectJit `outer`
+        // becomes a scalar KERNEL PARAM (exercising `compile_node`'s Ref
+        // arm against `env`-bound params, not just block-lets). The
+        // original probe's inner block had ONE expression — a parse
+        // error in every mode that `all_three_agree` accepted silently
+        // (same hollow-CompileErr class as the cast probe above).
+        all_three_agree_fused(
+            "{ let outer = i64:100; { let t = outer - i64:1; t * i64:2 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let a = i64:9; { let b = a * i64:2; b + a } }",
+        )
+        .await;
+    }
+
+    /// Stage C4 probes: `?`/`$` unwrap and builtin DynCall emission on
+    /// the direct path. The generated sweep can't produce these
+    /// constructs (`gen_program` emits neither qop nor builtin calls),
+    /// so without explicit probes a C4 regression would be invisible
+    /// to the gates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_qop_dyncall_probes() {
+        // Scalar-success `$` — branchless Scalar2 unwrap of the
+        // bounds-checked ArrayRef's Nullable<i64>.
+        all_three_agree_fused(
+            "{ let a = [i64:1, i64:2, i64:3]; a[0]$ + a[1]$ }",
+        )
+        .await;
+        // Out-of-bounds → error → bottom in every mode (the unwrap's
+        // pending path). Fuses — the bottom is a runtime outcome.
+        all_three_agree_fused("{ let a = [i64:1]; a[5]$ }").await;
+        // MapRef result through `$` — map access + scalar unwrap.
+        all_three_agree_fused(r#"{ let m = {"a" => i64:7}; m{"a"}$ + i64:1 }"#)
+            .await;
+        // Value-shape success `$` (duration element) — the Value
+        // unwrap arm + a Value-shape kernel return.
+        all_three_agree_fused("{ let a = [duration:1.s]; a[0]$ }").await;
+        // Builtin DynCall, scalar return, string arg.
+        all_three_agree_fused(r#"{ let s = "hello"; str::len(s) }"#).await;
+        // Builtin DynCall inside arithmetic (scalar return feeds Bin).
+        all_three_agree_fused(r#"{ let s = "hello"; str::len(s) + i64:1 }"#)
+            .await;
+        // Builtin DynCall with String return (ret_kind 4) + owned
+        // string-return kernel boundary.
+        all_three_agree_fused(r#"{ let s = "abc"; str::to_upper(s) }"#).await;
+        // Composite-success `$` (#199): the unwrap must re-box the
+        // Value's inline ValArray bits into the composite ABI's
+        // `*mut ValArray` — owned-producer and borrowed-Local inners.
+        all_three_agree_fused("{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }")
+            .await;
+        all_three_agree_fused(
+            "{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }",
+        )
+        .await;
+        all_three_agree_fused("{ let t = [(i64:1, i64:2)]; t[0]$ }").await;
+    }
+
+    /// Stage C5 probes: `select` (expression form) emission on the
+    /// direct path. Pattern coverage: literal arms, scrutinee binds,
+    /// guards (incl. a runtime-bottom guard), null/Nullable type
+    /// predicates in BOTH arm orders (the classic path's trivially-true
+    /// non-null predicate is order-unsound — the direct path tests
+    /// NOT-null explicitly, so these four probes pin order soundness),
+    /// variant tag + payload binds, a computed scrutinee (evaluated
+    /// once), and a nested select.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_select_probes() {
+        // Literal arms + wildcard.
+        all_three_agree_fused(
+            "{ let x = i64:7; select x { i64:0 => i64:100, \
+             i64:7 => i64:200, _ => i64:1 } }",
+        )
+        .await;
+        // Arm bind with body arithmetic.
+        all_three_agree_fused(
+            "{ let x = i64:5; select x { i64:0 => i64:100, n => n * i64:2 } }",
+        )
+        .await;
+        // Guard that fails at runtime, then one that passes.
+        all_three_agree_fused(
+            "{ let x = i64:3; select x { n if n > i64:10 => n, \
+             n => n + i64:1 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let x = i64:42; select x { n if n > i64:10 => n * i64:2, \
+             n => n } }",
+        )
+        .await;
+        // A guard that BOTTOMS at runtime (div-by-zero) — the arm does
+        // not match; the next arm wins.
+        all_three_agree_fused(
+            "{ let x = i64:9; select x { n if n / i64:0 == i64:1 => i64:1, \
+             m => m } }",
+        )
+        .await;
+        // Nullable scrutinee, both arm orders, both runtime values —
+        // the trivially-true-first-arm order trap.
+        all_three_agree_fused(
+            "{ let v: [i64, null] = null; select v { i64 as _ => i64:1, \
+             null as _ => i64:0 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let v: [i64, null] = null; select v { null as _ => i64:0, \
+             i64 as _ => i64:1 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let v: [i64, null] = i64:42; select v { i64 as _ => i64:1, \
+             null as _ => i64:0 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let v: [i64, null] = i64:42; select v { null as _ => i64:0, \
+             i64 as _ => i64:1 } }",
+        )
+        .await;
+        // Nullable RESULT (Value merge): scalar arm widens, null arm
+        // packs (NULL, 0).
+        all_three_agree_fused(
+            "{ let v: [i64, null] = i64:42; select v { i64 as _ => i64:1, \
+             null as _ => null } }",
+        )
+        .await;
+        // Variant tag-eq + scalar payload bind.
+        all_three_agree_fused(
+            "{ let v: [`Add(i64), `Neg] = `Add(i64:3); \
+             select v { `Add(n) => n + i64:1, `Neg => i64:0 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let v: [`Add(i64), `Neg] = `Neg; \
+             select v { `Add(n) => n + i64:1, `Neg => i64:0 } }",
+        )
+        .await;
+        // Computed scrutinee — must be evaluated exactly once and
+        // reused by every arm condition.
+        all_three_agree_fused(
+            "{ let x = i64:5; select (x * i64:2) { i64:10 => i64:1, \
+             _ => i64:0 } }",
+        )
+        .await;
+        // Bottom scrutinee with an irrefutable final arm — no value in
+        // any mode.
+        all_three_agree_fused(
+            "{ let x = i64:0; select (i64:10 / x) { n => n + i64:1 } }",
+        )
+        .await;
+        // Bool-literal pair (the only typecheckable conditional final
+        // arm) — exercises the unreachable miss trap.
+        all_three_agree_fused(
+            "{ let b = true; select b { true => i64:1, false => i64:0 } }",
+        )
+        .await;
+        all_three_agree_fused(
+            "{ let b = false; select b { true => i64:1, false => i64:0 } }",
+        )
+        .await;
+        // String result merge.
+        all_three_agree_fused(
+            r#"{ let x = i64:1; select x { i64:0 => "zero", _ => "other" } }"#,
+        )
+        .await;
+        // Nested select.
+        all_three_agree_fused(
+            "{ let x = i64:5; select (select x { i64:0 => i64:1, \
+             n => n + i64:1 }) { i64:6 => i64:100, m => m } }",
+        )
+        .await;
+    }
+
+    /// Stage C6 probes: string interpolation (`emit_string_interpolate_node`,
+    /// the Node twin of the GIR Concat arm) and checked arithmetic
+    /// (`emit_checked_arith_node` — NEW coverage, the GIR path never
+    /// lowered `+?` and friends). The generated sweep produces neither
+    /// construct, so without probes a regression would be invisible.
+    /// Checked-arith semantics under test: overflow / div-by-zero is a
+    /// catchable error VALUE (flows through `is_err` / `$`), never
+    /// bottom — the node-walk's `wrap_arith_error` core.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_string_checked_probes() {
+        // Interpolation: scalar part rendered via Display.
+        all_three_agree_fused(r#"{ let x = i64:7; "x is [x]" }"#).await;
+        // Mixed string + scalar parts.
+        all_three_agree_fused(r#"{ let a = "foo"; let b = i64:2; "[a]-[b]!" }"#)
+            .await;
+        // Pure string concat through interpolation.
+        all_three_agree_fused(r#"{ let a = "foo"; let b = "bar"; "[a][b]" }"#)
+            .await;
+        // Float / bool parts (per-prim push helpers).
+        all_three_agree_fused(
+            r#"{ let f = f64:1.5; let b = true; "f=[f] b=[b]" }"#,
+        )
+        .await;
+        // Interpolated literal scalar (const part).
+        all_three_agree_fused(r#""n=[i64:42]""#).await;
+        // A non-scalar part (Nullable from a[i]) — the restriction: the
+        // INTERPOLATION doesn't fuse, node-walks to the right value in
+        // every mode. Deliberate fallback, so no fused>0 assertion —
+        // a SUB-region (the `a[0]` access) still fuses via the
+        // attempt-then-recurse protocol, so fused>0 here would pass
+        // without testing what this probe is about.
+        all_three_agree(r#"{ let a = [i64:1, i64:2]; "e=[a[0]]" }"#).await;
+        // Checked add/sub/mul/mod, no overflow — success unwrapped by `$`.
+        all_three_agree_fused("{ let x = i64:5; (x +? i64:3)$ }").await;
+        all_three_agree_fused(
+            "{ let x = i64:10; (x -? i64:3)$ * (i64:2 *? i64:3)$ }",
+        )
+        .await;
+        all_three_agree_fused("{ let x = i64:10; (x %? i64:3)$ }").await;
+        // Overflow → the ArithError error VALUE (catchable, not bottom).
+        all_three_agree_fused("i64:9223372036854775807 +? i64:1").await;
+        all_three_agree_fused("is_err(i64:9223372036854775807 +? i64:1)")
+            .await;
+        // `0 /? 0` → error value through is_err — node-walk semantics:
+        // checked div0 FLOWS (unlike unchecked div0, which is bottom).
+        all_three_agree_fused("is_err(i64:0 /? i64:0)").await;
+        // Overflow through `$` — the error drops, bottom in every mode.
+        all_three_agree_fused("(i64:9223372036854775807 +? i64:1)$").await;
+        // Checked arith inside a larger expression (select consumes the
+        // [T, Error] union).
+        all_three_agree_fused(
+            "{ let x = i64:6; select (x +? i64:1) { i64 as n => n * i64:2, \
+             _ => i64:0 } }",
+        )
+        .await;
+        // Checked result interpolated after unwrap — the unwrapped part
+        // is a possibly-bottom Scalar2, which the interpolate relay's
+        // `.single()` refuses (the GIR `compile_scalar` parity): the
+        // INTERPOLATION doesn't fuse, node-walks to the right value in
+        // every mode. Deliberate fallback (same sub-region caveat as
+        // the Nullable-part probe above).
+        all_three_agree(r#"{ let x = i64:5; "v=[(x +? i64:1)$]" }"#).await;
+    }
+
+    /// Originally (Stage 1) these pinned the non-scalar FALLBACK —
+    /// `compile_node` bailed on a tuple/struct let and the program
+    /// node-walked. Stage C's composite emission absorbed both shapes:
+    /// measured via [`FusionStats`], each program now fuses its whole
+    /// body region (`fused == 1`, the same signature as the wholly-
+    /// fusing scalar probes — not a sub-region remnant). So the honest
+    /// assertion flipped from "falls back" to "fuses"; the probes now
+    /// pin composite-let + accessor coverage instead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_composite_probes() {
+        // A tuple-let + tuple accessors.
+        all_three_agree_fused("{ let t = (i64:1, i64:2); t.0 + t.1 }").await;
+        // A struct-let + field accessors.
+        all_three_agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }")
+            .await;
+    }
+
+    /// Broad differential sweep: the type-directed generator produces
+    /// scalar / tuple / array / select programs. For EVERY one, `Interp`
+    /// (node-walk reference) and `DirectJit` (the new `compile_node`
+    /// path, falling back to node-walk on any unsupported shape) must
+    /// agree. A scalar program exercises `compile_node`; a non-scalar one
+    /// exercises the fallback. Deterministic seed → reproducible.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn direct_node_jit_generated_sweep() {
+        use crate::generate::gen_program;
+        use crate::mutate::Rng;
+        let t = Duration::from_secs(10);
+        let mut rng = Rng::new(0xD17EC7);
+        let mut fused = 0usize;
+        for _ in 0..120 {
+            let code = gen_program(&mut rng);
+            let (interp, (direct, stats)) = tokio::join!(
+                run_program(&code, Mode::Interp, t),
+                run_program_with_stats(&code, Mode::DirectJit, t),
+            );
+            fused += stats.fused;
+            // Skip nondeterministic programs (a value whose Display
+            // embeds a process-global id, etc.): re-run interp and only
+            // assert when interp agrees with itself — mirrors the
+            // oracle's double-run guard.
+            if !interp.agrees_with(&direct) {
+                let interp2 = run_program(&code, Mode::Interp, t).await;
+                if !interp.agrees_with(&interp2) {
+                    continue; // nondeterministic — not a backend bug
+                }
+                panic!(
+                    "Interp vs DirectJit diverge for `{code}`: \
+                     {interp:?} vs {direct:?}"
+                );
+            }
+        }
+        // The live coverage number — visible in every `--nocapture`
+        // run, no instrumentation ritual required.
+        eprintln!("sweep: {fused} regions fused across 120 programs");
+    }
 }

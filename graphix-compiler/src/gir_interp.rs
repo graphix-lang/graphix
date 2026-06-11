@@ -14,38 +14,20 @@
 //!   arguments via the DynCall side-channel, and unpacks the result.
 //! - JIT failure (or `JitDisabled`) → DON'T splice. The original nodes
 //!   stay in the graph and run through the node-walk, the universal
-//!   fallback. [`GirNode::build`] enforces this by refusing to
-//!   construct a node without a JIT wrapper.
+//!   fallback. A [`GirNode`] cannot be constructed without a JIT
+//!   wrapper, so this is structural.
 //!
-//! This file keeps [`GirNode`], its arg-layout / arg-packing, the
-//! [`DynCallSlot`] cross-call machinery, and the [`KernelRegistry`] for
-//! `GirOp::Call` dispatch — everything the JIT boundary needs, and
-//! nothing of the deleted interpreter.
+//! This file keeps [`GirNode`], its arg-layout / arg-packing, and the
+//! [`DynCallSlot`] cross-call machinery — everything the JIT boundary
+//! needs, and nothing of the deleted interpreter.
 
 use crate::{
     gir::GirKernel,
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
 };
-use arcstr::ArcStr;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
-use std::{collections::BTreeMap, sync::Arc};
-
-// ─── Cross-kernel call dispatch ──────────────────────────────────
-
-/// Runtime lookup table for `GirOp::Call`. Each kernel that fuses at
-/// `Lambda::compile` time gets registered here under its source-level
-/// binding name; an inner lambda whose body calls one of those names
-/// produces a `GirOp::Call`, and the interpreter walks this map to
-/// dispatch.
-///
-/// The registry is built once per Lambda::compile (snapshot of the
-/// fusion-visibility scope at that point) and shared via `Arc` into
-/// every `GirNode` the lambda's init produces.
-#[derive(Debug, Default)]
-pub struct KernelRegistry {
-    pub kernels: BTreeMap<ArcStr, Arc<GirKernel>>,
-}
+use std::sync::Arc;
 
 // ─── GirNode: the Apply<R, E> wrapper ────────────────────────────
 
@@ -591,21 +573,10 @@ pub struct GirNode<R: Rt, E: UserEvent> {
     /// passes into `update`. `None` means "haven't seen a value yet";
     /// the kernel runs once every slot is `Some`.
     args: Box<[Option<Value>]>,
-    /// Synchronously-compiled JIT wrapper, when available. Filled at
-    /// `Lambda::compile` time when JIT mode is `Sync`. Update
-    /// dispatch checks this first.
-    jit: Option<Arc<crate::gir_jit::WrappedKernel>>,
-    /// Async JIT slot. Filled by the global background worker once
-    /// it finishes compiling. `update` polls the slot on each call;
-    /// before it's filled the interpreter runs, after it the JIT'd
-    /// wrapper does. Set when JIT mode is `Async`.
-    async_jit: Option<Arc<crate::gir_jit::AsyncJitSlot>>,
-    /// Fused kernels visible at this lambda's compile site, shared
-    /// across all instantiations of the lambda. The interpreter uses
-    /// this to dispatch `GirOp::Call`. Empty registry is fine —
-    /// kernels that don't reference any cross-kernel calls just
-    /// never look up.
-    registry: Arc<KernelRegistry>,
+    /// The compiled JIT wrapper this node dispatches into. Required:
+    /// a fused node without a JIT cannot exist — JIT failure means
+    /// the region was never spliced and the original nodes node-walk.
+    jit: Arc<crate::gir_jit::WrappedKernel>,
     /// One slot per `kernel.fn_params` entry. Empty for kernels with
     /// no HOF args. The DynCall dispatcher closure (assembled inside
     /// `Apply<R, E>::update`) borrows this slice mutably to invoke
@@ -752,7 +723,6 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for GirNode<R, E> {
             .field("fn_name", &self.kernel.fn_name)
             .field("params", &self.kernel.params.len())
             .field("fn_params", &self.kernel.fn_params.len())
-            .field("jit", &self.jit.is_some())
             .finish()
     }
 }
@@ -766,7 +736,7 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
     }
 
     /// Clone this node for a fresh array slot ([`crate::Update::clone_rebind`]):
-    /// SHARE the immutable IR / JIT / registry `Arc`s (the kernel is the
+    /// SHARE the immutable IR / JIT `Arc`s (the kernel is the
     /// incidental "what `update` does"), but re-run the `build` chokepoint
     /// so the per-cycle scratch is fresh and the `dyn_slots` are re-inited
     /// (each slot's inner Apply is a per-slot instance, not shared). `scope`
@@ -778,33 +748,26 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> ::anyhow::Result<Self> {
-        Self::build(
-            ctx,
-            self.kernel.clone(),
-            n_args,
-            self.jit.clone(),
-            self.async_jit.clone(),
-            self.registry.clone(),
-            scope,
-            top_id,
-        )
+        Self::new(ctx, self.kernel.clone(), n_args, self.jit.clone(), scope, top_id)
     }
 
-    /// Single construction chokepoint. Builds the GirNode and runs
-    /// both pre-init helpers (`pre_init_binding_slots` for binding-
-    /// source fn_params, `pre_init_builtin_slots` for builtin-source
+    /// Single construction chokepoint: a GirNode dispatches into
+    /// `wrapped`, the JIT artifact — there is no other way to make
+    /// one (JIT failure means the region is never spliced and the
+    /// original nodes node-walk). Builds the GirNode and runs both
+    /// pre-init helpers (`pre_init_binding_slots` for binding-source
+    /// fn_params, `pre_init_builtin_slots` for builtin-source
     /// fn_params). Without those, the first `DynCall` into the kernel
     /// either silently fails to drive its inner Apply (binding case)
     /// or panics with "fn-arg value isn't a LambdaDef" (builtin case).
-    /// Having one chokepoint makes that bug class impossible — every
-    /// public constructor goes through this.
-    fn build(
+    ///
+    /// `scope` and `top_id` initialize per-DynCall-slot state (the
+    /// inner Applies that DynCall dispatches into).
+    pub fn new(
         ctx: &mut crate::ExecCtx<R, E>,
         kernel: Arc<GirKernel>,
         n_args: usize,
-        jit: Option<Arc<crate::gir_jit::WrappedKernel>>,
-        async_jit: Option<Arc<crate::gir_jit::AsyncJitSlot>>,
-        registry: Arc<KernelRegistry>,
+        wrapped: Arc<crate::gir_jit::WrappedKernel>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> ::anyhow::Result<Self> {
@@ -813,18 +776,6 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
             total_kernel_arity(&kernel),
             "GirNode arity = sum of all slot kinds"
         );
-        // A fused node REQUIRES a JIT. The GIR interpreter is gone —
-        // `update` dispatches unconditionally into the JIT'd wrapper.
-        // If JIT compilation failed (or `JitDisabled` was set), we
-        // refuse to construct a GirNode at all. Every splice site
-        // treats this `Err` as "don't splice — leave the original
-        // nodes to node-walk", which is the universal fallback.
-        if jit.is_none() && async_jit.is_none() {
-            ::anyhow::bail!(
-                "no JIT for kernel `{}` — fused node must node-walk",
-                kernel.fn_name
-            );
-        }
         let dyn_slots = kernel
             .fn_params
             .iter()
@@ -834,50 +785,13 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         let mut node = Self {
             kernel,
             args: vec![None; n_args].into_boxed_slice(),
-            jit,
-            async_jit,
-            registry,
+            jit: wrapped,
             dyn_slots,
             arg_layout,
         };
         node.pre_init_binding_slots(ctx);
         node.pre_init_builtin_slots(ctx)?;
         Ok(node)
-    }
-
-    /// Construct a fresh GirNode for `kernel`, sized to match `n_args`
-    /// input slots (which must equal `kernel.params.len() +
-    /// kernel.fn_params.len()` — the input slice the runtime passes
-    /// into `update` mixes prim and fn args). Runs through the
-    /// interpreter; use [`Self::with_jit`] for synchronous JIT or
-    /// [`Self::with_async_jit`] for background-compiled JIT.
-    ///
-    /// `scope` and `top_id` are used to initialize per-DynCall-slot
-    /// state (the inner Applies that DynCall dispatches into).
-    pub fn new(
-        ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<GirKernel>,
-        n_args: usize,
-        registry: Arc<KernelRegistry>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
-    ) -> ::anyhow::Result<Self> {
-        Self::build(ctx, kernel, n_args, None, None, registry, scope, top_id)
-    }
-
-    /// Construct a GirNode whose `update` dispatches into a JIT'd
-    /// kernel via `wrapped`. JIT path is only used for kernels that
-    /// don't contain `GirOp::Call` or `GirOp::DynCall`.
-    pub fn with_jit(
-        ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<GirKernel>,
-        n_args: usize,
-        wrapped: Arc<crate::gir_jit::WrappedKernel>,
-        registry: Arc<KernelRegistry>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
-    ) -> ::anyhow::Result<Self> {
-        Self::build(ctx, kernel, n_args, Some(wrapped), None, registry, scope, top_id)
     }
 
     /// Eagerly initialize each binding-source DynCall slot so the
@@ -947,21 +861,6 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
             }
         }
         Ok(())
-    }
-
-    /// Construct a GirNode that interprets initially and atomic-
-    /// swaps to a JIT'd wrapper when the async worker finishes
-    /// compiling.
-    pub fn with_async_jit(
-        ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<GirKernel>,
-        n_args: usize,
-        slot: Arc<crate::gir_jit::AsyncJitSlot>,
-        registry: Arc<KernelRegistry>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
-    ) -> ::anyhow::Result<Self> {
-        Self::build(ctx, kernel, n_args, None, Some(slot), registry, scope, top_id)
     }
 }
 
@@ -1133,277 +1032,253 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
                 fn_arg_values[fn_idx] = v;
             }
         }
-        // Pick a JIT wrapper if available. Sync JIT wins (already
-        // compiled at Lambda::compile); else check the async slot
-        // which atomic-fills when the worker thread finishes.
-        //
-        // The JIT supports kernels with array/tuple/struct/variant
-        // INPUTS (each composite param is a pointer in the wrapper's
-        // arg slot — `*const ValArray` for array/tuple/struct,
-        // `*const Value` for variant). Fn-typed params (HOF args)
-        // still bail at the gir_jit compile path, so `self.jit` is
-        // None for those — no extra gate needed here.
-        let wrapper = match &self.jit {
-            Some(w) => Some(w.clone()),
-            None => self.async_jit.as_ref().and_then(|s| s.fetch()),
-        };
-        match wrapper.as_ref() {
-            None => {
-                // No interpreter. A GirNode is only ever constructed
-                // with a sync JIT (`build` bails otherwise); the only
-                // way to land here is an async-JIT slot that hasn't
-                // filled yet. Produce nothing this cycle and re-fire
-                // when the slot fills.
-                None
+        // JIT dispatch. The JIT supports kernels with
+        // array/tuple/struct/variant INPUTS (each composite param is a
+        // pointer in the wrapper's arg slot — `*const ValArray` for
+        // array/tuple/struct, `*const Value` for variant). Re-derive
+        // the typed per-kind args from `param_opts`, aborting (`?`) on
+        // any missing input, pack each scalar arg's bits into a raw
+        // u64 slot, composite args as `*const ValArray`, etc., call
+        // through the wrapper, and unpack the result.
+        let wrapped = &self.jit;
+        let mut scalar_arg_bits: smallvec::SmallVec<[u64; 8]> =
+            smallvec::SmallVec::with_capacity(k.params.len());
+        for (i, p) in k.params.iter().enumerate() {
+            let v = param_opts[i].as_ref()?;
+            scalar_arg_bits
+                .push(crate::gir_jit::pack_value_to_u64(v, p.prim));
+        }
+        let composite_arr = |i: usize| -> Option<ValArray> {
+            match param_opts[i].as_ref()? {
+                Value::Array(a) => Some(a.clone()),
+                v => panic!(
+                    "GirNode: composite param expected Value::Array, \
+                     got {v:?}"
+                ),
             }
-            Some(wrapped) => {
-                // JIT path. Re-derive the typed per-kind args from
-                // `param_opts`, aborting (`?`) on any missing input —
-                // JIT bottom support is a later phase, so a missing input
-                // still aborts the whole kernel here. Then pack each
-                // scalar arg's bits into a raw u64 slot, composite args
-                // as `*const ValArray`, etc., call through the wrapper,
-                // and unpack the result.
-                let mut scalar_arg_bits: smallvec::SmallVec<[u64; 8]> =
-                    smallvec::SmallVec::with_capacity(k.params.len());
-                for (i, p) in k.params.iter().enumerate() {
-                    let v = param_opts[i].as_ref()?;
-                    scalar_arg_bits
-                        .push(crate::gir_jit::pack_value_to_u64(v, p.prim));
-                }
-                let composite_arr = |i: usize| -> Option<ValArray> {
-                    match param_opts[i].as_ref()? {
-                        Value::Array(a) => Some(a.clone()),
-                        v => panic!(
-                            "GirNode: composite param expected Value::Array, \
-                             got {v:?}"
-                        ),
-                    }
-                };
-                let mut array_args: smallvec::SmallVec<[ValArray; 4]> =
-                    smallvec::SmallVec::with_capacity(k.array_params.len());
-                for j in 0..k.array_params.len() {
-                    array_args.push(composite_arr(base_array + j)?);
-                }
-                let mut tuple_args: smallvec::SmallVec<[ValArray; 4]> =
-                    smallvec::SmallVec::with_capacity(k.tuple_params.len());
-                for j in 0..k.tuple_params.len() {
-                    tuple_args.push(composite_arr(base_tuple + j)?);
-                }
-                let mut struct_args: smallvec::SmallVec<[ValArray; 4]> =
-                    smallvec::SmallVec::with_capacity(k.struct_params.len());
-                for j in 0..k.struct_params.len() {
-                    struct_args.push(composite_arr(base_struct + j)?);
-                }
-                let mut variant_args: smallvec::SmallVec<[Value; 4]> =
-                    smallvec::SmallVec::with_capacity(k.variant_params.len());
-                for j in 0..k.variant_params.len() {
-                    variant_args.push(param_opts[base_variant + j].clone()?);
-                }
-                let mut nullable_args: smallvec::SmallVec<[Value; 4]> =
-                    smallvec::SmallVec::with_capacity(k.nullable_params.len());
-                for j in 0..k.nullable_params.len() {
-                    nullable_args.push(param_opts[base_nullable + j].clone()?);
-                }
-                let mut string_args: smallvec::SmallVec<[arcstr::ArcStr; 4]> =
-                    smallvec::SmallVec::with_capacity(k.string_params.len());
-                for j in 0..k.string_params.len() {
-                    match param_opts[base_string + j].as_ref()? {
-                        Value::String(s) => string_args.push(s.clone()),
-                        v => panic!(
-                            "GirNode: string param expected Value::String, \
-                             got {v:?}"
-                        ),
-                    }
-                }
-                let mut value_args: smallvec::SmallVec<[Value; 4]> =
-                    smallvec::SmallVec::with_capacity(k.value_params.len());
-                for j in 0..k.value_params.len() {
-                    value_args.push(param_opts[base_value + j].clone()?);
-                }
-                //
-                // Slot order is the canonical kind-grouped ABI layout
-                // (`GirKernel::abi_params`): scalar params first, then
-                // array/tuple/struct pointers, then variant/nullable
-                // (disc, payload) pairs — exactly what the JIT wrapper
-                // unpacks.
-                //
-                // The ValArray references stay borrowed by `array_args`
-                // / `tuple_args` / `struct_args` (`SmallVec<ValArray>`)
-                // for the duration of the wrapper call — the JIT'd
-                // helpers dereference these pointers, so the originals
-                // must outlive the call. They do: the smallvecs live
-                // for the rest of `update`.
-                let mut slots: smallvec::SmallVec<[u64; 16]> =
-                    smallvec::SmallVec::with_capacity(
-                        self.kernel.abi_param_wire_slots(),
-                    );
-                for bits in &scalar_arg_bits {
-                    slots.push(*bits);
-                }
-                for a in &array_args {
-                    slots.push(a as *const ValArray as u64);
-                }
-                for a in &tuple_args {
-                    slots.push(a as *const ValArray as u64);
-                }
-                for a in &struct_args {
-                    slots.push(a as *const ValArray as u64);
-                }
-                // String boundary: pack the borrowed `ArcStr` as its
-                // thin pointer (one word). `ArcStr` is
-                // `repr(transparent)` over `NonNull<ThinInner>`, so the
-                // pointer word IS the value. The kernel refcount-bumps
-                // on entry via `graphix_arcstr_clone`; we keep the
-                // `string_args` smallvec alive for the call's duration.
-                for s in &string_args {
-                    let p = s as *const arcstr::ArcStr as *const u64;
-                    unsafe {
-                        slots.push(*p);
-                    }
-                }
-                // Variant / Nullable boundary: pack the borrowed
-                // `Value` as its two `repr(u64)` words (disc, payload).
-                // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
-                // aligned, layout pinned by the const_assert in
-                // `gir_jit_helpers`. We don't transfer ownership —
-                // the kernel refcount-bumps on entry via
-                // `graphix_value_clone`.
-                for v in &variant_args {
-                    let p = v as *const Value as *const u64;
-                    unsafe {
-                        slots.push(*p);
-                        slots.push(*p.add(1));
-                    }
-                }
-                for v in &nullable_args {
-                    let p = v as *const Value as *const u64;
-                    unsafe {
-                        slots.push(*p);
-                        slots.push(*p.add(1));
-                    }
-                }
-                // Bare value-shape (DateTime/Duration/Bytes) boundary:
-                // two-word `Value` pack, same as variant/nullable. The
-                // kernel clones on entry; we keep `value_args` alive.
-                for v in &value_args {
-                    let p = v as *const Value as *const u64;
-                    unsafe {
-                        slots.push(*p);
-                        slots.push(*p.add(1));
-                    }
-                }
-                // Drift guard: the packed slot count must equal the
-                // kernel's declared ABI footprint. A mismatch means the
-                // per-kind arg vectors disagree with `abi_params` —
-                // catch it here rather than as a silent misread in the
-                // JIT wrapper.
-                debug_assert_eq!(
-                    slots.len(),
-                    self.kernel.abi_param_wire_slots(),
-                    "packed slot count must match the kernel ABI layout"
-                );
-                let mut out: [u64; 2] = [0, 0];
-                let f = unsafe { wrapped.fn_ptr() };
-                // Set up the DynCall dispatcher handle so the JIT'd
-                // code can invoke fn-typed params via `graphix_dyncall`.
-                // Save the previous handle so nested JIT-to-JIT
-                // HOF dispatches stack correctly.
-                //
-                // SAFETY: `state` lives on this stack frame for the
-                // entire `f(...)` call. The raw pointers in it refer
-                // to live mutable borrows of self/ctx/event/fn_arg_values
-                // which we hold through the call. `dispatch_typed::<R, E>`
-                // is monomorphized for THIS R, E so the typed downcast
-                // inside it is sound.
-                let mut state = DispatcherState::<R, E> {
-                    dyn_slots: &mut self.dyn_slots[..] as *mut [DynCallSlot<R, E>],
-                    fn_arg_values: &fn_arg_values[..] as *const [Value],
-                    ctx: ctx as *mut ExecCtx<R, E>,
-                    event: event as *mut Event<E>,
-                };
-                let handle = crate::gir_jit_helpers::DynDispatchHandle {
-                    dispatch: dispatch_typed::<R, E>,
-                    state: (&mut state) as *mut _ as *mut u8,
-                };
-                let prev_handle = crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
-                    .with(|c| c.replace(&handle as *const _));
-                // Always reset the pending flag before the call so
-                // we can distinguish "this kernel pended" from
-                // "some earlier kernel left the flag set."
-                crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
-                unsafe {
-                    f(slots.as_ptr(), out.as_mut_ptr());
-                }
-                crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
-                    .with(|c| c.set(prev_handle));
-                let pending = crate::gir_jit_helpers::DYNCALL_PENDING
-                    .with(|c| c.replace(false));
-                if pending {
-                    // The kernel's *out slot is either a garbage
-                    // scalar (no deref needed) or a null pointer
-                    // (for composite returns; the JIT emitted a
-                    // sentinel from the pre_pending block). Either
-                    // way, discard and re-fire next cycle.
-                    return None;
-                }
-                // Decode the wrapper's *out slot(s) according to the
-                // kernel's declared return type into the boundary
-                // `Option<Value>`:
-                //
-                // - Prim: out[0] bits → Value (unpack_u64_to_value).
-                // - Array/Tuple/Struct: out[0] holds a `*mut ValArray`
-                //   we own; reclaim via Box::from_raw.
-                // - Variant/Nullable/value-shape: out[0] = Value disc,
-                //   out[1] = payload. Transmute the two u64s back into a
-                //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
-                //   layout pinned by `gir_jit_helpers`).
-                use crate::gir::AbiKind;
-                let v = match crate::gir::abi_kind(&self.kernel.return_type) {
-                    Some(AbiKind::Scalar(p)) => {
-                        crate::gir_jit::unpack_u64_to_value(out[0], p)
-                    }
-                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                        let ptr = out[0] as *mut ValArray;
-                        let owned = unsafe { *Box::from_raw(ptr) };
-                        Value::Array(owned)
-                    }
-                    // Unit-returning kernel: the JIT writes 0 into
-                    // *out; nothing to decode. The caller discards via
-                    // `GirStmt::Discard` so the value is never inspected —
-                    // a Bool placeholder is type-correct and cheap.
-                    Some(AbiKind::Unit) => Value::Bool(false),
-                    // String-returning kernel: `out[0]` is the ArcStr's
-                    // thin pointer (transferred ownership). ArcStr is
-                    // `repr(transparent)` over `NonNull<ThinInner>`, so
-                    // the raw u64 is a valid `ArcStr` bit pattern.
-                    Some(AbiKind::String) => {
-                        let raw = out[0];
-                        // SAFETY: the JIT'd kernel produced this via
-                        // `graphix_arcstr_clone_from_static` or
-                        // `graphix_string_buf_finalize`, both returning
-                        // owned ArcStr values.
-                        let s: arcstr::ArcStr = unsafe {
-                            std::mem::transmute::<u64, arcstr::ArcStr>(raw)
-                        };
-                        Value::String(s)
-                    }
-                    // Variant / Nullable / value-shape (datetime /
-                    // duration / bytes / map / error): out[0] = disc,
-                    // out[1] = payload. Transmute the two u64s back into
-                    // a Value.
-                    Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => unsafe {
-                        std::mem::transmute(out)
-                    },
-                    Some(AbiKind::Null) | None => unreachable!(
-                        "JIT decode for a non-fusable / bare-Null kernel \
-                         return — JIT should have bailed out before \
-                         producing such a kernel"
-                    ),
-                };
-                Some(v)
+        };
+        let mut array_args: smallvec::SmallVec<[ValArray; 4]> =
+            smallvec::SmallVec::with_capacity(k.array_params.len());
+        for j in 0..k.array_params.len() {
+            array_args.push(composite_arr(base_array + j)?);
+        }
+        let mut tuple_args: smallvec::SmallVec<[ValArray; 4]> =
+            smallvec::SmallVec::with_capacity(k.tuple_params.len());
+        for j in 0..k.tuple_params.len() {
+            tuple_args.push(composite_arr(base_tuple + j)?);
+        }
+        let mut struct_args: smallvec::SmallVec<[ValArray; 4]> =
+            smallvec::SmallVec::with_capacity(k.struct_params.len());
+        for j in 0..k.struct_params.len() {
+            struct_args.push(composite_arr(base_struct + j)?);
+        }
+        let mut variant_args: smallvec::SmallVec<[Value; 4]> =
+            smallvec::SmallVec::with_capacity(k.variant_params.len());
+        for j in 0..k.variant_params.len() {
+            variant_args.push(param_opts[base_variant + j].clone()?);
+        }
+        let mut nullable_args: smallvec::SmallVec<[Value; 4]> =
+            smallvec::SmallVec::with_capacity(k.nullable_params.len());
+        for j in 0..k.nullable_params.len() {
+            nullable_args.push(param_opts[base_nullable + j].clone()?);
+        }
+        let mut string_args: smallvec::SmallVec<[arcstr::ArcStr; 4]> =
+            smallvec::SmallVec::with_capacity(k.string_params.len());
+        for j in 0..k.string_params.len() {
+            match param_opts[base_string + j].as_ref()? {
+                Value::String(s) => string_args.push(s.clone()),
+                v => panic!(
+                    "GirNode: string param expected Value::String, \
+                     got {v:?}"
+                ),
             }
         }
+        let mut value_args: smallvec::SmallVec<[Value; 4]> =
+            smallvec::SmallVec::with_capacity(k.value_params.len());
+        for j in 0..k.value_params.len() {
+            value_args.push(param_opts[base_value + j].clone()?);
+        }
+        //
+        // Slot order is the canonical kind-grouped ABI layout
+        // (`GirKernel::abi_params`): scalar params first, then
+        // array/tuple/struct pointers, then variant/nullable
+        // (disc, payload) pairs — exactly what the JIT wrapper
+        // unpacks.
+        //
+        // The ValArray references stay borrowed by `array_args`
+        // / `tuple_args` / `struct_args` (`SmallVec<ValArray>`)
+        // for the duration of the wrapper call — the JIT'd
+        // helpers dereference these pointers, so the originals
+        // must outlive the call. They do: the smallvecs live
+        // for the rest of `update`.
+        let mut slots: smallvec::SmallVec<[u64; 16]> =
+            smallvec::SmallVec::with_capacity(
+                self.kernel.abi_param_wire_slots(),
+            );
+        for bits in &scalar_arg_bits {
+            slots.push(*bits);
+        }
+        for a in &array_args {
+            slots.push(a as *const ValArray as u64);
+        }
+        for a in &tuple_args {
+            slots.push(a as *const ValArray as u64);
+        }
+        for a in &struct_args {
+            slots.push(a as *const ValArray as u64);
+        }
+        // String boundary: pack the borrowed `ArcStr` as its
+        // thin pointer (one word). `ArcStr` is
+        // `repr(transparent)` over `NonNull<ThinInner>`, so the
+        // pointer word IS the value. The kernel refcount-bumps
+        // on entry via `graphix_arcstr_clone`; we keep the
+        // `string_args` smallvec alive for the call's duration.
+        for s in &string_args {
+            let p = s as *const arcstr::ArcStr as *const u64;
+            unsafe {
+                slots.push(*p);
+            }
+        }
+        // Variant / Nullable boundary: pack the borrowed
+        // `Value` as its two `repr(u64)` words (disc, payload).
+        // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
+        // aligned, layout pinned by the const_assert in
+        // `gir_jit_helpers`. We don't transfer ownership —
+        // the kernel refcount-bumps on entry via
+        // `graphix_value_clone`.
+        for v in &variant_args {
+            let p = v as *const Value as *const u64;
+            unsafe {
+                slots.push(*p);
+                slots.push(*p.add(1));
+            }
+        }
+        for v in &nullable_args {
+            let p = v as *const Value as *const u64;
+            unsafe {
+                slots.push(*p);
+                slots.push(*p.add(1));
+            }
+        }
+        // Bare value-shape (DateTime/Duration/Bytes) boundary:
+        // two-word `Value` pack, same as variant/nullable. The
+        // kernel clones on entry; we keep `value_args` alive.
+        for v in &value_args {
+            let p = v as *const Value as *const u64;
+            unsafe {
+                slots.push(*p);
+                slots.push(*p.add(1));
+            }
+        }
+        // Drift guard: the packed slot count must equal the
+        // kernel's declared ABI footprint. A mismatch means the
+        // per-kind arg vectors disagree with `abi_params` —
+        // catch it here rather than as a silent misread in the
+        // JIT wrapper.
+        debug_assert_eq!(
+            slots.len(),
+            self.kernel.abi_param_wire_slots(),
+            "packed slot count must match the kernel ABI layout"
+        );
+        let mut out: [u64; 2] = [0, 0];
+        let f = unsafe { wrapped.fn_ptr() };
+        // Set up the DynCall dispatcher handle so the JIT'd
+        // code can invoke fn-typed params via `graphix_dyncall`.
+        // Save the previous handle so nested JIT-to-JIT
+        // HOF dispatches stack correctly.
+        //
+        // SAFETY: `state` lives on this stack frame for the
+        // entire `f(...)` call. The raw pointers in it refer
+        // to live mutable borrows of self/ctx/event/fn_arg_values
+        // which we hold through the call. `dispatch_typed::<R, E>`
+        // is monomorphized for THIS R, E so the typed downcast
+        // inside it is sound.
+        let mut state = DispatcherState::<R, E> {
+            dyn_slots: &mut self.dyn_slots[..] as *mut [DynCallSlot<R, E>],
+            fn_arg_values: &fn_arg_values[..] as *const [Value],
+            ctx: ctx as *mut ExecCtx<R, E>,
+            event: event as *mut Event<E>,
+        };
+        let handle = crate::gir_jit_helpers::DynDispatchHandle {
+            dispatch: dispatch_typed::<R, E>,
+            state: (&mut state) as *mut _ as *mut u8,
+        };
+        let prev_handle = crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
+            .with(|c| c.replace(&handle as *const _));
+        // Always reset the pending flag before the call so
+        // we can distinguish "this kernel pended" from
+        // "some earlier kernel left the flag set."
+        crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+        unsafe {
+            f(slots.as_ptr(), out.as_mut_ptr());
+        }
+        crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
+            .with(|c| c.set(prev_handle));
+        let pending = crate::gir_jit_helpers::DYNCALL_PENDING
+            .with(|c| c.replace(false));
+        if pending {
+            // The kernel's *out slot is either a garbage
+            // scalar (no deref needed) or a null pointer
+            // (for composite returns; the JIT emitted a
+            // sentinel from the pre_pending block). Either
+            // way, discard and re-fire next cycle.
+            return None;
+        }
+        // Decode the wrapper's *out slot(s) according to the
+        // kernel's declared return type into the boundary
+        // `Option<Value>`:
+        //
+        // - Prim: out[0] bits → Value (unpack_u64_to_value).
+        // - Array/Tuple/Struct: out[0] holds a `*mut ValArray`
+        //   we own; reclaim via Box::from_raw.
+        // - Variant/Nullable/value-shape: out[0] = Value disc,
+        //   out[1] = payload. Transmute the two u64s back into a
+        //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
+        //   layout pinned by `gir_jit_helpers`).
+        use crate::gir::AbiKind;
+        let v = match crate::gir::abi_kind(&self.kernel.return_type) {
+            Some(AbiKind::Scalar(p)) => {
+                crate::gir_jit::unpack_u64_to_value(out[0], p)
+            }
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                let ptr = out[0] as *mut ValArray;
+                let owned = unsafe { *Box::from_raw(ptr) };
+                Value::Array(owned)
+            }
+            // Unit-returning kernel: the JIT writes 0 into
+            // *out; nothing to decode. The caller discards via
+            // `GirStmt::Discard` so the value is never inspected —
+            // a Bool placeholder is type-correct and cheap.
+            Some(AbiKind::Unit) => Value::Bool(false),
+            // String-returning kernel: `out[0]` is the ArcStr's
+            // thin pointer (transferred ownership). ArcStr is
+            // `repr(transparent)` over `NonNull<ThinInner>`, so
+            // the raw u64 is a valid `ArcStr` bit pattern.
+            Some(AbiKind::String) => {
+                let raw = out[0];
+                // SAFETY: the JIT'd kernel produced this via
+                // `graphix_arcstr_clone_from_static` or
+                // `graphix_string_buf_finalize`, both returning
+                // owned ArcStr values.
+                let s: arcstr::ArcStr = unsafe {
+                    std::mem::transmute::<u64, arcstr::ArcStr>(raw)
+                };
+                Value::String(s)
+            }
+            // Variant / Nullable / value-shape (datetime /
+            // duration / bytes / map / error): out[0] = disc,
+            // out[1] = payload. Transmute the two u64s back into
+            // a Value.
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => unsafe {
+                std::mem::transmute(out)
+            },
+            Some(AbiKind::Null) | None => unreachable!(
+                "JIT decode for a non-fusable / bare-Null kernel \
+                 return — JIT should have bailed out before \
+                 producing such a kernel"
+            ),
+        };
+        Some(v)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {

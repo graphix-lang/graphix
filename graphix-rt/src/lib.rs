@@ -17,7 +17,7 @@ use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath, ModuleResolver, Source},
     typ::{FnType, Type},
-    BindId, CFlag, Event, ExecCtx, NoUserEvent, Scope, UserEvent,
+    BindId, CFlag, Event, ExecCtx, FusionStats, NoUserEvent, Scope, UserEvent,
 };
 use log::error;
 use netidx::{
@@ -495,6 +495,12 @@ enum ToGX<X: GXExt> {
     EnvStats {
         res: oneshot::Sender<EnvStats>,
     },
+    /// Introspection: snapshot the compile-time fusion outcome
+    /// counters accumulated on the `ExecCtx`. See
+    /// [`graphix_compiler::FusionStats`].
+    FusionStats {
+        res: oneshot::Sender<FusionStats>,
+    },
     CycleReady {
         res: oneshot::Sender<bool>,
     },
@@ -715,6 +721,16 @@ impl<X: GXExt> GXHandle<X> {
     /// binding/ref leak). See [`EnvStats`].
     pub async fn env_stats(&self) -> Result<EnvStats> {
         self.exec(|res| ToGX::EnvStats { res }).await
+    }
+
+    /// Snapshot the compile-time fusion outcome counters accumulated
+    /// on the `ExecCtx` by every `compile()` this runtime has
+    /// dispatched (the root module included). Stats are compile-time
+    /// only — they don't change while a program runs — so fetch any
+    /// time after the compile of interest. See
+    /// [`graphix_compiler::FusionStats`].
+    pub async fn fusion_stats(&self) -> Result<FusionStats> {
+        self.exec(|res| ToGX::FusionStats { res }).await
     }
 
     /// Whether the runtime has pending work scheduled for the next

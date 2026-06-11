@@ -402,6 +402,9 @@ impl<X: GXExt> GX<X> {
                         ref_var_total,
                     });
                 }
+                ToGX::FusionStats { res } => {
+                    let _ = res.send(self.ctx.fusion_stats.clone());
+                }
                 ToGX::CycleReady { res } => {
                     let _ = res.send(self.cycle_ready());
                 }

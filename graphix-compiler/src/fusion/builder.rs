@@ -56,10 +56,10 @@ pub struct BuiltKernel {
     /// back into the runtime's nodes map.
     pub splice: SpliceTarget,
     /// Transitively-reachable sub-kernels referenced from this
-    /// kernel's body via [`crate::gir::GirOp::Call`]. The splicer
-    /// populates the runtime
-    /// [`crate::gir_interp::KernelRegistry`] from this map so Call
-    /// ops dispatch correctly.
+    /// kernel's body via [`crate::gir::GirOp::Call`]. The JIT
+    /// compiles them together with the parent
+    /// (`compile_kernel_with_callees`) so Call ops dispatch as
+    /// direct CLIF calls.
     pub called_kernels: std::collections::BTreeMap<
         arcstr::ArcStr,
         crate::fusion::lowering::CachedKernel,
@@ -187,25 +187,25 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         feeders: Box<[Node<R, E>]>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
-        called_kernels: std::collections::BTreeMap<
-            arcstr::ArcStr,
-            crate::fusion::lowering::CachedKernel,
-        >,
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
-        let mut registry = crate::gir_interp::KernelRegistry::default();
-        for (name, c) in called_kernels {
-            registry.kernels.insert(name, c.kernel);
-        }
-        let registry = StdArc::new(registry);
-        let inner = match wrapped {
-            Some(w) => crate::gir_interp::GirNode::with_jit(
-                ctx, kernel, n_args, w, registry, scope, top_id,
-            )?,
-            None => crate::gir_interp::GirNode::new(
-                ctx, kernel, n_args, registry, scope, top_id,
-            )?,
+        // A fused node REQUIRES a JIT. The GIR interpreter is gone —
+        // if JIT compilation failed (or `JitDisabled` was set), refuse
+        // to construct. Every splice site treats this `Err` as "don't
+        // splice — leave the original nodes to node-walk", which is
+        // the universal fallback.
+        let wrapped = match wrapped {
+            Some(w) => w,
+            None => {
+                return Err(anyhow!(
+                    "no JIT for kernel `{}` — fused node must node-walk",
+                    kernel.fn_name
+                ))
+            }
         };
+        let inner = crate::gir_interp::GirNode::new(
+            ctx, kernel, n_args, wrapped, scope, top_id,
+        )?;
         Ok(Box::new(Self {
             spec,
             typ,
@@ -332,7 +332,6 @@ pub fn splice<R: Rt, E: UserEvent>(
             feeders,
             scope,
             top_id,
-            built.called_kernels.clone(),
         ),
         SpliceTarget::InitFnCache => Err(anyhow!(
             "splice: InitFnCache target not yet supported (LambdaBind path)"

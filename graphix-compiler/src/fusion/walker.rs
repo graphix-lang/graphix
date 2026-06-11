@@ -305,19 +305,7 @@ impl<'a, R: Rt, E: UserEvent> Walker<'a, R, E> {
 }
 
 fn single_bind_id<R: Rt, E: UserEvent>(b: &Bind<R, E>) -> Option<BindId> {
-    let mut id: Option<BindId> = None;
-    let mut count = 0usize;
-    b.pattern.ids(&mut |i| {
-        count += 1;
-        if id.is_none() {
-            id = Some(i);
-        }
-    });
-    if count == 1 {
-        id
-    } else {
-        None
-    }
+    b.single_bind_id()
 }
 
 /// Accessor for `Module<R, E>::nodes`. Reads the `nodes` field

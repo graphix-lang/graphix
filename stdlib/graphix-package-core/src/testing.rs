@@ -81,6 +81,12 @@ impl TestCtx {
         drop(self.rt);
         self.internal_only.shutdown().await
     }
+
+    /// Snapshot the compile-time fusion outcome counters. See
+    /// [`graphix_compiler::FusionStats`] and [`GXHandle::fusion_stats`].
+    pub async fn fusion_stats(&self) -> Result<graphix_compiler::FusionStats> {
+        self.rt.fusion_stats().await
+    }
 }
 
 pub type RegisterFn = fn(

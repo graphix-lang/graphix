@@ -104,6 +104,18 @@ macro_rules! compare_op {
                 $crate::NodeView::$name(self)
             }
 
+            fn emit_clif(
+                &self,
+                cx: &mut $crate::gir_jit::BodyCx,
+            ) -> Result<$crate::gir_jit::CompiledExpr> {
+                $crate::gir_jit::emit_cmp_node(
+                    cx,
+                    $crate::gir::CmpOp::$name,
+                    &self.lhs.node,
+                    &self.rhs.node,
+                )
+            }
+
             fn clone_rebind(
                 &self,
                 ctx: &mut ExecCtx<R, E>,
@@ -222,6 +234,18 @@ macro_rules! bool_op {
                 $crate::NodeView::$name(self)
             }
 
+            fn emit_clif(
+                &self,
+                cx: &mut $crate::gir_jit::BodyCx,
+            ) -> Result<$crate::gir_jit::CompiledExpr> {
+                $crate::gir_jit::emit_bool_node(
+                    cx,
+                    $crate::gir::BoolOp::$name,
+                    &self.lhs.node,
+                    &self.rhs.node,
+                )
+            }
+
             fn clone_rebind(
                 &self,
                 ctx: &mut ExecCtx<R, E>,
@@ -308,6 +332,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         crate::NodeView::Not(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_not_node(cx, &self.n)
+    }
+
     fn clone_rebind(
         &self,
         ctx: &mut ExecCtx<R, E>,
@@ -367,8 +398,60 @@ impl fmt::Display for Op {
 
 defetyp!(ARITH_ERR, ARITH_ERR_TAG, "ArithError", "Error<`{}(string)>");
 
+/// Wrap a checked-arith result: a raw `Value::Error` from netidx's
+/// `checked_*` ops (overflow / underflow / div-by-zero) becomes the
+/// catchable `ArithError` error VALUE the checked operators produce
+/// (`[T, Error<`ArithError(string)>]`); success passes through. The
+/// single semantic core shared by the node-walk update (canonical) and
+/// the JIT's `graphix_value_checked_*` helpers — the two can't drift.
+pub(crate) fn wrap_arith_error(result: Value) -> Value {
+    match result {
+        Value::Error(e) => {
+            let tag = Value::String(ARITH_ERR_TAG.clone());
+            let err = Value::from(format_compact!("{e}"));
+            let var = Value::Array(ValArray::from_iter([tag, err]));
+            Value::Error(Arc::new(var))
+        }
+        v => v,
+    }
+}
+
+/// Generate the `Update::emit_clif` override for an [`arith_op!`] type.
+/// `$base` is the unchecked [`crate::gir::BinOp`] (`Add` for both `+`
+/// and `+?`). Unchecked ops emit through the shared arith relay;
+/// checked ops route to the checked relay (Value-shape result — the
+/// success value or the `ArithError` error value).
+macro_rules! arith_emit_clif {
+    (false, $base:ident) => {
+        fn emit_clif(
+            &self,
+            cx: &mut $crate::gir_jit::BodyCx,
+        ) -> Result<$crate::gir_jit::CompiledExpr> {
+            $crate::gir_jit::emit_arith_node(
+                cx,
+                $crate::gir::BinOp::$base,
+                &self.lhs.node,
+                &self.rhs.node,
+            )
+        }
+    };
+    (true, $base:ident) => {
+        fn emit_clif(
+            &self,
+            cx: &mut $crate::gir_jit::BodyCx,
+        ) -> Result<$crate::gir_jit::CompiledExpr> {
+            $crate::gir_jit::emit_checked_arith_node(
+                cx,
+                $crate::gir::BinOp::$base,
+                &self.lhs.node,
+                &self.rhs.node,
+            )
+        }
+    };
+}
+
 macro_rules! arith_op {
-    ($name:ident, $opn:expr, $checked:literal, $method:ident) => {
+    ($name:ident, $opn:expr, $checked:tt, $method:ident, $base:ident) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
@@ -419,19 +502,17 @@ macro_rules! arith_op {
                 let rhs = self.rhs.cached.as_ref()?;
                 if lhs_up || rhs_up {
                     let result = lhs.clone().$method(rhs.clone());
-                    match result {
-                        Value::Error(e) if $checked => {
-                            let tag = Value::String(ARITH_ERR_TAG.clone());
-                            let err = Value::from(format_compact!("{e}"));
-                            let var = Value::Array(ValArray::from_iter([tag, err]));
-                            Some(Value::Error(Arc::new(var)))
+                    if $checked {
+                        Some(wrap_arith_error(result))
+                    } else {
+                        match result {
+                            Value::Error(e) => {
+                                log::error!("arith error in {} at {} {e}", self.spec.ori, self.spec.pos);
+                                eprintln!("arith error in {} at {} {e}", self.spec.ori, self.spec.pos);
+                                None
+                            }
+                            v => Some(v)
                         }
-                        Value::Error(e) => {
-                            log::error!("arith error in {} at {} {e}", self.spec.ori, self.spec.pos);
-                            eprintln!("arith error in {} at {} {e}", self.spec.ori, self.spec.pos);
-                            None
-                        }
-                        v => Some(v)
                     }
                 } else {
                     None
@@ -528,6 +609,8 @@ macro_rules! arith_op {
                 $crate::NodeView::$name(self)
             }
 
+            arith_emit_clif!($checked, $base);
+
             fn clone_rebind(
                 &self,
                 ctx: &mut ExecCtx<R, E>,
@@ -551,14 +634,14 @@ macro_rules! arith_op {
 // the `ArithError` union. Using the bare `+`/`-`/`*` operators for the checked
 // variants (the previous behavior) silently wrapped on overflow, so `+?`/`-?`/
 // `*?` never produced an error.
-arith_op!(Add, Op::Add, false, add);
-arith_op!(Sub, Op::Sub, false, sub);
-arith_op!(Mul, Op::Mul, false, mul);
-arith_op!(Div, Op::Div, false, div);
-arith_op!(Mod, Op::Mod, false, rem);
+arith_op!(Add, Op::Add, false, add, Add);
+arith_op!(Sub, Op::Sub, false, sub, Sub);
+arith_op!(Mul, Op::Mul, false, mul, Mul);
+arith_op!(Div, Op::Div, false, div, Div);
+arith_op!(Mod, Op::Mod, false, rem, Mod);
 
-arith_op!(CheckedAdd, Op::CheckedAdd, true, checked_add);
-arith_op!(CheckedSub, Op::CheckedSub, true, checked_sub);
-arith_op!(CheckedMul, Op::CheckedMul, true, checked_mul);
-arith_op!(CheckedDiv, Op::CheckedDiv, true, checked_div);
-arith_op!(CheckedMod, Op::CheckedMod, true, checked_rem);
+arith_op!(CheckedAdd, Op::CheckedAdd, true, checked_add, Add);
+arith_op!(CheckedSub, Op::CheckedSub, true, checked_sub, Sub);
+arith_op!(CheckedMul, Op::CheckedMul, true, checked_mul, Mul);
+arith_op!(CheckedDiv, Op::CheckedDiv, true, checked_div, Div);
+arith_op!(CheckedMod, Op::CheckedMod, true, checked_rem, Mod);

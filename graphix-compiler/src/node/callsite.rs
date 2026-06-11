@@ -8,7 +8,7 @@ use crate::{
     Scope, TypecheckPhase, Update, UserEvent,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::subscriber::Value;
@@ -891,6 +891,73 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::CallSite(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        if let Some((_, f)) = &self.function {
+            // A resolved user-lambda callee is a cross-kernel call —
+            // lands in Stage E; until then the subtree node-walks.
+            if matches!(f.view(), crate::ApplyView::Lambda(_)) {
+                bail!(
+                    "emit_clif: cross-kernel lambda call — lands in Stage E; \
+                     subtree node-walks"
+                );
+            }
+            // Builtin-owned emission hook ([`Apply::emit_clif`]).
+            // `Some` is the call's result; `None` falls through to
+            // the DynCall path below.
+            if let Some(cv) = f.emit_clif(self, cx)? {
+                return Ok(cv);
+            }
+        }
+        // Builtin DynCall. `marshal_arg_indices[i]` is a position in
+        // the source-order arg list `spec_apply.args` — which spans
+        // both labeled and positional args. The Node-side lookup has
+        // to mirror that: labeled args go through `arg_named`,
+        // positional args through `arg_positional` indexed by running
+        // positional count (not source position).
+        let info = match cx.builtin_site(self.spec.id) {
+            Some(info) => info.clone(),
+            None => bail!(
+                "emit_clif: builtin call site not discovered — doesn't fuse"
+            ),
+        };
+        let spec_apply = match &self.spec.kind {
+            crate::expr::ExprKind::Apply(a) => a,
+            _ => bail!("CallSite spec must be ExprKind::Apply"),
+        };
+        let mut source_nodes: Vec<&Node<R, E>> =
+            Vec::with_capacity(spec_apply.args.len());
+        let mut pos_idx: usize = 0;
+        for (label, _) in spec_apply.args.iter() {
+            let n = match label {
+                Some(name) => self.arg_named(name),
+                None => {
+                    let n = self.arg_positional(pos_idx);
+                    pos_idx += 1;
+                    n
+                }
+            };
+            match n {
+                Some(n) => source_nodes.push(n),
+                None => bail!("emit_clif: missing call-site arg node"),
+            }
+        }
+        let arg_nodes = info
+            .marshal_arg_indices
+            .iter()
+            .map(|&call_idx| {
+                source_nodes.get(call_idx).copied().ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: marshal arg index {call_idx} out of range"
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::gir_jit::emit_dyncall_node(cx, &info, &arg_nodes)
     }
 
     fn clone_rebind(

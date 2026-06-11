@@ -207,6 +207,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         crate::NodeView::ArrayRef(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_array_ref_node(cx, &self.source.node, &self.i.node)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             source: Cached::new(self.source.node.clone_rebind(ctx, scope)),
@@ -352,6 +359,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         crate::NodeView::ArraySlice(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_array_slice_node(
+            cx,
+            &self.source.node,
+            self.start.as_ref().map(|c| &c.node),
+            self.end.as_ref().map(|c| &c.node),
+        )
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             source: Cached::new(self.source.node.clone_rebind(ctx, scope)),
@@ -448,6 +467,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Array(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        // `[a, b, c]` — the runtime shape (a flat ValArray) is
+        // identical to a tuple literal's; share the producer relay.
+        crate::gir_jit::emit_tuple_new_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

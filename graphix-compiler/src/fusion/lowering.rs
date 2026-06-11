@@ -117,10 +117,10 @@ pub struct FusionCtx {
     /// `ApplyView::Lambda` arm of [`emit_node`] when it builds (or
     /// finds cached) a lambda kernel. Keyed by the source-level
     /// binding name used in the call site's `Ref` — same name
-    /// embedded in the emitted `GirOp::Call.fn_name`. The splice
-    /// step copies these entries into the parent kernel's
-    /// [`crate::gir_interp::KernelRegistry`] so the interpreter
-    /// dispatches Call ops against the cached sub-kernels.
+    /// embedded in the emitted `GirOp::Call.fn_name`. The JIT
+    /// compiles these together with the parent kernel
+    /// (`compile_kernel_with_callees`) so Call ops dispatch as
+    /// direct CLIF calls.
     pub called_kernels: std::collections::BTreeMap<ArcStr, CachedKernel>,
 }
 
@@ -2545,7 +2545,6 @@ pub struct FusedCallback {
     /// below is non-empty and `build_slot` takes the splice path.
     kernel: Option<std::sync::Arc<crate::gir::GirKernel>>,
     wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
-    called_kernels: std::collections::BTreeMap<ArcStr, CachedKernel>,
     /// Captured outer bindings (closure conversion), in kernel-input
     /// order *after* the formal args. Each is fed by a shared `Ref`
     /// feeder (to its bind_id) appended after the per-slot element
@@ -2578,7 +2577,6 @@ pub struct SplitKernel {
     value_id: crate::expr::ExprId,
     kernel: std::sync::Arc<crate::gir::GirKernel>,
     wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
-    called_kernels: std::collections::BTreeMap<ArcStr, CachedKernel>,
     /// The region's free-var inputs (bind_id + name + kind + typ),
     /// re-resolved per slot to build the `FusedKernel` feeders.
     inputs: Vec<crate::fusion::FreeVarInput>,
@@ -2635,7 +2633,6 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
             Some(FusedCallback {
                 kernel: Some(cached.kernel),
                 wrapped,
-                called_kernels: sub_called,
                 captures: cached.captures,
                 n_formal,
                 spec,
@@ -2651,7 +2648,6 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
             Some(FusedCallback {
                 kernel: None,
                 wrapped: None,
-                called_kernels: std::collections::BTreeMap::new(),
                 captures: Vec::new(),
                 n_formal,
                 spec,
@@ -2757,7 +2753,6 @@ fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
             value_id,
             kernel: built.kernel,
             wrapped,
-            called_kernels: built.called_kernels,
             inputs,
             spec: value_node.spec().clone(),
             typ: value_node.typ().clone(),
@@ -2824,7 +2819,6 @@ impl FusedCallback {
             feeders.into_boxed_slice(),
             scope,
             top_id,
-            self.called_kernels.clone(),
         )
     }
 
@@ -2893,7 +2887,6 @@ impl FusedCallback {
                 feeders.into_boxed_slice(),
                 scope.clone(),
                 top_id,
-                sk.called_kernels.clone(),
             )?;
             if let Ok(mut old) =
                 crate::fusion::splice_into(body, sk.value_id, fk)
@@ -4073,12 +4066,12 @@ fn emit_type_predicate_cond(
             if !p.contains(netidx_value::Typ::Null)
                 && p.iter().count() == 1 =>
         {
-            // Single non-null primitive predicate. Two cases are
-            // soundly always-true: (a) the scrutinee is a matching
-            // Prim (trivial), and (b) the scrutinee is `Nullable<T>`
-            // and the surrounding select's null arm has already
-            // filtered out `null` (exhaustiveness leaves this arm
-            // to cover the non-null half).
+            // Single non-null primitive predicate. Always-true only
+            // when the scrutinee is a matching Prim (it statically
+            // cannot be null). Over a `Nullable<T>` scrutinee the
+            // test must be EXPLICIT — emitting it as trivially-true
+            // was arm-order-unsound (#200): placed before the null
+            // arm, the chain took it on a null scrutinee.
             let pred_typ = p.iter().next();
             match (gir::scalar_prim(&scrut.typ), pred_typ) {
                 (Some(sp), Some(pt)) if PrimType::from_typ(pt) == Some(sp) => {
@@ -4089,7 +4082,11 @@ fn emit_type_predicate_cond(
                     Some(gir::AbiKind::Nullable)
                 ) =>
                 {
-                    Some(None)
+                    let isnull = GirExpr {
+                        op: GirOp::IsNull(Box::new(scrut.clone())),
+                        typ: gir::prim_type(PrimType::Bool),
+                    };
+                    gir::not(isnull).map(Some)
                 }
                 // Any other shape (e.g. a wider union scrutinee or
                 // a mismatched Prim) we can't lower soundly. Refuse
@@ -4580,7 +4577,7 @@ fn is_unit(t: &Type) -> bool {
 }
 
 /// True if `t` derefs to the single-bit `bytes` primitive.
-fn is_bytes(t: &Type) -> bool {
+pub(crate) fn is_bytes(t: &Type) -> bool {
     t.with_deref(|r| match r {
         Some(Type::Primitive(p)) => {
             p.contains(netidx_value::Typ::Bytes) && p.iter().count() == 1
@@ -4590,7 +4587,7 @@ fn is_bytes(t: &Type) -> bool {
 }
 
 /// True if `t` derefs to the single-bit `Map` shape.
-fn is_map(t: &Type) -> bool {
+pub(crate) fn is_map(t: &Type) -> bool {
     t.with_deref(|r| matches!(r, Some(Type::Map { .. })))
 }
 
@@ -4601,7 +4598,7 @@ fn is_array(t: &Type) -> bool {
 
 /// True if `t` derefs to one of the single-bit `datetime`/`duration`
 /// value-shape primitives.
-fn is_datetime_or_duration(t: &Type) -> bool {
+pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
     t.with_deref(|r| match r {
         Some(Type::Primitive(p)) if p.iter().count() == 1 => {
             p.contains(netidx_value::Typ::DateTime)
@@ -4945,7 +4942,7 @@ fn finish_kernel<R: crate::Rt, E: crate::UserEvent>(
     };
     ctx.known_fns.insert(ArcStr::from(fn_name), signature.clone());
     let body_stmts = emit_body(body, ctx, ec, self_info)?;
-    let kernel = GirKernel {
+    let sig = crate::kernel_abi::KernelSig {
         fn_name: ArcStr::from(fn_name),
         params: params.params,
         fn_params: params.fn_params,
@@ -4959,8 +4956,8 @@ fn finish_kernel<R: crate::Rt, E: crate::UserEvent>(
         tail_call_slots,
         return_type,
         has_tail_loop,
-        body: body_stmts,
     };
+    let kernel = GirKernel { sig: std::sync::Arc::new(sig), body: body_stmts };
     let called_kernels = std::mem::take(&mut ctx.called_kernels);
     Some((kernel, signature, called_kernels))
 }

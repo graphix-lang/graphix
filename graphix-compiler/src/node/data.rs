@@ -107,6 +107,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         crate::NodeView::Struct(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_struct_new_node(cx, &self.names, &self.n)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
@@ -420,6 +427,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         crate::NodeView::StructRef(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        // `field` is the position in the struct type's canonical
+        // (sorted) layout, resolved by typecheck; unresolved → the
+        // subtree node-walks.
+        let sorted_idx = self.field.ok_or_else(|| {
+            anyhow::anyhow!("emit_clif: struct field index unresolved")
+        })?;
+        crate::gir_jit::emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
@@ -510,6 +530,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Tuple(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_tuple_new_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -619,6 +646,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         crate::NodeView::Variant(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_variant_new_node(cx, &self.tag, &self.n)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
@@ -710,6 +744,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::TupleRef(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

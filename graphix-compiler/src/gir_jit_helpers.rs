@@ -394,6 +394,35 @@ pub unsafe extern "C" fn graphix_value_new_string_from_arcstr(
     Value::String(unsafe { (*tag).clone() })
 }
 
+/// Unwrap an owned `Value::Array` into the composite ABI's owned
+/// `*mut ValArray`. The payload word INSIDE a Value is the ValArray
+/// bits themselves, not a box — handing it directly to a composite
+/// consumer is a type confusion (the consumer's drop would
+/// `Box::from_raw` the Arc's data pointer). Consumes the Value;
+/// ownership of the inner ValArray transfers into the box.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_into_array(v: Value) -> *mut ValArray {
+    match v {
+        Value::Array(a) => Box::into_raw(Box::new(a)),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    }
+}
+
+/// Borrowed-read variant of [`graphix_value_into_array`]: clones the
+/// inner ValArray (refcount bump) and forgets the input so the
+/// caller's bits stay valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_into_array_borrowed(
+    v: Value,
+) -> *mut ValArray {
+    let ptr = match &v {
+        Value::Array(a) => Box::into_raw(Box::new(a.clone())),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    std::mem::forget(v);
+    ptr
+}
+
 /// Consume a Value and decrement the inner refcount (for
 /// String/Array/Variant/etc. — a no-op for scalar variants like
 /// I64/Bool/Null).  Use at scope exit for owned Value locals.
@@ -450,6 +479,25 @@ value_arith_helper!(graphix_value_sub, -);
 value_arith_helper!(graphix_value_mul, *);
 value_arith_helper!(graphix_value_div, /);
 value_arith_helper!(graphix_value_rem, %);
+
+// Checked arithmetic (`+?`/`-?`/`*?`/`/?`/`%?`) — netidx's `checked_*`
+// inherent methods, with any raw error wrapped into the catchable
+// `ArithError` error VALUE through the SAME
+// [`crate::node::op::wrap_arith_error`] core the node-walk's checked
+// update uses (never bottom, unlike unchecked div0). Each helper
+// CONSUMES both args, same contract as the unchecked family above.
+macro_rules! value_checked_arith_helper {
+    ($name:ident, $method:ident) => {
+        pub extern "C" fn $name(l: Value, r: Value) -> Value {
+            crate::node::op::wrap_arith_error(l.$method(r))
+        }
+    };
+}
+value_checked_arith_helper!(graphix_value_checked_add, checked_add);
+value_checked_arith_helper!(graphix_value_checked_sub, checked_sub);
+value_checked_arith_helper!(graphix_value_checked_mul, checked_mul);
+value_checked_arith_helper!(graphix_value_checked_div, checked_div);
+value_checked_arith_helper!(graphix_value_checked_rem, checked_rem);
 
 /// Value equality (`GirOp::ValueEq`). Compares via netidx's
 /// `impl PartialEq for Value` — byte-identical to the non-fused `==`
@@ -1264,6 +1312,11 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_valarray_clone", graphix_valarray_clone as *const u8),
         ("graphix_valarray_drop", graphix_valarray_drop as *const u8),
         ("graphix_value_new_from_array", graphix_value_new_from_array as *const u8),
+        ("graphix_value_into_array", graphix_value_into_array as *const u8),
+        (
+            "graphix_value_into_array_borrowed",
+            graphix_value_into_array_borrowed as *const u8,
+        ),
         (
             "graphix_value_new_string_from_arcstr",
             graphix_value_new_string_from_arcstr as *const u8,
@@ -1279,6 +1332,11 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_value_mul", graphix_value_mul as *const u8),
         ("graphix_value_div", graphix_value_div as *const u8),
         ("graphix_value_rem", graphix_value_rem as *const u8),
+        ("graphix_value_checked_add", graphix_value_checked_add as *const u8),
+        ("graphix_value_checked_sub", graphix_value_checked_sub as *const u8),
+        ("graphix_value_checked_mul", graphix_value_checked_mul as *const u8),
+        ("graphix_value_checked_div", graphix_value_checked_div as *const u8),
+        ("graphix_value_checked_rem", graphix_value_checked_rem as *const u8),
         ("graphix_value_eq", graphix_value_eq as *const u8),
         ("graphix_bytes_index", graphix_bytes_index as *const u8),
         ("graphix_map_ref", graphix_map_ref as *const u8),

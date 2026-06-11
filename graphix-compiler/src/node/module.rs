@@ -509,6 +509,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         crate::NodeView::Module(self)
     }
 
+    fn jit(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
+        // A module is structure, not computation — recurse into its
+        // statement nodes so the contents fuse. (`source` is NOT a
+        // child to fuse: for a dynamic module it's the node producing
+        // the module's source string, whose compiled graph gets its
+        // own fusion pass inside `compile_source` at runtime.)
+        for child in self.nodes.iter_mut() {
+            crate::fusion::jit_node(child, ctx)?;
+        }
+        Ok(None)
+    }
+
     fn splice_child(
         &mut self,
         target: ExprId,

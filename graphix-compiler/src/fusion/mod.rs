@@ -42,6 +42,32 @@ pub use walker::{
 // public surface.
 pub use lowering::*;
 
+/// Compile-time fusion outcome counters, accumulated on
+/// [`crate::ExecCtx::fusion_stats`] by every `compile()` the context
+/// runs. Per-context (the compiler supports many instances per
+/// process and tests run in parallel) — unlike the runtime-side
+/// per-thread `gir_jit_helpers` invocation counters, which can't
+/// give per-region failure reasons and are wrong for a per-program
+/// assertion on a multi-thread runtime.
+///
+/// Exists because the direct JIT path degrades silently: a region
+/// that fails to compile just node-walks and produces the correct
+/// value, so value-agreement tests cannot distinguish "fused
+/// correctly" from "never fused". These counters make "did it
+/// actually fuse, and if not why" a queryable fact.
+#[derive(Debug, Clone, Default)]
+pub struct FusionStats {
+    /// `try_fuse` attempts that passed the cheap gates (identity,
+    /// return-type) and reached the compile attempt.
+    pub attempted: usize,
+    /// Regions that compiled + spliced (direct path), or classic-path
+    /// splices (for old-vs-new coverage comparison at the flip).
+    pub fused: usize,
+    /// Per-failure (region root ExprId, compile error) — the blocker
+    /// profile. Compile-time only; bounded by program size.
+    pub failed: Vec<(crate::expr::ExprId, compact_str::CompactString)>,
+}
+
 /// Run the fusion phase on a compiled Node tree.
 ///
 /// Called by [`crate::compile`] between typecheck phase 2 and
@@ -74,6 +100,17 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
         return Ok(());
     }
     let jit_disabled = flags.contains(crate::CFlag::JitDisabled);
+    // The distributed path (`design/distributed_jit.md`): fusion is
+    // `Update::jit` recursion — each node fuses its own maximal
+    // subtree via [`try_fuse`] — instead of the central walker plan
+    // below. Off by default; the GIR path is production until the
+    // flip. `JitDisabled` means nothing can splice, so skip entirely.
+    if flags.contains(crate::CFlag::DirectNodeJit) {
+        if !jit_disabled {
+            jit_node(node, ctx)?;
+        }
+        return Ok(());
+    }
     // Phase 1: walk the typed Node graph to collect candidates.
     // The walker borrows into the tree, so we extract owned data
     // (source_id + cloned body Expr + free-var inputs) into a
@@ -259,11 +296,12 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
             if jit_disabled {
                 None
             } else {
-                match crate::gir_jit::compile_kernel_with_callees(
+                let result = crate::gir_jit::compile_kernel_with_callees(
                     &mut ctx.jit.lock(),
                     &built.kernel,
                     &callees,
-                ) {
+                );
+                match result {
                     Ok(w) => Some(std::sync::Arc::new(w)),
                     Err(_) => continue,
                 }
@@ -296,7 +334,6 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
             feeders,
             crate::Scope::root(),
             entry.source_id,
-            built.called_kernels.clone(),
         ) {
             Ok(n) => n,
             Err(_) => continue,
@@ -307,6 +344,7 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
         match splice_into(node, entry.source_id, kernel_node) {
             Ok(mut old) => {
                 old.delete(ctx);
+                ctx.fusion_stats.fused += 1;
                 log::debug!(
                     "fusion::fuse: spliced `{}` at {:?} with {} input(s)",
                     fn_name,
@@ -392,6 +430,317 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
         });
     });
     out
+}
+
+/// Drive fusion for one child `Node` (the distributed path's uniform
+/// child-visit protocol, used by every [`crate::Update::jit`] impl and
+/// the compile-time driver): first try to fuse the WHOLE child subtree
+/// via [`try_fuse`]; if it doesn't fuse, recurse into the child's own
+/// `jit` (which fuses ITS children's maximal subtrees in turn). Either
+/// way a produced replacement is swapped in and the original deleted —
+/// the parent owns the swap because a node can't replace itself behind
+/// `&mut self`.
+///
+/// Maximality falls out of the top-down order: the highest subtree
+/// whose `try_fuse` succeeds is spliced and nothing below it is ever
+/// attempted; a failed attempt falls through to finer-grained fusion
+/// inside.
+pub fn jit_node<R: crate::Rt, E: crate::UserEvent>(
+    child: &mut crate::Node<R, E>,
+    ctx: &mut crate::ExecCtx<R, E>,
+) -> anyhow::Result<()> {
+    if let Some(new) = try_fuse(child, ctx)? {
+        let mut old = std::mem::replace(child, new);
+        old.delete(ctx);
+        return Ok(());
+    }
+    if let Some(new) = child.jit(ctx)? {
+        let mut old = std::mem::replace(child, new);
+        old.delete(ctx);
+    }
+    Ok(())
+}
+
+/// Try to fuse the whole subtree rooted at `node` into one JIT kernel.
+/// Mechanics only, NO policy — policy (where to attempt, what to
+/// recurse) lives in each node's [`crate::Update::jit`] impl.
+///
+/// `Ok(Some(replacement))` — the subtree compiled; the replacement is
+/// a [`FusedKernel`] node (feeders + JIT dispatch) the caller swaps in
+/// (deleting the original). `Ok(None)` — not fusable: the root type
+/// isn't representable at the kernel boundary, the subtree is an
+/// identity passthrough (zero compute — the runtime `Ref` feeder
+/// already produces the value), or some node in the subtree doesn't
+/// emit CLIF (the `emit_clif` default `Err`) — async ops, unsupported
+/// shapes. "Is it fusable" IS the compile attempt; there is no
+/// separate analysis to drift out of sync with the emitter.
+pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    ctx: &mut crate::ExecCtx<R, E>,
+) -> anyhow::Result<Option<crate::Node<R, E>>> {
+    use crate::gir::AbiKind;
+    // Identity suppression: a bare binding read (possibly through
+    // grouping parens) forwards one input unchanged — fusing it wraps
+    // zero compute in dispatch overhead (and the `run!` harness's
+    // `let result = {code}` wrapper would otherwise register as
+    // "fused" without any real body fusion — see CLAUDE.md #139).
+    if region_is_identity(node) {
+        return Ok(None);
+    }
+    // Return-type gate: the kernel boundary can't represent bare
+    // `Null` (fusion must widen to Nullable first) or `Unit` (a
+    // side-effect-only marker), and a type that doesn't freeze to a
+    // concrete shape can't have an ABI at all. `freeze_normalized`
+    // because a select-rooted region's type is typecheck's raw arm
+    // union (`Set([i64, TVar→i64])`), which only freezes once
+    // flattened.
+    let Some(return_type) = crate::gir::freeze_normalized(node.typ()) else {
+        return Ok(None);
+    };
+    match crate::gir::abi_kind(&return_type) {
+        Some(
+            AbiKind::Scalar(_)
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value
+            | AbiKind::String,
+        ) => {}
+        Some(AbiKind::Unit | AbiKind::Null) | None => return Ok(None),
+    }
+    ctx.fusion_stats.attempted += 1;
+    let inputs = collect_region_inputs(&**node, ctx);
+    // Scalar env slots resolve BindId-first (C2) — duplicate basenames
+    // are fine there. The OTHER per-kind tables are still name-keyed
+    // (BindId-keying lands per-table as each shape gains emission, C3+):
+    // two distinct non-scalar captures sharing a basename would
+    // silently alias one slot — refuse to fuse instead.
+    {
+        use crate::fusion::lowering::RegionInputKind;
+        let mut names: ahash::AHashSet<&str> = ahash::AHashSet::default();
+        for fv in &inputs {
+            if matches!(fv.kind, RegionInputKind::Prim(_)) {
+                continue;
+            }
+            if !names.insert(fv.name.as_str()) {
+                return Ok(None);
+            }
+        }
+    }
+    // Discover sync-builtin Apply sites BEFORE the kernel build (the
+    // same Node-based prepass the classic path runs in `fuse`):
+    // `fn_params` installs the `FnSource::Builtin` slots on the sig —
+    // the runtime (`GirNode::pre_init_builtin_slots`) constructs each
+    // site's Apply from them — and `apply_sites` lets
+    // `CallSite::emit_clif` recognise a registered site and lower it
+    // to a DynCall.
+    let mut discovery = crate::fusion::BuiltinCallDiscovery::default();
+    crate::fusion::walk_node_for_builtin_calls::<R, E>(
+        &**node,
+        ctx,
+        &crate::expr::ModPath::root(),
+        &mut discovery,
+    );
+    let source_id = node.spec().id;
+    let mut sig = sig_from_inputs(
+        arcstr::ArcStr::from(
+            compact_str::format_compact!("region_{:?}", source_id).as_str(),
+        ),
+        &inputs,
+        return_type,
+    );
+    sig.fn_params = discovery.fn_params;
+    let kernel = std::sync::Arc::new(crate::gir::GirKernel {
+        sig: std::sync::Arc::new(sig),
+        body: Vec::new(),
+    });
+    // The compile attempt: entry binds the declared params, then the
+    // body is emitted by `emit_clif` recursion from the root. Any Err
+    // (a node that doesn't emit) discards the half-built function —
+    // the subtree node-walks.
+    let wrapped = match crate::gir_jit::compile_kernel_with_callees_direct(
+        &mut ctx.jit.lock(),
+        &kernel,
+        &std::collections::BTreeMap::new(),
+        node,
+        &discovery.apply_sites,
+    ) {
+        Ok(w) => std::sync::Arc::new(w),
+        Err(e) => {
+            log::trace!(
+                "fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}"
+            );
+            ctx.fusion_stats
+                .failed
+                .push((source_id, compact_str::format_compact!("{e:#}")));
+            return Ok(None);
+        }
+    };
+    let feeders: Box<[crate::Node<R, E>]> = inputs
+        .iter()
+        .map(|fv| {
+            crate::node::genn::reference::<R, E>(
+                ctx,
+                fv.bind_id,
+                fv.typ.clone(),
+                source_id,
+            )
+        })
+        .collect();
+    match builder::FusedKernel::<R, E>::new(
+        ctx,
+        node.spec().clone(),
+        node.typ().clone(),
+        kernel,
+        Some(wrapped),
+        feeders,
+        crate::Scope::root(),
+        source_id,
+    ) {
+        Ok(n) => {
+            log::debug!(
+                "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
+                inputs.len()
+            );
+            ctx.fusion_stats.fused += 1;
+            Ok(Some(n))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// True iff the subtree is a bare binding read (through any number of
+/// grouping parens) — the Node analog of the GIR
+/// `is_identity_passthrough` (`Return(Local(_))`) check.
+fn region_is_identity<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+) -> bool {
+    use crate::NodeView;
+    let mut n: &dyn crate::Update<R, E> = &**node;
+    loop {
+        match n.view() {
+            NodeView::Ref(_) => return true,
+            NodeView::ExplicitParens(p) => n = &*p.n,
+            _ => return false,
+        }
+    }
+}
+
+/// Build a [`crate::gir::KernelSig`] straight from a region's typed
+/// input list — no GIR body, no `FusionCtx`. The per-kind routing is
+/// the same single-source-of-truth rule `populate_kernel_inputs`
+/// applies on the GIR path (one slot per input, one
+/// [`crate::gir::TailCallSlot`] per input in source order — the
+/// runtime's `build_arg_layout` reads the slot list for per-position
+/// routing even in non-tail kernels).
+fn sig_from_inputs(
+    fn_name: arcstr::ArcStr,
+    inputs: &[FreeVarInput],
+    return_type: crate::typ::Type,
+) -> crate::gir::KernelSig {
+    use crate::fusion::lowering::RegionInputKind;
+    use crate::gir::{
+        ArrayInput, Input, NullableInput, StringInput, StructInput,
+        TailCallSlot, TailCallSlotKind, TupleInput, ValueInput, VariantInput,
+    };
+    let mut sig = crate::gir::KernelSig {
+        fn_name,
+        params: Vec::new(),
+        fn_params: Vec::new(),
+        array_params: Vec::new(),
+        tuple_params: Vec::new(),
+        struct_params: Vec::new(),
+        variant_params: Vec::new(),
+        nullable_params: Vec::new(),
+        string_params: Vec::new(),
+        value_params: Vec::new(),
+        tail_call_slots: Vec::new(),
+        return_type,
+        has_tail_loop: false,
+    };
+    for fv in inputs {
+        let name = fv.name.clone();
+        let bind_id = Some(fv.bind_id);
+        let slot_kind = match &fv.kind {
+            RegionInputKind::Prim(prim) => {
+                sig.params.push(Input { name: name.clone(), prim: *prim, bind_id });
+                TailCallSlotKind::Scalar(*prim)
+            }
+            RegionInputKind::Array(elem) => {
+                sig.array_params.push(ArrayInput {
+                    name: name.clone(),
+                    elem: elem.clone(),
+                    bind_id,
+                });
+                TailCallSlotKind::ValArray
+            }
+            RegionInputKind::Tuple(t) => {
+                let elems = crate::gir::tuple_slots(t)
+                    .map(<[crate::typ::Type]>::to_vec)
+                    .expect(
+                        "RegionInputKind::Tuple must carry a frozen \
+                         Type::Tuple (freeze invariant)",
+                    );
+                sig.tuple_params.push(TupleInput {
+                    name: name.clone(),
+                    elems,
+                    bind_id,
+                });
+                TailCallSlotKind::ValArray
+            }
+            RegionInputKind::Struct(t) => {
+                let fields = crate::gir::struct_fields(t)
+                    .map(<[(arcstr::ArcStr, crate::typ::Type)]>::to_vec)
+                    .expect(
+                        "RegionInputKind::Struct must carry a frozen \
+                         Type::Struct (freeze invariant)",
+                    );
+                sig.struct_params.push(StructInput {
+                    name: name.clone(),
+                    fields,
+                    bind_id,
+                });
+                TailCallSlotKind::ValArray
+            }
+            RegionInputKind::Variant(t) => {
+                let cases = crate::gir::variant_cases(t).expect(
+                    "RegionInputKind::Variant must carry a frozen variant \
+                     Type (freeze invariant)",
+                );
+                sig.variant_params.push(VariantInput {
+                    name: name.clone(),
+                    cases,
+                    bind_id,
+                });
+                TailCallSlotKind::Variant
+            }
+            RegionInputKind::Nullable(elem) => {
+                sig.nullable_params.push(NullableInput {
+                    name: name.clone(),
+                    elem: elem.clone(),
+                    bind_id,
+                });
+                TailCallSlotKind::Nullable
+            }
+            RegionInputKind::String => {
+                sig.string_params
+                    .push(StringInput { name: name.clone(), bind_id });
+                TailCallSlotKind::String
+            }
+            RegionInputKind::Value(t) => {
+                sig.value_params.push(ValueInput {
+                    name: name.clone(),
+                    typ: t.clone(),
+                    bind_id,
+                });
+                TailCallSlotKind::Value
+            }
+        };
+        sig.tail_call_slots.push(TailCallSlot { name, kind: slot_kind });
+    }
+    sig
 }
 
 /// Find a Node anywhere in the tree whose `spec().id == target`.

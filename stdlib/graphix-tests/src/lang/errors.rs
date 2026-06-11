@@ -106,3 +106,38 @@ run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
+
+// composite-success `$` (#199): the fused unwrap must re-box the
+// Value's inline ValArray bits into the composite ABI's
+// `*mut ValArray` — passing the raw payload word through SIGSEGV'd.
+const COMPOSITE_DOLLAR: &str = r#"
+{
+    let a = [1, 2, 3];
+    a[1..]$
+}
+"#;
+
+run!(composite_dollar, COMPOSITE_DOLLAR, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => &**a == &[Value::I64(2), Value::I64(3)],
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// borrowed-inner variant of the same class: the qop inner is a Local
+// read of a Nullable local, exercising the clone-not-consume re-box.
+const COMPOSITE_DOLLAR_BORROWED: &str = r#"
+{
+    let a = [1, 2, 3];
+    let x = a[1..];
+    x$
+}
+"#;
+
+run!(
+    composite_dollar_borrowed,
+    COMPOSITE_DOLLAR_BORROWED,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => &**a == &[Value::I64(2), Value::I64(3)],
+        _ => false,
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);

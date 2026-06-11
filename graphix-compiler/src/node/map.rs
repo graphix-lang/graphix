@@ -231,6 +231,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         crate::NodeView::MapRef(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_map_ref_node(cx, &self.source.node, &self.key.node)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             source: Cached::new(self.source.node.clone_rebind(ctx, scope)),

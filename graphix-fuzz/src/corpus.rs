@@ -74,4 +74,9 @@ pub const SEEDS: &[&str] = &[
     "duration:1.s + duration:500.ms",
     // error operators
     "{ let r: [i64, null] = i64:5; r? }",
+    // composite-success unwrap (#199 — Value payload bits vs boxed
+    // *mut ValArray composite ABI)
+    "{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }",
+    "{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }",
+    "{ let t = [(i64:1, i64:2)]; t[0]$ }",
 ];

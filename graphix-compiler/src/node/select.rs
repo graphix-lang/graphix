@@ -274,6 +274,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         crate::NodeView::Select(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_select_node(cx, self)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // The arg (scrutinee) references no arm bindings. Per arm, re-mint
         // the pattern FIRST (binds enter the scope name map), then clone the

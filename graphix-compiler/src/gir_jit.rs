@@ -56,6 +56,10 @@ use crate::gir::{
     GirKernel, GirOp, GirStmt, PrimType, SelectArm,
 };
 use crate::typ::Type;
+// `compile_node` (Stage 1 of `design/delete_gir_ir.md`) calls `Update`
+// trait methods (`typ`, `view`) on region-root Nodes.
+#[allow(unused_imports)]
+use crate::Update as _;
 use anyhow::{anyhow, Context as AnyContext, Result};
 use arcstr::ArcStr;
 use netidx_value::Value;
@@ -72,6 +76,12 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use std::collections::BTreeMap;
+
+/// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the GIR
+/// arms below and the direct node path's HOF emitters (Stage D2 of
+/// `design/distributed_jit.md`).
+#[path = "gir_jit_scaffold.rs"]
+pub(crate) mod scaffold;
 
 // ─── JIT context ─────────────────────────────────────────────────
 
@@ -241,6 +251,21 @@ fn push_abi_returns(sig: &mut Signature, kernel: &GirKernel) -> Result<()> {
     Ok(())
 }
 
+/// When the `GRAPHIX_DUMP_CLIF` env var is set, print the just-built
+/// CLIF function to stderr with a `;; clif <label>` header. The dump
+/// runs after `FunctionBuilder::finalize` but before
+/// `define_function`, so it shows exactly what emission produced.
+/// Baked pointer constants (interned strings/values) vary run-to-run;
+/// normalize large `iconst` immediates before diffing two captures.
+fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
+    static DUMP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var_os("GRAPHIX_DUMP_CLIF").is_some()
+    });
+    if *DUMP {
+        eprintln!(";; clif {label}\n{}", func.display());
+    }
+}
+
 fn define_typed_kernel(
     jit: &mut JitCtx,
     kernel: &GirKernel,
@@ -277,6 +302,10 @@ fn define_typed_kernel(
     let strings = KernelStrings::build(kernel);
     let values = KernelValues::build(kernel);
     {
+        // GIR-body path (`body_emitter: None`) — the lazy arenas stay
+        // empty (only direct-path emission interns lazily).
+        let lazy_strings = std::cell::RefCell::new(Vec::new());
+        let lazy_values = std::cell::RefCell::new(Vec::new());
         let helper_refs = declare_helpers(
             &mut jit.module,
             &mut jit.func_ctx.func,
@@ -291,9 +320,13 @@ fn define_typed_kernel(
             &helper_refs,
             &strings,
             &values,
+            &lazy_strings,
+            &lazy_values,
+            None,
         )?;
         builder.finalize();
     }
+    maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
 
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
@@ -474,6 +507,72 @@ pub fn compile_kernel_with_callees(
     kernel: &std::sync::Arc<GirKernel>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
 ) -> Result<WrappedKernel> {
+    compile_kernel_with_callees_impl(jit, kernel, callees, None)
+}
+
+/// Stage-1 `CFlag::DirectNodeJit` entry: compile `kernel` but emit its
+/// BODY by walking the region-root `Node` via [`compile_node`] instead
+/// of lowering `kernel.body` (the `GirStmt` list). The kernel ABI
+/// (params / return / wrapper) still comes from the `GirKernel`; only
+/// the parent body codegen changes. Callees (if any) still use the GIR
+/// body path — Stage-1 scalar regions have no callees, so this doesn't
+/// matter yet. The `root` Node and `kernel` must describe the same
+/// region (same params + return shape); the caller guarantees this by
+/// passing the very Node the `GirKernel` was built from.
+pub fn compile_kernel_with_callees_direct<R: crate::Rt, E: crate::UserEvent>(
+    jit: &mut Jit,
+    kernel: &std::sync::Arc<GirKernel>,
+    callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
+    root: &crate::Node<R, E>,
+    apply_sites: &nohash::IntMap<
+        crate::expr::ExprId,
+        crate::fusion::lowering::BuiltinCallSiteInfo,
+    >,
+) -> Result<WrappedKernel> {
+    let emitter = NodeBodyEmitter {
+        root,
+        return_type: &kernel.return_type,
+        apply_sites,
+    };
+    compile_kernel_with_callees_impl(jit, kernel, callees, Some(&emitter))
+}
+
+fn compile_kernel_with_callees_impl(
+    jit: &mut Jit,
+    kernel: &std::sync::Arc<GirKernel>,
+    callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
+    parent_body: Option<&dyn BodyEmitter>,
+) -> Result<WrappedKernel> {
+    let mut to_define: Vec<std::sync::Arc<GirKernel>> = Vec::new();
+    let r = compile_kernel_with_callees_inner(
+        jit,
+        kernel,
+        callees,
+        parent_body,
+        &mut to_define,
+    );
+    if r.is_err() {
+        // Evict every declared-but-never-defined cache entry. On the
+        // direct path a failed compile is the COMMON "doesn't fuse"
+        // signal (any node without an emit_clif impl), and a kernel
+        // `Arc` can be re-submitted later (lambda kernels are cached
+        // and shared across call sites) — a stale entry would hand
+        // out a `FuncId` whose body was never defined. It would also
+        // pin the kernel `Arc` (and its declared symbol) forever.
+        for k in &to_define {
+            jit.by_kernel.remove(&(std::sync::Arc::as_ptr(k) as usize));
+        }
+    }
+    r
+}
+
+fn compile_kernel_with_callees_inner(
+    jit: &mut Jit,
+    kernel: &std::sync::Arc<GirKernel>,
+    callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
+    parent_body: Option<&dyn BodyEmitter>,
+    to_define: &mut Vec<std::sync::Arc<GirKernel>>,
+) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
     // transitively-reachable callees). Cached entries reuse their
     // `FuncId`; fresh ones get a freshly-declared FuncId and queue
@@ -483,16 +582,16 @@ pub fn compile_kernel_with_callees(
     // the same FuncId; that's how self-recursion via `GirOp::Call`
     // resolves to a CLIF call back to the parent.
     let kernel_name = kernel.fn_name.clone();
+    let parent_key = std::sync::Arc::as_ptr(kernel) as usize;
     let mut funcids: BTreeMap<ArcStr, (FuncId, Signature)> = BTreeMap::new();
-    let mut to_define: Vec<std::sync::Arc<GirKernel>> = Vec::new();
-    let parent_entry = ensure_declared(jit, kernel, &mut to_define)?;
+    let parent_entry = ensure_declared(jit, kernel, to_define)?;
     funcids.insert(kernel_name.clone(), parent_entry.clone());
     for (name, k) in callees {
         if name.as_str() == kernel_name.as_str() {
             funcids.insert(name.clone(), parent_entry.clone());
             continue;
         }
-        let entry = ensure_declared(jit, k, &mut to_define)?;
+        let entry = ensure_declared(jit, k, to_define)?;
         funcids.insert(name.clone(), entry);
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
@@ -505,9 +604,19 @@ pub fn compile_kernel_with_callees(
     // addresses its code baked in; store it back into the per-kernel
     // cache entry so it lives as long as the per-context module's
     // code.
-    for k in &to_define {
-        let (strings, values) = define_kernel_body(&mut jit.ctx, k, &funcids)?;
+    //
+    // The `DirectNodeJit` body emitter (`parent_body`) is used only for
+    // the PARENT kernel (identity match on the `Arc` pointer); callees
+    // always use their GIR body.
+    for k in to_define.iter() {
         let key = std::sync::Arc::as_ptr(k) as usize;
+        let body: Option<&dyn BodyEmitter> = if key == parent_key {
+            parent_body
+        } else {
+            None
+        };
+        let (strings, values) =
+            define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
         if let Some(cached) = jit.by_kernel.get_mut(&key) {
             cached._strings = strings;
             cached._values = values;
@@ -581,6 +690,7 @@ fn define_kernel_body(
     jit: &mut JitCtx,
     kernel: &GirKernel,
     funcids: &BTreeMap<ArcStr, (FuncId, Signature)>,
+    body_emitter: Option<&dyn BodyEmitter>,
 ) -> Result<(KernelStrings, KernelValues)> {
     let (func_id, sig) =
         funcids.get(&kernel.fn_name).cloned().ok_or_else(|| {
@@ -625,6 +735,14 @@ fn define_kernel_body(
         }
         let strings = KernelStrings::build(kernel);
         let values = KernelValues::build(kernel);
+        // Direct-path lazy interning arenas — filled during emission
+        // via `BodyCx::interned_str` / `interned_value`, merged into
+        // the returned tables below so the baked addresses live as
+        // long as the compiled code. Empty on the GIR path.
+        let lazy_strings: std::cell::RefCell<Vec<Box<ArcStr>>> =
+            std::cell::RefCell::new(Vec::new());
+        let lazy_values: std::cell::RefCell<Vec<Box<Value>>> =
+            std::cell::RefCell::new(Vec::new());
         let helper_refs = declare_helpers(
             &mut jit.module,
             &mut jit.func_ctx.func,
@@ -639,14 +757,21 @@ fn define_kernel_body(
             &helper_refs,
             &strings,
             &values,
+            &lazy_strings,
+            &lazy_values,
+            body_emitter,
         )?;
         builder.finalize();
+        maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
         // Hand `strings`/`values` back to the caller, which stores
         // them in the shared module's per-kernel cache entry — the
         // JIT'd code baked in `*const ArcStr` / `*const Value`
         // pointers into these tables and the shared module's code
         // outlives this function.
-        (strings, values)
+        (
+            strings.with_lazy(lazy_strings.into_inner()),
+            values.with_lazy(lazy_values.into_inner()),
+        )
     };
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
@@ -802,6 +927,7 @@ fn define_wrapper(
         b.seal_all_blocks();
         b.finalize();
     }
+    maybe_dump_clif(&jit.func_ctx.func, &symbol);
 
     jit.module
         .define_function(wrapper_id, &mut jit.func_ctx)
@@ -891,106 +1017,6 @@ pub fn unpack_u64_to_value(bits: u64, prim: PrimType) -> Value {
     }
 }
 
-// ─── Async JIT compile ───────────────────────────────────────────
-//
-// A single shared worker thread processes JIT compile requests off
-// the runtime path. GirNode holds an `Arc<AsyncJitSlot>` whose
-// internal `OnceLock` is empty until the worker fills it. The
-// runtime thread's `update` pays one atomic load per call to check
-// — once filled, it dispatches to native code; until then, it
-// interprets. No atomic swap needed: `OnceLock` is set-once.
-//
-// Why not a thread pool: even one worker keeps codegen entirely off
-// the runtime path, which is the win we want. A pool helps only if
-// many compile requests pile up at startup; for typical programs
-// (handful of fusable lambdas), a single worker drains in
-// background well before any kernel is hot.
-
-/// Set-once JIT slot. GirNode reads via `fetch()` on every update
-/// (one atomic load); the worker calls `fill()` once when the kernel
-/// finishes compiling. Failures (cranelift unsupported op, OOM, …)
-/// leave the slot empty forever — the interpreter keeps running.
-#[derive(Default)]
-pub struct AsyncJitSlot {
-    slot: std::sync::OnceLock<std::sync::Arc<WrappedKernel>>,
-}
-
-impl AsyncJitSlot {
-    pub fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { slot: std::sync::OnceLock::new() })
-    }
-
-    /// Fast path checked on every GirNode update. Returns `None`
-    /// while the worker is still compiling, `Some(_)` once the
-    /// slot has been filled.
-    pub fn fetch(&self) -> Option<std::sync::Arc<WrappedKernel>> {
-        self.slot.get().cloned()
-    }
-}
-
-struct CompileRequest {
-    kernel: std::sync::Arc<crate::gir::GirKernel>,
-    slot: std::sync::Arc<AsyncJitSlot>,
-    name: arcstr::ArcStr,
-}
-
-static JIT_WORKER: std::sync::LazyLock<std::sync::mpsc::SyncSender<CompileRequest>> =
-    std::sync::LazyLock::new(|| {
-        // Bounded channel with generous buffer so a flurry of
-        // Lambda::compiles at program startup don't block.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<CompileRequest>(1024);
-        std::thread::Builder::new()
-            .name("graphix-jit-compile".to_string())
-            .spawn(move || {
-                while let Ok(req) = rx.recv() {
-                    match compile_kernel_with_wrapper(&req.kernel) {
-                        Ok(wrapped) => {
-                            // OnceLock::set returns Err if already
-                            // set; we never re-fill, so the only way
-                            // to hit that is two requests aliasing
-                            // the same slot — shouldn't happen, but
-                            // ignore if it does.
-                            let _ = req.slot.slot.set(std::sync::Arc::new(wrapped));
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "gir_jit (async): compile failed for {}: \
-                                 {e:#}; GirNode will stay on interpreter",
-                                req.name
-                            );
-                            // Slot stays empty — GirNode keeps
-                            // interpreting forever. Acceptable
-                            // graceful degradation.
-                        }
-                    }
-                }
-            })
-            .expect("spawn gir_jit worker thread");
-        tx
-    });
-
-/// Queue an async JIT compile of `kernel`. Returns immediately with
-/// an empty [`AsyncJitSlot`]; the worker fills it when codegen
-/// completes (typically tens to a few hundred ms later, depending
-/// on kernel size). GirNode polls the slot on each update and swaps
-/// from interpreter to native dispatch transparently.
-pub fn submit_async_compile(
-    kernel: std::sync::Arc<crate::gir::GirKernel>,
-    name: arcstr::ArcStr,
-) -> std::sync::Arc<AsyncJitSlot> {
-    let slot = AsyncJitSlot::new();
-    let req = CompileRequest { kernel, slot: slot.clone(), name };
-    if JIT_WORKER.try_send(req).is_err() {
-        // Channel full or worker dead. We log once (TODO: throttle)
-        // and return the empty slot — GirNode just keeps interpreting.
-        log::warn!(
-            "gir_jit (async): worker queue full or thread gone; \
-             skipping JIT for this kernel"
-        );
-    }
-    slot
-}
-
 // ─── Function shape ──────────────────────────────────────────────
 
 fn compile_into_function(
@@ -1000,6 +1026,9 @@ fn compile_into_function(
     helper_refs: &HelperRefs,
     strings: &KernelStrings,
     values: &KernelValues,
+    lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
+    lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
+    body_emitter: Option<&dyn BodyEmitter>,
 ) -> Result<()> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -1037,7 +1066,7 @@ fn compile_into_function(
                 let cty = prim_to_clif(prim);
                 let var = b.declare_var(cty);
                 b.def_var(var, initial_vals[d.wire_slot]);
-                env.bind(d.name.clone(), var, prim);
+                env.bind_with_id(d.name.clone(), var, prim, d.bind_id);
             }
             AbiParamKind::Array
             | AbiParamKind::Tuple
@@ -1128,8 +1157,18 @@ fn compile_into_function(
         values,
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
+        lazy_strings,
+        lazy_values,
+        builtin_apply_sites: body_emitter
+            .and_then(|em| em.builtin_apply_sites()),
     };
-    compile_body(b, &kernel.body, &mut env, &lower)?;
+    // Body codegen: the `DirectNodeJit` path supplies a `NodeBodyEmitter`
+    // that walks the region-root Node via `compile_node`; otherwise the
+    // production GIR path lowers `kernel.body` (the `GirStmt` list).
+    match body_emitter {
+        Some(em) => em.emit(b, &mut env, &lower)?,
+        None => compile_body(b, &kernel.body, &mut env, &lower)?,
+    }
 
     if let Some(head) = loop_head {
         b.seal_block(head);
@@ -1223,13 +1262,29 @@ pub struct KernelStrings {
     /// Dropped after codegen would be fine, but we keep it for
     /// debug-print symmetry; cost is small.
     index: BTreeMap<ArcStr, usize>,
+    /// Lazily-interned entries from direct-path emission
+    /// ([`BodyCx::interned_str`]) — each individually boxed so its
+    /// address survives Vec growth; the baked pointers point INTO the
+    /// boxes. There is no pre-walk on the direct path (a Node prewalk
+    /// mirroring emission coverage would be a silent-drift dangling-
+    /// pointer hazard); interning happens AT emission, so coverage is
+    /// exact by construction.
+    lazy: Vec<Box<ArcStr>>,
 }
 
 impl KernelStrings {
     /// An empty string table — for kernels that reference no strings,
     /// or as a placeholder before the real table is built.
     pub fn empty() -> Self {
-        Self { slots: Box::new([]), index: BTreeMap::new() }
+        Self { slots: Box::new([]), index: BTreeMap::new(), lazy: Vec::new() }
+    }
+
+    /// Attach direct-path lazily-interned entries (see the `lazy`
+    /// field) so they live exactly as long as this table — i.e. as
+    /// long as the compiled code that baked their addresses.
+    pub fn with_lazy(mut self, lazy: Vec<Box<ArcStr>>) -> Self {
+        self.lazy = lazy;
+        self
     }
 
     /// Pre-walk `kernel`, intern every string it references, and
@@ -1247,7 +1302,7 @@ impl KernelStrings {
             index.insert(s.clone(), slots.len());
             slots.push(canonical);
         }
-        Self { slots: slots.into_boxed_slice(), index }
+        Self { slots: slots.into_boxed_slice(), index, lazy: Vec::new() }
     }
 
     /// Get the stable `*const ArcStr` for `s`. Panics if `s` wasn't
@@ -1273,11 +1328,20 @@ impl KernelStrings {
 /// lower inline.)
 pub struct KernelValues {
     slots: Box<[Value]>,
+    /// Direct-path lazily-interned value-shape constants — see
+    /// [`KernelStrings::lazy`].
+    lazy: Vec<Box<Value>>,
 }
 
 impl KernelValues {
     pub fn empty() -> Self {
-        Self { slots: Box::new([]) }
+        Self { slots: Box::new([]), lazy: Vec::new() }
+    }
+
+    /// See [`KernelStrings::with_lazy`].
+    pub fn with_lazy(mut self, lazy: Vec<Box<Value>>) -> Self {
+        self.lazy = lazy;
+        self
     }
 
     /// Pre-walk `kernel`, collect each distinct value-shape `Const`
@@ -1287,7 +1351,7 @@ impl KernelValues {
         for stmt in &kernel.body {
             collect_values_stmt(stmt, &mut slots);
         }
-        Self { slots: slots.into_boxed_slice() }
+        Self { slots: slots.into_boxed_slice(), lazy: Vec::new() }
     }
 
     /// Stable `*const Value` for `v`. Panics on a pre-walk miss (a
@@ -1570,7 +1634,7 @@ fn collect_strings_expr(e: &GirExpr, out: &mut std::collections::BTreeSet<ArcStr
 
 /// Per-function lowering context: things that don't change across
 /// statements within a single body.
-struct LowerCtx<'a> {
+pub(crate) struct LowerCtx<'a> {
     /// `Some(block)` when the kernel has a tail loop; TailCall jumps
     /// here. `None` for non-tail-recursive kernels.
     loop_head: Option<Block>,
@@ -1620,12 +1684,29 @@ struct LowerCtx<'a> {
     /// producer op's scalar fields/body, so no producer buf is ever
     /// in flight at a composite-DynCall pending point.
     dyncall_buf_stack: std::cell::RefCell<Vec<Variable>>,
+    /// Direct-path lazy interning arenas (see
+    /// [`KernelStrings::lazy`]) — entries appended during emission via
+    /// [`BodyCx::interned_str`] / [`BodyCx::interned_value`], harvested
+    /// by `define_kernel_body` into the per-kernel tables. Each entry
+    /// is individually boxed so its address survives Vec growth.
+    lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
+    lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
     /// Lazily-created single `pending_exit` block. Created on the
     /// first composite-return DynCall site; its body (sentinel +
     /// `return`) is emitted at the end of `compile_into_function`.
     /// All `pre_pending_<n>` blocks jump here after dropping the
     /// owned set.
     pending_exit: std::cell::RefCell<Option<Block>>,
+    /// Discovered sync-builtin Apply sites for the direct path
+    /// (`Some` only when a [`BodyEmitter`] supplies them) — keyed by
+    /// the Apply's spec id, consumed by [`BodyCx::builtin_site`] so
+    /// `CallSite::emit_clif` can lower a registered site to a DynCall.
+    builtin_apply_sites: Option<
+        &'a nohash::IntMap<
+            crate::expr::ExprId,
+            crate::fusion::lowering::BuiltinCallSiteInfo,
+        >,
+    >,
 }
 
 /// FuncRefs into the JIT module for each runtime helper, valid
@@ -1843,6 +1924,13 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64)); // ret.disc
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
+        // Unwrap a `Value::Array` into the composite ABI's owned
+        // `*mut ValArray` (consuming / borrowed-read variants).
+        "graphix_value_into_array" | "graphix_value_into_array_borrowed" => {
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
+            sig.returns.push(AbiParam::new(types::I64)); // *mut ValArray
+        }
         // Value arithmetic (datetime/duration `ValueArith`): two Value
         // args (four words) in, one Value (two words) out.
         "graphix_value_add"
@@ -1850,6 +1938,14 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         | "graphix_value_mul"
         | "graphix_value_div"
         | "graphix_value_rem"
+        // Checked arithmetic (`+?` family): same four-words-in /
+        // Value-out shape; the result is the success Value or the
+        // `ArithError` error value.
+        | "graphix_value_checked_add"
+        | "graphix_value_checked_sub"
+        | "graphix_value_checked_mul"
+        | "graphix_value_checked_div"
+        | "graphix_value_checked_rem"
         // Map access (`MapRef`): map Value + key Value (four words) in,
         // a Value (Nullable<V>, two words) out — same shape.
         | "graphix_map_ref" => {
@@ -2143,7 +2239,7 @@ struct ValueVar {
 /// `value()` assert the expected variant and bail loudly if a site
 /// mishandles a Value-shaped result.
 #[derive(Debug, Clone, Copy)]
-enum CompiledExpr {
+pub enum CompiledExpr {
     Single(ClifValue),
     /// A scalar that MAY be a value-bottom (div/mod-by-zero, signed
     /// MIN/-1, scalar `?` on an error). `valid` is an I8 0/1 bool —
@@ -2257,14 +2353,14 @@ fn scalar_result(
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
-struct JitEnv {
+pub(crate) struct JitEnv {
     /// Scalar locals: `(name, var, valid, prim)`. Lookups walk
     /// back-to-front for proper shadowing. `valid` is `Some(var)`
     /// only for a TAINTED local (`let v = 1/0`) — its I8 validity bit
     /// rides alongside the value so `let`-bound bottoms flow through a
     /// later read; a non-tainted local has `valid: None` (the fast
     /// path, read back as `CompiledExpr::Single`).
-    locals: Vec<(ArcStr, Variable, Option<Variable>, PrimType)>,
+    locals: Vec<(ArcStr, Variable, Option<Variable>, PrimType, Option<crate::BindId>)>,
     /// Composite parameter pointer Variables: `(name, var)`. The var
     /// holds a `*const ValArray` (CLIF i64 on 64-bit targets). Array,
     /// tuple, and struct params share this table — they differ only
@@ -2305,9 +2401,25 @@ impl JitEnv {
         }
     }
 
-    /// Bind a non-tainted scalar local (the common path).
+    /// Bind a non-tainted scalar local (the common path). Name-keyed
+    /// only — the GIR path's lets and synthetic locals have no
+    /// BindId.
     fn bind(&mut self, name: ArcStr, var: Variable, prim: PrimType) {
-        self.locals.push((name, var, None, prim));
+        self.locals.push((name, var, None, prim, None));
+    }
+
+    /// Bind a non-tainted scalar local carrying its source BindId —
+    /// the direct path's params and lets, so `Ref` emission resolves
+    /// BindId-first (exact under shadowing, where basenames alias —
+    /// the #162/#167 bug class).
+    fn bind_with_id(
+        &mut self,
+        name: ArcStr,
+        var: Variable,
+        prim: PrimType,
+        bind_id: Option<crate::BindId>,
+    ) {
+        self.locals.push((name, var, None, prim, bind_id));
     }
 
     /// Bind a possibly-tainted scalar local — `valid` is its I8
@@ -2320,7 +2432,19 @@ impl JitEnv {
         valid: Variable,
         prim: PrimType,
     ) {
-        self.locals.push((name, var, Some(valid), prim));
+        self.locals.push((name, var, Some(valid), prim, None));
+    }
+
+    /// [`Self::bind_tainted`] carrying its source BindId.
+    fn bind_tainted_with_id(
+        &mut self,
+        name: ArcStr,
+        var: Variable,
+        valid: Variable,
+        prim: PrimType,
+        bind_id: Option<crate::BindId>,
+    ) {
+        self.locals.push((name, var, Some(valid), prim, bind_id));
     }
 
     fn bind_composite(&mut self, name: ArcStr, var: Variable) {
@@ -2343,8 +2467,24 @@ impl JitEnv {
         &self,
         name: &str,
     ) -> Option<(Variable, Option<Variable>, PrimType)> {
-        for (n, v, valid, p) in self.locals.iter().rev() {
+        for (n, v, valid, p, _) in self.locals.iter().rev() {
             if n.as_str() == name {
+                return Some((*v, *valid, *p));
+            }
+        }
+        None
+    }
+
+    /// Resolve a scalar slot by its source BindId — exact (no
+    /// shadowing ambiguity). Only slots bound via the `_with_id`
+    /// variants are found here; callers fall back to the name lookup
+    /// for id-less slots.
+    fn lookup_bind_id(
+        &self,
+        id: crate::BindId,
+    ) -> Option<(Variable, Option<Variable>, PrimType)> {
+        for (_, v, valid, p, bid) in self.locals.iter().rev() {
+            if *bid == Some(id) {
                 return Some((*v, *valid, *p));
             }
         }
@@ -3288,6 +3428,2600 @@ fn compile_tainted_scalar(
     }
 }
 
+// ─── Direct Node → CLIF (Stage 1 of `design/delete_gir_ir.md`) ──────
+//
+// `compile_node` is the seed of the merged `node → CLIF` pass that will
+// eventually replace `emit_node` (node → GIR) + `compile_expr`
+// (GIR → CLIF). It walks the region-root [`crate::Node`] graph via
+// `NodeView` and emits CLIF directly, reusing every existing helper
+// (`compile_bin`/`compile_cmp`/`compile_cast`/`JitEnv`/`CompiledExpr`)
+// so there is exactly one home for the CLIF logic. Gated by
+// [`crate::CFlag::DirectNodeJit`]; the production path is still the GIR
+// body lowering.
+//
+// **Scalar-only slice today.** Const/Ref/Add..Mod/Cmp/And/Or/Not/Cast/
+// ExplicitParens, plus a scalar-let `Block`. Any other `NodeView` (or a
+// non-scalar shape) returns `Err` → the kernel build fails → `fuse()`
+// leaves the region un-spliced → it node-walks (the universal
+// fallback). Bottom/taint propagation is identical to the GIR path:
+// scalar div/mod-by-zero produces a [`CompiledExpr::Scalar2`] and the
+// abort is resolved at the kernel boundary (`NodeBodyEmitter::emit`).
+
+/// A type-erased producer of a kernel function BODY, given the
+/// already-set-up entry block, bound params, and lowering context. The
+/// sole implementor is [`NodeBodyEmitter`] (the `DirectNodeJit` path —
+/// walks the region-root `Node` via [`compile_node`]); the production
+/// GIR path is `compile_body` over the `GirKernel`'s `GirStmt` list,
+/// reached when no emitter is supplied. Erasing the `R`/`E` of the Node
+/// lets the (monomorphic) JIT-compile pipeline thread a generic
+/// `&Node<R, E>` through without itself becoming generic.
+trait BodyEmitter {
+    fn emit(
+        &self,
+        b: &mut FunctionBuilder,
+        env: &mut JitEnv,
+        ctx: &LowerCtx,
+    ) -> Result<()>;
+
+    /// Discovered sync-builtin Apply sites for the region being
+    /// emitted (`CallSite::emit_clif` lowers a registered site to a
+    /// DynCall via [`BodyCx::builtin_site`]). `None` on the GIR path —
+    /// its sites are already lowered into the `GirStmt` body.
+    fn builtin_apply_sites(
+        &self,
+    ) -> Option<
+        &nohash::IntMap<
+            crate::expr::ExprId,
+            crate::fusion::lowering::BuiltinCallSiteInfo,
+        >,
+    > {
+        None
+    }
+}
+
+/// The `DirectNodeJit` body emitter — walks the region-root `Node` via
+/// [`compile_node`] and emits the kernel return. `return_type` comes
+/// from the (still-used) `GirKernel` so the boundary marshalling agrees
+/// with the kernel signature / wrapper / runtime arg-pack.
+struct NodeBodyEmitter<'a, R: crate::Rt, E: crate::UserEvent> {
+    root: &'a crate::Node<R, E>,
+    return_type: &'a Type,
+    apply_sites: &'a nohash::IntMap<
+        crate::expr::ExprId,
+        crate::fusion::lowering::BuiltinCallSiteInfo,
+    >,
+}
+
+impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
+    for NodeBodyEmitter<'_, R, E>
+{
+    fn emit(
+        &self,
+        b: &mut FunctionBuilder,
+        env: &mut JitEnv,
+        ctx: &LowerCtx,
+    ) -> Result<()> {
+        let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+        let cv = self.root.emit_clif(&mut cx)?;
+        let src = node_composite_source(self.root);
+        emit_kernel_return(&mut cx, self.return_type, cv, src)
+    }
+
+    fn builtin_apply_sites(
+        &self,
+    ) -> Option<
+        &nohash::IntMap<
+            crate::expr::ExprId,
+            crate::fusion::lowering::BuiltinCallSiteInfo,
+        >,
+    > {
+        Some(self.apply_sites)
+    }
+}
+
+/// The open-kernel emission context handed to
+/// [`crate::Update::emit_clif`] / [`crate::Apply::emit_clif`] impls:
+/// everything needed to add CLIF to the function currently being
+/// defined. Constructed by the kernel-body emitter right after the
+/// entry binder installs the params; emission recursion is
+/// `child.emit_clif(cx)`. `b` is the raw cranelift builder — full
+/// power for novel emitters; the graphix-specific surface (env binds,
+/// helper FuncRefs, element reads, taint/pending) stays behind
+/// crate-internal relays so `JitEnv`/`LowerCtx` remain private.
+pub struct BodyCx<'a, 'f, 'c> {
+    pub b: &'a mut FunctionBuilder<'f>,
+    pub(crate) env: &'a mut JitEnv,
+    pub(crate) ctx: &'a LowerCtx<'c>,
+}
+
+impl BodyCx<'_, '_, '_> {
+    /// FuncRef for a registered `gir_jit_helpers` runtime helper.
+    pub fn helper(&self, name: &str) -> Result<FuncRef> {
+        self.ctx
+            .helper_refs
+            .get(name)
+            .ok_or_else(|| anyhow!("missing helper {name}"))
+    }
+
+    /// Stable `*const ArcStr` for `s` as an `iconst`, interned lazily
+    /// at emission (no body prewalk on the direct path — coverage is
+    /// exact by construction). The arena entry is individually boxed
+    /// so its address survives growth; `define_kernel_body` merges the
+    /// arena into the per-kernel [`KernelStrings`] so it outlives the
+    /// compiled code that baked the pointer.
+    pub fn interned_str(&mut self, s: &ArcStr) -> ClifValue {
+        let mut lazy = self.ctx.lazy_strings.borrow_mut();
+        let ptr = match lazy.iter().find(|b| b.as_ref() == s) {
+            Some(b) => b.as_ref() as *const ArcStr,
+            None => {
+                lazy.push(Box::new(crate::gir_jit_intern::intern(s)));
+                lazy.last().unwrap().as_ref() as *const ArcStr
+            }
+        };
+        self.b.ins().iconst(types::I64, ptr as i64)
+    }
+
+    /// The discovered builtin Apply-site info for `id`, if the
+    /// region's pre-build discovery pass registered one (direct path
+    /// only — `None` whenever no [`BodyEmitter`] supplied the map).
+    pub(crate) fn builtin_site(
+        &self,
+        id: crate::expr::ExprId,
+    ) -> Option<&crate::fusion::lowering::BuiltinCallSiteInfo> {
+        self.ctx.builtin_apply_sites.and_then(|m| m.get(&id))
+    }
+
+    /// Stable `*const Value` for a value-shape constant — see
+    /// [`Self::interned_str`].
+    pub fn interned_value(&mut self, v: &Value) -> ClifValue {
+        let mut lazy = self.ctx.lazy_values.borrow_mut();
+        let ptr = match lazy.iter().find(|b| b.as_ref() == v) {
+            Some(b) => b.as_ref() as *const Value,
+            None => {
+                lazy.push(Box::new(v.clone()));
+                lazy.last().unwrap().as_ref() as *const Value
+            }
+        };
+        self.b.ins().iconst(types::I64, ptr as i64)
+    }
+}
+
+/// Ownership classification of a Node-rooted result — the Node twin of
+/// `classify_composite_source` (which reads GirExpr structure). A
+/// binding read is BORROWED (the env slot keeps the ref); grouping and
+/// blocks are transparent to their tail; everything else (literals,
+/// producers, calls) hands out an owned ref. Used by the direct path's
+/// let-bind / block-tail / kernel-return sites to decide whether a
+/// clone is needed before the source's scope drops.
+pub(crate) fn node_composite_source<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+) -> CompositeSource {
+    use crate::NodeView;
+    let mut n: &dyn crate::Update<R, E> = &**node;
+    loop {
+        match n.view() {
+            NodeView::Ref(_) => return CompositeSource::Borrowed,
+            NodeView::ExplicitParens(p) => n = &*p.n,
+            NodeView::Block(blk) => match blk.children.last() {
+                Some(tail) => n = &**tail,
+                None => return CompositeSource::Owned,
+            },
+            _ => return CompositeSource::Owned,
+        }
+    }
+}
+
+/// Clone a borrowed composite pointer so the result is owned; pass an
+/// owned one through. By-source variant of `ensure_owned_composite`
+/// for the direct path (which classifies from the Node, not GirExpr).
+pub(crate) fn ensure_owned_composite_src(
+    cx: &mut BodyCx,
+    src: CompositeSource,
+    v: ClifValue,
+) -> Result<ClifValue> {
+    match src {
+        CompositeSource::Owned => Ok(v),
+        CompositeSource::Borrowed => {
+            let clone = cx.helper("graphix_valarray_clone")?;
+            let call = cx.b.ins().call(clone, &[v]);
+            Ok(cx.b.inst_results(call)[0])
+        }
+    }
+}
+
+/// Clone a borrowed two-word Value so the result is owned; pass an
+/// owned one through. By-source variant of `ensure_owned_value`.
+pub(crate) fn ensure_owned_value_src(
+    cx: &mut BodyCx,
+    src: CompositeSource,
+    disc: ClifValue,
+    payload: ClifValue,
+) -> Result<(ClifValue, ClifValue)> {
+    match src {
+        CompositeSource::Owned => Ok((disc, payload)),
+        CompositeSource::Borrowed => {
+            let clone = cx.helper("graphix_value_clone")?;
+            let call = cx.b.ins().call(clone, &[disc, payload]);
+            let r = cx.b.inst_results(call);
+            Ok((r[0], r[1]))
+        }
+    }
+}
+
+/// Emit the kernel return for the direct path — the Node-classified
+/// mirror of `compile_body`'s `GirStmt::Return` arm. Borrowed results
+/// (a `Ref` still owned by the env, possibly through parens / block
+/// tails) are cloned so the scope-exit / kernel-exit drops below don't
+/// free the buffer the caller is about to receive. Value / composite /
+/// string returns run the pending check (an earlier DynCall that
+/// pended means the caller discards the result — drop it instead of
+/// leaking); a possibly-bottom scalar routes its validity through the
+/// pending exit (the OUTPUT-consumes-bottom rule).
+fn emit_kernel_return(
+    cx: &mut BodyCx,
+    return_type: &Type,
+    cv: CompiledExpr,
+    src: CompositeSource,
+) -> Result<()> {
+    match gir::abi_kind(return_type) {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let (disc, payload) = match cv {
+                CompiledExpr::Value { disc, payload } => (disc, payload),
+                _ => {
+                    return Err(anyhow!(
+                        "emit_kernel_return: Value-shape return got a \
+                         non-Value result"
+                    ));
+                }
+            };
+            let (disc, payload) =
+                ensure_owned_value_src(cx, src, disc, payload)?;
+            emit_return_pending_check(
+                cx.b,
+                cx.env,
+                cx.ctx,
+                ReturnDropShape::Value { disc, payload },
+            )?;
+            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().return_(&[disc, payload]);
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let v = cv.single()?;
+            let v = ensure_owned_composite_src(cx, src, v)?;
+            emit_return_pending_check(
+                cx.b,
+                cx.env,
+                cx.ctx,
+                ReturnDropShape::Composite(v),
+            )?;
+            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().return_(&[v]);
+        }
+        Some(AbiKind::String) => {
+            // String results are owned at production (reads clone);
+            // no ensure needed — mirror the GIR String return arm.
+            let v = cv.single()?;
+            emit_return_pending_check(
+                cx.b,
+                cx.env,
+                cx.ctx,
+                ReturnDropShape::String(v),
+            )?;
+            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().return_(&[v]);
+        }
+        Some(AbiKind::Scalar(_)) => match cv {
+            CompiledExpr::Single(v) => {
+                drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+                cx.b.ins().return_(&[v]);
+            }
+            CompiledExpr::Scalar2 { value, valid } => {
+                let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+                let pre_pending = cx.b.create_block();
+                let ret_block = cx.b.create_block();
+                let pending_exit = {
+                    let mut slot = cx.ctx.pending_exit.borrow_mut();
+                    match *slot {
+                        Some(blk) => blk,
+                        None => {
+                            let blk = cx.b.create_block();
+                            *slot = Some(blk);
+                            blk
+                        }
+                    }
+                };
+                cx.b.ins().brif(valid, ret_block, &[], pre_pending, &[]);
+                cx.b.switch_to_block(pre_pending);
+                cx.b.seal_block(pre_pending);
+                cx.b.ins().call(pending_set, &[]);
+                emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+                cx.b.ins().jump(pending_exit, &[]);
+                cx.b.switch_to_block(ret_block);
+                cx.b.seal_block(ret_block);
+                drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+                cx.b.ins().return_(&[value]);
+            }
+            CompiledExpr::Value { .. } => {
+                return Err(anyhow!(
+                    "emit_kernel_return: scalar return got a Value-shape \
+                     result"
+                ));
+            }
+        },
+        other => {
+            return Err(anyhow!(
+                "emit_kernel_return: kernel return shape {other:?} not \
+                 representable — falls back to node-walk"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The kernel-local name a scalar `Ref` resolves to in [`JitEnv`]. The
+/// region's free-var inputs are bound as kernel params under the
+/// binding's unqualified name (see `collect_region_inputs` →
+/// `FreeVarInput.name` and `compile_into_function`'s entry binder), and
+/// block-lets bind under their let name; both are the last component of
+/// the Ref's `ModPath`. Mirrors `emit_node`'s Ref arm.
+fn ref_local_name(spec: &crate::expr::Expr) -> Option<&str> {
+    let name = match &spec.kind {
+        crate::expr::ExprKind::Ref { name } => name,
+        _ => return None,
+    };
+    let s: &str = name.0.as_ref();
+    Some(netidx::path::Path::basename(s).unwrap_or(s))
+}
+
+// ─── Distributed node-emission relays ─────────────────────────────
+//
+// The per-node `Update::emit_clif` impls (node/*.rs) are thin shims
+// over these crate-internal helpers, which own the CLIF mechanics
+// (`JitEnv`/`LowerCtx` stay private to this module). Each relay
+// mirrors the corresponding GIR arm of `compile_expr` exactly — same
+// helpers, same taint propagation — so the two paths can't drift
+// while both are alive.
+
+/// Constant literal, dispatched on its runtime shape. Mirrors the
+/// GIR `GirOp::Const` / `GirOp::ConstStr` arms:
+///
+/// - Scalar: inline `iconst`/`f64const`.
+/// - String: stable interned `*const ArcStr` + refcount bump via
+///   `graphix_arcstr_clone_from_static` → an OWNED ArcStr word.
+/// - Value-shape (datetime/duration/bytes/map literals): stable
+///   interned `*const Value` + `graphix_value_clone_from_static` →
+///   an OWNED two-word Value.
+pub(crate) fn emit_const_node(
+    cx: &mut BodyCx,
+    value: &Value,
+    typ: &Type,
+) -> Result<CompiledExpr> {
+    match gir::abi_kind(typ) {
+        Some(AbiKind::Scalar(prim)) => {
+            Ok(CompiledExpr::Single(compile_const(cx.b, value, prim)))
+        }
+        Some(AbiKind::String) => {
+            let s = match value {
+                Value::String(s) => s,
+                v => {
+                    return Err(anyhow!(
+                        "emit_clif: String-typed Constant holds {v:?}"
+                    ));
+                }
+            };
+            let ptr = cx.interned_str(s);
+            let clone = cx.helper("graphix_arcstr_clone_from_static")?;
+            let call = cx.b.ins().call(clone, &[ptr]);
+            Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+        }
+        Some(AbiKind::Value) => {
+            let ptr = cx.interned_value(value);
+            let clone = cx.helper("graphix_value_clone_from_static")?;
+            let call = cx.b.ins().call(clone, &[ptr]);
+            let r = cx.b.inst_results(call);
+            Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+        }
+        other => Err(anyhow!(
+            "emit_clif: Constant of shape {other:?} — not yet supported"
+        )),
+    }
+}
+
+/// A binding read. Resolve the Ref's source name to the kernel param
+/// / block-let slot in the env (same name the params were bound under
+/// — see `compile_into_function`'s entry binder). Surfaces a tainted
+/// local's validity bit, mirroring `compile_expr`'s scalar-Local
+/// intercept.
+pub(crate) fn emit_ref_node(
+    cx: &mut BodyCx,
+    spec: &crate::expr::Expr,
+    typ: &Type,
+    id: crate::BindId,
+) -> Result<CompiledExpr> {
+    match gir::abi_kind(typ) {
+        // Scalar: BindId-first — exact under shadowing (an outer
+        // capture and an inner let sharing a basename resolve to
+        // different slots). Name fallback covers id-less slots (the
+        // GIR path's synthetic locals; direct-path slots all carry
+        // ids). Surfaces a tainted local's validity bit.
+        Some(AbiKind::Scalar(_)) => {
+            let (var, valid, _) = match cx.env.lookup_bind_id(id) {
+                Some(slot) => slot,
+                None => {
+                    let name = ref_local_name(spec).ok_or_else(|| {
+                        anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
+                    })?;
+                    cx.env.lookup(name).ok_or_else(|| {
+                        anyhow!("emit_clif: undefined scalar local `{name}`")
+                    })?
+                }
+            };
+            let value = cx.b.use_var(var);
+            Ok(match valid {
+                None => CompiledExpr::Single(value),
+                Some(vv) => {
+                    let valid = cx.b.use_var(vv);
+                    CompiledExpr::Scalar2 { value, valid }
+                }
+            })
+        }
+        // String: read the slot and refcount-bump — each consumer gets
+        // an independently-owned ArcStr; the slot keeps its own ref
+        // until scope exit. Mirrors the GIR string-Local arm.
+        Some(AbiKind::String) => {
+            let name = ref_local_name(spec).ok_or_else(|| {
+                anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
+            })?;
+            let var = cx.env.lookup_string(name).ok_or_else(|| {
+                anyhow!("emit_clif: undefined string local `{name}`")
+            })?;
+            let s = cx.b.use_var(var);
+            let clone = cx.helper("graphix_arcstr_clone")?;
+            let call = cx.b.ins().call(clone, &[s]);
+            Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+        }
+        // Variant / Nullable / value-shape: BORROWED two-word read —
+        // the env still owns the ref; consumers clone via
+        // `ensure_owned_value_src` when they need ownership. Mirrors
+        // the GIR value-Local arm.
+        Some(AbiKind::Variant) => {
+            let name = ref_local_name(spec).ok_or_else(|| {
+                anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
+            })?;
+            let vv = cx.env.lookup_variant(name).ok_or_else(|| {
+                anyhow!("emit_clif: undefined variant local `{name}`")
+            })?;
+            Ok(CompiledExpr::Value {
+                disc: cx.b.use_var(vv.disc),
+                payload: cx.b.use_var(vv.payload),
+            })
+        }
+        Some(AbiKind::Nullable | AbiKind::Value) => {
+            let name = ref_local_name(spec).ok_or_else(|| {
+                anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
+            })?;
+            let vv = cx.env.lookup_nullable(name).ok_or_else(|| {
+                anyhow!("emit_clif: undefined value-shape local `{name}`")
+            })?;
+            Ok(CompiledExpr::Value {
+                disc: cx.b.use_var(vv.disc),
+                payload: cx.b.use_var(vv.payload),
+            })
+        }
+        // Composite: BORROWED pointer read — consumers clone via
+        // `ensure_owned_composite_src` when they need ownership.
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let name = ref_local_name(spec).ok_or_else(|| {
+                anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
+            })?;
+            let var = cx.env.lookup_composite(name).ok_or_else(|| {
+                anyhow!("emit_clif: undefined composite local `{name}`")
+            })?;
+            Ok(CompiledExpr::Single(cx.b.use_var(var)))
+        }
+        other => Err(anyhow!(
+            "emit_clif: Ref of shape {other:?} — not yet supported"
+        )),
+    }
+}
+
+/// Arithmetic — compile both operands, then the SAME `compile_bin`
+/// helper (including the div/mod taint/guard), propagating operand
+/// validity exactly as the GIR `Bin` arm. A datetime/duration operand
+/// routes to the `ValueArith` mirror first (netidx `Value` arithmetic
+/// via the `graphix_value_<op>` helpers, both operands OWNED since the
+/// helpers consume) — the same dispatch `emit_arith` makes when
+/// lowering to GIR.
+pub(crate) fn emit_arith_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    op: BinOp,
+    lhs: &crate::Node<R, E>,
+    rhs: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    if crate::fusion::lowering::is_datetime_or_duration(lhs.typ())
+        || crate::fusion::lowering::is_datetime_or_duration(rhs.typ())
+    {
+        let (ld, lp) = emit_owned_value_operand_node(cx, lhs)?;
+        let (rd, rp) = emit_owned_value_operand_node(cx, rhs)?;
+        let helper = match op {
+            BinOp::Add => "graphix_value_add",
+            BinOp::Sub => "graphix_value_sub",
+            BinOp::Mul => "graphix_value_mul",
+            BinOp::Div => "graphix_value_div",
+            BinOp::Mod => "graphix_value_rem",
+        };
+        let fref = cx.helper(helper)?;
+        let call = cx.b.ins().call(fref, &[ld, lp, rd, rp]);
+        let r = cx.b.inst_results(call);
+        return Ok(CompiledExpr::Value { disc: r[0], payload: r[1] });
+    }
+    let lcv = lhs.emit_clif(cx)?;
+    let rcv = rhs.emit_clif(cx)?;
+    let (l, _) = lcv.scalar_with_validity(cx.b)?;
+    let (r, _) = rcv.scalar_with_validity(cx.b)?;
+    // Fallible prim derivation (not `prim_of`, which panics): an
+    // operand's type may be typecheck's un-normalized union (a select
+    // result) — scalar after `freeze_normalized`, or Err → no fusion.
+    let prim = gir::freeze_normalized(lhs.typ())
+        .as_ref()
+        .and_then(gir::scalar_prim)
+        .ok_or_else(|| {
+            anyhow!(
+                "emit_clif: arith operand of non-scalar type {:?}",
+                lhs.typ()
+            )
+        })?;
+    // Integer div/mod taint/guard — identical to the GIR `Bin` arm.
+    if matches!(op, BinOp::Div | BinOp::Mod)
+        && prim.is_integer()
+        && node_int_div_may_bottom(lhs, rhs)
+    {
+        let b = &mut *cx.b;
+        let is_zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
+        let bad = if prim.is_signed() {
+            let min: i64 = match prim {
+                PrimType::I8 => i8::MIN as i64,
+                PrimType::I16 => i16::MIN as i64,
+                PrimType::I32 => i32::MIN as i64,
+                _ => i64::MIN,
+            };
+            let is_min = b.ins().icmp_imm(IntCC::Equal, l, min);
+            let is_neg1 = b.ins().icmp_imm(IntCC::Equal, r, -1);
+            let overflow = b.ins().band(is_min, is_neg1);
+            b.ins().bor(is_zero, overflow)
+        } else {
+            is_zero
+        };
+        let one = b.ins().iconst(prim_to_clif(prim), 1);
+        let safe_r = b.ins().select(bad, one, r);
+        let value = compile_bin(b, op, prim, l, safe_r)?;
+        let not_bad = {
+            let one_i8 = b.ins().iconst(types::I8, 1);
+            b.ins().bxor(bad, one_i8)
+        };
+        let mut valid = not_bad;
+        if let CompiledExpr::Scalar2 { valid: lv, .. } = lcv {
+            valid = b.ins().band(valid, lv);
+        }
+        if let CompiledExpr::Scalar2 { valid: rv, .. } = rcv {
+            valid = b.ins().band(valid, rv);
+        }
+        return Ok(CompiledExpr::Scalar2 { value, valid });
+    }
+    let value = compile_bin(cx.b, op, prim, l, r)?;
+    let valid = combine_validity(cx.b, &[lcv, rcv]);
+    Ok(scalar_result(value, valid))
+}
+
+/// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`) — NEW
+/// direct-path coverage; the GIR path never lowered these. Both
+/// operands are compiled as OWNED `(disc, payload)` Values (the same
+/// route as `emit_arith_node`'s ValueArith dispatch — the helpers
+/// consume), then the `graphix_value_checked_<op>` helper computes via
+/// the SAME netidx `Value::checked_*` + [`crate::node::op::
+/// wrap_arith_error`] core the node-walk's update uses. The result is
+/// a Value: the success scalar, or the catchable `ArithError` error
+/// VALUE (`[T, Error<`ArithError(string)>]` freezes to the Nullable
+/// wire shape) — never bottom, unlike unchecked div0.
+pub(crate) fn emit_checked_arith_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    op: BinOp,
+    lhs: &crate::Node<R, E>,
+    rhs: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    let (ld, lp) = emit_owned_value_operand_node(cx, lhs)?;
+    let (rd, rp) = emit_owned_value_operand_node(cx, rhs)?;
+    let helper = match op {
+        BinOp::Add => "graphix_value_checked_add",
+        BinOp::Sub => "graphix_value_checked_sub",
+        BinOp::Mul => "graphix_value_checked_mul",
+        BinOp::Div => "graphix_value_checked_div",
+        BinOp::Mod => "graphix_value_checked_rem",
+    };
+    let fref = cx.helper(helper)?;
+    let call = cx.b.ins().call(fref, &[ld, lp, rd, rp]);
+    let r = cx.b.inst_results(call);
+    Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+}
+
+/// Comparison — `compile_cmp` (total-order floats) on scalar operands,
+/// propagating operand validity. Non-scalar `==`/`!=` (String,
+/// composite, value-shape) mirrors the GIR `ValueEq` arm: both operands
+/// as OWNED `(disc, payload)` Values (the helper consumes them),
+/// compared via netidx `Value` PartialEq. Ordering operators on
+/// non-scalar operands aren't lowered (mirrors `gir::cmp`) — Err, the
+/// region node-walks.
+pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    op: CmpOp,
+    lhs: &crate::Node<R, E>,
+    rhs: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    let lprim =
+        gir::freeze_normalized(lhs.typ()).as_ref().and_then(gir::scalar_prim);
+    let rprim =
+        gir::freeze_normalized(rhs.typ()).as_ref().and_then(gir::scalar_prim);
+    if let (Some(lp), Some(_)) = (lprim, rprim) {
+        let lcv = lhs.emit_clif(cx)?;
+        let rcv = rhs.emit_clif(cx)?;
+        let (l, _) = lcv.scalar_with_validity(cx.b)?;
+        let (r, _) = rcv.scalar_with_validity(cx.b)?;
+        let value = compile_cmp(cx.b, op, lp, l, r);
+        let valid = combine_validity(cx.b, &[lcv, rcv]);
+        return Ok(scalar_result(value, valid));
+    }
+    let ne = match op {
+        CmpOp::Eq => false,
+        CmpOp::Ne => true,
+        other => {
+            return Err(anyhow!(
+                "emit_clif: ordering cmp {other:?} on non-scalar operands \
+                 — not lowered (mirrors gir::cmp)"
+            ));
+        }
+    };
+    for t in [lhs.typ(), rhs.typ()] {
+        if matches!(
+            gir::abi_kind(t),
+            Some(AbiKind::Unit | AbiKind::Null) | None
+        ) {
+            return Err(anyhow!(
+                "emit_clif: ==/!= operand of type {t:?} has no comparable \
+                 runtime form (mirrors gir::cmp)"
+            ));
+        }
+    }
+    let (ld, lp) = emit_owned_value_operand_node(cx, lhs)?;
+    let (rd, rp) = emit_owned_value_operand_node(cx, rhs)?;
+    let helper = cx.helper("graphix_value_eq")?;
+    let call = cx.b.ins().call(helper, &[ld, lp, rd, rp]);
+    let eq = cx.b.inst_results(call)[0]; // I8 bool
+    Ok(CompiledExpr::Single(if ne {
+        let one = cx.b.ins().iconst(types::I8, 1);
+        cx.b.ins().bxor(eq, one)
+    } else {
+        eq
+    }))
+}
+
+/// Logical — STRICT `band`/`bor` (both operands always compiled),
+/// taint-propagating, matching the GIR `BoolBin` arm and the
+/// node-walk's `bool_op!`.
+pub(crate) fn emit_bool_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    op: BoolOp,
+    lhs: &crate::Node<R, E>,
+    rhs: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    let lcv = lhs.emit_clif(cx)?;
+    let rcv = rhs.emit_clif(cx)?;
+    let (l, _) = lcv.scalar_with_validity(cx.b)?;
+    let (r, _) = rcv.scalar_with_validity(cx.b)?;
+    let value = match op {
+        BoolOp::And => cx.b.ins().band(l, r),
+        BoolOp::Or => cx.b.ins().bor(l, r),
+    };
+    let valid = combine_validity(cx.b, &[lcv, rcv]);
+    Ok(scalar_result(value, valid))
+}
+
+/// Logical NOT — taint-propagating.
+pub(crate) fn emit_not_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    inner: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    let cv = inner.emit_clif(cx)?;
+    let (v, _) = cv.scalar_with_validity(cx.b)?;
+    let one = cx.b.ins().iconst(types::I8, 1);
+    let value = cx.b.ins().bxor(v, one);
+    let valid = combine_validity(cx.b, &[cv]);
+    Ok(scalar_result(value, valid))
+}
+
+/// `cast<T>(x)` — `compile_cast`, taint-propagating.
+pub(crate) fn emit_cast_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    inner: &crate::Node<R, E>,
+    target: &Type,
+) -> Result<CompiledExpr> {
+    let target = PrimType::from_type(target).ok_or_else(|| {
+        anyhow!("emit_clif: TypeCast to non-scalar target {target:?}")
+    })?;
+    let src = gir::scalar_prim(inner.typ()).ok_or_else(|| {
+        anyhow!(
+            "emit_clif: cast source of non-scalar typ {:?}",
+            inner.typ()
+        )
+    })?;
+    let cv = inner.emit_clif(cx)?;
+    let (v, _) = cv.scalar_with_validity(cx.b)?;
+    let value = compile_cast(cx.b, v, src, target);
+    let valid = combine_validity(cx.b, &[cv]);
+    Ok(scalar_result(value, valid))
+}
+
+/// String interpolation `"x is [x]"` — the Node twin of the GIR
+/// `Concat` arm ([`compile_concat`]): build a heap-owned `*mut String`,
+/// push each part (append-as-str for string parts — reads are already
+/// owned clones, the push consumes; Display-rendered for scalars via
+/// the shared [`string_buf_push_helper`]), finalize into an OWNED
+/// ArcStr. Keeps the GIR restriction on part shapes: a non-scalar /
+/// non-string part (a Nullable from `a[i]`, a composite, a value-shape
+/// — see findings "StringInterpolate non-scalar part") is Err, the
+/// subtree node-walks.
+pub(crate) fn emit_string_interpolate_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    args: &[crate::node::Cached<R, E>],
+) -> Result<CompiledExpr> {
+    let new_buf = cx.helper("graphix_string_buf_new")?;
+    let call = cx.b.ins().call(new_buf, &[]);
+    let buf = cx.b.inst_results(call)[0];
+    for a in args {
+        let part = &a.node;
+        // `freeze_normalized` so a select-valued part (whose type is
+        // the un-normalized arm union) still classifies.
+        let frozen = gir::freeze_normalized(part.typ());
+        match frozen.as_ref().and_then(gir::abi_kind) {
+            Some(AbiKind::String) => {
+                let s = part.emit_clif(cx)?.single()?;
+                let push = cx.helper("graphix_string_buf_push_arcstr")?;
+                cx.b.ins().call(push, &[buf, s]);
+            }
+            Some(AbiKind::Scalar(p)) => {
+                let v = part.emit_clif(cx)?.single()?;
+                let push = cx.helper(string_buf_push_helper(p))?;
+                cx.b.ins().call(push, &[buf, v]);
+            }
+            other => {
+                return Err(anyhow!(
+                    "emit_clif: string-interpolate part of shape {other:?} \
+                     — only String and scalar parts are lowered (mirrors \
+                     the GIR Concat restriction)"
+                ));
+            }
+        }
+    }
+    let finalize = cx.helper("graphix_string_buf_finalize")?;
+    let call = cx.b.ins().call(finalize, &[buf]);
+    Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+}
+
+/// A `do` / `{ ... }` block — let prefix then a tail expression.
+/// Mirrors `compile_block_scalar`/`_value`: bind each let by its
+/// runtime shape (cloning borrowed composite/value sources so the
+/// block exclusively owns its locals), compile the tail, clone the
+/// tail out if it borrows a local we're about to drop, emit the
+/// scope-exit drops for this block's owned locals, then pop the
+/// block-scoped env entries.
+pub(crate) fn emit_block_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    children: &[crate::Node<R, E>],
+) -> Result<CompiledExpr> {
+    use crate::NodeView;
+    if children.is_empty() {
+        return Err(anyhow!("emit_clif: empty block"));
+    }
+    let mark = cx.env.mark();
+    let last = children.len() - 1;
+    for (i, child) in children.iter().enumerate() {
+        if i == last {
+            let tail_cv = child.emit_clif(cx)?;
+            // The tail may alias a block-scoped local we're about to
+            // drop — clone borrowed results so they outlive the block.
+            let src = node_composite_source(child);
+            let result = match tail_cv {
+                CompiledExpr::Single(v) => {
+                    match gir::abi_kind(child.typ()) {
+                        Some(
+                            AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                        ) => CompiledExpr::Single(
+                            ensure_owned_composite_src(cx, src, v)?,
+                        ),
+                        // Scalars need no clone; a String read is
+                        // already an owned clone (the Ref/Const arms
+                        // bump the refcount at read).
+                        _ => CompiledExpr::Single(v),
+                    }
+                }
+                // A tainted tail is always a scalar — no clone.
+                cv @ CompiledExpr::Scalar2 { .. } => cv,
+                CompiledExpr::Value { disc, payload } => {
+                    let (disc, payload) =
+                        ensure_owned_value_src(cx, src, disc, payload)?;
+                    CompiledExpr::Value { disc, payload }
+                }
+            };
+            emit_scope_drops(cx, &mark)?;
+            cx.env.truncate(mark);
+            return Ok(result);
+        }
+        match child.view() {
+            NodeView::Bind(bind) => {
+                let bspec = match &bind.spec.kind {
+                    crate::expr::ExprKind::Bind(be) => be,
+                    _ => {
+                        return Err(anyhow!(
+                            "emit_clif: Bind node spec isn't ExprKind::Bind"
+                        ));
+                    }
+                };
+                if bspec.rec {
+                    return Err(anyhow!(
+                        "emit_clif: recursive let not supported"
+                    ));
+                }
+                let name = bspec.pattern.single_bind().ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: non-single-bind let pattern not \
+                         supported"
+                    )
+                })?;
+                let bind_id = bind.single_bind_id();
+                emit_let_node(cx, name, bind_id, &bind.node)?;
+            }
+            // Compile-time-only declarations — skip (mirrors emit_do).
+            NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
+            // Expression statement — evaluate, discard the result.
+            // (Async machinery can't appear here: any async node
+            // fails its emit and the whole block falls back to the
+            // node-walk.) A discarded may-bottom scalar is fine — the
+            // bottom is never consumed. Owned non-scalar results are
+            // dropped: discarding is consuming. (The GIR Discard arm
+            // leaks these; doing better here can't diverge values.)
+            _ => {
+                let cv = child.emit_clif(cx)?;
+                emit_discard_result(cx, child, cv)?;
+            }
+        }
+    }
+    // The loop always returns on the last child.
+    unreachable!("emit_block_node: last child not handled")
+}
+
+/// Bind one `let local = value` into the env by the value's runtime
+/// shape — the direct-path mirror of `compile_block_scalar`'s let
+/// arms (composite/value lets clone borrowed sources so this scope
+/// exclusively owns them; the scope-exit drop would otherwise free a
+/// buffer the enclosing scope still holds).
+fn emit_let_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    name: &ArcStr,
+    bind_id: Option<crate::BindId>,
+    value: &crate::Node<R, E>,
+) -> Result<()> {
+    // `freeze_normalized` so a select-valued let (whose type is the
+    // un-normalized arm union) still classifies.
+    let frozen = gir::freeze_normalized(value.typ());
+    match frozen.as_ref().and_then(gir::abi_kind) {
+        Some(AbiKind::Scalar(p)) => {
+            let cv = value.emit_clif(cx)?;
+            match cv {
+                CompiledExpr::Single(v) => {
+                    let var = cx.b.declare_var(prim_to_clif(p));
+                    cx.b.def_var(var, v);
+                    cx.env.bind_with_id(name.clone(), var, p, bind_id);
+                }
+                CompiledExpr::Scalar2 { value, valid } => {
+                    let var = cx.b.declare_var(prim_to_clif(p));
+                    cx.b.def_var(var, value);
+                    let valid_var = cx.b.declare_var(types::I8);
+                    cx.b.def_var(valid_var, valid);
+                    cx.env.bind_tainted_with_id(
+                        name.clone(),
+                        var,
+                        valid_var,
+                        p,
+                        bind_id,
+                    );
+                }
+                CompiledExpr::Value { .. } => {
+                    return Err(anyhow!(
+                        "emit_clif: scalar let got a Value-shape result"
+                    ));
+                }
+            }
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let v = value.emit_clif(cx)?.single()?;
+            let owned = ensure_owned_composite_src(
+                cx,
+                node_composite_source(value),
+                v,
+            )?;
+            let var = cx.b.declare_var(types::I64);
+            cx.b.def_var(var, owned);
+            cx.env.bind_composite(name.clone(), var);
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let cv = value.emit_clif(cx)?;
+            let (disc, payload) = match cv {
+                CompiledExpr::Value { disc, payload } => (disc, payload),
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: value-shape let got a non-Value result"
+                    ));
+                }
+            };
+            let (disc, payload) = ensure_owned_value_src(
+                cx,
+                node_composite_source(value),
+                disc,
+                payload,
+            )?;
+            let disc_var = cx.b.declare_var(types::I64);
+            let payload_var = cx.b.declare_var(types::I64);
+            cx.b.def_var(disc_var, disc);
+            cx.b.def_var(payload_var, payload);
+            let vv = ValueVar { disc: disc_var, payload: payload_var };
+            if matches!(
+                frozen.as_ref().and_then(gir::abi_kind),
+                Some(AbiKind::Variant)
+            ) {
+                cx.env.bind_variant(name.clone(), vv);
+            } else {
+                cx.env.bind_nullable(name.clone(), vv);
+            }
+        }
+        Some(AbiKind::String) => {
+            // String reads/consts are already owned clones.
+            let v = value.emit_clif(cx)?.single()?;
+            let var = cx.b.declare_var(types::I64);
+            cx.b.def_var(var, v);
+            cx.env.bind_string(name.clone(), var);
+        }
+        other => {
+            return Err(anyhow!(
+                "emit_clif: let value of shape {other:?} — not yet supported"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Drop a discarded statement's result if it owns an allocation.
+/// Borrowed reads (a bare `Ref` statement) own nothing; strings are
+/// always owned at production (reads clone).
+fn emit_discard_result<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    node: &crate::Node<R, E>,
+    cv: CompiledExpr,
+) -> Result<()> {
+    let owned =
+        matches!(node_composite_source(node), CompositeSource::Owned);
+    match cv {
+        CompiledExpr::Single(v) => match gir::abi_kind(node.typ()) {
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
+                if owned =>
+            {
+                let drop = cx.helper("graphix_valarray_drop")?;
+                cx.b.ins().call(drop, &[v]);
+            }
+            Some(AbiKind::String) => {
+                let drop = cx.helper("graphix_arcstr_drop")?;
+                cx.b.ins().call(drop, &[v]);
+            }
+            _ => {}
+        },
+        CompiledExpr::Scalar2 { .. } => {}
+        CompiledExpr::Value { disc, payload } => {
+            if owned {
+                let drop = cx.helper("graphix_value_drop")?;
+                cx.b.ins().call(drop, &[disc, payload]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit runtime drops for every owned composite / variant / nullable /
+/// string local this scope introduced above `mark` — the direct-path
+/// mirror of `compile_block_scalar`'s scope-exit drop block. Scalars
+/// need no drop.
+fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
+    let arr_drop = cx.helper("graphix_valarray_drop")?;
+    let val_drop = cx.helper("graphix_value_drop")?;
+    let str_drop = cx.helper("graphix_arcstr_drop")?;
+    for (_, var) in &cx.env.composites[mark.composites..] {
+        let ptr = cx.b.use_var(*var);
+        cx.b.ins().call(arr_drop, &[ptr]);
+    }
+    for (_, vv) in &cx.env.variants[mark.variants..] {
+        let disc = cx.b.use_var(vv.disc);
+        let payload = cx.b.use_var(vv.payload);
+        cx.b.ins().call(val_drop, &[disc, payload]);
+    }
+    for (_, vv) in &cx.env.nullables[mark.nullables..] {
+        let disc = cx.b.use_var(vv.disc);
+        let payload = cx.b.use_var(vv.payload);
+        cx.b.ins().call(val_drop, &[disc, payload]);
+    }
+    for (_, var) in &cx.env.strings[mark.strings..] {
+        let ptr = cx.b.use_var(*var);
+        cx.b.ins().call(str_drop, &[ptr]);
+    }
+    Ok(())
+}
+
+/// Compile a `ValueArith` / `ValueEq` / bytes / map / slice operand as
+/// an OWNED `(disc, payload)` Value — the consuming helpers take both
+/// operands by value. The Node twin of `compile_owned_value_operand`:
+/// a value-shape operand clones a Borrowed read via
+/// `ensure_owned_value_src`; a scalar is promoted to a fresh
+/// `Value::<prim>` by inline packing; a String (already owned at
+/// production) is wrapped via `graphix_value_new_string` (consumes); a
+/// composite is owned-ensured then wrapped via
+/// `graphix_value_new_from_array` (consumes). A possibly-bottom
+/// (`Scalar2`) scalar errors — same as the GIR path's
+/// `compile_scalar` → `.single()`.
+fn emit_owned_value_operand_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    node: &crate::Node<R, E>,
+) -> Result<(ClifValue, ClifValue)> {
+    match gir::abi_kind(node.typ()) {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let (disc, payload) = node.emit_clif(cx)?.value()?;
+            ensure_owned_value_src(
+                cx,
+                node_composite_source(node),
+                disc,
+                payload,
+            )
+        }
+        Some(AbiKind::Scalar(p)) => {
+            let s = node.emit_clif(cx)?.single()?;
+            let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
+            let payload = scalar_to_payload_i64(cx.b, p, s);
+            Ok((disc, payload))
+        }
+        Some(AbiKind::String) => {
+            // Const/Ref/Concat reads all produce an owned ArcStr;
+            // `graphix_value_new_string` consumes it into a Value.
+            let s = node.emit_clif(cx)?.single()?;
+            let helper = cx.helper("graphix_value_new_string")?;
+            let call = cx.b.ins().call(helper, &[s]);
+            let r = cx.b.inst_results(call);
+            Ok((r[0], r[1]))
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let ptr = node.emit_clif(cx)?.single()?;
+            let ptr = ensure_owned_composite_src(
+                cx,
+                node_composite_source(node),
+                ptr,
+            )?;
+            let helper = cx.helper("graphix_value_new_from_array")?;
+            let call = cx.b.ins().call(helper, &[ptr]);
+            let r = cx.b.inst_results(call);
+            Ok((r[0], r[1]))
+        }
+        other => {
+            Err(anyhow!("emit_clif: value operand has unexpected type {other:?}"))
+        }
+    }
+}
+
+/// Compile one producer-op field and emit the matching
+/// `graphix_value_buf_push_*` call into `buf` — the Node twin of
+/// `compile_and_push_field` (same helper choice per shape, same
+/// owned/borrowed push variant via `node_composite_source`, same
+/// bottom-abort for a `Scalar2` field).
+fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    buf: ClifValue,
+    field: &crate::Node<R, E>,
+) -> Result<()> {
+    let helper_name: &str = match gir::abi_kind(field.typ()) {
+        Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            match node_composite_source(field) {
+                CompositeSource::Owned => "graphix_value_buf_push_array",
+                CompositeSource::Borrowed => {
+                    "graphix_value_buf_push_array_borrowed"
+                }
+            }
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            match node_composite_source(field) {
+                CompositeSource::Owned => "graphix_value_buf_push_value",
+                CompositeSource::Borrowed => {
+                    "graphix_value_buf_push_value_borrowed"
+                }
+            }
+        }
+        // String SSA is the ArcStr's raw thin-pointer bits (owned);
+        // `_push_string` takes it by value (consumes). See the GIR
+        // `compile_and_push_field` for why `_push_arcstr` (which
+        // derefs a `*const ArcStr`) would be UB here.
+        Some(AbiKind::String) => "graphix_value_buf_push_string",
+        other => {
+            return Err(anyhow!(
+                "emit_clif: producer field of shape {other:?} — not \
+                 representable"
+            ));
+        }
+    };
+    let push = cx.helper(helper_name)?;
+    if gir::is_value_shape(field.typ()) {
+        let (disc, payload) = field.emit_clif(cx)?.value()?;
+        cx.b.ins().call(push, &[buf, disc, payload]);
+    } else {
+        // A composite producer has no per-field validity channel, so a
+        // bottom (`Scalar2`) field must propagate to the kernel
+        // OUTPUT: abort to `pending_exit` when the field is invalid,
+        // then push the (now-known-valid) value.
+        match field.emit_clif(cx)? {
+            CompiledExpr::Single(v) => {
+                cx.b.ins().call(push, &[buf, v]);
+            }
+            CompiledExpr::Scalar2 { value, valid } => {
+                emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+                cx.b.ins().call(push, &[buf, value]);
+            }
+            CompiledExpr::Value { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: scalar producer field compiled to \
+                     Value-shape — dispatch is broken"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Tuple / array literal — build a `Vec<Value>` field-by-field via the
+/// producer helpers, then finalize into an owned `*mut ValArray`.
+/// Mirrors the GIR `TupleNew` arm (array literals lower to the same op
+/// — the runtime shape is identical, only the static type differs).
+pub(crate) fn emit_tuple_new_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    fields: &[crate::node::Cached<R, E>],
+) -> Result<CompiledExpr> {
+    let buf_new = cx.helper("graphix_value_buf_new")?;
+    let finalize = cx.helper("graphix_valarray_finalize")?;
+    let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
+    let call = cx.b.ins().call(buf_new, &[cap]);
+    let buf = cx.b.inst_results(call)[0];
+    for f in fields {
+        emit_push_field_node(cx, buf, &f.node)?;
+    }
+    let call = cx.b.ins().call(finalize, &[buf]);
+    Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+}
+
+/// Struct literal — mirrors the GIR `StructNew` arm: an outer ValArray
+/// of inner `[name, value]` pairs, fields sorted alphabetically by
+/// name (graphix's canonical struct layout, same sort
+/// `emit_struct_new` applies when lowering to GIR). Field names are
+/// interned lazily via [`BodyCx::interned_str`].
+pub(crate) fn emit_struct_new_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    names: &[ArcStr],
+    fields: &[crate::node::Cached<R, E>],
+) -> Result<CompiledExpr> {
+    if names.len() != fields.len() {
+        return Err(anyhow!(
+            "emit_clif: struct literal name/field arity mismatch"
+        ));
+    }
+    let mut indexed: Vec<(&ArcStr, &crate::node::Cached<R, E>)> =
+        names.iter().zip(fields.iter()).collect();
+    indexed.sort_by(|a, b| a.0.cmp(b.0));
+    let buf_new = cx.helper("graphix_value_buf_new")?;
+    let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
+    let push_array = cx.helper("graphix_value_buf_push_array")?;
+    let finalize = cx.helper("graphix_valarray_finalize")?;
+    let outer_cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
+    let call = cx.b.ins().call(buf_new, &[outer_cap]);
+    let outer = cx.b.inst_results(call)[0];
+    for (name, field) in indexed {
+        let inner_cap = cx.b.ins().iconst(types::I64, 2);
+        let call = cx.b.ins().call(buf_new, &[inner_cap]);
+        let inner = cx.b.inst_results(call)[0];
+        let name_ptr = cx.interned_str(name);
+        cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
+        emit_push_field_node(cx, inner, &field.node)?;
+        let call = cx.b.ins().call(finalize, &[inner]);
+        let inner_arr = cx.b.inst_results(call)[0];
+        cx.b.ins().call(push_array, &[outer, inner_arr]);
+    }
+    let call = cx.b.ins().call(finalize, &[outer]);
+    Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+}
+
+/// Variant constructor — mirrors the GIR `VariantNew` arm. Nullary →
+/// `Value::String(tag)` via `graphix_value_new_string_from_arcstr`
+/// (clones the interned tag — see the GIR arm for why the clone is
+/// mandatory). With payloads → `Value::Array([tag, p0, ...])` built
+/// via the buf helpers and unwrapped into a two-register Value by
+/// `graphix_value_new_from_array`. The tag is interned lazily via
+/// [`BodyCx::interned_str`].
+pub(crate) fn emit_variant_new_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    tag: &ArcStr,
+    payloads: &[crate::node::Cached<R, E>],
+) -> Result<CompiledExpr> {
+    let tag_ptr = cx.interned_str(tag);
+    if payloads.is_empty() {
+        let new_str = cx.helper("graphix_value_new_string_from_arcstr")?;
+        let call = cx.b.ins().call(new_str, &[tag_ptr]);
+        let r = cx.b.inst_results(call);
+        Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    } else {
+        let buf_new = cx.helper("graphix_value_buf_new")?;
+        let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
+        let finalize = cx.helper("graphix_valarray_finalize")?;
+        let wrap_array = cx.helper("graphix_value_new_from_array")?;
+        let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
+        let call = cx.b.ins().call(buf_new, &[cap]);
+        let buf = cx.b.inst_results(call)[0];
+        cx.b.ins().call(push_arcstr, &[buf, tag_ptr]);
+        for p in payloads {
+            emit_push_field_node(cx, buf, &p.node)?;
+        }
+        let call = cx.b.ins().call(finalize, &[buf]);
+        let arr = cx.b.inst_results(call)[0];
+        let call = cx.b.ins().call(wrap_array, &[arr]);
+        let r = cx.b.inst_results(call);
+        Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    }
+}
+
+/// Compile an accessor's composite source to a `*const ValArray`,
+/// returning the pointer plus its ownership classification. Shared by
+/// the tuple/struct/array element-read relays; the caller drops an
+/// Owned pointer after the read (the element helpers clone the slot
+/// out, so the temporary producer would otherwise leak — a Borrowed
+/// read stays owned by its env slot).
+fn emit_accessor_source_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    source: &crate::Node<R, E>,
+    want: AbiKind,
+) -> Result<(ClifValue, CompositeSource)> {
+    if gir::abi_kind(source.typ()) != Some(want) {
+        return Err(anyhow!(
+            "emit_clif: accessor source of type {:?} isn't {want:?}",
+            source.typ()
+        ));
+    }
+    let src = node_composite_source(source);
+    let ptr = source.emit_clif(cx)?.single()?;
+    Ok((ptr, src))
+}
+
+/// Drop an accessor's temporary Owned source after the element read.
+fn emit_accessor_source_drop(
+    cx: &mut BodyCx,
+    ptr: ClifValue,
+    src: CompositeSource,
+) -> Result<()> {
+    if matches!(src, CompositeSource::Owned) {
+        let drop = cx.helper("graphix_valarray_drop")?;
+        cx.b.ins().call(drop, &[ptr]);
+    }
+    Ok(())
+}
+
+/// `t.<idx>` — mirrors the GIR `TupleGet` arm: a statically-valid
+/// index, read through `compile_element_read` (owned result; Value
+/// shape for a value-shape element, Single otherwise).
+pub(crate) fn emit_tuple_ref_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    source: &crate::Node<R, E>,
+    idx: usize,
+    elem_typ: &Type,
+) -> Result<CompiledExpr> {
+    let (arr_ptr, src) =
+        emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
+    let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
+    let result =
+        compile_element_read(cx.b, arr_ptr, idx_const, elem_typ, false, cx.ctx)?;
+    emit_accessor_source_drop(cx, arr_ptr, src)?;
+    Ok(result)
+}
+
+/// `s.field` — mirrors the GIR `StructGet` arm (the two-level kv-pair
+/// read via the `struct_get_*` helper family). `sorted_idx` is the
+/// field's position in the struct type's canonical (sorted) layout —
+/// resolved by the node's typecheck.
+pub(crate) fn emit_struct_ref_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    source: &crate::Node<R, E>,
+    sorted_idx: usize,
+    elem_typ: &Type,
+) -> Result<CompiledExpr> {
+    let (arr_ptr, src) =
+        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
+    let result =
+        compile_element_read(cx.b, arr_ptr, idx_const, elem_typ, true, cx.ctx)?;
+    emit_accessor_source_drop(cx, arr_ptr, src)?;
+    Ok(result)
+}
+
+/// `a[i]` / `bytes[i]` — mirrors the GIR `ArrayGet` / `BytesIndex`
+/// arms. The result type is always `Nullable<elem>` (out-of-bounds →
+/// the `ArrayIndexError` Value), produced by the shared bounds-checked
+/// helpers (`graphix_valarray_index` routes through the node-walk's
+/// own `node::array::array_index`, `graphix_bytes_index` through
+/// `bytes_index` — all backends agree bit-for-bit).
+pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    source: &crate::Node<R, E>,
+    idx: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    let idx_prim = gir::scalar_prim(idx.typ())
+        .filter(|p| p.is_integer())
+        .ok_or_else(|| {
+            anyhow!(
+                "emit_clif: index of non-integer type {:?}",
+                idx.typ()
+            )
+        })?;
+    if matches!(gir::abi_kind(source.typ()), Some(AbiKind::Array)) {
+        let (arr_ptr, src) =
+            emit_accessor_source_node(cx, source, AbiKind::Array)?;
+        let idx_val = idx.emit_clif(cx)?.single()?;
+        let idx_i64 = widen_to_i64(cx.b, idx_val, idx_prim);
+        let helper = cx.helper("graphix_valarray_index")?;
+        let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
+        let r = cx.b.inst_results(call);
+        let (disc, payload) = (r[0], r[1]);
+        emit_accessor_source_drop(cx, arr_ptr, src)?;
+        return Ok(CompiledExpr::Value { disc, payload });
+    }
+    if crate::fusion::lowering::is_bytes(source.typ()) {
+        // The helper consumes the bytes operand — owned, like the GIR
+        // `BytesIndex` arm.
+        let (bd, bp) = emit_owned_value_operand_node(cx, source)?;
+        let i = idx.emit_clif(cx)?.single()?;
+        let helper = cx.helper("graphix_bytes_index")?;
+        let call = cx.b.ins().call(helper, &[bd, bp, i]);
+        let r = cx.b.inst_results(call);
+        return Ok(CompiledExpr::Value { disc: r[0], payload: r[1] });
+    }
+    Err(anyhow!(
+        "emit_clif: index source of type {:?} isn't an array or bytes",
+        source.typ()
+    ))
+}
+
+/// `m{key}` — mirrors the GIR `MapRef` arm: both operands as OWNED
+/// `(disc, payload)` Values (the helper consumes them);
+/// `graphix_map_ref` does the lookup (shared `node::map::map_get`
+/// semantics), returning `Nullable<V>` as two words.
+pub(crate) fn emit_map_ref_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    source: &crate::Node<R, E>,
+    key: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    if !crate::fusion::lowering::is_map(source.typ()) {
+        return Err(anyhow!(
+            "emit_clif: map-ref source of type {:?} isn't a Map",
+            source.typ()
+        ));
+    }
+    let (md, mp) = emit_owned_value_operand_node(cx, source)?;
+    let (kd, kp) = emit_owned_value_operand_node(cx, key)?;
+    let helper = cx.helper("graphix_map_ref")?;
+    let call = cx.b.ins().call(helper, &[md, mp, kd, kp]);
+    let r = cx.b.inst_results(call);
+    Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+}
+
+/// `a[i..j]` — mirrors the GIR `ArraySlice` arm: the source as an
+/// OWNED Value (the helper consumes it; a composite source is wrapped
+/// via `graphix_value_new_from_array`), present bounds as integer
+/// scalars with a flag bit each, absent bounds pass 0 with the bit
+/// cleared. Result is `Nullable<source>` (shared
+/// `node::array::array_slice` semantics).
+pub(crate) fn emit_array_slice_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    source: &crate::Node<R, E>,
+    start: Option<&crate::Node<R, E>>,
+    end: Option<&crate::Node<R, E>>,
+) -> Result<CompiledExpr> {
+    if !(matches!(gir::abi_kind(source.typ()), Some(AbiKind::Array))
+        || crate::fusion::lowering::is_bytes(source.typ()))
+    {
+        return Err(anyhow!(
+            "emit_clif: slice source of type {:?} isn't an array or bytes",
+            source.typ()
+        ));
+    }
+    let (sd, sp) = emit_owned_value_operand_node(cx, source)?;
+    let emit_bound = |cx: &mut BodyCx,
+                          n: Option<&crate::Node<R, E>>,
+                          flag: i64,
+                          flags: &mut i64|
+     -> Result<ClifValue> {
+        match n {
+            None => Ok(cx.b.ins().iconst(types::I64, 0)),
+            Some(n) => {
+                if !gir::scalar_prim(n.typ()).is_some_and(|p| p.is_integer())
+                {
+                    return Err(anyhow!(
+                        "emit_clif: slice bound of non-integer type {:?}",
+                        n.typ()
+                    ));
+                }
+                *flags |= flag;
+                n.emit_clif(cx)?.single()
+            }
+        }
+    };
+    let mut flags = 0i64;
+    let start_v = emit_bound(cx, start, 1, &mut flags)?;
+    let end_v = emit_bound(cx, end, 2, &mut flags)?;
+    let flags_v = cx.b.ins().iconst(types::I64, flags);
+    let helper = cx.helper("graphix_array_slice")?;
+    let call = cx.b.ins().call(helper, &[sd, sp, start_v, end_v, flags_v]);
+    let r = cx.b.inst_results(call);
+    Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+}
+
+/// `?` / `$` — both unwrap a Nullable<T> to T (else pass the value
+/// through unchanged for a non-Nullable inner, mirroring `wrap_qop`'s
+/// None branch). The Node twin of `wrap_qop` fused with the two GIR
+/// `QopUnwrap` compile arms (`compile_scalar_qop_unwrap` for scalar /
+/// string / composite success, the `compile_value_expr` arm for
+/// Value-shape success).
+pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    inner: &crate::Node<R, E>,
+) -> Result<CompiledExpr> {
+    let Some(inner_typ) = gir::freeze_concrete(inner.typ()) else {
+        return Err(anyhow!(
+            "emit_clif: `?` inner type {:?} doesn't freeze concrete",
+            inner.typ()
+        ));
+    };
+    let Some(success_typ) = gir::nullable_inner(&inner_typ) else {
+        return inner.emit_clif(cx);
+    };
+    let cv = inner.emit_clif(cx)?;
+    let (disc, payload) = match cv {
+        CompiledExpr::Value { disc, payload } => (disc, payload),
+        _ => {
+            return Err(anyhow!(
+                "emit_clif: `?` inner not Value-shape — a Nullable inner \
+                 must compile to (disc, payload)"
+            ));
+        }
+    };
+    // `disc == Typ::Error` (`0x2000_0000`) means bottom.
+    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, disc, 0x2000_0000_i64);
+    match gir::abi_kind(&success_typ) {
+        // Prim success — BRANCHLESS per-value validity. The payload
+        // word holds the success bits when !is_err; on the error path
+        // the bits are garbage but `valid=0` means they're never used.
+        // The error Value isn't dropped here: a `Value::Error` carries
+        // an `Arc<Value>` payload, but a scalar `Nullable` inner is a
+        // by-value scalar (no heap), so nothing leaks. (A Local-read
+        // Borrowed inner is owned by its env slot and dropped at scope
+        // exit either way.)
+        Some(AbiKind::Scalar(p)) => {
+            let value = cast_u64_to_prim(cx.b, payload, p);
+            let one = cx.b.ins().iconst(types::I8, 1);
+            let valid = cx.b.ins().bxor(is_err, one); // !is_err
+            Ok(CompiledExpr::Scalar2 { value, valid })
+        }
+        // String / composite success — keep the branch-abort path.
+        Some(
+            AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+        ) => {
+            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+            let value_drop = cx.helper("graphix_value_drop")?;
+            let inner_owned =
+                node_composite_source(inner) == CompositeSource::Owned;
+            let pre_pending = cx.b.create_block();
+            let continue_block = cx.b.create_block();
+            let pending_exit = {
+                let mut slot = cx.ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = cx.b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
+            cx.b.switch_to_block(pre_pending);
+            cx.b.seal_block(pre_pending);
+            // Drop the owned error Value only when `inner` is an owned
+            // producer (a Borrowed Local is owned by its env slot, which
+            // `emit_pending_cleanup` drops — dropping here too would
+            // double-free).
+            if inner_owned {
+                cx.b.ins().call(value_drop, &[disc, payload]);
+            }
+            cx.b.ins().call(pending_set, &[]);
+            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().jump(pending_exit, &[]);
+            cx.b.switch_to_block(continue_block);
+            cx.b.seal_block(continue_block);
+            // Extract success T (now known non-error). The unwrap
+            // result is Owned, so a String/composite success from a
+            // Borrowed inner must be cloned. String: the ArcStr bits
+            // inside a Value ARE the string ABI's one-word
+            // representation. Composite: the payload word is the
+            // ValArray BITS, but the composite ABI is a boxed
+            // `*mut ValArray` — re-box via `graphix_value_into_array`
+            // (consumes) / `_borrowed` (clones inner); see the GIR arm
+            // (#199).
+            let v = match gir::abi_kind(&success_typ) {
+                Some(AbiKind::String) => {
+                    if inner_owned {
+                        payload
+                    } else {
+                        let clone = cx.helper("graphix_arcstr_clone")?;
+                        let call = cx.b.ins().call(clone, &[payload]);
+                        cx.b.inst_results(call)[0]
+                    }
+                }
+                _ => {
+                    let helper_name = if inner_owned {
+                        "graphix_value_into_array"
+                    } else {
+                        "graphix_value_into_array_borrowed"
+                    };
+                    let unbox = cx.helper(helper_name)?;
+                    let call = cx.b.ins().call(unbox, &[disc, payload]);
+                    cx.b.inst_results(call)[0]
+                }
+            };
+            Ok(CompiledExpr::Single(v))
+        }
+        // Value-shape success. On `Error` disc, drop the owned inner,
+        // signal pending, jump to `pending_exit`; otherwise the
+        // non-error Value IS the result T (its own `(disc, payload)`,
+        // passed through to the consumer which takes ownership).
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+            let value_drop = cx.helper("graphix_value_drop")?;
+            let src = node_composite_source(inner);
+            let pre_pending = cx.b.create_block();
+            let continue_block = cx.b.create_block();
+            let pending_exit = {
+                let mut slot = cx.ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = cx.b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
+            cx.b.switch_to_block(pre_pending);
+            cx.b.seal_block(pre_pending);
+            // Drop the owned error Value before aborting — but ONLY when
+            // `inner` is an owned producer. A Borrowed (Ref) inner is
+            // owned by its env slot, which `emit_pending_cleanup` ->
+            // `drop_owned_composites` already drops; dropping it here too
+            // would double-free (Arc double-decrement / use-after-free).
+            if src == CompositeSource::Owned {
+                cx.b.ins().call(value_drop, &[disc, payload]);
+            }
+            cx.b.ins().call(pending_set, &[]);
+            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().jump(pending_exit, &[]);
+            cx.b.switch_to_block(continue_block);
+            cx.b.seal_block(continue_block);
+            // The non-error Value IS the result T. Ensure it's owned: a
+            // Borrowed (Ref) inner aliases its env slot, which is also
+            // dropped at scope exit — handing those bits to the consumer
+            // (the unwrap result is Owned) would double-free. An Owned
+            // inner passes through unchanged.
+            let (od, op) = ensure_owned_value_src(cx, src, disc, payload)?;
+            Ok(CompiledExpr::Value { disc: od, payload: op })
+        }
+        Some(AbiKind::Unit | AbiKind::Null) | None => Err(anyhow!(
+            "emit_clif: `?` with unsupported success type {:?}",
+            success_typ
+        )),
+    }
+}
+
+/// Builtin DynCall — marshal the (marshal-ordered) `args` into a
+/// fresh `LPooled<Vec<Value>>` buf, dispatch via `graphix_dyncall`
+/// against the `FnSource::Builtin` slot at `info.fn_index`, then
+/// decode the return per shape. The Node twin of
+/// `marshal_dyncall_args` fused with the two GIR `DynCall` decode
+/// arms (`compile_scalar_impl` for scalar / unit / string / composite
+/// returns, the `compile_value_expr` arm for Value-shape returns).
+pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    info: &crate::fusion::lowering::BuiltinCallSiteInfo,
+    args: &[&crate::Node<R, E>],
+) -> Result<CompiledExpr> {
+    let buf_new = cx.helper("graphix_value_buf_new")?;
+    let cap = cx.b.ins().iconst(types::I64, args.len() as i64);
+    let call = cx.b.ins().call(buf_new, &[cap]);
+    let buf = cx.b.inst_results(call)[0];
+    let buf_var = cx.b.declare_var(types::I64);
+    cx.b.def_var(buf_var, buf);
+    cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+    for (arg_node, t) in args.iter().zip(info.arg_types.iter()) {
+        // Compare by runtime SHAPE (`AbiKind`), not exact `Type` —
+        // the direct twin of the lowering-side agreement check. The
+        // DynCall marshals by `info.arg_types`, so only the shape
+        // needs to agree; a mismatch aborts the kernel (the classic
+        // path refuses at lowering — same net effect, the subtree
+        // node-walks).
+        let Some(frozen) = gir::freeze_normalized(arg_node.typ()) else {
+            return Err(anyhow!(
+                "emit_clif: DynCall arg type {:?} doesn't freeze concrete",
+                arg_node.typ()
+            ));
+        };
+        if gir::abi_kind(&frozen) != gir::abi_kind(t) {
+            return Err(anyhow!(
+                "emit_clif: DynCall arg shape {:?} disagrees with the \
+                 discovered arg type {t:?}",
+                frozen
+            ));
+        }
+        // For composite/value args the push helper depends on where the
+        // SSA value came from. A `Borrowed` source (a Ref read — the
+        // caller still owns it) refcount-bumps; an `Owned` source (a
+        // producer op, or a composite/Value-return DynCall result not
+        // bound to a local) transfers ownership into the buf. Using the
+        // borrowed helper on an Owned source leaks the original; the
+        // move helper on a Borrowed source double-frees it.
+        let helper_name: &str = match gir::abi_kind(t) {
+            Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                match node_composite_source(arg_node) {
+                    CompositeSource::Owned => "graphix_value_buf_push_array",
+                    CompositeSource::Borrowed => {
+                        "graphix_value_buf_push_array_borrowed"
+                    }
+                }
+            }
+            // Variant / Nullable / datetime / duration / bytes / map /
+            // error all ride the two-word `(disc, payload)` Value wire
+            // shape.
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                match node_composite_source(arg_node) {
+                    CompositeSource::Owned => "graphix_value_buf_push_value",
+                    CompositeSource::Borrowed => {
+                        "graphix_value_buf_push_value_borrowed"
+                    }
+                }
+            }
+            Some(AbiKind::String) => "graphix_value_buf_push_string",
+            Some(AbiKind::Unit) => {
+                return Err(anyhow!("emit_clif: DynCall arg has Unit type"));
+            }
+            Some(AbiKind::Null) | None => {
+                return Err(anyhow!(
+                    "DynCall arg with bare Null / non-fusable type — should \
+                     have widened to Nullable<T> at construction"
+                ));
+            }
+        };
+        let push = cx.helper(helper_name)?;
+        if gir::is_value_shape(t) {
+            let (disc, payload) = arg_node.emit_clif(cx)?.value()?;
+            cx.b.ins().call(push, &[buf, disc, payload]);
+        } else {
+            // `.single()` rejects a possibly-bottom `Scalar2` arg — on
+            // the classic path a may-bottom arg never reaches
+            // marshalling; bailing the kernel here matches it.
+            let v = arg_node.emit_clif(cx)?.single()?;
+            cx.b.ins().call(push, &[buf, v]);
+        }
+    }
+    let dyncall = cx.helper("graphix_dyncall")?;
+    let ret_kind: i64 = match gir::abi_kind(&info.return_type) {
+        Some(AbiKind::Scalar(_)) => 0,
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => 1,
+        // Variant / Nullable / value-shape all come back as a
+        // boxed `*mut Value` (dispatch_typed wraps the
+        // dispatcher's returned `Value` in `Box::into_raw`
+        // regardless of the outer enum tag), so they share the
+        // ret_kind=2 path.
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => 2,
+        // Unit return: dispatcher returns 0 (the slot is
+        // discarded by the caller). ret_kind=3 tells
+        // dispatch_typed not to box anything.
+        Some(AbiKind::Unit) => 3,
+        // String return: dispatcher extracts the ArcStr from
+        // `Value::String`, transmutes to raw u64 bits, returns
+        // in word0. Caller's SSA reads the bits directly as
+        // an owned `arcstr::ArcStr` (`repr(transparent)`).
+        Some(AbiKind::String) => 4,
+        Some(AbiKind::Null) | None => {
+            return Err(anyhow!(
+                "DynCall with bare Null / non-fusable return — \
+                 should have widened to Nullable<T> at construction"
+            ));
+        }
+    };
+    let fn_idx_val = cx.b.ins().iconst(types::I32, info.fn_index as i64);
+    let ret_kind_val = cx.b.ins().iconst(types::I8, ret_kind);
+    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, ret_kind_val]);
+    // `graphix_dyncall` has two `I64` returns (disc, payload) so that
+    // ret_kind=2 (Value-shape) can deliver both words. For
+    // scalar/composite/unit/string return kinds the first return
+    // holds the value (or pointer / 0); the second is undefined.
+    let (raw0, raw1) = {
+        let r = cx.b.inst_results(call);
+        (r[0], r[1])
+    };
+    // `graphix_dyncall` consumed the args buf — pop it off the
+    // in-flight stack before the (possible) pending branch below, so
+    // a `pre_pending` block here doesn't try to double-free it.
+    cx.ctx.dyncall_buf_stack.borrow_mut().pop();
+    match gir::abi_kind(&info.return_type) {
+        Some(AbiKind::Scalar(p)) => {
+            // Scalar return: 0 on pending is a harmless sentinel for
+            // downstream scalar arithmetic. No branch needed — the
+            // wrapper-level DYNCALL_PENDING check in GirNode::update
+            // discards the whole kernel result.
+            Ok(CompiledExpr::Single(cast_u64_to_prim(cx.b, raw0, p)))
+        }
+        Some(AbiKind::Unit) => {
+            // Unit return: dispatcher returned (0, _). The wrapper-
+            // level DYNCALL_PENDING check still fires.
+            Ok(CompiledExpr::Single(raw0))
+        }
+        Some(AbiKind::String) => {
+            // String return: `raw0` is the ArcStr's raw thin-pointer
+            // bits (transferred ownership). The 0 sentinel from a
+            // pending dispatch is never decoded — the wrapper-level
+            // DYNCALL_PENDING check discards the kernel result first.
+            Ok(CompiledExpr::Single(raw0))
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            // Composite return: `raw0` is an owned `*mut ValArray`,
+            // or null on pending. Null can't be deref'd by downstream
+            // ops, so we branch: on pending, drop every owned local +
+            // every outer in-flight DynCall buf, then jump to
+            // `pending_exit`. (`pending_take` READS without clearing,
+            // so no re-set is needed.)
+            let pending_take = cx.helper("graphix_dyncall_pending_take")?;
+            let call = cx.b.ins().call(pending_take, &[]);
+            let pending = cx.b.inst_results(call)[0];
+            let pre_pending = cx.b.create_block();
+            let continue_block = cx.b.create_block();
+            let pending_exit = {
+                let mut slot = cx.ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = cx.b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            cx.b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
+            cx.b.switch_to_block(pre_pending);
+            cx.b.seal_block(pre_pending);
+            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().jump(pending_exit, &[]);
+            cx.b.switch_to_block(continue_block);
+            cx.b.seal_block(continue_block);
+            Ok(CompiledExpr::Single(raw0))
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            // Value-shape return: both register-words, same pending
+            // branch as the composite arm (the boxed Value sentinel is
+            // null on pending).
+            let pending_take = cx.helper("graphix_dyncall_pending_take")?;
+            let call = cx.b.ins().call(pending_take, &[]);
+            let pending = cx.b.inst_results(call)[0];
+            let pre_pending = cx.b.create_block();
+            let continue_block = cx.b.create_block();
+            let pending_exit = {
+                let mut slot = cx.ctx.pending_exit.borrow_mut();
+                match *slot {
+                    Some(blk) => blk,
+                    None => {
+                        let blk = cx.b.create_block();
+                        *slot = Some(blk);
+                        blk
+                    }
+                }
+            };
+            cx.b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
+            cx.b.switch_to_block(pre_pending);
+            cx.b.seal_block(pre_pending);
+            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().jump(pending_exit, &[]);
+            cx.b.switch_to_block(continue_block);
+            cx.b.seal_block(continue_block);
+            Ok(CompiledExpr::Value { disc: raw0, payload: raw1 })
+        }
+        Some(AbiKind::Null) | None => Err(anyhow!(
+            "DynCall with bare Null / non-fusable return — \
+             should have widened to Nullable<T> at construction"
+        )),
+    }
+}
+
+/// How a `select`'s arms merge into one result — derived from the
+/// select node's frozen result type. Scalar merges always thread an I8
+/// validity phi (`expr_may_value_bottom` has no Node twin, so every
+/// arm passes a validity arg; the result is reported `Scalar2` only
+/// when something actually tainted). String/composite merges have no
+/// validity channel — a possibly-bottom scrutinee with one of those
+/// result shapes refuses to fuse instead.
+enum SelectMerge {
+    Scalar(PrimType),
+    Value,
+    Composite,
+    String,
+}
+
+/// The select scrutinee, emitted exactly ONCE up front; every arm
+/// condition and pattern bind reuses these SSA values (the direct
+/// path's form of the GIR `__sel_scrut` stabilization — SSA reuse
+/// gives eval-once for free). `Opaque` (string / composite) supports
+/// only Ignore / guard arms, none of which can test the value.
+#[derive(Clone, Copy)]
+enum SelectScrut {
+    Scalar { value: ClifValue, valid: Option<ClifValue>, prim: PrimType },
+    Value { disc: ClifValue, payload: ClifValue },
+    Opaque,
+}
+
+/// A pattern binding to install in the arm's matched region, under the
+/// pattern's real `BindId` (the arm body's `Ref`s resolve BindId-first,
+/// so no shadow guard is needed — unlike the GIR `known_consts`
+/// channel).
+enum SelectArmBind {
+    /// `n => ...` — bind the scalar scrutinee itself.
+    Scrut(crate::BindId),
+    /// `` `Tag(n) `` — bind one scalar variant payload. The read uses
+    /// `unreachable_unchecked` on a wrong-tag value, so it MUST be
+    /// emitted inside the matched region (after the tag-eq branch) —
+    /// never in the fall-through chain. (The GIR path inlines payload
+    /// reads into the cond via known_consts; the node-walk evaluates
+    /// binds only after the pattern matches — we follow the node-walk.)
+    Payload { id: crate::BindId, idx: usize, prim: PrimType },
+}
+
+/// `select` at expression position — the Node twin of
+/// `emit_select_as_expr` (lowering) + `compile_ifchain` (codegen)
+/// fused into one pass. Canonical semantics are `Select::update` /
+/// `PatternNode::is_match` (node/select.rs, node/pattern.rs):
+///
+/// - the scrutinee is evaluated once; no scrutinee value → no select
+///   value (a `Scalar2` scrutinee's validity ANDs into every arm's
+///   result validity — the #178 scrutinee gate);
+/// - an explicit type predicate is TESTED (`null as _` → IsNull;
+///   `i64 as _` over `[i64, null]` → NOT-null). The GIR path emits
+///   the non-null case as trivially-true, which is order-unsound —
+///   here the test is explicit so arm order is right by construction;
+/// - a guard runs only after the pattern matches, with the pattern's
+///   binds in scope; a bottom guard means the arm does NOT match;
+/// - the first matching arm wins; an arm with no condition and no
+///   guard takes the chain unconditionally.
+///
+/// The final-arm miss trap mirrors `compile_ifchain`, but is emitted
+/// only where typecheck's exhaustiveness makes it unreachable: a
+/// guarded final arm, or a conditional final arm under a possibly-
+/// bottom scrutinee (whose garbage cond bits could miss every arm),
+/// refuse to fuse instead. (The GIR path traps live in that second
+/// case — see the C5 findings.)
+pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    sel: &crate::node::select::Select<R, E>,
+) -> Result<CompiledExpr> {
+    use crate::node::pattern::StructPatternNode;
+    use crate::NodeView;
+    if sel.arms.is_empty() {
+        return Err(anyhow!("emit_clif: select with no arms"));
+    }
+    let result_typ = gir::freeze_normalized(sel.typ()).ok_or_else(|| {
+        anyhow!(
+            "emit_clif: select result type {:?} doesn't freeze concrete",
+            sel.typ()
+        )
+    })?;
+    let merge_shape = match gir::abi_kind(&result_typ) {
+        Some(AbiKind::Scalar(p)) => SelectMerge::Scalar(p),
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            SelectMerge::Value
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            SelectMerge::Composite
+        }
+        Some(AbiKind::String) => SelectMerge::String,
+        other @ (Some(AbiKind::Unit | AbiKind::Null) | None) => {
+            return Err(anyhow!(
+                "emit_clif: select result shape {other:?} not representable"
+            ));
+        }
+    };
+    let scrut_typ =
+        gir::freeze_normalized(sel.arg.node.typ()).ok_or_else(|| {
+            anyhow!(
+                "emit_clif: select scrutinee type {:?} doesn't freeze \
+                 concrete",
+                sel.arg.node.typ()
+            )
+        })?;
+    let scrut_kind = gir::abi_kind(&scrut_typ).ok_or_else(|| {
+        anyhow!("emit_clif: select scrutinee shape not classifiable")
+    })?;
+    let scrut = match scrut_kind {
+        AbiKind::Scalar(p) => match sel.arg.node.emit_clif(cx)? {
+            CompiledExpr::Single(value) => {
+                SelectScrut::Scalar { value, valid: None, prim: p }
+            }
+            CompiledExpr::Scalar2 { value, valid } => {
+                SelectScrut::Scalar { value, valid: Some(valid), prim: p }
+            }
+            CompiledExpr::Value { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: scalar select scrutinee produced a \
+                     Value-shape result"
+                ));
+            }
+        },
+        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
+            // The (disc, payload) pair stays live across the whole arm
+            // chain with no drop path, so it must be a borrowed env
+            // slot (a Ref read) — the GIR variant arms had the same
+            // Local-only rule. An owned producer scrutinee would leak.
+            if node_composite_source(&sel.arg.node)
+                != CompositeSource::Borrowed
+            {
+                return Err(anyhow!(
+                    "emit_clif: owned value-shape select scrutinee — no \
+                     drop path across the arm chain"
+                ));
+            }
+            let (disc, payload) = sel.arg.node.emit_clif(cx)?.value()?;
+            SelectScrut::Value { disc, payload }
+        }
+        // String / composite scrutinees support only Ignore / guard
+        // arms (no condition can test them); a borrowed read has no
+        // effects to evaluate, so nothing is emitted. (A string Ref
+        // read CLONES — emitting it here would leak the clone.)
+        AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
+            if node_composite_source(&sel.arg.node)
+                != CompositeSource::Borrowed
+            {
+                return Err(anyhow!(
+                    "emit_clif: owned opaque select scrutinee — no drop \
+                     path across the arm chain"
+                ));
+            }
+            SelectScrut::Opaque
+        }
+        AbiKind::Unit | AbiKind::Null => {
+            return Err(anyhow!(
+                "emit_clif: select scrutinee of shape {scrut_kind:?}"
+            ));
+        }
+    };
+    let scrut_valid = match scrut {
+        SelectScrut::Scalar { valid, .. } => valid,
+        SelectScrut::Value { .. } | SelectScrut::Opaque => None,
+    };
+    if scrut_valid.is_some() && !matches!(merge_shape, SelectMerge::Scalar(_))
+    {
+        // Only the scalar merge has a validity phi to poison; the
+        // node-walk's "bottom scrutinee → no select value" can't be
+        // expressed through the other merge shapes here.
+        return Err(anyhow!(
+            "emit_clif: possibly-bottom scrutinee with a non-scalar \
+             select result"
+        ));
+    }
+    let merge = cx.b.create_block();
+    match merge_shape {
+        SelectMerge::Scalar(p) => {
+            cx.b.append_block_param(merge, prim_to_clif(p));
+            cx.b.append_block_param(merge, types::I8); // validity
+        }
+        SelectMerge::Value => {
+            cx.b.append_block_param(merge, types::I64); // disc
+            cx.b.append_block_param(merge, types::I64); // payload
+        }
+        SelectMerge::Composite | SelectMerge::String => {
+            cx.b.append_block_param(merge, types::I64);
+        }
+    }
+    let mut any_taint = scrut_valid.is_some();
+    let n = sel.arms.len();
+    for (i, (pat, body)) in sel.arms.iter().enumerate() {
+        let is_last = i == n - 1;
+        // Type-predicate condition. The node-walk tests the predicate
+        // only when it's explicit (`PatternNode::is_match`); an
+        // inferred predicate imposes no runtime test.
+        let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
+            None
+        } else {
+            let pred = gir::freeze_concrete(&pat.type_predicate)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: select type predicate {:?} doesn't \
+                         freeze concrete",
+                        pat.type_predicate
+                    )
+                })?;
+            match &pred {
+                Type::Primitive(p)
+                    if p.contains(netidx_value::Typ::Null)
+                        && p.iter().count() == 1 =>
+                {
+                    match scrut {
+                        SelectScrut::Value { disc, .. }
+                            if matches!(scrut_kind, AbiKind::Nullable) =>
+                        {
+                            Some(cx.b.ins().icmp_imm(
+                                IntCC::Equal,
+                                disc,
+                                value_disc::NULL,
+                            ))
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                                "emit_clif: null predicate over non-\
+                                 Nullable scrutinee {scrut_typ:?}"
+                            ));
+                        }
+                    }
+                }
+                Type::Primitive(p)
+                    if !p.contains(netidx_value::Typ::Null)
+                        && p.iter().count() == 1 =>
+                {
+                    let pt = p.iter().next().unwrap();
+                    match scrut {
+                        SelectScrut::Scalar { prim, .. }
+                            if PrimType::from_typ(pt) == Some(prim) =>
+                        {
+                            None
+                        }
+                        SelectScrut::Value { disc, .. }
+                            if matches!(scrut_kind, AbiKind::Nullable)
+                                && gir::nullable_inner(&scrut_typ)
+                                    .as_ref()
+                                    .and_then(gir::scalar_prim)
+                                    == PrimType::from_typ(pt) =>
+                        {
+                            // `[T, null]` runtime value is T or null,
+                            // so "is a T" ≡ "is not null" — tested,
+                            // not assumed (order-sound).
+                            Some(cx.b.ins().icmp_imm(
+                                IntCC::NotEqual,
+                                disc,
+                                value_disc::NULL,
+                            ))
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                                "emit_clif: type predicate {pred:?} over \
+                                 scrutinee {scrut_typ:?} not lowerable"
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: type predicate {pred:?} not lowerable"
+                    ));
+                }
+            }
+        };
+        // Structure condition + the binds to install once matched.
+        let mut binds: Vec<SelectArmBind> = Vec::new();
+        let scond: Option<ClifValue> = match &pat.structure_predicate {
+            StructPatternNode::Ignore => None,
+            StructPatternNode::Bind(id) => match scrut {
+                SelectScrut::Scalar { .. } => {
+                    binds.push(SelectArmBind::Scrut(*id));
+                    None
+                }
+                SelectScrut::Value { .. } | SelectScrut::Opaque => {
+                    return Err(anyhow!(
+                        "emit_clif: non-scalar scrutinee bind pattern not \
+                         yet lowerable"
+                    ));
+                }
+            },
+            StructPatternNode::Literal(v) => {
+                let lit_prim =
+                    gir::scalar_prim_of_value(v).ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: non-scalar literal pattern {v:?}"
+                        )
+                    })?;
+                match scrut {
+                    SelectScrut::Scalar { value, prim, .. }
+                        if prim == lit_prim =>
+                    {
+                        let lit = compile_const(cx.b, v, lit_prim);
+                        Some(compile_cmp(
+                            cx.b,
+                            CmpOp::Eq,
+                            lit_prim,
+                            value,
+                            lit,
+                        ))
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "emit_clif: literal pattern prim {lit_prim:?} \
+                             doesn't match scrutinee {scrut_typ:?}"
+                        ));
+                    }
+                }
+            }
+            StructPatternNode::Variant { tag, all, binds: pbinds } => {
+                if all.is_some() {
+                    return Err(anyhow!(
+                        "emit_clif: whole-variant @ binding not lowerable"
+                    ));
+                }
+                let (disc, payload) = match scrut {
+                    SelectScrut::Value { disc, payload }
+                        if matches!(scrut_kind, AbiKind::Variant) =>
+                    {
+                        (disc, payload)
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "emit_clif: variant pattern over non-variant \
+                             scrutinee {scrut_typ:?}"
+                        ));
+                    }
+                };
+                // Payload types come from the arm's own (frozen)
+                // type predicate — `Variant(tag, elts)` for exactly
+                // this arm, unlike the GIR path's whole-scrutinee
+                // VariantInfo case table.
+                let pred = gir::freeze_concrete(&pat.type_predicate)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: variant pattern predicate {:?} \
+                             doesn't freeze concrete",
+                            pat.type_predicate
+                        )
+                    })?;
+                let elts = match &pred {
+                    Type::Variant(ptag, elts)
+                        if ptag == tag && elts.len() == pbinds.len() =>
+                    {
+                        elts
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "emit_clif: variant pattern `{tag}` doesn't \
+                             match its predicate {pred:?}"
+                        ));
+                    }
+                };
+                for (idx, (sub, elt)) in
+                    pbinds.iter().zip(elts.iter()).enumerate()
+                {
+                    match sub {
+                        StructPatternNode::Bind(id) => {
+                            let prim = gir::scalar_prim(elt)
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "emit_clif: non-scalar variant \
+                                         payload {elt:?}"
+                                    )
+                                })?;
+                            binds.push(SelectArmBind::Payload {
+                                id: *id,
+                                idx,
+                                prim,
+                            });
+                        }
+                        StructPatternNode::Ignore => {}
+                        StructPatternNode::Literal(_)
+                        | StructPatternNode::Slice { .. }
+                        | StructPatternNode::SlicePrefix { .. }
+                        | StructPatternNode::SliceSuffix { .. }
+                        | StructPatternNode::Struct { .. }
+                        | StructPatternNode::Variant { .. } => {
+                            return Err(anyhow!(
+                                "emit_clif: nested variant payload \
+                                 pattern not lowerable"
+                            ));
+                        }
+                    }
+                }
+                let tag_ptr = cx.interned_str(tag);
+                let helper = cx.helper("graphix_variant_tag_eq")?;
+                let call =
+                    cx.b.ins().call(helper, &[disc, payload, tag_ptr]);
+                Some(cx.b.inst_results(call)[0])
+            }
+            StructPatternNode::Slice { .. }
+            | StructPatternNode::SlicePrefix { .. }
+            | StructPatternNode::SliceSuffix { .. }
+            | StructPatternNode::Struct { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: slice/tuple/struct select pattern not \
+                     yet lowerable"
+                ));
+            }
+        };
+        let pcond = match (tcond, scond) {
+            (None, None) => None,
+            (Some(c), None) | (None, Some(c)) => Some(c),
+            (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
+        };
+        let has_guard = pat.guard.is_some();
+        // The final-arm miss trap below is sound only when typecheck's
+        // exhaustiveness makes a miss impossible. A guarded final arm
+        // (typecheck forbids it today — defensive) or garbage cond
+        // bits from a possibly-bottom scrutinee could miss every arm.
+        if is_last && has_guard {
+            return Err(anyhow!(
+                "emit_clif: guard on the final select arm — the chain \
+                 could miss every arm"
+            ));
+        }
+        if is_last && pcond.is_some() && scrut_valid.is_some() {
+            return Err(anyhow!(
+                "emit_clif: possibly-bottom scrutinee with a conditional \
+                 final arm — the chain could miss every arm"
+            ));
+        }
+        let matched = cx.b.create_block();
+        let fail: Option<Block> = if pcond.is_some() || has_guard {
+            Some(cx.b.create_block())
+        } else {
+            None
+        };
+        match pcond {
+            Some(c) => {
+                cx.b.ins().brif(c, matched, &[], fail.unwrap(), &[]);
+            }
+            None => {
+                cx.b.ins().jump(matched, &[]);
+            }
+        }
+        cx.b.switch_to_block(matched);
+        cx.b.seal_block(matched);
+        let mark = cx.env.mark();
+        for bind in &binds {
+            match bind {
+                SelectArmBind::Scrut(id) => {
+                    let SelectScrut::Scalar { value, valid, prim } = scrut
+                    else {
+                        return Err(anyhow!(
+                            "emit_clif: scrutinee bind without a scalar \
+                             scrutinee"
+                        ));
+                    };
+                    let name: ArcStr = compact_str::format_compact!(
+                        "__pat{}",
+                        id.inner()
+                    )
+                    .as_str()
+                    .into();
+                    let var = cx.b.declare_var(prim_to_clif(prim));
+                    cx.b.def_var(var, value);
+                    match valid {
+                        None => {
+                            cx.env.bind_with_id(name, var, prim, Some(*id))
+                        }
+                        Some(v) => {
+                            let valid_var = cx.b.declare_var(types::I8);
+                            cx.b.def_var(valid_var, v);
+                            cx.env.bind_tainted_with_id(
+                                name,
+                                var,
+                                valid_var,
+                                prim,
+                                Some(*id),
+                            );
+                        }
+                    }
+                }
+                SelectArmBind::Payload { id, idx, prim } => {
+                    let SelectScrut::Value { disc, payload } = scrut else {
+                        return Err(anyhow!(
+                            "emit_clif: payload bind without a variant \
+                             scrutinee"
+                        ));
+                    };
+                    let helper =
+                        cx.helper(variant_payload_helper(*prim)?)?;
+                    let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
+                    let call =
+                        cx.b.ins().call(helper, &[disc, payload, idx_c]);
+                    let v = cx.b.inst_results(call)[0];
+                    let var = cx.b.declare_var(prim_to_clif(*prim));
+                    cx.b.def_var(var, v);
+                    let name: ArcStr = compact_str::format_compact!(
+                        "__pat{}",
+                        id.inner()
+                    )
+                    .as_str()
+                    .into();
+                    cx.env.bind_with_id(name, var, *prim, Some(*id));
+                }
+            }
+        }
+        if let Some(g) = &pat.guard {
+            // Canonical guard semantics: evaluated only after the
+            // pattern matched, with the binds in scope; a bottom guard
+            // (`valid` = 0) means the arm does NOT match.
+            let (gv, gvalid) =
+                g.node.emit_clif(cx)?.scalar_with_validity(cx.b)?;
+            let eff = cx.b.ins().band(gv, gvalid);
+            let body_blk = cx.b.create_block();
+            cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
+            cx.b.switch_to_block(body_blk);
+            cx.b.seal_block(body_blk);
+        }
+        let body_frozen =
+            gir::freeze_normalized(body.node.typ()).ok_or_else(|| {
+                anyhow!(
+                    "emit_clif: select arm type {:?} doesn't freeze \
+                     concrete",
+                    body.node.typ()
+                )
+            })?;
+        match merge_shape {
+            SelectMerge::Scalar(rp) => {
+                if gir::scalar_prim(&body_frozen) != Some(rp) {
+                    return Err(anyhow!(
+                        "emit_clif: select arm type {body_frozen:?} \
+                         doesn't match the scalar merge {rp:?}"
+                    ));
+                }
+                let cv = body.node.emit_clif(cx)?;
+                if matches!(cv, CompiledExpr::Scalar2 { .. }) {
+                    any_taint = true;
+                }
+                let (v, valid) = cv.scalar_with_validity(cx.b)?;
+                let valid = match scrut_valid {
+                    Some(sv) => cx.b.ins().band(valid, sv),
+                    None => valid,
+                };
+                cx.env.truncate(mark);
+                cx.b.ins().jump(
+                    merge,
+                    &[BlockArg::Value(v), BlockArg::Value(valid)],
+                );
+            }
+            SelectMerge::Value => {
+                // Node twin of `widen_arm_to_value`, keyed on the arm
+                // BODY's frozen type.
+                let (d, p) = match gir::abi_kind(&body_frozen) {
+                    Some(AbiKind::Null) => {
+                        // A bare-null arm body has nothing to emit (and
+                        // a Null-shaped node can't emit anyway); only
+                        // the literal constant form is recognized.
+                        match body.node.view() {
+                            NodeView::Constant(c)
+                                if matches!(c.value, Value::Null) => {}
+                            _ => {
+                                return Err(anyhow!(
+                                    "emit_clif: null-typed select arm \
+                                     isn't a null literal"
+                                ));
+                            }
+                        }
+                        let d =
+                            cx.b.ins().iconst(types::I64, value_disc::NULL);
+                        let p = cx.b.ins().iconst(types::I64, 0);
+                        (d, p)
+                    }
+                    Some(AbiKind::Scalar(p)) => {
+                        let v = body.node.emit_clif(cx)?.single()?;
+                        let d = cx
+                            .b
+                            .ins()
+                            .iconst(types::I64, prim_to_value_disc(p));
+                        (d, scalar_to_payload_i64(cx.b, p, v))
+                    }
+                    Some(
+                        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value,
+                    ) => {
+                        let (d, p) = body.node.emit_clif(cx)?.value()?;
+                        ensure_owned_value_src(
+                            cx,
+                            node_composite_source(&body.node),
+                            d,
+                            p,
+                        )?
+                    }
+                    other => {
+                        return Err(anyhow!(
+                            "emit_clif: select arm of shape {other:?} \
+                             can't widen to the Value merge"
+                        ));
+                    }
+                };
+                cx.env.truncate(mark);
+                cx.b.ins().jump(
+                    merge,
+                    &[BlockArg::Value(d), BlockArg::Value(p)],
+                );
+            }
+            SelectMerge::Composite => {
+                if !matches!(
+                    gir::abi_kind(&body_frozen),
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
+                ) {
+                    return Err(anyhow!(
+                        "emit_clif: select arm type {body_frozen:?} \
+                         doesn't match the composite merge"
+                    ));
+                }
+                let v = body.node.emit_clif(cx)?.single()?;
+                let v = ensure_owned_composite_src(
+                    cx,
+                    node_composite_source(&body.node),
+                    v,
+                )?;
+                cx.env.truncate(mark);
+                cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
+            }
+            SelectMerge::String => {
+                if !matches!(
+                    gir::abi_kind(&body_frozen),
+                    Some(AbiKind::String)
+                ) {
+                    return Err(anyhow!(
+                        "emit_clif: select arm type {body_frozen:?} \
+                         doesn't match the string merge"
+                    ));
+                }
+                // String reads/produces are owned at production.
+                let v = body.node.emit_clif(cx)?.single()?;
+                cx.env.truncate(mark);
+                cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
+            }
+        }
+        match fail {
+            Some(f) => {
+                cx.b.switch_to_block(f);
+                cx.b.seal_block(f);
+                if is_last {
+                    // Unreachable by construction (see the refusals
+                    // above); CLIF still requires a terminator.
+                    cx.b.ins().trap(
+                        cranelift_codegen::ir::TrapCode::user(2).unwrap(),
+                    );
+                }
+            }
+            // An unconditional arm consumed control flow; any
+            // remaining arms are unreachable (typecheck's dead-arm
+            // check forbids them anyway). Mirrors `compile_ifchain`.
+            None => break,
+        }
+    }
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    match merge_shape {
+        SelectMerge::Scalar(_) => {
+            let params = cx.b.block_params(merge);
+            let (value, valid) = (params[0], params[1]);
+            Ok(if any_taint {
+                CompiledExpr::Scalar2 { value, valid }
+            } else {
+                // Nothing tainted: every arm passed `iconst 1` — the
+                // validity phi is dead and the result composes as a
+                // clean scalar (parity with the classic taint
+                // optimization).
+                CompiledExpr::Single(value)
+            })
+        }
+        SelectMerge::Value => {
+            let params = cx.b.block_params(merge);
+            Ok(CompiledExpr::Value { disc: params[0], payload: params[1] })
+        }
+        SelectMerge::Composite | SelectMerge::String => {
+            Ok(CompiledExpr::Single(cx.b.block_params(merge)[0]))
+        }
+    }
+}
+
+/// Node-graph analog of `gir::int_div_may_bottom` — true unless the
+/// divisor is a non-zero constant (and, for signed, the dividend isn't
+/// the MIN/-1 overflow pair). Conservative `true` keeps the runtime
+/// guard; a provable non-bottom skips it. Sees through `ExplicitParens`.
+fn node_int_div_may_bottom<R: crate::Rt, E: crate::UserEvent>(
+    lhs: &crate::Node<R, E>,
+    rhs: &crate::Node<R, E>,
+) -> bool {
+    use crate::NodeView;
+    fn const_value<'a, R: crate::Rt, E: crate::UserEvent>(
+        n: &'a crate::Node<R, E>,
+    ) -> Option<&'a Value> {
+        match n.view() {
+            NodeView::Constant(c) => Some(&c.value),
+            NodeView::ExplicitParens(p) => const_value(&p.n),
+            _ => None,
+        }
+    }
+    let Some(rv) = const_value(rhs) else {
+        return true;
+    };
+    // A zero divisor always bottoms.
+    if value_is_zero(rv) {
+        return true;
+    }
+    // A non-(-1) divisor can't hit the signed MIN/-1 overflow; safe.
+    if !value_is_neg_one(rv) {
+        return false;
+    }
+    // Divisor is -1: only the dividend == MIN bottoms. A non-MIN
+    // constant dividend is safe; anything else is conservatively unsafe.
+    match const_value(lhs) {
+        Some(lv) => value_is_int_min(lv),
+        None => true,
+    }
+}
+
+fn value_is_zero(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::I8(0)
+            | Value::I16(0)
+            | Value::I32(0)
+            | Value::I64(0)
+            | Value::U8(0)
+            | Value::U16(0)
+            | Value::U32(0)
+            | Value::U64(0)
+            | Value::Z32(0)
+            | Value::Z64(0)
+            | Value::V32(0)
+            | Value::V64(0)
+    )
+}
+
+fn value_is_neg_one(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::I8(-1)
+            | Value::I16(-1)
+            | Value::I32(-1)
+            | Value::I64(-1)
+            | Value::Z32(-1)
+            | Value::Z64(-1)
+    )
+}
+
+fn value_is_int_min(v: &Value) -> bool {
+    match v {
+        Value::I8(x) => *x == i8::MIN,
+        Value::I16(x) => *x == i16::MIN,
+        Value::I32(x) | Value::Z32(x) => *x == i32::MIN,
+        Value::I64(x) | Value::Z64(x) => *x == i64::MIN,
+        _ => false,
+    }
+}
+
 /// Compile a scalar / composite-pointer `GirOp::Block` (lets + tail),
 /// propagating per-value validity: if the tail is a value-bottom
 /// (`Scalar2`) the Block result is too. Value-shape Blocks route to
@@ -3503,7 +6237,15 @@ fn compile_scalar_qop_unwrap(
             b.seal_block(continue_block);
             // Extract success T (now known non-error). QopUnwrap is
             // classified Owned, so a String/composite success from a
-            // Borrowed (Local) inner must be cloned.
+            // Borrowed (Local) inner must be cloned. String: the
+            // ArcStr bits inside a Value ARE the string ABI's one-word
+            // representation, so the payload passes through (owned) or
+            // refcount-bumps (borrowed). Composite: the payload word is
+            // the ValArray BITS, but the composite ABI is a boxed
+            // `*mut ValArray` — pass through `graphix_value_into_array`
+            // (consumes) / `_borrowed` (clones inner) to re-box; handing
+            // the raw bits downstream is the type confusion behind #199
+            // (drop did `Box::from_raw` on the Arc's data pointer).
             let v = match gir::abi_kind(success_typ) {
                 Some(AbiKind::String) => {
                     if inner_owned {
@@ -3518,18 +6260,17 @@ fn compile_scalar_qop_unwrap(
                     }
                 }
                 _ => {
-                    if inner_owned {
-                        payload
+                    let helper_name = if inner_owned {
+                        "graphix_value_into_array"
                     } else {
-                        let clone = ctx
-                            .helper_refs
-                            .get("graphix_valarray_clone")
-                            .ok_or_else(|| {
-                                anyhow!("missing graphix_valarray_clone")
-                            })?;
-                        let call = b.ins().call(clone, &[payload]);
-                        b.inst_results(call)[0]
-                    }
+                        "graphix_value_into_array_borrowed"
+                    };
+                    let unbox = ctx
+                        .helper_refs
+                        .get(helper_name)
+                        .ok_or_else(|| anyhow!("missing {helper_name}"))?;
+                    let call = b.ins().call(unbox, &[disc, payload]);
+                    b.inst_results(call)[0]
                 }
             };
             Ok(CompiledExpr::Single(v))
@@ -4214,243 +6955,35 @@ fn compile_value_expr(
         }
         GirOp::ArrayFind { array, elem, elem_local, predicate } => {
             // First element matching `predicate`, as a Nullable<elem>
-            // (`null` if none). Early-exit loop whose two exit edges
-            // (found / not-found) feed a two-word `(disc, payload)`
-            // merge block — same Value-shape phi shape `compile_ifchain`
-            // uses.
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            // (`null` if none) — see [`scaffold::emit_find_loop`].
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let found = b.create_block();
-            let advance = b.create_block();
-            let not_found = b.create_block();
-            let exit = b.create_block();
-            b.append_block_param(exit, types::I64); // disc
-            b.append_block_param(exit, types::I64); // payload
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], not_found, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            let mark = env.mark();
-            // Element binding: scalar (locals) or composite (owned
-            // `*ValArray`). `elem_prim` is `Some` for the scalar case; the
-            // matched result is the element itself — for composite, the
-            // owned element is consumed (wrapped into a Value) on the found
-            // edge and dropped on the advance edge (matched-once / not-this-
-            // iteration), like `ArrayFilter`'s conditional consume.
-            let (elem_var, elem_prim) = match gir::scalar_prim(&elem) {
-                Some(prim) => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get(valarray_get_helper(prim)?)
-                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_val = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(prim_to_clif(prim));
-                    b.def_var(elem_var, elem_val);
-                    env.bind(elem_local.clone(), elem_var, prim);
-                    (elem_var, Some(prim))
-                }
-                None => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get("graphix_valarray_get_array")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_valarray_get_array")
-                        })?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_ptr = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(types::I64);
-                    b.def_var(elem_var, elem_ptr);
-                    env.bind_composite(elem_local.clone(), elem_var);
-                    (elem_var, None)
-                }
-            };
-            let keep = compile_scalar(b, predicate, env, ctx)?;
-            env.truncate(mark);
-            b.ins().brif(keep, found, &[], advance, &[]);
-            b.switch_to_block(found);
-            b.seal_block(found);
-            let (disc, payload) = match elem_prim {
-                Some(prim) => {
-                    let elem_again = b.use_var(elem_var);
-                    let disc =
-                        b.ins().iconst(types::I64, prim_to_value_disc(prim));
-                    let payload = scalar_to_payload_i64(b, prim, elem_again);
-                    (disc, payload)
-                }
-                None => {
-                    // Wrap the owned `*ValArray` element into a value-shape
-                    // `(ARRAY_DISC, payload)` Value (consumes it).
-                    let wrap = ctx
-                        .helper_refs
-                        .get("graphix_value_new_from_array")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_value_new_from_array")
-                        })?;
-                    let elem_now = b.use_var(elem_var);
-                    let call = b.ins().call(wrap, &[elem_now]);
-                    let r = b.inst_results(call);
-                    (r[0], r[1])
-                }
-            };
-            b.ins()
-                .jump(exit, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
-            b.switch_to_block(advance);
-            if elem_prim.is_none() {
-                // Not matched this iteration — drop the owned element.
-                let drop_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let elem_now = b.use_var(elem_var);
-                b.ins().call(drop_helper, &[elem_now]);
-            }
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(advance);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(not_found);
-            b.seal_block(not_found);
-            let null_disc = b.ins().iconst(types::I64, value_disc::NULL);
-            let null_payload = b.ins().iconst(types::I64, 0);
-            b.ins().jump(
-                exit,
-                &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)],
-            );
-            b.switch_to_block(exit);
-            b.seal_block(exit);
-            let disc = b.block_params(exit)[0];
-            let payload = b.block_params(exit)[1];
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            let (disc, payload) = scaffold::emit_find_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                &scaffold::HofElem { name: elem_local, typ: elem },
+                |cx| compile_scalar(cx.b, predicate, cx.env, cx.ctx),
+            )?;
             Ok(CompiledExpr::Value { disc, payload })
         }
         GirOp::ArrayFindMap { array, in_elem, elem_local, body } => {
             // Early-exit on the first non-null body result; the op's
-            // value is that `Nullable<out>` (or null). Same merge shape
-            // as ArrayFind, but the body produces the (disc, payload)
-            // directly (not a predicate), and a composite element is the
-            // owned `*ValArray` bound/dropped per iteration (the result
-            // is the body value, so the element is dropped every pass).
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            // value is that `Nullable<out>` (or null) — see
+            // [`scaffold::emit_find_map_loop`].
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let found = b.create_block();
-            let advance = b.create_block();
-            let not_found = b.create_block();
-            let exit = b.create_block();
-            b.append_block_param(exit, types::I64); // disc
-            b.append_block_param(exit, types::I64); // payload
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], not_found, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            let mark = env.mark();
-            let composite_elem = match gir::scalar_prim(&in_elem) {
-                Some(prim) => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get(valarray_get_helper(prim)?)
-                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_val = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(prim_to_clif(prim));
-                    b.def_var(elem_var, elem_val);
-                    env.bind(elem_local.clone(), elem_var, prim);
-                    None
-                }
-                None => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get("graphix_valarray_get_array")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_valarray_get_array")
-                        })?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_ptr = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(types::I64);
-                    b.def_var(elem_var, elem_ptr);
-                    env.bind_composite(elem_local.clone(), elem_var);
-                    Some(elem_var)
-                }
-            };
-            // Body produces `Nullable<out>` as `(disc, payload)`.
-            let (bdisc, bpayload) = compile_value_expr(b, body, env, ctx)?.value()?;
-            if let Some(elem_var) = composite_elem {
-                let drop_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let elem_now = b.use_var(elem_var);
-                b.ins().call(drop_helper, &[elem_now]);
-            }
-            env.truncate(mark);
-            let is_null = b.ins().icmp_imm(
-                cranelift_codegen::ir::condcodes::IntCC::Equal,
-                bdisc,
-                value_disc::NULL,
-            );
-            // not-null → found; null → advance. `bdisc`/`bpayload`
-            // dominate `found` (computed before the branch).
-            b.ins().brif(is_null, advance, &[], found, &[]);
-            b.switch_to_block(found);
-            b.seal_block(found);
-            b.ins().jump(
-                exit,
-                &[BlockArg::Value(bdisc), BlockArg::Value(bpayload)],
-            );
-            b.switch_to_block(advance);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(advance);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(not_found);
-            b.seal_block(not_found);
-            let null_disc = b.ins().iconst(types::I64, value_disc::NULL);
-            let null_payload = b.ins().iconst(types::I64, 0);
-            b.ins().jump(
-                exit,
-                &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)],
-            );
-            b.switch_to_block(exit);
-            b.seal_block(exit);
-            let disc = b.block_params(exit)[0];
-            let payload = b.block_params(exit)[1];
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            let (disc, payload) = scaffold::emit_find_map_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                &scaffold::HofElem { name: elem_local, typ: in_elem },
+                |cx| compile_value_expr(cx.b, body, cx.env, cx.ctx)?.value(),
+            )?;
             Ok(CompiledExpr::Value { disc, payload })
         }
         other => Err(anyhow!(
@@ -4991,585 +7524,113 @@ fn compile_scalar_impl(
             ))
         }
         GirOp::ArrayInit { n, idx_local, body } => {
-            // n_val = eval n.    Scalar I64-ish; widen if narrower.
-            // buf = buf_new(n_val)
-            // loop i in 0..n_val:
-            //     bind idx_local to i in env
-            //     compile_and_push_field(buf, body)  // any elem shape
-            // arr = finalize(buf)
-            //
-            // Block structure: caller's current block jumps to
-            // loop_header; loop_header tests the counter and brif's
-            // to loop_body (push + increment) or loop_exit (finalize).
-            // loop_exit is where compile_expr returns to.
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
-            let finalize = ctx
-                .helper_refs
-                .get("graphix_valarray_finalize")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
+            // Build an `n`-element array by pushing the body result
+            // per index — see [`scaffold::emit_init_loop`].
             let n_raw = compile_scalar(b, n, env, ctx)?;
-            let n_widened = widen_to_i64(b, n_raw, prim_of(&n.typ));
-            // Clamp a negative `n` to 0 (matching the node-walk's
-            // `n.max(0)`): `buf_new(neg)` reserves usize::MAX and panics
-            // across the extern "C" boundary. The loop guard
-            // (`i < n_val`, signed) already wouldn't iterate, but the
-            // allocation happens first.
-            let zero_clamp = b.ins().iconst(types::I64, 0);
-            let is_neg =
-                b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
-            let n_val = b.ins().select(is_neg, zero_clamp, n_widened);
-            let call = b.ins().call(buf_new, &[n_val]);
-            let buf = b.inst_results(call)[0];
-            // Register the in-progress output buf for pending cleanup: a
-            // value-shape/composite DynCall or a `?` (QopUnwrap) in the
-            // body can pend mid-loop and jump to `pending_exit`; without
-            // this the half-built buf (+ its accumulated elements) leaks.
-            // Popped before `finalize` on the normal path.
-            register_hof_buf(b, ctx, buf);
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let loop_exit = b.create_block();
-            b.ins().jump(loop_header, &[]);
-            // Header: test i < n. brif uses I8 cond (0 or 1).
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, n_val);
-            b.ins()
-                .brif(cond, loop_body, &[], loop_exit, &[]);
-            // Body: bind idx_local, compile body expr, push, increment.
-            b.switch_to_block(loop_body);
-            let mark = env.mark();
-            env.bind(idx_local.clone(), i_var, PrimType::I64);
-            // Compile the body and push it with the shape-appropriate
-            // helper (prim → push_<T>, composite → push_array, value-
-            // shape → push_value, string → push_arcstr).
-            compile_and_push_field(b, env, ctx, buf, body)?;
-            env.truncate(mark);
-            let i_now = b.use_var(i_var);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            // Exit: finalize and return the array pointer.
-            b.switch_to_block(loop_exit);
-            b.seal_block(loop_exit);
-            unregister_hof_buf(ctx);
-            let call = b.ins().call(finalize, &[buf]);
-            Ok(b.inst_results(call)[0])
+            let out_src = classify_composite_source(body);
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            scaffold::emit_init_loop(
+                &mut cx,
+                n_raw,
+                prim_of(&n.typ),
+                idx_local,
+                &body.typ,
+                out_src,
+                |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
+            )
         }
         GirOp::ArrayMap { array, in_elem, elem_local, body } => {
-            // Iterate over an existing composite param/local.
-            //   arr_ptr = lookup_composite(array)
-            //   len = call valarray_len(arr_ptr)
-            //   buf = call buf_new(len)
-            //   loop i in 0..len:
-            //     elem = call valarray_get_<in_elem>(arr_ptr, i)
-            //     bind elem_local = elem
-            //     compile_and_push_field(buf, body)  // any out shape
-            //   finalize(buf)
-            //
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
-            let finalize = ctx
-                .helper_refs
-                .get("graphix_valarray_finalize")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
+            // Push the body result per element of an existing
+            // composite param/local — see [`scaffold::emit_map_loop`].
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let call = b.ins().call(buf_new, &[len]);
-            let buf = b.inst_results(call)[0];
-            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let loop_exit = b.create_block();
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            let mark = env.mark();
-            match gir::scalar_prim(&in_elem) {
-                // Scalar element: get the scalar, bind into the `locals`
-                // slot.
-                Some(prim) => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get(valarray_get_helper(prim)?)
-                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(prim_to_clif(prim));
-                    b.def_var(elem_var, elem);
-                    env.bind(elem_local.clone(), elem_var, prim);
-                    compile_and_push_field(b, env, ctx, buf, body)?;
-                }
-                // Composite element (`Array<(k,v)>` etc.): the element is
-                // an owned `*mut ValArray`; bind it into the composite
-                // slot, run the body (its `TupleGet`s clone the fields
-                // they read), then drop the per-iteration element.
-                None => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get("graphix_valarray_get_array")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_valarray_get_array")
-                        })?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_ptr = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(types::I64);
-                    b.def_var(elem_var, elem_ptr);
-                    env.bind_composite(elem_local.clone(), elem_var);
-                    compile_and_push_field(b, env, ctx, buf, body)?;
-                    let drop_helper = ctx
-                        .helper_refs
-                        .get("graphix_valarray_drop")
-                        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                    let elem_now = b.use_var(elem_var);
-                    b.ins().call(drop_helper, &[elem_now]);
-                }
-            }
-            env.truncate(mark);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(loop_exit);
-            b.seal_block(loop_exit);
-            unregister_hof_buf(ctx);
-            let call = b.ins().call(finalize, &[buf]);
-            Ok(b.inst_results(call)[0])
+            let out_src = classify_composite_source(body);
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            scaffold::emit_map_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                &scaffold::HofElem { name: elem_local, typ: in_elem },
+                &body.typ,
+                out_src,
+                |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
+            )
         }
         GirOp::ArrayFilter { array, elem, elem_local, predicate } => {
-            // Same shape as ArrayMap but with a conditional push.
-            //   loop i in 0..len:
-            //     elem = get(arr, i); bind elem_local
-            //     keep = eval predicate (Bool, CLIF I8)
-            //     if keep: push elem; else (composite) drop elem
-            //     i += 1
-            // A composite element is an owned `*mut ValArray`: on keep it
-            // moves into the output (`push_array`), on not-keep it must be
-            // dropped — hence the extra `drop_block` for the composite case.
-            let composite = gir::scalar_prim(&elem).is_none();
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
-            let finalize = ctx
-                .helper_refs
-                .get("graphix_valarray_finalize")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
-            let get_helper = match gir::scalar_prim(&elem) {
-                Some(prim) => ctx
-                    .helper_refs
-                    .get(valarray_get_helper(prim)?)
-                    .ok_or_else(|| anyhow!("missing valarray_get helper"))?,
-                None => ctx
-                    .helper_refs
-                    .get("graphix_valarray_get_array")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_get_array"))?,
-            };
-            let push = match gir::scalar_prim(&elem) {
-                Some(prim) => ctx
-                    .helper_refs
-                    .get(value_buf_push_helper(prim)?)
-                    .ok_or_else(|| anyhow!("missing push helper for {prim:?}"))?,
-                None => ctx
-                    .helper_refs
-                    .get("graphix_value_buf_push_array")
-                    .ok_or_else(|| anyhow!("missing graphix_value_buf_push_array"))?,
-            };
+            // Conditional push of the ORIGINAL element on a true
+            // predicate — see [`scaffold::emit_filter_loop`]. The
+            // predicate compiles via `compile_scalar`, so a Scalar2
+            // (may-bottom) predicate Errs at build time = de-fuse.
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let call = b.ins().call(buf_new, &[len]);
-            let buf = b.inst_results(call)[0];
-            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let push_block = b.create_block();
-            let advance = b.create_block();
-            let loop_exit = b.create_block();
-            // not-kept owned composite element → drop before advancing
-            let drop_block = if composite {
-                Some(b.create_block())
-            } else {
-                None
-            };
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-            let elem_val = b.inst_results(call)[0];
-            let mark = env.mark();
-            let elem_var = if composite {
-                let v = b.declare_var(types::I64);
-                b.def_var(v, elem_val);
-                env.bind_composite(elem_local.clone(), v);
-                v
-            } else {
-                let prim = gir::scalar_prim(&elem).unwrap();
-                let v = b.declare_var(prim_to_clif(prim));
-                b.def_var(v, elem_val);
-                env.bind(elem_local.clone(), v, prim);
-                v
-            };
-            let keep = compile_scalar(b, predicate, env, ctx)?;
-            env.truncate(mark);
-            let not_kept = drop_block.unwrap_or(advance);
-            b.ins().brif(keep, push_block, &[], not_kept, &[]);
-            b.switch_to_block(push_block);
-            let elem_again = b.use_var(elem_var);
-            b.ins().call(push, &[buf, elem_again]);
-            b.ins().jump(advance, &[]);
-            b.seal_block(push_block);
-            if let Some(drop_block) = drop_block {
-                b.switch_to_block(drop_block);
-                let drop_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let elem_now = b.use_var(elem_var);
-                b.ins().call(drop_helper, &[elem_now]);
-                b.ins().jump(advance, &[]);
-                b.seal_block(drop_block);
-            }
-            b.switch_to_block(advance);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(advance);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(loop_exit);
-            b.seal_block(loop_exit);
-            unregister_hof_buf(ctx);
-            let call = b.ins().call(finalize, &[buf]);
-            Ok(b.inst_results(call)[0])
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            scaffold::emit_filter_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                &scaffold::HofElem { name: elem_local, typ: elem },
+                |cx| compile_scalar(cx.b, predicate, cx.env, cx.ctx),
+            )
         }
         GirOp::ArrayFilterMap { array, in_elem, elem_local, out_elem, body } => {
-            // Like ArrayFilter, but the body yields a `Nullable<out_elem>`
-            // per element (Value-shape `(disc, payload)`); collect the
-            // non-null payloads.
-            //   loop i in 0..len:
-            //     elem = get(arr, i); bind elem_local
-            //     (disc, payload) = compile body
-            //     if disc == NULL: skip; else push cast(payload, out_elem)
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
-            let finalize = ctx
-                .helper_refs
-                .get("graphix_valarray_finalize")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
-            let get_helper = ctx
-                .helper_refs
-                .get(valarray_get_helper(*in_elem)?)
-                .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-            let push = ctx
-                .helper_refs
-                .get(value_buf_push_helper(*out_elem)?)
-                .ok_or_else(|| anyhow!("missing push helper for {out_elem:?}"))?;
+            // Collect the non-null `Nullable<out_elem>` body results —
+            // see [`scaffold::emit_filter_map_loop`].
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let call = b.ins().call(buf_new, &[len]);
-            let buf = b.inst_results(call)[0];
-            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let push_block = b.create_block();
-            let advance = b.create_block();
-            let loop_exit = b.create_block();
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-            let elem_val = b.inst_results(call)[0];
-            let elem_var = b.declare_var(prim_to_clif(*in_elem));
-            b.def_var(elem_var, elem_val);
-            let mark = env.mark();
-            env.bind(elem_local.clone(), elem_var, *in_elem);
-            let cv = compile_expr(b, body, env, ctx)?;
-            env.truncate(mark);
-            let (disc, payload) = match cv {
-                CompiledExpr::Value { disc, payload } => (disc, payload),
-                _ => {
-                    return Err(anyhow!(
-                        "ArrayFilterMap body not Value-shape — expected \
-                         a Nullable result"
-                    ))
-                }
-            };
-            let is_null =
-                b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
-            b.ins().brif(is_null, advance, &[], push_block, &[]);
-            b.switch_to_block(push_block);
-            let scalar = cast_u64_to_prim(b, payload, *out_elem);
-            b.ins().call(push, &[buf, scalar]);
-            b.ins().jump(advance, &[]);
-            b.seal_block(push_block);
-            b.switch_to_block(advance);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(advance);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(loop_exit);
-            b.seal_block(loop_exit);
-            unregister_hof_buf(ctx);
-            let call = b.ins().call(finalize, &[buf]);
-            Ok(b.inst_results(call)[0])
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            scaffold::emit_filter_map_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                *in_elem,
+                elem_local,
+                *out_elem,
+                |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
+            )
         }
         GirOp::ArrayFlatMap { array, in_elem, elem_local, out_elem: _, body } => {
-            // Like ArrayMap, but each body result is an owned
-            // `Array<out_elem>` (composite pointer) concatenated into the
-            // output buf via `graphix_value_buf_extend_from_array` (which
-            // flattens + drops it). Linear — no per-element branch.
-            let buf_new = ctx
-                .helper_refs
-                .get("graphix_value_buf_new")
-                .ok_or_else(|| anyhow!("missing graphix_value_buf_new"))?;
-            let finalize = ctx
-                .helper_refs
-                .get("graphix_valarray_finalize")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_finalize"))?;
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
-            let extend = ctx
-                .helper_refs
-                .get("graphix_value_buf_extend_from_array")
-                .ok_or_else(|| {
-                    anyhow!("missing graphix_value_buf_extend_from_array")
-                })?;
+            // Concatenate the per-element `Array<out_elem>` body
+            // results — see [`scaffold::emit_flat_map_loop`]. The body
+            // must hand the scaffold an OWNED array for `extend` to
+            // consume; a Borrowed source (Local read) is refcount-
+            // cloned first.
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let call = b.ins().call(buf_new, &[len]);
-            let buf = b.inst_results(call)[0];
-            register_hof_buf(b, ctx, buf); // pending-cleanup: drop half-built buf if body pends
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let loop_exit = b.create_block();
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            let mark = env.mark();
-            // Element binding: scalar (locals) or composite (owned
-            // `*ValArray` in the composite slot, dropped after the body).
-            let composite_elem = match gir::scalar_prim(&in_elem) {
-                Some(prim) => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get(valarray_get_helper(prim)?)
-                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_val = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(prim_to_clif(prim));
-                    b.def_var(elem_var, elem_val);
-                    env.bind(elem_local.clone(), elem_var, prim);
-                    None
-                }
-                None => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get("graphix_valarray_get_array")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_valarray_get_array")
-                        })?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_ptr = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(types::I64);
-                    b.def_var(elem_var, elem_ptr);
-                    env.bind_composite(elem_local.clone(), elem_var);
-                    Some(elem_var)
-                }
-            };
-            let body_ptr = compile_scalar(b, body, env, ctx)?;
-            // Body must be an owned array for `extend` to consume; a
-            // Borrowed source (Local read) is refcount-cloned first.
-            let body_ptr = ensure_owned_composite(b, ctx, body, body_ptr)?;
-            if let Some(elem_var) = composite_elem {
-                let drop_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let elem_now = b.use_var(elem_var);
-                b.ins().call(drop_helper, &[elem_now]);
-            }
-            env.truncate(mark);
-            b.ins().call(extend, &[buf, body_ptr]);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(loop_exit);
-            b.seal_block(loop_exit);
-            unregister_hof_buf(ctx);
-            let call = b.ins().call(finalize, &[buf]);
-            Ok(b.inst_results(call)[0])
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            scaffold::emit_flat_map_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                &scaffold::HofElem { name: elem_local, typ: in_elem },
+                |cx| {
+                    let p = compile_scalar(cx.b, body, cx.env, cx.ctx)?;
+                    ensure_owned_composite(cx.b, cx.ctx, body, p)
+                },
+            )
         }
         GirOp::ArrayFold { array, elem_typ, init, acc_local, elem_local, body } => {
-            // acc_var = compile init  (scalar, type = gir::scalar_prim(&body.typ))
-            // loop i in 0..len:
-            //   elem = get(arr, i)
-            //   bind acc_local = acc_var, elem_local = elem
-            //   new_acc = compile body
-            //   def_var(acc_var, new_acc)
-            // result = use_var(acc_var)
+            // Scalar accumulator threaded through the loop — see
+            // [`scaffold::emit_fold_loop`]. The acc prim is the FOLD's
+            // own result type.
             let acc_prim = prim_of(&e.typ);
-            let len_helper = ctx
-                .helper_refs
-                .get("graphix_valarray_len")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_len"))?;
             let arr_var = env.lookup_composite(array).ok_or_else(|| {
                 anyhow!("GIR malformed: undefined fold array `{array}` in JIT")
             })?;
             let arr_ptr = b.use_var(arr_var);
-            let call = b.ins().call(len_helper, &[arr_ptr]);
-            let len = b.inst_results(call)[0];
-            let acc_var = b.declare_var(prim_to_clif(acc_prim));
-            let init_val = compile_scalar(b, init, env, ctx)?;
-            b.def_var(acc_var, init_val);
-            let i_var = b.declare_var(types::I64);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.def_var(i_var, zero);
-            let loop_header = b.create_block();
-            let loop_body = b.create_block();
-            let loop_exit = b.create_block();
-            b.ins().jump(loop_header, &[]);
-            b.switch_to_block(loop_header);
-            let i_cur = b.use_var(i_var);
-            let cond = b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-            b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
-            b.switch_to_block(loop_body);
-            let i_now = b.use_var(i_var);
-            // Bind acc and elem locals so the body's GirOp::Local
-            // resolutions work. The order matches the interp:
-            // acc first then elem (GIR construction pins this).
-            let mark = env.mark();
-            env.bind(acc_local.clone(), acc_var, acc_prim);
-            // Element binding: scalar (locals) or composite (an owned
-            // `*mut ValArray` in the composite slot, dropped after the
-            // body) — the same split as `ArrayMap`.
-            let elem_composite_var = match gir::scalar_prim(&elem_typ) {
-                Some(prim) => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get(valarray_get_helper(prim)?)
-                        .ok_or_else(|| anyhow!("missing valarray_get helper"))?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_val = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(prim_to_clif(prim));
-                    b.def_var(elem_var, elem_val);
-                    env.bind(elem_local.clone(), elem_var, prim);
-                    None
-                }
-                None => {
-                    let get_helper = ctx
-                        .helper_refs
-                        .get("graphix_valarray_get_array")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_valarray_get_array")
-                        })?;
-                    let call = b.ins().call(get_helper, &[arr_ptr, i_now]);
-                    let elem_ptr = b.inst_results(call)[0];
-                    let elem_var = b.declare_var(types::I64);
-                    b.def_var(elem_var, elem_ptr);
-                    env.bind_composite(elem_local.clone(), elem_var);
-                    Some(elem_var)
-                }
-            };
-            let new_acc = compile_scalar(b, body, env, ctx)?;
-            if let Some(elem_var) = elem_composite_var {
-                let drop_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let elem_now = b.use_var(elem_var);
-                b.ins().call(drop_helper, &[elem_now]);
-            }
-            env.truncate(mark);
-            b.def_var(acc_var, new_acc);
-            let one = b.ins().iconst(types::I64, 1);
-            let i_next = b.ins().iadd(i_now, one);
-            b.def_var(i_var, i_next);
-            b.ins().jump(loop_header, &[]);
-            b.seal_block(loop_body);
-            b.seal_block(loop_header);
-            b.switch_to_block(loop_exit);
-            b.seal_block(loop_exit);
-            Ok(b.use_var(acc_var))
+            let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
+            scaffold::emit_fold_loop(
+                &mut cx,
+                scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+                acc_prim,
+                acc_local,
+                &scaffold::HofElem { name: elem_local, typ: elem_typ },
+                |cx| compile_scalar(cx.b, init, cx.env, cx.ctx),
+                |cx| compile_scalar(cx.b, body, cx.env, cx.ctx),
+            )
         }
         GirOp::VariantTagEq { name, expected_tag } => {
             // Read the variant local as `(disc, payload)`; the helper
@@ -5670,7 +7731,7 @@ fn variant_payload_helper(p: PrimType) -> Result<&'static str> {
 /// a tail-call rebind needs a refcount bump (`Borrowed`) or can
 /// transfer ownership directly (`Owned`).
 #[derive(Debug, PartialEq, Eq)]
-enum CompositeSource {
+pub(crate) enum CompositeSource {
     /// Expression produces a fresh owned pointer — TupleNew,
     /// StructNew, ArrayInit, etc. Transfer to the slot as-is.
     Owned,
@@ -6073,27 +8134,6 @@ fn drop_owned_composites(
     Ok(())
 }
 
-/// Register an in-progress HOF output buf (`graphix_value_buf_new`) for
-/// pending cleanup: declare it as a CLIF Variable and push onto
-/// `ctx.dyncall_buf_stack`, so a value-shape/composite DynCall or `?`
-/// (QopUnwrap) that pends inside the loop body drops it from its
-/// `pre_pending` block via [`emit_pending_cleanup`]. Mirrors the
-/// DynCall arg-buf registration in [`marshal_dyncall_args`]. Pair with
-/// [`unregister_hof_buf`] before `finalize` on the normal (non-pending)
-/// path — `finalize` consumes the buf there, so the runtime drop happens
-/// exactly once (cleanup on pend, finalize otherwise).
-fn register_hof_buf(b: &mut FunctionBuilder, ctx: &LowerCtx, buf: ClifValue) {
-    let buf_var = b.declare_var(types::I64);
-    b.def_var(buf_var, buf);
-    ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
-}
-
-/// Pop the HOF output buf registered by [`register_hof_buf`]. Called on
-/// the normal path just before `finalize` consumes the buf.
-fn unregister_hof_buf(ctx: &LowerCtx) {
-    ctx.dyncall_buf_stack.borrow_mut().pop();
-}
-
 /// Emit drops for everything the JIT'd kernel currently owns, for
 /// the `pre_pending` block of a composite-return DynCall that
 /// pended. This is `drop_owned_composites` plus the in-flight
@@ -6235,23 +8275,12 @@ fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
     })
 }
 
-/// Compile a producer-op field expression and emit the appropriate
-/// `graphix_value_buf_push_*` call into `buf`. Centralises the
-/// GirType-shape dispatch used by `GirOp::TupleNew`, `StructNew`,
-/// and `VariantNew` for nested composite fields (mirrors what
-/// `GirOp::DynCall`'s arg-marshalling already does for HOF dispatch).
-///
-/// Each shape's helper choice:
-/// - **Prim**: `graphix_value_buf_push_<T>` per the prim.
-/// - **Array/Tuple/Struct**: `graphix_value_buf_push_array` (owned)
-///   or `_borrowed` (refcount-bumped) by [`classify_composite_source`].
-/// - **Variant/Nullable**: `graphix_value_buf_push_value` or
-///   `_borrowed`, picked the same way.
-/// - **String**: `graphix_value_buf_push_arcstr`. String SSA values
-///   are always owned (per `ensure_owned_composite`'s String pass-
-///   through), so the push helper transfers ownership.
-/// - **Unit/Null**: invalid as a field — caller should have rejected
-///   in `emit_*_new`.
+/// Compile a producer-op field expression and push it into `buf` —
+/// the compile half; the helper selection + shape dispatch is
+/// [`scaffold::push_field`]. Used by `GirOp::TupleNew`, `StructNew`,
+/// and `VariantNew` for nested composite fields (the HOF loop
+/// scaffolds call `push_field` directly with their body closures'
+/// results).
 fn compile_and_push_field(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
@@ -6259,89 +8288,10 @@ fn compile_and_push_field(
     buf: ClifValue,
     field: &GirExpr,
 ) -> Result<()> {
-    let helper_name: &str = match gir::abi_kind(&field.typ) {
-        Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            match classify_composite_source(field) {
-                CompositeSource::Owned => "graphix_value_buf_push_array",
-                CompositeSource::Borrowed => {
-                    "graphix_value_buf_push_array_borrowed"
-                }
-            }
-        }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            match classify_composite_source(field) {
-                CompositeSource::Owned => "graphix_value_buf_push_value",
-                CompositeSource::Borrowed => {
-                    "graphix_value_buf_push_value_borrowed"
-                }
-            }
-        }
-        // String SSA is the ArcStr's raw thin-pointer bits (owned),
-        // NOT a pointer-to-an-ArcStr struct. `_push_arcstr` takes a
-        // `*const ArcStr` and dereferences it — using it here treats
-        // the ArcStr's bits as a pointer to its own struct (UAF/UB).
-        // `_push_string` takes ArcStr by value (consumes), which is
-        // what we want for an owned String SSA field.
-        Some(AbiKind::String) => "graphix_value_buf_push_string",
-        Some(AbiKind::Unit) => {
-            return Err(anyhow!(
-                "producer-op field has Unit type — emit_*_new should reject"
-            ));
-        }
-        Some(AbiKind::Null) | None => {
-            return Err(anyhow!(
-                "producer-op field has bare Null / non-fusable type — should \
-                 widen to Nullable<T>"
-            ));
-        }
-    };
-    let push = ctx
-        .helper_refs
-        .get(helper_name)
-        .ok_or_else(|| anyhow!("missing {helper_name}"))?;
-    // Value-shape fields (Variant/Nullable/DateTime/Duration/Bytes/Map)
-    // need both `(disc, payload)` registers from the typed Value ABI;
-    // everything else is a single ClifValue. This dispatch MUST match the
-    // helper-selection above — both key on the full value-shape set
-    // (`is_value_shape()`). When it only listed Variant|Nullable, a
-    // DateTime/Duration/Bytes/Map field fell to the `_` arm and
-    // `.single()` Err'd, silently de-fusing the whole kernel.
-    if gir::is_value_shape(&field.typ) {
-        let cv = compile_expr(b, field, env, ctx)?;
-        let (disc, payload) = match cv {
-            CompiledExpr::Value { disc, payload } => (disc, payload),
-            _ => {
-                return Err(anyhow!(
-                    "Value-shape field compiled to Single — \
-                     compile_expr dispatch is broken"
-                ));
-            }
-        };
-        b.ins().call(push, &[buf, disc, payload]);
-    } else {
-        // A composite producer has no per-field validity channel, so a
-        // bottom (`Scalar2`) field must propagate to the kernel OUTPUT:
-        // abort to `pending_exit` when the field is invalid, then push
-        // the (now-known-valid) value. A non-tainted `Single` skips the
-        // check (the common path).
-        match compile_expr(b, field, env, ctx)? {
-            CompiledExpr::Single(v) => {
-                b.ins().call(push, &[buf, v]);
-            }
-            CompiledExpr::Scalar2 { value, valid } => {
-                emit_bottom_abort(b, env, ctx, valid)?;
-                b.ins().call(push, &[buf, value]);
-            }
-            CompiledExpr::Value { .. } => {
-                return Err(anyhow!(
-                    "scalar producer field compiled to Value-shape — \
-                     compile_expr dispatch is broken"
-                ));
-            }
-        }
-    }
-    Ok(())
+    let src = classify_composite_source(field);
+    let cv = compile_expr(b, field, env, ctx)?;
+    let mut cx = BodyCx { b, env, ctx };
+    scaffold::push_field(&mut cx, buf, cv, &field.typ, src)
 }
 
 /// Map an element [`PrimType`] to the `graphix_valarray_get_<T>`
@@ -6511,6 +8461,24 @@ fn compile_ifchain(
         }
         _ => None,
     };
+
+    // A possibly-bottom scrutinee makes every arm cond computed from
+    // GARBAGE bits — with a conditional final arm, all arms can miss
+    // and the trap below becomes reachable (#201, SIGILL). The
+    // validity-AND already poisons the RESULT correctly; the conds it
+    // can't fix. Refuse to fuse — the select node-walks (which
+    // produces no value, the canonical semantics). The stmt form
+    // (`compile_select_stmt`) is immune: its scrutinee gate branches
+    // to `pending_exit` before any cond runs.
+    if scrut_valid.is_some()
+        && arms.last().is_some_and(|(c, _)| c.is_some())
+    {
+        return Err(anyhow!(
+            "if-chain: possibly-bottom scrutinee with a conditional \
+             final arm — the miss trap would be reachable; falls back \
+             to the node-walk"
+        ));
+    }
 
     // For a scalar/composite result, thread an I8 validity bit through
     // the merge phi IFF a guard, the scrutinee, or any arm body can be
@@ -6729,6 +8697,26 @@ fn value_new_prim_helper(p: PrimType) -> &'static str {
     }
 }
 
+/// The `graphix_string_buf_push_*` helper that Display-renders a
+/// scalar of `p` into a Concat / string-interpolate buffer. Shared by
+/// the GIR `Concat` arm ([`compile_concat`]) and the direct path
+/// ([`emit_string_interpolate_node`]).
+fn string_buf_push_helper(p: PrimType) -> &'static str {
+    match p {
+        PrimType::I64 => "graphix_string_buf_push_i64",
+        PrimType::U64 => "graphix_string_buf_push_u64",
+        PrimType::I32 => "graphix_string_buf_push_i32",
+        PrimType::U32 => "graphix_string_buf_push_u32",
+        PrimType::I16 => "graphix_string_buf_push_i16",
+        PrimType::U16 => "graphix_string_buf_push_u16",
+        PrimType::I8 => "graphix_string_buf_push_i8",
+        PrimType::U8 => "graphix_string_buf_push_u8",
+        PrimType::F64 => "graphix_string_buf_push_f64",
+        PrimType::F32 => "graphix_string_buf_push_f32",
+        PrimType::Bool => "graphix_string_buf_push_bool",
+    }
+}
+
 /// `GirOp::Concat` codegen — build a heap-owned `*mut String`, push
 /// each part (formatted-Display for prims, append-as-str for ArcStr
 /// children), and finalize into an owned ArcStr (single `i64` CLIF
@@ -6766,19 +8754,7 @@ fn compile_concat(
             }
             Some(AbiKind::Scalar(p)) => {
                 let v = compile_scalar(b, part, env, ctx)?;
-                let helper_name = match p {
-                    PrimType::I64 => "graphix_string_buf_push_i64",
-                    PrimType::U64 => "graphix_string_buf_push_u64",
-                    PrimType::I32 => "graphix_string_buf_push_i32",
-                    PrimType::U32 => "graphix_string_buf_push_u32",
-                    PrimType::I16 => "graphix_string_buf_push_i16",
-                    PrimType::U16 => "graphix_string_buf_push_u16",
-                    PrimType::I8 => "graphix_string_buf_push_i8",
-                    PrimType::U8 => "graphix_string_buf_push_u8",
-                    PrimType::F64 => "graphix_string_buf_push_f64",
-                    PrimType::F32 => "graphix_string_buf_push_f32",
-                    PrimType::Bool => "graphix_string_buf_push_bool",
-                };
+                let helper_name = string_buf_push_helper(p);
                 let push = ctx.helper_refs.get(helper_name).ok_or_else(
                     || anyhow!("missing {helper_name}"),
                 )?;
@@ -7115,8 +9091,8 @@ mod tests {
     use crate::gir::{
         arith, bool_op, cast, cmp, const_expr, datetime_type, duration_type,
         local, null_type, nullable_type, prim_type, string_type, tuple_type,
-        BinOp, BoolOp, CmpOp, Input, GirExpr, GirKernel, GirOp, GirStmt, Let,
-        PrimType, SelectArm,
+        BinOp, BoolOp, CmpOp, Input, GirExpr, GirKernel, GirOp, GirStmt,
+        KernelSig, Let, PrimType, SelectArm,
     };
 
     fn input(name: &str, prim: PrimType) -> Input {
@@ -7164,23 +9140,26 @@ mod tests {
         )
         .unwrap();
         let kernel = GirKernel {
-            fn_name: ArcStr::from("ax_plus_bc"),
-            params: vec![
-                input("a", PrimType::I64),
-                input("b", PrimType::I64),
-                input("c", PrimType::I64),
-            ],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("ax_plus_bc"),
+                params: vec![
+                    input("a", PrimType::I64),
+                    input("b", PrimType::I64),
+                    input("c", PrimType::I64),
+                ],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7216,19 +9195,22 @@ mod tests {
             typ: prim_type(PrimType::F64),
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("scaled"),
-            params: vec![input("a", PrimType::F64), input("b", PrimType::F64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::F64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("scaled"),
+                params: vec![input("a", PrimType::F64), input("b", PrimType::F64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::F64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(block)],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7256,19 +9238,22 @@ mod tests {
         )
         .unwrap();
         let kernel = GirKernel {
-            fn_name: ArcStr::from("range_check"),
-            params: vec![input("x", PrimType::F64), input("y", PrimType::F64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::Bool),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("range_check"),
+                params: vec![input("x", PrimType::F64), input("y", PrimType::F64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::Bool),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7283,19 +9268,22 @@ mod tests {
         // |i| cast<f64>(i)
         let body = cast(loc("i", PrimType::I64), PrimType::F64).unwrap();
         let kernel = GirKernel {
-            fn_name: ArcStr::from("itof"),
-            params: vec![input("i", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::F64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("itof"),
+                params: vec![input("i", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::F64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7399,25 +9387,28 @@ mod tests {
             }],
         };
         GirKernel {
-            fn_name: ArcStr::from("iterate"),
-            params: vec![
-                input("zr", PrimType::F64),
-                input("zi", PrimType::F64),
-                input("cr", PrimType::F64),
-                input("ci", PrimType::F64),
-                input("i", PrimType::I64),
-            ],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: true,
+            sig: KernelSig {
+                fn_name: ArcStr::from("iterate"),
+                params: vec![
+                    input("zr", PrimType::F64),
+                    input("zi", PrimType::F64),
+                    input("cr", PrimType::F64),
+                    input("ci", PrimType::F64),
+                    input("i", PrimType::I64),
+                ],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: true,
+            }
+            .into(),
             body: vec![GirStmt::Select { scrut: None, arms: vec![arm0, arm1, arm2] }],
         }
     }
@@ -7461,19 +9452,22 @@ mod tests {
             }],
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("countdown"),
-            params: vec![input("n", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: true,
+            sig: KernelSig {
+                fn_name: ArcStr::from("countdown"),
+                params: vec![input("n", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: true,
+            }
+            .into(),
             body: vec![GirStmt::Select { scrut: None, arms: vec![arm0, arm1] }],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7516,19 +9510,22 @@ mod tests {
             typ: prim_type(PrimType::I64),
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("sign"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("sign"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(chain)],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7565,24 +9562,27 @@ mod tests {
             typ: prim_type(PrimType::I64),
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("nullable_dispatch"),
-            params: vec![],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![crate::gir::NullableInput {
-                name: ArcStr::from("x"),
-                elem: prim_type(PrimType::I64),
-                bind_id: None,
-            }],
-            tail_call_slots: vec![crate::gir::TailCallSlot {
-                name: ArcStr::from("x"),
-                kind: crate::gir::TailCallSlotKind::Nullable,
-            }],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("nullable_dispatch"),
+                params: vec![],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![crate::gir::NullableInput {
+                    name: ArcStr::from("x"),
+                    elem: prim_type(PrimType::I64),
+                    bind_id: None,
+                }],
+                tail_call_slots: vec![crate::gir::TailCallSlot {
+                    name: ArcStr::from("x"),
+                    kind: crate::gir::TailCallSlotKind::Nullable,
+                }],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(chain)],
         };
         let wrapped =
@@ -7639,22 +9639,25 @@ mod tests {
             typ: nullable_type(prim_type(PrimType::I64)),
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("maybe_inc"),
-            params: vec![input("n", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![crate::gir::TailCallSlot {
-                name: ArcStr::from("n"),
-                kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
-            }],
-            return_type: nullable_type(prim_type(PrimType::I64)),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("maybe_inc"),
+                params: vec![input("n", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![crate::gir::TailCallSlot {
+                    name: ArcStr::from("n"),
+                    kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
+                }],
+                return_type: nullable_type(prim_type(PrimType::I64)),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let wrapped =
@@ -7725,19 +9728,22 @@ mod tests {
         )
         .unwrap();
         let kernel = GirKernel {
-            fn_name: ArcStr::from("inc"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("inc"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let (_ctx, p) = jit(&kernel);
@@ -7755,19 +9761,22 @@ mod tests {
         use std::sync::Arc;
         // square(x: i64) -> i64 { x * x }
         let square = Arc::new(GirKernel {
-            fn_name: ArcStr::from("square"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("square"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(
                 arith(
                     loc("x", PrimType::I64),
@@ -7788,19 +9797,22 @@ mod tests {
         let body = arith(call_expr, const_expr(Value::I64(10)), BinOp::Add)
             .unwrap();
         let caller = Arc::new(GirKernel {
-            fn_name: ArcStr::from("caller"),
-            params: vec![input("n", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("caller"),
+                params: vec![input("n", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         });
         let mut callees = BTreeMap::new();
@@ -7844,23 +9856,26 @@ mod tests {
         )
         .unwrap();
         let h = Arc::new(GirKernel {
-            fn_name: ArcStr::from("h"),
-            params: vec![input("n", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![TupleInput {
-                name: ArcStr::from("p"),
-                elems: vec![i64t(), i64t()],
-                bind_id: None,
-            }],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: i64t(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("h"),
+                params: vec![input("n", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![TupleInput {
+                    name: ArcStr::from("p"),
+                    elems: vec![i64t(), i64t()],
+                    bind_id: None,
+                }],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: i64t(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(h_body)],
         });
         // caller(a, b, c) = h((a, b), c)
@@ -7879,23 +9894,26 @@ mod tests {
             typ: i64t(),
         };
         let caller = Arc::new(GirKernel {
-            fn_name: ArcStr::from("caller"),
-            params: vec![
-                input("a", PrimType::I64),
-                input("b", PrimType::I64),
-                input("c", PrimType::I64),
-            ],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: i64t(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("caller"),
+                params: vec![
+                    input("a", PrimType::I64),
+                    input("b", PrimType::I64),
+                    input("c", PrimType::I64),
+                ],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: i64t(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(call)],
         });
         let mut callees = BTreeMap::new();
@@ -7946,19 +9964,22 @@ mod tests {
             typ: nullable_i64(),
         };
         let h = Arc::new(GirKernel {
-            fn_name: ArcStr::from("h"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: nullable_i64(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("h"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: nullable_i64(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(h_body)],
         });
         // caller(x) = h(x)
@@ -7970,19 +9991,22 @@ mod tests {
             typ: nullable_i64(),
         };
         let caller = Arc::new(GirKernel {
-            fn_name: ArcStr::from("caller"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: nullable_i64(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("caller"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: nullable_i64(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(call)],
         });
         let mut callees = BTreeMap::new();
@@ -8020,23 +10044,26 @@ mod tests {
             || nullable_type(prim_type(PrimType::I64));
         // h(m: [i64, null]) -> [i64, null] = m
         let h = Arc::new(GirKernel {
-            fn_name: ArcStr::from("h"),
-            params: vec![],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![NullableInput {
-                name: ArcStr::from("m"),
-                elem: prim_type(PrimType::I64),
-                bind_id: None,
-            }],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: nullable_i64(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("h"),
+                params: vec![],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![NullableInput {
+                    name: ArcStr::from("m"),
+                    elem: prim_type(PrimType::I64),
+                    bind_id: None,
+                }],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: nullable_i64(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::Local(ArcStr::from("m")),
                 typ: nullable_i64(),
@@ -8064,19 +10091,22 @@ mod tests {
             typ: nullable_i64(),
         };
         let caller = Arc::new(GirKernel {
-            fn_name: ArcStr::from("caller"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: nullable_i64(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("caller"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: nullable_i64(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::Call {
                     fn_name: ArcStr::from("h"),
@@ -8113,23 +10143,26 @@ mod tests {
         let nullable_i64 =
             || nullable_type(prim_type(PrimType::I64));
         let kernel = GirKernel {
-            fn_name: ArcStr::from("h"),
-            params: vec![],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![NullableInput {
-                name: ArcStr::from("m"),
-                elem: prim_type(PrimType::I64),
-                bind_id: None,
-            }],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::Bool),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("h"),
+                params: vec![],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![NullableInput {
+                    name: ArcStr::from("m"),
+                    elem: prim_type(PrimType::I64),
+                    bind_id: None,
+                }],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::Bool),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::IsNull(Box::new(GirExpr {
                     op: GirOp::Local(ArcStr::from("m")),
@@ -8166,22 +10199,25 @@ mod tests {
         use netidx_value::Value;
         // (1) |s: string| -> string s
         let str_kernel = GirKernel {
-            fn_name: ArcStr::from("sk"),
-            params: vec![],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![crate::gir::StringInput {
-                name: ArcStr::from("s"),
-                bind_id: None,
-            }],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: string_type(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("sk"),
+                params: vec![],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![crate::gir::StringInput {
+                    name: ArcStr::from("s"),
+                    bind_id: None,
+                }],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: string_type(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::Local(ArcStr::from("s")),
                 typ: string_type(),
@@ -8207,23 +10243,26 @@ mod tests {
             std::time::Duration::from_secs(1),
         ));
         let dt_kernel = GirKernel {
-            fn_name: ArcStr::from("dk"),
-            params: vec![],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![crate::gir::ValueInput {
-                name: ArcStr::from("d"),
-                typ: datetime_type(),
-                bind_id: None,
-            }],
-            tail_call_slots: vec![],
-            return_type: datetime_type(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("dk"),
+                params: vec![],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![crate::gir::ValueInput {
+                    name: ArcStr::from("d"),
+                    typ: datetime_type(),
+                    bind_id: None,
+                }],
+                tail_call_slots: vec![],
+                return_type: datetime_type(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(GirExpr {
                 op: GirOp::ValueArith {
                     op: BinOp::Add,
@@ -8300,19 +10339,22 @@ mod tests {
             },
         ];
         let fib = Arc::new(GirKernel {
-            fn_name: ArcStr::from("fib"),
-            params: vec![input("n", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("fib"),
+                params: vec![input("n", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Select { scrut: None, arms }],
         });
         // Lazy fusion would put the parent's own kernel in the
@@ -8348,19 +10390,22 @@ mod tests {
         use std::sync::Arc;
         // leaf(x) = x + 1
         let leaf = Arc::new(GirKernel {
-            fn_name: ArcStr::from("leaf"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("leaf"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(
                 arith(
                     loc("x", PrimType::I64),
@@ -8372,19 +10417,22 @@ mod tests {
         });
         // middle(x) = leaf(x) * 2
         let middle = Arc::new(GirKernel {
-            fn_name: ArcStr::from("middle"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("middle"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(
                 arith(
                     GirExpr {
@@ -8402,19 +10450,22 @@ mod tests {
         });
         // outer(x) = middle(x) - 3
         let outer = Arc::new(GirKernel {
-            fn_name: ArcStr::from("outer"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("outer"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(
                 arith(
                     GirExpr {
@@ -8452,19 +10503,22 @@ mod tests {
     fn shared_module_callee_dedup() {
         use std::sync::Arc;
         let square = Arc::new(GirKernel {
-            fn_name: ArcStr::from("square"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-            return_type: prim_type(PrimType::I64),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("square"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                return_type: prim_type(PrimType::I64),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(
                 arith(
                     loc("x", PrimType::I64),
@@ -8489,19 +10543,22 @@ mod tests {
             )
             .unwrap();
             Arc::new(GirKernel {
-                fn_name: ArcStr::from("caller"),
-                params: vec![input("n", PrimType::I64)],
-                fn_params: vec![],
-                array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![],
-                return_type: prim_type(PrimType::I64),
-                has_tail_loop: false,
+                sig: KernelSig {
+                    fn_name: ArcStr::from("caller"),
+                    params: vec![input("n", PrimType::I64)],
+                    fn_params: vec![],
+                    array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![],
+                    return_type: prim_type(PrimType::I64),
+                    has_tail_loop: false,
+                }
+                .into(),
                 body: vec![GirStmt::Return(body)],
             })
         };
@@ -8577,25 +10634,28 @@ mod tests {
             ]),
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("pair_of"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![crate::gir::TailCallSlot {
-                name: ArcStr::from("x"),
-                kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
-            }],
-            return_type: tuple_type(vec![
-                prim_type(PrimType::I64),
-                prim_type(PrimType::I64),
-            ]),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("pair_of"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![crate::gir::TailCallSlot {
+                    name: ArcStr::from("x"),
+                    kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
+                }],
+                return_type: tuple_type(vec![
+                    prim_type(PrimType::I64),
+                    prim_type(PrimType::I64),
+                ]),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let wrapped =
@@ -8665,22 +10725,25 @@ mod tests {
             typ: string_type(),
         };
         let kernel = GirKernel {
-            fn_name: ArcStr::from("returns_str"),
-            params: vec![input("x", PrimType::I64)],
-            fn_params: vec![],
-            array_params: vec![],
-            tuple_params: vec![],
-            struct_params: vec![],
-            variant_params: vec![],
-            nullable_params: vec![],
-            string_params: vec![],
-            value_params: vec![],
-            tail_call_slots: vec![crate::gir::TailCallSlot {
-                name: ArcStr::from("x"),
-                kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
-            }],
-            return_type: string_type(),
-            has_tail_loop: false,
+            sig: KernelSig {
+                fn_name: ArcStr::from("returns_str"),
+                params: vec![input("x", PrimType::I64)],
+                fn_params: vec![],
+                array_params: vec![],
+                tuple_params: vec![],
+                struct_params: vec![],
+                variant_params: vec![],
+                nullable_params: vec![],
+                string_params: vec![],
+                value_params: vec![],
+                tail_call_slots: vec![crate::gir::TailCallSlot {
+                    name: ArcStr::from("x"),
+                    kind: crate::gir::TailCallSlotKind::Scalar(PrimType::I64),
+                }],
+                return_type: string_type(),
+                has_tail_loop: false,
+            }
+            .into(),
             body: vec![GirStmt::Return(body)],
         };
         let wrapped =

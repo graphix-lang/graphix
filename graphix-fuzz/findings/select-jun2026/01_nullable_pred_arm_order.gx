@@ -1,0 +1,12 @@
+// bisect: GIR/emit bug (interp != fused) — wrong value, not a crash
+// interp/jit: Interp i64:0, classic Jit i64:1 pre-fix; both i64:0 post-fix.
+// Found during C5 (the direct path was written order-sound and the
+// divergence surfaced when probing why; task #200).
+// root_cause: emit_type_predicate_cond emitted a single-prim type
+// predicate (`i64 as _`) over a Nullable scrutinee as TRIVIALLY TRUE
+// ("exhaustiveness leaves this arm the non-null half") — unsound when
+// the arm precedes the null arm: the chain takes it on a null
+// scrutinee. Fixed by emitting an explicit `!IsNull(scrut)` condition.
+// The scrutinee must come from a fused producer (array::find) — a
+// let-bound literal null never fuses, which is why the bug hid.
+{ let a = [i64:1]; let v = array::find(a, |x| x > 10); select v { i64 as _ => 1, null as _ => 0 } }

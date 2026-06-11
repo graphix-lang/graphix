@@ -202,6 +202,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         crate::NodeView::ExplicitParens(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        // `(x)` — grouping only; transparent recurse.
+        self.n.emit_clif(cx)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
@@ -446,6 +454,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         crate::NodeView::Constant(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_const_node(cx, &self.value, &self.typ)
+    }
+
     fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
@@ -553,6 +568,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Block(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_block_node(cx, &self.children)
+    }
+
+    fn jit(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
+        // Statement spine: each child fuses its own maximal subtree
+        // (or recurses further). The Block itself only fuses when a
+        // PARENT's try_fuse succeeds on a region containing it (via
+        // emit_clif above) — module-level blocks never do (their Bind
+        // children must stay live to publish), and that is structural:
+        // emit_block_node has no publish, so a region containing a
+        // bind only ever covers block-scoped lets.
+        for child in self.children.iter_mut() {
+            crate::fusion::jit_node(child, ctx)?;
+        }
+        Ok(None)
     }
 
     fn splice_child(
@@ -684,6 +723,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::StringInterpolate(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_string_interpolate_node(cx, &self.args)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -987,6 +1033,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::TypeCast(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_cast_node(cx, &self.n, &self.target)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

@@ -1,0 +1,17 @@
+// bisect: JIT codegen bug (SIGSEGV, not a value divergence)
+// interp/jit: Interp returns [i64:2, i64:3]; the fused+JIT run died with
+// signal 11 (ValArray::clone <- Value::clone on a dangling pointer).
+// Found during the C4 direct-path mirror work (#199); confirmed
+// pre-existing at committed HEAD b4baaee in a clean worktree.
+// root_cause: representation confusion in the QopUnwrap composite-success
+// arm (gir_jit.rs compile_scalar_qop_unwrap + the direct-path mirror
+// emit_qop_node). A Value::Array's payload word holds the ValArray BITS
+// inline, but the composite kernel ABI is a boxed `*mut ValArray`
+// (Box::into_raw). The arm passed the raw payload word through as the
+// composite SSA, so downstream drop/clone did Box::from_raw /
+// (*ptr).clone() on the Arc's data pointer. Fixed by re-boxing through
+// graphix_value_into_array (owned inner, consumes) /
+// graphix_value_into_array_borrowed (borrowed inner, clones). The
+// string-success path was never affected (ArcStr bits are the same
+// one-word representation inside and outside a Value).
+{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }

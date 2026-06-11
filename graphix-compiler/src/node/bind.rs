@@ -27,6 +27,22 @@ pub struct Bind<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
+    /// The single `BindId` this binding introduces, when the pattern
+    /// binds exactly one name (`let x = …`). `None` for destructuring
+    /// patterns. Used by the fusion walker (ValueBind candidates) and
+    /// the JIT block-let binder (BindId-keyed env slots).
+    pub(crate) fn single_bind_id(&self) -> Option<BindId> {
+        let mut id: Option<BindId> = None;
+        let mut count = 0usize;
+        self.pattern.ids(&mut |i| {
+            count += 1;
+            if id.is_none() {
+                id = Some(i);
+            }
+        });
+        if count == 1 { id } else { None }
+    }
+
     /// Build a `Bind` node from an already-compiled RHS node and an
     /// already-compiled destructuring pattern. AOT codegen has
     /// already resolved the type and generated BindIds for the
@@ -231,6 +247,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         crate::NodeView::Bind(self)
     }
 
+    fn jit(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
+        // Fuse the bound VALUE, never the Bind itself: the Bind must
+        // stay live to drive the publish of the result to its BindId
+        // (the ValueBind splice shape). A whole-Bind fusion can't
+        // happen anyway — Bind has no emit_clif, so any try_fuse
+        // rooted here fails structurally.
+        crate::fusion::jit_node(&mut self.node, ctx)?;
+        Ok(None)
+    }
+
     fn splice_child(
         &mut self,
         target: ExprId,
@@ -362,6 +391,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
         crate::NodeView::Ref(self)
+    }
+
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_ref_node(
+            cx,
+            self.spec.as_ref(),
+            &self.typ,
+            self.id,
+        )
     }
 
     fn clone_rebind(
