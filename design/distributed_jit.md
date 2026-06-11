@@ -547,7 +547,99 @@ flip).
   drop, acc threading as a block param. Stage D is now functionally
   COMPLETE — remaining gaps are recorded parity items (#150
   string/value elements, #203 nested-HOF lambda bodies, composite
-  leaves); next is Stage E. (#202 turned out NOT to be Apply::emit_clif work:
+  leaves); next is Stage E.
+
+  **Stage E execution plan** (recon 2026-06-11 — the parallel period
+  gives three shortcuts the original plan didn't bank on):
+  (1) `build_lambda_kernel` (lowering.rs) is FusionCtx-FREE — it
+  takes `(g, kernel_name, ec)`, does formal-arg → RegionInput
+  translation, closure conversion (BindId-sorted captures, fn-typed
+  skipped, String/Unit/Null returns refused), and caches
+  `CachedKernel` by `(LambdaId, resolved FnType)` in
+  `ec.fusion_kernels`. Post-Stage-A its `kernel.sig` IS a
+  `KernelSig`. The direct analysis calls it directly (make
+  pub(crate)) — no new cache, no new builder.
+  (2) `compile_kernel_with_callees_direct` ALREADY accepts the
+  callee map (passed empty today): callees compile from their GIR
+  bodies (classic-proven — including GirOp::Call self/mutual
+  recursion via shared FuncIds AND the tail rebind-and-jump
+  machinery), only the PARENT emits via Node. So tail loops and
+  recursion come FREE in E — callee-body Node-emission (and the
+  has_tail_loop agreement assert) moves to Stage F prep.
+  (3) The CallSite::emit_clif dispatch already has the fall-through
+  shape: a missing lambda-call entry just bails = de-fuse.
+  E-substages:
+  - **E1 discovery**: a FULL-coverage immutable Node walker (the
+    canonical `for_each_node`, exhaustive NodeView match like
+    collect_lambda_binds') walks the region in try_fuse's ANALYSIS
+    phase (before the jit lock); at each CallSite with resolved
+    `ApplyView::Lambda(g)`: `build_lambda_kernel(g, "__dl_{lambda
+    id}", ec)` (cache-hit returns the FIRST builder's name — always
+    use the RETURNED fn_name, a lambda can be cached under a
+    `__hof_*` name by the per-slot path), record `ExprId →
+    LambdaCallInfo { fn_name, kernel: Arc<GirKernel>, captures }`
+    (the apply_sites pattern) + accumulate `BTreeMap<ArcStr,
+    Arc<GirKernel>>` callees including the build's transitive
+    `sub_called`. Thread both into LowerCtx.
+    `define_kernel_body`: a Node-emitted parent declares FuncRefs
+    for ALL funcids entries (its GIR body is empty —
+    collect_call_sites finds nothing).
+  - **E2 call emission**: CallSite::emit_clif's Lambda arm looks up
+    LambdaCallInfo by spec id (miss → bail = de-fuse); marshals the
+    COMBINED formals+captures list in the callee's kind-grouped ABI
+    order (scalars, composites array→tuple→struct, value-shapes
+    variant→nullable two words — the Node twin of
+    compile_call_clif_args, same owned-arg post-call drops);
+    captures resolve from the parent env BindId-first (V1: scalar +
+    composite captures; value-shape captures bail — the variant/
+    nullable env tables are still name-keyed); result unpacked per
+    the callee's return ABI (1 result scalar/composite, 2 results
+    value-shape, classified Owned).
+  - **E3 verification**: probes — multi-callsite same lambda,
+    captures (scalar + composite), recursion (`let rec` fib),
+    mutual recursion, deep tail recursion (exercises the GIR tail
+    machinery through a direct parent), composite/value args +
+    returns; recursion-weighted fuzz; full battery + CLIF
+    differential (classic invariant; DirectJit gains call kernels).
+
+  **E1+E2 LANDED** (2026-06-11). Working and kernel-verified: simple
+  calls, multi-callsite-one-kernel, scalar captures (closure
+  conversion — the capture rides the parent region as an input and
+  forwards as the trailing call arg; verified `imul`-only callee),
+  f64, composite literal args (owned, dropped post-call), labeled
+  args with defaults. Probe suite: 11 probes, 6 Clean. The `Clean`
+  noise set gained "function-valued let" (a lambda-valued let can
+  NEVER emit by design — the binding node-walks while call sites
+  fuse; distinct message so it doesn't mask real let-shape gaps).
+  Three findings from the campaign:
+  (a) TWO silent `Ok(None)` paths in try_fuse made `attempted`
+  disagree with the failure list (FusedKernel::new Err after a
+  successful compile; the duplicate-basename refusal) — both now
+  log. The debugging rule held: every silent fallback eventually
+  costs an investigation.
+  (b) **#205** (pre-existing classic GIR, newly reachable):
+  `GirStmt::Return` routes on the un-normalized select arm-union
+  type — a lambda kernel whose body is a Nullable-returning select
+  fails "GIR malformed". Classic never built such a kernel (no
+  recurse-on-failure granularity). Probe pinned, flip on fix.
+  (c) **Recursive lambdas have NEVER fused** (classic included):
+  `build_lambda_kernel` routes through
+  `build_kir_kernel_from_region`, which hardcodes `self_info: None`
+  ("Regions have no self-recursion") — the complete
+  `SelfInfo`/tail-rebind machinery exists in `build_kernel` but
+  nothing connects it at this entry; classic's consumers (per-slot
+  HOF callbacks) never needed it. **E3 = construct `SelfInfo` in
+  `build_lambda_kernel`** (name + params/source_args from the
+  already-translated inputs) and pass through a self-aware build,
+  unlocking recursion + the tail rebind-and-jump for BOTH paths.
+  Probes pinned (recursion at depth 500 — note 50k-deep recursion
+  OVERFLOWS THE NODE-WALK'S STACK, a canonical-model reality; the
+  fused tail loop won't have that limit, so E3 adds a fused-only
+  deep probe). Also added: `ExecCtx::fusion_building` — a
+  re-entrancy guard in `build_lambda_kernel` (mutual recursion
+  would otherwise recurse the build forever: the cache entry lands
+  on completion and per-build `known_fns` only covers
+  self-recursion; pre-existing classic landmine, now a de-fuse). (#202 turned out NOT to be Apply::emit_clif work:
   `cast<T>(x)` is a TypeCast NODE whose emit_clif relay exists — the
   gap is `emit_cast_node` refusing the union `[T, Error]` result
   shape; an independent graphix-compiler item.)

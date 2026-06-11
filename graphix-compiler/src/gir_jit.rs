@@ -528,11 +528,16 @@ pub fn compile_kernel_with_callees_direct<R: crate::Rt, E: crate::UserEvent>(
         crate::expr::ExprId,
         crate::fusion::lowering::BuiltinCallSiteInfo,
     >,
+    lambda_sites: &nohash::IntMap<
+        crate::expr::ExprId,
+        crate::fusion::LambdaCallInfo,
+    >,
 ) -> Result<WrappedKernel> {
     let emitter = NodeBodyEmitter {
         root,
         return_type: &kernel.return_type,
         apply_sites,
+        lambda_sites,
     };
     compile_kernel_with_callees_impl(jit, kernel, callees, Some(&emitter))
 }
@@ -716,7 +721,24 @@ fn define_kernel_body(
         // function. Done before constructing the FunctionBuilder
         // because both `declare_func_in_func` and `FunctionBuilder::new`
         // borrow `jit.func_ctx.func` mutably.
-        let needed = crate::gir::collect_call_sites(kernel);
+        //
+        // A Node-emitted parent's GirKernel body is EMPTY (its calls
+        // are CallSite nodes, not GirOp::Call), so collect_call_sites
+        // finds nothing — declare every funcids entry EXCEPT the
+        // parent itself instead (a region can't self-call; the
+        // discovery set is exactly the region's callee closure, so
+        // with no lambda call sites this is empty and the emitted
+        // function is byte-identical to the pre-Stage-E one).
+        let needed: std::collections::BTreeSet<ArcStr> =
+            if body_emitter.is_some() {
+                funcids
+                    .keys()
+                    .filter(|n| n.as_str() != kernel.fn_name.as_str())
+                    .cloned()
+                    .collect()
+            } else {
+                crate::gir::collect_call_sites(kernel)
+            };
         let mut callee_refs: BTreeMap<ArcStr, FuncRef> = BTreeMap::new();
         for name in needed {
             let target_fid = funcids.get(&name).map(|(f, _)| *f).ok_or_else(
@@ -1162,6 +1184,8 @@ fn compile_into_function(
         lazy_values,
         builtin_apply_sites: body_emitter
             .and_then(|em| em.builtin_apply_sites()),
+        lambda_call_sites: body_emitter
+            .and_then(|em| em.lambda_call_sites()),
     };
     // Body codegen: the `DirectNodeJit` path supplies a `NodeBodyEmitter`
     // that walks the region-root Node via `compile_node`; otherwise the
@@ -1719,6 +1743,13 @@ pub(crate) struct LowerCtx<'a> {
             crate::expr::ExprId,
             crate::fusion::lowering::BuiltinCallSiteInfo,
         >,
+    >,
+    /// Discovered statically-resolved lambda call sites — the direct
+    /// path's `ExprId → LambdaCallInfo` map (`None` on the GIR path).
+    /// `CallSite::emit_clif` resolves a registered site to a CLIF
+    /// `call` against `callee_refs[info.fn_name]`.
+    lambda_call_sites: Option<
+        &'a nohash::IntMap<crate::expr::ExprId, crate::fusion::LambdaCallInfo>,
     >,
 }
 
@@ -3519,6 +3550,18 @@ trait BodyEmitter {
     > {
         None
     }
+
+    /// Discovered statically-resolved lambda call sites for the region
+    /// being emitted (`CallSite::emit_clif` lowers a registered site to
+    /// a CLIF `call` via [`BodyCx::lambda_site`]). `None` on the GIR
+    /// path — its calls are already `GirOp::Call` in the body.
+    fn lambda_call_sites(
+        &self,
+    ) -> Option<
+        &nohash::IntMap<crate::expr::ExprId, crate::fusion::LambdaCallInfo>,
+    > {
+        None
+    }
 }
 
 /// The `DirectNodeJit` body emitter — walks the region-root `Node` via
@@ -3531,6 +3574,10 @@ struct NodeBodyEmitter<'a, R: crate::Rt, E: crate::UserEvent> {
     apply_sites: &'a nohash::IntMap<
         crate::expr::ExprId,
         crate::fusion::lowering::BuiltinCallSiteInfo,
+    >,
+    lambda_sites: &'a nohash::IntMap<
+        crate::expr::ExprId,
+        crate::fusion::LambdaCallInfo,
     >,
 }
 
@@ -3558,6 +3605,14 @@ impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
         >,
     > {
         Some(self.apply_sites)
+    }
+
+    fn lambda_call_sites(
+        &self,
+    ) -> Option<
+        &nohash::IntMap<crate::expr::ExprId, crate::fusion::LambdaCallInfo>,
+    > {
+        Some(self.lambda_sites)
     }
 }
 
@@ -3611,6 +3666,17 @@ impl BodyCx<'_, '_, '_> {
         id: crate::expr::ExprId,
     ) -> Option<&crate::fusion::lowering::BuiltinCallSiteInfo> {
         self.ctx.builtin_apply_sites.and_then(|m| m.get(&id))
+    }
+
+    /// The discovered lambda call-site info for `id`, if `try_fuse`'s
+    /// analysis registered one (direct path only). A `Some` means the
+    /// callee kernel is declared in this function's `callee_refs` under
+    /// `info.fn_name` and ready to `call`.
+    pub(crate) fn lambda_site(
+        &self,
+        id: crate::expr::ExprId,
+    ) -> Option<&crate::fusion::LambdaCallInfo> {
+        self.ctx.lambda_call_sites.and_then(|m| m.get(&id))
     }
 
     /// Stable `*const Value` for a value-shape constant — see
@@ -4445,6 +4511,18 @@ fn emit_let_node<R: crate::Rt, E: crate::UserEvent>(
             cx.env.bind_string(name.clone(), var);
         }
         other => {
+            // A function-valued let can NEVER emit by design — a
+            // lambda isn't a kernel value; its call sites fuse as
+            // cross-kernel calls while the binding itself node-walks
+            // (publishing the LambdaDef). Distinct message so probe
+            // assertions can treat it as structural recurse noise,
+            // not a coverage gap.
+            if matches!(value.typ(), Type::Fn(_)) {
+                return Err(anyhow!(
+                    "emit_clif: function-valued let — the binding \
+                     node-walks, call sites fuse"
+                ));
+            }
             return Err(anyhow!(
                 "emit_clif: let value of shape {other:?} — not yet supported"
             ));
@@ -7913,6 +7991,256 @@ enum CallArgDrop {
 /// matches the callee's per-kind param vectors (both built by walking
 /// the same input list), so the assembled order lines up slot-for-slot
 /// with the signature `push_abi_params` produced.
+/// One entry in the flat formals+captures list
+/// [`emit_lambda_call_node`] marshals — either a call-site arg Node or
+/// a closure-converted capture resolved from the calling kernel's env.
+enum LambdaCallSlot<'a, R: crate::Rt, E: crate::UserEvent> {
+    Arg(&'a crate::Node<R, E>, Type),
+    Cap(&'a crate::fusion::lowering::CaptureSlot),
+}
+
+impl<R: crate::Rt, E: crate::UserEvent> LambdaCallSlot<'_, R, E> {
+    fn typ(&self) -> &Type {
+        match self {
+            LambdaCallSlot::Arg(_, t) => t,
+            LambdaCallSlot::Cap(c) => &c.typ,
+        }
+    }
+}
+
+/// Direct-path cross-kernel lambda call — the Node twin of the
+/// `GirOp::Call` arms. The flat formals+captures list is assembled in
+/// the same pre-group order the callee's input list uses (formal args
+/// in FnType parameter order, then captures in `CaptureSlot` order),
+/// then kind-grouped to the callee's ABI exactly like
+/// [`compile_call_clif_args`]: scalars, composite pointers
+/// (array→tuple→struct), value-shape pairs (variant→nullable). Owned
+/// composite/value ARGS are dropped after the call (the callee clones
+/// every composite/value param on entry); captures are env READS
+/// (borrowed) and never drop. Captures resolve BindId-first with a
+/// name fallback; V1 supports scalar + composite captures — a
+/// value-shape capture Errs (those env tables are still name-keyed)
+/// and the subtree node-walks. A may-bottom (`Scalar2`) scalar arg or
+/// capture Errs = de-fuse (same `compile_scalar` contract as the GIR
+/// caller). The result is unpacked per the callee's return ABI: one
+/// CLIF result for scalar / composite-pointer returns, a two-word
+/// `(disc, payload)` pair for variant/nullable — owned, like the GIR
+/// arm's classification.
+pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    cs: &crate::node::callsite::CallSite<R, E>,
+    info: &crate::fusion::LambdaCallInfo,
+) -> Result<CompiledExpr> {
+    let fn_name = &info.fn_name;
+    let ftype = cs
+        .resolved_ftype()
+        .or_else(|| cs.ftype())
+        .ok_or_else(|| anyhow!("lambda call `{fn_name}`: no resolved FnType"))?;
+    // Formal args in FnType parameter order — the order
+    // `build_lambda_kernel` translated them into kernel inputs.
+    let mut slots: Vec<LambdaCallSlot<R, E>> =
+        Vec::with_capacity(ftype.args.len() + info.captures.len());
+    let mut pos = 0usize;
+    for fa in ftype.args.iter() {
+        let node = match &fa.kind {
+            crate::typ::FnArgKind::Positional { .. } => {
+                let n = cs.arg_positional(pos);
+                pos += 1;
+                n
+            }
+            crate::typ::FnArgKind::Labeled { name, .. } => cs.arg_named(name),
+        }
+        .ok_or_else(|| {
+            anyhow!("lambda call `{fn_name}`: missing call-site arg node")
+        })?;
+        let t = gir::freeze_normalized(node.typ()).ok_or_else(|| {
+            anyhow!(
+                "lambda call `{fn_name}`: arg type doesn't freeze concrete"
+            )
+        })?;
+        slots.push(LambdaCallSlot::Arg(node, t));
+    }
+    for cap in &info.captures {
+        slots.push(LambdaCallSlot::Cap(cap));
+    }
+    // Shape gate — same as the GIR caller: scalar / composite /
+    // variant / nullable only.
+    for s in &slots {
+        match gir::abi_kind(s.typ()) {
+            Some(
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::Variant
+                | AbiKind::Nullable,
+            ) => {}
+            _ => {
+                return Err(anyhow!(
+                    "lambda call `{fn_name}`: arg/capture type {:?} not \
+                     lowered on the calling side — subtree node-walks",
+                    s.typ()
+                ));
+            }
+        }
+    }
+    let emit_arg_single = |cx: &mut BodyCx,
+                           n: &crate::Node<R, E>|
+     -> Result<ClifValue> {
+        match n.emit_clif(cx)? {
+            CompiledExpr::Single(v) => Ok(v),
+            cv => Err(anyhow!(
+                "lambda call `{fn_name}`: arg compiled to a \
+                 possibly-bottom or non-single value ({cv:?}) — \
+                 subtree node-walks"
+            )),
+        }
+    };
+    let cap_scalar = |cx: &mut BodyCx,
+                      cap: &crate::fusion::lowering::CaptureSlot|
+     -> Result<ClifValue> {
+        let (var, valid, _) = cx
+            .env
+            .lookup_bind_id(cap.bind_id)
+            .or_else(|| cx.env.lookup(cap.name.as_str()))
+            .ok_or_else(|| {
+                anyhow!(
+                    "lambda call `{fn_name}`: capture `{}` not in the \
+                     calling kernel's env",
+                    cap.name
+                )
+            })?;
+        if valid.is_some() {
+            return Err(anyhow!(
+                "lambda call `{fn_name}`: capture `{}` is possibly-bottom \
+                 — subtree node-walks",
+                cap.name
+            ));
+        }
+        Ok(cx.b.use_var(var))
+    };
+    let cap_composite = |cx: &mut BodyCx,
+                         cap: &crate::fusion::lowering::CaptureSlot|
+     -> Result<ClifValue> {
+        let var = cx
+            .env
+            .lookup_composite_bind_id(cap.bind_id)
+            .or_else(|| cx.env.lookup_composite(cap.name.as_str()))
+            .ok_or_else(|| {
+                anyhow!(
+                    "lambda call `{fn_name}`: composite capture `{}` not \
+                     in the calling kernel's env",
+                    cap.name
+                )
+            })?;
+        Ok(cx.b.use_var(var))
+    };
+    let is_kind = |s: &&LambdaCallSlot<R, E>, k: AbiKind| {
+        gir::abi_kind(s.typ()) == Some(k)
+    };
+    let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len());
+    let mut drops: Vec<CallArgDrop> = Vec::new();
+    // Scalars first.
+    for s in slots
+        .iter()
+        .filter(|s| matches!(gir::abi_kind(s.typ()), Some(AbiKind::Scalar(_))))
+    {
+        let v = match s {
+            LambdaCallSlot::Arg(n, _) => emit_arg_single(cx, n)?,
+            LambdaCallSlot::Cap(c) => cap_scalar(cx, c)?,
+        };
+        clif_args.push(v);
+    }
+    // Composite pointers: array, then tuple, then struct.
+    let composite = slots
+        .iter()
+        .filter(|s| is_kind(s, AbiKind::Array))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Tuple)))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)));
+    for s in composite {
+        let ptr = match s {
+            LambdaCallSlot::Arg(n, _) => {
+                let p = emit_arg_single(cx, n)?;
+                if node_composite_source(n) == CompositeSource::Owned {
+                    drops.push(CallArgDrop::Composite(p));
+                }
+                p
+            }
+            LambdaCallSlot::Cap(c) => cap_composite(cx, c)?,
+        };
+        clif_args.push(ptr);
+    }
+    // Value-shape: variant, then nullable — two words each.
+    let value = slots
+        .iter()
+        .filter(|s| is_kind(s, AbiKind::Variant))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)));
+    for s in value {
+        let (disc, payload) = match s {
+            LambdaCallSlot::Arg(n, _) => {
+                let (d, p) = n.emit_clif(cx)?.value()?;
+                if node_composite_source(n) == CompositeSource::Owned {
+                    drops.push(CallArgDrop::Value { disc: d, payload: p });
+                }
+                (d, p)
+            }
+            LambdaCallSlot::Cap(c) => {
+                return Err(anyhow!(
+                    "lambda call `{fn_name}`: value-shape capture `{}` — \
+                     not yet lowered (name-keyed env table), subtree \
+                     node-walks",
+                    c.name
+                ));
+            }
+        };
+        clif_args.push(disc);
+        clif_args.push(payload);
+    }
+    let func_ref = cx.ctx.callee_refs.get(fn_name).ok_or_else(|| {
+        anyhow!(
+            "lambda call `{fn_name}`: callee_refs has no entry — \
+             discovery/declare drift"
+        )
+    })?;
+    let inst = cx.b.ins().call(*func_ref, &clif_args);
+    let ret = &info.kernel.return_type;
+    let result = match gir::abi_kind(ret) {
+        Some(
+            AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple
+            | AbiKind::Struct,
+        ) => {
+            let results = cx.b.inst_results(inst);
+            if results.len() != 1 {
+                return Err(anyhow!(
+                    "lambda call `{fn_name}`: callee returned {} values, \
+                     expected 1",
+                    results.len()
+                ));
+            }
+            CompiledExpr::Single(results[0])
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable) => {
+            let results = cx.b.inst_results(inst);
+            if results.len() != 2 {
+                return Err(anyhow!(
+                    "lambda call `{fn_name}`: value-shape callee returned \
+                     {} values, expected 2",
+                    results.len()
+                ));
+            }
+            CompiledExpr::Value { disc: results[0], payload: results[1] }
+        }
+        other => {
+            return Err(anyhow!(
+                "lambda call `{fn_name}`: return shape {other:?} not \
+                 lowered — subtree node-walks"
+            ));
+        }
+    };
+    emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
+    Ok(result)
+}
+
 fn compile_call_clif_args(
     b: &mut FunctionBuilder,
     fn_name: &ArcStr,

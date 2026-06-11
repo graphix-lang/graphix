@@ -1453,6 +1453,15 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
             (LambdaId, std::sync::Arc<typ::FnType>),
             fusion::lowering::CachedKernel,
         >>,
+    /// Lambdas whose kernel build is CURRENTLY on the stack —
+    /// `build_lambda_kernel`'s re-entrancy guard. Mutual recursion
+    /// (f's body builds g, whose body re-enters f before f's cache
+    /// entry lands) would otherwise recurse the build forever; the
+    /// guard refuses the inner build so the call chain de-fuses to
+    /// the node-walk instead of hanging the compiler. `Arc` so a
+    /// drop-guard can hold the set without borrowing the `ExecCtx`.
+    pub(crate) fusion_building:
+        triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// Whether JIT compilation is enabled for the current compile.
     /// Set by [`compile`] from `!flags.contains(CFlag::JitDisabled)`.
     /// Read by code paths that JIT-compile outside `fuse()`'s
@@ -1501,6 +1510,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             builtin_bindings: ahash::AHashMap::default(),
             jit: parking_lot::Mutex::new(gir_jit::Jit::new()?,),
             fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
+            fusion_building: triomphe::Arc::new(parking_lot::Mutex::new(
+                nohash::IntSet::default(),
+            )),
             jit_enabled: true,
             fusion_stats: FusionStats::default(),
         })

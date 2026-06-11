@@ -1200,7 +1200,7 @@ impl FusionCtx {
     }
 }
 
-fn ident_of(path: &ModPath) -> Option<&str> {
+pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
     // A Ref we can fuse must be a bare identifier (no module path),
     // because we read its value from a local binding in the kernel.
     // `foo::bar` would require a more elaborate story.
@@ -2382,7 +2382,7 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
 /// `GirOp::Call` keyed on the name in the per-slot path, so a
 /// first-builder-wins `fn_name` is benign there, but uniqueness keeps
 /// the two paths from cross-contaminating a shared cache entry's name).
-fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
+pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     g: &crate::node::lambda::GXLambda<R, E>,
     kernel_name: &ArcStr,
     ec: &mut crate::ExecCtx<R, E>,
@@ -2396,6 +2396,29 @@ fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     if let Some(cached) = ec.fusion_kernels.lock().get(&key).cloned() {
         return Some((cached, std::collections::BTreeMap::new()));
     }
+    // Re-entrancy guard: a lambda whose body (transitively) builds a
+    // lambda that calls back into THIS one — mutual recursion — would
+    // recurse this build forever: the cache entry above only lands on
+    // completion, and the per-build `known_fns` registration only
+    // covers SELF-recursion (a kernel knows its own name before its
+    // body emits). Refuse the re-entered build instead: the inner
+    // call site doesn't lower, the enclosing body emission fails, and
+    // the whole chain de-fuses to the node-walk. Mutually-recursive
+    // lambdas are a fusion gap, not a compiler hang.
+    struct BuildingGuard(
+        triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+        u64,
+    );
+    impl Drop for BuildingGuard {
+        fn drop(&mut self) {
+            self.0.lock().remove(&self.1);
+        }
+    }
+    let lid = g.id().inner();
+    if !ec.fusion_building.lock().insert(lid) {
+        return None;
+    }
+    let _building = BuildingGuard(ec.fusion_building.clone(), lid);
     // Translate each lambda formal arg into a kernel `RegionInput`.
     // The arg's source-level name (from `FnArgKind`) becomes the
     // kernel input slot name so the body's `Ref` lookups resolve.

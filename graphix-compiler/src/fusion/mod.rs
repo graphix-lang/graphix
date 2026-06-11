@@ -432,6 +432,249 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
     out
 }
 
+/// Visit `node` and every reachable descendant (pre-order: `f` sees a
+/// node before its children) — the canonical full-coverage immutable
+/// walker. The `NodeView` match is EXHAUSTIVE on purpose: a new node
+/// variant is a compile error here, not a silently-untraversed
+/// container (same discipline as `static_resolve::collect_lambda_binds`,
+/// which should migrate onto this walker at Stage F). Lambda BODIES are
+/// not descended (a body compiles per call site — its call sites belong
+/// to the callee kernel's own discovery), and `FusedKernel` is opaque
+/// (post-fusion synthetic).
+pub(crate) fn for_each_node<'a, R: crate::Rt, E: crate::UserEvent>(
+    node: &'a crate::Node<R, E>,
+    f: &mut dyn FnMut(&'a crate::Node<R, E>),
+) {
+    f(node);
+    use crate::NodeView;
+    macro_rules! rec {
+        ($($n:expr),*) => {{ $(for_each_node::<R, E>($n, f);)* }};
+    }
+    match node.view() {
+        NodeView::Bind(b) => rec!(&b.node),
+        NodeView::Module(m) => {
+            for child in m.nodes.iter() {
+                rec!(child)
+            }
+        }
+        NodeView::Block(blk) => {
+            for child in blk.children.iter() {
+                rec!(child)
+            }
+        }
+        NodeView::CallSite(cs) => {
+            for arg in cs.args.values() {
+                if let Some(n) = &arg.node {
+                    rec!(n)
+                }
+            }
+            rec!(&cs.fnode)
+        }
+        NodeView::Select(s) => {
+            rec!(&s.arg.node);
+            for (pat, body) in s.arms.iter() {
+                if let Some(g) = &pat.guard {
+                    rec!(&g.node)
+                }
+                rec!(&body.node)
+            }
+        }
+        NodeView::TryCatch(t) => {
+            for n in t.nodes.iter() {
+                rec!(n)
+            }
+            rec!(&t.handler)
+        }
+        NodeView::Qop(q) => rec!(&q.n),
+        NodeView::OrNever(o) => rec!(&o.n),
+        NodeView::ExplicitParens(p) => rec!(&p.n),
+        NodeView::TypeCast(t) => rec!(&t.n),
+        NodeView::Not(n) => rec!(&n.n),
+        NodeView::Connect(c) => rec!(&c.node),
+        NodeView::ConnectDeref(c) => rec!(&c.rhs.node),
+        NodeView::StringInterpolate(s) => {
+            for a in s.args.iter() {
+                rec!(&a.node)
+            }
+        }
+        NodeView::Any(a) => {
+            for n in a.n.iter() {
+                rec!(n)
+            }
+        }
+        NodeView::Sample(s) => rec!(&s.trigger, &s.arg.node),
+        NodeView::Struct(s) => {
+            for c in s.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::StructWith(s) => {
+            rec!(&s.source);
+            for r in s.replace.iter() {
+                rec!(&r.n.node)
+            }
+        }
+        NodeView::Tuple(t) => {
+            for c in t.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::Variant(v) => {
+            for c in v.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::Array(a) => {
+            for c in a.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::Map(m) => {
+            for c in m.keys.iter() {
+                rec!(&c.node)
+            }
+            for c in m.vals.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::StructRef(s) => rec!(&s.source),
+        NodeView::TupleRef(t) => rec!(&t.source),
+        NodeView::ArrayRef(a) => rec!(&a.source.node, &a.i.node),
+        NodeView::ArraySlice(a) => {
+            rec!(&a.source.node);
+            if let Some(s) = &a.start {
+                rec!(&s.node)
+            }
+            if let Some(e) = &a.end {
+                rec!(&e.node)
+            }
+        }
+        NodeView::MapRef(m) => rec!(&m.source.node, &m.key.node),
+        NodeView::ByRef(b) => rec!(&b.child),
+        NodeView::Deref(d) => rec!(&d.child),
+        NodeView::Add(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Sub(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Mul(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Div(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Mod(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedAdd(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedSub(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedMul(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedDiv(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedMod(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Eq(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Ne(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Lt(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Gt(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Lte(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Gte(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::And(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Or(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Lambda(_) => {}
+        NodeView::Ref(_)
+        | NodeView::Constant(_)
+        | NodeView::Use(_)
+        | NodeView::TypeDef(_)
+        | NodeView::Nop(_) => {}
+        NodeView::FusedKernel(_) => {}
+    }
+}
+
+/// One discovered statically-resolved lambda call site in a region
+/// being directly compiled — the lambda-call analogue of
+/// [`crate::fusion::lowering::BuiltinCallSiteInfo`]. Recorded by
+/// [`discover_lambda_calls`] during `try_fuse`'s ANALYSIS phase (before
+/// the jit lock — `build_lambda_kernel` needs `&mut ExecCtx`); consumed
+/// by `CallSite::emit_clif` via `BodyCx::lambda_site` to emit a CLIF
+/// `call` against the declared callee.
+#[derive(Debug, Clone)]
+pub struct LambdaCallInfo {
+    /// The callee kernel's name in the `funcids`/`callee_refs` maps.
+    /// Always the CACHED kernel's name (a cache hit returns the first
+    /// builder's name — possibly a `__hof_*` name from the per-slot
+    /// HOF path), never this call site's source name.
+    pub fn_name: arcstr::ArcStr,
+    /// Kept alive so the return-ABI read outlives the build and the
+    /// `by_kernel` entry pins the same `Arc`.
+    pub kernel: std::sync::Arc<crate::gir::GirKernel>,
+    /// Closure-converted captures, appended after the formal args in
+    /// the callee's input list (the caller marshals each from its own
+    /// env, BindId-first).
+    pub captures: Vec<crate::fusion::lowering::CaptureSlot>,
+}
+
+/// Walk the region collecting every statically-resolved lambda call
+/// site (building or cache-hitting each callee's [`CachedKernel`] —
+/// GIR body included, which is how the callee compiles during the
+/// parallel period) plus the transitive callee closure. A lambda that
+/// fails to build (unsupported arg/return shape, body that doesn't
+/// lower) is simply NOT recorded — its call site bails at emission and
+/// the subtree node-walks.
+fn discover_lambda_calls<R: crate::Rt, E: crate::UserEvent>(
+    root: &crate::Node<R, E>,
+    ctx: &mut crate::ExecCtx<R, E>,
+) -> (
+    nohash::IntMap<crate::expr::ExprId, LambdaCallInfo>,
+    std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<crate::gir::GirKernel>>,
+) {
+    let mut sites: nohash::IntMap<crate::expr::ExprId, LambdaCallInfo> =
+        nohash::IntMap::default();
+    let mut callees: std::collections::BTreeMap<
+        arcstr::ArcStr,
+        std::sync::Arc<crate::gir::GirKernel>,
+    > = std::collections::BTreeMap::new();
+    for_each_node(root, &mut |n| {
+        let crate::NodeView::CallSite(cs) = n.view() else {
+            return;
+        };
+        let Some(crate::ApplyView::Lambda(g)) = cs.resolved_apply() else {
+            return;
+        };
+        // Kernel name: the call site's SOURCE name, derived exactly
+        // like the classic region path (lowering.rs `emit_expr_node`'s
+        // CallSite arm) — a self-recursive body call resolves to the
+        // same key the build registered before emitting its body, so a
+        // recursive lambda builds ONCE with a coherent cache entry.
+        // (Shadowed same-name lambdas can't collide within one region:
+        // the second `let f` would put a Lambda-valued Bind inside the
+        // region, which doesn't emit — the region splits first.) A
+        // lambda-literal call (`(|x| x)(1)` — fnode isn't a Ref) has no
+        // name and stays on the node-walk, classic parity.
+        let crate::expr::ExprKind::Ref { name } = &cs.fnode.spec().kind
+        else {
+            return;
+        };
+        let name: arcstr::ArcStr =
+            match crate::fusion::lowering::ident_of(name) {
+                Some(ident) => arcstr::ArcStr::from(ident),
+                None => {
+                    let s: &str = name.0.as_ref();
+                    arcstr::ArcStr::from(s)
+                }
+            };
+        let Some((cached, sub)) =
+            crate::fusion::lowering::build_lambda_kernel(g, &name, ctx)
+        else {
+            return;
+        };
+        callees
+            .entry(cached.fn_name.clone())
+            .or_insert_with(|| cached.kernel.clone());
+        for (sub_name, sub_kernel) in sub {
+            callees.entry(sub_name).or_insert(sub_kernel.kernel);
+        }
+        sites.insert(
+            n.spec().id,
+            LambdaCallInfo {
+                fn_name: cached.fn_name,
+                kernel: cached.kernel,
+                captures: cached.captures,
+            },
+        );
+    });
+    (sites, callees)
+}
+
 /// Drive fusion for one child `Node` (the distributed path's uniform
 /// child-visit protocol, used by every [`crate::Update::jit`] impl and
 /// the compile-time driver): first try to fuse the WHOLE child subtree
@@ -525,6 +768,17 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
                 continue;
             }
             if !names.insert(fv.name.as_str()) {
+                // A real blocker, not protocol noise — log it (a
+                // silent Ok(None) after `attempted += 1` makes the
+                // stats disagree with the failure list).
+                ctx.fusion_stats.failed.push((
+                    node.spec().id,
+                    compact_str::format_compact!(
+                        "non-scalar region inputs share basename `{}` — \
+                         refuse to fuse",
+                        fv.name
+                    ),
+                ));
                 return Ok(None);
             }
         }
@@ -543,6 +797,12 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
         &crate::expr::ModPath::root(),
         &mut discovery,
     );
+    // Statically-resolved lambda call sites: build (or cache-hit) each
+    // callee's kernel NOW — `build_lambda_kernel` needs `&mut ExecCtx`,
+    // which emission (under the jit lock) can't have. The callees
+    // compile from their GIR bodies during the parallel period; the
+    // parent's call sites emit CLIF `call`s against them.
+    let (lambda_sites, lambda_callees) = discover_lambda_calls(node, ctx);
     let source_id = node.spec().id;
     let mut sig = sig_from_inputs(
         arcstr::ArcStr::from(
@@ -563,9 +823,10 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     let wrapped = match crate::gir_jit::compile_kernel_with_callees_direct(
         &mut ctx.jit.lock(),
         &kernel,
-        &std::collections::BTreeMap::new(),
+        &lambda_callees,
         node,
         &discovery.apply_sites,
+        &lambda_sites,
     ) {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
@@ -607,7 +868,17 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
             ctx.fusion_stats.fused += 1;
             Ok(Some(n))
         }
-        Err(_) => Ok(None),
+        Err(e) => {
+            // The kernel COMPILED but the runtime carrier refused it —
+            // log like any other blocker (a silent Ok(None) here made
+            // `attempted` and `failed` disagree, which is exactly the
+            // drift FusionStats exists to expose).
+            ctx.fusion_stats.failed.push((
+                source_id,
+                compact_str::format_compact!("FusedKernel::new: {e:#}"),
+            ));
+            Ok(None)
+        }
     }
 }
 

@@ -898,11 +898,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         cx: &mut crate::gir_jit::BodyCx,
     ) -> Result<crate::gir_jit::CompiledExpr> {
         if let Some((_, f)) = &self.function {
-            // A resolved user-lambda callee is a cross-kernel call —
-            // lands in Stage E; until then the subtree node-walks.
+            // A resolved user-lambda callee is a cross-kernel call:
+            // `try_fuse`'s analysis discovered the site and built (or
+            // cache-hit) the callee kernel — emit a CLIF `call`
+            // against it. An undiscovered site (the lambda didn't
+            // build — unsupported arg/return shape, body that doesn't
+            // lower) de-fuses and the subtree node-walks.
             if matches!(f.view(), crate::ApplyView::Lambda(_)) {
+                if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
+                    return crate::gir_jit::emit_lambda_call_node(
+                        cx, self, &info,
+                    );
+                }
                 bail!(
-                    "emit_clif: cross-kernel lambda call — lands in Stage E; \
+                    "emit_clif: lambda call site not discovered — \
                      subtree node-walks"
                 );
             }

@@ -695,8 +695,14 @@ mod tests {
         }
         if fuse == Fuse::Clean {
             for (id, reason) in &stats.failed {
+                // Structural recurse noise, not coverage gaps: the
+                // attempt-then-recurse protocol logs the ancestor
+                // wrappers ("node does not emit CLIF"), and a
+                // function-valued let can never emit by design (the
+                // binding node-walks while its call sites fuse).
                 assert!(
-                    reason.contains("node does not emit CLIF"),
+                    reason.contains("node does not emit CLIF")
+                        || reason.contains("function-valued let"),
                     "expected `{code}` to fuse cleanly under DirectJit \
                      but {id:?} hit a real blocker: {reason}"
                 );
@@ -1328,6 +1334,109 @@ mod tests {
         all_three_agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::flat_map(a, |(k, v)| [k, v]) }",
+        )
+        .await;
+    }
+
+    /// Stage E probes: cross-kernel lambda calls on the direct path —
+    /// `try_fuse`'s analysis discovers statically-resolved lambda call
+    /// sites (full-coverage `for_each_node` walk), builds each callee
+    /// kernel via the shared `build_lambda_kernel` (GIR body,
+    /// classic-proven — including self-recursion and the tail
+    /// rebind-and-jump), and `CallSite::emit_clif` emits a CLIF `call`
+    /// with kind-grouped args + closure-converted captures.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_lambda_call_probes() {
+        // simple scalar call
+        all_three_agree_fused_clean(
+            "{ let f = |x: i64| x * i64:2; f(i64:21) }",
+        )
+        .await;
+        // two call sites, one callee kernel
+        all_three_agree_fused_clean(
+            "{ let f = |x: i64| x + i64:1; f(i64:1) + f(i64:2) }",
+        )
+        .await;
+        // scalar capture (closure conversion: `k` rides as a trailing
+        // kernel arg, marshalled from the calling kernel's env)
+        all_three_agree_fused_clean(
+            "{ let k = i64:10; let f = |x: i64| x * k; f(i64:4) }",
+        )
+        .await;
+        // f64 arg + return
+        all_three_agree_fused_clean(
+            "{ let f = |x: f64| x * f64:2.5; f(f64:4.0) }",
+        )
+        .await;
+        // composite (array) arg — the literal is an OWNED caller-side
+        // arg, dropped after the call (the callee clones on entry)
+        all_three_agree_fused_clean(
+            "{ let f = |a: Array<i64>| a[i64:0]$ + a[i64:1]$; \
+             f([i64:1, i64:2, i64:3]) }",
+        )
+        .await;
+        // callee body containing a HOF call: the fold inside the
+        // lambda body never statically resolves (#203 — the same gap
+        // on both paths), so the callee kernel can't build and the
+        // call node-walks. Flip when #203 lands.
+        all_three_agree(
+            "{ let f = |a: Array<i64>| \
+               array::fold(a, i64:0, |acc, x| acc + x); \
+             f([i64:1, i64:2, i64:3]) }",
+        )
+        .await;
+        // labeled arg — used explicitly and via its default
+        all_three_agree_fused_clean(
+            "{ let f = |#k: i64 = i64:5, x: i64| x + k; \
+             f(#k: i64:3, i64:2) + f(i64:2) }",
+        )
+        .await;
+        // Nullable (value-shape) return from a select body — blocked
+        // by #205 (pre-existing classic-GIR: GirStmt::Return routes on
+        // the un-normalized select arm-union type; unreachable
+        // classically because classic's planner never built this
+        // kernel). Values agree via node-walk; flip to
+        // all_three_agree_fused_clean when #205 lands.
+        all_three_agree(
+            "{ let f = |x: i64| -> [i64, null] \
+               select x { i64:0 => null, _ => x }; \
+             f(i64:5) }",
+        )
+        .await;
+        // self-recursion — E3 pending: `build_lambda_kernel` routes
+        // through `build_kir_kernel_from_region`, which hardcodes
+        // `self_info: None` ("Regions have no self-recursion") — the
+        // body's self call site can't lower, so recursive lambdas
+        // have NEVER built (classic included; its per-slot HOF
+        // consumers are non-recursive callbacks). E3 constructs
+        // `SelfInfo` in `build_lambda_kernel` and threads it through
+        // `build_kernel`. Flip to all_three_agree_fused_clean then.
+        all_three_agree(
+            "{ let rec f = |n: i64| -> i64 \
+               select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; \
+             f(i64:10) }",
+        )
+        .await;
+        // tail recursion — same E3 dependency; once SelfInfo threads
+        // through, the existing tail rebind-and-jump machinery
+        // (`try_emit_tail_call`/`tail_call_slots`) makes this a native
+        // loop. Depth kept stack-safe for the NODE-WALK (each
+        // recursive call nests native update frames — 50k overflows
+        // the interp); E3 adds a fused-only deep-depth probe.
+        all_three_agree(
+            "{ let rec lp = |n: i64, acc: i64| -> i64 \
+               select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
+             lp(i64:500, i64:0) }",
+        )
+        .await;
+        // lambda call INSIDE a HOF callback body: the callback's body
+        // isn't part of the region walk, so the inner site isn't
+        // discovered — the map kernel Errs and the whole construct
+        // node-walks (correct degradation). Extend discovery into HOF
+        // analysis_pred bodies to flip this.
+        all_three_agree(
+            "{ let f = |x: i64| x * i64:2; let a = [i64:1, i64:2]; \
+             array::map(a, |x| f(x)) }",
         )
         .await;
     }

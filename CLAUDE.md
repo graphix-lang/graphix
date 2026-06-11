@@ -465,7 +465,28 @@ value — derived from a single source (`gir.rs` `abi_params`/`AbiParamKind`).
   element; sparse `_` slots free via tuple_leaves; composite leaves
   node-walk). Remaining parity gaps: #150 (string/value elements,
   composite leaves, filter_map composite elems), #203 (nested HOFs
-  in lambda BODIES — Stage E).
+  in lambda BODIES — Stage E). Stage E1+E2 landed: cross-kernel
+  lambda calls on the direct path — `discover_lambda_calls` (the
+  canonical full `for_each_node` walker) builds callee kernels via
+  the shared `build_lambda_kernel` (pub(crate); callees compile from
+  GIR bodies during the parallel period), records
+  `ExprId → LambdaCallInfo` (the apply_sites pattern), and
+  `CallSite::emit_clif` + `emit_lambda_call_node` emit kind-grouped
+  CLIF calls with closure-converted captures (kernel-verified: the
+  capture rides the parent as an input, forwards as the trailing
+  arg). Source-name keying mirrors classic (`ident_of`). New guards:
+  `ExecCtx::fusion_building` (mutual-recursion re-entrancy —
+  pre-existing infinite-build landmine, now a de-fuse) and two
+  formerly-SILENT try_fuse Ok(None) paths now log (FusedKernel::new
+  Err; duplicate-basename). Findings: #205 (pre-existing:
+  GirStmt::Return mis-routes un-normalized Nullable select types —
+  the first kernel build ever to reach it found it); recursive
+  lambdas have NEVER fused on any path (`build_lambda_kernel` →
+  region build hardcodes `self_info: None`; the SelfInfo/tail
+  machinery exists unconnected) — E3 threads SelfInfo through,
+  unlocking recursion + tail loops for both paths. NOTE: deep
+  recursion overflows the NODE-WALK's native stack (~50k frames) —
+  keep node-walk-compared recursion probes shallow.
 - `delete_gir_ir.md` — superseded by `distributed_jit.md` (planned the same
   removal around a central walker); its scoping analysis and risks remain
   valid.
