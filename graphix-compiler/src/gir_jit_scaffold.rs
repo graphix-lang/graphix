@@ -21,11 +21,19 @@
 use super::*;
 
 /// The input array for a HOF loop. `owned` ⇒ the scaffold emits a
-/// `graphix_valarray_drop(ptr)` after the loop completes (at the
-/// single post-loop merge point). The classic GIR arms always pass
-/// `owned: false` (the array is a borrowed env local); the direct
-/// path (Stage D2) passes `owned: true` when the array operand is a
-/// fresh producer result.
+/// `graphix_valarray_drop(ptr)` after the loop completes — at the
+/// single post-loop merge point ONLY. A pending abort inside the loop
+/// body (composite-return DynCall pend, QopUnwrap, `push_field`'s
+/// bottom-abort) jumps to `pending_exit` WITHOUT dropping it:
+/// `emit_pending_cleanup` only sees `dyncall_buf_stack` entries and
+/// env-bound locals, and a raw `ArraySrc.ptr` is neither. So the
+/// contract for an owned fresh-producer input (Stage D2) is
+/// one-or-the-other: either register the ptr for pending cleanup (a
+/// valarray analogue of [`register_hof_buf`]) and pass `owned: true`,
+/// or bind it into the env as an owned composite local and pass
+/// `owned: false` (env scope-exit drops it — passing `owned: true` as
+/// well would DOUBLE-drop on the normal path). The classic GIR arms
+/// always pass `owned: false` (the array is a borrowed env local).
 pub(crate) struct ArraySrc {
     pub ptr: ClifValue,
     pub owned: bool,
@@ -136,6 +144,14 @@ fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
 /// (non-pending) path — `finalize` consumes the buf there, so the
 /// runtime drop happens exactly once (cleanup on pend, finalize
 /// otherwise).
+///
+/// No Err path pops this stack: a scaffold Err between register and
+/// finalize abandons the WHOLE kernel build (the caller discards the
+/// function and `clear_context`s; `LowerCtx` and its
+/// `dyncall_buf_stack` are constructed fresh per build). Catching a
+/// scaffold Err and continuing to emit within the same build would
+/// leave a stale entry that poisons every later pending-cleanup —
+/// don't.
 fn register_hof_buf(b: &mut FunctionBuilder, ctx: &LowerCtx, buf: ClifValue) {
     let buf_var = b.declare_var(types::I64);
     b.def_var(buf_var, buf);
@@ -231,10 +247,14 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
 /// - **Variant/Nullable/Value**: `graphix_value_buf_push_value` or
 ///   `_borrowed`, picked the same way; pushes both `(disc, payload)`
 ///   words.
-/// - **String**: `graphix_value_buf_push_string`. String SSA values
-///   are the ArcStr's raw thin-pointer bits (owned), NOT a pointer to
-///   an ArcStr struct — `_push_arcstr` would dereference them as one
+/// - **String**: `graphix_value_buf_push_string`, UNCONDITIONALLY —
+///   `src` is ignored because string SSA is always owned (every
+///   producer on both paths — ConstStr, Concat, Local/Ref reads —
+///   hands out a fresh refcount; see `ReturnDropShape::String`). The
+///   bits are the ArcStr's raw thin pointer, NOT a pointer to an
+///   ArcStr struct — `_push_arcstr` would dereference them as one
 ///   (UAF/UB); `_push_string` takes the ArcStr by value (consumes).
+///   A caller with a genuinely borrowed string SSA must clone first.
 /// - **Unit/Null**: invalid as a field — caller should have rejected.
 pub(crate) fn push_field(
     cx: &mut BodyCx,
@@ -583,6 +603,15 @@ where
 /// FIRST, then the element (GIR construction pins this order); the
 /// body's result re-defines the acc Variable. No output buf, no
 /// pending-cleanup registration.
+///
+/// The `init`/`body` closures must yield a DEFINITELY-VALID scalar:
+/// the design contract is that a may-bottom fold body de-fuses at
+/// BUILD time, so a closure holding a `Scalar2` must Err (the GIR
+/// arms get this from `compile_scalar`'s `.single()`), never strip
+/// the validity bit and return the bare value. Same contract for
+/// [`emit_filter_loop`]/[`emit_find_loop`] predicates and
+/// [`emit_flat_map_loop`] bodies. Contrast [`push_field`] (the map
+/// path), which accepts `Scalar2` and bottom-aborts at RUNTIME.
 pub(crate) fn emit_fold_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
@@ -713,7 +742,11 @@ where
 /// payload)` pair (or null). Same merge shape as [`emit_find_loop`],
 /// but the body produces the pair directly (not a predicate), and a
 /// composite element is dropped EVERY iteration right after the body
-/// (the result is the body value, never the element).
+/// (the result is the body value, never the element). The closure's
+/// pair must be OWNED and independent of the element — the element is
+/// dropped before the null test, and on the found edge the pair
+/// leaves the loop as the kernel's result (like
+/// [`emit_flat_map_loop`]'s owned-ptr requirement).
 pub(crate) fn emit_find_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,

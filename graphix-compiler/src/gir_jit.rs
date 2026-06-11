@@ -7667,11 +7667,11 @@ fn compile_scalar_impl(
             let call = b.ins().call(helper, &[disc, payload, idx_const]);
             Ok(b.inst_results(call)[0])
         }
-        // `ArrayFindMap` is value-shape (Nullable<out>) and composite-
-        // input-capable; not yet JIT-lowered (the interp handles it via
-        // `fuse()` fallback).
+        // ArrayFindMap produces a Nullable (Value-shape) result, so
+        // `compile_expr` routes it to `compile_value_expr`; reaching the
+        // scalar path means routing drifted.
         GirOp::ArrayFindMap { .. } => Err(anyhow!(
-            "ArrayFindMap not yet JIT-lowered"
+            "ArrayFindMap is Value-shape — should route to compile_value_expr"
         )),
     }
 }

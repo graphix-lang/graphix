@@ -328,15 +328,33 @@ flip).
   sharper gate than value agreement for a pure refactor. Value gates
   also green: 1423 fixtures (all FuseExpect::Jit intact), fuzz suites
   6/6, regress 16/16, 150 generated + 400 mutated programs, 0
-  divergences. **D2 preconditions recorded:** (1) `ArraySrc { owned:
+  divergences. A 27-agent adversarial review (4 angles × verify)
+  confirmed the refactor and surfaced only D2-facing contract gaps +
+  one stale comment, all addressed as doc-contract text on the
+  scaffolds. **D2 preconditions recorded:** (1) `ArraySrc { owned:
   true }` (fresh-producer input arrays) drops only on the NORMAL
   post-loop path — a mid-loop pending abort (`pending_exit`) or build
   Err won't release it, because a raw SSA value is invisible to
-  `emit_pending_cleanup`; D2 must bind the owned input into the env as
-  an owned composite local (or register it like the HOF buf) before
-  passing owned:true. (2) `emit_filter_map_loop` is PrimType-in/out by
-  construction (the GIR op's own restriction) — if D2's filter_map
-  needs wider shapes it extends the scaffold, not bypasses it. Next:
+  `emit_pending_cleanup`. The contract is one-or-the-other: register
+  the ptr for pending cleanup (a valarray analogue of
+  `register_hof_buf`) + owned:true, OR env-bind it as an owned
+  composite + owned:false — env-bind PLUS owned:true double-drops on
+  the normal path (doc'd on `ArraySrc`). (2) `emit_filter_map_loop` is
+  PrimType-in/out by construction (the GIR op's own restriction) — if
+  D2's filter_map needs wider shapes it extends the scaffold, not
+  bypasses it. (3) The scaffold surface (and the BodyCx pieces its
+  closures need) is `pub(crate)` — but `MapFn`/`FoldFn::emit_clif`
+  impls live in package CRATES (graphix-package-core/-array), so D2
+  re-exports the scaffolds `pub` alongside the plan's §1 BodyCx
+  public-surface work. (4) All scaffold bindings are name-only
+  (`env.bind`/`bind_composite`); the direct path resolves BindId-first
+  (C2, the #162/#167 shadowing class) — `HofElem` grows an
+  `Option<BindId>` when D2 wires the first Node-body closure. (5) The
+  bare-`ClifValue` closures (fold init/body, filter/find pred,
+  flat_map body) carry the may-bottom BUILD-time de-fuse contract —
+  closure must Err on Scalar2, never strip validity (doc'd on
+  `emit_fold_loop`); `push_field` (map/init) is the one RUNTIME
+  bottom-abort seam. Next:
   D2 `Apply::emit_clif` on MapQ/FoldQ + per-HOF
   `MapFn`/`FoldFn::emit_clif`, one at a time (map → filter → fold →
   flat_map → filter_map → find → find_map → array::init), preserving
