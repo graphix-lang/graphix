@@ -296,6 +296,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.static_resolve_fn_args(ctx, fn_args)
     }
 
+    fn emit_clif(
+        &self,
+        callsite: &crate::node::callsite::CallSite<R, E>,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<Option<crate::gir_jit::CompiledExpr>> {
+        // Without this delegation the trait default's `Ok(None)`
+        // silently swallows every builtin's emission hook — the
+        // call site falls to DynCall and the builtin "loses fusion"
+        // with no error anywhere (it happened: Stage D2 landed
+        // MapQ::emit_clif and no probe inlined until the wrapper
+        // was caught).
+        self.apply.emit_clif(callsite, cx)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

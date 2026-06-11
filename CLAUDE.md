@@ -398,6 +398,41 @@ value — derived from a single source (`gir.rs` `abi_params`/`AbiParamKind`).
   CLIF-identical via `GRAPHIX_DUMP_CLIF` differential. D2 reuses the
   scaffolds from `Apply::emit_clif` HOF impls (pass `ArraySrc { owned:
   true }` for fresh producer inputs — dead config under the GIR arms).
+  D2-map landed: `MapFn::emit_clif` + MapQ's `Apply::emit_clif`
+  orchestration + `MapImpl` via `emit_map_loop` — whole-block maximal
+  fusion on the direct path, EXCEEDING classic on composite-elem and
+  qop-body maps. TRAP (cost a day): `BuiltInLambda` (node/lambda.rs,
+  the builtin plumbing wrapper) must delegate EVERY `Apply` method —
+  it delegated ten but not the new `emit_clif`, so the trait default's
+  `Ok(None)` silently swallowed every builtin's hook while all probes
+  "passed" (the array-literal region satisfied `fused > 0`
+  vacuously). Diagnostics that catch this class: `graphix-fuzz run
+  <f>` runs all THREE modes printing per-mode `attempted/fused` + the
+  blocker list, and probe suites use a `Fuse::{No,Some,Clean}` ladder
+  (`Clean` = fused>0 AND no non-ancestor-noise blocker). Nested HOFs
+  don't inline on either path (#203 — resolve_static_calls doesn't
+  descend lambda bodies). D2-filter landed: `FilterImpl::emit_clif`
+  via `emit_filter_loop` — the orchestration is generic over `MapFn`,
+  so each further HOF is one new method. Filter's contract: a
+  may-bottom (Scalar2) PREDICATE Errs = build-time de-fuse (vs map's
+  runtime bottom-abort seam) — there's no runtime keep-vs-drop answer
+  for a bottom pred; canonically the pred slot never fires and the
+  output BLOCKS. The strong de-fuse probe is statically-may-bottom /
+  runtime-clean (div by element, no zero): de-fuses, then node-walks
+  to a REAL value all modes agree on — Timeout==Timeout agreement is
+  value-blind. Composite-elem filters inline on direct only
+  (classic needs a register-scalar elem for single-name callbacks).
+  D2-fold landed: `FoldFn::emit_clif` + FoldQ's `Apply::emit_clif`
+  (the 2-arg `(acc, elem)` orchestration) + `FoldImpl` via
+  `emit_fold_loop`; the scaffold's acc bind gained `Option<BindId>`
+  (classic passes None — differential-proven invariant), so
+  `fold(a, acc, |acc, x| ...)` resolves the init's outer `acc` vs
+  the loop's acc BindId-first. BOTH init and body closures de-fuse
+  at build on may-bottom (a bottom acc poisons all later iterations —
+  no per-element runtime seam). Fold probes found #204 (pre-existing,
+  both paths): a HOF callsite in OPERAND position (`k + fold(...)`)
+  never statically resolves — static_resolve's visit_mut only
+  descends Module/Block/Bind/CallSite (same class as #203, Stage E).
 - `delete_gir_ir.md` — superseded by `distributed_jit.md` (planned the same
   removal around a central walker); its scoping analysis and risks remain
   valid.

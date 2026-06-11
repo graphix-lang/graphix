@@ -81,7 +81,7 @@ use std::collections::BTreeMap;
 /// arms below and the direct node path's HOF emitters (Stage D2 of
 /// `design/distributed_jit.md`).
 #[path = "gir_jit_scaffold.rs"]
-pub(crate) mod scaffold;
+pub mod scaffold;
 
 // ─── JIT context ─────────────────────────────────────────────────
 
@@ -2361,11 +2361,15 @@ pub(crate) struct JitEnv {
     /// later read; a non-tainted local has `valid: None` (the fast
     /// path, read back as `CompiledExpr::Single`).
     locals: Vec<(ArcStr, Variable, Option<Variable>, PrimType, Option<crate::BindId>)>,
-    /// Composite parameter pointer Variables: `(name, var)`. The var
-    /// holds a `*const ValArray` (CLIF i64 on 64-bit targets). Array,
-    /// tuple, and struct params share this table — they differ only
-    /// in how the kernel reads slots, not in the pointer layout.
-    composites: Vec<(ArcStr, Variable)>,
+    /// Composite parameter pointer Variables: `(name, var, bind_id)`.
+    /// The var holds a `*const ValArray` (CLIF i64 on 64-bit targets).
+    /// Array, tuple, and struct params share this table — they differ
+    /// only in how the kernel reads slots, not in the pointer layout.
+    /// `bind_id` is `Some` only for slots bound via
+    /// [`Self::bind_composite_with_id`] (currently the HOF loop
+    /// element); lookups resolve BindId-first with name fallback,
+    /// mirroring `locals`.
+    composites: Vec<(ArcStr, Variable, Option<crate::BindId>)>,
     /// Variant locals — each entry holds a [`ValueVar`] (`disc`,
     /// `payload`) representing the two-word `repr(u64)` Value. Reads
     /// return both Variables via `b.use_var`; consumer ops
@@ -2448,7 +2452,19 @@ impl JitEnv {
     }
 
     fn bind_composite(&mut self, name: ArcStr, var: Variable) {
-        self.composites.push((name, var));
+        self.composites.push((name, var, None));
+    }
+
+    /// [`Self::bind_composite`] carrying its source BindId — the
+    /// composite analogue of [`Self::bind_with_id`], so a composite
+    /// `Ref` resolves BindId-first (exact under shadowing).
+    fn bind_composite_with_id(
+        &mut self,
+        name: ArcStr,
+        var: Variable,
+        bind_id: Option<crate::BindId>,
+    ) {
+        self.composites.push((name, var, bind_id));
     }
 
     fn bind_variant(&mut self, name: ArcStr, vv: ValueVar) {
@@ -2492,8 +2508,21 @@ impl JitEnv {
     }
 
     fn lookup_composite(&self, name: &str) -> Option<Variable> {
-        for (n, v) in self.composites.iter().rev() {
+        for (n, v, _) in self.composites.iter().rev() {
             if n.as_str() == name {
+                return Some(*v);
+            }
+        }
+        None
+    }
+
+    /// Resolve a composite slot by its source BindId — see
+    /// [`Self::lookup_bind_id`]. Only slots bound via
+    /// [`Self::bind_composite_with_id`] are found here; callers fall
+    /// back to the name lookup for id-less slots.
+    fn lookup_composite_bind_id(&self, id: crate::BindId) -> Option<Variable> {
+        for (_, v, bid) in self.composites.iter().rev() {
+            if *bid == Some(id) {
                 return Some(*v);
             }
         }
@@ -3005,7 +3034,7 @@ fn compile_body(
                     .iter()
                     .map(|s| s.name.as_str())
                     .collect();
-                for (name, var) in &env.composites[ctx.param_mark.composites..] {
+                for (name, var, _) in &env.composites[ctx.param_mark.composites..] {
                     if slot_names.contains(name.as_str()) {
                         continue;
                     }
@@ -3593,7 +3622,7 @@ impl BodyCx<'_, '_, '_> {
 /// producers, calls) hands out an owned ref. Used by the direct path's
 /// let-bind / block-tail / kernel-return sites to decide whether a
 /// clone is needed before the source's scope drops.
-pub(crate) fn node_composite_source<R: crate::Rt, E: crate::UserEvent>(
+pub fn node_composite_source<R: crate::Rt, E: crate::UserEvent>(
     node: &crate::Node<R, E>,
 ) -> CompositeSource {
     use crate::NodeView;
@@ -3910,13 +3939,21 @@ pub(crate) fn emit_ref_node(
         }
         // Composite: BORROWED pointer read — consumers clone via
         // `ensure_owned_composite_src` when they need ownership.
+        // BindId-first like the scalar arm (exact under shadowing);
+        // name fallback covers the id-less slots (params, lets, the
+        // GIR path's locals).
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let name = ref_local_name(spec).ok_or_else(|| {
-                anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
-            })?;
-            let var = cx.env.lookup_composite(name).ok_or_else(|| {
-                anyhow!("emit_clif: undefined composite local `{name}`")
-            })?;
+            let var = match cx.env.lookup_composite_bind_id(id) {
+                Some(var) => var,
+                None => {
+                    let name = ref_local_name(spec).ok_or_else(|| {
+                        anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
+                    })?;
+                    cx.env.lookup_composite(name).ok_or_else(|| {
+                        anyhow!("emit_clif: undefined composite local `{name}`")
+                    })?
+                }
+            };
             Ok(CompiledExpr::Single(cx.b.use_var(var)))
         }
         other => Err(anyhow!(
@@ -4441,7 +4478,7 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
     let arr_drop = cx.helper("graphix_valarray_drop")?;
     let val_drop = cx.helper("graphix_value_drop")?;
     let str_drop = cx.helper("graphix_arcstr_drop")?;
-    for (_, var) in &cx.env.composites[mark.composites..] {
+    for (_, var, _) in &cx.env.composites[mark.composites..] {
         let ptr = cx.b.use_var(*var);
         cx.b.ins().call(arr_drop, &[ptr]);
     }
@@ -6125,7 +6162,7 @@ fn compile_block_scalar(
         .helper_refs
         .get("graphix_arcstr_drop")
         .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
-    for (_, var) in &env.composites[mark.composites..] {
+    for (_, var, _) in &env.composites[mark.composites..] {
         let ptr = b.use_var(*var);
         b.ins().call(arr_drop, &[ptr]);
     }
@@ -6712,7 +6749,7 @@ fn compile_value_expr(
                 ctx.helper_refs.get("graphix_value_drop").ok_or_else(
                     || anyhow!("missing graphix_value_drop"),
                 )?;
-            for (_, var) in &env.composites[mark.composites..] {
+            for (_, var, _) in &env.composites[mark.composites..] {
                 let ptr = b.use_var(*var);
                 b.ins().call(arr_drop, &[ptr]);
             }
@@ -6964,7 +7001,7 @@ fn compile_value_expr(
             let (disc, payload) = scaffold::emit_find_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, typ: elem },
+                &scaffold::HofElem { name: elem_local, id: None, typ: elem },
                 |cx| compile_scalar(cx.b, predicate, cx.env, cx.ctx),
             )?;
             Ok(CompiledExpr::Value { disc, payload })
@@ -6981,7 +7018,7 @@ fn compile_value_expr(
             let (disc, payload) = scaffold::emit_find_map_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, typ: in_elem },
+                &scaffold::HofElem { name: elem_local, id: None, typ: in_elem },
                 |cx| compile_value_expr(cx.b, body, cx.env, cx.ctx)?.value(),
             )?;
             Ok(CompiledExpr::Value { disc, payload })
@@ -7551,7 +7588,7 @@ fn compile_scalar_impl(
             scaffold::emit_map_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, typ: in_elem },
+                &scaffold::HofElem { name: elem_local, id: None, typ: in_elem },
                 &body.typ,
                 out_src,
                 |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
@@ -7570,7 +7607,7 @@ fn compile_scalar_impl(
             scaffold::emit_filter_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, typ: elem },
+                &scaffold::HofElem { name: elem_local, id: None, typ: elem },
                 |cx| compile_scalar(cx.b, predicate, cx.env, cx.ctx),
             )
         }
@@ -7605,7 +7642,7 @@ fn compile_scalar_impl(
             scaffold::emit_flat_map_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, typ: in_elem },
+                &scaffold::HofElem { name: elem_local, id: None, typ: in_elem },
                 |cx| {
                     let p = compile_scalar(cx.b, body, cx.env, cx.ctx)?;
                     ensure_owned_composite(cx.b, cx.ctx, body, p)
@@ -7627,7 +7664,8 @@ fn compile_scalar_impl(
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
                 acc_prim,
                 acc_local,
-                &scaffold::HofElem { name: elem_local, typ: elem_typ },
+                None,
+                &scaffold::HofElem { name: elem_local, id: None, typ: elem_typ },
                 |cx| compile_scalar(cx.b, init, cx.env, cx.ctx),
                 |cx| compile_scalar(cx.b, body, cx.env, cx.ctx),
             )
@@ -7731,7 +7769,7 @@ fn variant_payload_helper(p: PrimType) -> Result<&'static str> {
 /// a tail-call rebind needs a refcount bump (`Borrowed`) or can
 /// transfer ownership directly (`Owned`).
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CompositeSource {
+pub enum CompositeSource {
     /// Expression produces a fresh owned pointer — TupleNew,
     /// StructNew, ArrayInit, etc. Transfer to the slot as-is.
     Owned,
@@ -8102,7 +8140,7 @@ fn drop_owned_composites(
         .helper_refs
         .get("graphix_value_drop")
         .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-    for (_, var) in &env.composites {
+    for (_, var, _) in &env.composites {
         let ptr = b.use_var(*var);
         b.ins().call(arr_drop, &[ptr]);
     }

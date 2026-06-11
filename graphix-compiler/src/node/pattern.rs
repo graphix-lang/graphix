@@ -434,6 +434,19 @@ impl StructPatternNode {
         }
     }
 
+    /// For a single-name binding pattern (`x` in `|x| body`), the bound
+    /// `BindId`; `None` for destructures / ignores / literals. The
+    /// body's `Ref`s to the arg carry this id — HOF emission passes it
+    /// through so the direct JIT path's BindId-first resolution finds
+    /// the loop-element slot exactly (see [`Self::tuple_leaves`] for
+    /// why this is an accessor rather than a public enum match).
+    pub fn single_bind_id(&self) -> Option<BindId> {
+        match self {
+            Self::Bind(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     pub fn ids<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
         match &self {
             Self::Ignore | Self::Literal(_) => (),

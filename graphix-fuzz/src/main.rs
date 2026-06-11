@@ -9,7 +9,7 @@
 
 use anyhow::{bail, Result};
 use graphix_fuzz::{
-    check, fuzz, generate_campaign, minimize, regression_corpus_len, run_program, run_regression,
+    check, fuzz, generate_campaign, minimize, regression_corpus_len, run_regression,
     Corpus, Mode, Outcome,
 };
 use std::sync::Arc;
@@ -152,9 +152,22 @@ async fn main() -> Result<()> {
             let code = code.trim();
             match cmd {
                 "run" => {
-                    for mode in [Mode::Interp, Mode::Jit] {
-                        let o = run_program(code, mode, TIMEOUT).await;
+                    for mode in [Mode::Interp, Mode::Jit, Mode::DirectJit] {
+                        let (o, stats) =
+                            graphix_fuzz::run_program_with_stats(code, mode, TIMEOUT)
+                                .await;
                         println!("{mode:?}: {}", render(&o));
+                        // Stats are compile-time fusion counters; only the
+                        // fusing modes have anything to say.
+                        if !matches!(mode, Mode::Interp) {
+                            println!(
+                                "  fusion: attempted={} fused={}",
+                                stats.attempted, stats.fused
+                            );
+                            for (id, why) in &stats.failed {
+                                println!("  failed {id:?}: {why}");
+                            }
+                        }
                     }
                 }
                 "check" => match check(code, TIMEOUT).await {

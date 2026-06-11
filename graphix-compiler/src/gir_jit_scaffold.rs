@@ -34,15 +34,22 @@ use super::*;
 /// `owned: false` (env scope-exit drops it — passing `owned: true` as
 /// well would DOUBLE-drop on the normal path). The classic GIR arms
 /// always pass `owned: false` (the array is a borrowed env local).
-pub(crate) struct ArraySrc {
+pub struct ArraySrc {
     pub ptr: ClifValue,
     pub owned: bool,
 }
 
 /// Loop element binding: bound under `name` in the `JitEnv` for the
-/// duration of each iteration, with shape dispatch from `typ`.
-pub(crate) struct HofElem<'a> {
+/// duration of each iteration, with shape dispatch from `typ`. `id` is
+/// the callback's element-arg `BindId` when the caller has one (the
+/// direct node path, where the body's element `Ref`s carry it and
+/// resolve BindId-first — the #162/#167 shadowing class); the classic
+/// GIR arms pass `None` (their synthetic locals are name-only). Bind
+/// bookkeeping emits no instructions, so `Some` vs `None` never
+/// changes the emitted CLIF.
+pub struct HofElem<'a> {
     pub name: &'a ArcStr,
+    pub id: Option<crate::BindId>,
     pub typ: &'a Type,
 }
 
@@ -94,7 +101,7 @@ fn bind_elem(
             let elem_val = cx.b.inst_results(call)[0];
             let var = cx.b.declare_var(prim_to_clif(prim));
             cx.b.def_var(var, elem_val);
-            cx.env.bind(elem.name.clone(), var, prim);
+            cx.env.bind_with_id(elem.name.clone(), var, prim, elem.id);
             Ok(BoundElem::Scalar { var, prim })
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -103,7 +110,7 @@ fn bind_elem(
             let elem_ptr = cx.b.inst_results(call)[0];
             let var = cx.b.declare_var(types::I64);
             cx.b.def_var(var, elem_ptr);
-            cx.env.bind_composite(elem.name.clone(), var);
+            cx.env.bind_composite_with_id(elem.name.clone(), var, elem.id);
             Ok(BoundElem::Composite { var })
         }
         _ => Err(anyhow!(
@@ -256,7 +263,7 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
 ///   (UAF/UB); `_push_string` takes the ArcStr by value (consumes).
 ///   A caller with a genuinely borrowed string SSA must clone first.
 /// - **Unit/Null**: invalid as a field — caller should have rejected.
-pub(crate) fn push_field(
+pub fn push_field(
     cx: &mut BodyCx,
     buf: ClifValue,
     cv: CompiledExpr,
@@ -337,7 +344,7 @@ pub(crate) fn push_field(
 /// node-walk's `n.max(0)`: `buf_new(neg)` would reserve `usize::MAX`
 /// and panic across the extern "C" boundary). `idx_name` binds the
 /// I64 loop counter Variable itself — no per-iteration copy.
-pub(crate) fn emit_init_loop<'a, 'f, 'c, F>(
+pub fn emit_init_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     n_raw: ClifValue,
     n_prim: PrimType,
@@ -383,7 +390,7 @@ where
 /// `array::map(arr, |x| body)` — push the body result per element. A
 /// composite element is an owned `*mut ValArray`, dropped AFTER the
 /// push (the body's element reads clone the fields they touch).
-pub(crate) fn emit_map_loop<'a, 'f, 'c, F>(
+pub fn emit_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
@@ -427,7 +434,7 @@ where
 /// `drop_block` for the composite case (created LAST, after
 /// `loop_exit` — block-creation order is part of the preserved
 /// emission sequence).
-pub(crate) fn emit_filter_loop<'a, 'f, 'c, F>(
+pub fn emit_filter_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
@@ -495,7 +502,7 @@ where
 /// `Nullable<out_elem>` per element as Value-shape `(disc, payload)`;
 /// collect the non-null payloads (cast back to `out_elem`'s register
 /// type). Scalar-only in/out element types.
-pub(crate) fn emit_filter_map_loop<'a, 'f, 'c, F>(
+pub fn emit_filter_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     in_elem: PrimType,
@@ -562,7 +569,7 @@ where
 /// into the output via `graphix_value_buf_extend_from_array` (which
 /// flattens + drops it). Linear — no per-element branch. A composite
 /// element is dropped after the body, before the extend.
-pub(crate) fn emit_flat_map_loop<'a, 'f, 'c, F>(
+pub fn emit_flat_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
@@ -612,11 +619,12 @@ where
 /// [`emit_filter_loop`]/[`emit_find_loop`] predicates and
 /// [`emit_flat_map_loop`] bodies. Contrast [`push_field`] (the map
 /// path), which accepts `Scalar2` and bottom-aborts at RUNTIME.
-pub(crate) fn emit_fold_loop<'a, 'f, 'c, I, F>(
+pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     acc_prim: PrimType,
     acc_name: &ArcStr,
+    acc_id: Option<crate::BindId>,
     elem: &HofElem,
     init: I,
     mut body: F,
@@ -639,7 +647,7 @@ where
     cx.b.switch_to_block(loop_body);
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    cx.env.bind(acc_name.clone(), acc_var, acc_prim);
+    cx.env.bind_with_id(acc_name.clone(), acc_var, acc_prim, acc_id);
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
     let new_acc = body(cx)?;
     drop_composite_elem(cx, &bound)?;
@@ -662,7 +670,7 @@ where
 /// match CONSUMES the owned element via `graphix_value_new_from_array`
 /// on the found edge and drops it on the advance edge (matched-once /
 /// not-this-iteration).
-pub(crate) fn emit_find_loop<'a, 'f, 'c, F>(
+pub fn emit_find_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
@@ -747,7 +755,7 @@ where
 /// dropped before the null test, and on the found edge the pair
 /// leaves the loop as the kernel's result (like
 /// [`emit_flat_map_loop`]'s owned-ptr requirement).
-pub(crate) fn emit_find_map_loop<'a, 'f, 'c, F>(
+pub fn emit_find_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,

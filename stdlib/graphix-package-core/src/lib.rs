@@ -661,6 +661,28 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     ) -> Option<graphix_compiler::gir::GirExpr> {
         None
     }
+
+    /// Direct-path codegen hook (Stage D2) — the [`Self::emit_gir`]
+    /// twin for the node-graph JIT. Implementations emit the HOF loop
+    /// into the open kernel via the `gir_jit::scaffold` fns, compiling
+    /// the callback body with `body.emit_clif(cx)`. Same contract as
+    /// [`graphix_compiler::Apply::emit_clif`]: `Ok(None)` = shape not
+    /// handled, and it MUST be decided BEFORE the first instruction is
+    /// emitted (run every gate up front); `Err` aborts the kernel
+    /// build (partial emission fine — the function is discarded). No
+    /// `ExecCtx`: emission runs under the jit lock (see
+    /// design/distributed_jit.md §1).
+    fn emit_clif(
+        _cx: &mut graphix_compiler::gir_jit::BodyCx,
+        _array_arg: &Node<R, E>,
+        _body: &Node<R, E>,
+        _elem_name: &ArcStr,
+        _elem_id: Option<graphix_compiler::BindId>,
+        _in_elem: &graphix_compiler::typ::Type,
+        _elem_binds: &[(graphix_compiler::BindId, usize)],
+    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug)]
@@ -1071,6 +1093,77 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         // analysis_pred is analysis-only — never run at runtime, no
         // need to put to sleep.
     }
+
+    /// Direct-path codegen (Stage D2) — the [`Apply::emit_clif`] twin
+    /// of the `GirEmitter::emit_gir` orchestration below: locate the
+    /// callback body through the analysis_pred's resolved CallSite,
+    /// extract the element name / BindId / destructure leaves, then
+    /// delegate to the per-`MapFn` [`MapFn::emit_clif`]. Every miss is
+    /// `Ok(None)` — nothing has been emitted yet, so the call site
+    /// falls back to its next strategy (DynCall, or no fusion).
+    fn emit_clif(
+        &self,
+        callsite: &CallSite<R, E>,
+        cx: &mut graphix_compiler::gir_jit::BodyCx,
+    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+        // No analysis_pred → callback wasn't statically resolvable.
+        let Some(slot) = self.analysis_pred.as_ref() else {
+            return Ok(None);
+        };
+        // Outer call site's positional args: array, callback.
+        let Some(array_arg) = callsite.arg_positional(0) else {
+            return Ok(None);
+        };
+        // Locate the callback's body Node through the synthesized
+        // inner CallSite's resolved Apply.
+        let inner_cs = match slot.pred.view() {
+            graphix_compiler::NodeView::CallSite(cs) => cs,
+            _ => return Ok(None),
+        };
+        let Some(inner_apply) = inner_cs.resolved_apply() else {
+            return Ok(None);
+        };
+        let g = match inner_apply {
+            graphix_compiler::ApplyView::Lambda(g) => g,
+            _ => return Ok(None),
+        };
+        let body = g.body();
+        // A `|(k, v)|` tuple-destructure arg has no single name —
+        // synthesize an element name and hand the per-leaf
+        // `(BindId, position)` list to the impl. A single-name `|x|`
+        // arg pulls its name from the callback `FnType.args[0].kind`
+        // and its BindId from the arg pattern (the body's `Ref`s carry
+        // that id — the direct path resolves BindId-first).
+        let (elem_name, elem_id, elem_binds) =
+            match g.args().first().and_then(|p| p.tuple_leaves()) {
+                Some(binds) => (arcstr::literal!("__elem"), None, binds),
+                None => {
+                    let n = match g.typ().args.first().map(|a| &a.kind) {
+                        Some(graphix_compiler::typ::FnArgKind::Positional {
+                            name: Some(n),
+                        }) => n.clone(),
+                        Some(graphix_compiler::typ::FnArgKind::Labeled {
+                            name,
+                            ..
+                        }) => name.clone(),
+                        _ => return Ok(None),
+                    };
+                    let id =
+                        g.args().first().and_then(|p| p.single_bind_id());
+                    (n, id, Vec::new())
+                }
+            };
+        // Delegate to the per-MapFn codegen.
+        T::emit_clif(
+            cx,
+            array_arg,
+            body,
+            &elem_name,
+            elem_id,
+            &self.etyp,
+            &elem_binds,
+        )
+    }
 }
 
 /// Fusion-time codegen for `MapQ`-built HOFs. Delegates to
@@ -1167,6 +1260,28 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
         _elem_binds: &[(graphix_compiler::BindId, usize)],
     ) -> Option<graphix_compiler::gir::GirExpr> {
         None
+    }
+
+    /// Direct-path codegen hook (Stage D2) — the [`MapFn::emit_clif`]
+    /// analog for the 2-arg `(acc, elem)` callback. `Ok(None)` gates
+    /// must all be decided before the first emitted instruction; after
+    /// emission starts a mismatch must `Err` (the kernel build aborts
+    /// and the subtree node-walks). The acc/elem BindIds come from the
+    /// callback's arg patterns — the direct path resolves Refs
+    /// BindId-first.
+    fn emit_clif(
+        _cx: &mut graphix_compiler::gir_jit::BodyCx,
+        _array_arg: &Node<R, E>,
+        _init_arg: &Node<R, E>,
+        _body: &Node<R, E>,
+        _acc_name: &ArcStr,
+        _acc_id: Option<graphix_compiler::BindId>,
+        _elem_name: &ArcStr,
+        _elem_id: Option<graphix_compiler::BindId>,
+        _in_elem: &graphix_compiler::typ::Type,
+        _elem_binds: &[(graphix_compiler::BindId, usize)],
+    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+        Ok(None)
     }
 }
 
@@ -1496,6 +1611,84 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             n.sleep(ctx)
         }
         // analysis_pred is analysis-only — no runtime sleep needed.
+    }
+
+    /// Direct-path codegen (Stage D2) — the [`Apply::emit_clif`] twin
+    /// of the `GirEmitter::emit_gir` orchestration below, adapted to
+    /// the 2-arg `(acc, elem)` callback. See `MapQ::emit_clif` for the
+    /// shared structure; every miss is `Ok(None)` (nothing emitted
+    /// yet — the call site falls back to DynCall or no fusion).
+    fn emit_clif(
+        &self,
+        callsite: &CallSite<R, E>,
+        cx: &mut graphix_compiler::gir_jit::BodyCx,
+    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+        let Some(slot) = self.analysis_pred.as_ref() else {
+            return Ok(None);
+        };
+        // Outer call site's positional args: array, init, callback.
+        let Some(array_arg) = callsite.arg_positional(0) else {
+            return Ok(None);
+        };
+        let Some(init_arg) = callsite.arg_positional(1) else {
+            return Ok(None);
+        };
+        let inner_cs = match slot.pred.view() {
+            graphix_compiler::NodeView::CallSite(cs) => cs,
+            _ => return Ok(None),
+        };
+        let Some(inner_apply) = inner_cs.resolved_apply() else {
+            return Ok(None);
+        };
+        let g = match inner_apply {
+            graphix_compiler::ApplyView::Lambda(g) => g,
+            _ => return Ok(None),
+        };
+        let body = g.body();
+        let mut params = g.typ().args.iter();
+        // The accumulator (1st) param is always a single name.
+        let acc_name = match params.next().map(|a| &a.kind) {
+            Some(graphix_compiler::typ::FnArgKind::Positional {
+                name: Some(n),
+            }) => n.clone(),
+            Some(graphix_compiler::typ::FnArgKind::Labeled {
+                name, ..
+            }) => name.clone(),
+            _ => return Ok(None),
+        };
+        let acc_id = g.args().first().and_then(|p| p.single_bind_id());
+        // The element (2nd) param may be an `|acc, (k, v)|`
+        // destructure — same handling as `MapQ::emit_clif`.
+        let (elem_name, elem_id, elem_binds) =
+            match g.args().get(1).and_then(|p| p.tuple_leaves()) {
+                Some(binds) => (arcstr::literal!("__elem"), None, binds),
+                None => {
+                    let n = match params.next().map(|a| &a.kind) {
+                        Some(graphix_compiler::typ::FnArgKind::Positional {
+                            name: Some(n),
+                        }) => n.clone(),
+                        Some(graphix_compiler::typ::FnArgKind::Labeled {
+                            name,
+                            ..
+                        }) => name.clone(),
+                        _ => return Ok(None),
+                    };
+                    let id = g.args().get(1).and_then(|p| p.single_bind_id());
+                    (n, id, Vec::new())
+                }
+            };
+        T::emit_clif(
+            cx,
+            array_arg,
+            init_arg,
+            body,
+            &acc_name,
+            acc_id,
+            &elem_name,
+            elem_id,
+            &self.etyp,
+            &elem_binds,
+        )
     }
 }
 

@@ -643,7 +643,28 @@ mod tests {
     /// correctly" from "silently never fused" (the C5 freeze gap: no
     /// select-rooted region was ever attempted and every value test
     /// passed).
-    async fn check_three(code: &str, must_fuse: bool) {
+    /// How much fusion a probe demands under `DirectJit`, beyond
+    /// value agreement.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fuse {
+        /// No fusion assertion — the probe pins value agreement only
+        /// (known-fallback shapes, flip when their stage lands).
+        No,
+        /// At least one region fused (`fused > 0`). NOTE: an auxiliary
+        /// region (an array literal, a select with `v` as input) can
+        /// satisfy this while the construct under test node-walks —
+        /// use `Clean` when the whole program is expected to fuse.
+        Some,
+        /// `fused > 0` AND no real blocker: the only tolerated failed
+        /// entries are the attempt-then-recurse ancestor noise ("node
+        /// does not emit CLIF" for the Module/Bind wrappers above the
+        /// fused region). This is what catches the silent-loss class —
+        /// the missing `BuiltInLambda::emit_clif` delegation passed
+        /// every `Some`-level probe while no map ever inlined.
+        Clean,
+    }
+
+    async fn check_three(code: &str, fuse: Fuse) {
         let t = Duration::from_secs(10);
         let (interp, jit, (direct, stats)) = tokio::join!(
             run_program(code, Mode::Interp, t),
@@ -659,7 +680,7 @@ mod tests {
             "Interp vs DirectJit disagree for `{code}`: \
              {interp:?} vs {direct:?}"
         );
-        if must_fuse {
+        if fuse != Fuse::No {
             let why: String = stats
                 .failed
                 .iter()
@@ -672,17 +693,35 @@ mod tests {
                 stats.attempted,
             );
         }
+        if fuse == Fuse::Clean {
+            for (id, reason) in &stats.failed {
+                assert!(
+                    reason.contains("node does not emit CLIF"),
+                    "expected `{code}` to fuse cleanly under DirectJit \
+                     but {id:?} hit a real blocker: {reason}"
+                );
+            }
+        }
     }
 
     async fn all_three_agree(code: &str) {
-        check_three(code, false).await
+        check_three(code, Fuse::No).await
     }
 
     /// [`all_three_agree`] + "it really fused": the probe is KNOWN to
     /// compile under the direct path, so a `fused == 0` run is a
     /// coverage regression even though every value still agrees.
     async fn all_three_agree_fused(code: &str) {
-        check_three(code, true).await
+        check_three(code, Fuse::Some).await
+    }
+
+    /// [`all_three_agree_fused`] + "and NOTHING legitimately refused":
+    /// the whole program is expected to compile into kernels, so any
+    /// non-ancestor-noise blocker is a regression. Prefer this for new
+    /// probes; audit a probe's full blocker profile before using it
+    /// (e.g. a bare-Null `let` legitimately refuses → use `_fused`).
+    async fn all_three_agree_fused_clean(code: &str) {
+        check_three(code, Fuse::Clean).await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -965,6 +1004,264 @@ mod tests {
         // A struct-let + field accessors.
         all_three_agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }")
             .await;
+    }
+
+    /// Stage D2 probes: inline `array::map` emission on the direct
+    /// path (`Apply::emit_clif` on MapQ → `MapFn::emit_clif` on the
+    /// array package's MapImpl → `scaffold::emit_map_loop`). V1 scope:
+    /// BORROWED input arrays + single-name callbacks; the last two
+    /// probes pin the deliberate V1 fallbacks (owned input array,
+    /// destructured callback) as value-agreeing node-walks — flip them
+    /// to `all_three_agree_fused` when the owned-arg stage / D3 land.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_map_probes() {
+        // scalar → scalar
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3]; array::map(a, |x| x * i64:2) }",
+        )
+        .await;
+        // scalar → tuple (composite out, owned push)
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; array::map(a, |x| (x, x * i64:2)) }",
+        )
+        .await;
+        // composite (tuple) element + accessors in the body
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
+             array::map(a, |p| p.0 + p.1) }",
+        )
+        .await;
+        // scalar → Nullable out (select body, Value-shape push)
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; \
+             array::map(a, |x| select x { i64:1 => i64:10, _ => null }) }",
+        )
+        .await;
+        // capture: the body reads an outer scalar (a kernel param
+        // under DirectJit — BindId-first resolution next to the
+        // BindId-bound loop element)
+        all_three_agree_fused_clean(
+            "{ let k = i64:10; let a = [i64:1, i64:2]; \
+             array::map(a, |x| x * k) }",
+        )
+        .await;
+        // Nested map-in-map: does NOT inline on either path — the
+        // inner CallSite lives in the callback's lambda body, which
+        // `resolve_static_calls` never descends into, so the inner
+        // MapQ has no analysis_pred (and no bound function) at
+        // emission time. Classic has the identical gap (its emit_gir
+        // path hits the same unresolved inner site); the runtime
+        // per-slot machinery carries correctness. Flip to
+        // `all_three_agree_fused` when static resolution descends
+        // into lambda bodies (Stage E callee-prepass territory).
+        all_three_agree(
+            "{ let a = [[i64:1, i64:2], [i64:3]]; \
+             array::map(a, |row| array::map(row, |x| x + i64:1)) }",
+        )
+        .await;
+        // string out (push_string)
+        all_three_agree_fused_clean(
+            r#"{ let a = [i64:1, i64:2]; array::map(a, |x| "v[x]") }"#,
+        )
+        .await;
+        // qop in the body — a may-bottom (Scalar2) field, push_field's
+        // RUNTIME bottom-abort seam (no overflow here, so values flow)
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; array::map(a, |x| (x +? i64:1)$) }",
+        )
+        .await;
+        // OWNED input array (a fresh slice producer) — the V1
+        // ownership gate: MapImpl::emit_clif returns Ok(None), the map
+        // node-walks to the right value in every mode. Flip to fused
+        // when the owned-arg stage lands (pending-cleanup registration
+        // for the input ptr).
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; array::map((a[1..])$, |x| x) }",
+        )
+        .await;
+        // Destructured `|(k, v)|` callback — the D3 gate (elem_binds
+        // non-empty → Ok(None) → node-walk). Flip to fused at D3.
+        all_three_agree(
+            "{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::filter` emission on the direct
+    /// path (`FilterImpl::emit_clif` → `scaffold::emit_filter_loop`).
+    /// Same V1 scope as the map probes (borrowed input, single-name
+    /// callback), plus filter's own contract probe: a may-bottom
+    /// predicate must DE-FUSE at build time (node-walk in every mode,
+    /// values agree) — there is no runtime keep-vs-drop answer for a
+    /// bottom predicate, so runtime-abort would diverge from the
+    /// canonical node-walk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_filter_probes() {
+        // scalar element, comparison predicate
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
+             array::filter(a, |x| x > i64:2) }",
+        )
+        .await;
+        // bool element, bare-ref predicate
+        all_three_agree_fused_clean(
+            "{ let a = [true, false, true]; array::filter(a, |x| x) }",
+        )
+        .await;
+        // composite (tuple) element + accessors in the predicate —
+        // EXCEEDS classic: emit_gir requires a register-scalar element
+        // for single-name callbacks, the direct path binds composites
+        // (keep MOVES the element, not-keep takes the drop_block)
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
+             array::filter(a, |p| p.0 > p.1) }",
+        )
+        .await;
+        // capture: the predicate reads an outer scalar
+        all_three_agree_fused_clean(
+            "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
+             array::filter(a, |x| x > k) }",
+        )
+        .await;
+        // select in the predicate
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::filter(a, |x| select x { i64:2 => false, _ => true }) }",
+        )
+        .await;
+        // STATICALLY may-bottom predicate (integer div by the element
+        // → Scalar2 regardless of the runtime values): FilterImpl Errs
+        // → the kernel de-fuses at build and the region node-walks to
+        // a REAL value all modes agree on. No zero in the array — a
+        // value-blind Timeout==Timeout agreement (the bottom case,
+        // next probe) can't catch a wrong de-fuse, this can.
+        all_three_agree(
+            "{ let a = [i64:1, i64:5, i64:20]; \
+             array::filter(a, |x| i64:10 / x > i64:1) }",
+        )
+        .await;
+        // ...and with an actual 0: the pred slot for that element is
+        // bottom, so filter's output NEVER fires — every mode times
+        // out. Pins the canonical blocking semantics (a runtime
+        // keep-vs-drop guess in a fused kernel would produce a value
+        // here and diverge).
+        all_three_agree(
+            "{ let a = [i64:0, i64:1, i64:5]; \
+             array::filter(a, |x| i64:10 / x > i64:1) }",
+        )
+        .await;
+        // string element — outside bind_elem's V1 shapes (#150) →
+        // Ok(None) → node-walk. Flip when string HOF elements land.
+        all_three_agree(
+            r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#,
+        )
+        .await;
+        // OWNED input array (fresh slice producer) — the V1 ownership
+        // gate, same as the map probe. Flip when the owned-arg stage
+        // lands.
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::filter((a[1..])$, |x| x > i64:1) }",
+        )
+        .await;
+        // Destructured `|(k, v)|` callback — the D3 gate. Flip at D3.
+        all_three_agree(
+            "{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::fold` emission on the direct
+    /// path (FoldQ's `Apply::emit_clif` orchestration →
+    /// `FoldImpl::emit_clif` → `scaffold::emit_fold_loop`). The
+    /// accumulator threads through the loop as a register Variable
+    /// (BindId-bound — the acc and elem resolve BindId-first next to
+    /// any same-named outer capture). Fold's contract probes: a
+    /// may-bottom INIT or BODY de-fuses at BUILD time — the plan's
+    /// explicit parity fixture ("a may-bottom fold body must de-fuse,
+    /// not runtime-abort").
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_fold_probes() {
+        // scalar sum
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
+             array::fold(a, i64:0, |acc, x| acc + x) }",
+        )
+        .await;
+        // computed init + capture in the body
+        all_three_agree_fused_clean(
+            "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
+             array::fold(a, k * i64:10, |acc, x| acc + x * k) }",
+        )
+        .await;
+        // composite (tuple) element + accessors — EXCEEDS classic
+        // (emit_gir requires a register-scalar element for single-name
+        // callbacks)
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
+             array::fold(a, i64:0, |acc, p| acc + p.0 * p.1) }",
+        )
+        .await;
+        // select in the body (acc threading through arms)
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::fold(a, i64:0, |acc, x| \
+               select x { i64:2 => acc, _ => acc + x }) }",
+        )
+        .await;
+        // outer binding with the SAME NAME as the acc, used as the
+        // INIT — the kernel param `acc` (outer BindId) feeds the init
+        // read while the loop's acc bind (lambda BindId) shadows it
+        // for the body's reads; BindId-first resolution keeps them
+        // straight
+        all_three_agree_fused_clean(
+            "{ let acc = i64:100; let a = [i64:1, i64:2]; \
+             array::fold(a, acc, |acc, x| acc + x) }",
+        )
+        .await;
+        // HOF callsite in OPERAND position (under the `+`) — neither
+        // path statically resolves it (#204: static_resolve's
+        // visit_mut only descends Module/Block/Bind/CallSite), so the
+        // fold node-walks on every mode. Flip to
+        // `all_three_agree_fused_clean` when #204 lands.
+        all_three_agree(
+            "{ let k = i64:100; let a = [i64:1, i64:2]; \
+             k + array::fold(a, i64:0, |acc, x| acc + x) }",
+        )
+        .await;
+        // STATICALLY may-bottom BODY (div by the element, no zero
+        // present): de-fuses at build, node-walks to a real value all
+        // modes agree on — the plan's explicit fold parity fixture.
+        all_three_agree(
+            "{ let a = [i64:1, i64:2]; \
+             array::fold(a, i64:100, |acc, x| acc / x) }",
+        )
+        .await;
+        // STATICALLY may-bottom INIT (same contract, the init seam)
+        all_three_agree(
+            "{ let n = i64:2; let a = [i64:1, i64:2]; \
+             array::fold(a, i64:10 / n, |acc, x| acc + x) }",
+        )
+        .await;
+        // string accumulator — not a register scalar → Ok(None) →
+        // node-walk. Flip if/when value-shape accumulators land.
+        all_three_agree(
+            r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#,
+        )
+        .await;
+        // OWNED input array (fresh slice producer) — the V1 ownership
+        // gate. Flip when the owned-arg stage lands.
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::fold((a[1..])$, i64:0, |acc, x| acc + x) }",
+        )
+        .await;
+        // Destructured `|acc, (k, v)|` callback — the D3 gate.
+        all_three_agree(
+            "{ let a = [(i64:1, i64:2)]; \
+             array::fold(a, i64:0, |acc, (k, v)| acc + k * v) }",
+        )
+        .await;
     }
 
     /// Broad differential sweep: the type-directed generator produces

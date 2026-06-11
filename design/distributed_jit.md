@@ -354,13 +354,105 @@ flip).
   flat_map body) carry the may-bottom BUILD-time de-fuse contract —
   closure must Err on Scalar2, never strip validity (doc'd on
   `emit_fold_loop`); `push_field` (map/init) is the one RUNTIME
-  bottom-abort seam. Next:
-  D2 `Apply::emit_clif` on MapQ/FoldQ + per-HOF
-  `MapFn`/`FoldFn::emit_clif`, one at a time (map → filter → fold →
-  flat_map → filter_map → find → find_map → array::init), preserving
-  may-bottom map body ⇒ runtime bottom-abort vs may-bottom fold/filter
-  body ⇒ build-time de-fuse, with #202 (cast CallSite) homed in the
-  same Apply::emit_clif work; D3 destructured `|(k,v)|` leaves.
+  bottom-abort seam. **D2-map landed** (2026-06-11):
+  `MapFn::emit_clif` (defaulted trait method, no ExecCtx — emission
+  runs under the jit lock), `Apply::emit_clif` on MapQ (the emit_gir
+  orchestration twin: analysis_pred → inner CallSite → Lambda body;
+  elem name from the callback FnType, elem BindId from the arg
+  pattern's `StructPatternNode::single_bind_id()`),
+  `MapImpl::emit_clif` via `scaffold::emit_map_loop` (V1 gates, all
+  pre-emission: destructured → D3, elem shape ∈ bind_elem's set,
+  `node_composite_source(array) == Borrowed` — owned producers await
+  the pending-cleanup stage —, body type freezes + not Unit/Null).
+  Supporting: scaffold surface + `node_composite_source` went `pub`;
+  `HofElem` gained `id: Option<BindId>`; JitEnv composites gained a
+  BindId column + BindId-first composite Ref resolution (classic
+  slots are id-less → resolution unchanged; CLIF differential
+  re-verified identical). Result: whole-block maximal fusion
+  (`{ let a = [..]; map(..) }` = ONE kernel, literal + loop), and the
+  direct path EXCEEDS classic on two probe shapes classic never
+  inlined (composite-tuple elements with accessor bodies; qop `$`
+  bodies) — the recurse-granularity gain the plan predicted. **Two
+  hard lessons, both now structural:** (1) risk 6 materialized at its
+  worst — `BuiltInLambda` (the builtin plumbing wrapper) delegated
+  ten Apply methods but not `emit_clif`, so the trait default's
+  Ok(None) silently swallowed EVERY builtin's hook; all 8 map probes
+  "passed" while no map ever inlined. Fixed with the delegation (+ a
+  loud comment); any new Apply method MUST be added to
+  BuiltInLambda's delegation set. (2) `fused > 0` is necessary, not
+  sufficient — the array-literal region satisfied it vacuously.
+  graphix-fuzz probes now use a `Fuse::{No, Some, Clean}` ladder:
+  `Clean` (fused>0 AND no non-ancestor-noise blocker in
+  `stats.failed`) catches the silent-loss class — used by the 7
+  wholly-fusing map probes; `Some` remains for probes with a
+  legitimately-refusing auxiliary region (e.g. a bare-Null let).
+  Verification rig: `graphix-fuzz run` now runs all THREE modes and
+  prints per-mode `attempted/fused` + the failed-reason list — the
+  diagnostic that cracked the wrapper bug in minutes after value
+  gates and fused-counts had both lied. Known nested-HOF gap filed as
+  #203 (resolve_static_calls doesn't descend lambda bodies — the
+  inner map never resolves; classic-parity, runtime per-slot
+  machinery carries correctness). **D2-filter landed** (2026-06-11):
+  `FilterImpl::emit_clif` via `scaffold::emit_filter_loop` — one new
+  method; the MapQ orchestration is generic over `MapFn`, so each
+  remaining HOF is now just its own `emit_clif`. Same V1 gates as map
+  plus the predicate type must freeze to `bool` (mirroring emit_gir);
+  the pred closure enforces the BUILD-time de-fuse contract — a
+  Scalar2 (may-bottom) predicate Errs, never runtime-aborts, because
+  there is no runtime keep-vs-drop answer for a bottom predicate
+  (only the node-walk represents it: the pred slot never fires and
+  filter's output BLOCKS — pinned by a probe with an actual div-0,
+  all modes Timeout-agree). The de-fuse probe that carries real
+  weight is the STATICALLY-may-bottom / runtime-clean one (div by
+  element, no zero present): the kernel de-fuses at build, then
+  node-walks to a real value all modes agree on — a value-blind
+  Timeout==Timeout agreement can't catch a wrong de-fuse, that one
+  can. Direct again EXCEEDS classic: composite-tuple elements with
+  accessor predicates inline (classic emit_gir requires a
+  register-scalar element for single-name callbacks; verified
+  attempted=0/fused=0 classic vs fused=1 direct, with the not-kept
+  drop_block + push_array element MOVE confirmed in the kernel dump).
+  CLIF differential: classic byte-identical; exactly the two filter
+  probes' DirectJit kernels changed (the inline landing), with
+  attempted 7→4 — the maximality/fewer-recursive-attempts gain.
+  compare.sh's normalizer now handles the two log-noise classes
+  (timestamps normalized so line PRESENCE still compares;
+  nondeterministic "could not send batch" dropped). **D2-fold landed**
+  (2026-06-11): `FoldFn::emit_clif` (defaulted, the 2-arg
+  `(acc, elem)` twin of MapFn's), FoldQ's `Apply::emit_clif`
+  orchestration (acc name/BindId from the callback's first param +
+  arg pattern, init_arg = positional 1), `FoldImpl::emit_clif` via
+  `scaffold::emit_fold_loop`. The scaffold's acc bind gained an
+  `Option<BindId>` (classic arm passes None — CLIF differential
+  proves invariance), so init-position reads of an outer binding
+  named `acc` and the loop's own acc resolve BindId-first without
+  collision (probe: `fold(a, acc, |acc, x| acc + x)` — the kernel
+  threads the acc as a loop block param seeded from the outer
+  value). Gates: map's set + acc must be a register scalar that init
+  and body types agree on. BOTH the init and body closures carry the
+  build-time de-fuse contract (a bottom acc poisons every later
+  iteration — no per-element runtime seam exists): the plan's
+  explicit parity fixtures are probes (statically-may-bottom body
+  `acc / x` and init `10 / n`, both runtime-clean → de-fuse, then
+  node-walk to a REAL value all modes agree on). Composite-elem
+  folds (`|acc, p| acc + p.0 * p.1`) again EXCEED classic. The
+  probe suite also found **#204** (pre-existing, both paths): a HOF
+  callsite in OPERAND position (`k + fold(...)`) never statically
+  resolves — `static_resolve.rs::visit_mut` only descends
+  Module/Block/Bind/CallSite, so the site gets no analysis_pred, no
+  bound function, and neither inlines nor DynCalls (classic
+  attempted=0, identical gap; values correct via node-walk). Same
+  class as #203 — likely fixed together in Stage E; a pin probe
+  documents it. Next: per-HOF `emit_clif` (flat_map → filter_map →
+  find → find_map → array::init), preserving may-bottom map body ⇒
+  runtime bottom-abort vs may-bottom fold/filter/find/flat_map
+  bodies ⇒ build-time de-fuse. (#202 turned out NOT to be
+  Apply::emit_clif work: `cast<T>(x)` is a TypeCast NODE whose
+  emit_clif relay exists — the gap is `emit_cast_node` refusing the
+  union `[T, Error]` result shape; an independent graphix-compiler
+  item, after D2.) Then the owned-array-arg widening
+  (pending-cleanup registration; flips the owned-slice probes) and
+  D3 destructured `|(k,v)|` leaves.
 - **E — cross-kernel calls + tail loops**: callee discovery prepass
   (CachedKernel build minus emit_body — already pure analysis), lambda-
   CallSite emit + captures as trailing args (BindId-keyed env lookup),
