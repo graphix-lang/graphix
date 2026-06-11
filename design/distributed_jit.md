@@ -496,10 +496,58 @@ flip).
   OPERATIONAL RULE (bitten twice): `cargo test` does NOT rebuild
   `target/debug/graphix-fuzz` — ALWAYS `cargo build -p graphix-fuzz`
   before CLI kernel inspection or differential capture, or the dump
-  shows the previous build's behavior. Next: the owned-array-arg
-  widening (pending-cleanup registration; flips the owned-slice
-  probes across all 8 suites), D3 destructured `|(k,v)|` leaves,
-  then Stage E. (#202 turned out NOT to be Apply::emit_clif work:
+  shows the previous build's behavior. **Owned-array-arg widening
+  landed** (2026-06-11): fresh-producer inputs (literals, slices,
+  inlined-HOF results) now feed the loop scaffolds. Mechanism: a new
+  ValArray-typed `LowerCtx::owned_input_stack` mirroring
+  `dyncall_buf_stack` — `scaffold::adopt_owned_src` registers the
+  input at loop entry (a pend inside the body frees it from
+  `emit_pending_cleanup` via `graphix_valarray_drop` — the buf stack
+  has the WRONG destructor for a finished ValArray), and
+  `drop_owned_src` drops + pops on the normal path: exactly once on
+  either path. The env-bind alternative was REJECTED — for the
+  record, the CORRECT reason (an earlier writeup misstated it):
+  select arms DO mark/truncate the JitEnv per arm (all four merge
+  shapes — verified), but `truncate` is compile-time hygiene that
+  emits NO drops, which is sound today only because arms bind
+  nothing but scalars (non-scalar scrutinee binds refuse to lower).
+  An env-bound owned composite input adopted inside an arm would be
+  truncated at arm end without a drop — a normal-path LEAK. The
+  stack entry's lifetime (loop entry → drop+pop at loop end) never
+  interacts with env scoping at all. The HOF impls' Borrowed
+  gate became `owned = (source == Owned)` passed through `ArraySrc`.
+  Payoff beyond slices/literals: with #204 covering arg positions,
+  HOF-of-HOF arguments now fuse as MULTI-LOOP SINGLE KERNELS —
+  kernel-verified: `filter(map(a, f), g)` emits the map loop,
+  adopts its result, runs the filter loop over it, and drops the
+  intermediate exactly once at exit (attempted=4 fused=1, whole
+  block). Pipeline probes: filter∘map, fold∘map, find∘filter,
+  flat_map∘init, plus a pending-path probe (mid-outer-loop overflow
+  bottom-abort frees the adopted intermediate — crash-detects
+  wrong-destructor/double-free). **D3 landed** (2026-06-11), closing
+  Stage D's functional scope: destructured `|(k, v)|` callbacks
+  inline via `HofElem::leaves` — per-leaf `(BindId, position, prim)`
+  triples computed by package-array's `scalar_leaves` from the
+  frozen tuple element type (register-scalar leaves only; composite
+  leaves node-walk — a future widening with #150), bound by
+  `bind_elem` off the owned composite element BindId-first (the
+  body's leaf Refs carry the pattern BindIds; the synthetic
+  `__leaf{id}` names are never looked up). Sparse patterns
+  (`|(k, _)|`) fall out free — `tuple_leaves` skips Ignore slots so
+  unbound positions get no read. Scalar leaf Variables need no
+  per-iteration drops (the element's own drop covers the
+  allocation), so the pending path is unchanged. Applies to the six
+  bind_elem scaffolds (map, filter, fold, flat_map, find, find_map);
+  filter_map stays scalar-elem-only (its scaffold has no bind_elem —
+  #150). Adding the required `leaves` field to `HofElem` made the
+  compiler enumerate every construction site (12 — the
+  14th-commandment payoff); classic arms pass `&[]` (bind
+  bookkeeping emits nothing → CLIF-identical). Kernel-verified: the
+  3-leaf fold emits element read + three leaf reads + body + element
+  drop, acc threading as a block param. Stage D is now functionally
+  COMPLETE — remaining gaps are recorded parity items (#150
+  string/value elements, #203 nested-HOF lambda bodies, composite
+  leaves); next is Stage E. (#202 turned out NOT to be Apply::emit_clif work:
   `cast<T>(x)` is a TypeCast NODE whose emit_clif relay exists — the
   gap is `emit_cast_node` refusing the union `[T, Error]` result
   shape; an independent graphix-compiler item.)

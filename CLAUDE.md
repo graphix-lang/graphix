@@ -448,6 +448,24 @@ value — derived from a single source (`gir.rs` `abi_params`/`AbiParamKind`).
   pub). OPERATIONAL RULE (bitten twice): `cargo test` does NOT
   rebuild `target/debug/graphix-fuzz` — always `cargo build -p
   graphix-fuzz` before CLI kernel inspection or differential capture.
+  Owned-array-arg widening landed: fresh-producer inputs (literals,
+  slices, inlined-HOF results) feed the loop scaffolds via
+  `adopt_owned_src` + the ValArray-typed `owned_input_stack`
+  (pending exits free them; normal path drops + pops after the loop
+  — the buf stack has the wrong destructor; env-binding was rejected
+  because JitEnv `truncate` emits no drops: select arms DO
+  mark/truncate per arm, sound today only because arm binds are
+  scalar-only, so an env-bound composite adoption inside an arm
+  would leak on the normal path). With #204, HOF-of-HOF args now
+  fuse as multi-loop single kernels (`filter(map(a,f),g)` = one
+  kernel, two loops, intermediate dropped exactly once —
+  kernel-verified). D3 landed, closing Stage D's functional scope:
+  destructured `|(k,v)|` callbacks inline via `HofElem::leaves`
+  (per-leaf BindId-bound scalar reads off the owned composite
+  element; sparse `_` slots free via tuple_leaves; composite leaves
+  node-walk). Remaining parity gaps: #150 (string/value elements,
+  composite leaves, filter_map composite elems), #203 (nested HOFs
+  in lambda BODIES — Stage E).
 - `delete_gir_ir.md` — superseded by `distributed_jit.md` (planned the same
   removal around a central walker); its scoping analysis and risks remain
   valid.

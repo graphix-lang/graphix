@@ -51,6 +51,17 @@ pub struct HofElem<'a> {
     pub name: &'a ArcStr,
     pub id: Option<crate::BindId>,
     pub typ: &'a Type,
+    /// Destructure leaves for a `|(k, v)|` callback: per bound leaf,
+    /// its pattern `BindId`, tuple position, and register-scalar prim.
+    /// [`bind_elem`] reads each off the owned composite element and
+    /// binds it BindId-first, so the body's leaf `Ref`s resolve
+    /// without name plumbing. Sparse positions (`|(k, _)|`) simply
+    /// have no entry. Empty for single-name callbacks and for every
+    /// classic GIR arm (classic lowers destructure as body-block
+    /// `TupleGet` lets instead). Only valid on a composite element —
+    /// leaves on a scalar element are a caller bug ([`bind_elem`]
+    /// Errs).
+    pub leaves: &'a [(crate::BindId, usize, PrimType)],
 }
 
 /// A bound per-iteration element — see [`bind_elem`].
@@ -96,6 +107,12 @@ fn bind_elem(
 ) -> Result<BoundElem> {
     match gir::abi_kind(elem.typ) {
         Some(AbiKind::Scalar(prim)) => {
+            if !elem.leaves.is_empty() {
+                return Err(anyhow!(
+                    "destructure leaves on a scalar HOF element — \
+                     caller bug"
+                ));
+            }
             let get_helper = cx.helper(valarray_get_helper(prim)?)?;
             let call = cx.b.ins().call(get_helper, &[arr_ptr, i_now]);
             let elem_val = cx.b.inst_results(call)[0];
@@ -111,6 +128,26 @@ fn bind_elem(
             let var = cx.b.declare_var(types::I64);
             cx.b.def_var(var, elem_ptr);
             cx.env.bind_composite_with_id(elem.name.clone(), var, elem.id);
+            // Destructure leaves: scalar reads off the owned element,
+            // bound under their pattern BindIds (the body's leaf Refs
+            // resolve BindId-first; the synthetic name is never looked
+            // up). Scalar Variables need no per-iteration drops — the
+            // element's own drop covers the allocation.
+            for (id, idx, prim) in elem.leaves {
+                let get = cx.helper(valarray_get_helper(*prim)?)?;
+                let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
+                let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
+                let v = cx.b.inst_results(call)[0];
+                let lvar = cx.b.declare_var(prim_to_clif(*prim));
+                cx.b.def_var(lvar, v);
+                let name: ArcStr = compact_str::format_compact!(
+                    "__leaf{}",
+                    id.inner()
+                )
+                .as_str()
+                .into();
+                cx.env.bind_with_id(name, lvar, *prim, Some(*id));
+            }
             Ok(BoundElem::Composite { var })
         }
         _ => Err(anyhow!(
@@ -133,10 +170,28 @@ fn drop_composite_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
 /// Drop the input array when the caller passed it owned — emitted at
 /// the single post-loop merge point of each scaffold. The classic GIR
 /// arms always pass `owned: false`, so this emits nothing for them.
+/// Register an OWNED input array (a fresh producer the caller just
+/// emitted — literal, slice, inlined-HOF result) for pending cleanup:
+/// a DynCall / `?` / bottom-abort that pends inside the loop body
+/// frees it from `emit_pending_cleanup` via the ValArray-typed
+/// `owned_input_stack` (the buf stack uses the buf destructor — wrong
+/// type). Pair with [`drop_owned_src`] after the loop: drop on the
+/// normal path, pop the registration (cleanup on pend, explicit drop
+/// otherwise — exactly once on either path). A Borrowed source is
+/// env-owned and needs neither.
+fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
+    if arr.owned {
+        let var = cx.b.declare_var(types::I64);
+        cx.b.def_var(var, arr.ptr);
+        cx.ctx.owned_input_stack.borrow_mut().push(var);
+    }
+}
+
 fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
     if arr.owned {
         let drop_helper = cx.helper("graphix_valarray_drop")?;
         cx.b.ins().call(drop_helper, &[arr.ptr]);
+        cx.ctx.owned_input_stack.borrow_mut().pop();
     }
     Ok(())
 }
@@ -402,6 +457,7 @@ pub fn emit_map_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
@@ -448,6 +504,7 @@ where
         gir::abi_kind(elem.typ),
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
     );
+    adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
@@ -517,6 +574,7 @@ where
 {
     let get_helper = cx.helper(valarray_get_helper(in_elem)?)?;
     let push = cx.helper(value_buf_push_helper(out_elem)?)?;
+    adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
@@ -581,6 +639,7 @@ where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
 {
     let extend = cx.helper("graphix_value_buf_extend_from_array")?;
+    adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
@@ -635,6 +694,7 @@ where
     I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
 {
+    adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let acc_var = cx.b.declare_var(prim_to_clif(acc_prim));
     let init_val = init(cx)?;
@@ -681,6 +741,7 @@ pub fn emit_find_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
 {
+    adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
@@ -766,6 +827,7 @@ pub fn emit_find_map_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<(ClifValue, ClifValue)>,
 {
+    adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();

@@ -35,6 +35,29 @@ fn is_unit_or_null(t: &Type) -> bool {
     matches!(gir::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null))
 }
 
+/// Destructure leaves (`|(k, v)|` — pattern BindId + tuple position)
+/// lowered to the `(id, position, prim)` triples
+/// `scaffold::bind_elem` binds per iteration off the composite
+/// element. `None` when the (frozen) element isn't a tuple carrying a
+/// register scalar at every BOUND position — those callbacks
+/// node-walk (composite leaves are a future widening). An empty
+/// `elem_binds` (single-name callback) is trivially `Some(empty)`.
+fn scalar_leaves(
+    in_elem: &Type,
+    elem_binds: &[(BindId, usize)],
+) -> Option<Vec<(BindId, usize, PrimType)>> {
+    if elem_binds.is_empty() {
+        return Some(Vec::new());
+    }
+    let Type::Tuple(ts) = in_elem else { return None };
+    elem_binds
+        .iter()
+        .map(|(id, i)| {
+            ts.get(*i).and_then(gir::scalar_prim).map(|p| (*id, *i, p))
+        })
+        .collect()
+}
+
 #[derive(Debug, Default)]
 struct MapImpl;
 
@@ -113,12 +136,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
         use gir::AbiKind;
-        // Destructured `|(k, v)|` callbacks are Stage D3.
-        if !elem_binds.is_empty() {
-            return Ok(None);
-        }
         // Element shape: only what `scaffold::bind_elem` accepts.
         let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        // A destructured `|(k, v)|` callback binds per-leaf reads off
+        // the composite element — register-scalar leaves only
+        // (composite leaves node-walk).
+        let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
         match gir::abi_kind(&in_elem) {
@@ -130,13 +155,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             ) => {}
             _ => return Ok(None),
         }
-        // V1: borrowed (env-owned) input arrays only — see the gate
-        // list above and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         // Output element type is the body's result — `freeze_normalized`
         // because typecheck can leave a select-valued body's type as the
         // un-flattened arm union.
@@ -151,15 +174,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::map emit_clif: borrowed array arg compiled to \
+                "array::map emit_clif: array arg compiled to \
                  non-Single {cv:?}"
             ),
         };
         let out_src = gir_jit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            &scaffold::HofElem {
+                name: elem_name,
+                id: elem_id,
+                typ: &in_elem,
+                leaves: &leaves,
+            },
             &out_typ,
             out_src,
             |cx| body.emit_clif(cx),
@@ -244,12 +272,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
         use gir::AbiKind;
-        // Destructured `|(k, v)|` callbacks are Stage D3.
-        if !elem_binds.is_empty() {
-            return Ok(None);
-        }
         // Element shape: only what `scaffold::bind_elem` accepts.
         let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        // A destructured `|(k, v)|` callback binds per-leaf reads off
+        // the composite element — register-scalar leaves only
+        // (composite leaves node-walk).
+        let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
         match gir::abi_kind(&in_elem) {
@@ -261,13 +291,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
             ) => {}
             _ => return Ok(None),
         }
-        // V1: borrowed (env-owned) input arrays only — see
-        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         match gir::freeze_normalized(body.typ()) {
             Some(t) if matches!(gir::scalar_prim(&t), Some(PrimType::Bool)) => {
             }
@@ -278,14 +306,19 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::filter emit_clif: borrowed array arg compiled to \
+                "array::filter emit_clif: array arg compiled to \
                  non-Single {cv:?}"
             ),
         };
         scaffold::emit_filter_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            &scaffold::HofElem {
+                name: elem_name,
+                id: elem_id,
+                typ: &in_elem,
+                leaves: &leaves,
+            },
             |cx| match body.emit_clif(cx)? {
                 CompiledExpr::Single(v) => Ok(v),
                 cv => bail!(
@@ -371,12 +404,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
         use gir::AbiKind;
-        // Destructured `|(k, v)|` callbacks are Stage D3.
-        if !elem_binds.is_empty() {
-            return Ok(None);
-        }
         // Element shape: only what `scaffold::bind_elem` accepts.
         let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        // A destructured `|(k, v)|` callback binds per-leaf reads off
+        // the composite element — register-scalar leaves only
+        // (composite leaves node-walk).
+        let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
         match gir::abi_kind(&in_elem) {
@@ -388,13 +423,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
             ) => {}
             _ => return Ok(None),
         }
-        // V1: borrowed (env-owned) input arrays only — see
-        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         match gir::freeze_normalized(body.typ())
             .as_ref()
             .and_then(gir::array_scalar_prim)
@@ -407,15 +440,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::flat_map emit_clif: borrowed array arg compiled \
+                "array::flat_map emit_clif: array arg compiled \
                  to non-Single {cv:?}"
             ),
         };
         let body_src = gir_jit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            &scaffold::HofElem {
+                name: elem_name,
+                id: elem_id,
+                typ: &in_elem,
+                leaves: &leaves,
+            },
             |cx| {
                 let p = match body.emit_clif(cx)? {
                     CompiledExpr::Single(v) => v,
@@ -499,7 +537,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        // Destructured `|(k, v)|` callbacks are Stage D3.
+        // The filter_map scaffold is scalar-elem-only (it binds the
+        // element through the per-prim getter, no `bind_elem`), so
+        // destructured callbacks node-walk — widen with #150.
         if !elem_binds.is_empty() {
             return Ok(None);
         }
@@ -510,13 +550,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             Some(p) => p,
             None => return Ok(None),
         };
-        // V1: borrowed (env-owned) input arrays only — see
-        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         let out_prim = match gir::freeze_normalized(body.typ())
             .and_then(|t| gir::nullable_inner(&t))
             .as_ref()
@@ -530,13 +568,13 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::filter_map emit_clif: borrowed array arg \
+                "array::filter_map emit_clif: array arg \
                  compiled to non-Single {cv:?}"
             ),
         };
         scaffold::emit_filter_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
             in_prim,
             elem_name,
             elem_id,
@@ -625,12 +663,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
         use gir::AbiKind;
-        // Destructured `|(k, v)|` callbacks are Stage D3.
-        if !elem_binds.is_empty() {
-            return Ok(None);
-        }
         // Element shape: only what `scaffold::bind_elem` accepts.
         let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        // A destructured `|(k, v)|` callback binds per-leaf reads off
+        // the composite element — register-scalar leaves only
+        // (composite leaves node-walk).
+        let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
         match gir::abi_kind(&in_elem) {
@@ -642,13 +682,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             ) => {}
             _ => return Ok(None),
         }
-        // V1: borrowed (env-owned) input arrays only — see
-        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         match gir::freeze_normalized(body.typ()) {
             Some(t) if matches!(gir::scalar_prim(&t), Some(PrimType::Bool)) => {
             }
@@ -659,14 +697,19 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::find emit_clif: borrowed array arg compiled to \
+                "array::find emit_clif: array arg compiled to \
                  non-Single {cv:?}"
             ),
         };
         scaffold::emit_find_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            &scaffold::HofElem {
+                name: elem_name,
+                id: elem_id,
+                typ: &in_elem,
+                leaves: &leaves,
+            },
             |cx| match body.emit_clif(cx)? {
                 CompiledExpr::Single(v) => Ok(v),
                 cv => bail!(
@@ -761,12 +804,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
         use gir::AbiKind;
-        // Destructured `|(k, v)|` callbacks are Stage D3.
-        if !elem_binds.is_empty() {
-            return Ok(None);
-        }
         // Element shape: only what `scaffold::bind_elem` accepts.
         let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        // A destructured `|(k, v)|` callback binds per-leaf reads off
+        // the composite element — register-scalar leaves only
+        // (composite leaves node-walk).
+        let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
         match gir::abi_kind(&in_elem) {
@@ -778,13 +823,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
             ) => {}
             _ => return Ok(None),
         }
-        // V1: borrowed (env-owned) input arrays only — see
-        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         match gir::freeze_normalized(body.typ()).as_ref().map(gir::abi_kind) {
             Some(Some(AbiKind::Nullable)) => {}
             _ => return Ok(None),
@@ -794,15 +837,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::find_map emit_clif: borrowed array arg compiled \
+                "array::find_map emit_clif: array arg compiled \
                  to non-Single {cv:?}"
             ),
         };
         let body_src = gir_jit::node_composite_source(body);
         let (disc, payload) = scaffold::emit_find_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            &scaffold::HofElem {
+                name: elem_name,
+                id: elem_id,
+                typ: &in_elem,
+                leaves: &leaves,
+            },
             |cx| {
                 let (d, p) = match body.emit_clif(cx)? {
                     CompiledExpr::Value { disc, payload } => (disc, payload),
@@ -909,12 +957,14 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
         use gir::AbiKind;
-        // Destructured `|acc, (k, v)|` callbacks are Stage D3.
-        if !elem_binds.is_empty() {
-            return Ok(None);
-        }
         // Element shape: only what `scaffold::bind_elem` accepts.
         let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        // A destructured `|acc, (k, v)|` callback binds per-leaf reads
+        // off the composite element — register-scalar leaves only
+        // (composite leaves node-walk).
+        let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
         match gir::abi_kind(&in_elem) {
@@ -926,13 +976,11 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             ) => {}
             _ => return Ok(None),
         }
-        // V1: borrowed (env-owned) input arrays only — see
-        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
-        if gir_jit::node_composite_source(array_arg)
-            != CompositeSource::Borrowed
-        {
-            return Ok(None);
-        }
+        // Borrowed inputs are env-owned; an OWNED input (fresh
+        // producer — literal, slice, inlined-HOF result) is adopted by
+        // the scaffold for both-path cleanup (the `ArraySrc` contract).
+        let owned = gir_jit::node_composite_source(array_arg)
+            == CompositeSource::Owned;
         // The acc threads through the loop as a register Variable —
         // init and body must both freeze to the same register scalar.
         let acc_prim = match gir::freeze_normalized(init_arg.typ())
@@ -954,7 +1002,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         let arr_ptr = match array_arg.emit_clif(cx)? {
             CompiledExpr::Single(v) => v,
             cv => bail!(
-                "array::fold emit_clif: borrowed array arg compiled to \
+                "array::fold emit_clif: array arg compiled to \
                  non-Single {cv:?}"
             ),
         };
@@ -967,11 +1015,16 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         };
         scaffold::emit_fold_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+            scaffold::ArraySrc { ptr: arr_ptr, owned },
             acc_prim,
             acc_name,
             acc_id,
-            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            &scaffold::HofElem {
+                name: elem_name,
+                id: elem_id,
+                typ: &in_elem,
+                leaves: &leaves,
+            },
             |cx| valid_scalar("init", init_arg.emit_clif(cx)?),
             |cx| valid_scalar("body", body.emit_clif(cx)?),
         )

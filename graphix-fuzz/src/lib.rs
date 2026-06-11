@@ -1070,18 +1070,16 @@ mod tests {
             "{ let a = [i64:1, i64:2]; array::map(a, |x| (x +? i64:1)$) }",
         )
         .await;
-        // OWNED input array (a fresh slice producer) — the V1
-        // ownership gate: MapImpl::emit_clif returns Ok(None), the map
-        // node-walks to the right value in every mode. Flip to fused
-        // when the owned-arg stage lands (pending-cleanup registration
-        // for the input ptr).
-        all_three_agree(
+        // OWNED input array (a fresh slice producer) — the scaffold
+        // adopts it (owned_input_stack registration: pending exits
+        // free it, the normal path drops it after the loop).
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; array::map((a[1..])$, |x| x) }",
         )
         .await;
-        // Destructured `|(k, v)|` callback — the D3 gate (elem_binds
-        // non-empty → Ok(None) → node-walk). Flip to fused at D3.
-        all_three_agree(
+        // Destructured `|(k, v)|` callback — D3: per-leaf BindId-bound
+        // reads off the composite element.
+        all_three_agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }",
         )
         .await;
@@ -1156,16 +1154,16 @@ mod tests {
             r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#,
         )
         .await;
-        // OWNED input array (fresh slice producer) — the V1 ownership
-        // gate, same as the map probe. Flip when the owned-arg stage
-        // lands.
-        all_three_agree(
+        // OWNED input array (fresh slice producer) — adopted by the
+        // scaffold, same as the map probe.
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter((a[1..])$, |x| x > i64:1) }",
         )
         .await;
-        // Destructured `|(k, v)|` callback — the D3 gate. Flip at D3.
-        all_three_agree(
+        // Destructured `|(k, v)|` predicate — D3 (the kept element is
+        // still the whole tuple)
+        all_three_agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }",
         )
         .await;
@@ -1263,15 +1261,16 @@ mod tests {
             r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#,
         )
         .await;
-        // OWNED input array (fresh slice producer) — the V1 ownership
-        // gate. Flip when the owned-arg stage lands.
-        all_three_agree(
+        // OWNED input array (fresh slice producer) — adopted by the
+        // scaffold.
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::fold((a[1..])$, i64:0, |acc, x| acc + x) }",
         )
         .await;
-        // Destructured `|acc, (k, v)|` callback — the D3 gate.
-        all_three_agree(
+        // Destructured `|acc, (k, v)|` callback — D3 (acc + leaves
+        // all BindId-bound in the loop scope)
+        all_three_agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::fold(a, i64:0, |acc, (k, v)| acc + k * v) }",
         )
@@ -1319,16 +1318,55 @@ mod tests {
             "{ let a = [i64:1, i64:2]; array::flat_map(a, |x| x) }",
         )
         .await;
-        // OWNED input array — the V1 ownership gate
-        all_three_agree(
+        // OWNED input array — adopted by the scaffold
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::flat_map((a[1..])$, |x| [x]) }",
         )
         .await;
-        // Destructured callback — the D3 gate
-        all_three_agree(
+        // Destructured callback — D3
+        all_three_agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::flat_map(a, |(k, v)| [k, v]) }",
+        )
+        .await;
+    }
+
+    /// D3 probes: destructured `|(k, v)|` callbacks — per-leaf
+    /// BindId-bound reads off the owned composite element
+    /// (`HofElem::leaves` via `scalar_leaves`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_destructure_probes() {
+        // mixed-prim leaves (i64, f64), f64 result
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, f64:2.5), (i64:3, f64:0.5)]; \
+             array::map(a, |(k, v)| v) }",
+        )
+        .await;
+        // sparse leaves: `_` positions get no bind (and no read)
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
+             array::map(a, |(k, _)| k * i64:10) }",
+        )
+        .await;
+        // find with a destructured predicate — the result is the
+        // whole matched tuple
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
+             array::find(a, |(k, v)| k > v) }",
+        )
+        .await;
+        // 3-leaf tuple through fold
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2, i64:3), (i64:4, i64:5, i64:6)]; \
+             array::fold(a, i64:0, |acc, (x, y, z)| acc + x * y + z) }",
+        )
+        .await;
+        // composite leaf — outside the register-scalar V1 →
+        // Ok(None) → node-walk (flip when composite leaves land)
+        all_three_agree(
+            "{ let a = [((i64:1, i64:2), i64:3)]; \
+             array::map(a, |(p, x)| x) }",
         )
         .await;
     }
@@ -1361,8 +1399,8 @@ mod tests {
                select p.0 { i64:1 => p.1, _ => null }) }",
         )
         .await;
-        // OWNED input array — the V1 ownership gate
-        all_three_agree(
+        // OWNED input array — adopted by the scaffold
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter_map((a[1..])$, |x| \
                select x { i64:2 => x, _ => null }) }",
@@ -1402,8 +1440,10 @@ mod tests {
              array::find(a, |x| i64:10 / x > i64:4) }",
         )
         .await;
-        // OWNED input array — the V1 ownership gate
-        all_three_agree(
+        // OWNED input array — adopted by the scaffold (the early-exit
+        // edges and the not-found edge all route through the shared
+        // exit where the input drops)
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find((a[1..])$, |x| x > i64:1) }",
         )
@@ -1431,11 +1471,64 @@ mod tests {
                select x % i64:2 { i64:0 => x, _ => null }) }",
         )
         .await;
-        // OWNED input array — the V1 ownership gate
-        all_three_agree(
+        // OWNED input array — adopted by the scaffold
+        all_three_agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find_map((a[1..])$, |x| \
                select x { i64:2 => x, _ => null }) }",
+        )
+        .await;
+    }
+
+    /// Owned-input widening probes: fresh-producer arrays (literals,
+    /// slices, inlined-HOF results) feed the loop scaffolds directly —
+    /// the scaffold adopts them (`owned_input_stack`: pending exits
+    /// free them, the normal path drops after the loop). The pipeline
+    /// probes are the composition payoff: with #204 covering arg
+    /// positions and owned inputs adopted, HOF-of-HOF args fuse as
+    /// MULTI-LOOP single kernels.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_owned_input_probes() {
+        // array literal as the DIRECT argument
+        all_three_agree_fused_clean(
+            "array::map([i64:1, i64:2, i64:3], |x| x * i64:2)",
+        )
+        .await;
+        // PIPELINE: filter over an inlined map — two loops, one kernel
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::filter(array::map(a, |x| x * i64:2), |x| x > i64:2) }",
+        )
+        .await;
+        // PIPELINE: fold over an inlined map
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::fold(array::map(a, |x| x * x), i64:0, |acc, x| acc + x) }",
+        )
+        .await;
+        // PIPELINE: find over an inlined filter (early exit consumes
+        // an adopted intermediate)
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
+             array::find(array::filter(a, |x| x % i64:2 == i64:0), \
+               |x| x > i64:2) }",
+        )
+        .await;
+        // PIPELINE feeding init's output into flat_map
+        all_three_agree_fused_clean(
+            "array::flat_map(array::init(i64:3, |i| i), |x| [x, x])",
+        )
+        .await;
+        // PENDING path through an adopted input: the outer map's body
+        // bottom-aborts mid-loop (i64::MAX overflow via `+?` then `$`)
+        // while the inner map's result is adopted — the pending
+        // cleanup must free it via `owned_input_stack` (a wrong-
+        // destructor or double-free would crash the JIT mode; the
+        // canonical outcome is a blocked output, Timeout in every
+        // mode).
+        all_three_agree(
+            "{ let a = [i64:9223372036854775807, i64:1]; \
+             array::map(array::map(a, |x| x), |x| (x +? i64:1)$) }",
         )
         .await;
     }

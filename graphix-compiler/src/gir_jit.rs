@@ -1156,6 +1156,7 @@ fn compile_into_function(
         strings,
         values,
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
+        owned_input_stack: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
@@ -1684,6 +1685,18 @@ pub(crate) struct LowerCtx<'a> {
     /// producer op's scalar fields/body, so no producer buf is ever
     /// in flight at a composite-DynCall pending point.
     dyncall_buf_stack: std::cell::RefCell<Vec<Variable>>,
+    /// Owned HOF input arrays in flight (fresh producers — a literal,
+    /// slice, or inlined-HOF result consumed by a loop scaffold).
+    /// Registered by `scaffold::adopt_owned_src` at loop entry and
+    /// popped by `scaffold::drop_owned_src` right after the loop's
+    /// normal-path drop, so a pending exit INSIDE the loop body frees
+    /// the input via [`emit_pending_cleanup`] (`graphix_valarray_drop`
+    /// — these are finished `*mut ValArray`s, NOT bufs, hence a
+    /// separate stack from `dyncall_buf_stack`). Variables here are
+    /// always defined on the paths that can pend (the registering
+    /// loop dominates its body) — unlike a JitEnv binding, an entry
+    /// never outlives its defining region, so select arms stay safe.
+    owned_input_stack: std::cell::RefCell<Vec<Variable>>,
     /// Direct-path lazy interning arenas (see
     /// [`KernelStrings::lazy`]) — entries appended during emission via
     /// [`BodyCx::interned_str`] / [`BodyCx::interned_value`], harvested
@@ -7006,7 +7019,12 @@ fn compile_value_expr(
             let (disc, payload) = scaffold::emit_find_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, id: None, typ: elem },
+                &scaffold::HofElem {
+                    name: elem_local,
+                    id: None,
+                    typ: elem,
+                    leaves: &[],
+                },
                 |cx| compile_scalar(cx.b, predicate, cx.env, cx.ctx),
             )?;
             Ok(CompiledExpr::Value { disc, payload })
@@ -7023,7 +7041,12 @@ fn compile_value_expr(
             let (disc, payload) = scaffold::emit_find_map_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, id: None, typ: in_elem },
+                &scaffold::HofElem {
+                    name: elem_local,
+                    id: None,
+                    typ: in_elem,
+                    leaves: &[],
+                },
                 |cx| compile_value_expr(cx.b, body, cx.env, cx.ctx)?.value(),
             )?;
             Ok(CompiledExpr::Value { disc, payload })
@@ -7594,7 +7617,12 @@ fn compile_scalar_impl(
             scaffold::emit_map_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, id: None, typ: in_elem },
+                &scaffold::HofElem {
+                    name: elem_local,
+                    id: None,
+                    typ: in_elem,
+                    leaves: &[],
+                },
                 &body.typ,
                 out_src,
                 |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
@@ -7613,7 +7641,12 @@ fn compile_scalar_impl(
             scaffold::emit_filter_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, id: None, typ: elem },
+                &scaffold::HofElem {
+                    name: elem_local,
+                    id: None,
+                    typ: elem,
+                    leaves: &[],
+                },
                 |cx| compile_scalar(cx.b, predicate, cx.env, cx.ctx),
             )
         }
@@ -7649,7 +7682,12 @@ fn compile_scalar_impl(
             scaffold::emit_flat_map_loop(
                 &mut cx,
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
-                &scaffold::HofElem { name: elem_local, id: None, typ: in_elem },
+                &scaffold::HofElem {
+                    name: elem_local,
+                    id: None,
+                    typ: in_elem,
+                    leaves: &[],
+                },
                 |cx| {
                     let p = compile_scalar(cx.b, body, cx.env, cx.ctx)?;
                     ensure_owned_composite(cx.b, cx.ctx, body, p)
@@ -7672,7 +7710,12 @@ fn compile_scalar_impl(
                 acc_prim,
                 acc_local,
                 None,
-                &scaffold::HofElem { name: elem_local, id: None, typ: elem_typ },
+                &scaffold::HofElem {
+                    name: elem_local,
+                    id: None,
+                    typ: elem_typ,
+                    leaves: &[],
+                },
                 |cx| compile_scalar(cx.b, init, cx.env, cx.ctx),
                 |cx| compile_scalar(cx.b, body, cx.env, cx.ctx),
             )
@@ -8201,6 +8244,17 @@ fn emit_pending_cleanup(
     for buf_var in ctx.dyncall_buf_stack.borrow().iter() {
         let ptr = b.use_var(*buf_var);
         b.ins().call(buf_drop, &[ptr]);
+    }
+    // Owned HOF input arrays in flight (fresh producers being
+    // consumed by a loop scaffold) — finished ValArrays, dropped via
+    // `graphix_valarray_drop` (NOT the buf destructor).
+    let arr_drop = ctx
+        .helper_refs
+        .get("graphix_valarray_drop")
+        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+    for arr_var in ctx.owned_input_stack.borrow().iter() {
+        let ptr = b.use_var(*arr_var);
+        b.ins().call(arr_drop, &[ptr]);
     }
     // Owned composite + variant locals (and entry-cloned params).
     drop_owned_composites(b, env, ctx)
