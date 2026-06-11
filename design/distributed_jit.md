@@ -442,17 +442,67 @@ flip).
   Module/Block/Bind/CallSite, so the site gets no analysis_pred, no
   bound function, and neither inlines nor DynCalls (classic
   attempted=0, identical gap; values correct via node-walk). Same
-  class as #203 — likely fixed together in Stage E; a pin probe
-  documents it. Next: per-HOF `emit_clif` (flat_map → filter_map →
-  find → find_map → array::init), preserving may-bottom map body ⇒
-  runtime bottom-abort vs may-bottom fold/filter/find/flat_map
-  bodies ⇒ build-time de-fuse. (#202 turned out NOT to be
-  Apply::emit_clif work: `cast<T>(x)` is a TypeCast NODE whose
-  emit_clif relay exists — the gap is `emit_cast_node` refusing the
-  union `[T, Error]` result shape; an independent graphix-compiler
-  item, after D2.) Then the owned-array-arg widening
-  (pending-cleanup registration; flips the owned-slice probes) and
-  D3 destructured `|(k,v)|` leaves.
+  class as #203. **#204 FIXED** (2026-06-11, pulled ahead of the
+  Stage-F flip so the coverage audit doesn't bake position cliffs
+  into the accepted set): static resolution now descends every
+  child-bearing node — operands, select scrutinee/guards/arms,
+  composite-literal elements, accessor sources, string
+  interpolations, connect RHS, try/catch, qop — EXCEPT `Lambda`
+  bodies (compile per call site, #203's territory) and
+  `FusedKernel` (post-fusion synthetic). `collect_lambda_binds` is
+  the canonical enumeration: an EXHAUSTIVE `NodeView` match (no `_`
+  arm), so a new node variant is a compile error there instead of a
+  silently-untraversed container; `visit_mut` mirrors it with
+  per-type downcast arms (mutability forces concrete-type
+  dispatch). Position probes (operand / select-arm / array-element
+  HOFs, all `Clean`) guard the runtime behavior. Benefits BOTH
+  paths: classic gains the same nested-position fusion. The full
+  canonical-traversal trait method (one `visit_children` in the
+  delete/sleep/refs family, retiring the narrow walkers —
+  static_resolve, find_node_by_id, the jit recursion,
+  walk_node_for_builtin_calls' Expr fallback) is deliberately
+  deferred to Stage E, where #203's lambda-body descent forces full
+  traversal anyway. Related observation recorded for E: the
+  `Update::jit` recursion is also spine-only (Module/Block/Bind) —
+  with #204 fixed the containing region fuses at its root so this
+  rarely matters, but a mixed sync/async region root that fails
+  try_fuse won't currently retry pure sub-expressions at operand
+  depth. **D2 ladder COMPLETE** (2026-06-11): flat_map, filter_map,
+  find, find_map, and array::init all landed in one batch — each a
+  single `emit_clif` (MapFn impls for the first four; Init has its
+  own `Apply::emit_clif` mirroring its GirEmitter). Per-HOF notes:
+  flat_map's body must freeze to `Array<scalar>` (the
+  array-returning branch of the `['b, Array<'b>]` union; bare-elem
+  bodies node-walk, classic parity) and hands the scaffold an OWNED
+  array — a Borrowed body source (bare Ref) is refcount-cloned via
+  `ensure_owned_composite_src` (now `pub`; kernel-verified: clone +
+  extend per iteration, both inputs dropped at exit). filter_map is
+  scalar-in/scalar-out (the scaffold binds through the per-prim
+  getter — no bind_elem; composite elems node-walk, widen with
+  #150); body gate = `nullable_inner` + `scalar_prim`. find returns
+  the matched element as a `Nullable<elem>` `(disc, payload)` pair —
+  composite elements EXCEED classic again (kernel-verified: found
+  edge CONSUMES the element via `value_new_from_array`, advance edge
+  drops it). find_map's first non-null body pair IS the kernel
+  result, so a Borrowed body pair is cloned via
+  `ensure_owned_value_src` (now `pub`) — the scaffold's owned-pair
+  contract. init: integer-frozen `n` (may-bottom n Errs =
+  build-time de-fuse), the index param binds the loop counter
+  Variable itself, body pushes via push_field (the runtime
+  bottom-abort seam, like map). The three remaining name-only
+  scaffold binds (fold acc — done earlier —, filter_map elem, init
+  idx) all gained `Option<BindId>` columns (classic passes None;
+  differential-proven invariant). `CompositeSource` is now `Copy`.
+  OPERATIONAL RULE (bitten twice): `cargo test` does NOT rebuild
+  `target/debug/graphix-fuzz` — ALWAYS `cargo build -p graphix-fuzz`
+  before CLI kernel inspection or differential capture, or the dump
+  shows the previous build's behavior. Next: the owned-array-arg
+  widening (pending-cleanup registration; flips the owned-slice
+  probes across all 8 suites), D3 destructured `|(k,v)|` leaves,
+  then Stage E. (#202 turned out NOT to be Apply::emit_clif work:
+  `cast<T>(x)` is a TypeCast NODE whose emit_clif relay exists — the
+  gap is `emit_cast_node` refusing the union `[T, Error]` result
+  shape; an independent graphix-compiler item.)
 - **E — cross-kernel calls + tail loops**: callee discovery prepass
   (CachedKernel build minus emit_body — already pure analysis), lambda-
   CallSite emit + captures as trailing args (BindId-keyed env lookup),

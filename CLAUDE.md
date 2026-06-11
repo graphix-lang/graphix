@@ -431,8 +431,23 @@ value — derived from a single source (`gir.rs` `abi_params`/`AbiParamKind`).
   at build on may-bottom (a bottom acc poisons all later iterations —
   no per-element runtime seam). Fold probes found #204 (pre-existing,
   both paths): a HOF callsite in OPERAND position (`k + fold(...)`)
-  never statically resolves — static_resolve's visit_mut only
-  descends Module/Block/Bind/CallSite (same class as #203, Stage E).
+  never statically resolved — static_resolve's visit_mut only
+  descended Module/Block/Bind/CallSite. #204 FIXED (pulled ahead of
+  the Stage-F flip): static resolution now descends every
+  child-bearing node except Lambda bodies (#203) and FusedKernel.
+  `collect_lambda_binds` is the canonical enumeration — an EXHAUSTIVE
+  NodeView match (no `_` arm; a new node variant is a compile error
+  there, not a silently-untraversed container); `visit_mut` mirrors
+  it with per-type downcast arms. Position probes (operand /
+  select-arm / array-element HOFs) pin it at `Clean`. Benefits both
+  paths; zero fixture/CLIF fallout. The D2 HOF ladder then COMPLETED:
+  flat_map, filter_map, find, find_map, array::init all inline on the
+  direct path (one `emit_clif` each — the orchestrations made every
+  rung a single method). find/find_map return Value-shape Nullable
+  pairs; borrowed body sources clone via `ensure_owned_*_src` (now
+  pub). OPERATIONAL RULE (bitten twice): `cargo test` does NOT
+  rebuild `target/debug/graphix-fuzz` — always `cargo build -p
+  graphix-fuzz` before CLI kernel inspection or differential capture.
 - `delete_gir_ir.md` — superseded by `distributed_jit.md` (planned the same
   removal around a central walker); its scoping analysis and risks remain
   valid.

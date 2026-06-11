@@ -82,10 +82,19 @@ pub fn resolve_static_calls<R: Rt, E: UserEvent>(
 /// Walk the tree, populate `out` with every (bind_id → Lambda's
 /// stored Value) pair we find. Bindings whose value Node isn't a
 /// Lambda are skipped.
+///
+/// The match is EXHAUSTIVE over [`NodeView`] on purpose — this is the
+/// canonical child-enumeration for static resolution (#204): a new
+/// node variant fails to compile here instead of silently not being
+/// traversed. [`visit_mut`] must descend exactly the same children;
+/// when the compiler sends you here for a new variant, extend both.
 fn collect_lambda_binds<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     out: &mut IntMap<BindId, Value>,
 ) {
+    macro_rules! rec {
+        ($($n:expr),*) => {{ $(collect_lambda_binds::<R, E>($n, out);)* }};
+    }
     match node.view() {
         NodeView::Bind(b) => {
             if let NodeView::Lambda(l) = b.node.view() {
@@ -96,11 +105,11 @@ fn collect_lambda_binds<R: Rt, E: UserEvent>(
             }
             // The Bind's value Node could itself contain Lambdas
             // (e.g. `let _ = { let f = |x| x; ... };`) — descend.
-            collect_lambda_binds::<R, E>(&b.node, out);
+            rec!(&b.node)
         }
         NodeView::Module(m) => {
             for child in m.nodes.iter() {
-                collect_lambda_binds::<R, E>(child, out);
+                rec!(child)
             }
             // Interface re-exports: a signed module proxies each impl
             // binding's value to its public `val` signature binding.
@@ -118,19 +127,129 @@ fn collect_lambda_binds<R: Rt, E: UserEvent>(
         }
         NodeView::Block(blk) => {
             for child in blk.children.iter() {
-                collect_lambda_binds::<R, E>(child, out);
+                rec!(child)
             }
         }
-        _ => {
-            // Lambdas can only be bound at let-binding sites, which
-            // are always `Bind` Nodes. So we only need to descend
-            // through containers that can host Binds (Module,
-            // Block). Other containers (CallSite args, Select arms,
-            // arithmetic operands, etc.) can contain *expressions*
-            // that produce lambda values, but those aren't visible
-            // to static resolution — a lambda value flowing
-            // through a non-Bind path is the dynamic case.
+        NodeView::CallSite(cs) => {
+            for arg in cs.args.values() {
+                if let Some(n) = &arg.node {
+                    rec!(n)
+                }
+            }
+            rec!(&cs.fnode)
         }
+        NodeView::Select(s) => {
+            rec!(&s.arg.node);
+            for (pat, body) in s.arms.iter() {
+                if let Some(g) = &pat.guard {
+                    rec!(&g.node)
+                }
+                rec!(&body.node)
+            }
+        }
+        NodeView::TryCatch(t) => {
+            for n in t.nodes.iter() {
+                rec!(n)
+            }
+            rec!(&t.handler)
+        }
+        NodeView::Qop(q) => rec!(&q.n),
+        NodeView::OrNever(o) => rec!(&o.n),
+        NodeView::ExplicitParens(p) => rec!(&p.n),
+        NodeView::TypeCast(t) => rec!(&t.n),
+        NodeView::Not(n) => rec!(&n.n),
+        NodeView::Connect(c) => rec!(&c.node),
+        NodeView::ConnectDeref(c) => rec!(&c.rhs.node),
+        NodeView::StringInterpolate(s) => {
+            for a in s.args.iter() {
+                rec!(&a.node)
+            }
+        }
+        NodeView::Any(a) => {
+            for n in a.n.iter() {
+                rec!(n)
+            }
+        }
+        NodeView::Sample(s) => rec!(&s.trigger, &s.arg.node),
+        NodeView::Struct(s) => {
+            for c in s.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::StructWith(s) => {
+            rec!(&s.source);
+            for r in s.replace.iter() {
+                rec!(&r.n.node)
+            }
+        }
+        NodeView::Tuple(t) => {
+            for c in t.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::Variant(v) => {
+            for c in v.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::Array(a) => {
+            for c in a.n.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::Map(m) => {
+            for c in m.keys.iter() {
+                rec!(&c.node)
+            }
+            for c in m.vals.iter() {
+                rec!(&c.node)
+            }
+        }
+        NodeView::StructRef(s) => rec!(&s.source),
+        NodeView::TupleRef(t) => rec!(&t.source),
+        NodeView::ArrayRef(a) => rec!(&a.source.node, &a.i.node),
+        NodeView::ArraySlice(a) => {
+            rec!(&a.source.node);
+            if let Some(s) = &a.start {
+                rec!(&s.node)
+            }
+            if let Some(e) = &a.end {
+                rec!(&e.node)
+            }
+        }
+        NodeView::MapRef(m) => rec!(&m.source.node, &m.key.node),
+        NodeView::ByRef(b) => rec!(&b.child),
+        NodeView::Deref(d) => rec!(&d.child),
+        NodeView::Add(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Sub(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Mul(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Div(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Mod(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedAdd(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedSub(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedMul(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedDiv(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::CheckedMod(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Eq(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Ne(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Lt(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Gt(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Lte(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Gte(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::And(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Or(o) => rec!(&o.lhs.node, &o.rhs.node),
+        // A lambda's body compiles per call site — a Bind inside it
+        // belongs to that body's own resolution pass (#203).
+        NodeView::Lambda(_) => {}
+        // Leaves.
+        NodeView::Ref(_)
+        | NodeView::Constant(_)
+        | NodeView::Use(_)
+        | NodeView::TypeDef(_)
+        | NodeView::Nop(_) => {}
+        // Synthetic, produced by fusion — can't exist during this
+        // pre-fusion pass.
+        NodeView::FusedKernel(_) => {}
     }
 }
 
@@ -138,10 +257,12 @@ fn collect_lambda_binds<R: Rt, E: UserEvent>(
 /// dispatching `f` on each. Container Nodes recurse into their
 /// children after `f` sees them.
 ///
-/// We descend Module, Block, Bind (value), and CallSite (args +
-/// fnode). Other container types are not yet traversed — extending
-/// to those is a follow-up as we extend coverage to nested
-/// expression positions.
+/// Descends every child-bearing node EXCEPT `Lambda` (a body compiles
+/// per call site — #203 territory) and `FusedKernel` (synthetic,
+/// post-fusion). The covered set must stay identical to
+/// [`collect_lambda_binds`]'s exhaustive `NodeView` match — that match
+/// is the compiler-checked enumeration; when a new variant lands
+/// there, add its downcast arm here.
 fn visit_mut<R: Rt, E: UserEvent>(
     node: &mut Node<R, E>,
     f: &mut dyn FnMut(&mut Node<R, E>) -> Result<()>,
@@ -151,6 +272,34 @@ fn visit_mut<R: Rt, E: UserEvent>(
     // mutable access to the container's children.
     let upd: &mut dyn Update<R, E> = &mut **node;
     let any: &mut dyn Any = upd;
+    // Binary ops: lhs/rhs Cached children.
+    macro_rules! binop {
+        ($($t:ty),* $(,)?) => {
+            $(if let Some(n) = any.downcast_mut::<$t>() {
+                visit_mut::<R, E>(&mut n.lhs.node, f)?;
+                return visit_mut::<R, E>(&mut n.rhs.node, f);
+            })*
+        };
+    }
+    // Single `n: Node` child.
+    macro_rules! single_n {
+        ($($t:ty),* $(,)?) => {
+            $(if let Some(x) = any.downcast_mut::<$t>() {
+                return visit_mut::<R, E>(&mut x.n, f);
+            })*
+        };
+    }
+    // A `n: Box<[Cached]>` child list.
+    macro_rules! cached_list {
+        ($($t:ty),* $(,)?) => {
+            $(if let Some(x) = any.downcast_mut::<$t>() {
+                for c in x.n.iter_mut() {
+                    visit_mut::<R, E>(&mut c.node, f)?;
+                }
+                return Ok(());
+            })*
+        };
+    }
     if let Some(m) = any.downcast_mut::<crate::node::module::Module<R, E>>() {
         for child in m.nodes.iter_mut() {
             visit_mut::<R, E>(child, f)?;
@@ -176,6 +325,126 @@ fn visit_mut<R: Rt, E: UserEvent>(
         visit_mut::<R, E>(&mut cs.fnode, f)?;
         return Ok(());
     }
+    if let Some(s) = any.downcast_mut::<crate::node::select::Select<R, E>>() {
+        visit_mut::<R, E>(&mut s.arg.node, f)?;
+        for (pat, body) in s.arms.iter_mut() {
+            if let Some(g) = &mut pat.guard {
+                visit_mut::<R, E>(&mut g.node, f)?;
+            }
+            visit_mut::<R, E>(&mut body.node, f)?;
+        }
+        return Ok(());
+    }
+    if let Some(t) = any.downcast_mut::<crate::node::error::TryCatch<R, E>>() {
+        for n in t.nodes.iter_mut() {
+            visit_mut::<R, E>(n, f)?;
+        }
+        return visit_mut::<R, E>(&mut t.handler, f);
+    }
+    single_n!(
+        crate::node::error::Qop<R, E>,
+        crate::node::error::OrNever<R, E>,
+        crate::node::ExplicitParens<R, E>,
+        crate::node::TypeCast<R, E>,
+        crate::node::op::Not<R, E>,
+    );
+    if let Some(c) = any.downcast_mut::<crate::node::Connect<R, E>>() {
+        return visit_mut::<R, E>(&mut c.node, f);
+    }
+    if let Some(c) = any.downcast_mut::<crate::node::ConnectDeref<R, E>>() {
+        return visit_mut::<R, E>(&mut c.rhs.node, f);
+    }
+    if let Some(s) = any.downcast_mut::<crate::node::StringInterpolate<R, E>>()
+    {
+        for a in s.args.iter_mut() {
+            visit_mut::<R, E>(&mut a.node, f)?;
+        }
+        return Ok(());
+    }
+    if let Some(a) = any.downcast_mut::<crate::node::Any<R, E>>() {
+        for n in a.n.iter_mut() {
+            visit_mut::<R, E>(n, f)?;
+        }
+        return Ok(());
+    }
+    if let Some(s) = any.downcast_mut::<crate::node::Sample<R, E>>() {
+        visit_mut::<R, E>(&mut s.trigger, f)?;
+        return visit_mut::<R, E>(&mut s.arg.node, f);
+    }
+    cached_list!(
+        crate::node::data::Struct<R, E>,
+        crate::node::data::Tuple<R, E>,
+        crate::node::data::Variant<R, E>,
+        crate::node::array::Array<R, E>,
+    );
+    if let Some(s) = any.downcast_mut::<crate::node::data::StructWith<R, E>>()
+    {
+        visit_mut::<R, E>(&mut s.source, f)?;
+        for r in s.replace.iter_mut() {
+            visit_mut::<R, E>(&mut r.n.node, f)?;
+        }
+        return Ok(());
+    }
+    if let Some(m) = any.downcast_mut::<crate::node::map::Map<R, E>>() {
+        for c in m.keys.iter_mut() {
+            visit_mut::<R, E>(&mut c.node, f)?;
+        }
+        for c in m.vals.iter_mut() {
+            visit_mut::<R, E>(&mut c.node, f)?;
+        }
+        return Ok(());
+    }
+    if let Some(s) = any.downcast_mut::<crate::node::data::StructRef<R, E>>() {
+        return visit_mut::<R, E>(&mut s.source, f);
+    }
+    if let Some(t) = any.downcast_mut::<crate::node::data::TupleRef<R, E>>() {
+        return visit_mut::<R, E>(&mut t.source, f);
+    }
+    if let Some(a) = any.downcast_mut::<crate::node::array::ArrayRef<R, E>>() {
+        visit_mut::<R, E>(&mut a.source.node, f)?;
+        return visit_mut::<R, E>(&mut a.i.node, f);
+    }
+    if let Some(a) = any.downcast_mut::<crate::node::array::ArraySlice<R, E>>()
+    {
+        visit_mut::<R, E>(&mut a.source.node, f)?;
+        if let Some(s) = &mut a.start {
+            visit_mut::<R, E>(&mut s.node, f)?;
+        }
+        if let Some(e) = &mut a.end {
+            visit_mut::<R, E>(&mut e.node, f)?;
+        }
+        return Ok(());
+    }
+    if let Some(m) = any.downcast_mut::<crate::node::map::MapRef<R, E>>() {
+        visit_mut::<R, E>(&mut m.source.node, f)?;
+        return visit_mut::<R, E>(&mut m.key.node, f);
+    }
+    if let Some(b) = any.downcast_mut::<crate::node::bind::ByRef<R, E>>() {
+        return visit_mut::<R, E>(&mut b.child, f);
+    }
+    if let Some(d) = any.downcast_mut::<crate::node::bind::Deref<R, E>>() {
+        return visit_mut::<R, E>(&mut d.child, f);
+    }
+    binop!(
+        crate::node::op::Add<R, E>,
+        crate::node::op::Sub<R, E>,
+        crate::node::op::Mul<R, E>,
+        crate::node::op::Div<R, E>,
+        crate::node::op::Mod<R, E>,
+        crate::node::op::CheckedAdd<R, E>,
+        crate::node::op::CheckedSub<R, E>,
+        crate::node::op::CheckedMul<R, E>,
+        crate::node::op::CheckedDiv<R, E>,
+        crate::node::op::CheckedMod<R, E>,
+        crate::node::op::Eq<R, E>,
+        crate::node::op::Ne<R, E>,
+        crate::node::op::Lt<R, E>,
+        crate::node::op::Gt<R, E>,
+        crate::node::op::Lte<R, E>,
+        crate::node::op::Gte<R, E>,
+        crate::node::op::And<R, E>,
+        crate::node::op::Or<R, E>,
+    );
     Ok(())
 }
 

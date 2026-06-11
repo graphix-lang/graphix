@@ -352,6 +352,83 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
             typ: gir::array_type(gir::prim_type(out_elem)),
         })
     }
+
+    /// Direct-path flat_map loop via `scaffold::emit_flat_map_loop`.
+    /// Same `Ok(None)` gates as `MapImpl::emit_clif`, plus the body
+    /// must freeze to `Array<scalar>` — the array-returning shape of
+    /// the `['b, Array<'b>]` callback union, mirroring `emit_gir`'s
+    /// `array_scalar_prim` gate (a bare-element body node-walks). The
+    /// body closure hands the scaffold an OWNED array for `extend` to
+    /// consume — a Borrowed body source (e.g. a Ref to an outer
+    /// array) is refcount-cloned per iteration.
+    fn emit_clif(
+        cx: &mut BodyCx,
+        array_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        elem_name: &ArcStr,
+        elem_id: Option<BindId>,
+        in_elem: &Type,
+        elem_binds: &[(BindId, usize)],
+    ) -> Result<Option<CompiledExpr>> {
+        use gir::AbiKind;
+        // Destructured `|(k, v)|` callbacks are Stage D3.
+        if !elem_binds.is_empty() {
+            return Ok(None);
+        }
+        // Element shape: only what `scaffold::bind_elem` accepts.
+        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        match gir::abi_kind(&in_elem) {
+            Some(
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct,
+            ) => {}
+            _ => return Ok(None),
+        }
+        // V1: borrowed (env-owned) input arrays only — see
+        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
+        if gir_jit::node_composite_source(array_arg)
+            != CompositeSource::Borrowed
+        {
+            return Ok(None);
+        }
+        match gir::freeze_normalized(body.typ())
+            .as_ref()
+            .and_then(gir::array_scalar_prim)
+        {
+            Some(_) => {}
+            None => return Ok(None),
+        }
+        // Gates done — emit. From here a mismatch is a build bug or a
+        // de-fuse, so Err (abort the kernel), never Ok(None).
+        let arr_ptr = match array_arg.emit_clif(cx)? {
+            CompiledExpr::Single(v) => v,
+            cv => bail!(
+                "array::flat_map emit_clif: borrowed array arg compiled \
+                 to non-Single {cv:?}"
+            ),
+        };
+        let body_src = gir_jit::node_composite_source(body);
+        scaffold::emit_flat_map_loop(
+            cx,
+            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            |cx| {
+                let p = match body.emit_clif(cx)? {
+                    CompiledExpr::Single(v) => v,
+                    cv => bail!(
+                        "array::flat_map body compiled to a non-Single \
+                         value ({cv:?}) — de-fuse to node-walk"
+                    ),
+                };
+                gir_jit::ensure_owned_composite_src(cx, body_src, p)
+            },
+        )
+        .map(|v| Some(CompiledExpr::Single(v)))
+    }
 }
 
 type FlatMap<R, E> = MapQ<R, E, FlatMapImpl>;
@@ -403,6 +480,70 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             },
             typ: gir::array_type(gir::prim_type(out_elem)),
         })
+    }
+
+    /// Direct-path filter_map loop via
+    /// `scaffold::emit_filter_map_loop`. The scaffold is scalar-only
+    /// on BOTH sides (it binds the element through the per-prim
+    /// getter, no `bind_elem`, and casts the non-null payload back to
+    /// the out prim), so the gates are: register-scalar element,
+    /// body freezes to `Nullable<scalar>` (mirroring `emit_gir`'s
+    /// `nullable_inner` + `scalar_prim`). The scaffold itself Errs on
+    /// a non-Value-shape body = build-time de-fuse.
+    fn emit_clif(
+        cx: &mut BodyCx,
+        array_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        elem_name: &ArcStr,
+        elem_id: Option<BindId>,
+        in_elem: &Type,
+        elem_binds: &[(BindId, usize)],
+    ) -> Result<Option<CompiledExpr>> {
+        // Destructured `|(k, v)|` callbacks are Stage D3.
+        if !elem_binds.is_empty() {
+            return Ok(None);
+        }
+        let in_prim = match gir::freeze_normalized(in_elem)
+            .as_ref()
+            .and_then(gir::scalar_prim)
+        {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        // V1: borrowed (env-owned) input arrays only — see
+        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
+        if gir_jit::node_composite_source(array_arg)
+            != CompositeSource::Borrowed
+        {
+            return Ok(None);
+        }
+        let out_prim = match gir::freeze_normalized(body.typ())
+            .and_then(|t| gir::nullable_inner(&t))
+            .as_ref()
+            .and_then(gir::scalar_prim)
+        {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        // Gates done — emit. From here a mismatch is a build bug or a
+        // de-fuse, so Err (abort the kernel), never Ok(None).
+        let arr_ptr = match array_arg.emit_clif(cx)? {
+            CompiledExpr::Single(v) => v,
+            cv => bail!(
+                "array::filter_map emit_clif: borrowed array arg \
+                 compiled to non-Single {cv:?}"
+            ),
+        };
+        scaffold::emit_filter_map_loop(
+            cx,
+            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+            in_prim,
+            elem_name,
+            elem_id,
+            out_prim,
+            |cx| body.emit_clif(cx),
+        )
+        .map(|v| Some(CompiledExpr::Single(v)))
     }
 }
 
@@ -465,6 +606,76 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             },
             typ: gir::nullable_type(in_elem),
         })
+    }
+
+    /// Direct-path find loop via `scaffold::emit_find_loop` — early
+    /// exit on the first matching element, result is the
+    /// `Nullable<elem>` `(disc, payload)` pair. Same gates and
+    /// predicate contract as `FilterImpl::emit_clif`: a may-bottom
+    /// (`Scalar2`) predicate Errs = build-time de-fuse (a bottom
+    /// predicate has no match/no-match answer; canonically the pred
+    /// slot never fires and find's output blocks).
+    fn emit_clif(
+        cx: &mut BodyCx,
+        array_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        elem_name: &ArcStr,
+        elem_id: Option<BindId>,
+        in_elem: &Type,
+        elem_binds: &[(BindId, usize)],
+    ) -> Result<Option<CompiledExpr>> {
+        use gir::AbiKind;
+        // Destructured `|(k, v)|` callbacks are Stage D3.
+        if !elem_binds.is_empty() {
+            return Ok(None);
+        }
+        // Element shape: only what `scaffold::bind_elem` accepts.
+        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        match gir::abi_kind(&in_elem) {
+            Some(
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct,
+            ) => {}
+            _ => return Ok(None),
+        }
+        // V1: borrowed (env-owned) input arrays only — see
+        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
+        if gir_jit::node_composite_source(array_arg)
+            != CompositeSource::Borrowed
+        {
+            return Ok(None);
+        }
+        match gir::freeze_normalized(body.typ()) {
+            Some(t) if matches!(gir::scalar_prim(&t), Some(PrimType::Bool)) => {
+            }
+            _ => return Ok(None),
+        }
+        // Gates done — emit. From here a mismatch is a build bug or a
+        // de-fuse, so Err (abort the kernel), never Ok(None).
+        let arr_ptr = match array_arg.emit_clif(cx)? {
+            CompiledExpr::Single(v) => v,
+            cv => bail!(
+                "array::find emit_clif: borrowed array arg compiled to \
+                 non-Single {cv:?}"
+            ),
+        };
+        scaffold::emit_find_loop(
+            cx,
+            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            |cx| match body.emit_clif(cx)? {
+                CompiledExpr::Single(v) => Ok(v),
+                cv => bail!(
+                    "array::find predicate compiled to a possibly-bottom \
+                     or non-scalar value ({cv:?}) — de-fuse to node-walk"
+                ),
+            },
+        )
+        .map(|(disc, payload)| Some(CompiledExpr::Value { disc, payload }))
     }
 }
 
@@ -531,6 +742,79 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
             },
             typ: out_ty,
         })
+    }
+
+    /// Direct-path find_map loop via `scaffold::emit_find_map_loop` —
+    /// early exit on the first non-null body result, which IS the
+    /// kernel's `Nullable<out>` result. The body must freeze to a
+    /// Nullable shape (mirroring `emit_gir`). The body pair leaves the
+    /// loop as the result, so a Borrowed body source (a bare Ref read)
+    /// is refcount-cloned via `ensure_owned_value_src` — the scaffold's
+    /// owned-pair contract.
+    fn emit_clif(
+        cx: &mut BodyCx,
+        array_arg: &Node<R, E>,
+        body: &Node<R, E>,
+        elem_name: &ArcStr,
+        elem_id: Option<BindId>,
+        in_elem: &Type,
+        elem_binds: &[(BindId, usize)],
+    ) -> Result<Option<CompiledExpr>> {
+        use gir::AbiKind;
+        // Destructured `|(k, v)|` callbacks are Stage D3.
+        if !elem_binds.is_empty() {
+            return Ok(None);
+        }
+        // Element shape: only what `scaffold::bind_elem` accepts.
+        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+            return Ok(None);
+        };
+        match gir::abi_kind(&in_elem) {
+            Some(
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct,
+            ) => {}
+            _ => return Ok(None),
+        }
+        // V1: borrowed (env-owned) input arrays only — see
+        // `MapImpl::emit_clif` and the `ArraySrc` ownership contract.
+        if gir_jit::node_composite_source(array_arg)
+            != CompositeSource::Borrowed
+        {
+            return Ok(None);
+        }
+        match gir::freeze_normalized(body.typ()).as_ref().map(gir::abi_kind) {
+            Some(Some(AbiKind::Nullable)) => {}
+            _ => return Ok(None),
+        }
+        // Gates done — emit. From here a mismatch is a build bug or a
+        // de-fuse, so Err (abort the kernel), never Ok(None).
+        let arr_ptr = match array_arg.emit_clif(cx)? {
+            CompiledExpr::Single(v) => v,
+            cv => bail!(
+                "array::find_map emit_clif: borrowed array arg compiled \
+                 to non-Single {cv:?}"
+            ),
+        };
+        let body_src = gir_jit::node_composite_source(body);
+        let (disc, payload) = scaffold::emit_find_map_loop(
+            cx,
+            scaffold::ArraySrc { ptr: arr_ptr, owned: false },
+            &scaffold::HofElem { name: elem_name, id: elem_id, typ: &in_elem },
+            |cx| {
+                let (d, p) = match body.emit_clif(cx)? {
+                    CompiledExpr::Value { disc, payload } => (disc, payload),
+                    cv => bail!(
+                        "array::find_map body compiled to a non-Value \
+                         shape ({cv:?}) — de-fuse to node-walk"
+                    ),
+                };
+                gir_jit::ensure_owned_value_src(cx, body_src, d, p)
+            },
+        )?;
+        Ok(Some(CompiledExpr::Value { disc, payload }))
     }
 }
 
@@ -1557,6 +1841,86 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             sl.pred.sleep(ctx);
         }
         // analysis_pred is analysis-only — no runtime sleep needed.
+    }
+
+    /// Direct-path codegen (Stage D2) — the `emit_gir` twin below:
+    /// `n` (positional 0) must freeze to an integer scalar, the index
+    /// param binds the loop counter Variable itself (no per-iteration
+    /// copy), and the body's per-index result is pushed via
+    /// `scaffold::push_field` (the runtime bottom-abort seam, same as
+    /// map). A may-bottom `n` Errs = build-time de-fuse.
+    fn emit_clif(
+        &self,
+        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
+        let Some(slot) = self.analysis_pred.as_ref() else {
+            return Ok(None);
+        };
+        // Positional arg 0 is the array size (`n`).
+        let Some(n_node) = callsite.arg_positional(0) else {
+            return Ok(None);
+        };
+        let n_prim = match gir::freeze_normalized(n_node.typ())
+            .as_ref()
+            .and_then(gir::scalar_prim)
+        {
+            Some(p) if p.is_integer() => p,
+            _ => return Ok(None),
+        };
+        // Body Node via the inner CallSite's resolved Apply.
+        let inner_cs = match slot.pred.view() {
+            graphix_compiler::NodeView::CallSite(cs) => cs,
+            _ => return Ok(None),
+        };
+        let Some(inner_apply) = inner_cs.resolved_apply() else {
+            return Ok(None);
+        };
+        let g = match inner_apply {
+            graphix_compiler::ApplyView::Lambda(g) => g,
+            _ => return Ok(None),
+        };
+        let body = g.body();
+        // Index param's name from the lambda's FnType, its BindId
+        // from the arg pattern (Refs resolve BindId-first).
+        let idx_name = match g.typ().args.first().map(|a| &a.kind) {
+            Some(graphix_compiler::typ::FnArgKind::Positional {
+                name: Some(n),
+            }) => n.clone(),
+            Some(graphix_compiler::typ::FnArgKind::Labeled {
+                name, ..
+            }) => name.clone(),
+            _ => return Ok(None),
+        };
+        let idx_id = g.args().first().and_then(|p| p.single_bind_id());
+        // Output element type is the body's result.
+        let Some(out_typ) = gir::freeze_normalized(body.typ()) else {
+            return Ok(None);
+        };
+        if is_unit_or_null(&out_typ) {
+            return Ok(None);
+        }
+        // Gates done — emit. From here a mismatch is a build bug or a
+        // de-fuse, so Err (abort the kernel), never Ok(None).
+        let n_raw = match n_node.emit_clif(cx)? {
+            CompiledExpr::Single(v) => v,
+            cv => bail!(
+                "array::init `n` compiled to a possibly-bottom or \
+                 non-scalar value ({cv:?}) — de-fuse to node-walk"
+            ),
+        };
+        let out_src = gir_jit::node_composite_source(body);
+        scaffold::emit_init_loop(
+            cx,
+            n_raw,
+            n_prim,
+            &idx_name,
+            idx_id,
+            &out_typ,
+            out_src,
+            |cx| body.emit_clif(cx),
+        )
+        .map(|v| Some(CompiledExpr::Single(v)))
     }
 }
 

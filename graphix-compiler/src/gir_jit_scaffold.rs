@@ -349,6 +349,7 @@ pub fn emit_init_loop<'a, 'f, 'c, F>(
     n_raw: ClifValue,
     n_prim: PrimType,
     idx_name: &ArcStr,
+    idx_id: Option<crate::BindId>,
     out_typ: &Type,
     out_src: CompositeSource,
     mut body: F,
@@ -374,7 +375,7 @@ where
     emit_loop_header(cx, i_var, n_val, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
     let mark = cx.env.mark();
-    cx.env.bind(idx_name.clone(), i_var, PrimType::I64);
+    cx.env.bind_with_id(idx_name.clone(), i_var, PrimType::I64, idx_id);
     let cv = body(cx)?;
     push_field(cx, buf, cv, out_typ, out_src)?;
     cx.env.truncate(mark);
@@ -507,6 +508,7 @@ pub fn emit_filter_map_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     in_elem: PrimType,
     elem_name: &ArcStr,
+    elem_id: Option<crate::BindId>,
     out_elem: PrimType,
     mut body: F,
 ) -> Result<ClifValue>
@@ -532,7 +534,7 @@ where
     let elem_var = cx.b.declare_var(prim_to_clif(in_elem));
     cx.b.def_var(elem_var, elem_val);
     let mark = cx.env.mark();
-    cx.env.bind(elem_name.clone(), elem_var, in_elem);
+    cx.env.bind_with_id(elem_name.clone(), elem_var, in_elem, elem_id);
     let cv = body(cx)?;
     cx.env.truncate(mark);
     let (disc, payload) = match cv {

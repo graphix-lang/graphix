@@ -1219,14 +1219,28 @@ mod tests {
              array::fold(a, acc, |acc, x| acc + x) }",
         )
         .await;
-        // HOF callsite in OPERAND position (under the `+`) — neither
-        // path statically resolves it (#204: static_resolve's
-        // visit_mut only descends Module/Block/Bind/CallSite), so the
-        // fold node-walks on every mode. Flip to
-        // `all_three_agree_fused_clean` when #204 lands.
-        all_three_agree(
+        // HOF callsite in OPERAND position (under the `+`) — pre-#204
+        // neither path statically resolved it (static_resolve only
+        // descended the Module/Block/Bind/CallSite spine). Now the
+        // full-position traversal resolves it and the whole block
+        // fuses as one region.
+        all_three_agree_fused_clean(
             "{ let k = i64:100; let a = [i64:1, i64:2]; \
              k + array::fold(a, i64:0, |acc, x| acc + x) }",
+        )
+        .await;
+        // #204 position coverage: HOF in a SELECT ARM...
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; let x = i64:1; \
+             select x { \
+               i64:1 => array::fold(a, i64:0, |acc, y| acc + y), \
+               _ => i64:0 } }",
+        )
+        .await;
+        // ...and as an ARRAY-LITERAL ELEMENT.
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; \
+             [array::fold(a, i64:0, |acc, x| acc + x), i64:5] }",
         )
         .await;
         // STATICALLY may-bottom BODY (div by the element, no zero
@@ -1260,6 +1274,201 @@ mod tests {
         all_three_agree(
             "{ let a = [(i64:1, i64:2)]; \
              array::fold(a, i64:0, |acc, (k, v)| acc + k * v) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::flat_map` emission on the
+    /// direct path (`FlatMapImpl::emit_clif` →
+    /// `scaffold::emit_flat_map_loop`). The body must be the
+    /// array-returning shape of the `['b, Array<'b>]` callback union
+    /// and hands the scaffold an OWNED array (Borrowed body sources
+    /// are refcount-cloned per iteration — probed below).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_flat_map_probes() {
+        // scalar element → fresh array body
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; \
+             array::flat_map(a, |x| [x, x * i64:10]) }",
+        )
+        .await;
+        // composite (tuple) element flattened to its fields —
+        // EXCEEDS classic (register-scalar-element gate there)
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
+             array::flat_map(a, |p| [p.0, p.1]) }",
+        )
+        .await;
+        // capture in the body
+        all_three_agree_fused_clean(
+            "{ let k = i64:2; let a = [i64:1, i64:2]; \
+             array::flat_map(a, |x| [x * k]) }",
+        )
+        .await;
+        // BORROWED body source: the body is a Ref to an outer array,
+        // so the scaffold's extend would consume the env's value —
+        // `ensure_owned_composite_src` clones it per iteration
+        all_three_agree_fused_clean(
+            "{ let b = [i64:9]; let a = [i64:1, i64:2]; \
+             array::flat_map(a, |x| b) }",
+        )
+        .await;
+        // bare-element body — the OTHER branch of the callback union;
+        // not Array-typed → Ok(None) → node-walk (classic parity)
+        all_three_agree(
+            "{ let a = [i64:1, i64:2]; array::flat_map(a, |x| x) }",
+        )
+        .await;
+        // OWNED input array — the V1 ownership gate
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::flat_map((a[1..])$, |x| [x]) }",
+        )
+        .await;
+        // Destructured callback — the D3 gate
+        all_three_agree(
+            "{ let a = [(i64:1, i64:2)]; \
+             array::flat_map(a, |(k, v)| [k, v]) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::filter_map` emission
+    /// (`FilterMapImpl::emit_clif` → `scaffold::emit_filter_map_loop`,
+    /// scalar in/out — the body's `Nullable<out>` Value-shape result
+    /// is collected when non-null).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_filter_map_probes() {
+        // select-bodied Nullable: keep evens doubled
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
+             array::filter_map(a, |x| \
+               select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
+        )
+        .await;
+        // capture in the body
+        all_three_agree_fused_clean(
+            "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
+             array::filter_map(a, |x| \
+               select x { i64:2 => x * k, _ => null }) }",
+        )
+        .await;
+        // composite element — outside the scalar-only scaffold →
+        // Ok(None) → node-walk (classic parity; widen with #150)
+        all_three_agree(
+            "{ let a = [(i64:1, i64:2)]; \
+             array::filter_map(a, |p| \
+               select p.0 { i64:1 => p.1, _ => null }) }",
+        )
+        .await;
+        // OWNED input array — the V1 ownership gate
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::filter_map((a[1..])$, |x| \
+               select x { i64:2 => x, _ => null }) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::find` emission
+    /// (`FindImpl::emit_clif` → `scaffold::emit_find_loop`, early
+    /// exit, `Nullable<elem>` Value-shape result). The may-bottom
+    /// predicate de-fuses at build, same contract as filter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_find_probes() {
+        // scalar element, found
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:5, i64:3]; \
+             array::find(a, |x| x > i64:2) }",
+        )
+        .await;
+        // scalar element, NOT found (null result)
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }",
+        )
+        .await;
+        // composite (tuple) element + accessor predicate — the found
+        // element is consumed into the Nullable result, not-matched
+        // ones drop per iteration. EXCEEDS classic for single-name
+        // callbacks.
+        all_three_agree_fused_clean(
+            "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
+             array::find(a, |p| p.0 > p.1) }",
+        )
+        .await;
+        // may-bottom predicate — build-time de-fuse, runtime-clean
+        all_three_agree(
+            "{ let a = [i64:1, i64:5]; \
+             array::find(a, |x| i64:10 / x > i64:4) }",
+        )
+        .await;
+        // OWNED input array — the V1 ownership gate
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::find((a[1..])$, |x| x > i64:1) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::find_map` emission
+    /// (`FindMapImpl::emit_clif` → `scaffold::emit_find_map_loop` —
+    /// the first non-null body pair IS the kernel result, so a
+    /// Borrowed body source is refcount-cloned per the owned-pair
+    /// contract).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_find_map_probes() {
+        // found: first even, doubled
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::find_map(a, |x| \
+               select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
+        )
+        .await;
+        // not found → null
+        all_three_agree_fused_clean(
+            "{ let a = [i64:1, i64:3]; \
+             array::find_map(a, |x| \
+               select x % i64:2 { i64:0 => x, _ => null }) }",
+        )
+        .await;
+        // OWNED input array — the V1 ownership gate
+        all_three_agree(
+            "{ let a = [i64:1, i64:2, i64:3]; \
+             array::find_map((a[1..])$, |x| \
+               select x { i64:2 => x, _ => null }) }",
+        )
+        .await;
+    }
+
+    /// Stage D2 probes: inline `array::init` emission (Init's own
+    /// `Apply::emit_clif` → `scaffold::emit_init_loop` — the index
+    /// param binds the loop counter Variable itself; the body result
+    /// pushes via `push_field`, the runtime bottom-abort seam).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_init_probes() {
+        // scalar body
+        all_three_agree_fused_clean("array::init(i64:4, |i| i * i)").await;
+        // composite (tuple) body
+        all_three_agree_fused_clean("array::init(i64:3, |i| (i, i + i64:1))")
+            .await;
+        // capture in the body
+        all_three_agree_fused_clean(
+            "{ let k = i64:10; array::init(i64:3, |i| i * k) }",
+        )
+        .await;
+        // computed n with a capture
+        all_three_agree_fused_clean(
+            "{ let n = i64:2; array::init(n + i64:1, |i| i) }",
+        )
+        .await;
+        // negative n clamps to the empty array (the scaffold's
+        // node-walk-parity clamp)
+        all_three_agree_fused_clean("array::init(i64:0 - i64:2, |i| i)")
+            .await;
+        // may-bottom n (div by a binding) — build-time de-fuse,
+        // runtime-clean
+        all_three_agree(
+            "{ let d = i64:2; array::init(i64:4 / d, |i| i) }",
         )
         .await;
     }

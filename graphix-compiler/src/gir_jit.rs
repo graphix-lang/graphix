@@ -3643,7 +3643,9 @@ pub fn node_composite_source<R: crate::Rt, E: crate::UserEvent>(
 /// Clone a borrowed composite pointer so the result is owned; pass an
 /// owned one through. By-source variant of `ensure_owned_composite`
 /// for the direct path (which classifies from the Node, not GirExpr).
-pub(crate) fn ensure_owned_composite_src(
+/// `pub` for package crates' `Apply::emit_clif` impls (e.g.
+/// `array::flat_map`'s body hand-off).
+pub fn ensure_owned_composite_src(
     cx: &mut BodyCx,
     src: CompositeSource,
     v: ClifValue,
@@ -3660,7 +3662,10 @@ pub(crate) fn ensure_owned_composite_src(
 
 /// Clone a borrowed two-word Value so the result is owned; pass an
 /// owned one through. By-source variant of `ensure_owned_value`.
-pub(crate) fn ensure_owned_value_src(
+/// `pub` for package crates' `Apply::emit_clif` impls (e.g.
+/// `array::find_map`'s body pair, which escapes its loop as the
+/// kernel result).
+pub fn ensure_owned_value_src(
     cx: &mut BodyCx,
     src: CompositeSource,
     disc: ClifValue,
@@ -7571,6 +7576,7 @@ fn compile_scalar_impl(
                 n_raw,
                 prim_of(&n.typ),
                 idx_local,
+                None,
                 &body.typ,
                 out_src,
                 |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
@@ -7624,6 +7630,7 @@ fn compile_scalar_impl(
                 scaffold::ArraySrc { ptr: arr_ptr, owned: false },
                 *in_elem,
                 elem_local,
+                None,
                 *out_elem,
                 |cx| compile_expr(cx.b, body, cx.env, cx.ctx),
             )
@@ -7768,7 +7775,7 @@ fn variant_payload_helper(p: PrimType) -> Result<&'static str> {
 /// Where a composite expression's pointer came from. Drives whether
 /// a tail-call rebind needs a refcount bump (`Borrowed`) or can
 /// transfer ownership directly (`Owned`).
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompositeSource {
     /// Expression produces a fresh owned pointer — TupleNew,
     /// StructNew, ArrayInit, etc. Transfer to the slot as-is.
